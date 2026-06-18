@@ -9,6 +9,7 @@ on:
     paths:
       - 'crates/egglsp/**'
       - 'src/lsp/**'
+      - '.github/workflows/lsp-real-server.yml'
 
 env:
   CARGO_TERM_COLOR: always
@@ -65,5 +66,100 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: lsp-compat-basedpyright
+          path: target/lsp-compatibility/
+          retention-days: 30
+
+  gopls:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.81.0
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install Go 1.22.5
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22.5'
+
+      - name: Install gopls v0.16.1
+        run: |
+          go install golang.org/x/tools/gopls@v0.16.1
+          echo "CODEGG_GOPLS_BIN=$(which gopls)" >> $GITHUB_ENV
+
+      - name: Run gopls smoke tests
+        run: |
+          cargo test -p egglsp \
+            --features lsp-real-server-tests \
+            --test real_server_smoke \
+            -- gopls --nocapture
+
+      - name: Upload compatibility reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lsp-compat-gopls
+          path: target/lsp-compatibility/
+          retention-days: 30
+
+  typescript-language-server:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.81.0
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install typescript-language-server v4.3.3
+        run: |
+          npm install -g typescript-language-server@4.3.3 typescript@5.5.4
+          echo "CODEGG_TS_LS_BIN=$(which typescript-language-server)" >> $GITHUB_ENV
+
+      - name: Run typescript-language-server smoke tests
+        run: |
+          cargo test -p egglsp \
+            --features lsp-real-server-tests \
+            --test real_server_smoke \
+            -- typescript --nocapture
+
+      - name: Upload compatibility reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lsp-compat-typescript-language-server
+          path: target/lsp-compatibility/
+          retention-days: 30
+
+  clangd:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.81.0
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install clangd 18
+        run: |
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo apt-key add -
+          echo "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-18 main" | sudo tee /etc/apt/sources.list.d/llvm.list
+          sudo apt-get update
+          sudo apt-get install -y clangd-18
+          sudo update-alternatives --install /usr/bin/clangd clangd /usr/bin/clangd-18 100
+          echo "CODEGG_CLANGD_BIN=$(which clangd)" >> $GITHUB_ENV
+
+      - name: Run clangd smoke tests
+        run: |
+          cargo test -p egglsp \
+            --features lsp-real-server-tests \
+            --test real_server_smoke \
+            -- clangd --nocapture
+
+      - name: Upload compatibility reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lsp-compat-clangd
           path: target/lsp-compatibility/
           retention-days: 30

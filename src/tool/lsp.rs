@@ -15,6 +15,10 @@ const MAX_REFERENCES: usize = 100;
 const MAX_SYMBOLS: usize = 300;
 const MAX_WORKSPACE_SYMBOLS: usize = 200;
 const MAX_HOVER_CHARS: usize = 2000;
+const MAX_DOCUMENT_HIGHLIGHTS: usize = 100;
+const MAX_COMPLETION_CANDIDATES: usize = 200;
+const MAX_SEMANTIC_TOKENS: usize = 1000;
+const MAX_CODE_ACTIONS: usize = 50;
 
 const MAX_SEMANTIC_CONTEXT_RADIUS: u32 = 120;
 const DEFAULT_SEMANTIC_CONTEXT_RADIUS: u32 = 40;
@@ -81,6 +85,16 @@ struct LocationSummary {
     start_column: u32,
     end_line: u32,
     end_column: u32,
+}
+
+#[derive(Serialize)]
+struct DocumentHighlightSummary {
+    file: String,
+    start_line: u32,
+    start_column: u32,
+    end_line: u32,
+    end_column: u32,
+    kind: String,
 }
 
 #[derive(Serialize, Clone)]
@@ -362,6 +376,28 @@ struct LspInput {
     call_direction: Option<String>,
     #[serde(default)]
     max_hunks: Option<usize>,
+    #[serde(default)]
+    start_line: Option<u32>,
+    #[serde(default)]
+    start_column: Option<u32>,
+    #[serde(default)]
+    end_line: Option<u32>,
+    #[serde(default)]
+    end_column: Option<u32>,
+    #[serde(default)]
+    max_candidates: Option<usize>,
+    #[serde(default)]
+    max_tokens: Option<usize>,
+    #[serde(default)]
+    max_actions: Option<usize>,
+    #[serde(default)]
+    action_index: Option<usize>,
+    #[serde(default)]
+    only: Option<Vec<String>>,
+    #[serde(default)]
+    trigger_kind: Option<i32>,
+    #[serde(default)]
+    trigger_char: Option<String>,
 }
 
 pub fn to_lsp_position(line: u32, column: u32) -> crate::lsp::lsp_types::Position {
@@ -439,6 +475,18 @@ fn severity_to_string(severity: crate::lsp::lsp_types::DiagnosticSeverity) -> St
         crate::lsp::lsp_types::DiagnosticSeverity::INFORMATION => "info",
         crate::lsp::lsp_types::DiagnosticSeverity::HINT => "hint",
         _ => "unknown",
+    }
+    .to_string()
+}
+
+fn document_highlight_kind_to_string(
+    kind: Option<crate::lsp::lsp_types::DocumentHighlightKind>,
+) -> String {
+    match kind {
+        Some(crate::lsp::lsp_types::DocumentHighlightKind::TEXT) => "text",
+        Some(crate::lsp::lsp_types::DocumentHighlightKind::READ) => "read",
+        Some(crate::lsp::lsp_types::DocumentHighlightKind::WRITE) => "write",
+        _ => "unspecified",
     }
     .to_string()
 }
@@ -2608,6 +2656,269 @@ impl Tool for LspTool {
                 serde_json::to_string_pretty(&output)
                     .map_err(|e| ToolError::Execution(format!("serialize: {e}")))?
             }
+            "declaration" => {
+                let file = self.resolve_file(&parsed.file_path)?;
+                let (line, col) = self.require_line_col(&parsed.line, &parsed.column)?;
+                let pos = to_lsp_position(line, col);
+                let locs = ops
+                    .declaration(&file, pos.line, pos.character)
+                    .await
+                    .map_err(|e| ToolError::Execution(format!("declaration: {e}")))?;
+                let truncated = locs.len() > MAX_REFERENCES;
+                let capped: Vec<_> = locs.into_iter().take(MAX_REFERENCES).collect();
+                let summaries: Vec<LocationSummary> = capped
+                    .iter()
+                    .map(|loc| {
+                        let range = loc.target_range;
+                        LocationSummary {
+                            file: uri_to_path(&loc.target_uri),
+                            start_line: range.start.line + 1,
+                            start_column: range.start.character + 1,
+                            end_line: range.end.line + 1,
+                            end_column: range.end.character + 1,
+                        }
+                    })
+                    .collect();
+                let output = LspToolOutput {
+                    operation: "declaration".to_string(),
+                    file_path: file_path_str,
+                    result_count: summaries.len(),
+                    truncated,
+                    results: summaries,
+                };
+                serde_json::to_string_pretty(&output)
+                    .map_err(|e| ToolError::Execution(format!("serialize: {e}")))?
+            }
+            "implementation" => {
+                let file = self.resolve_file(&parsed.file_path)?;
+                let (line, col) = self.require_line_col(&parsed.line, &parsed.column)?;
+                let pos = to_lsp_position(line, col);
+                let locs = ops
+                    .implementation(&file, pos.line, pos.character)
+                    .await
+                    .map_err(|e| ToolError::Execution(format!("implementation: {e}")))?;
+                let truncated = locs.len() > MAX_REFERENCES;
+                let capped: Vec<_> = locs.into_iter().take(MAX_REFERENCES).collect();
+                let summaries: Vec<LocationSummary> = capped
+                    .iter()
+                    .map(|loc| {
+                        let range = loc.target_range;
+                        LocationSummary {
+                            file: uri_to_path(&loc.target_uri),
+                            start_line: range.start.line + 1,
+                            start_column: range.start.character + 1,
+                            end_line: range.end.line + 1,
+                            end_column: range.end.character + 1,
+                        }
+                    })
+                    .collect();
+                let output = LspToolOutput {
+                    operation: "implementation".to_string(),
+                    file_path: file_path_str,
+                    result_count: summaries.len(),
+                    truncated,
+                    results: summaries,
+                };
+                serde_json::to_string_pretty(&output)
+                    .map_err(|e| ToolError::Execution(format!("serialize: {e}")))?
+            }
+            "documentHighlights" => {
+                let file = self.resolve_file(&parsed.file_path)?;
+                let (line, col) = self.require_line_col(&parsed.line, &parsed.column)?;
+                let pos = to_lsp_position(line, col);
+                let highlights = ops
+                    .document_highlights(&file, pos.line, pos.character)
+                    .await
+                    .map_err(|e| ToolError::Execution(format!("documentHighlights: {e}")))?;
+                let file_str = file.to_string_lossy().to_string();
+                let truncated = highlights.len() > MAX_DOCUMENT_HIGHLIGHTS;
+                let capped: Vec<_> = highlights
+                    .into_iter()
+                    .take(MAX_DOCUMENT_HIGHLIGHTS)
+                    .collect();
+                let summaries: Vec<DocumentHighlightSummary> = capped
+                    .iter()
+                    .map(|h| DocumentHighlightSummary {
+                        file: file_str.clone(),
+                        start_line: h.range.start.line + 1,
+                        start_column: h.range.start.character + 1,
+                        end_line: h.range.end.line + 1,
+                        end_column: h.range.end.character + 1,
+                        kind: document_highlight_kind_to_string(h.kind),
+                    })
+                    .collect();
+                let output = LspToolOutput {
+                    operation: "documentHighlights".to_string(),
+                    file_path: file_path_str,
+                    result_count: summaries.len(),
+                    truncated,
+                    results: summaries,
+                };
+                serde_json::to_string_pretty(&output)
+                    .map_err(|e| ToolError::Execution(format!("serialize: {e}")))?
+            }
+            "signatureHelp" => {
+                let file = self.resolve_file(&parsed.file_path)?;
+                let (line, col) = self.require_line_col(&parsed.line, &parsed.column)?;
+                let pos = to_lsp_position(line, col);
+                let help = ops
+                    .signature_help_typed(&file, pos.line, pos.character)
+                    .await
+                    .map_err(|e| ToolError::Execution(format!("signatureHelp: {e}")))?;
+                let result_count = help.as_ref().map(|h| h.signatures.len()).unwrap_or(0);
+                let output = LspToolOutput {
+                    operation: "signatureHelp".to_string(),
+                    file_path: file_path_str,
+                    result_count,
+                    truncated: false,
+                    results: help,
+                };
+                serde_json::to_string_pretty(&output)
+                    .map_err(|e| ToolError::Execution(format!("serialize: {e}")))?
+            }
+            "completion" => {
+                let file = self.resolve_file(&parsed.file_path)?;
+                let (line, col) = self.require_line_col(&parsed.line, &parsed.column)?;
+                let pos = to_lsp_position(line, col);
+                let max = parsed.max_candidates.unwrap_or(MAX_COMPLETION_CANDIDATES);
+                let trigger_kind = match parsed.trigger_kind {
+                    Some(1) => Some(crate::lsp::lsp_types::CompletionTriggerKind::INVOKED),
+                    Some(2) => Some(
+                        crate::lsp::lsp_types::CompletionTriggerKind::TRIGGER_CHARACTER,
+                    ),
+                    Some(3) => Some(
+                        crate::lsp::lsp_types::CompletionTriggerKind::TRIGGER_FOR_INCOMPLETE_COMPLETIONS,
+                    ),
+                    _ => None,
+                };
+                let candidates = ops
+                    .completion_bounded(
+                        &file,
+                        pos.line,
+                        pos.character,
+                        trigger_kind,
+                        parsed.trigger_char.clone(),
+                        max,
+                    )
+                    .await
+                    .map_err(|e| ToolError::Execution(format!("completion: {e}")))?;
+                let output = LspToolOutput {
+                    operation: "completion".to_string(),
+                    file_path: file_path_str,
+                    result_count: candidates.len(),
+                    truncated: false,
+                    results: candidates,
+                };
+                serde_json::to_string_pretty(&output)
+                    .map_err(|e| ToolError::Execution(format!("serialize: {e}")))?
+            }
+            "semanticTokens" => {
+                let file = self.resolve_file(&parsed.file_path)?;
+                let max = parsed.max_tokens.unwrap_or(MAX_SEMANTIC_TOKENS);
+                let tokens = ops
+                    .semantic_tokens(&file, max)
+                    .await
+                    .map_err(|e| ToolError::Execution(format!("semanticTokens: {e}")))?;
+                let output = LspToolOutput {
+                    operation: "semanticTokens".to_string(),
+                    file_path: file_path_str,
+                    result_count: tokens.len(),
+                    truncated: false,
+                    results: tokens,
+                };
+                serde_json::to_string_pretty(&output)
+                    .map_err(|e| ToolError::Execution(format!("serialize: {e}")))?
+            }
+            "codeActionSummaries" => {
+                let file = self.resolve_file(&parsed.file_path)?;
+                let start_line_input = parsed.start_line.ok_or_else(|| {
+                    ToolError::Execution(
+                        "start_line required for codeActionSummaries (1-indexed)".to_string(),
+                    )
+                })?;
+                let start_col_input = parsed.start_column.unwrap_or(start_line_input);
+                let end_line_input = parsed.end_line.unwrap_or(start_line_input);
+                let end_col_input = parsed.end_column.unwrap_or(start_col_input);
+                let max = parsed.max_actions.unwrap_or(MAX_CODE_ACTIONS);
+                let only = parsed.only.as_ref().map(|kinds| {
+                    kinds
+                        .iter()
+                        .map(|k| crate::lsp::lsp_types::CodeActionKind::from(k.clone()))
+                        .collect::<Vec<_>>()
+                });
+                let actions = ops
+                    .code_action_summaries(
+                        &file,
+                        start_line_input.saturating_sub(1),
+                        start_col_input.saturating_sub(1),
+                        end_line_input.saturating_sub(1),
+                        end_col_input.saturating_sub(1),
+                        Vec::new(),
+                        only,
+                        max,
+                    )
+                    .await
+                    .map_err(|e| ToolError::Execution(format!("codeActionSummaries: {e}")))?;
+                let output = LspToolOutput {
+                    operation: "codeActionSummaries".to_string(),
+                    file_path: file_path_str,
+                    result_count: actions.len(),
+                    truncated: false,
+                    results: actions,
+                };
+                serde_json::to_string_pretty(&output)
+                    .map_err(|e| ToolError::Execution(format!("serialize: {e}")))?
+            }
+            "codeActionPreview" => {
+                let file = self.resolve_file(&parsed.file_path)?;
+                let start_line_input = parsed.start_line.ok_or_else(|| {
+                    ToolError::Execution(
+                        "start_line required for codeActionPreview (1-indexed)".to_string(),
+                    )
+                })?;
+                let start_col_input = parsed.start_column.unwrap_or(start_line_input);
+                let end_line_input = parsed.end_line.unwrap_or(start_line_input);
+                let end_col_input = parsed.end_column.unwrap_or(start_col_input);
+                let action_index = parsed.action_index.ok_or_else(|| {
+                    ToolError::Execution(
+                        "action_index required for codeActionPreview".to_string(),
+                    )
+                })?;
+                let only = parsed.only.as_ref().map(|kinds| {
+                    kinds
+                        .iter()
+                        .map(|k| crate::lsp::lsp_types::CodeActionKind::from(k.clone()))
+                        .collect::<Vec<_>>()
+                });
+                let preview = ops
+                    .preview_code_action(
+                        &file,
+                        start_line_input.saturating_sub(1),
+                        start_col_input.saturating_sub(1),
+                        end_line_input.saturating_sub(1),
+                        end_col_input.saturating_sub(1),
+                        Vec::new(),
+                        only,
+                        action_index,
+                        Some(&self.allowed_root),
+                    )
+                    .await
+                    .map_err(|e| ToolError::Execution(format!("codeActionPreview: {e}")))?;
+                let total_edits: usize = preview
+                    .affected_files
+                    .iter()
+                    .map(|f| f.edits.len())
+                    .sum();
+                let output = LspToolOutput {
+                    operation: "codeActionPreview".to_string(),
+                    file_path: file_path_str,
+                    result_count: total_edits,
+                    truncated: preview.truncated,
+                    results: preview,
+                };
+                serde_json::to_string_pretty(&output)
+                    .map_err(|e| ToolError::Execution(format!("serialize: {e}")))?
+            }
             op => return Err(ToolError::Execution(format!("unknown LSP operation: {op}"))),
         };
 
@@ -3843,6 +4154,17 @@ diff --git a/src/lib.rs b/src/lib.rs
             max_call_nodes: None,
             call_direction: None,
             max_hunks: None,
+            start_line: None,
+            start_column: None,
+            end_line: None,
+            end_column: None,
+            max_candidates: None,
+            max_tokens: None,
+            max_actions: None,
+            action_index: None,
+            only: None,
+            trigger_kind: None,
+            trigger_char: None,
         }
     }
 

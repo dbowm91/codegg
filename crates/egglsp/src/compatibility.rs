@@ -632,6 +632,89 @@ mod tests {
     }
 
     #[test]
+    fn gopls_profile_has_correct_root_markers() {
+        // Focused root-marker check separate from the broader
+        // `gopls_profile_shape` test so a regression in the root
+        // marker list is reported independently from readiness or
+        // observed-capability regressions.
+        let p = gopls_profile();
+        assert!(
+            p.root_markers.contains(&"go.mod".to_string()),
+            "gopls root_markers missing go.mod: {:?}",
+            p.root_markers
+        );
+        assert!(
+            p.root_markers.contains(&"go.work".to_string()),
+            "gopls root_markers missing go.work: {:?}",
+            p.root_markers
+        );
+        assert!(
+            p.root_markers.contains(&".git".to_string()),
+            "gopls root_markers missing .git fallback: {:?}",
+            p.root_markers
+        );
+        // gopls should NOT advertise TypeScript- or Python-specific
+        // root markers.
+        assert!(!p.root_markers.iter().any(|m| m == "tsconfig.json"));
+        assert!(!p.root_markers.iter().any(|m| m == "pyproject.toml"));
+    }
+
+    #[test]
+    fn typescript_profile_supports_stdio() {
+        // Focused assertion that typescript-language-server uses
+        // the `--stdio` transport argument. A regression to the
+        // transport flag will be reported here independently of
+        // readiness/root-marker regressions.
+        let p = typescript_language_server_profile();
+        assert!(
+            p.default_args.contains(&"--stdio".to_string()),
+            "typescript-language-server default_args missing --stdio: {:?}",
+            p.default_args
+        );
+        // Root markers must include at least one TypeScript-specific
+        // and one Node-specific marker so the project root can be
+        // resolved for either layout.
+        assert!(p.root_markers.contains(&"tsconfig.json".to_string()));
+        assert!(p.root_markers.contains(&"package.json".to_string()));
+    }
+
+    #[test]
+    fn clangd_profile_uses_warmup_delay() {
+        // Focused assertion that clangd uses a warmup-delay
+        // readiness policy. clangd does not reliably emit progress
+        // notifications on small fixtures, so a fixed warmup delay
+        // is the deterministic readiness signal. A regression here
+        // will surface as a CI flake on real-server runs.
+        let p = clangd_profile();
+        match &p.readiness_policy {
+            LspReadinessPolicy::WarmupDelay { duration } => {
+                assert!(
+                    !duration.is_zero(),
+                    "clangd warmup delay must be > 0 to allow background indexing settle"
+                );
+                assert!(
+                    *duration <= Duration::from_secs(10),
+                    "clangd warmup delay should stay bounded for CI; got {:?}",
+                    duration
+                );
+            }
+            other => panic!(
+                "expected clangd to use WarmupDelay readiness; got {:?}",
+                other
+            ),
+        }
+        // clangd-specific root markers must be present.
+        assert!(p.root_markers.contains(&"compile_commands.json".to_string()));
+        // clangd must disable clang-tidy by default to avoid
+        // requiring clang-tidy configuration in every fixture.
+        assert!(
+            p.default_args.contains(&"--clang-tidy=0".to_string()),
+            "clangd default_args missing --clang-tidy=0: {:?}",
+            p.default_args
+        );
+    }
+
+    #[test]
     fn profile_lookup_returns_tier2_servers() {
         assert!(profile_for_server("gopls").is_some());
         assert!(profile_for_server("typescript-language-server").is_some());
@@ -675,10 +758,15 @@ mod tests {
 
     #[test]
     fn observed_capabilities_default_for_tier1() {
-        // Tier 1 servers do not override type hierarchy; the field
-        // exists on every profile and must default to None.
+        // pyright has no override; rust-analyzer advertises type
+        // hierarchy via the override (lsp-types 0.97 has no
+        // server-side field for it).
         let ra = rust_analyzer_profile();
-        assert_eq!(ra.observed_capabilities.type_hierarchy, None);
+        assert_eq!(
+            ra.observed_capabilities.type_hierarchy,
+            Some(true),
+            "rust-analyzer profile must declare type hierarchy via the override"
+        );
         let py = pyright_profile();
         assert_eq!(py.observed_capabilities.type_hierarchy, None);
     }

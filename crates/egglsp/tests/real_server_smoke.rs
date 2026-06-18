@@ -6,6 +6,7 @@
 //! server binaries are not available.
 
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -105,6 +106,159 @@ struct RealServerFixture {
     hover_position: Position,
     /// Expected symbol names from `document_symbols` (best-effort, not asserted).
     expected_symbol_names: Vec<&'static str>,
+    /// Pass 3 — language identifier for the fixture (e.g. "rust", "python",
+    /// "go", "typescript", "cpp"). Used by capability-keyed checks to
+    /// surface language-appropriate errors. The field defaults to empty
+    /// for older fixtures and is filled in by the per-language
+    /// constructors.
+    language_id: String,
+    /// Pass 3 — positions for the new read-only and preview operations.
+    /// Each field is `None` when the operation is not exercised against
+    /// the fixture (e.g. older Rust/Python fixtures leave the new
+    /// positions unset so the existing suite path is unchanged).
+    mutation_targets: MutationTargets,
+    /// Pass 3 — capability flags that opt the new operations into the
+    /// smoke suite. All flags default to `false` so the existing Tier 1
+    /// fixtures run unchanged.
+    expected_capabilities: ExpectedCapabilities,
+    /// Pass 3 — completion expectations. Each entry describes a position
+    /// the harness should request completion at and substrings that must
+    /// appear in the returned labels.
+    completions: Vec<CompletionExpectation>,
+    /// Pass 3 — declaration expectations. Each entry describes a
+    /// position the harness should request declaration at and a
+    /// minimum count + set of expected files.
+    declaration_targets: Vec<LocationExpectation>,
+    /// Pass 3 — signature-help expectations.
+    signature_help_targets: Vec<LocationExpectation>,
+    /// Pass 3 — workspace-symbol query + assertion. The optional tuple
+    /// is `(query, expectation)` so the suite can verify the query
+    /// returned symbols that mention the expected files.
+    workspace_symbol_query: Option<WorkspaceSymbolExpectation>,
+    /// Pass 3 — document-highlight expectations. Each entry describes a
+    /// position the harness should request documentHighlight at and a
+    /// minimum count + set of expected files.
+    document_highlight_targets: Vec<LocationExpectation>,
+}
+
+/// Pass 3 — Per-operation positions for the new read-only and
+/// preview operations. A `None` field means the operation is not
+/// exercised by the fixture (the smoke suite skips the corresponding
+/// check).
+#[allow(dead_code)]
+#[derive(Default, Clone)]
+struct MutationTargets {
+    pub rename: Option<Position>,
+    pub format: Option<Position>,
+    pub completion: Option<Position>,
+    pub signature_help: Option<Position>,
+    /// Format-previews do not need a position (the operation is
+    /// document-scoped), but we keep the field for symmetry with
+    /// other positions. The format check is gated on
+    /// `format_preview_requested` instead.
+    pub format_preview_requested: bool,
+    /// Rename-preview check is gated on `rename_preview_requested`.
+    pub rename_preview_requested: bool,
+}
+
+/// Pass 3 — Capability flags the new operations check against. The
+/// smoke suite only exercises an operation when the corresponding
+/// flag is `true` *and* the live server advertises the matching
+/// capability. All flags default to `false` so the existing Tier 1
+/// fixtures do not change behavior.
+#[allow(dead_code)]
+#[derive(Default, Clone)]
+struct ExpectedCapabilities {
+    pub declaration: bool,
+    pub implementation: bool,
+    pub document_highlight: bool,
+    pub workspace_symbols: bool,
+    pub signature_help: bool,
+    pub semantic_tokens: bool,
+    pub rename: bool,
+    pub code_actions: bool,
+    pub formatting: bool,
+}
+
+/// Pass 3 — Semantic assertion for a position-based location query
+/// (declaration, implementation, document highlight, signature
+/// help). The smoke suite records `RequiredIfAdvertised` when the
+/// live server reports the capability and the result matches the
+/// expectation.
+#[allow(dead_code)]
+#[derive(Clone)]
+struct LocationExpectation {
+    pub position: Position,
+    /// Minimum number of locations the query must return. Defaults
+    /// to 1 for simple "did the server return *anything*" checks.
+    pub min_locations: usize,
+    /// Files (relative to fixture root, or absolute) that the
+    /// returned locations should reference. The check passes when
+    /// at least one returned location points into a file whose
+    /// path ends with one of these suffixes — this avoids
+    /// platform-specific absolute-path comparisons.
+    pub expected_files: Vec<PathBuf>,
+}
+
+impl Default for LocationExpectation {
+    fn default() -> Self {
+        Self {
+            position: Position::new(0, 0),
+            min_locations: 1,
+            expected_files: Vec::new(),
+        }
+    }
+}
+
+/// Pass 3 — Semantic assertion for a `textDocument/completion`
+/// request. The smoke suite records `RequiredIfAdvertised` when
+/// the live server reports `completionProvider` and the response
+/// contains at least one label whose name contains at least one
+/// of `expected_label_substrings`.
+#[allow(dead_code)]
+#[derive(Clone)]
+struct CompletionExpectation {
+    pub position: Position,
+    /// Max candidates to request. Defaults to 50 — large enough to
+    /// surface common identifiers, small enough to keep the test
+    /// fast.
+    pub max_candidates: usize,
+    /// Substrings that must appear (case-insensitively) in at
+    /// least one returned label. Empty means "server returned any
+    /// non-empty list".
+    pub expected_label_substrings: Vec<String>,
+}
+
+impl Default for CompletionExpectation {
+    fn default() -> Self {
+        Self {
+            position: Position::new(0, 0),
+            max_candidates: 50,
+            expected_label_substrings: Vec::new(),
+        }
+    }
+}
+
+/// Pass 3 — A `workspace/symbol` query plus a semantic assertion.
+/// The query is required; the expectation mirrors
+/// [`LocationExpectation`] but is checked against the file paths
+/// in the returned `SymbolInformation` entries.
+#[allow(dead_code)]
+#[derive(Clone)]
+struct WorkspaceSymbolExpectation {
+    pub query: String,
+    pub min_locations: usize,
+    pub expected_files: Vec<PathBuf>,
+}
+
+impl Default for WorkspaceSymbolExpectation {
+    fn default() -> Self {
+        Self {
+            query: String::new(),
+            min_locations: 1,
+            expected_files: Vec::new(),
+        }
+    }
 }
 
 /// Build a Rust fixture with a `Point` struct, an `add`/`greet` pair, a
@@ -211,6 +365,19 @@ pub fn caller() -> i32 {
         // `add` call site: line 27, character 4.
         hover_position: Position::new(27, 4),
         expected_symbol_names: vec!["add", "greet", "Point", "broken", "caller"],
+        language_id: "rust".to_string(),
+        // Pass 3 — leave all new operation positions unset. The
+        // existing Rust smoke suite exercises the four classic
+        // operations (document symbols, definition, references,
+        // hover) and does not opt into the new read-only and
+        // preview operations yet.
+        mutation_targets: MutationTargets::default(),
+        expected_capabilities: ExpectedCapabilities::default(),
+        completions: Vec::new(),
+        declaration_targets: Vec::new(),
+        signature_help_targets: Vec::new(),
+        workspace_symbol_query: None,
+        document_highlight_targets: Vec::new(),
     }
 }
 
@@ -308,6 +475,452 @@ def caller() -> int:
         // `add` call site: line 12, character 11.
         hover_position: Position::new(12, 11),
         expected_symbol_names: vec!["greet", "broken", "caller"],
+        language_id: "python".to_string(),
+        // Pass 3 — same conservative defaults as the Rust
+        // fixture; the new operations are not exercised against
+        // the Tier 1 fixtures.
+        mutation_targets: MutationTargets::default(),
+        expected_capabilities: ExpectedCapabilities::default(),
+        completions: Vec::new(),
+        declaration_targets: Vec::new(),
+        signature_help_targets: Vec::new(),
+        workspace_symbol_query: None,
+        document_highlight_targets: Vec::new(),
+    }
+}
+
+/// Build a Go fixture with a `Point` struct, an `Add` helper, a
+/// `Broken` for diagnostics, and a `Caller` that uses `Add` from a
+/// different package via `helper/`.
+fn gopls_fixture() -> RealServerFixture {
+    let tempdir = tempfile::tempdir().unwrap();
+    let root = tempdir.path().to_path_buf();
+
+    std::fs::write(
+        root.join("go.mod"),
+        "module codegg-test\n\ngo 1.22\n",
+    )
+    .unwrap();
+
+    // helper/helper.go — secondary source.
+    // Line 0: package helper
+    // Line 1: (blank)
+    // Line 2: func Add(a, b int) int {
+    // Line 3:     return a + b
+    // Line 4: }
+    let helper_dir = root.join("helper");
+    std::fs::create_dir_all(&helper_dir).unwrap();
+    let helper_go = helper_dir.join("helper.go");
+    std::fs::write(
+        &helper_go,
+        r#"package helper
+
+func Add(a, b int) int {
+	return a + b
+}
+"#,
+    )
+    .unwrap();
+
+    // main.go — primary source.
+    // Line 0: package main
+    // Line 1: (blank)
+    // Line 2: import (
+    // Line 3:     "codegg-test/helper"
+    // Line 4: )
+    // Line 5: (blank)
+    // Line 6: type Point struct {
+    // Line 7:     X int
+    // Line 8:     Y int
+    // Line 9: }
+    // Line 10: (blank)
+    // Line 11: func main() {
+    // Line 12:     _ = helper.Add(1, 2)
+    // Line 13: }
+    // Line 14: (blank)
+    // Line 15: // Intentional type error for diagnostics
+    // Line 16: func Broken() int {
+    // Line 17:     var x string = 42
+    // Line 18:     return len(x)
+    // Line 19: }
+    // Line 20: (blank)
+    // Line 21: // Caller of helper.Add for cross-file references.
+    // Line 22: func Caller() int {
+    // Line 23:     return helper.Add(3, 4)
+    // Line 24: }
+    let main_go = root.join("main.go");
+    std::fs::write(
+        &main_go,
+        r#"package main
+
+import (
+	"codegg-test/helper"
+)
+
+type Point struct {
+	X int
+	Y int
+}
+
+func main() {
+	_ = helper.Add(1, 2)
+}
+
+// Intentional type error for diagnostics
+func Broken() int {
+	var x string = 42
+	return len(x)
+}
+
+// Caller of helper.Add for cross-file references.
+func Caller() int {
+	return helper.Add(3, 4)
+}
+"#,
+    )
+    .unwrap();
+
+    RealServerFixture {
+        tempdir,
+        root,
+        source_files: vec![main_go.clone(), helper_go.clone()],
+        primary_source: main_go.clone(),
+        secondary_source: Some(helper_go.clone()),
+        diagnostics_file: main_go.clone(),
+        // `Point` type on line 6, character 5 (lands on `type` keyword).
+        symbol_position: Position::new(6, 5),
+        // `helper.Add` call site in main.go: line 12, character 9.
+        definition_position: Position::new(12, 9),
+        // `helper.Add` call site in main.go: line 12, character 9 (declaration is in helper.go).
+        references_position: Position::new(12, 9),
+        // `helper.Add` call site: line 12, character 9.
+        hover_position: Position::new(12, 9),
+        expected_symbol_names: vec!["main", "Point", "Broken", "Caller"],
+        language_id: "go".to_string(),
+        // Pass 3 — gopls is the first consumer of the
+        // generalized harness. Enable the new operations the
+        // plan calls out for Tier 2 Go checks (implementation
+        // and workspace symbols) plus completion (gopls
+        // resolves imported identifiers).
+        mutation_targets: MutationTargets::default(),
+        expected_capabilities: ExpectedCapabilities {
+            implementation: true,
+            workspace_symbols: true,
+            // Other capabilities stay false until a Tier 2
+            // fixture is built to exercise them.
+            ..Default::default()
+        },
+        completions: Vec::new(),
+        declaration_targets: Vec::new(),
+        signature_help_targets: Vec::new(),
+        workspace_symbol_query: None,
+        document_highlight_targets: Vec::new(),
+    }
+}
+
+/// Build a TypeScript fixture with a `Point` interface, an `add`
+/// helper, a `broken()` for diagnostics, and a `caller()` that uses
+/// `add` from `helper.ts`.
+fn typescript_fixture() -> RealServerFixture {
+    let tempdir = tempfile::tempdir().unwrap();
+    let root = tempdir.path().to_path_buf();
+
+    std::fs::write(
+        root.join("package.json"),
+        r#"{
+  "name": "codegg-test",
+  "version": "0.1.0",
+  "private": true,
+  "dependencies": {
+    "typescript": "5.5.4"
+  }
+}
+"#,
+    )
+    .unwrap();
+
+    std::fs::write(
+        root.join("tsconfig.json"),
+        r#"{
+  "compilerOptions": {
+    "target": "es2020",
+    "module": "commonjs",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true
+  },
+  "include": ["src/**/*.ts"]
+}
+"#,
+    )
+    .unwrap();
+
+    let src_dir = root.join("src");
+    std::fs::create_dir_all(&src_dir).unwrap();
+
+    // src/helper.ts — secondary source.
+    // Line 0: export interface Point {
+    // Line 1:     x: number;
+    // Line 2:     y: number;
+    // Line 3: }
+    // Line 4: (blank)
+    // Line 5: export function add(a: number, b: number): number {
+    // Line 6:     return a + b;
+    // Line 7: }
+    let helper_ts = src_dir.join("helper.ts");
+    std::fs::write(
+        &helper_ts,
+        r#"export interface Point {
+    x: number;
+    y: number;
+}
+
+export function add(a: number, b: number): number {
+    return a + b;
+}
+"#,
+    )
+    .unwrap();
+
+    // src/main.ts — primary source.
+    // Line 0: import { add, Point } from "./helper";
+    // Line 1: (blank)
+    // Line 2: function greet(name: string): string {
+    // Line 3:     return `Hello, ${name}!`;
+    // Line 4: }
+    // Line 5: (blank)
+    // Line 6: // Intentional type error for diagnostics
+    // Line 7: function broken(): number {
+    // Line 8:     const x: string = 42;
+    // Line 9:     return x;
+    // Line 10: }
+    // Line 11: (blank)
+    // Line 12: // Cross-file reference: uses `add` from helper.ts.
+    // Line 13: function caller(): number {
+    // Line 14:     return add(1, 2);
+    // Line 15: }
+    // Line 16: (blank)
+    // Line 17: // Completion site — `add.` would offer completion after typing.
+    // Line 18: const _completionSite = add;
+    // Line 19: // Signature-help site — calling `add(`
+    // Line 20: const _signatureSite = add(1, 2);
+    let main_ts = src_dir.join("main.ts");
+    std::fs::write(
+        &main_ts,
+        r#"import { add, Point } from "./helper";
+
+function greet(name: string): string {
+    return `Hello, ${name}!`;
+}
+
+// Intentional type error for diagnostics
+function broken(): number {
+    const x: string = 42;
+    return x;
+}
+
+// Cross-file reference: uses `add` from helper.ts.
+function caller(): number {
+    return add(1, 2);
+}
+
+// Completion site — `add` is referenced.
+const _completionSite = add;
+// Signature-help site — calling `add(`
+const _signatureSite = add(1, 2);
+"#,
+    )
+    .unwrap();
+
+    RealServerFixture {
+        tempdir,
+        root,
+        source_files: vec![main_ts.clone(), helper_ts.clone()],
+        primary_source: main_ts.clone(),
+        secondary_source: Some(helper_ts.clone()),
+        diagnostics_file: main_ts.clone(),
+        // `greet` def on line 2, character 9.
+        symbol_position: Position::new(2, 9),
+        // `add` call site in main.ts: line 14, character 11.
+        definition_position: Position::new(14, 11),
+        // `add` import use in main.ts: line 0, character 9 (lands on `add`).
+        references_position: Position::new(0, 9),
+        // `add` call site: line 14, character 11.
+        hover_position: Position::new(14, 11),
+        expected_symbol_names: vec!["greet", "broken", "caller"],
+        language_id: "typescript".to_string(),
+        // Pass 3 — TypeScript profile opts into the
+        // implementation, signature help, and document
+        // highlight checks the plan calls out for
+        // typescript-language-server.
+        mutation_targets: MutationTargets::default(),
+        expected_capabilities: ExpectedCapabilities {
+            implementation: true,
+            signature_help: true,
+            document_highlight: true,
+            ..Default::default()
+        },
+        completions: Vec::new(),
+        declaration_targets: Vec::new(),
+        signature_help_targets: Vec::new(),
+        workspace_symbol_query: None,
+        document_highlight_targets: Vec::new(),
+    }
+}
+
+/// Build a C++ fixture with a `Widget` header/class split, an
+/// `add` helper, a `Broken` for diagnostics, and a `Caller` that
+/// uses `Widget::add`.
+fn clangd_fixture() -> RealServerFixture {
+    let tempdir = tempfile::tempdir().unwrap();
+    let root = tempdir.path().to_path_buf();
+
+    // compile_commands.json — minimal compile DB so clangd picks up
+    // the project root and parser flags.
+    let compile_commands = r#"[
+  {
+    "directory": "ROOT",
+    "command": "clang++ -std=c++17 -Iinclude -c src/main.cpp",
+    "file": "src/main.cpp"
+  },
+  {
+    "directory": "ROOT",
+    "command": "clang++ -std=c++17 -Iinclude -c src/widget.cpp",
+    "file": "src/widget.cpp"
+  }
+]
+"#;
+    let compile_commands = compile_commands.replace("ROOT", &root.to_string_lossy());
+    std::fs::write(root.join("compile_commands.json"), compile_commands).unwrap();
+
+    let include_dir = root.join("include");
+    std::fs::create_dir_all(&include_dir).unwrap();
+    let src_dir = root.join("src");
+    std::fs::create_dir_all(&src_dir).unwrap();
+
+    // include/widget.hpp — declaration.
+    // Line 0: #pragma once
+    // Line 1: (blank)
+    // Line 2: class Widget {
+    // Line 3: public:
+    // Line 4:     int add(int a, int b);
+    // Line 5:     int broken();
+    // Line 6: };
+    let widget_hpp = include_dir.join("widget.hpp");
+    std::fs::write(
+        &widget_hpp,
+        r#"#pragma once
+
+class Widget {
+public:
+    int add(int a, int b);
+    int broken();
+};
+"#,
+    )
+    .unwrap();
+
+    // src/widget.cpp — definition (secondary source for cross-file references).
+    // Line 0: #include "widget.hpp"
+    // Line 1: (blank)
+    // Line 2: int Widget::add(int a, int b) {
+    // Line 3:     return a + b;
+    // Line 4: }
+    // Line 5: (blank)
+    // Line 6: int Widget::broken() {
+    // Line 7:     // Intentional type mismatch for diagnostics.
+    // Line 8:     return "not an int";
+    // Line 9: }
+    let widget_cpp = src_dir.join("widget.cpp");
+    std::fs::write(
+        &widget_cpp,
+        r#"#include "widget.hpp"
+
+int Widget::add(int a, int b) {
+    return a + b;
+}
+
+int Widget::broken() {
+    // Intentional type mismatch for diagnostics.
+    return "not an int";
+}
+"#,
+    )
+    .unwrap();
+
+    // src/main.cpp — primary source.
+    // Line 0: #include "widget.hpp"
+    // Line 1: (blank)
+    // Line 2: int greet(const char* name) {
+    // Line 3:     return 0;
+    // Line 4: }
+    // Line 5: (blank)
+    // Line 6: int main() {
+    // Line 7:     Widget w;
+    // Line 8:     return w.add(1, 2);
+    // Line 9: }
+    // Line 10: (blank)
+    // Line 11: // Caller that uses Widget::add for cross-file references.
+    // Line 12: int caller() {
+    // Line 13:     Widget w;
+    // Line 14:     return w.add(3, 4);
+    // Line 15: }
+    let main_cpp = src_dir.join("main.cpp");
+    std::fs::write(
+        &main_cpp,
+        r#"#include "widget.hpp"
+
+int greet(const char* name) {
+    return 0;
+}
+
+int main() {
+    Widget w;
+    return w.add(1, 2);
+}
+
+// Caller that uses Widget::add for cross-file references.
+int caller() {
+    Widget w;
+    return w.add(3, 4);
+}
+"#,
+    )
+    .unwrap();
+
+    RealServerFixture {
+        tempdir,
+        root,
+        source_files: vec![main_cpp.clone(), widget_cpp.clone(), widget_hpp.clone()],
+        primary_source: main_cpp.clone(),
+        secondary_source: Some(widget_hpp.clone()),
+        diagnostics_file: widget_cpp.clone(),
+        // `greet` def on line 2, character 4 (the `int` keyword).
+        symbol_position: Position::new(2, 4),
+        // `w.add` call site in main.cpp: line 8, character 11 (lands on `add`).
+        definition_position: Position::new(8, 11),
+        // `Widget::add` declaration in widget.hpp: line 4, character 8.
+        references_position: Position::new(4, 8),
+        // `w.add` call site: line 8, character 11.
+        hover_position: Position::new(8, 11),
+        expected_symbol_names: vec!["greet", "main", "caller"],
+        language_id: "cpp".to_string(),
+        // Pass 3 — clangd opts into the declaration,
+        // implementation, and document highlight checks the
+        // plan calls out for the C++ profile.
+        mutation_targets: MutationTargets::default(),
+        expected_capabilities: ExpectedCapabilities {
+            declaration: true,
+            implementation: true,
+            document_highlight: true,
+            ..Default::default()
+        },
+        completions: Vec::new(),
+        declaration_targets: Vec::new(),
+        signature_help_targets: Vec::new(),
+        workspace_symbol_query: None,
+        document_highlight_targets: Vec::new(),
     }
 }
 
@@ -1128,7 +1741,18 @@ async fn run_smoke_suite(
         ));
     }
 
-    // 12. Graceful shutdown — use the runtime-backed harness so the
+    // 12. Pass 3 — Generalized operation checks driven by the
+    // fixture's `expected_capabilities` and `*_targets` /
+    // `*_expectation` fields. Each check is conditional on
+    // (a) the fixture opting in via `expected_capabilities.<op>`
+    // and (b) the live server advertising the matching provider.
+    // The checks are designed so that adding a new Tier 2
+    // fixture does not require touching the harness — only the
+    // per-language constructor needs to opt in to the new
+    // operations.
+    run_generalized_operation_checks(&client, fixture, &caps, &primary_uri, bin_path, &profile.server_id, &mut checks, &stderr_tail).await;
+
+    // 13. Graceful shutdown — use the runtime-backed harness so the
     // compatibility report captures real stderr output. The harness
     // sets intent → sends protocol shutdown → waits under graceful
     // deadline → force-kills on timeout.
@@ -1196,6 +1820,1190 @@ fn build_report(
         checks: checks.iter().map(|c| c.to_compatibility_check()).collect(),
         stderr_tail,
         known_limitations: profile.known_limitations.clone(),
+    }
+}
+
+// ── Generalized Operation Checks (Pass 3) ──────────────────────────
+
+/// Match a file path returned by the server against the fixture's
+/// expected file list. The comparison is suffix-based: the returned
+/// path (which is typically a file:// URI or absolute path) is
+/// converted to a `PathBuf` and the check passes when any of the
+/// expected paths is a suffix of the returned path. This avoids
+/// platform-specific absolute-path comparisons and tolerates the
+/// `file://` URI prefix that `egglsp` adds when converting back
+/// from a server `Location`.
+fn matches_expected_file(returned: &str, expected: &Path) -> bool {
+    if returned.is_empty() {
+        return false;
+    }
+    let stripped = returned
+        .strip_prefix("file://")
+        .or_else(|| returned.strip_prefix("file:"))
+        .unwrap_or(returned);
+    let returned_path = std::path::Path::new(stripped);
+    returned_path.ends_with(expected) || expected.ends_with(returned_path)
+}
+
+/// Run a single location-style operation (declaration,
+/// implementation, document highlight) and append a `SmokeCheck` to
+/// `checks`. The check is `RequiredIfAdvertised` when the
+/// server's capability is enabled; otherwise the check is
+/// recorded as `Unsupported` (informational).
+///
+/// The new location-style operations live on
+/// [`LspOperations`] which requires an [`LspService`]. The smoke
+/// runner only has an [`LspClient`], so this helper drives the
+/// underlying JSON-RPC request directly through
+/// [`LspClient::send_request`] and normalizes the response
+/// (Scalar / Array / Link variants for declaration, plain array
+/// for document highlight) to a uniform `Vec<LocationLink>` for
+/// suffix-based file assertions.
+async fn run_location_check(
+    client: &LspClient,
+    primary_uri: &url::Url,
+    operation: &str,
+    target: &LocationExpectation,
+    supports_op: bool,
+    bin_path: &Path,
+    server_id: &str,
+    stderr_tail: &[String],
+    checks: &mut Vec<SmokeCheck>,
+) {
+    if !supports_op {
+        checks.push(SmokeCheck::pass(
+            format!("{operation} (skipped: not supported)"),
+            CompatibilityRequirement::Optional,
+            0,
+        ));
+        return;
+    }
+    let (method, parse_array) = match operation {
+        "declaration" => ("textDocument/declaration", true),
+        "implementation" => ("textDocument/implementation", true),
+        "documentHighlight" => ("textDocument/documentHighlight", false),
+        other => {
+            tracing::error!("unknown location operation: {other}");
+            checks.push(SmokeCheck::fail(
+                operation,
+                CompatibilityRequirement::RequiredIfAdvertised,
+                format!("unknown location operation: {other}"),
+                0,
+            ));
+            return;
+        }
+    };
+    let start = std::time::Instant::now();
+    let params = serde_json::json!({
+        "textDocument": { "uri": primary_uri.as_str() },
+        "position": { "line": target.position.line, "character": target.position.character },
+    });
+    let result = tokio::time::timeout(REQUEST_TIMEOUT, client.send_request(method, params)).await;
+    let ms = start.elapsed().as_millis() as u64;
+    match result {
+        Ok(Ok(value)) => {
+            if value.is_null() {
+                checks.push(SmokeCheck::fail(
+                    operation,
+                    CompatibilityRequirement::RequiredIfAdvertised,
+                    format!(
+                        "expected at least {} location(s); got 0 (server returned null)",
+                        target.min_locations
+                    ),
+                    ms,
+                ));
+                return;
+            }
+            // Normalize the response into Vec<LocationLink>.
+            let normalized: Vec<egglsp::lsp_types::LocationLink> = if parse_array {
+                // GotoDefinitionResponse: Scalar | Array | Link
+                match serde_json::from_value::<egglsp::lsp_types::GotoDefinitionResponse>(
+                    value.clone(),
+                ) {
+                    Ok(gdr) => egglsp::operations::normalize_goto_response(gdr),
+                    Err(e) => {
+                        checks.push(SmokeCheck::fail(
+                            operation,
+                            CompatibilityRequirement::RequiredIfAdvertised,
+                            format!("malformed {method} response: {e}"),
+                            ms,
+                        ));
+                        return;
+                    }
+                }
+            } else {
+                // DocumentHighlight: array of DocumentHighlight
+                // Convert each to a LocationLink so the same
+                // suffix-based file assertion can run.
+                match serde_json::from_value::<Vec<egglsp::lsp_types::DocumentHighlight>>(value) {
+                    Ok(highlights) => {
+                        let uri = egglsp::lsp_types::Uri::from_str(primary_uri.as_str())
+                            .unwrap_or_else(|_| {
+                                egglsp::lsp_types::Uri::from_str("file:///invalid")
+                                    .expect("hardcoded invalid URI must parse")
+                            });
+                        highlights
+                            .into_iter()
+                            .map(|h| egglsp::lsp_types::LocationLink {
+                                origin_selection_range: None,
+                                target_uri: uri.clone(),
+                                target_range: h.range,
+                                target_selection_range: h.range,
+                            })
+                            .collect()
+                    }
+                    Err(e) => {
+                        checks.push(SmokeCheck::fail(
+                            operation,
+                            CompatibilityRequirement::RequiredIfAdvertised,
+                            format!("malformed {method} response: {e}"),
+                            ms,
+                        ));
+                        return;
+                    }
+                }
+            };
+            if normalized.len() < target.min_locations {
+                checks.push(SmokeCheck::fail(
+                    operation,
+                    CompatibilityRequirement::RequiredIfAdvertised,
+                    format!(
+                        "expected at least {} location(s); got {}",
+                        target.min_locations,
+                        normalized.len()
+                    ),
+                    ms,
+                ));
+                return;
+            }
+            if !target.expected_files.is_empty() {
+                let any_match = normalized.iter().any(|loc| {
+                    let raw = loc.target_uri.to_string();
+                    target
+                        .expected_files
+                        .iter()
+                        .any(|exp| matches_expected_file(&raw, exp))
+                });
+                if !any_match {
+                    let returned: Vec<String> =
+                        normalized.iter().map(|l| l.target_uri.to_string()).collect();
+                    checks.push(SmokeCheck::fail(
+                        operation,
+                        CompatibilityRequirement::RequiredIfAdvertised,
+                        format!(
+                            "no returned location matched any expected file (expected any of {:?}); got {:?}",
+                            target.expected_files, returned
+                        ),
+                        ms,
+                    ));
+                    return;
+                }
+            }
+            checks.push(SmokeCheck::pass(
+                format!("{operation} ({} found)", normalized.len()),
+                CompatibilityRequirement::RequiredIfAdvertised,
+                ms,
+            ));
+        }
+        Ok(Err(e)) => checks.push(SmokeCheck::fail(
+            operation,
+            CompatibilityRequirement::RequiredIfAdvertised,
+            format!("{e}"),
+            ms,
+        )),
+        Err(_elapsed) => checks.push(SmokeCheck::fail(
+            operation,
+            CompatibilityRequirement::RequiredIfAdvertised,
+            stage_timeout_error(server_id, bin_path, operation, REQUEST_TIMEOUT, stderr_tail),
+            ms,
+        )),
+    }
+}
+
+/// Run a single signature-help operation and append a `SmokeCheck`.
+/// The check is `RequiredIfAdvertised` when the server's capability
+/// is enabled; otherwise the check is recorded as `Unsupported`.
+async fn run_signature_help_check(
+    client: &LspClient,
+    primary_uri: &url::Url,
+    target: &LocationExpectation,
+    supports_op: bool,
+    bin_path: &Path,
+    server_id: &str,
+    stderr_tail: &[String],
+    checks: &mut Vec<SmokeCheck>,
+) {
+    if !supports_op {
+        checks.push(SmokeCheck::pass(
+            "signatureHelp (skipped: not supported)",
+            CompatibilityRequirement::Optional,
+            0,
+        ));
+        return;
+    }
+    let start = std::time::Instant::now();
+    let params = serde_json::json!({
+        "textDocument": { "uri": primary_uri.as_str() },
+        "position": { "line": target.position.line, "character": target.position.character },
+    });
+    let result = tokio::time::timeout(
+        REQUEST_TIMEOUT,
+        client.send_request("textDocument/signatureHelp", params),
+    )
+    .await;
+    let ms = start.elapsed().as_millis() as u64;
+    match result {
+        Ok(Ok(value)) => {
+            if value.is_null() {
+                // None is a legitimate response (server has no
+                // help at this position). Record a pass with a
+                // note in the detail.
+                checks.push(SmokeCheck::pass(
+                    "signatureHelp (server returned null at this position)",
+                    CompatibilityRequirement::RequiredIfAdvertised,
+                    ms,
+                ));
+                return;
+            }
+            match serde_json::from_value::<egglsp::lsp_types::SignatureHelp>(value) {
+                Ok(help) => {
+                    if help.signatures.is_empty() {
+                        checks.push(SmokeCheck::fail(
+                            "signatureHelp",
+                            CompatibilityRequirement::RequiredIfAdvertised,
+                            "server returned signatureHelp with 0 signatures",
+                            ms,
+                        ));
+                        return;
+                    }
+                    checks.push(SmokeCheck::pass(
+                        format!("signatureHelp ({} signature(s))", help.signatures.len()),
+                        CompatibilityRequirement::RequiredIfAdvertised,
+                        ms,
+                    ));
+                }
+                Err(e) => checks.push(SmokeCheck::fail(
+                    "signatureHelp",
+                    CompatibilityRequirement::RequiredIfAdvertised,
+                    format!("malformed signatureHelp response: {e}"),
+                    ms,
+                )),
+            }
+        }
+        Ok(Err(e)) => checks.push(SmokeCheck::fail(
+            "signatureHelp",
+            CompatibilityRequirement::RequiredIfAdvertised,
+            format!("{e}"),
+            ms,
+        )),
+        Err(_elapsed) => checks.push(SmokeCheck::fail(
+            "signatureHelp",
+            CompatibilityRequirement::RequiredIfAdvertised,
+            stage_timeout_error(
+                server_id,
+                bin_path,
+                "signatureHelp",
+                REQUEST_TIMEOUT,
+                stderr_tail,
+            ),
+            ms,
+        )),
+    }
+}
+
+/// Run a single workspace-symbol query and append a `SmokeCheck`.
+async fn run_workspace_symbol_check(
+    client: &LspClient,
+    expectation: &WorkspaceSymbolExpectation,
+    supports_op: bool,
+    bin_path: &Path,
+    server_id: &str,
+    stderr_tail: &[String],
+    checks: &mut Vec<SmokeCheck>,
+) {
+    if !supports_op {
+        checks.push(SmokeCheck::pass(
+            "workspaceSymbol (skipped: not supported)",
+            CompatibilityRequirement::Optional,
+            0,
+        ));
+        return;
+    }
+    let start = std::time::Instant::now();
+    let params = serde_json::json!({ "query": expectation.query });
+    let result = tokio::time::timeout(
+        REQUEST_TIMEOUT,
+        client.send_request("workspace/symbol", params),
+    )
+    .await;
+    let ms = start.elapsed().as_millis() as u64;
+    match result {
+        Ok(Ok(value)) => {
+            if value.is_null() {
+                checks.push(SmokeCheck::fail(
+                    "workspaceSymbol",
+                    CompatibilityRequirement::RequiredIfAdvertised,
+                    format!(
+                        "expected at least {} symbol(s); got 0 (server returned null)",
+                        expectation.min_locations
+                    ),
+                    ms,
+                ));
+                return;
+            }
+            // Normalize via the existing helper to handle both
+            // flat and nested response shapes.
+            let response: egglsp::lsp_types::WorkspaceSymbolResponse =
+                match serde_json::from_value(value) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        checks.push(SmokeCheck::fail(
+                            "workspaceSymbol",
+                            CompatibilityRequirement::RequiredIfAdvertised,
+                            format!("malformed workspace/symbol response: {e}"),
+                            ms,
+                        ));
+                        return;
+                    }
+                };
+            let symbols = egglsp::operations::normalize_workspace_symbol_response(response);
+            if symbols.len() < expectation.min_locations {
+                checks.push(SmokeCheck::fail(
+                    "workspaceSymbol",
+                    CompatibilityRequirement::RequiredIfAdvertised,
+                    format!(
+                        "expected at least {} symbol(s); got {}",
+                        expectation.min_locations,
+                        symbols.len()
+                    ),
+                    ms,
+                ));
+                return;
+            }
+            if !expectation.expected_files.is_empty() {
+                let any_match = symbols.iter().any(|sym| {
+                    let raw = sym.location.uri.to_string();
+                    expectation
+                        .expected_files
+                        .iter()
+                        .any(|exp| matches_expected_file(&raw, exp))
+                });
+                if !any_match {
+                    let returned: Vec<String> =
+                        symbols.iter().map(|s| s.location.uri.to_string()).collect();
+                    checks.push(SmokeCheck::fail(
+                        "workspaceSymbol",
+                        CompatibilityRequirement::RequiredIfAdvertised,
+                        format!(
+                            "no returned symbol matched any expected file (expected any of {:?}); got {:?}",
+                            expectation.expected_files, returned
+                        ),
+                        ms,
+                    ));
+                    return;
+                }
+            }
+            checks.push(SmokeCheck::pass(
+                format!(
+                    "workspaceSymbol ({} found for query {:?})",
+                    symbols.len(),
+                    expectation.query
+                ),
+                CompatibilityRequirement::RequiredIfAdvertised,
+                ms,
+            ));
+        }
+        Ok(Err(e)) => checks.push(SmokeCheck::fail(
+            "workspaceSymbol",
+            CompatibilityRequirement::RequiredIfAdvertised,
+            format!("{e}"),
+            ms,
+        )),
+        Err(_elapsed) => checks.push(SmokeCheck::fail(
+            "workspaceSymbol",
+            CompatibilityRequirement::RequiredIfAdvertised,
+            stage_timeout_error(
+                server_id,
+                bin_path,
+                "workspaceSymbol",
+                REQUEST_TIMEOUT,
+                stderr_tail,
+            ),
+            ms,
+        )),
+    }
+}
+
+/// Run a single completion expectation and append a `SmokeCheck`.
+async fn run_completion_check(
+    client: &LspClient,
+    primary_uri: &url::Url,
+    expectation: &CompletionExpectation,
+    supports_op: bool,
+    bin_path: &Path,
+    server_id: &str,
+    stderr_tail: &[String],
+    checks: &mut Vec<SmokeCheck>,
+) {
+    if !supports_op {
+        checks.push(SmokeCheck::pass(
+            "completion (skipped: not supported)",
+            CompatibilityRequirement::Optional,
+            0,
+        ));
+        return;
+    }
+    let start = std::time::Instant::now();
+    let params = serde_json::json!({
+        "textDocument": { "uri": primary_uri.as_str() },
+        "position": { "line": expectation.position.line, "character": expectation.position.character },
+    });
+    let result = tokio::time::timeout(
+        REQUEST_TIMEOUT,
+        client.send_request("textDocument/completion", params),
+    )
+    .await;
+    let ms = start.elapsed().as_millis() as u64;
+    let candidates: Vec<String> = match result {
+        Ok(Ok(value)) => {
+            if value.is_null() {
+                Vec::new()
+            } else {
+                // CompletionList has { isIncomplete, items };
+                // the bare array form skips the wrapper. Try the
+                // wrapper first, then the bare array, and fall
+                // back to an empty list on parse error.
+                #[derive(serde::Deserialize)]
+                struct CompletionListWire {
+                    items: Vec<egglsp::lsp_types::CompletionItem>,
+                }
+                let parsed: Vec<egglsp::lsp_types::CompletionItem> =
+                    match serde_json::from_value::<CompletionListWire>(value.clone()) {
+                        Ok(list) => list.items,
+                        Err(_) => {
+                            let items: Result<
+                                Vec<egglsp::lsp_types::CompletionItem>,
+                                _,
+                            > = serde_json::from_value(value);
+                            match items {
+                                Ok(items) => items,
+                                Err(e) => {
+                                    checks.push(SmokeCheck::fail(
+                                    "completion",
+                                    CompatibilityRequirement::RequiredIfAdvertised,
+                                    format!("malformed textDocument/completion response: {e}"),
+                                    ms,
+                                ));
+                                return;
+                            }
+                            }
+                        }
+                    };
+                let _truncated = parsed.len() > expectation.max_candidates;
+                parsed
+                    .into_iter()
+                    .take(expectation.max_candidates)
+                    .map(|item| item.label)
+                    .collect::<Vec<_>>()
+            }
+        }
+        Ok(Err(e)) => {
+            checks.push(SmokeCheck::fail(
+                "completion",
+                CompatibilityRequirement::RequiredIfAdvertised,
+                format!("{e}"),
+                ms,
+            ));
+            return;
+        }
+        Err(_elapsed) => {
+            checks.push(SmokeCheck::fail(
+                "completion",
+                CompatibilityRequirement::RequiredIfAdvertised,
+                stage_timeout_error(server_id, bin_path, "completion", REQUEST_TIMEOUT, stderr_tail),
+                ms,
+            ));
+            return;
+        }
+    };
+    if expectation.expected_label_substrings.is_empty() {
+        if candidates.is_empty() {
+            checks.push(SmokeCheck::fail(
+                "completion",
+                CompatibilityRequirement::RequiredIfAdvertised,
+                "server returned 0 completion candidates",
+                ms,
+            ));
+        } else {
+            checks.push(SmokeCheck::pass(
+                format!("completion ({} candidate(s))", candidates.len()),
+                CompatibilityRequirement::RequiredIfAdvertised,
+                ms,
+            ));
+        }
+        return;
+    }
+    let lower_substrings: Vec<String> = expectation
+        .expected_label_substrings
+        .iter()
+        .map(|s| s.to_lowercase())
+        .collect();
+    let matched: Vec<&str> = candidates
+        .iter()
+        .filter(|label| {
+            let label_lower = label.to_lowercase();
+            lower_substrings.iter().any(|s| label_lower.contains(s))
+        })
+        .map(|s| s.as_str())
+        .collect();
+    if matched.is_empty() {
+        checks.push(SmokeCheck::fail(
+            "completion",
+            CompatibilityRequirement::RequiredIfAdvertised,
+            format!(
+                "no completion label contained any of {:?}; got {} candidate(s): {:?}",
+                expectation.expected_label_substrings,
+                candidates.len(),
+                candidates
+            ),
+            ms,
+        ));
+    } else {
+        checks.push(SmokeCheck::pass(
+            format!(
+                "completion ({} matched label(s): {:?})",
+                matched.len(),
+                matched
+            ),
+            CompatibilityRequirement::RequiredIfAdvertised,
+            ms,
+        ));
+    }
+}
+
+/// Run a single semantic-tokens request and append a `SmokeCheck`.
+/// Decoding errors are reported as `RequiredIfAdvertised` failures
+/// because they indicate a misbehaving server rather than a
+/// missing capability.
+async fn run_semantic_tokens_check(
+    client: &LspClient,
+    primary_uri: &url::Url,
+    supports_op: bool,
+    bin_path: &Path,
+    server_id: &str,
+    stderr_tail: &[String],
+    checks: &mut Vec<SmokeCheck>,
+) {
+    if !supports_op {
+        checks.push(SmokeCheck::pass(
+            "semanticTokens (skipped: not supported)",
+            CompatibilityRequirement::Optional,
+            0,
+        ));
+        return;
+    }
+    let start = std::time::Instant::now();
+    let params = serde_json::json!({
+        "textDocument": { "uri": primary_uri.as_str() },
+    });
+    let result = tokio::time::timeout(
+        REQUEST_TIMEOUT,
+        client.send_request("textDocument/semanticTokens/full", params),
+    )
+    .await;
+    let ms = start.elapsed().as_millis() as u64;
+    match result {
+        Ok(Ok(value)) => {
+            if value.is_null() {
+                checks.push(SmokeCheck::pass(
+                    "semanticTokens (server returned null)",
+                    CompatibilityRequirement::RequiredIfAdvertised,
+                    ms,
+                ));
+                return;
+            }
+            match serde_json::from_value::<egglsp::lsp_types::SemanticTokens>(value) {
+                Ok(tokens) => {
+                    checks.push(SmokeCheck::pass(
+                        format!("semanticTokens ({} raw token(s))", tokens.data.len()),
+                        CompatibilityRequirement::RequiredIfAdvertised,
+                        ms,
+                    ));
+                }
+                Err(e) => checks.push(SmokeCheck::fail(
+                    "semanticTokens",
+                    CompatibilityRequirement::RequiredIfAdvertised,
+                    format!("malformed semanticTokens response: {e}"),
+                    ms,
+                )),
+            }
+        }
+        Ok(Err(e)) => checks.push(SmokeCheck::fail(
+            "semanticTokens",
+            CompatibilityRequirement::RequiredIfAdvertised,
+            format!("{e}"),
+            ms,
+        )),
+        Err(_elapsed) => checks.push(SmokeCheck::fail(
+            "semanticTokens",
+            CompatibilityRequirement::RequiredIfAdvertised,
+            stage_timeout_error(
+                server_id,
+                bin_path,
+                "semanticTokens",
+                REQUEST_TIMEOUT,
+                stderr_tail,
+            ),
+            ms,
+        )),
+    }
+}
+
+/// Run a preview-only rename check. The smoke suite verifies that
+/// the on-disk file is unchanged by reading a sha256 hash before
+/// and after the preview call. Rename failures are
+/// `RequiredIfAdvertised` because the request may legitimately
+/// return no edits when the position is not a renameable
+/// identifier.
+async fn run_rename_preview_check(
+    client: &LspClient,
+    fixture: &RealServerFixture,
+    primary_uri: &url::Url,
+    supports_op: bool,
+    bin_path: &Path,
+    server_id: &str,
+    stderr_tail: &[String],
+    checks: &mut Vec<SmokeCheck>,
+) {
+    if !supports_op {
+        checks.push(SmokeCheck::pass(
+            "renamePreview (skipped: not supported)",
+            CompatibilityRequirement::Optional,
+            0,
+        ));
+        return;
+    }
+    let pos = match fixture.mutation_targets.rename {
+        Some(p) => p,
+        None => {
+            checks.push(SmokeCheck::pass(
+                "renamePreview (skipped: no mutation_targets.rename)",
+                CompatibilityRequirement::Optional,
+                0,
+            ));
+            return;
+        }
+    };
+    let primary_path = match primary_uri.to_file_path() {
+        Ok(p) => p,
+        Err(_) => {
+            checks.push(SmokeCheck::fail(
+                "renamePreview",
+                CompatibilityRequirement::RequiredIfAdvertised,
+                "primary URI is not a file path",
+                0,
+            ));
+            return;
+        }
+    };
+    let before_hash = match std::fs::read(&primary_path) {
+        Ok(bytes) => egglsp::operations::sha256_hex(&bytes),
+        Err(e) => {
+            checks.push(SmokeCheck::fail(
+                "renamePreview",
+                CompatibilityRequirement::RequiredIfAdvertised,
+                format!("failed to read primary file before preview: {e}"),
+                0,
+            ));
+            return;
+        }
+    };
+    let start = std::time::Instant::now();
+    let params = serde_json::json!({
+        "textDocument": { "uri": primary_uri.as_str() },
+        "position": { "line": pos.line, "character": pos.character },
+        "newName": "renamed_identifier",
+    });
+    let result = tokio::time::timeout(
+        REQUEST_TIMEOUT,
+        client.send_request("textDocument/rename", params),
+    )
+    .await;
+    let ms = start.elapsed().as_millis() as u64;
+    let after_hash = std::fs::read(&primary_path).map(|b| egglsp::operations::sha256_hex(&b));
+    let on_disk_unchanged = match &after_hash {
+        Ok(h) => h == &before_hash,
+        Err(_) => false,
+    };
+    match result {
+        Ok(Ok(value)) => {
+            if !on_disk_unchanged {
+                checks.push(SmokeCheck::fail(
+                    "renamePreview",
+                    CompatibilityRequirement::Required,
+                    format!(
+                        "rename preview mutated on-disk file: before_hash={before_hash}, after_hash={:?}",
+                        after_hash
+                    ),
+                    ms,
+                ));
+                return;
+            }
+            if value.is_null() {
+                checks.push(SmokeCheck::pass(
+                    format!("renamePreview (no edits; disk hash unchanged: {before_hash})"),
+                    CompatibilityRequirement::RequiredIfAdvertised,
+                    ms,
+                ));
+                return;
+            }
+            match serde_json::from_value::<egglsp::lsp_types::WorkspaceEdit>(value) {
+                Ok(_edit) => checks.push(SmokeCheck::pass(
+                    format!("renamePreview (server returned edits; disk hash unchanged: {before_hash})"),
+                    CompatibilityRequirement::RequiredIfAdvertised,
+                    ms,
+                )),
+                Err(e) => checks.push(SmokeCheck::fail(
+                    "renamePreview",
+                    CompatibilityRequirement::RequiredIfAdvertised,
+                    format!("malformed rename response: {e}"),
+                    ms,
+                )),
+            }
+        }
+        Ok(Err(e)) => checks.push(SmokeCheck::fail(
+            "renamePreview",
+            CompatibilityRequirement::RequiredIfAdvertised,
+            format!("{e}"),
+            ms,
+        )),
+        Err(_elapsed) => checks.push(SmokeCheck::fail(
+            "renamePreview",
+            CompatibilityRequirement::RequiredIfAdvertised,
+            stage_timeout_error(server_id, bin_path, "renamePreview", REQUEST_TIMEOUT, stderr_tail),
+            ms,
+        )),
+    }
+}
+
+/// Run a preview-only formatting check. The smoke suite verifies
+/// that the on-disk file is unchanged.
+async fn run_format_preview_check(
+    client: &LspClient,
+    fixture: &RealServerFixture,
+    primary_uri: &url::Url,
+    supports_op: bool,
+    bin_path: &Path,
+    server_id: &str,
+    stderr_tail: &[String],
+    checks: &mut Vec<SmokeCheck>,
+) {
+    if !supports_op {
+        checks.push(SmokeCheck::pass(
+            "formatPreview (skipped: not supported)",
+            CompatibilityRequirement::Optional,
+            0,
+        ));
+        return;
+    }
+    if !fixture.mutation_targets.format_preview_requested {
+        checks.push(SmokeCheck::pass(
+            "formatPreview (skipped: not requested by fixture)",
+            CompatibilityRequirement::Optional,
+            0,
+        ));
+        return;
+    }
+    let primary_path = match primary_uri.to_file_path() {
+        Ok(p) => p,
+        Err(_) => {
+            checks.push(SmokeCheck::fail(
+                "formatPreview",
+                CompatibilityRequirement::RequiredIfAdvertised,
+                "primary URI is not a file path",
+                0,
+            ));
+            return;
+        }
+    };
+    let before_hash = match std::fs::read(&primary_path) {
+        Ok(bytes) => egglsp::operations::sha256_hex(&bytes),
+        Err(e) => {
+            checks.push(SmokeCheck::fail(
+                "formatPreview",
+                CompatibilityRequirement::RequiredIfAdvertised,
+                format!("failed to read primary file before preview: {e}"),
+                0,
+            ));
+            return;
+        }
+    };
+    let start = std::time::Instant::now();
+    let params = serde_json::json!({
+        "textDocument": { "uri": primary_uri.as_str() },
+        "options": {
+            "tabSize": 4,
+            "insertSpaces": true,
+        },
+    });
+    let result = tokio::time::timeout(
+        REQUEST_TIMEOUT,
+        client.send_request("textDocument/formatting", params),
+    )
+    .await;
+    let ms = start.elapsed().as_millis() as u64;
+    let after_hash = std::fs::read(&primary_path).map(|b| egglsp::operations::sha256_hex(&b));
+    let on_disk_unchanged = match &after_hash {
+        Ok(h) => h == &before_hash,
+        Err(_) => false,
+    };
+    match result {
+        Ok(Ok(value)) => {
+            if !on_disk_unchanged {
+                checks.push(SmokeCheck::fail(
+                    "formatPreview",
+                    CompatibilityRequirement::Required,
+                    format!(
+                        "format preview mutated on-disk file: before_hash={before_hash}, after_hash={:?}",
+                        after_hash
+                    ),
+                    ms,
+                ));
+                return;
+            }
+            if value.is_null() {
+                checks.push(SmokeCheck::pass(
+                    format!("formatPreview (no edits; disk hash unchanged: {before_hash})"),
+                    CompatibilityRequirement::RequiredIfAdvertised,
+                    ms,
+                ));
+                return;
+            }
+            match serde_json::from_value::<Vec<egglsp::lsp_types::TextEdit>>(value) {
+                Ok(edits) => checks.push(SmokeCheck::pass(
+                    format!(
+                        "formatPreview ({} edit(s); disk hash unchanged: {before_hash})",
+                        edits.len()
+                    ),
+                    CompatibilityRequirement::RequiredIfAdvertised,
+                    ms,
+                )),
+                Err(e) => checks.push(SmokeCheck::fail(
+                    "formatPreview",
+                    CompatibilityRequirement::RequiredIfAdvertised,
+                    format!("malformed format response: {e}"),
+                    ms,
+                )),
+            }
+        }
+        Ok(Err(e)) => checks.push(SmokeCheck::fail(
+            "formatPreview",
+            CompatibilityRequirement::RequiredIfAdvertised,
+            format!("{e}"),
+            ms,
+        )),
+        Err(_elapsed) => checks.push(SmokeCheck::fail(
+            "formatPreview",
+            CompatibilityRequirement::RequiredIfAdvertised,
+            stage_timeout_error(server_id, bin_path, "formatPreview", REQUEST_TIMEOUT, stderr_tail),
+            ms,
+        )),
+    }
+}
+
+/// Run a code-action summary check. The fixture does not pin a
+/// specific action title; the check passes when the server
+/// returns at least one action with an `edit` payload (raw
+/// command-only actions are skipped — command execution is
+/// disabled in Phase 4).
+async fn run_code_action_check(
+    client: &LspClient,
+    primary_uri: &url::Url,
+    fixture: &RealServerFixture,
+    supports_op: bool,
+    bin_path: &Path,
+    server_id: &str,
+    stderr_tail: &[String],
+    checks: &mut Vec<SmokeCheck>,
+) {
+    if !supports_op {
+        checks.push(SmokeCheck::pass(
+            "codeActions (skipped: not supported)",
+            CompatibilityRequirement::Optional,
+            0,
+        ));
+        return;
+    }
+    let start = std::time::Instant::now();
+    let params = serde_json::json!({
+        "textDocument": { "uri": primary_uri.as_str() },
+        "range": {
+            "start": { "line": 0, "character": 0 },
+            "end": { "line": 0, "character": 0 },
+        },
+        "context": { "diagnostics": [] },
+    });
+    let result = tokio::time::timeout(
+        REQUEST_TIMEOUT,
+        client.send_request("textDocument/codeAction", params),
+    )
+    .await;
+    let ms = start.elapsed().as_millis() as u64;
+    match result {
+        Ok(Ok(value)) => {
+            if value.is_null() {
+                checks.push(SmokeCheck::pass(
+                    format!(
+                        "codeActions (null response; fixture={})",
+                        fixture.language_id
+                    ),
+                    CompatibilityRequirement::RequiredIfAdvertised,
+                    ms,
+                ));
+                return;
+            }
+            // The response is an array of CodeActionOrCommand.
+            // Deserialize just enough to count the entries that
+            // carry a WorkspaceEdit payload.
+            #[derive(serde::Deserialize)]
+            #[serde(untagged)]
+            #[allow(dead_code)]
+            enum ActionOrCommand {
+                Command { title: String },
+                CodeAction {
+                    title: String,
+                    #[serde(default)]
+                    edit: Option<serde_json::Value>,
+                    #[serde(default)]
+                    command: Option<serde_json::Value>,
+                },
+            }
+            match serde_json::from_value::<Vec<ActionOrCommand>>(value) {
+                Ok(actions) => {
+                    let edit_bearing = actions
+                        .iter()
+                        .filter(|a| matches!(a, ActionOrCommand::CodeAction { edit: Some(_), .. }))
+                        .count();
+                    checks.push(SmokeCheck::pass(
+                        format!(
+                            "codeActions ({} summary, {} with edit; fixture={})",
+                            actions.len(),
+                            edit_bearing,
+                            fixture.language_id
+                        ),
+                        CompatibilityRequirement::RequiredIfAdvertised,
+                        ms,
+                    ));
+                }
+                Err(e) => checks.push(SmokeCheck::fail(
+                    "codeActions",
+                    CompatibilityRequirement::RequiredIfAdvertised,
+                    format!("malformed codeAction response: {e}"),
+                    ms,
+                )),
+            }
+        }
+        Ok(Err(e)) => checks.push(SmokeCheck::fail(
+            "codeActions",
+            CompatibilityRequirement::RequiredIfAdvertised,
+            format!("{e}"),
+            ms,
+        )),
+        Err(_elapsed) => checks.push(SmokeCheck::fail(
+            "codeActions",
+            CompatibilityRequirement::RequiredIfAdvertised,
+            stage_timeout_error(server_id, bin_path, "codeActions", REQUEST_TIMEOUT, stderr_tail),
+            ms,
+        )),
+    }
+}
+
+/// Pass 3 — Run the suite of generalized operation checks driven
+/// by the fixture's `expected_capabilities` and per-operation
+/// target / expectation fields. Each sub-check is independent
+/// and short-circuits independently so a single failure does
+/// not mask other findings.
+async fn run_generalized_operation_checks(
+    client: &LspClient,
+    fixture: &RealServerFixture,
+    caps: &LspCapabilitySnapshot,
+    primary_uri: &url::Url,
+    bin_path: &Path,
+    server_id: &str,
+    checks: &mut Vec<SmokeCheck>,
+    stderr_tail: &[String],
+) {
+    // Declaration
+    if fixture.expected_capabilities.declaration {
+        if let Some(target) = fixture.declaration_targets.first() {
+            run_location_check(
+                client,
+                primary_uri,
+                "declaration",
+                target,
+                caps.supports_declaration,
+                bin_path,
+                server_id,
+                stderr_tail,
+                checks,
+            )
+            .await;
+        }
+    }
+
+    // Implementation
+    if fixture.expected_capabilities.implementation {
+        // Re-use the same shape as the definition position; the
+        // implementation query lives in the same target field
+        // unless the fixture specifies otherwise.
+        let target = LocationExpectation {
+            position: fixture.definition_position,
+            min_locations: 1,
+            expected_files: Vec::new(),
+        };
+        run_location_check(
+            client,
+            primary_uri,
+            "implementation",
+            &target,
+            caps.supports_implementation,
+            bin_path,
+            server_id,
+            stderr_tail,
+            checks,
+        )
+        .await;
+    }
+
+    // Document highlight
+    if fixture.expected_capabilities.document_highlight {
+        for target in &fixture.document_highlight_targets {
+            run_location_check(
+                client,
+                primary_uri,
+                "documentHighlight",
+                target,
+                caps.supports_document_highlight,
+                bin_path,
+                server_id,
+                stderr_tail,
+                checks,
+            )
+            .await;
+        }
+    }
+
+    // Workspace symbols
+    if fixture.expected_capabilities.workspace_symbols {
+        if let Some(expectation) = &fixture.workspace_symbol_query {
+            run_workspace_symbol_check(
+                client,
+                expectation,
+                caps.supports_workspace_symbols,
+                bin_path,
+                server_id,
+                stderr_tail,
+                checks,
+            )
+            .await;
+        }
+    }
+
+    // Signature help
+    if fixture.expected_capabilities.signature_help {
+        for target in &fixture.signature_help_targets {
+            run_signature_help_check(
+                client,
+                primary_uri,
+                target,
+                caps.supports_signature_help,
+                bin_path,
+                server_id,
+                stderr_tail,
+                checks,
+            )
+            .await;
+        }
+    }
+
+    // Semantic tokens
+    if fixture.expected_capabilities.semantic_tokens {
+        run_semantic_tokens_check(
+            client,
+            primary_uri,
+            caps.supports_semantic_tokens,
+            bin_path,
+            server_id,
+            stderr_tail,
+            checks,
+        )
+        .await;
+    }
+
+    // Rename preview
+    if fixture.expected_capabilities.rename || fixture.mutation_targets.rename_preview_requested {
+        run_rename_preview_check(
+            client,
+            fixture,
+            primary_uri,
+            caps.supports_rename,
+            bin_path,
+            server_id,
+            stderr_tail,
+            checks,
+        )
+        .await;
+    }
+
+    // Format preview
+    if fixture.expected_capabilities.formatting
+        || fixture.mutation_targets.format_preview_requested
+    {
+        run_format_preview_check(
+            client,
+            fixture,
+            primary_uri,
+            caps.supports_document_formatting,
+            bin_path,
+            server_id,
+            stderr_tail,
+            checks,
+        )
+        .await;
+    }
+
+    // Code actions
+    if fixture.expected_capabilities.code_actions {
+        run_code_action_check(
+            client,
+            primary_uri,
+            fixture,
+            caps.supports_code_actions,
+            bin_path,
+            server_id,
+            stderr_tail,
+            checks,
+        )
+        .await;
+    }
+
+    // Completion (opt-in via `completions` list, regardless of
+    // `expected_capabilities.completion` to keep the existing
+    // Tier 1 fixtures unchanged).
+    if caps.supports_completion {
+        for expectation in &fixture.completions {
+            run_completion_check(
+                client,
+                primary_uri,
+                expectation,
+                true,
+                bin_path,
+                server_id,
+                stderr_tail,
+                checks,
+            )
+            .await;
+        }
     }
 }
 
@@ -1355,6 +3163,131 @@ async fn basedpyright_smoke() {
     };
 
     write_report(&report, "pyright");
+    assert_required_checks(&report);
+}
+
+// ── Tier 2 Tests ───────────────────────────────────────────────────
+//
+// gopls / typescript-language-server / clangd smoke tests.
+// Each test follows the same pattern as the Tier 1 tests:
+//   1. Resolve the binary via `CODEGG_<SERVER>_BIN` env var, falling
+//      back to PATH lookup. Skip with `eprintln!("SKIP: ...")` if
+//      not found so the suite remains CI-friendly without the
+//      binary.
+//   2. Capture `--version` for the compatibility report.
+//   3. Drive the standard smoke suite against the Tier 2 fixture.
+//   4. Write the JSON report under `target/lsp-compatibility/`.
+//   5. Assert that required checks passed.
+
+#[tokio::test]
+async fn gopls_smoke() {
+    let bin = match require_server_binary("CODEGG_GOPLS_BIN", &["gopls"]) {
+        Some(b) => b,
+        None => {
+            eprintln!("SKIP: gopls not found (set CODEGG_GOPLS_BIN or install gopls)");
+            return;
+        }
+    };
+
+    let version = tokio::time::timeout(VERSION_TIMEOUT, capture_version(&bin))
+        .await
+        .ok()
+        .flatten();
+    eprintln!("gopls version: {:?}", version);
+
+    let fixture = gopls_fixture();
+    let profile = compatibility::gopls_profile();
+    let report = match tokio::time::timeout(
+        TEST_TIMEOUT,
+        run_smoke_suite(&profile, &bin, &fixture, version),
+    )
+    .await
+    {
+        Ok(r) => r,
+        Err(_elapsed) => {
+            eprintln!("gopls smoke test timed out after {TEST_TIMEOUT:?}");
+            return;
+        }
+    };
+
+    write_report(&report, "gopls");
+    assert_required_checks(&report);
+}
+
+#[tokio::test]
+async fn typescript_smoke() {
+    let bin = match require_server_binary(
+        "CODEGG_TS_LS_BIN",
+        &["typescript-language-server"],
+    ) {
+        Some(b) => b,
+        None => {
+            eprintln!(
+                "SKIP: typescript-language-server not found (set CODEGG_TS_LS_BIN or install typescript-language-server)"
+            );
+            return;
+        }
+    };
+
+    let version = tokio::time::timeout(VERSION_TIMEOUT, capture_version(&bin))
+        .await
+        .ok()
+        .flatten();
+    eprintln!("typescript-language-server version: {:?}", version);
+
+    let fixture = typescript_fixture();
+    let profile = compatibility::typescript_language_server_profile();
+    let report = match tokio::time::timeout(
+        TEST_TIMEOUT,
+        run_smoke_suite(&profile, &bin, &fixture, version),
+    )
+    .await
+    {
+        Ok(r) => r,
+        Err(_elapsed) => {
+            eprintln!(
+                "typescript-language-server smoke test timed out after {TEST_TIMEOUT:?}"
+            );
+            return;
+        }
+    };
+
+    write_report(&report, "typescript-language-server");
+    assert_required_checks(&report);
+}
+
+#[tokio::test]
+async fn clangd_smoke() {
+    let bin = match require_server_binary("CODEGG_CLANGD_BIN", &["clangd"]) {
+        Some(b) => b,
+        None => {
+            eprintln!("SKIP: clangd not found (set CODEGG_CLANGD_BIN or install clangd)");
+            return;
+        }
+    };
+
+    let version = tokio::time::timeout(VERSION_TIMEOUT, capture_version(&bin))
+        .await
+        .ok()
+        .flatten();
+    eprintln!("clangd version: {:?}", version);
+
+    let fixture = clangd_fixture();
+    let profile = compatibility::clangd_profile();
+    let report = match tokio::time::timeout(
+        TEST_TIMEOUT,
+        run_smoke_suite(&profile, &bin, &fixture, version),
+    )
+    .await
+    {
+        Ok(r) => r,
+        Err(_elapsed) => {
+            eprintln!("clangd smoke test timed out after {TEST_TIMEOUT:?}");
+            return;
+        }
+    };
+
+    write_report(&report, "clangd");
     assert_required_checks(&report);
 }
 
@@ -1676,4 +3609,119 @@ async fn missing_diagnostics_readiness_times_out() {
 
     // Clean up: shut down the client.
     let _ = client.shutdown().await;
+}
+
+// ── Pass 3 — Generalized fixture unit tests ────────────────────────
+//
+// These tests are deterministic, do not require any real LSP
+// server, and lock down the typed fixture contract introduced in
+// Pass 3 (generalized harness). They guard against regressions
+// in the new struct shapes and the default values that the
+// existing Tier 1 fixtures rely on.
+
+#[test]
+fn location_expectation_serializes() {
+    let expectation = LocationExpectation {
+        position: Position::new(3, 7),
+        min_locations: 2,
+        expected_files: vec![PathBuf::from("src/lib.rs"), PathBuf::from("src/helper.rs")],
+    };
+    // Clone to exercise the Clone impl.
+    let copy = expectation.clone();
+    assert_eq!(copy.position, Position::new(3, 7));
+    assert_eq!(copy.min_locations, 2);
+    assert_eq!(copy.expected_files.len(), 2);
+    assert_eq!(copy.expected_files[0], PathBuf::from("src/lib.rs"));
+}
+
+#[test]
+fn location_expectation_default_is_sane() {
+    let expectation = LocationExpectation::default();
+    assert_eq!(expectation.position, Position::new(0, 0));
+    // Default min_locations must be 1 — matches the "at least one
+    // location" assumption that callers rely on.
+    assert_eq!(expectation.min_locations, 1);
+    assert!(expectation.expected_files.is_empty());
+}
+
+#[test]
+fn completion_expectation_serializes() {
+    let expectation = CompletionExpectation {
+        position: Position::new(2, 4),
+        max_candidates: 25,
+        expected_label_substrings: vec!["add".to_string(), "point".to_string()],
+    };
+    let copy = expectation.clone();
+    assert_eq!(copy.position, Position::new(2, 4));
+    assert_eq!(copy.max_candidates, 25);
+    assert_eq!(copy.expected_label_substrings.len(), 2);
+    assert_eq!(copy.expected_label_substrings[0], "add");
+}
+
+#[test]
+fn completion_expectation_default_is_sane() {
+    let expectation = CompletionExpectation::default();
+    assert_eq!(expectation.position, Position::new(0, 0));
+    // Default max_candidates must be > 0 so a request that omits
+    // the field still gets useful results.
+    assert!(expectation.max_candidates > 0);
+    assert!(expectation.expected_label_substrings.is_empty());
+}
+
+#[test]
+fn mutation_targets_default_is_empty() {
+    let targets = MutationTargets::default();
+    // The default MutationTargets must have every field unset so
+    // existing fixtures that do not opt into the new operations
+    // see `None` everywhere.
+    assert!(targets.rename.is_none());
+    assert!(targets.format.is_none());
+    assert!(targets.completion.is_none());
+    assert!(targets.signature_help.is_none());
+    assert!(!targets.format_preview_requested);
+    assert!(!targets.rename_preview_requested);
+}
+
+#[test]
+fn expected_capabilities_default_is_all_false() {
+    let caps = ExpectedCapabilities::default();
+    // Every capability flag must default to false so adding a
+    // new flag cannot accidentally opt every fixture in.
+    assert!(!caps.declaration);
+    assert!(!caps.implementation);
+    assert!(!caps.document_highlight);
+    assert!(!caps.workspace_symbols);
+    assert!(!caps.signature_help);
+    assert!(!caps.semantic_tokens);
+    assert!(!caps.rename);
+    assert!(!caps.code_actions);
+    assert!(!caps.formatting);
+}
+
+#[test]
+fn workspace_symbol_expectation_serializes() {
+    let expectation = WorkspaceSymbolExpectation {
+        query: "add".to_string(),
+        min_locations: 1,
+        expected_files: vec![PathBuf::from("src/main.rs")],
+    };
+    let copy = expectation.clone();
+    assert_eq!(copy.query, "add");
+    assert_eq!(copy.min_locations, 1);
+    assert_eq!(copy.expected_files, vec![PathBuf::from("src/main.rs")]);
+}
+
+#[test]
+fn matches_expected_file_handles_file_uri_prefix() {
+    let exp = PathBuf::from("src/lib.rs");
+    // Suffix match against a `file://` URI works.
+    assert!(matches_expected_file("file:///tmp/proj/src/lib.rs", &exp));
+    // Direct absolute path works.
+    assert!(matches_expected_file("/tmp/proj/src/lib.rs", &exp));
+    // Suffix-only with `file:` prefix (single-slash) works.
+    assert!(matches_expected_file("file:/tmp/proj/src/lib.rs", &exp));
+    // Mismatched path returns false.
+    assert!(!matches_expected_file("file:///tmp/proj/src/other.rs", &exp));
+    // Empty string returns false.
+    assert!(!matches_expected_file("", &exp));
 }
