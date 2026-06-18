@@ -2559,6 +2559,15 @@ async fn run_smoke_suite(
     // names back to operations is removed; the operation record
     // is now part of the same logical step as the request.
     //
+    // Pass 9 — Complete the operation matrix. The request-site
+    // helpers cover 11 of 25 `LspSemanticOperation` variants.
+    // The matrix pass emits a default `LspOperationCompatibility`
+    // for every variant that wasn't already exercised, so
+    // consumers see a complete picture (e.g. "InlayHint is
+    // advertised but not exercised; clangd reports it as a
+    // known limitation").
+    populate_operation_matrix(&caps, &mut operation_records);
+    //
     // Pass 6 — build a structured `LspShutdownTrace` from
     // the harness's `HarnessShutdownResult` so daemon-mode
     // hangs are distinguishable from stdio-mode hangs.
@@ -2574,6 +2583,72 @@ async fn run_smoke_suite(
         Some(shutdown_trace),
         stderr_tail,
     )
+}
+
+/// Pass 9 — Walk every `LspSemanticOperation` variant and emit
+/// a default `LspOperationCompatibility` for any variant that
+/// was not already exercised by the request-site helpers.
+/// Existing records are preserved; the matrix step is purely
+/// additive.
+///
+/// The advertised flag is read from the live
+/// `LspCapabilitySnapshot`. Operations the server does not
+/// advertise AND the harness did not exercise are recorded
+/// with `exercised = false` and `requirement = Optional` so
+/// the matrix is exhaustive without inflating required checks.
+fn populate_operation_matrix(
+    caps: &LspCapabilitySnapshot,
+    records: &mut Vec<egglsp::compatibility::LspOperationCompatibility>,
+) {
+    use egglsp::capability::LspSemanticOperation;
+    use egglsp::compatibility::{CompatibilityRequirement, LspOperationCompatibility};
+    // Static list of every operation the harness knows about.
+    // Adding a new `LspSemanticOperation` variant to the enum
+    // and forgetting to extend this list will surface as a
+    // missing record in the JSON report.
+    const ALL_OPERATIONS: &[LspSemanticOperation] = &[
+        LspSemanticOperation::Diagnostics,
+        LspSemanticOperation::DocumentSymbols,
+        LspSemanticOperation::WorkspaceSymbols,
+        LspSemanticOperation::Definition,
+        LspSemanticOperation::Declaration,
+        LspSemanticOperation::Implementation,
+        LspSemanticOperation::References,
+        LspSemanticOperation::Hover,
+        LspSemanticOperation::DocumentHighlight,
+        LspSemanticOperation::Completion,
+        LspSemanticOperation::SignatureHelp,
+        LspSemanticOperation::Rename,
+        LspSemanticOperation::PrepareRename,
+        LspSemanticOperation::CodeAction,
+        LspSemanticOperation::DocumentFormatting,
+        LspSemanticOperation::RangeFormatting,
+        LspSemanticOperation::InlayHints,
+        LspSemanticOperation::FoldingRanges,
+        LspSemanticOperation::SelectionRanges,
+        LspSemanticOperation::DocumentLinks,
+        LspSemanticOperation::ExecuteCommand,
+        LspSemanticOperation::CallHierarchy,
+        LspSemanticOperation::TypeHierarchy,
+        LspSemanticOperation::SemanticTokens,
+        LspSemanticOperation::SecurityContext,
+    ];
+    for op in ALL_OPERATIONS {
+        let op_name = op.as_str();
+        if records.iter().any(|r| r.operation == op_name) {
+            continue;
+        }
+        let advertised = caps.supports(*op);
+        records.push(LspOperationCompatibility {
+            operation: op_name.to_string(),
+            advertised,
+            exercised: false,
+            request_succeeded: false,
+            semantic_assertion_passed: false,
+            requirement: CompatibilityRequirement::Optional,
+            known_limit: None,
+        });
+    }
 }
 
 /// Build a `LspShutdownTrace` from the harness result. The
