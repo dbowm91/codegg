@@ -1404,7 +1404,7 @@ impl Tool for LspTool {
     }
 
     fn description(&self) -> &str {
-        "Query LSP server for code intelligence and preview-only edits. Operations: goToDefinition, findReferences, hover, documentSymbol, workspaceSymbol, diagnostics, renamePreview, formatPreview, sourceActionPreview, semanticCheckPreview, semanticContext, securityContext, callHierarchy, typeHierarchy, capabilities, hunkSourceContext. semanticCheckPreview accepts either full proposed content or a single-file unified diff patch. semanticContext returns a compact LSP-backed context packet with source excerpt, diagnostics, symbols, and optional definition/reference/overlay information. securityContext returns a security-review context packet with risk markers. capabilities returns a normalized snapshot of what the server supports. hunkSourceContext returns per-hunk navigation evidence with enclosing symbols, diagnostics, definitions, references, and hierarchy. When include_source_actions=true, semanticContext also includes safe source-action preview hints (initially only source.organizeImports). callHierarchy/typeHierarchy return call/type hierarchy information for the symbol at line+column. Edit operations are previews only; use apply_patch (or other mutating tools) for actual changes."
+        "Query LSP server for code intelligence and preview-only edits. Operations: goToDefinition, findReferences, hover, documentSymbol, workspaceSymbol, diagnostics, declaration, implementation, documentHighlights, signatureHelp, completion, semanticTokens, renamePreview, formatPreview, sourceActionPreview, codeActionSummaries, codeActionPreview, semanticCheckPreview, semanticContext, securityContext, callHierarchy, typeHierarchy, capabilities, hunkSourceContext. semanticCheckPreview accepts either full proposed content or a single-file unified diff patch. semanticContext returns a compact LSP-backed context packet with source excerpt, diagnostics, symbols, and optional definition/reference/overlay information. securityContext returns a security-review context packet with risk markers. capabilities returns a normalized snapshot of what the server supports. hunkSourceContext returns per-hunk navigation evidence with enclosing symbols, diagnostics, definitions, references, and hierarchy. When include_source_actions=true, semanticContext also includes safe source-action preview hints (initially only source.organizeImports). callHierarchy/typeHierarchy return call/type hierarchy information for the symbol at line+column. declaration/implementation/documentHighlights/signatureHelp/completion/semanticTokens are read-only navigation and code intelligence operations. codeActionSummaries returns code action summaries for a range; codeActionPreview returns a preview of a specific code action. Edit operations are previews only; use apply_patch (or other mutating tools) for actual changes."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -1416,13 +1416,16 @@ impl Tool for LspTool {
                     "enum": [
                         "goToDefinition", "findReferences", "hover",
                         "documentSymbol", "workspaceSymbol", "diagnostics",
+                        "declaration", "implementation", "documentHighlights",
+                        "signatureHelp", "completion", "semanticTokens",
                         "renamePreview", "formatPreview", "sourceActionPreview",
+                        "codeActionSummaries", "codeActionPreview",
                         "semanticCheckPreview", "semanticContext",
                         "callHierarchy", "typeHierarchy",
                         "securityContext", "capabilities",
                         "hunkSourceContext"
                     ],
-                    "description": "LSP operation to perform. semanticCheckPreview accepts either full proposed content or a single-file unified diff patch. semanticContext returns a compact LSP-backed context packet. securityContext returns a security-review context packet with risk markers. capabilities returns a normalized snapshot of what the server supports. hunkSourceContext returns per-hunk navigation evidence with enclosing symbols, diagnostics, definitions, references, and hierarchy. callHierarchy/typeHierarchy return call/type hierarchy information for the symbol at line+column. Edit operations are previews only; use apply_patch (or other mutating tools) for actual changes."
+                    "description": "LSP operation to perform. declaration/implementation/documentHighlights/signatureHelp/completion/semanticTokens are read-only navigation and code intelligence. codeActionSummaries returns code action summaries for a range; codeActionPreview returns a preview of a specific code action. semanticCheckPreview accepts either full proposed content or a single-file unified diff patch. semanticContext returns a compact LSP-backed context packet. securityContext returns a security-review context packet with risk markers. capabilities returns a normalized snapshot of what the server supports. hunkSourceContext returns per-hunk navigation evidence with enclosing symbols, diagnostics, definitions, references, and hierarchy. callHierarchy/typeHierarchy return call/type hierarchy information for the symbol at line+column. Edit operations are previews only; use apply_patch (or other mutating tools) for actual changes."
                 },
                 "file_path": {
                     "type": "string",
@@ -1519,6 +1522,35 @@ impl Tool for LspTool {
                 "max_hunks": {
                     "type": "number",
                     "description": "Maximum hunks for hunkSourceContext. Default 20."
+                },
+                "max_candidates": {
+                    "type": "number",
+                    "description": "Maximum completion candidates to return. Default 200."
+                },
+                "max_tokens": {
+                    "type": "number",
+                    "description": "Maximum semantic tokens to return. Default 1000."
+                },
+                "max_actions": {
+                    "type": "number",
+                    "description": "Maximum code actions for codeActionSummaries. Default 50."
+                },
+                "action_index": {
+                    "type": "number",
+                    "description": "Index of the code action to preview for codeActionPreview (0-indexed)."
+                },
+                "only": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Optional code action kinds filter for codeActionSummaries/codeActionPreview."
+                },
+                "trigger_kind": {
+                    "type": "number",
+                    "description": "Completion trigger kind: 1=invoked, 2=triggerCharacter, 3=triggerForIncompleteCompletions."
+                },
+                "trigger_char": {
+                    "type": "string",
+                    "description": "Trigger character for completion when trigger_kind=2."
                 }
             },
             "required": ["operation"]
@@ -3296,13 +3328,16 @@ mod tests {
                     "enum": [
                         "goToDefinition", "findReferences", "hover",
                         "documentSymbol", "workspaceSymbol", "diagnostics",
+                        "declaration", "implementation", "documentHighlights",
+                        "signatureHelp", "completion", "semanticTokens",
                         "renamePreview", "formatPreview", "sourceActionPreview",
+                        "codeActionSummaries", "codeActionPreview",
                         "semanticCheckPreview", "semanticContext",
                         "callHierarchy", "typeHierarchy",
                         "securityContext", "capabilities",
                         "hunkSourceContext"
                     ],
-                    "description": "LSP operation to perform. semanticCheckPreview accepts either full proposed content or a single-file unified diff patch. semanticContext returns a compact LSP-backed context packet. securityContext returns a security-review context packet with risk markers. capabilities returns a normalized snapshot of what the server supports. hunkSourceContext returns per-hunk navigation evidence with enclosing symbols, diagnostics, definitions, references, and hierarchy. callHierarchy/typeHierarchy return call/type hierarchy information for the symbol at line+column. Edit operations are previews only; use apply_patch (or other mutating tools) for actual changes."
+                    "description": "LSP operation to perform. declaration/implementation/documentHighlights/signatureHelp/completion/semanticTokens are read-only navigation and code intelligence. codeActionSummaries returns code action summaries for a range; codeActionPreview returns a preview of a specific code action. semanticCheckPreview accepts either full proposed content or a single-file unified diff patch. semanticContext returns a compact LSP-backed context packet. securityContext returns a security-review context packet with risk markers. capabilities returns a normalized snapshot of what the server supports. hunkSourceContext returns per-hunk navigation evidence with enclosing symbols, diagnostics, definitions, references, and hierarchy. callHierarchy/typeHierarchy return call/type hierarchy information for the symbol at line+column. Edit operations are previews only; use apply_patch (or other mutating tools) for actual changes."
                 },
                 "file_path": {
                     "type": "string",
@@ -3399,6 +3434,35 @@ mod tests {
                 "max_hunks": {
                     "type": "number",
                     "description": "Maximum hunks for hunkSourceContext. Default 20."
+                },
+                "max_candidates": {
+                    "type": "number",
+                    "description": "Maximum completion candidates to return. Default 200."
+                },
+                "max_tokens": {
+                    "type": "number",
+                    "description": "Maximum semantic tokens to return. Default 1000."
+                },
+                "max_actions": {
+                    "type": "number",
+                    "description": "Maximum code actions for codeActionSummaries. Default 50."
+                },
+                "action_index": {
+                    "type": "number",
+                    "description": "Index of the code action to preview for codeActionPreview (0-indexed)."
+                },
+                "only": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Optional code action kinds filter for codeActionSummaries/codeActionPreview."
+                },
+                "trigger_kind": {
+                    "type": "number",
+                    "description": "Completion trigger kind: 1=invoked, 2=triggerCharacter, 3=triggerForIncompleteCompletions."
+                },
+                "trigger_char": {
+                    "type": "string",
+                    "description": "Trigger character for completion when trigger_kind=2."
                 }
             },
             "required": ["operation"]

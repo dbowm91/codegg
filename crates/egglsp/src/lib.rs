@@ -76,8 +76,8 @@ pub use operations::SourceActionPreviewKind;
 pub use operations::COMPLETION_DETAIL_MAX_CHARS;
 pub use operations::{
     CodeActionPreview, CodeActionSummary, FormattingPreview, PrepareRenameResult, RenamePreview,
-    CODE_ACTION_SUMMARY_DEFAULT_MAX, FORMATTING_PREVIEW_MAX_DIFF_BYTES, RENAME_PREVIEW_MAX_EDITS,
-    RENAME_PREVIEW_MAX_FILES,
+    VersionedFileEvidence, CODE_ACTION_SUMMARY_DEFAULT_MAX, FORMATTING_PREVIEW_MAX_DIFF_BYTES,
+    RENAME_PREVIEW_MAX_EDITS, RENAME_PREVIEW_MAX_FILES,
 };
 pub use semantic_context::{
     SemanticContextCaps, SemanticContextIntent, SemanticContextRequest, SemanticContextResponse,

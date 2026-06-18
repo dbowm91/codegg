@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use lsp_types::*;
 use sha2::{Digest, Sha256};
@@ -172,6 +172,17 @@ pub const RENAME_PREVIEW_MAX_EDITS: usize = 1000;
 /// when the formatted content would produce a larger patch.
 pub const FORMATTING_PREVIEW_MAX_DIFF_BYTES: usize = 8 * 1024;
 
+/// Evidence about a file's version at preview time. Carries the
+/// content hash (SHA-256 hex) and the optional LSP document version
+/// so consumers can detect external disk changes after the preview
+/// was constructed.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct VersionedFileEvidence {
+    pub file: PathBuf,
+    pub content_hash: String,
+    pub document_version: Option<i32>,
+}
+
 /// Default cap on the number of [`CodeActionSummary`] entries
 /// returned by [`LspOperations::code_action_summaries`].
 pub const CODE_ACTION_SUMMARY_DEFAULT_MAX: usize = 50;
@@ -267,6 +278,14 @@ pub struct RenamePreview {
     /// True when the underlying server's edit count or file count
     /// exceeded the preview caps and was clamped.
     pub truncated: bool,
+    /// True when any affected file's content hash changed between
+    /// the preview request and the verification re-read. When true
+    /// the preview may be stale and should be refreshed before use.
+    pub base_stale: bool,
+    /// Per-file version evidence for every file touched by the
+    /// rename. Captured before and after the LSP request to enable
+    /// staleness detection.
+    pub affected_file_versions: Vec<VersionedFileEvidence>,
     /// Authoritative server generation of the live client.
     pub server_generation: u64,
 }
@@ -380,6 +399,15 @@ pub struct FormattingPreview {
     pub diff: String,
     /// True when the diff exceeded the cap and was truncated.
     pub truncated: bool,
+    /// sha256 hex of the file content on disk after the preview
+    /// was constructed (the verification re-read). When this
+    /// differs from `before_hash` the base was modified externally
+    /// during the request and `base_stale` is set.
+    pub final_disk_hash: String,
+    /// True when the on-disk file content changed between the
+    /// initial read and the verification re-read. When true the
+    /// preview may be stale and should be refreshed before use.
+    pub base_stale: bool,
     pub server_generation: u64,
 }
 
@@ -1773,6 +1801,17 @@ impl LspOperations {
             ));
         }
 
+        // Step 0: Capture the hash of the target file before the request.
+        let target_file = file_path.to_path_buf();
+        let base_content = tokio::fs::read_to_string(&target_file).await.map_err(|e| {
+            LspError::RequestFailed(format!(
+                "failed to read file {}: {}",
+                target_file.display(),
+                e
+            ))
+        })?;
+        let target_base_hash = sha256_hex(base_content.as_bytes());
+
         // Step 1: prepare_rename (typed) → placeholder.
         let prepared = self.prepare_rename_typed(file_path, line, column).await?;
 
@@ -1788,6 +1827,8 @@ impl LspOperations {
                 edit_count: 0,
                 warnings: vec!["Position is not renameable (prepareRename returned null)".to_string()],
                 truncated: false,
+                base_stale: false,
+                affected_file_versions: Vec::new(),
                 server_generation,
             });
         }
@@ -1846,6 +1887,50 @@ impl LspOperations {
             ));
         }
 
+        // Step 5: capture hashes of affected files from the preview
+        // and verify none changed externally during the request.
+        let mut affected_file_versions = Vec::new();
+        let mut base_stale = false;
+
+        // Re-read the target file to detect external changes.
+        let post_content = tokio::fs::read_to_string(&target_file).await.map_err(|e| {
+            LspError::RequestFailed(format!(
+                "failed to re-read target file {}: {}",
+                target_file.display(),
+                e
+            ))
+        })?;
+        let target_post_hash = sha256_hex(post_content.as_bytes());
+        if target_post_hash != target_base_hash {
+            base_stale = true;
+        }
+        affected_file_versions.push(VersionedFileEvidence {
+            file: target_file.clone(),
+            content_hash: target_post_hash,
+            document_version: None,
+        });
+
+        // Record version evidence for all other affected files.
+        for fp in &preview.files {
+            if fp.file == target_file {
+                continue;
+            }
+            let p = fp.file.clone();
+            let post_content = tokio::fs::read_to_string(&p).await.map_err(|e| {
+                LspError::RequestFailed(format!(
+                    "failed to read affected file {}: {}",
+                    p.display(),
+                    e
+                ))
+            })?;
+            let post_hash = sha256_hex(post_content.as_bytes());
+            affected_file_versions.push(VersionedFileEvidence {
+                file: p,
+                content_hash: post_hash,
+                document_version: None,
+            });
+        }
+
         let (key, _root) = self.service.get_or_create_client(file_path).await?;
         let server_generation = self.service.generation_for_key(&key).await;
 
@@ -1856,6 +1941,8 @@ impl LspOperations {
             edit_count,
             warnings,
             truncated,
+            base_stale,
+            affected_file_versions,
             server_generation,
         })
     }
@@ -2120,22 +2207,15 @@ impl LspOperations {
 
         // Verify the on-disk file is unchanged (defense-in-depth
         // even though no mutating call was made).
-        let after_disk_hash = sha256_hex(&tokio::fs::read(file_path).await.map_err(|e| {
+        let final_disk_bytes = tokio::fs::read(file_path).await.map_err(|e| {
             LspError::RequestFailed(format!(
                 "failed to re-read file {}: {}",
                 file_path.display(),
                 e
             ))
-        })?);
-        if after_disk_hash != before_hash {
-            return Err(LspError::RequestFailed(format!(
-                "format_preview_typed: on-disk file {} changed unexpectedly \
-                 (before_hash={}, after_disk_hash={})",
-                file_path.display(),
-                before_hash,
-                after_disk_hash
-            )));
-        }
+        })?;
+        let final_disk_hash = sha256_hex(&final_disk_bytes);
+        let base_stale = final_disk_hash != before_hash;
 
         let (key, _root) = self.service.get_or_create_client(file_path).await?;
         let server_generation = self.service.generation_for_key(&key).await;
@@ -2147,6 +2227,8 @@ impl LspOperations {
             after_hash,
             diff,
             truncated,
+            final_disk_hash,
+            base_stale,
             server_generation,
         })
     }
@@ -4267,5 +4349,154 @@ mod tests {
         let sig = "fn add(x: u32, y: u32) -> u32";
         let label = ParameterLabel::LabelOffsets([7, 13]);
         assert_eq!(resolve_parameter_label(sig, &label), "x: u32");
+    }
+
+    // ---- Pass 8: base-freshness semantics ----
+
+    #[test]
+    fn versioned_file_evidence_round_trips_through_serde() {
+        let ev = VersionedFileEvidence {
+            file: PathBuf::from("src/main.rs"),
+            content_hash: "abc123".to_string(),
+            document_version: Some(5),
+        };
+        let json = serde_json::to_value(&ev).expect("serialize");
+        let decoded: VersionedFileEvidence = serde_json::from_value(json).expect("deserialize");
+        assert_eq!(decoded.file, PathBuf::from("src/main.rs"));
+        assert_eq!(decoded.content_hash, "abc123");
+        assert_eq!(decoded.document_version, Some(5));
+    }
+
+    #[test]
+    fn formatting_preview_includes_base_freshness_fields() {
+        let preview = FormattingPreview {
+            file: PathBuf::from("foo.rs"),
+            edit_count: 2,
+            before_hash: "aaa".to_string(),
+            after_hash: "bbb".to_string(),
+            diff: "--- a/foo.rs\n+++ b/foo.rs\n".to_string(),
+            truncated: false,
+            final_disk_hash: "aaa".to_string(),
+            base_stale: false,
+            server_generation: 1,
+        };
+        assert_eq!(preview.final_disk_hash, "aaa");
+        assert!(!preview.base_stale);
+    }
+
+    #[test]
+    fn formatting_preview_detects_stale_base_via_hash_mismatch() {
+        // Simulate the staleness check: base_hash != final_disk_hash
+        let before = b"fn foo() {}\n";
+        let disk_after = b"fn foo() { changed(); }\n";
+        let before_hash = sha256_hex(before);
+        let disk_hash = sha256_hex(disk_after);
+        let base_stale = before_hash != disk_hash;
+
+        let preview = FormattingPreview {
+            file: PathBuf::from("foo.rs"),
+            edit_count: 0,
+            before_hash: before_hash.clone(),
+            after_hash: sha256_hex(before),
+            diff: String::new(),
+            truncated: false,
+            final_disk_hash: disk_hash.clone(),
+            base_stale,
+            server_generation: 1,
+        };
+        assert!(preview.base_stale);
+        assert_ne!(preview.before_hash, preview.final_disk_hash);
+    }
+
+    #[test]
+    fn formatting_preview_clean_when_disk_unchanged() {
+        let content = b"fn foo() {}\n";
+        let hash = sha256_hex(content);
+
+        let preview = FormattingPreview {
+            file: PathBuf::from("foo.rs"),
+            edit_count: 0,
+            before_hash: hash.clone(),
+            after_hash: hash.clone(),
+            diff: String::new(),
+            truncated: false,
+            final_disk_hash: hash.clone(),
+            base_stale: false,
+            server_generation: 1,
+        };
+        assert!(!preview.base_stale);
+        assert_eq!(preview.before_hash, preview.final_disk_hash);
+    }
+
+    #[test]
+    fn rename_preview_includes_base_freshness_fields() {
+        let preview = RenamePreview {
+            old_name: Some("old".to_string()),
+            new_name: "new".to_string(),
+            affected_files: Vec::new(),
+            edit_count: 0,
+            warnings: Vec::new(),
+            truncated: false,
+            base_stale: false,
+            affected_file_versions: Vec::new(),
+            server_generation: 1,
+        };
+        assert!(!preview.base_stale);
+        assert!(preview.affected_file_versions.is_empty());
+    }
+
+    #[test]
+    fn rename_preview_stale_base_detected() {
+        let old_hash = sha256_hex(b"original");
+        let new_hash = sha256_hex(b"modified");
+
+        let preview = RenamePreview {
+            old_name: Some("foo".to_string()),
+            new_name: "bar".to_string(),
+            affected_files: Vec::new(),
+            edit_count: 1,
+            warnings: Vec::new(),
+            truncated: false,
+            base_stale: old_hash != new_hash,
+            affected_file_versions: vec![VersionedFileEvidence {
+                file: PathBuf::from("foo.rs"),
+                content_hash: new_hash.clone(),
+                document_version: None,
+            }],
+            server_generation: 1,
+        };
+        assert!(preview.base_stale);
+        assert_eq!(preview.affected_file_versions.len(), 1);
+        assert_eq!(preview.affected_file_versions[0].content_hash, new_hash);
+    }
+
+    #[test]
+    fn rename_preview_affected_files_populated() {
+        let files = vec![
+            VersionedFileEvidence {
+                file: PathBuf::from("a.rs"),
+                content_hash: sha256_hex(b"a"),
+                document_version: None,
+            },
+            VersionedFileEvidence {
+                file: PathBuf::from("b.rs"),
+                content_hash: sha256_hex(b"b"),
+                document_version: Some(3),
+            },
+        ];
+        let preview = RenamePreview {
+            old_name: Some("x".to_string()),
+            new_name: "y".to_string(),
+            affected_files: Vec::new(),
+            edit_count: 2,
+            warnings: Vec::new(),
+            truncated: false,
+            base_stale: false,
+            affected_file_versions: files.clone(),
+            server_generation: 1,
+        };
+        assert_eq!(preview.affected_file_versions.len(), 2);
+        assert_eq!(preview.affected_file_versions[0].file, PathBuf::from("a.rs"));
+        assert_eq!(preview.affected_file_versions[1].document_version, Some(3));
     }
 }

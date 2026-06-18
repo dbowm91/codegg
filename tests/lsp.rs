@@ -83,9 +83,17 @@ fn lsp_tool_schema_operation_enum() {
         "documentSymbol",
         "workspaceSymbol",
         "diagnostics",
+        "declaration",
+        "implementation",
+        "documentHighlights",
+        "signatureHelp",
+        "completion",
+        "semanticTokens",
         "renamePreview",
         "formatPreview",
         "sourceActionPreview",
+        "codeActionSummaries",
+        "codeActionPreview",
         "semanticCheckPreview",
         "semanticContext",
         "callHierarchy",
@@ -2225,5 +2233,238 @@ async fn security_context_notes_include_no_position_message() {
             .iter()
             .any(|n| n.as_str().unwrap().contains("no target position")),
         "notes should mention missing target position"
+    );
+}
+
+// ── Phase 4: LspTool operation exposure tests ──────────────────────────────
+
+#[tokio::test]
+#[allow(non_snake_case)]
+async fn lsp_schema_includes_declaration_and_implementation() {
+    let tool = make_tool();
+    let params = tool.parameters();
+    let ops = params["properties"]["operation"]["enum"]
+        .as_array()
+        .expect("operation.enum should be an array");
+    assert!(ops.iter().any(|v| v.as_str() == Some("declaration")));
+    assert!(ops.iter().any(|v| v.as_str() == Some("implementation")));
+}
+
+#[tokio::test]
+#[allow(non_snake_case)]
+async fn lsp_schema_includes_documentHighlights_and_signatureHelp() {
+    let tool = make_tool();
+    let params = tool.parameters();
+    let ops = params["properties"]["operation"]["enum"]
+        .as_array()
+        .expect("operation.enum should be an array");
+    assert!(ops
+        .iter()
+        .any(|v| v.as_str() == Some("documentHighlights")));
+    assert!(ops.iter().any(|v| v.as_str() == Some("signatureHelp")));
+}
+
+#[tokio::test]
+#[allow(non_snake_case)]
+async fn lsp_schema_includes_completion_and_semanticTokens() {
+    let tool = make_tool();
+    let params = tool.parameters();
+    let ops = params["properties"]["operation"]["enum"]
+        .as_array()
+        .expect("operation.enum should be an array");
+    assert!(ops.iter().any(|v| v.as_str() == Some("completion")));
+    assert!(ops.iter().any(|v| v.as_str() == Some("semanticTokens")));
+}
+
+#[tokio::test]
+#[allow(non_snake_case)]
+async fn lsp_schema_includes_codeActionSummaries_and_codeActionPreview() {
+    let tool = make_tool();
+    let params = tool.parameters();
+    let ops = params["properties"]["operation"]["enum"]
+        .as_array()
+        .expect("operation.enum should be an array");
+    assert!(ops
+        .iter()
+        .any(|v| v.as_str() == Some("codeActionSummaries")));
+    assert!(ops
+        .iter()
+        .any(|v| v.as_str() == Some("codeActionPreview")));
+}
+
+#[tokio::test]
+#[allow(non_snake_case)]
+async fn lsp_schema_includes_completion_params() {
+    let tool = make_tool();
+    let params = tool.parameters();
+    let props = params["properties"].as_object().expect("properties object");
+    assert!(props.contains_key("max_candidates"));
+    assert!(props.contains_key("trigger_kind"));
+    assert!(props.contains_key("trigger_char"));
+}
+
+#[tokio::test]
+#[allow(non_snake_case)]
+async fn lsp_schema_includes_semanticTokens_params() {
+    let tool = make_tool();
+    let params = tool.parameters();
+    let props = params["properties"].as_object().expect("properties object");
+    assert!(props.contains_key("max_tokens"));
+}
+
+#[tokio::test]
+#[allow(non_snake_case)]
+async fn lsp_schema_includes_codeAction_params() {
+    let tool = make_tool();
+    let params = tool.parameters();
+    let props = params["properties"].as_object().expect("properties object");
+    assert!(props.contains_key("max_actions"));
+    assert!(props.contains_key("action_index"));
+    assert!(props.contains_key("only"));
+}
+
+#[tokio::test]
+#[allow(non_snake_case)]
+async fn declaration_requires_file_path_line_column() {
+    let tool = make_tool();
+    let err = tool
+        .execute(serde_json::json!({
+            "operation": "declaration",
+            "file_path": "src/main.rs"
+        }))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, ToolError::Execution(ref m) if m.contains("line") || m.contains("column"))
+    );
+}
+
+#[tokio::test]
+#[allow(non_snake_case)]
+async fn implementation_requires_file_path_line_column() {
+    let tool = make_tool();
+    let err = tool
+        .execute(serde_json::json!({
+            "operation": "implementation",
+            "file_path": "src/main.rs"
+        }))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, ToolError::Execution(ref m) if m.contains("line") || m.contains("column"))
+    );
+}
+
+#[tokio::test]
+#[allow(non_snake_case)]
+async fn documentHighlights_requires_file_path_line_column() {
+    let tool = make_tool();
+    let err = tool
+        .execute(serde_json::json!({
+            "operation": "documentHighlights",
+            "file_path": "src/main.rs"
+        }))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, ToolError::Execution(ref m) if m.contains("line") || m.contains("column"))
+    );
+}
+
+#[tokio::test]
+#[allow(non_snake_case)]
+async fn signatureHelp_requires_file_path_line_column() {
+    let tool = make_tool();
+    let err = tool
+        .execute(serde_json::json!({
+            "operation": "signatureHelp",
+            "file_path": "src/main.rs"
+        }))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, ToolError::Execution(ref m) if m.contains("line") || m.contains("column"))
+    );
+}
+
+#[tokio::test]
+#[allow(non_snake_case)]
+async fn completion_requires_file_path_line_column() {
+    let tool = make_tool();
+    let err = tool
+        .execute(serde_json::json!({
+            "operation": "completion",
+            "file_path": "src/main.rs"
+        }))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, ToolError::Execution(ref m) if m.contains("line") || m.contains("column"))
+    );
+}
+
+#[tokio::test]
+#[allow(non_snake_case)]
+async fn semanticTokens_requires_file_path() {
+    let tool = make_tool();
+    let err = tool
+        .execute(serde_json::json!({
+            "operation": "semanticTokens"
+        }))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, ToolError::Execution(ref m) if m.contains("file_path"))
+    );
+}
+
+#[tokio::test]
+#[allow(non_snake_case)]
+async fn codeActionSummaries_requires_file_path_and_range() {
+    let tool = make_tool();
+    let err = tool
+        .execute(serde_json::json!({
+            "operation": "codeActionSummaries",
+            "file_path": "src/main.rs"
+        }))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, ToolError::Execution(ref m) if m.contains("start_line"))
+    );
+}
+
+#[tokio::test]
+#[allow(non_snake_case)]
+async fn codeActionPreview_requires_action_index() {
+    let tool = make_tool();
+    let err = tool
+        .execute(serde_json::json!({
+            "operation": "codeActionPreview",
+            "file_path": "src/main.rs",
+            "start_line": 1,
+            "start_column": 1,
+            "end_line": 1,
+            "end_column": 10
+        }))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, ToolError::Execution(ref m) if m.contains("action_index"))
+    );
+}
+
+#[tokio::test]
+#[allow(non_snake_case)]
+async fn workspaceSymbol_requires_symbol() {
+    let tool = make_tool();
+    let err = tool
+        .execute(serde_json::json!({
+            "operation": "workspaceSymbol"
+        }))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, ToolError::Execution(ref m) if m.contains("symbol"))
     );
 }
