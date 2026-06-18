@@ -649,7 +649,7 @@ func Caller() int {
         shutdown_requirement: CompatibilityRequirement::KnownLimitation,
         implementation_position: Some(Position::new(7, 5)),
         type_hierarchy_targets: vec![TypeHierarchyExpectation {
-            position: Position::new(7, 5),
+            position: Position::new(6, 5),
             min_items: 1,
             check_supertypes: true,
             check_subtypes: true,
@@ -951,8 +951,7 @@ int caller() {
             // Querying from a usage site in main.cpp returns 0 results.
             implementation: false,
             document_highlight: true,
-            // clangd does not support textDocument/prepareTypeHierarchy;
-            // override removed pending real-server evidence.
+            // clangd does not support textDocument/prepareTypeHierarchy.
             ..Default::default()
         },
         completions: Vec::new(),

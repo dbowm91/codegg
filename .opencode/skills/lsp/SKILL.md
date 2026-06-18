@@ -447,7 +447,7 @@ pub struct LspCompatibilityProfile {
 }
 ```
 
-`gopls` profile flips `observed_capabilities.type_hierarchy = Some(true)`; `clangd` does not support type hierarchy (override removed pending real-server evidence). `rust-analyzer_profile` was also updated in Phase 4 so the snapshot remains accurate. `LspCapabilitySnapshot::from_capabilities_with_override(caps, server_name, language_id, &override)` merges the override into the snapshot at client construction time.
+`gopls` profile flips `observed_capabilities.type_hierarchy = Some(true)`; `clangd` does not support type hierarchy (tested against clangd 22.1.1, confirmed not a supported LSP method). `rust-analyzer_profile` was also updated in Phase 4 so the snapshot remains accurate. `LspCapabilitySnapshot::from_capabilities_with_override(caps, server_name, language_id, &override)` merges the override into the snapshot at client construction time.
 
 ### Option-level details
 
