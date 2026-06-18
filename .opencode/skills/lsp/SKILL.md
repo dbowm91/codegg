@@ -388,7 +388,7 @@ pub fn all_profiles() -> Vec<LspCompatibilityProfile>       // tier1 ++ tier2 (d
 | Tier | Servers | Test surface |
 |------|---------|--------------|
 | Tier 1 | `rust-analyzer`, `basedpyright` / `pyright` | Real-server CI in `.github/workflows/lsp-real-server.yml` (`lsp-real-server-tests` feature) on opt-in triggers (`workflow_dispatch`, weekly schedule, push paths under `crates/egglsp/**`, `src/lsp/**`, or the workflow YAML itself) |
-| Tier 2 | `gopls`, `typescript-language-server`, `clangd` | Real-server CI in `.github/workflows/lsp-real-server.yml`, opt-in, with pinned versions: `gopls` v0.16.1 (Go 1.22.5), `typescript-language-server` 4.3.3 + `typescript` 5.5.4 (Node 20), `clangd` 18 (LLVM apt) |
+| Tier 2 | `gopls`, `typescript-language-server`, `clangd` | Real-server CI in `.github/workflows/lsp-real-server.yml`, opt-in, with pinned versions: `gopls` v0.16.1 (Go 1.22.5), `typescript-language-server` 4.3.3 + `typescript` 5.5.4 (Node 20), `clangd` 18.1.8 (LLVM apt, checksum-verified archive) |
 
 Default CI remains network-free; Tier 2 jobs run only on opt-in triggers or path-triggered runs. Tier 2 profiles share the same `LspCompatibilityProfile` struct, the same accessor pattern, and the same client code path — generic client code reads profile fields (readiness policy, restart policy, executable candidates, observed capability overrides) instead of branching on server IDs.
 
@@ -1596,7 +1596,7 @@ The smoke tests (`crates/egglsp/tests/real_server_smoke.rs`) exercise rust-analy
 |------|--------|----------------|
 | `gopls_smoke` | `gopls` | v0.16.1 (Go 1.22.5) |
 | `typescript_smoke` | `typescript-language-server` | 4.3.3 + `typescript` 5.5.4 (Node 20) |
-| `clangd_smoke` | `clangd` | 18 (LLVM apt) |
+| `clangd_smoke` | `clangd` | 18.1.8 (LLVM apt, checksum-verified archive) |
 
 The Tier 2 tests resolve the binary via the `CODEGG_<SERVER>_BIN` env var (falling back to `PATH`) and emit `SKIP: …` on `eprintln` when not present so the suite stays CI-friendly without the binary. Reports are written to `target/lsp-compatibility/` under sanitized filenames.
 
@@ -1688,7 +1688,7 @@ The 11-pass follow-up (`plans/lsp_phase3_restart_ownership_and_cleanup_final_gap
 
 ## Phase 4: Broader Compatibility & Higher-Level Capability Adoption (complete for pinned Tier 1 + Tier 2 matrix)
 
-Phase 4 (`plans/lsp_phase4_broader_compatibility_and_capability_adoption.md`) broadens language-server coverage and exposes higher-value LSP capabilities, while preserving the safety rule established in earlier phases: read-only semantic operations may execute directly, mutation-producing operations must remain preview-only. Tier 2 compatibility is passing on pinned versions (gopls v0.16.1, typescript-language-server v4.3.3, clangd v18.1.3) with documented known limitations. All Phase 4 surface lives in `crates/egglsp/`; generic client code reads profile fields instead of branching on server IDs. Compatibility outside pinned versions remains experimental.
+Phase 4 (`plans/lsp_phase4_broader_compatibility_and_capability_adoption.md`) broadens language-server coverage and exposes higher-value LSP capabilities, while preserving the safety rule established in earlier phases: read-only semantic operations may execute directly, mutation-producing operations must remain preview-only. Tier 2 compatibility is passing on pinned versions (gopls v0.16.1, typescript-language-server v4.3.3, clangd v18.1.8) with documented known limitations. All Phase 4 surface lives in `crates/egglsp/`; generic client code reads profile fields instead of branching on server IDs. Compatibility outside pinned versions remains experimental.
 
 ### Pass 0 — Baseline and report schema
 

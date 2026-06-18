@@ -44,7 +44,7 @@ generic code.
 | Tier | Servers | Test surface |
 |------|---------|--------------|
 | Tier 1 | `rust-analyzer`, `basedpyright` / `pyright` | Real-server CI in `.github/workflows/lsp-real-server.yml` (`lsp-real-server-tests` feature) on opt-in triggers (`workflow_dispatch`, weekly schedule, push paths) |
-| Tier 2 | `gopls`, `typescript-language-server`, `clangd` | Real-server CI in `.github/workflows/lsp-real-server.yml`, opt-in, with pinned versions: `gopls` v0.16.1 (Go 1.22.5), `typescript-language-server` 4.3.3 + `typescript` 5.5.4 (Node 20), `clangd` 18.1.3 (LLVM apt, checksum-verified archive) |
+| Tier 2 | `gopls`, `typescript-language-server`, `clangd` | Real-server CI in `.github/workflows/lsp-real-server.yml`, opt-in, with pinned versions: `gopls` v0.16.1 (Go 1.22.5), `typescript-language-server` 4.3.3 + `typescript` 5.5.4 (Node 20), `clangd` 18.1.8 (LLVM apt, checksum-verified archive) |
 
 Profile accessors:
 
@@ -196,7 +196,7 @@ for Tier 2 quirks in generic code.
 |---------|-------------|------------|--------------|-----------|-----------------------------------------|
 | `gopls_profile()` | `gopls` | `gopls` | `go.work`, `go.mod`, `.git` | `WaitForDiagnosticsOrTimeout { 15s }` | `Some(true)` |
 | `typescript_language_server_profile()` | `typescript-language-server` | `typescript-language-server --stdio` | `tsconfig.json`, `jsconfig.json`, `package.json`, `.git` | `WaitForProgressEndOrTimeout { 20s }` | `None` (not observed) |
-| `clangd_profile()` | `clangd` | `clangd --background-index=false --clang-tidy=0` | `compile_commands.json`, `compile_flags.txt`, `CMakeLists.txt`, `.git` | `WarmupDelay { 2s }` | `Some(true)` | pinned v18.1.3 (checksum-verified LLVM archive) |
+| `clangd_profile()` | `clangd` | `clangd --background-index=false --clang-tidy=0` | `compile_commands.json`, `compile_flags.txt`, `CMakeLists.txt`, `.git` | `WarmupDelay { 2s }` | `Some(true)` | pinned v18.1.8 (checksum-verified LLVM archive) |
 
 `gopls` requires a `go.mod` (or `go.work`) in the workspace root and
 needs `go.work` for multi-module workspaces. `typescript-language-server`
@@ -2277,7 +2277,7 @@ set). CI installs pinned versions on the Tier 2 matrix jobs.
 | `basedpyright` | basedpyright | `1.13.1` | `dtolnay/rust-toolchain@1.81.0` |
 | `gopls` | gopls | `v0.16.1` | Go `1.22.5` |
 | `typescript-language-server` | typescript-language-server | `4.3.3` + `typescript@5.5.4` | Node `20` |
-| `clangd` | clangd | `18` (LLVM apt, checksum-verified LLVM 18.1.3 archive) | — |
+| `clangd` | clangd | `18` (LLVM apt, checksum-verified LLVM 18.1.8 archive) | — |
 
 Each matrix job runs only its own server test (e.g. `-- rust_analyzer` or `-- gopls`); artifact filenames are sanitized via the matrix job name and uploaded from `target/lsp-compatibility/` with a 30-day retention.
 
@@ -2400,7 +2400,7 @@ the Phase 4 plan (`plans/lsp_phase4_broader_compatibility_and_capability_adoptio
 | `basedpyright` / `pyright` | 1 | Linux | `WaitForDiagnosticsOrTimeout { 15s }` | passing | Type checking depth may vary between pyright and basedpyright; no `prepareCallHierarchy` |
 | `gopls` | 2 | Linux | `WaitForDiagnosticsOrTimeout { 15s }` | passing (pinned v0.16.1) | Requires `go.mod` (or `go.work`) in workspace root; multi-module workspace symbols need `go.work`; no push diagnostics from gopls itself (push inferred from `text_document_sync`); daemon mode persists after shutdown/exit (known limitation) |
 | `typescript-language-server` | 2 | Linux | `WaitForDiagnosticsOrTimeout { 30s }` | passing (pinned v4.3.3) | Requires `node_modules` installed locally (CI installs pinned versions); single-language server (handles TS/JS but no JSX/TSX-specific quirks); daemon mode persists after shutdown/exit (known limitation) |
-| `clangd` | 2 | Linux | `WarmupDelay { 2s }` | passing (pinned v18.1.3, checksum-verified LLVM 18.1.3 archive) | Requires `compile_commands.json` or `compile_flags.txt` in workspace root; background indexing disabled for test determinism; daemon mode persists after shutdown/exit (known limitation); references/hover may not resolve on member-access patterns with minimal fixtures |
+| `clangd` | 2 | Linux | `WarmupDelay { 2s }` | passing (pinned v18.1.8, checksum-verified LLVM 18.1.8 archive) | Requires `compile_commands.json` or `compile_flags.txt` in workspace root; background indexing disabled for test determinism; daemon mode persists after shutdown/exit (known limitation); references/hover may not resolve on member-access patterns with minimal fixtures |
 
 `status` here maps to the same vocabulary used in CI: a Tier 2 server
 is "passing" once its required smoke checks (`Passing` or
@@ -2693,7 +2693,7 @@ handoff live in
 | Pass 9 | LspTool adoption | Eight new operations exposed through `LspTool` dispatch: `declaration`, `implementation`, `documentHighlights`, `signatureHelp`, `completion`, `semanticTokens`, `codeActionSummaries`, `codeActionPreview` |
 | Pass 10 | Tier 2 CI matrix | gopls, typescript-language-server, clangd jobs in `.github/workflows/lsp-real-server.yml` with pinned versions |
 | Pass 11 | Docs + final verification | Architecture, skill guide, AGENTS.md, README updated; full suite green |
-| Pass 12 | Per-server shutdown results | Tier 2 shutdown failures classified as `KnownLimitation`; exact clangd pin (checksum-verified LLVM 18.1.3 archive); data-driven smoke expectations (no server-ID branches) |
+| Pass 12 | Per-server shutdown results | Tier 2 shutdown failures classified as `KnownLimitation`; exact clangd pin (checksum-verified LLVM 18.1.8 archive); data-driven smoke expectations (no server-ID branches) |
 | Pass 13 | Architecture docs + final closure | LSP architecture documentation updated for Phase 4 closure: fail-closed unknown capability policy, effective capability snapshots, observed diagnostics integration, raw-edit formatting fidelity, per-file stale-base evidence, strict semantic-token modifier policy, real implementation fixtures, data-driven smoke expectations, per-server shutdown results, exact clangd pin |
 
 ### Phase 4 outcomes
@@ -2749,8 +2749,8 @@ handoff live in
     smoke test logic; behavior is driven by fixture/profile data.
 19. **Per-server shutdown results** — Tier 2 shutdown failures are
     classified as `KnownLimitation`, not hard errors.
-20. **Exact clangd pin** — `clangd` v18.1.3 from a checksum-verified
-    LLVM 18.1.3 archive.
+20. **Exact clangd pin** — `clangd` v18.1.8 from a checksum-verified
+    LLVM 18.1.8 archive.
 
 ### Phase 4 final checklist
 
@@ -2795,7 +2795,7 @@ handoff live in
 
 #### CI and docs
 
-- [x] Tier 2 versions are pinned (gopls v0.16.1, typescript-language-server 4.3.3 + typescript 5.5.4, clangd 18.1.3 checksum-verified)
+- [x] Tier 2 versions are pinned (gopls v0.16.1, typescript-language-server 4.3.3 + typescript 5.5.4, clangd 18.1.8 checksum-verified)
 - [x] Default CI remains network-free (push trigger fires only on changes to LSP source paths)
 - [x] Compatibility artifacts upload (`target/lsp-compatibility/`, 30-day retention)
 - [x] Documentation accurately scopes support (this file + skill guide + AGENTS.md + README)
@@ -2811,7 +2811,7 @@ handoff live in
 - [x] Real implementation fixtures documented (gopls interface, clangd virtual base)
 - [x] Data-driven smoke expectations documented (no server-ID branches)
 - [x] Per-server shutdown results documented (Tier 2 shutdown = KnownLimitation)
-- [x] Exact clangd pin documented (v18.1.3, checksum-verified LLVM archive)
+- [x] Exact clangd pin documented (v18.1.8, checksum-verified LLVM archive)
 - [x] Phase 4 status updated to "complete for pinned Tier 1 and Tier 2 matrix"
 
 ## See Also

@@ -141,6 +141,29 @@ pub struct LspCompatibilityCheck {
     pub duration_ms: Option<u64>,
 }
 
+/// Per-operation compatibility detail distinguishing protocol
+/// success, semantic success, skipped checks, and known
+/// limitations. "Passing" means an exercised semantic assertion
+/// passed — not merely that the server advertised the capability.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LspOperationCompatibility {
+    /// Operation name (e.g. "implementation", "typeHierarchy/prepare").
+    pub operation: String,
+    /// True when the server advertised this capability.
+    pub advertised: bool,
+    /// True when the test actually sent a request for this operation.
+    pub exercised: bool,
+    /// True when the LSP request succeeded (no protocol error).
+    pub request_succeeded: bool,
+    /// True when the semantic assertion (e.g. expected file, label
+    /// substring, minimum count) passed.
+    pub semantic_assertion_passed: bool,
+    /// How strictly this check must pass.
+    pub requirement: CompatibilityRequirement,
+    /// Optional reason when the check is a known limitation.
+    pub known_limit: Option<String>,
+}
+
 /// Server version information captured during test runs.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LspServerVersion {

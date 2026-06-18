@@ -298,13 +298,9 @@ impl LspOperations {
         if max_actions == 0 {
             return Ok(Vec::new());
         }
-        if let Some(snapshot) = self.capability_snapshot_for_file(file_path).await {
-            if !snapshot.supports(LspSemanticOperation::CodeAction) {
-                if let Some(u) = snapshot.unavailable(LspSemanticOperation::CodeAction) {
-                    return Err(LspError::Unavailable(u));
-                }
-            }
-        }
+        // Fail-closed capability gate.
+        self.require_capability(file_path, LspSemanticOperation::CodeAction)
+            .await?;
 
         let actions = self
             .code_actions(
@@ -349,15 +345,9 @@ impl LspOperations {
     ) -> Result<CodeActionPreview, LspError> {
         use crate::capability::LspSemanticOperation;
 
-        // Capability-gate by running the same check as summaries
-        // (without consuming a max_actions budget).
-        if let Some(snapshot) = self.capability_snapshot_for_file(file_path).await {
-            if !snapshot.supports(LspSemanticOperation::CodeAction) {
-                if let Some(u) = snapshot.unavailable(LspSemanticOperation::CodeAction) {
-                    return Err(LspError::Unavailable(u));
-                }
-            }
-        }
+        // Fail-closed capability gate.
+        self.require_capability(file_path, LspSemanticOperation::CodeAction)
+            .await?;
 
         let actions = self
             .code_actions(

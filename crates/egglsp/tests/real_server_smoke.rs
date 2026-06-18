@@ -148,6 +148,10 @@ struct RealServerFixture {
     hover_requirement: CompatibilityRequirement,
     shutdown_requirement: CompatibilityRequirement,
     implementation_position: Option<Position>,
+    /// Pass 5 — type-hierarchy expectations. Each entry describes a
+    /// position the harness should request prepareTypeHierarchy at
+    /// and a minimum item count + optional supertype/subtype checks.
+    type_hierarchy_targets: Vec<TypeHierarchyExpectation>,
 }
 
 /// Pass 3 — Per-operation positions for the new read-only and
@@ -187,6 +191,7 @@ struct ExpectedCapabilities {
     pub rename: bool,
     pub code_actions: bool,
     pub formatting: bool,
+    pub type_hierarchy: bool,
 }
 
 /// Pass 3 — Semantic assertion for a position-based location query
@@ -266,6 +271,34 @@ impl Default for WorkspaceSymbolExpectation {
             query: String::new(),
             min_locations: 1,
             expected_files: Vec::new(),
+        }
+    }
+}
+
+/// Pass 5 — Semantic assertion for `textDocument/prepareTypeHierarchy`
+/// plus follow-up `typeHierarchy/supertypes` and/or
+/// `typeHierarchy/subtypes`. The smoke suite records
+/// `RequiredIfAdvertised` when the server supports type hierarchy
+/// and the prepare response returns at least `min_items`.
+#[allow(dead_code)]
+#[derive(Clone)]
+struct TypeHierarchyExpectation {
+    pub position: Position,
+    /// Minimum number of items the prepare response must return.
+    pub min_items: usize,
+    /// If true, also exercise supertypes after prepare.
+    pub check_supertypes: bool,
+    /// If true, also exercise subtypes after prepare.
+    pub check_subtypes: bool,
+}
+
+impl Default for TypeHierarchyExpectation {
+    fn default() -> Self {
+        Self {
+            position: Position::new(0, 0),
+            min_items: 1,
+            check_supertypes: true,
+            check_subtypes: false,
         }
     }
 }
@@ -397,6 +430,7 @@ pub fn caller() -> i32 {
         hover_requirement: CompatibilityRequirement::KnownLimitation,
         shutdown_requirement: CompatibilityRequirement::Required,
         implementation_position: None,
+        type_hierarchy_targets: Vec::new(),
     }
 }
 
@@ -512,6 +546,7 @@ def caller() -> int:
         hover_requirement: CompatibilityRequirement::RequiredIfAdvertised,
         shutdown_requirement: CompatibilityRequirement::Required,
         implementation_position: None,
+        type_hierarchy_targets: Vec::new(),
     }
 }
 
@@ -600,6 +635,7 @@ func Caller() int {
         expected_capabilities: ExpectedCapabilities {
             workspace_symbols: true,
             implementation: true,
+            type_hierarchy: true,
             ..Default::default()
         },
         completions: Vec::new(),
@@ -612,6 +648,12 @@ func Caller() int {
         hover_requirement: CompatibilityRequirement::RequiredIfAdvertised,
         shutdown_requirement: CompatibilityRequirement::KnownLimitation,
         implementation_position: Some(Position::new(7, 5)),
+        type_hierarchy_targets: vec![TypeHierarchyExpectation {
+            position: Position::new(7, 5),
+            min_items: 1,
+            check_supertypes: true,
+            check_subtypes: true,
+        }],
     }
 }
 
@@ -770,6 +812,7 @@ const _signatureSite = add(1, 2);
         hover_requirement: CompatibilityRequirement::RequiredIfAdvertised,
         shutdown_requirement: CompatibilityRequirement::KnownLimitation,
         implementation_position: None,
+        type_hierarchy_targets: Vec::new(),
     }
 }
 
@@ -907,6 +950,7 @@ int caller() {
             // declarations in headers; marked KnownLimitation below.
             implementation: false,
             document_highlight: true,
+            type_hierarchy: true,
             ..Default::default()
         },
         completions: Vec::new(),
@@ -921,6 +965,12 @@ int caller() {
         // Query implementation from the override declaration in widget.hpp
         // (line 7: `int add(int a, int b) override;`).
         implementation_position: Some(Position::new(7, 8)),
+        type_hierarchy_targets: vec![TypeHierarchyExpectation {
+            position: Position::new(2, 7),
+            min_items: 1,
+            check_supertypes: true,
+            check_subtypes: true,
+        }],
     }
 }
 
@@ -1323,10 +1373,15 @@ async fn run_smoke_suite(
         }
     }
 
-    // 4. Capability snapshot — derived from the real InitializeResult.
+    // 4. Capability snapshot — derived from the real InitializeResult,
+    //    with profile-level overrides applied (same path as production).
     let cap_start = std::time::Instant::now();
-    let caps =
-        LspCapabilitySnapshot::from_capabilities(&server_caps, Some(&profile.server_id), None);
+    let caps = LspCapabilitySnapshot::from_capabilities_with_override(
+        &server_caps,
+        Some(&profile.server_id),
+        None,
+        &profile.observed_capabilities,
+    );
     let cap_ms = cap_start.elapsed().as_millis() as u64;
     checks.push(SmokeCheck::pass(
         "capability_snapshot",
@@ -2043,6 +2098,169 @@ async fn run_location_check(
             stage_timeout_error(server_id, bin_path, operation, REQUEST_TIMEOUT, stderr_tail),
             ms,
         )),
+    }
+}
+
+/// Run a single type-hierarchy operation and append `SmokeCheck`s
+/// for prepare, supertypes, and subtypes. Each sub-check is
+/// independent. The check is `RequiredIfAdvertised` when the
+/// server's capability is enabled via profile override.
+async fn run_type_hierarchy_check(
+    client: &LspClient,
+    primary_uri: &url::Url,
+    target: &TypeHierarchyExpectation,
+    supports_type_hierarchy: bool,
+    bin_path: &Path,
+    server_id: &str,
+    stderr_tail: &[String],
+    checks: &mut Vec<SmokeCheck>,
+) {
+    if !supports_type_hierarchy {
+        checks.push(SmokeCheck::pass(
+            "typeHierarchy (skipped: not supported)",
+            CompatibilityRequirement::Optional,
+            0,
+        ));
+        return;
+    }
+
+    // prepareTypeHierarchy
+    let start = std::time::Instant::now();
+    let result = tokio::time::timeout(
+        REQUEST_TIMEOUT,
+        client.prepare_type_hierarchy(primary_uri, target.position),
+    )
+    .await;
+    let ms = start.elapsed().as_millis() as u64;
+    let items = match result {
+        Ok(Ok(items)) => items,
+        Ok(Err(e)) => {
+            checks.push(SmokeCheck::fail(
+                "typeHierarchy/prepare",
+                CompatibilityRequirement::RequiredIfAdvertised,
+                format!("{e}"),
+                ms,
+            ));
+            return;
+        }
+        Err(_elapsed) => {
+            checks.push(SmokeCheck::fail(
+                "typeHierarchy/prepare",
+                CompatibilityRequirement::RequiredIfAdvertised,
+                stage_timeout_error(
+                    server_id,
+                    bin_path,
+                    "typeHierarchy/prepare",
+                    REQUEST_TIMEOUT,
+                    stderr_tail,
+                ),
+                ms,
+            ));
+            return;
+        }
+    };
+
+    if items.len() < target.min_items {
+        checks.push(SmokeCheck::fail(
+            "typeHierarchy/prepare",
+            CompatibilityRequirement::RequiredIfAdvertised,
+            format!(
+                "expected at least {} item(s), got {}",
+                target.min_items,
+                items.len()
+            ),
+            ms,
+        ));
+        return;
+    }
+    checks.push(SmokeCheck::pass(
+        format!("typeHierarchy/prepare ({} item(s))", items.len()),
+        CompatibilityRequirement::RequiredIfAdvertised,
+        ms,
+    ));
+
+    // typeHierarchy/supertypes
+    if target.check_supertypes {
+        let start = std::time::Instant::now();
+        let result = tokio::time::timeout(
+            REQUEST_TIMEOUT,
+            client.supertypes(items[0].clone()),
+        )
+        .await;
+        let ms = start.elapsed().as_millis() as u64;
+        match result {
+            Ok(Ok(supers)) => {
+                checks.push(SmokeCheck::pass(
+                    format!("typeHierarchy/supertypes ({} item(s))", supers.len()),
+                    CompatibilityRequirement::RequiredIfAdvertised,
+                    ms,
+                ));
+            }
+            Ok(Err(e)) => {
+                checks.push(SmokeCheck::fail(
+                    "typeHierarchy/supertypes",
+                    CompatibilityRequirement::RequiredIfAdvertised,
+                    format!("{e}"),
+                    ms,
+                ));
+            }
+            Err(_elapsed) => {
+                checks.push(SmokeCheck::fail(
+                    "typeHierarchy/supertypes",
+                    CompatibilityRequirement::RequiredIfAdvertised,
+                    stage_timeout_error(
+                        server_id,
+                        bin_path,
+                        "typeHierarchy/supertypes",
+                        REQUEST_TIMEOUT,
+                        stderr_tail,
+                    ),
+                    ms,
+                ));
+            }
+        }
+    }
+
+    // typeHierarchy/subtypes
+    if target.check_subtypes {
+        let start = std::time::Instant::now();
+        let result = tokio::time::timeout(
+            REQUEST_TIMEOUT,
+            client.subtypes(items[0].clone()),
+        )
+        .await;
+        let ms = start.elapsed().as_millis() as u64;
+        match result {
+            Ok(Ok(subs)) => {
+                checks.push(SmokeCheck::pass(
+                    format!("typeHierarchy/subtypes ({} item(s))", subs.len()),
+                    CompatibilityRequirement::RequiredIfAdvertised,
+                    ms,
+                ));
+            }
+            Ok(Err(e)) => {
+                checks.push(SmokeCheck::fail(
+                    "typeHierarchy/subtypes",
+                    CompatibilityRequirement::RequiredIfAdvertised,
+                    format!("{e}"),
+                    ms,
+                ));
+            }
+            Err(_elapsed) => {
+                checks.push(SmokeCheck::fail(
+                    "typeHierarchy/subtypes",
+                    CompatibilityRequirement::RequiredIfAdvertised,
+                    stage_timeout_error(
+                        server_id,
+                        bin_path,
+                        "typeHierarchy/subtypes",
+                        REQUEST_TIMEOUT,
+                        stderr_tail,
+                    ),
+                    ms,
+                ));
+            }
+        }
     }
 }
 
@@ -2961,6 +3179,23 @@ async fn run_generalized_operation_checks(
         }
     }
 
+    // Type hierarchy
+    if fixture.expected_capabilities.type_hierarchy {
+        for target in &fixture.type_hierarchy_targets {
+            run_type_hierarchy_check(
+                client,
+                primary_uri,
+                target,
+                caps.supports_type_hierarchy,
+                bin_path,
+                server_id,
+                stderr_tail,
+                checks,
+            )
+            .await;
+        }
+    }
+
     // Signature help
     if fixture.expected_capabilities.signature_help {
         for target in &fixture.signature_help_targets {
@@ -3742,6 +3977,7 @@ fn expected_capabilities_default_is_all_false() {
     assert!(!caps.rename);
     assert!(!caps.code_actions);
     assert!(!caps.formatting);
+    assert!(!caps.type_hierarchy);
 }
 
 #[test]

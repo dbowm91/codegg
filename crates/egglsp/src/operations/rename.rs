@@ -225,14 +225,18 @@ impl super::LspOperations {
         line: u32,
         column: u32,
     ) -> Result<PrepareRenameResult, LspError> {
-        // Check capability up-front. Fail-open if the snapshot is
-        // unavailable (server still initializing).
-        if let Some(snapshot) = self.capability_snapshot_for_file(file_path).await {
-            if !snapshot.supports(LspSemanticOperation::PrepareRename) {
-                if let Some(u) = snapshot.unavailable(LspSemanticOperation::PrepareRename) {
-                    return Ok(PrepareRenameResult::Unavailable(u));
-                }
+        // Fail-closed capability gate. Unknown → NotInitialized;
+        // Unsupported → PrepareRenameResult::Unavailable (structured
+        // fallback, not an error).
+        match self
+            .require_capability(file_path, LspSemanticOperation::PrepareRename)
+            .await
+        {
+            Ok(()) => {}
+            Err(LspError::Unavailable(u)) => {
+                return Ok(PrepareRenameResult::Unavailable(u));
             }
+            Err(e) => return Err(e),
         }
         let resp = self.prepare_rename(file_path, line, column).await?;
         Ok(PrepareRenameResult::from_response(resp))

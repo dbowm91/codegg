@@ -5,7 +5,7 @@ use sha2::{Digest, Sha256};
 use similar::TextDiff;
 
 use crate::client::url_to_uri;
-use crate::edit::{preview_text_edits_for_file, WorkspaceEditPreview};
+use crate::edit::{preview_text_edits_for_file, validate_path_against_root, WorkspaceEditPreview};
 use crate::error::LspError;
 
 use super::LspOperations;
@@ -202,17 +202,16 @@ impl LspOperations {
     pub async fn format_preview_typed(
         &self,
         file_path: &Path,
-        _allowed_root: Option<&Path>,
+        allowed_root: Option<&Path>,
     ) -> Result<FormattingPreview, LspError> {
         use crate::capability::LspSemanticOperation;
 
-        if let Some(snapshot) = self.capability_snapshot_for_file(file_path).await {
-            if !snapshot.supports(LspSemanticOperation::DocumentFormatting) {
-                if let Some(u) = snapshot.unavailable(LspSemanticOperation::DocumentFormatting) {
-                    return Err(LspError::Unavailable(u));
-                }
-            }
-        }
+        // Fail-closed capability gate.
+        self.require_capability(file_path, LspSemanticOperation::DocumentFormatting)
+            .await?;
+
+        // Validate path against allowed root before any server request.
+        validate_path_against_root(file_path, allowed_root)?;
 
         let before_content = tokio::fs::read_to_string(file_path).await.map_err(|e| {
             LspError::RequestFailed(format!(
@@ -233,6 +232,7 @@ impl LspOperations {
                 ))
             })?;
             let final_disk_hash = sha256_hex(&final_disk_bytes);
+            let base_stale = final_disk_hash != before_hash;
             let (key, _root) = self.service.get_or_create_client(file_path).await?;
             let server_generation = self.service.generation_for_key(&key).await;
             return Ok(FormattingPreview {
@@ -243,7 +243,7 @@ impl LspOperations {
                 diff: String::new(),
                 truncated: false,
                 final_disk_hash,
-                base_stale: false,
+                base_stale,
                 server_generation,
             });
         }
