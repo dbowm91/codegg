@@ -28,6 +28,71 @@
 use lsp_types::ServerCapabilities;
 use serde::{Deserialize, Serialize};
 
+/// Extract boolean support from `Option<OneOf<bool, T>>` fields.
+///
+/// Returns `true` only when the value is `Some(OneOf::Left(true))` or
+/// `Some(OneOf::Right(_))`. Treats `Some(OneOf::Left(false))` and
+/// `None` as unsupported.
+fn one_of_bool_or_options_supported<T>(
+    value: &Option<lsp_types::OneOf<bool, T>>,
+) -> bool {
+    match value {
+        Some(lsp_types::OneOf::Left(enabled)) => *enabled,
+        Some(lsp_types::OneOf::Right(_)) => true,
+        None => false,
+    }
+}
+
+/// Extract boolean support from enum capabilities with a `Simple(bool)`
+/// variant (e.g. `DeclarationCapability`, `CallHierarchyServerCapability`).
+/// Returns `true` for `Simple(true)` or any non-Simple variant.
+fn enum_simple_supported(value: &impl EnumCapability) -> bool {
+    value.is_enabled()
+}
+
+/// Trait for enum capability types that have a `Simple(bool)` variant.
+/// Returns `true` for `Simple(true)` or any non-Simple variant (Options,
+/// RegistrationOptions).
+trait EnumCapability {
+    fn is_enabled(&self) -> bool;
+}
+
+impl EnumCapability for lsp_types::DeclarationCapability {
+    fn is_enabled(&self) -> bool {
+        !matches!(self, Self::Simple(false))
+    }
+}
+
+impl EnumCapability for lsp_types::ImplementationProviderCapability {
+    fn is_enabled(&self) -> bool {
+        !matches!(self, Self::Simple(false))
+    }
+}
+
+impl EnumCapability for lsp_types::HoverProviderCapability {
+    fn is_enabled(&self) -> bool {
+        !matches!(self, Self::Simple(false))
+    }
+}
+
+impl EnumCapability for lsp_types::FoldingRangeProviderCapability {
+    fn is_enabled(&self) -> bool {
+        !matches!(self, Self::Simple(false))
+    }
+}
+
+impl EnumCapability for lsp_types::SelectionRangeProviderCapability {
+    fn is_enabled(&self) -> bool {
+        !matches!(self, Self::Simple(false))
+    }
+}
+
+impl EnumCapability for lsp_types::CallHierarchyServerCapability {
+    fn is_enabled(&self) -> bool {
+        !matches!(self, Self::Simple(false))
+    }
+}
+
 /// Normalized boolean view of an LSP server's capabilities.
 ///
 /// Constructed via [`LspCapabilitySnapshot::from_capabilities`] from the
@@ -269,18 +334,25 @@ impl LspCapabilitySnapshot {
         let supports_push_diagnostics = caps.text_document_sync.is_some();
         let supports_diagnostics = supports_push_diagnostics || supports_pull_diagnostics;
 
-        // Declaration / implementation.
-        let supports_declaration = caps.declaration_provider.is_some();
-        let supports_implementation = caps.implementation_provider.is_some();
+        // Declaration / implementation — enums with `Simple(bool)`.
+        let supports_declaration = caps
+            .declaration_provider
+            .as_ref()
+            .is_some_and(enum_simple_supported);
+        let supports_implementation = caps
+            .implementation_provider
+            .as_ref()
+            .is_some_and(enum_simple_supported);
 
         // Document highlight — `Option<OneOf<bool, _>>`.
-        let supports_document_highlight = caps.document_highlight_provider.is_some();
+        let supports_document_highlight =
+            one_of_bool_or_options_supported(&caps.document_highlight_provider);
 
         // Signature help — `Option<SignatureHelpOptions>` (direct struct).
         let supports_signature_help = caps.signature_help_provider.is_some();
 
         // Rename + prepare rename — `Option<OneOf<bool, RenameOptions>>`.
-        let supports_rename = caps.rename_provider.is_some();
+        let supports_rename = one_of_bool_or_options_supported(&caps.rename_provider);
         let supports_prepare_rename = caps.rename_provider.as_ref().is_some_and(|p| match p {
             lsp_types::OneOf::Left(_) => false,
             lsp_types::OneOf::Right(opts) => opts.prepare_provider.unwrap_or(false),
@@ -290,8 +362,10 @@ impl LspCapabilitySnapshot {
         let supports_code_actions = caps.code_action_provider.is_some();
 
         // Formatting — `Option<OneOf<bool, _>>`.
-        let supports_document_formatting = caps.document_formatting_provider.is_some();
-        let supports_range_formatting = caps.document_range_formatting_provider.is_some();
+        let supports_document_formatting =
+            one_of_bool_or_options_supported(&caps.document_formatting_provider);
+        let supports_range_formatting =
+            one_of_bool_or_options_supported(&caps.document_range_formatting_provider);
 
         // Type hierarchy — never inferred from call hierarchy. The
         // override is the only way to flip this on.
@@ -303,13 +377,20 @@ impl LspCapabilitySnapshot {
             supports_push_diagnostics,
             supports_pull_diagnostics,
             supports_diagnostics,
-            supports_document_symbols: caps.document_symbol_provider.is_some(),
-            supports_workspace_symbols: caps.workspace_symbol_provider.is_some(),
-            supports_definition: caps.definition_provider.is_some(),
+            supports_document_symbols: one_of_bool_or_options_supported(
+                &caps.document_symbol_provider,
+            ),
+            supports_workspace_symbols: one_of_bool_or_options_supported(
+                &caps.workspace_symbol_provider,
+            ),
+            supports_definition: one_of_bool_or_options_supported(&caps.definition_provider),
             supports_declaration,
             supports_implementation,
-            supports_references: caps.references_provider.is_some(),
-            supports_hover: caps.hover_provider.is_some(),
+            supports_references: one_of_bool_or_options_supported(&caps.references_provider),
+            supports_hover: caps
+                .hover_provider
+                .as_ref()
+                .is_some_and(enum_simple_supported),
             supports_document_highlight,
             supports_completion: caps.completion_provider.is_some(),
             supports_signature_help,
@@ -318,12 +399,21 @@ impl LspCapabilitySnapshot {
             supports_code_actions,
             supports_document_formatting,
             supports_range_formatting,
-            supports_inlay_hints: caps.inlay_hint_provider.is_some(),
-            supports_folding_ranges: caps.folding_range_provider.is_some(),
-            supports_selection_ranges: caps.selection_range_provider.is_some(),
+            supports_inlay_hints: one_of_bool_or_options_supported(&caps.inlay_hint_provider),
+            supports_folding_ranges: caps
+                .folding_range_provider
+                .as_ref()
+                .is_some_and(enum_simple_supported),
+            supports_selection_ranges: caps
+                .selection_range_provider
+                .as_ref()
+                .is_some_and(enum_simple_supported),
             supports_document_links: caps.document_link_provider.is_some(),
             supports_execute_command: caps.execute_command_provider.is_some(),
-            supports_call_hierarchy: caps.call_hierarchy_provider.is_some(),
+            supports_call_hierarchy: caps
+                .call_hierarchy_provider
+                .as_ref()
+                .is_some_and(enum_simple_supported),
             supports_type_hierarchy,
             supports_semantic_tokens: caps.semantic_tokens_provider.is_some(),
             details,
@@ -834,5 +924,229 @@ mod tests {
         assert!(snap.supports_selection_ranges);
         assert!(snap.supports_document_links);
         assert!(snap.supports_execute_command);
+    }
+
+    // ── Pass 1: Boolean provider normalization tests ────────────────
+
+    #[test]
+    fn one_of_bool_false_is_unsupported() {
+        let mut caps = ServerCapabilities::default();
+        caps.document_highlight_provider = Some(lsp_types::OneOf::Left(false));
+        caps.rename_provider = Some(lsp_types::OneOf::Left(false));
+        caps.document_formatting_provider = Some(lsp_types::OneOf::Left(false));
+        caps.document_range_formatting_provider = Some(lsp_types::OneOf::Left(false));
+        caps.references_provider = Some(lsp_types::OneOf::Left(false));
+        caps.definition_provider = Some(lsp_types::OneOf::Left(false));
+        caps.document_symbol_provider = Some(lsp_types::OneOf::Left(false));
+        caps.workspace_symbol_provider = Some(lsp_types::OneOf::Left(false));
+        caps.inlay_hint_provider = Some(lsp_types::OneOf::Left(false));
+        let snap = LspCapabilitySnapshot::from_capabilities(&caps, Some("s"), Some("rust"));
+        assert!(!snap.supports_document_highlight);
+        assert!(!snap.supports_rename);
+        assert!(!snap.supports_document_formatting);
+        assert!(!snap.supports_range_formatting);
+        assert!(!snap.supports_references);
+        assert!(!snap.supports_definition);
+        assert!(!snap.supports_document_symbols);
+        assert!(!snap.supports_workspace_symbols);
+        assert!(!snap.supports_inlay_hints);
+    }
+
+    #[test]
+    fn one_of_bool_true_is_supported() {
+        let mut caps = ServerCapabilities::default();
+        caps.document_highlight_provider = Some(lsp_types::OneOf::Left(true));
+        caps.rename_provider = Some(lsp_types::OneOf::Left(true));
+        caps.document_formatting_provider = Some(lsp_types::OneOf::Left(true));
+        caps.document_range_formatting_provider = Some(lsp_types::OneOf::Left(true));
+        caps.references_provider = Some(lsp_types::OneOf::Left(true));
+        caps.definition_provider = Some(lsp_types::OneOf::Left(true));
+        caps.document_symbol_provider = Some(lsp_types::OneOf::Left(true));
+        caps.workspace_symbol_provider = Some(lsp_types::OneOf::Left(true));
+        caps.inlay_hint_provider = Some(lsp_types::OneOf::Left(true));
+        let snap = LspCapabilitySnapshot::from_capabilities(&caps, Some("s"), Some("rust"));
+        assert!(snap.supports_document_highlight);
+        assert!(snap.supports_rename);
+        assert!(snap.supports_document_formatting);
+        assert!(snap.supports_range_formatting);
+        assert!(snap.supports_references);
+        assert!(snap.supports_definition);
+        assert!(snap.supports_document_symbols);
+        assert!(snap.supports_workspace_symbols);
+        assert!(snap.supports_inlay_hints);
+    }
+
+    #[test]
+    fn one_of_options_is_supported() {
+        let mut caps = ServerCapabilities::default();
+        caps.document_highlight_provider =
+            Some(lsp_types::OneOf::Right(lsp_types::DocumentHighlightOptions {
+                work_done_progress_options: Default::default(),
+            }));
+        caps.rename_provider = Some(lsp_types::OneOf::Right(RenameOptions {
+            prepare_provider: None,
+            work_done_progress_options: Default::default(),
+        }));
+        caps.document_formatting_provider =
+            Some(lsp_types::OneOf::Right(lsp_types::DocumentFormattingOptions {
+                work_done_progress_options: Default::default(),
+            }));
+        caps.document_range_formatting_provider = Some(lsp_types::OneOf::Right(
+            lsp_types::DocumentRangeFormattingOptions {
+                work_done_progress_options: Default::default(),
+            },
+        ));
+        caps.references_provider =
+            Some(lsp_types::OneOf::Right(lsp_types::ReferencesOptions {
+                work_done_progress_options: Default::default(),
+            }));
+        caps.definition_provider =
+            Some(lsp_types::OneOf::Right(lsp_types::DefinitionOptions {
+                work_done_progress_options: Default::default(),
+            }));
+        caps.document_symbol_provider =
+            Some(lsp_types::OneOf::Right(lsp_types::DocumentSymbolOptions {
+                label: None,
+                work_done_progress_options: Default::default(),
+            }));
+        caps.workspace_symbol_provider =
+            Some(lsp_types::OneOf::Right(lsp_types::WorkspaceSymbolOptions {
+                work_done_progress_options: Default::default(),
+                resolve_provider: None,
+            }));
+        caps.inlay_hint_provider =
+            Some(lsp_types::OneOf::Right(lsp_types::InlayHintServerCapabilities::Options(
+                lsp_types::InlayHintOptions {
+                    work_done_progress_options: Default::default(),
+                    resolve_provider: None,
+                },
+            )));
+        let snap = LspCapabilitySnapshot::from_capabilities(&caps, Some("s"), Some("rust"));
+        assert!(snap.supports_document_highlight);
+        assert!(snap.supports_rename);
+        assert!(snap.supports_document_formatting);
+        assert!(snap.supports_range_formatting);
+        assert!(snap.supports_references);
+        assert!(snap.supports_definition);
+        assert!(snap.supports_document_symbols);
+        assert!(snap.supports_workspace_symbols);
+        assert!(snap.supports_inlay_hints);
+    }
+
+    #[test]
+    fn enum_simple_false_is_unsupported() {
+        let mut caps = ServerCapabilities::default();
+        caps.declaration_provider = Some(lsp_types::DeclarationCapability::Simple(false));
+        caps.implementation_provider =
+            Some(lsp_types::ImplementationProviderCapability::Simple(false));
+        caps.hover_provider = Some(lsp_types::HoverProviderCapability::Simple(false));
+        caps.folding_range_provider =
+            Some(lsp_types::FoldingRangeProviderCapability::Simple(false));
+        caps.selection_range_provider =
+            Some(lsp_types::SelectionRangeProviderCapability::Simple(false));
+        caps.call_hierarchy_provider =
+            Some(lsp_types::CallHierarchyServerCapability::Simple(false));
+        let snap = LspCapabilitySnapshot::from_capabilities(&caps, Some("s"), Some("rust"));
+        assert!(!snap.supports_declaration);
+        assert!(!snap.supports_implementation);
+        assert!(!snap.supports_hover);
+        assert!(!snap.supports_folding_ranges);
+        assert!(!snap.supports_selection_ranges);
+        assert!(!snap.supports_call_hierarchy);
+    }
+
+    #[test]
+    fn enum_options_variant_is_supported() {
+        let mut caps = ServerCapabilities::default();
+        caps.declaration_provider =
+            Some(lsp_types::DeclarationCapability::Options(lsp_types::DeclarationOptions {
+                work_done_progress_options: Default::default(),
+            }));
+        caps.implementation_provider =
+            Some(lsp_types::ImplementationProviderCapability::Options(
+                lsp_types::StaticTextDocumentRegistrationOptions {
+                    document_selector: None,
+                    id: None,
+                },
+            ));
+        caps.hover_provider = Some(lsp_types::HoverProviderCapability::Options(
+            lsp_types::HoverOptions {
+                work_done_progress_options: Default::default(),
+            },
+        ));
+        caps.folding_range_provider =
+            Some(lsp_types::FoldingRangeProviderCapability::Options(
+                lsp_types::StaticTextDocumentColorProviderOptions {
+                    document_selector: None,
+                    id: None,
+                },
+            ));
+        caps.selection_range_provider =
+            Some(lsp_types::SelectionRangeProviderCapability::Options(
+                lsp_types::SelectionRangeOptions {
+                    work_done_progress_options: Default::default(),
+                },
+            ));
+        caps.call_hierarchy_provider =
+            Some(lsp_types::CallHierarchyServerCapability::Options(
+                lsp_types::CallHierarchyOptions {
+                    work_done_progress_options: Default::default(),
+                },
+            ));
+        let snap = LspCapabilitySnapshot::from_capabilities(&caps, Some("s"), Some("rust"));
+        assert!(snap.supports_declaration);
+        assert!(snap.supports_implementation);
+        assert!(snap.supports_hover);
+        assert!(snap.supports_folding_ranges);
+        assert!(snap.supports_selection_ranges);
+        assert!(snap.supports_call_hierarchy);
+    }
+
+    #[test]
+    fn one_of_none_is_unsupported() {
+        let caps = ServerCapabilities::default();
+        let snap = LspCapabilitySnapshot::from_capabilities(&caps, Some("s"), Some("rust"));
+        assert!(!snap.supports_document_highlight);
+        assert!(!snap.supports_rename);
+        assert!(!snap.supports_document_formatting);
+        assert!(!snap.supports_range_formatting);
+        assert!(!snap.supports_references);
+        assert!(!snap.supports_definition);
+        assert!(!snap.supports_document_symbols);
+        assert!(!snap.supports_workspace_symbols);
+        assert!(!snap.supports_inlay_hints);
+    }
+
+    #[test]
+    fn enum_none_is_unsupported() {
+        let caps = ServerCapabilities::default();
+        let snap = LspCapabilitySnapshot::from_capabilities(&caps, Some("s"), Some("rust"));
+        assert!(!snap.supports_declaration);
+        assert!(!snap.supports_implementation);
+        assert!(!snap.supports_hover);
+        assert!(!snap.supports_folding_ranges);
+        assert!(!snap.supports_selection_ranges);
+        assert!(!snap.supports_call_hierarchy);
+    }
+
+    #[test]
+    fn rename_false_explicitly_unsupported() {
+        // Regression: rename_provider = Some(OneOf::Left(false)) must be
+        // treated as unsupported, not as "present so supported".
+        let mut caps = ServerCapabilities::default();
+        caps.rename_provider = Some(lsp_types::OneOf::Left(false));
+        let snap = LspCapabilitySnapshot::from_capabilities(&caps, Some("s"), Some("rust"));
+        assert!(!snap.supports_rename);
+        assert!(!snap.supports_prepare_rename);
+    }
+
+    #[test]
+    fn formatting_false_explicitly_unsupported() {
+        let mut caps = ServerCapabilities::default();
+        caps.document_formatting_provider = Some(lsp_types::OneOf::Left(false));
+        caps.document_range_formatting_provider = Some(lsp_types::OneOf::Left(false));
+        let snap = LspCapabilitySnapshot::from_capabilities(&caps, Some("s"), Some("rust"));
+        assert!(!snap.supports_document_formatting);
+        assert!(!snap.supports_range_formatting);
     }
 }
