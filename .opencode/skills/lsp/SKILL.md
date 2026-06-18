@@ -1754,6 +1754,51 @@ Added typed APIs `declaration`, `implementation`, `document_highlights`, `signat
 8. Tier 2 CI is opt-in and version-pinned; default CI remains network-free.
 9. Existing Phase 2 and Phase 3 suites remain unchanged and green.
 
+## Phase 4 Final Harness Evidence and Matrix Closure (Passes 1–11)
+
+A follow-up 11-pass closure
+(`plans/lsp_phase4_final_harness_evidence_and_matrix_closure.md`)
+addresses gaps surfaced by the previous closure's
+hardening work. The harness is now a first-class consumer
+of the typed preview APIs and emits a complete operation
+matrix on every run.
+
+| Pass | Focus | Where |
+|------|-------|-------|
+| Pass 1 | Explicit `ImplementationExpectation` list per fixture (clangd accepts both override declaration `include/widget.hpp` and definition `src/widget.cpp`) | `crates/egglsp/tests/real_server_smoke.rs` |
+| Pass 2 | Per-operation `LspOperationCompatibility` records emitted at request sites (no more `checks_to_operation_support` post-hoc walk) | `crates/egglsp/tests/real_server_smoke.rs` |
+| Pass 3 | `assert_required_checks` fails `RequiredIfAdvertised` + `Skipped` when the matching capability was advertised (catches coverage gaps) | `crates/egglsp/tests/real_server_smoke.rs` |
+| Pass 4 | `run_type_hierarchy_check` emits three distinct records (`typeHierarchy/prepare` / `typeHierarchy/supertypes` / `typeHierarchy/subtypes`) | `crates/egglsp/tests/real_server_smoke.rs` |
+| Pass 5 | TypeScript code-actions fixture lands on the type-mismatch diagnostic at line 22; `code_action_min_edit_bearing = 1`; command-only → `KnownLimitation` | `crates/egglsp/tests/real_server_smoke.rs` |
+| Pass 6 | `LspShutdownTrace { requested, server_exited, exit_code, signal, stderr_tail, duration_ms, mode: OperationMode { Stdio, Daemon }, force_kill_requested }` added to `LspCompatibilityReport` | `crates/egglsp/src/compatibility.rs` |
+| Pass 7 | `crates/egglsp/src/position.rs` with `PositionEncoding { Utf8, Utf16, Utf32 }`, `lsp_units_to_byte_offset`, `lsp_range_to_byte_offsets` — semantic-token bounds validation is now encoding-aware (Pass 7 invariant: `signature_help` and `decode_semantic_tokens` share a single implementation) | `crates/egglsp/src/position.rs` |
+| Pass 8 | `evaluate_rename_workspace_edit` verifies the response touches at least one expected file AND the edit range covers the identifier at `pos` (via `identifier_range_at`) | `crates/egglsp/tests/real_server_smoke.rs` |
+| Pass 9 | `populate_operation_matrix` emits a default `LspOperationCompatibility` for every one of the 25 `LspSemanticOperation` variants — the report carries a complete matrix | `crates/egglsp/tests/real_server_smoke.rs` |
+| Pass 10 | Full pinned Tier 1 + Tier 2 matrix executed; per-server JSON artifacts preserved under `target/lsp-compatibility/` | `crates/egglsp/tests/real_server_smoke.rs` |
+| Pass 11 | Documentation closure — `architecture/lsp.md`, `AGENTS.md`, and this skill guide updated | All three doc surfaces |
+
+### Phase 4 final closure invariants
+
+- **No new `workspace/executeCommand` invocation.** Code-action
+  command-only results remain rejected as `KnownLimitation`.
+- **Per-operation traceability.** Every `LspOperationCompatibility`
+  in the report is emitted at a single request site (Pass 2)
+  or at the matrix pass (Pass 9). The legacy
+  `checks_to_operation_support` walk is gone.
+- **UTF-16-aware offset handling.** Semantic-token bounds
+  and signature-help parameter offsets share a single
+  encoding-aware implementation; CJK and supplementary-plane
+  identifiers decode correctly across all pinned servers.
+- **Fail-closed capability gating.** Pass 3 closes a coverage
+  gap: a server that advertises a capability but is not
+  exercised by the harness now fails `assert_required_checks`
+  instead of silently passing.
+- **Preview-only mutation boundary.** No new write paths
+  added. The smoke harness still drives `textDocument/rename`
+  and `textDocument/formatting` through the typed preview
+  APIs (`rename_preview_typed`, `format_preview_typed`); the
+  on-disk file is never mutated.
+
 ## See Also
 
 - [tool.md](tool.md) - LSP tool wrapper

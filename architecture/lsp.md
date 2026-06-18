@@ -2869,6 +2869,69 @@ compatibility report.
 - [x] `cargo build --tests -p egglsp --features lsp-real-server-tests` clean (5 pre-existing dead-code warnings, no errors)
 - [x] Pass-2 model-facing invariant: `src/tool/lsp.rs` `renamePreview` and `formatPreview` handlers now route through `rename_preview_typed` / `format_preview_typed`; no model-facing path calls an unchecked wrapper directly.
 
+## Phase 4 Final Harness Evidence and Matrix Closure (Passes 1–11)
+
+A follow-up 11-pass closure
+(`plans/lsp_phase4_final_harness_evidence_and_matrix_closure.md`)
+addresses the gaps surfaced by the previous closure's
+hardening work. The harness is now a first-class consumer
+of the typed preview APIs and emits a complete operation
+matrix on every run.
+
+### Pass summary
+
+| Pass | Focus | What changed |
+|------|-------|--------------|
+| Pass 1 | Explicit implementation expectations | `ImplementationExpectation` struct with `source_file`, `position`, `min_locations`, `expected_files`, `expected_label_substrings`. Replaces the implicit `primary_source`-anchored fallback so clangd's `include/widget.hpp` override declaration and `src/widget.cpp` definition are both accepted. |
+| Pass 2 | Per-operation records at request sites | Each `run_*_check` helper emits a paired `LspOperationCompatibility` at the request site via a local `emit` closure. `checks_to_operation_support` post-hoc name parsing is removed; the operation record is part of the same logical step as the request. |
+| Pass 3 | Advertised-required check enforcement | `assert_required_checks` fails `RequiredIfAdvertised` + `Skipped` when the matching capability was advertised. Capability lookup uses prefix matching for variable-format check names (`"implementation (1 found)"` → `supports_implementation`). |
+| Pass 4 | Type-hierarchy as three operations | `run_type_hierarchy_check` emits distinct `typeHierarchy/prepare`, `typeHierarchy/supertypes`, `typeHierarchy/subtypes` checks; each gets its own `LspOperationCompatibility` record. The matrix records all three as sub-records sharing `supports_type_hierarchy`. |
+| Pass 5 | Edit-bearing TypeScript code actions | TypeScript fixture lands on the type-mismatch diagnostic at line 22 (`const x: string = 42;`); `code_action_min_edit_bearing = 1`; command-only responses classified as `KnownLimitation`. |
+| Pass 6 | Structured shutdown traces | New `LspShutdownTrace { requested, server_exited, exit_code, signal, stderr_tail, duration_ms, mode: OperationMode, force_kill_requested }` and `OperationMode { Stdio, Daemon }` in `LspCompatibilityReport`. Daemon-mode hangs are distinguishable from stdio-mode hangs. |
+| Pass 7 | Encoding-aware semantic-token bounds | New `crates/egglsp/src/position.rs` module with `PositionEncoding { Utf8, Utf16, Utf32 }`, `lsp_units_to_byte_offset`, and `lsp_range_to_byte_offsets`. The smoke harness validates decoded semantic tokens against the file's UTF-16 line offsets; `signature_help` and `decode_semantic_tokens` share a single implementation. |
+| Pass 8 | Strengthened rename smoke | `RenameEvaluation` enum (`Pass { matched_files, range_covers_pos }` / `NoFileMatch` / `RangeMissesIdentifier`); `identifier_range_at` walks the line text to find identifier bounds; `evaluate_rename_workspace_edit` walks both `WorkspaceEdit.changes` and `document_changes` and verifies the response touches at least one expected file AND the edit range covers the identifier at `pos`. |
+| Pass 9 | Full 25-operation matrix | `populate_operation_matrix` walks every `LspSemanticOperation` variant and emits a default `LspOperationCompatibility` for any variant not already exercised. Consumers see a complete matrix (advertised vs exercised vs never-tested) per server. |
+| Pass 10 | Execute and preserve the full matrix | All 4 pinned servers exercised end-to-end (rust-analyzer, basedpyright, typescript-language-server, clangd). One JSON per server is preserved under `target/lsp-compatibility/`. |
+| Pass 11 | Docs + final closure | This section, `AGENTS.md` module row, and `.opencode/skills/lsp/SKILL.md` updated. |
+
+### Pass 11 — Final closure checklist
+
+- [x] `architecture/lsp.md` updated with this section
+- [x] `AGENTS.md` module row updated to summarize closure
+- [x] `.opencode/skills/lsp/SKILL.md` references Phase 4 final closure (Passes 1–11)
+- [x] `crates/egglsp/src/position.rs` shared by `signature_help` and `decode_semantic_tokens`
+- [x] `LspCompatibilityReport.shutdown_trace: Option<LspShutdownTrace>` populated by harness
+- [x] `LspCompatibilityReport.operation_support` covers all 25 `LspSemanticOperation` variants
+- [x] `target/lsp-compatibility/<server>-<version>.json` artifacts preserved
+- [x] `cargo build --tests -p egglsp --features lsp-real-server-tests` clean (8 pre-existing warnings, no errors)
+- [x] `cargo test -p egglsp --features lsp-real-server-tests --test real_server_smoke typescript_smoke` green
+- [x] `cargo test -p egglsp --features lsp-real-server-tests --test real_server_smoke basedpyright_smoke` green
+- [x] `cargo test -p egglsp --features lsp-real-server-tests --test real_server_smoke clangd_smoke` green
+
+### Architectural invariants preserved
+
+- **Preview-only mutation boundary.** No new write paths
+  added by the closure passes. `rename_preview_unchecked` and
+  `format_preview_unchecked` are still used by the smoke
+  harness but no model-facing tool path routes through them.
+- **No new `workspace/executeCommand` invocation.** Code-action
+  command-only results remain rejected as `KnownLimitation`.
+- **Per-operation traceability.** Every `LspOperationCompatibility`
+  in the report is emitted at a single request site
+  (Pass 2) or at the matrix pass (Pass 9). The legacy
+  `checks_to_operation_support` walk is gone, so a missing
+  record cannot silently mask a coverage gap.
+- **UTF-16-aware offset handling.** Semantic-token bounds
+  and signature-help parameter offsets share a single
+  encoding-aware implementation, eliminating the class of
+  bugs where a CJK identifier's `length` was interpreted
+  as UTF-16 units but the line text was walked in UTF-8
+  bytes.
+- **Fail-closed capability gating.** Pass 3 closes a coverage
+  gap: a server that advertises a capability but is not
+  exercised by the harness now fails `assert_required_checks`
+  instead of silently passing.
+
 ## See Also
 
 - [.opencode/skills/lsp/SKILL.md](../.opencode/skills/lsp/SKILL.md) - LSP skill guide
