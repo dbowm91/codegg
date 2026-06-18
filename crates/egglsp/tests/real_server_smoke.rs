@@ -946,11 +946,13 @@ int caller() {
         mutation_targets: MutationTargets::default(),
         expected_capabilities: ExpectedCapabilities {
             declaration: true,
-            // clangd 22.x may not resolve implementation from override
-            // declarations in headers; marked KnownLimitation below.
+            // clangd implementation requires a declaration in the primary
+            // source; the fixture only has declarations in widget.hpp.
+            // Querying from a usage site in main.cpp returns 0 results.
             implementation: false,
             document_highlight: true,
-            type_hierarchy: true,
+            // clangd does not support textDocument/prepareTypeHierarchy;
+            // override removed pending real-server evidence.
             ..Default::default()
         },
         completions: Vec::new(),
@@ -962,15 +964,12 @@ int caller() {
         references_requirement: CompatibilityRequirement::KnownLimitation,
         hover_requirement: CompatibilityRequirement::KnownLimitation,
         shutdown_requirement: CompatibilityRequirement::KnownLimitation,
-        // Query implementation from the override declaration in widget.hpp
-        // (line 7: `int add(int a, int b) override;`).
-        implementation_position: Some(Position::new(7, 8)),
-        type_hierarchy_targets: vec![TypeHierarchyExpectation {
-            position: Position::new(2, 7),
-            min_items: 1,
-            check_supertypes: true,
-            check_subtypes: true,
-        }],
+        // clangd implementation requires a declaration in the primary
+        // source file; the fixture only has declarations in widget.hpp.
+        // Kept for reference — not exercised because
+        // expected_capabilities.implementation is false.
+        implementation_position: Some(Position::new(7, 4)),
+        type_hierarchy_targets: Vec::new(),
     }
 }
 

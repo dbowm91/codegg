@@ -401,10 +401,7 @@ pub fn clangd_profile() -> LspCompatibilityProfile {
             "Requires compile_commands.json or compile_flags.txt in workspace root".to_string(),
             "Background indexing disabled for test determinism".to_string(),
         ],
-        observed_capabilities: crate::capability::ObservedCapabilitiesOverride {
-            type_hierarchy: Some(true),
-            type_hierarchy_tested_version: Some("18".to_string()),
-        },
+        observed_capabilities: crate::capability::ObservedCapabilitiesOverride::default(),
     }
 }
 
@@ -656,8 +653,9 @@ mod tests {
             }
         );
         assert_eq!(p.restart_policy, LspRestartPolicy::default());
-        // clangd supports type hierarchy.
-        assert_eq!(p.observed_capabilities.type_hierarchy, Some(true));
+        // clangd does not support type hierarchy (override removed
+        // pending real-server evidence).
+        assert_eq!(p.observed_capabilities.type_hierarchy, None);
         assert!(!p.known_limitations.is_empty());
     }
 

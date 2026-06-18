@@ -196,7 +196,7 @@ for Tier 2 quirks in generic code.
 |---------|-------------|------------|--------------|-----------|-----------------------------------------|
 | `gopls_profile()` | `gopls` | `gopls` | `go.work`, `go.mod`, `.git` | `WaitForDiagnosticsOrTimeout { 15s }` | `Some(true)` |
 | `typescript_language_server_profile()` | `typescript-language-server` | `typescript-language-server --stdio` | `tsconfig.json`, `jsconfig.json`, `package.json`, `.git` | `WaitForProgressEndOrTimeout { 20s }` | `None` (not observed) |
-| `clangd_profile()` | `clangd` | `clangd --background-index=false --clang-tidy=0` | `compile_commands.json`, `compile_flags.txt`, `CMakeLists.txt`, `.git` | `WarmupDelay { 2s }` | `Some(true)` | pinned v18.1.8 (checksum-verified LLVM archive) |
+| `clangd_profile()` | `clangd` | `clangd --background-index=false --clang-tidy=0` | `compile_commands.json`, `compile_flags.txt`, `CMakeLists.txt`, `.git` | `WarmupDelay { 2s }` | `None` (not observed; type hierarchy override removed) | pinned v18.1.8 (checksum-verified LLVM archive) |
 
 `gopls` requires a `go.mod` (or `go.work`) in the workspace root and
 needs `go.work` for multi-module workspaces. `typescript-language-server`

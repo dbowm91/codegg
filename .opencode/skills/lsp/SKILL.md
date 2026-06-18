@@ -447,7 +447,7 @@ pub struct LspCompatibilityProfile {
 }
 ```
 
-`gopls` and `clangd` profiles flip `observed_capabilities.type_hierarchy = Some(true)`; `rust-analyzer_profile` was also updated in Phase 4 so the snapshot remains accurate. `LspCapabilitySnapshot::from_capabilities_with_override(caps, server_name, language_id, &override)` merges the override into the snapshot at client construction time.
+`gopls` profile flips `observed_capabilities.type_hierarchy = Some(true)`; `clangd` does not support type hierarchy (override removed pending real-server evidence). `rust-analyzer_profile` was also updated in Phase 4 so the snapshot remains accurate. `LspCapabilitySnapshot::from_capabilities_with_override(caps, server_name, language_id, &override)` merges the override into the snapshot at client construction time.
 
 ### Option-level details
 
@@ -1700,7 +1700,7 @@ Tier 1 reports remain valid; new `LspCompatibilityReport` fields (`protocol_vers
 
 ### Pass 2 — Tier 2 compatibility profiles
 
-`gopls_profile()`, `typescript_language_server_profile()`, and `clangd_profile()` extend the data-driven pattern. Each profile records `executable_candidates`, `default_args`, `root_markers`, `initialization_options`, `workspace_configuration`, `readiness_policy`, `restart_policy`, `known_limitations`, and `observed_capabilities`. Tier membership is recorded on the profile; `tier2_profiles()` / `all_profiles()` provide deterministic accessors. `gopls` and `clangd` opt into `observed_capabilities.type_hierarchy = Some(true)`; `rust-analyzer_profile` was also updated in Phase 4 to keep its snapshot accurate.
+`gopls_profile()`, `typescript_language_server_profile()`, and `clangd_profile()` extend the data-driven pattern. Each profile records `executable_candidates`, `default_args`, `root_markers`, `initialization_options`, `workspace_configuration`, `readiness_policy`, `restart_policy`, `known_limitations`, and `observed_capabilities`. Tier membership is recorded on the profile; `tier2_profiles()` / `all_profiles()` provide deterministic accessors. `gopls` opts into `observed_capabilities.type_hierarchy = Some(true)`; `clangd` does not (override removed). `rust-analyzer_profile` was also updated in Phase 4 to keep its snapshot accurate.
 
 ### Pass 3 — Generalize the real-server fixture harness
 
