@@ -375,9 +375,7 @@ Tracks open documents for replay after server restart. `OpenDocumentSnapshot` ca
 
 ## Tier 1 vs Tier 2
 
-Phase 4 corrective validation in progress; Tier 2 profiles and operations
-are implemented but compatibility remains experimental pending pinned
-real-server evidence. Server maturity is tracked on the profile, not in
+Phase 4 corrective validation complete for Tier 2 pinned versions; compatibility passing on gopls v0.16.1, typescript-language-server v4.3.3, and clangd v18.1.3 with known limitations documented. Server maturity is tracked on the profile, not in
 any generic client branch — there is no `match server_id` for Tier 2
 quirks. Profile accessors live in `crates/egglsp/src/compatibility.rs`:
 
@@ -1686,7 +1684,7 @@ The 11-pass follow-up (`plans/lsp_phase3_restart_ownership_and_cleanup_final_gap
 
 ## Phase 4: Broader Compatibility & Higher-Level Capability Adoption (corrective validation in progress)
 
-Phase 4 (`plans/lsp_phase4_broader_compatibility_and_capability_adoption.md`) broadens language-server coverage and exposes higher-value LSP capabilities, while preserving the safety rule established in earlier phases: read-only semantic operations may execute directly, mutation-producing operations must remain preview-only. Tier 2 profiles and operations are implemented but compatibility remains experimental pending pinned real-server evidence. All Phase 4 surface lives in `crates/egglsp/`; generic client code reads profile fields instead of branching on server IDs.
+Phase 4 (`plans/lsp_phase4_broader_compatibility_and_capability_adoption.md`) broadens language-server coverage and exposes higher-value LSP capabilities, while preserving the safety rule established in earlier phases: read-only semantic operations may execute directly, mutation-producing operations must remain preview-only. Tier 2 compatibility is passing on pinned versions (gopls v0.16.1, typescript-language-server v4.3.3, clangd v18.1.3) with documented known limitations. All Phase 4 surface lives in `crates/egglsp/`; generic client code reads profile fields instead of branching on server IDs.
 
 ### Pass 0 — Baseline and report schema
 

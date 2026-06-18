@@ -2360,12 +2360,12 @@ the Phase 4 plan (`plans/lsp_phase4_broader_compatibility_and_capability_adoptio
 |--------|------|----------|-----------|--------|--------------|
 | `rust-analyzer` | 1 | Linux | `WaitForProgressEndOrTimeout { 30s }` | passing | First semantic requests may be incomplete while indexing; large projects may have slow initial diagnostics |
 | `basedpyright` / `pyright` | 1 | Linux | `WaitForDiagnosticsOrTimeout { 15s }` | passing | Type checking depth may vary between pyright and basedpyright; no `prepareCallHierarchy` |
-| `gopls` | 2 | Linux | `WaitForDiagnosticsOrTimeout { 15s }` | experimental/passing | Requires `go.mod` (or `go.work`) in workspace root; multi-module workspace symbols need `go.work`; no push diagnostics from gopls itself (push inferred from `text_document_sync`) |
-| `typescript-language-server` | 2 | Linux | `WaitForProgressEndOrTimeout { 20s }` | experimental/passing | Requires `node_modules` installed locally (CI installs pinned versions); single-language server (handles TS/JS but no JSX/TSX-specific quirks) |
-| `clangd` | 2 | Linux | `WarmupDelay { 2s }` | experimental/passing | Requires `compile_commands.json` or `compile_flags.txt` in workspace root; background indexing disabled for test determinism |
+| `gopls` | 2 | Linux | `WaitForDiagnosticsOrTimeout { 15s }` | passing (pinned v0.16.1) | Requires `go.mod` (or `go.work`) in workspace root; multi-module workspace symbols need `go.work`; no push diagnostics from gopls itself (push inferred from `text_document_sync`); daemon mode persists after shutdown/exit (known limitation) |
+| `typescript-language-server` | 2 | Linux | `WaitForDiagnosticsOrTimeout { 30s }` | passing (pinned v4.3.3) | Requires `node_modules` installed locally (CI installs pinned versions); single-language server (handles TS/JS but no JSX/TSX-specific quirks); daemon mode persists after shutdown/exit (known limitation) |
+| `clangd` | 2 | Linux | `WarmupDelay { 2s }` | passing (pinned v18.1.3) | Requires `compile_commands.json` or `compile_flags.txt` in workspace root; background indexing disabled for test determinism; daemon mode persists after shutdown/exit (known limitation); references/hover may not resolve on member-access patterns with minimal fixtures |
 
 `status` here maps to the same vocabulary used in CI: a Tier 2 server
-is "experimental/passing" once its required smoke checks (`Passing` or
+is "passing" once its required smoke checks (`Passing` or
 `PassingWithKnownLimits`) hold on the pinned version, and is not
 promoted to "passing" until the required semantic assertions
 (`Required` / `RequiredIfAdvertised` checks) are green. The full
