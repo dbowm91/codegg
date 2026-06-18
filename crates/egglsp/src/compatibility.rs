@@ -94,6 +94,13 @@ pub struct LspCompatibilityProfile {
     pub restart_policy: LspRestartPolicy,
     /// Known limitations to document in compatibility reports.
     pub known_limitations: Vec<String>,
+    /// Profile-level capability overrides for fields the protocol does
+    /// not advertise on the server side (notably type-hierarchy on
+    /// `lsp-types` 0.97). Generic client code merges these into the
+    /// snapshot derived from `ServerCapabilities` via
+    /// [`crate::capability::LspCapabilitySnapshot::from_capabilities_with_override`].
+    #[serde(default)]
+    pub observed_capabilities: crate::capability::ObservedCapabilitiesOverride,
 }
 
 /// Compatibility check status in a report.
@@ -194,6 +201,14 @@ pub fn rust_analyzer_profile() -> LspCompatibilityProfile {
             "First semantic requests may be incomplete while indexing".to_string(),
             "Large projects may have slow initial diagnostics".to_string(),
         ],
+        // Phase 4: rust-analyzer supports type hierarchy, but
+        // `lsp-types` 0.97 does not expose a server-side
+        // `type_hierarchy_provider` field. The override flips the
+        // normalized flag on so `semanticContext` / `typeHierarchy`
+        // callers see the correct capability.
+        observed_capabilities: crate::capability::ObservedCapabilitiesOverride {
+            type_hierarchy: Some(true),
+        },
     }
 }
 
@@ -227,6 +242,143 @@ pub fn pyright_profile() -> LspCompatibilityProfile {
         known_limitations: vec![
             "Type checking depth may vary between pyright and basedpyright".to_string(),
         ],
+        observed_capabilities: crate::capability::ObservedCapabilitiesOverride::default(),
+    }
+}
+
+// ── Tier 2 Profiles ─────────────────────────────────────────────────
+
+/// Returns the compatibility profile for `gopls` (the official Go
+/// language server).
+///
+/// gopls supports type hierarchy, but `lsp-types` 0.97 only models
+/// type hierarchy as a CLIENT capability, so the server-side
+/// advertised state is not visible in `ServerCapabilities`. The
+/// profile's [`observed_capabilities`] field flips
+/// `supports_type_hierarchy` on so generic client code can route
+/// `typeHierarchy` requests to gopls.
+pub fn gopls_profile() -> LspCompatibilityProfile {
+    LspCompatibilityProfile {
+        server_id: "gopls".to_string(),
+        executable_candidates: vec!["gopls".to_string()],
+        default_args: vec![],
+        root_markers: vec![
+            "go.work".to_string(),
+            "go.mod".to_string(),
+            ".git".to_string(),
+        ],
+        initialization_options: serde_json::json!({
+            "usePlaceholders": true,
+            "completeUnimported": true,
+            "semanticTokens": true,
+        }),
+        workspace_configuration: serde_json::json!({
+            "gopls": {
+                "analyses": {
+                    "unusedparams": true,
+                },
+            },
+        }),
+        // gopls emits diagnostics eagerly once a package is loaded.
+        // Diagnostics-based readiness is the most reliable signal
+        // for the production code path.
+        readiness_policy: LspReadinessPolicy::WaitForDiagnosticsOrTimeout {
+            timeout: Duration::from_secs(15),
+        },
+        restart_policy: LspRestartPolicy::default(),
+        known_limitations: vec![
+            "gopls requires a go.mod (or go.work) in the workspace root".to_string(),
+            "Workspace symbols need go.work for multi-module workspaces".to_string(),
+        ],
+        observed_capabilities: crate::capability::ObservedCapabilitiesOverride {
+            type_hierarchy: Some(true),
+        },
+    }
+}
+
+/// Returns the compatibility profile for `typescript-language-server`.
+///
+/// `typescript-language-server` reports `$/progress` notifications
+/// while loading the project, so progress-end is the most reliable
+/// readiness signal.
+pub fn typescript_language_server_profile() -> LspCompatibilityProfile {
+    LspCompatibilityProfile {
+        server_id: "typescript-language-server".to_string(),
+        executable_candidates: vec!["typescript-language-server".to_string()],
+        default_args: vec!["--stdio".to_string()],
+        root_markers: vec![
+            "tsconfig.json".to_string(),
+            "jsconfig.json".to_string(),
+            "package.json".to_string(),
+            ".git".to_string(),
+        ],
+        initialization_options: serde_json::json!({}),
+        workspace_configuration: serde_json::json!({
+            "typescript": {
+                "preferences": {
+                    "includeCompletionsForModuleExports": true,
+                },
+            },
+        }),
+        // typescript-language-server reports project-loading progress
+        // via `$/progress`. Wait for the end of that progress stream
+        // before declaring the client ready, with a 20s safety net.
+        readiness_policy: LspReadinessPolicy::WaitForProgressEndOrTimeout {
+            timeout: Duration::from_secs(20),
+        },
+        restart_policy: LspRestartPolicy::default(),
+        known_limitations: vec![
+            "Requires node_modules installed locally (CI installs pinned versions)".to_string(),
+            "Single-language server (handles TS/JS but no JSX/TSX-specific quirks)".to_string(),
+        ],
+        observed_capabilities: crate::capability::ObservedCapabilitiesOverride::default(),
+    }
+}
+
+/// Returns the compatibility profile for `clangd`.
+///
+/// clangd does not reliably emit progress notifications and may not
+/// push diagnostics immediately on small projects, so a fixed
+/// warmup delay is the most deterministic readiness signal for
+/// tests. The `--background-index=false` and `--clang-tidy=0`
+/// arguments keep test runs deterministic.
+pub fn clangd_profile() -> LspCompatibilityProfile {
+    LspCompatibilityProfile {
+        server_id: "clangd".to_string(),
+        executable_candidates: vec!["clangd".to_string()],
+        // --background-index=false keeps the index off the cold
+        // path so test fixtures do not race background indexing.
+        // --clang-tidy=0 disables clang-tidy diagnostics, which
+        // would otherwise require clang-tidy configuration in
+        // every fixture.
+        default_args: vec![
+            "--background-index=false".to_string(),
+            "--clang-tidy=0".to_string(),
+        ],
+        root_markers: vec![
+            "compile_commands.json".to_string(),
+            "compile_flags.txt".to_string(),
+            "CMakeLists.txt".to_string(),
+            ".git".to_string(),
+        ],
+        initialization_options: serde_json::json!({
+            "compilationDatabasePath": "compile_commands.json",
+        }),
+        workspace_configuration: serde_json::json!({}),
+        // clangd does not reliably emit progress; a short warmup
+        // delay is the most deterministic readiness signal for
+        // test runs.
+        readiness_policy: LspReadinessPolicy::WarmupDelay {
+            duration: Duration::from_secs(2),
+        },
+        restart_policy: LspRestartPolicy::default(),
+        known_limitations: vec![
+            "Requires compile_commands.json or compile_flags.txt in workspace root".to_string(),
+            "Background indexing disabled for test determinism".to_string(),
+        ],
+        observed_capabilities: crate::capability::ObservedCapabilitiesOverride {
+            type_hierarchy: Some(true),
+        },
     }
 }
 
@@ -235,6 +387,9 @@ pub fn profile_for_server(server_id: &str) -> Option<LspCompatibilityProfile> {
     match server_id {
         "rust-analyzer" => Some(rust_analyzer_profile()),
         "basedpyright" | "pyright" => Some(pyright_profile()),
+        "gopls" => Some(gopls_profile()),
+        "typescript-language-server" => Some(typescript_language_server_profile()),
+        "clangd" => Some(clangd_profile()),
         _ => None,
     }
 }
@@ -242,6 +397,25 @@ pub fn profile_for_server(server_id: &str) -> Option<LspCompatibilityProfile> {
 /// All known Tier 1 profiles.
 pub fn tier1_profiles() -> Vec<LspCompatibilityProfile> {
     vec![rust_analyzer_profile(), pyright_profile()]
+}
+
+/// All known Tier 2 profiles.
+pub fn tier2_profiles() -> Vec<LspCompatibilityProfile> {
+    vec![
+        gopls_profile(),
+        typescript_language_server_profile(),
+        clangd_profile(),
+    ]
+}
+
+/// Every profile registered in this module, across tiers. The order
+/// matches the per-tier ordering so callers iterating this list
+/// observe a stable, deterministic sequence.
+pub fn all_profiles() -> Vec<LspCompatibilityProfile> {
+    let mut all = Vec::with_capacity(tier1_profiles().len() + tier2_profiles().len());
+    all.extend(tier1_profiles());
+    all.extend(tier2_profiles());
+    all
 }
 
 /// Pass 6 — Evaluate a references-result compatibility check.
@@ -384,6 +558,129 @@ mod tests {
         let py = pyright_profile();
         // rust-analyzer uses progress-based, pyright uses diagnostics-based
         assert_ne!(ra.readiness_policy, py.readiness_policy);
+    }
+
+    // ── Tier 2 profile tests ────────────────────────────────────────
+
+    #[test]
+    fn gopls_profile_shape() {
+        let p = gopls_profile();
+        assert_eq!(p.server_id, "gopls");
+        assert_eq!(p.executable_candidates, vec!["gopls".to_string()]);
+        assert!(p.default_args.is_empty());
+        assert!(p.root_markers.contains(&"go.mod".to_string()));
+        assert!(p.root_markers.contains(&"go.work".to_string()));
+        assert!(p.root_markers.contains(&".git".to_string()));
+        assert_eq!(
+            p.readiness_policy,
+            LspReadinessPolicy::WaitForDiagnosticsOrTimeout {
+                timeout: Duration::from_secs(15)
+            }
+        );
+        assert_eq!(p.restart_policy, LspRestartPolicy::default());
+        // Type hierarchy is observed on gopls.
+        assert_eq!(p.observed_capabilities.type_hierarchy, Some(true));
+        assert!(!p.known_limitations.is_empty());
+    }
+
+    #[test]
+    fn typescript_language_server_profile_shape() {
+        let p = typescript_language_server_profile();
+        assert_eq!(p.server_id, "typescript-language-server");
+        assert_eq!(
+            p.executable_candidates,
+            vec!["typescript-language-server".to_string()]
+        );
+        assert_eq!(p.default_args, vec!["--stdio".to_string()]);
+        assert!(p.root_markers.contains(&"tsconfig.json".to_string()));
+        assert!(p.root_markers.contains(&"jsconfig.json".to_string()));
+        assert!(p.root_markers.contains(&"package.json".to_string()));
+        assert!(p.root_markers.contains(&".git".to_string()));
+        assert_eq!(
+            p.readiness_policy,
+            LspReadinessPolicy::WaitForProgressEndOrTimeout {
+                timeout: Duration::from_secs(20)
+            }
+        );
+        assert_eq!(p.restart_policy, LspRestartPolicy::default());
+        // No observed overrides for typescript-language-server.
+        assert_eq!(p.observed_capabilities.type_hierarchy, None);
+        assert!(!p.known_limitations.is_empty());
+    }
+
+    #[test]
+    fn clangd_profile_shape() {
+        let p = clangd_profile();
+        assert_eq!(p.server_id, "clangd");
+        assert_eq!(p.executable_candidates, vec!["clangd".to_string()]);
+        assert!(p.default_args.contains(&"--background-index=false".to_string()));
+        assert!(p.default_args.contains(&"--clang-tidy=0".to_string()));
+        assert!(p.root_markers.contains(&"compile_commands.json".to_string()));
+        assert!(p.root_markers.contains(&"compile_flags.txt".to_string()));
+        assert!(p.root_markers.contains(&"CMakeLists.txt".to_string()));
+        assert!(p.root_markers.contains(&".git".to_string()));
+        assert_eq!(
+            p.readiness_policy,
+            LspReadinessPolicy::WarmupDelay {
+                duration: Duration::from_secs(2)
+            }
+        );
+        assert_eq!(p.restart_policy, LspRestartPolicy::default());
+        // clangd supports type hierarchy.
+        assert_eq!(p.observed_capabilities.type_hierarchy, Some(true));
+        assert!(!p.known_limitations.is_empty());
+    }
+
+    #[test]
+    fn profile_lookup_returns_tier2_servers() {
+        assert!(profile_for_server("gopls").is_some());
+        assert!(profile_for_server("typescript-language-server").is_some());
+        assert!(profile_for_server("clangd").is_some());
+        // Server IDs not in the catalog still return None.
+        assert!(profile_for_server("solargraph").is_none());
+    }
+
+    #[test]
+    fn tier2_profiles_count() {
+        let profiles = tier2_profiles();
+        assert_eq!(profiles.len(), 3);
+    }
+
+    #[test]
+    fn all_profiles_includes_tier1_and_tier2() {
+        let all = all_profiles();
+        assert_eq!(all.len(), tier1_profiles().len() + tier2_profiles().len());
+        let ids: std::collections::HashSet<String> =
+            all.iter().map(|p| p.server_id.clone()).collect();
+        assert!(ids.contains("rust-analyzer"));
+        assert!(ids.contains("basedpyright"));
+        assert!(ids.contains("gopls"));
+        assert!(ids.contains("typescript-language-server"));
+        assert!(ids.contains("clangd"));
+    }
+
+    #[test]
+    fn all_profile_server_ids_are_unique() {
+        let all = all_profiles();
+        let mut ids: Vec<String> = all.iter().map(|p| p.server_id.clone()).collect();
+        ids.sort();
+        let original_len = ids.len();
+        ids.dedup();
+        assert_eq!(
+            ids.len(),
+            original_len,
+            "duplicate server_id across profiles: {all:?}"
+        );
+    }
+
+    #[test]
+    fn observed_capabilities_default_for_tier1() {
+        // Tier 1 servers do not override type hierarchy; the field
+        // exists on every profile and must default to None.
+        let ra = rust_analyzer_profile();
+        assert_eq!(ra.observed_capabilities.type_hierarchy, None);
+        let py = pyright_profile();
+        assert_eq!(py.observed_capabilities.type_hierarchy, None);
     }
 
     // ── Pass 6 references-check tests ──────────────────────────────

@@ -41,7 +41,9 @@ pub mod service;
 pub mod supervisor;
 pub mod writer;
 
-pub use capability::{LspCapabilitySnapshot, LspSemanticOperation, LspUnavailable};
+pub use capability::{
+    LspCapabilitySnapshot, LspSemanticOperation, LspUnavailable, SemanticTokenLegendSnapshot,
+};
 pub use client::{
     ClientTransportSnapshot, DiagnosticCacheEntry, JsonRpcId, LspClient, LspClientHealthSnapshot,
     LspClientOptions, OperationalSummary, ProgressSnapshot,
@@ -64,8 +66,18 @@ pub use hunk_context::{
     HunkSourceNavigationRequest, HunkSourceNavigationResponse,
 };
 pub use operations::select_source_action_edit;
+pub use operations::completion_kind_to_string;
+pub use operations::decode_semantic_tokens;
+pub use operations::CompletionCandidate;
+pub use operations::DecodedSemanticToken;
 pub use operations::LspOperations;
 pub use operations::SourceActionPreviewKind;
+pub use operations::COMPLETION_DETAIL_MAX_CHARS;
+pub use operations::{
+    CodeActionPreview, CodeActionSummary, FormattingPreview, PrepareRenameResult, RenamePreview,
+    CODE_ACTION_SUMMARY_DEFAULT_MAX, FORMATTING_PREVIEW_MAX_DIFF_BYTES,
+    RENAME_PREVIEW_MAX_EDITS, RENAME_PREVIEW_MAX_FILES,
+};
 pub use semantic_context::{
     SemanticContextCaps, SemanticContextIntent, SemanticContextRequest, SemanticContextResponse,
     SemanticLocation,

@@ -1,5 +1,7 @@
 use thiserror::Error;
 
+use egglsp::LspUnavailable;
+
 #[derive(Error, Debug)]
 pub enum AppError {
     #[error("config error: {0}")]
@@ -232,6 +234,7 @@ impl From<egglsp::LspError> for LspError {
             egglsp::LspError::AmbiguousSourceAction(kind, titles) => {
                 LspError::AmbiguousSourceAction(kind, titles)
             }
+            egglsp::LspError::CommandOnlyCodeAction(s) => LspError::CommandOnlyCodeAction(s),
             egglsp::LspError::Protocol(s) => {
                 LspError::RequestFailed(format!("protocol error: {}", s))
             }
@@ -256,6 +259,9 @@ impl From<egglsp::LspError> for LspError {
             }
             egglsp::LspError::InvalidConfig(s) => {
                 LspError::RequestFailed(format!("invalid configuration: {s}"))
+            }
+            egglsp::LspError::Unavailable(u) => {
+                LspError::Unsupported(u)
             }
         }
     }
@@ -301,6 +307,15 @@ pub enum LspError {
 
     #[error("source action returned multiple edit-bearing actions: {0}: {1}")]
     AmbiguousSourceAction(String, String),
+
+    #[error("code action '{0}' is command-only; command execution is disabled")]
+    CommandOnlyCodeAction(String),
+
+    /// The server does not advertise the capability required for this
+    /// operation. Carries a structured `LspUnavailable` so callers can
+    /// surface a precise, model-safe reason (operation, server, language).
+    #[error("operation unavailable: {0}")]
+    Unsupported(LspUnavailable),
 }
 
 impl LspError {

@@ -182,6 +182,21 @@ pub struct LspUnavailable {
     pub language_id: Option<String>,
 }
 
+impl std::fmt::Display for LspUnavailable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match (&self.server, &self.language_id) {
+            (Some(s), Some(l)) => write!(
+                f,
+                "{} ({}/{}) — {}",
+                self.operation, s, l, self.reason
+            ),
+            (Some(s), None) => write!(f, "{} ({}) — {}", self.operation, s, self.reason),
+            (None, Some(l)) => write!(f, "{} ({}) — {}", self.operation, l, self.reason),
+            (None, None) => write!(f, "{} — {}", self.operation, self.reason),
+        }
+    }
+}
+
 impl LspUnavailable {
     pub fn new(op: LspSemanticOperation, reason: impl Into<String>) -> Self {
         Self {

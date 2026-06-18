@@ -24,7 +24,7 @@ pub struct WorkspaceEditPreview {
     pub truncated: bool,
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct FileEditPreview {
     pub file: PathBuf,
     pub original_hash: String,
@@ -33,7 +33,7 @@ pub struct FileEditPreview {
     pub patch_omitted: bool,
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TextEditPreview {
     pub start_line: u32,
     pub start_column: u32,

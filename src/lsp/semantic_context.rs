@@ -419,10 +419,19 @@ impl SemanticContextCollector {
         let caps = self.service.get_capabilities_for_key(&key).await?;
         let lang = crate::lsp::language::detect_language(file.to_str().unwrap_or(""));
         let server_name = key.split(':').next_back().map(String::from);
-        Some(LspCapabilitySnapshot::from_capabilities(
+        // Phase 4: apply profile-level observed capabilities override
+        // (e.g. type hierarchy on gopls/clangd, which lsp-types 0.97
+        // does not expose via ServerCapabilities).
+        let override_caps = server_name
+            .as_deref()
+            .and_then(egglsp::compatibility::profile_for_server)
+            .map(|p| p.observed_capabilities)
+            .unwrap_or_default();
+        Some(LspCapabilitySnapshot::from_capabilities_with_override(
             &caps,
             server_name.as_deref(),
             lang,
+            &override_caps,
         ))
     }
 

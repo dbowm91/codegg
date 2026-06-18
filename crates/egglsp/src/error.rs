@@ -56,6 +56,9 @@ pub enum LspError {
     #[error("source action '{0}' returned multiple edit-bearing actions: {1}")]
     AmbiguousSourceAction(String, String),
 
+    #[error("code action '{0}' is command-only; command execution is disabled")]
+    CommandOnlyCodeAction(String),
+
     #[error("protocol error: {0}")]
     Protocol(String),
 
@@ -80,6 +83,13 @@ pub enum LspError {
 
     #[error("invalid configuration: {0}")]
     InvalidConfig(String),
+
+    /// Operation is unavailable on the active server because it does
+    /// not advertise the required capability. Carries a structured
+    /// `LspUnavailable` so callers can surface a precise, model-safe
+    /// explanation.
+    #[error("operation unavailable: {0}")]
+    Unavailable(crate::capability::LspUnavailable),
 }
 
 impl LspError {
