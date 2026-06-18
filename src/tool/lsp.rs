@@ -1842,7 +1842,7 @@ impl Tool for LspTool {
                 })?;
                 let pos = to_lsp_position(line, col);
                 let preview = ops
-                    .rename_preview(
+                    .rename_preview_unchecked(
                         &file,
                         pos.line,
                         pos.character,
@@ -1864,7 +1864,7 @@ impl Tool for LspTool {
             "formatPreview" => {
                 let file = self.resolve_file(&parsed.file_path)?;
                 let preview = ops
-                    .format_preview(&file, Some(&self.allowed_root))
+                    .format_preview_unchecked(&file, Some(&self.allowed_root))
                     .await
                     .map_err(|e| ToolError::Execution(format!("formatPreview: {e}")))?;
                 let output = LspToolOutput {

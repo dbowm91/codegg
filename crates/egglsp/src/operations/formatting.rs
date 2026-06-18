@@ -102,7 +102,15 @@ pub fn document_end_position_utf16(text: &str) -> Position {
 }
 
 impl LspOperations {
-    pub async fn format_preview(
+    /// Low-level `textDocument/formatting` protocol wrapper.
+    ///
+    /// **No capability gating, no `before_hash` / `after_hash`
+    /// computation, no in-memory diff.** Callers outside the
+    /// typed [`Self::format_preview_typed`] helper should
+    /// generally prefer the typed API; this method exists for
+    /// the typed surface to use internally and for the real-server
+    /// smoke harness to drive raw protocol behavior.
+    pub async fn format_preview_unchecked(
         &self,
         file_path: &Path,
         allowed_root: Option<&Path>,

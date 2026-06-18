@@ -221,7 +221,16 @@ pub fn select_source_action_edit(
 }
 
 impl LspOperations {
-    pub async fn code_actions(
+    /// Low-level `textDocument/codeAction` protocol wrapper.
+    ///
+    /// **No capability gating, no command-only filtering, no
+    /// summary normalization.** Callers outside the typed
+    /// [`Self::code_action_summaries`] /
+    /// [`Self::preview_code_action`] helpers should generally
+    /// prefer the typed API; this method exists for the typed
+    /// surface to use internally and for the real-server smoke
+    /// harness to drive raw protocol behavior.
+    pub async fn code_actions_unchecked(
         &self,
         file_path: &Path,
         start_line: u32,
@@ -303,7 +312,7 @@ impl LspOperations {
             .await?;
 
         let actions = self
-            .code_actions(
+            .code_actions_unchecked(
                 file_path,
                 start_line,
                 start_col,
@@ -350,7 +359,7 @@ impl LspOperations {
             .await?;
 
         let actions = self
-            .code_actions(
+            .code_actions_unchecked(
                 file_path,
                 start_line,
                 start_col,

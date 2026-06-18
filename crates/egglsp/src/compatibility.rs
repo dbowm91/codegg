@@ -181,6 +181,13 @@ pub struct LspCompatibilityReport {
     pub readiness_ms: Option<u64>,
     pub capabilities: crate::capability::LspCapabilitySnapshot,
     pub checks: Vec<LspCompatibilityCheck>,
+    /// Pass 6 — per-operation compatibility records. Each entry
+    /// distinguishes protocol success, semantic success, and known
+    /// limitations on a per-operation basis (not by parsing check
+    /// names). `serde(default)` keeps backward compatibility with
+    /// older report JSON that lacks this field.
+    #[serde(default)]
+    pub operation_support: Vec<LspOperationCompatibility>,
     pub stderr_tail: Vec<String>,
     pub known_limitations: Vec<String>,
 }

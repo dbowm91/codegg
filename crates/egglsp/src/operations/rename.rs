@@ -2,7 +2,7 @@ use std::path::Path;
 
 use lsp_types::*;
 
-use crate::capability::{LspCapabilitySnapshot, LspSemanticOperation};
+use crate::capability::{CapabilityDecision, LspCapabilitySnapshot, LspSemanticOperation};
 use crate::client::url_to_uri;
 use crate::edit::preview_workspace_edit;
 use crate::error::LspError;
@@ -117,7 +117,14 @@ pub struct RenamePreview {
 }
 
 impl super::LspOperations {
-    pub async fn prepare_rename(
+    /// Low-level `textDocument/prepareRename` protocol wrapper.
+    ///
+    /// **No capability gating, no prepare-rename normalization.**
+    /// Callers outside the typed [`Self::prepare_rename_typed`]
+    /// helper should generally prefer the typed API; this method
+    /// exists for the typed surface to use internally and for the
+    /// real-server smoke harness to drive raw protocol behavior.
+    pub async fn prepare_rename_unchecked(
         &self,
         file_path: &Path,
         line: u32,
@@ -149,7 +156,14 @@ impl super::LspOperations {
         Ok(pr)
     }
 
-    pub async fn rename_preview(
+    /// Low-level `textDocument/rename` protocol wrapper.
+    ///
+    /// **No capability gating, no prepare-rename consultation.**
+    /// Callers outside the typed [`Self::rename_preview_typed`]
+    /// helper should generally prefer the typed API; this method
+    /// exists for the typed surface to use internally and for the
+    /// real-server smoke harness to drive raw protocol behavior.
+    pub async fn rename_preview_unchecked(
         &self,
         file_path: &Path,
         line: u32,
@@ -225,33 +239,65 @@ impl super::LspOperations {
         line: u32,
         column: u32,
     ) -> Result<PrepareRenameResult, LspError> {
-        // Fail-closed capability gate. Unknown → NotInitialized;
-        // Unsupported → PrepareRenameResult::Unavailable (structured
-        // fallback, not an error).
+        // Inspect the explicit capability decision so we can
+        // distinguish Supported / Unsupported / Unknown.
+        // `require_capability` would collapse Unsupported and
+        // Unknown into a single error path, which is wrong for
+        // callers that need to react differently (e.g. the
+        // rename pipeline skips prepare-rename when the server
+        // does not advertise it).
         match self
-            .require_capability(file_path, LspSemanticOperation::PrepareRename)
-            .await
+            .capability_decision_for_file(file_path, LspSemanticOperation::PrepareRename)
+            .await?
         {
-            Ok(()) => {}
-            Err(LspError::Unavailable(u)) => {
+            CapabilityDecision::Supported => {}
+            CapabilityDecision::Unsupported(u) => {
                 return Ok(PrepareRenameResult::Unavailable(u));
             }
-            Err(e) => return Err(e),
+            CapabilityDecision::Unknown { operation, reason: _ } => {
+                return Err(LspError::NotInitialized(format!(
+                    "capability {} is not yet known for {}",
+                    operation.as_str(),
+                    file_path.display(),
+                )));
+            }
         }
-        let resp = self.prepare_rename(file_path, line, column).await?;
+        let resp = self
+            .prepare_rename_unchecked(file_path, line, column)
+            .await?;
         Ok(PrepareRenameResult::from_response(resp))
     }
 
     /// Preview-only `textDocument/rename` returning a typed
-    /// [`RenamePreview`] DTO. Capability-gated via
-    /// `prepare_rename_typed` and the same root-validation
-    /// contract as [`Self::rename_preview`].
+    /// [`RenamePreview`] DTO. Capability-gated via the explicit
+    /// Rename + PrepareRename capability decisions and the same
+    /// root-validation contract as
+    /// [`Self::rename_preview_unchecked`].
     ///
     /// `new_name` must be non-empty. The on-disk file is never
     /// mutated. Resource operations (create/rename/delete) inside
     /// `document_changes` are reported as structured warnings
     /// because the underlying preview pipeline does not surface
     /// them.
+    ///
+    /// # Capability decision flow
+    ///
+    /// ```text
+    /// 1. require Rename capability (fail-closed: not advertised → Unavailable,
+    ///    unknown → NotInitialized)
+    /// 2. inspect effective capability snapshot for PrepareRename
+    /// 3. if PrepareRename supported:
+    ///      call prepareRename
+    ///      NotRenameable -> return empty structured preview, no rename request
+    ///      Range/DefaultBehavior -> continue with `old_name` from the placeholder
+    /// 4. if PrepareRename unsupported:
+    ///      skip prepareRename, issue `textDocument/rename` directly,
+    ///      `old_name = None` (the server did not advertise prepare-rename;
+    ///      fabricating a placeholder would be wrong)
+    /// 5. if PrepareRename unknown:
+    ///      fail closed with NotInitialized (do not silently issue a rename
+    ///      against a server whose prepare-rename state is not yet known)
+    /// ```
     pub async fn rename_preview_typed(
         &self,
         file_path: &Path,
@@ -277,12 +323,58 @@ impl super::LspOperations {
         })?;
         let target_base_hash = sha256_hex(base_content.as_bytes());
 
-        // Step 1: prepare_rename (typed) → placeholder.
-        let prepared = self.prepare_rename_typed(file_path, line, column).await?;
+        // Step 1: explicit Rename capability gate. The server MUST
+        // advertise rename; if it does not, fail fast with a
+        // structured `LspUnavailable` so the caller can react.
+        self.require_capability(file_path, LspSemanticOperation::Rename)
+            .await?;
 
-        // If the server says the position is not renameable, do not
-        // send the rename request — return a structured indication.
-        if !prepared.is_renameable() {
+        // Step 2: inspect the explicit PrepareRename decision so
+        // we can react differently to `Unsupported` (issue rename
+        // directly with `old_name = None`) and `Unknown` (fail
+        // closed). The previous flow always called
+        // `prepare_rename_typed`, which conflated "server does
+        // not advertise prepare-rename" with "the position is
+        // not renameable".
+        let prepare_decision = self
+            .capability_decision_for_file(file_path, LspSemanticOperation::PrepareRename)
+            .await?;
+
+        let mut warnings: Vec<String> = Vec::new();
+        let prepared = match prepare_decision {
+            CapabilityDecision::Supported => {
+                // Server advertises prepare-rename. Call it and
+                // branch on the typed result.
+                self.prepare_rename_typed(file_path, line, column).await?
+            }
+            CapabilityDecision::Unsupported(u) => {
+                // Server does NOT advertise prepare-rename but
+                // DOES advertise rename (Step 1 already gated
+                // that). Record a structured note and proceed
+                // with the rename request directly; `old_name`
+                // is `None` because we have no placeholder.
+                warnings.push(format!(
+                    "prepareRename not advertised by {}; issuing rename directly",
+                    u.server.as_deref().unwrap_or("server")
+                ));
+                PrepareRenameResult::DefaultBehavior
+            }
+            CapabilityDecision::Unknown { operation, reason: _ } => {
+                // Fail-closed: if the server's prepare-rename
+                // capability is not yet known, do not silently
+                // issue a rename.
+                return Err(LspError::NotInitialized(format!(
+                    "capability {} is not yet known for {}",
+                    operation.as_str(),
+                    file_path.display(),
+                )));
+            }
+        };
+
+        // If the server explicitly told us the position is not
+        // renameable, do not send the rename request — return a
+        // structured empty preview.
+        if matches!(prepared, PrepareRenameResult::NotRenameable) {
             let (key, _root) = self.service.get_or_create_client(file_path).await?;
             let server_generation = self.service.generation_for_key(&key).await;
             return Ok(RenamePreview {
@@ -302,19 +394,19 @@ impl super::LspOperations {
 
         let old_name = match &prepared {
             PrepareRenameResult::Range { placeholder, .. } => placeholder.clone(),
-            PrepareRenameResult::DefaultBehavior | PrepareRenameResult::NotRenameable => None,
-            PrepareRenameResult::Unavailable(_) => unreachable!("checked above"),
+            PrepareRenameResult::DefaultBehavior => None,
+            PrepareRenameResult::NotRenameable => None,
+            PrepareRenameResult::Unavailable(_) => unreachable!("handled above"),
         };
 
-        // Step 2: call the existing rename pipeline to get a
+        // Step 3: call the existing rename pipeline to get a
         // raw WorkspaceEdit (so we can inspect document_changes
         // for resource ops) AND the prepared WorkspaceEditPreview.
         let (raw_edit, preview) = self
             .rename_raw_and_preview(file_path, line, column, new_name, allowed_root)
             .await?;
 
-        // Step 3: scan for resource operations in document_changes.
-        let mut warnings: Vec<String> = Vec::new();
+        // Step 4: scan for resource operations in document_changes.
         if let Some(doc_changes) = raw_edit.document_changes.as_ref() {
             match doc_changes {
                 DocumentChanges::Operations(ops) => {
@@ -336,7 +428,7 @@ impl super::LspOperations {
             }
         }
 
-        // Step 4: re-check the caps from the prepared preview.
+        // Step 5: re-check the caps from the prepared preview.
         let edit_count = preview.total_edits;
         let mut truncated = preview.truncated;
         if preview.total_files > RENAME_PREVIEW_MAX_FILES {
@@ -354,7 +446,7 @@ impl super::LspOperations {
             ));
         }
 
-        // Step 5: capture hashes of affected files from the preview
+        // Step 6: capture hashes of affected files from the preview
         // and verify none changed externally during the request.
         let mut affected_file_versions = Vec::new();
         let mut base_stale = false;
@@ -420,7 +512,7 @@ impl super::LspOperations {
     /// the raw `WorkspaceEdit` (for resource-op inspection) AND
     /// the prepared `WorkspaceEditPreview` (for the model-facing
     /// surface). Reuses the same logic as the public
-    /// `rename_preview` method.
+    /// `rename_preview_unchecked` method.
     pub(crate) async fn rename_raw_and_preview(
         &self,
         file_path: &Path,
@@ -757,5 +849,137 @@ mod tests {
             },
         ];
         assert_eq!(evidence.len(), 2);
+    }
+
+    // ── Pass 1: capability decision flow tests ─────────────────────
+
+    /// Build a snapshot where the server advertises `renameProvider`
+    /// but NOT `prepareProvider`. The `renameProvider` is set with
+    /// `prepare_provider: Some(false)`, so the snapshot should
+    /// report rename supported and prepare-rename unsupported.
+    fn rename_supported_prepare_unsupported_snapshot() -> LspCapabilitySnapshot {
+        let mut caps = ServerCapabilities::default();
+        caps.rename_provider = Some(lsp_types::OneOf::Right(RenameOptions {
+            prepare_provider: Some(false),
+            work_done_progress_options: Default::default(),
+        }));
+        LspCapabilitySnapshot::from_capabilities(&caps, Some("clangd"), Some("cpp"))
+    }
+
+    /// Build a snapshot where the server does not advertise any
+    /// rename provider. Both rename and prepare-rename are
+    /// unsupported.
+    fn rename_unsupported_snapshot() -> LspCapabilitySnapshot {
+        let caps = ServerCapabilities::default();
+        LspCapabilitySnapshot::from_capabilities(&caps, Some("pylsp"), Some("python"))
+    }
+
+    /// Build a snapshot where the server advertises both rename
+    /// and prepare-rename.
+    fn rename_and_prepare_supported_snapshot() -> LspCapabilitySnapshot {
+        let mut caps = ServerCapabilities::default();
+        caps.rename_provider = Some(lsp_types::OneOf::Right(RenameOptions {
+            prepare_provider: Some(true),
+            work_done_progress_options: Default::default(),
+        }));
+        LspCapabilitySnapshot::from_capabilities(&caps, Some("rust-analyzer"), Some("rust"))
+    }
+
+    #[test]
+    fn rename_supported_prepare_unsupported_decision_is_distinct() {
+        // Pass 1 — when rename is supported but prepare-rename is
+        // not, the typed surface must distinguish the two states
+        // and call the rename request directly (with `old_name =
+        // None`) instead of stopping with a "not renameable" error.
+        let snap = rename_supported_prepare_unsupported_snapshot();
+        assert!(snap.supports(LspSemanticOperation::Rename));
+        assert!(!snap.supports(LspSemanticOperation::PrepareRename));
+        match snap.decide(LspSemanticOperation::PrepareRename) {
+            CapabilityDecision::Unsupported(u) => {
+                assert_eq!(u.operation, "prepareRename");
+            }
+            other => panic!("expected Unsupported, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rename_unsupported_decision_is_unsupported() {
+        // Pass 1 — when rename is not advertised, the decision
+        // must be `Unsupported` so the typed surface rejects the
+        // request before any protocol call.
+        let snap = rename_unsupported_snapshot();
+        assert!(!snap.supports(LspSemanticOperation::Rename));
+        match snap.decide(LspSemanticOperation::Rename) {
+            CapabilityDecision::Unsupported(u) => {
+                assert_eq!(u.operation, "rename");
+            }
+            other => panic!("expected Unsupported, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rename_and_prepare_supported_both_supported() {
+        // Pass 1 — when both are advertised, both decisions are
+        // `Supported` so the typed surface calls prepare-rename
+        // first, then rename.
+        let snap = rename_and_prepare_supported_snapshot();
+        assert!(snap.supports(LspSemanticOperation::Rename));
+        assert!(snap.supports(LspSemanticOperation::PrepareRename));
+        assert!(matches!(
+            snap.decide(LspSemanticOperation::Rename),
+            CapabilityDecision::Supported
+        ));
+        assert!(matches!(
+            snap.decide(LspSemanticOperation::PrepareRename),
+            CapabilityDecision::Supported
+        ));
+    }
+
+    #[test]
+    fn prepare_null_response_normalizes_to_not_renameable() {
+        // Pass 1 — when the server returns null from prepareRename
+        // (i.e. the position cannot be renamed), the typed surface
+        // must stop before issuing the rename request and return
+        // an empty structured preview.
+        let prepared: PrepareRenameResult = PrepareRenameResult::from_response(None);
+        assert!(matches!(prepared, PrepareRenameResult::NotRenameable));
+        assert!(!prepared.is_renameable());
+    }
+
+    #[test]
+    fn prepare_default_behavior_is_renameable_with_no_placeholder() {
+        // Pass 1 — when the server returns `defaultBehavior: true`,
+        // the typed surface must continue to the rename step and
+        // pass `old_name = None` (no placeholder available).
+        let prepared: PrepareRenameResult =
+            PrepareRenameResult::from_response(Some(PrepareRenameResponse::DefaultBehavior {
+                default_behavior: true,
+            }));
+        assert!(matches!(prepared, PrepareRenameResult::DefaultBehavior));
+        assert!(prepared.is_renameable());
+        // No placeholder when the server returns DefaultBehavior.
+        assert!(prepared.range().is_none());
+    }
+
+    #[test]
+    fn prepare_unavailable_is_not_renameable() {
+        // Pass 1 — when the server does not advertise prepare-rename,
+        // the typed surface must NOT collapse this into a
+        // `NotRenameable` for the position; the rename pipeline
+        // branches on this case and issues the rename request
+        // directly.
+        let prepared = PrepareRenameResult::Unavailable(LspUnavailable::new(
+            LspSemanticOperation::PrepareRename,
+            "no provider",
+        ));
+        assert!(!prepared.is_renameable());
+        assert!(matches!(prepared, PrepareRenameResult::Unavailable(_)));
+        // The rename pipeline uses a different branch
+        // (`CapabilityDecision::Unsupported`) for this case;
+        // a `PrepareRenameResult::Unavailable` would only be
+        // observed if the caller already invoked
+        // `prepare_rename_typed` directly. The flow is:
+        //   rename_preview_typed inspects the capability decision
+        //   directly, NOT the result of `prepare_rename_typed`.
     }
 }

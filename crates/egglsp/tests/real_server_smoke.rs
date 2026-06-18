@@ -148,6 +148,28 @@ struct RealServerFixture {
     hover_requirement: CompatibilityRequirement,
     shutdown_requirement: CompatibilityRequirement,
     implementation_position: Option<Position>,
+    /// Pass 4 — optional override for the source file the
+    /// implementation check is driven from. When `None`, the
+    /// harness uses `primary_source`. clangd's
+    /// `textDocument/implementation` is exercised from a header
+    /// file (`include/widget.hpp`) because that is where the
+    /// abstract declaration lives.
+    implementation_source: Option<PathBuf>,
+    /// Pass 8 — position the code-action request is driven
+    /// from. When `None`, the harness falls back to
+    /// `definition_position`.
+    code_action_position: Option<Position>,
+    /// Pass 8 — minimum number of edit-bearing code actions
+    /// required for the smoke check to pass. `0` preserves the
+    /// legacy "any response is fine" behavior; `>0` opts into
+    /// the strict previewable-only semantics (null / empty /
+    /// 0 edit-bearing all fail).
+    code_action_min_edit_bearing: usize,
+    /// Pass 8 — allow the code-action check to pass with a
+    /// command-only result (no edit). `false` (default)
+    /// classifies a command-only response as a known
+    /// limitation; `true` treats it as a passing check.
+    code_action_allow_command_only: bool,
     /// Pass 5 — type-hierarchy expectations. Each entry describes a
     /// position the harness should request prepareTypeHierarchy at
     /// and a minimum item count + optional supertype/subtype checks.
@@ -203,6 +225,13 @@ struct ExpectedCapabilities {
 #[derive(Clone)]
 struct LocationExpectation {
     pub position: Position,
+    /// Optional override for the source file the request is
+    /// issued against. When `None`, the request uses the
+    /// fixture's `primary_source`. Pass 4 — clangd's
+    /// `textDocument/implementation` is exercised from
+    /// `include/widget.hpp`, not the primary `main.cpp`, so the
+    /// harness must support a per-expectation URI.
+    pub source_file: Option<PathBuf>,
     /// Minimum number of locations the query must return. Defaults
     /// to 1 for simple "did the server return *anything*" checks.
     pub min_locations: usize,
@@ -220,6 +249,7 @@ impl Default for LocationExpectation {
     fn default() -> Self {
         Self {
             position: Position::new(0, 0),
+            source_file: None,
             min_locations: 1,
             expected_files: Vec::new(),
             expected_label_substrings: Vec::new(),
@@ -289,6 +319,17 @@ struct TypeHierarchyExpectation {
     pub position: Position,
     /// Minimum number of items the prepare response must return.
     pub min_items: usize,
+    /// If `Some(name)`, at least one prepare item must have a
+    /// name matching this string. Pass 5 — when the fixture
+    /// defines a real trait (e.g. `Greeter`), the smoke suite
+    /// asserts the returned item is `Greeter` rather than
+    /// relying on count alone.
+    pub expected_prepare_name: Option<String>,
+    /// Substrings that must appear in at least one returned
+    /// subtype item name. Pass 5 — when the fixture defines a
+    /// `Person` struct implementing the trait, the smoke suite
+    /// asserts the returned subtype name contains `Person`.
+    pub expected_subtype_substrings: Vec<String>,
     /// If true, also exercise supertypes after prepare.
     pub check_supertypes: bool,
     /// If true, also exercise subtypes after prepare.
@@ -300,6 +341,8 @@ impl Default for TypeHierarchyExpectation {
         Self {
             position: Position::new(0, 0),
             min_items: 1,
+            expected_prepare_name: None,
+            expected_subtype_substrings: Vec::new(),
             check_supertypes: true,
             check_subtypes: false,
         }
@@ -348,16 +391,35 @@ edition = "2021"
     // Line 16:     }
     // Line 17: }
     // Line 18: (blank)
-    // Line 19: // Intentional type error for diagnostics
-    // Line 20: pub fn broken() -> i32 {
-    // Line 21:     let x: String = 42;
-    // Line 22:     x
-    // Line 23: }
-    // Line 24: (blank)
-    // Line 25: // Call hierarchy target
-    // Line 26: pub fn caller() -> i32 {
-    // Line 27:     add(1, 2)
+    // Line 19: // Pass 5 — Type-hierarchy target: a `Greeter` trait
+    // Line 20: // and a `Person` struct implementing it. The
+    // Line 21: // smoke suite queries `textDocument/prepareTypeHierarchy`
+    // Line 22: // at the `Greeter` identifier (line 22) and asserts
+    // Line 23: // that the returned item name is `Greeter`. The
+    // Line 24: // follow-up `typeHierarchy/subtypes` request
+    // Line 25: // must return `Person`.
+    // Line 26: pub trait Greeter {
+    // Line 27:     fn greet(&self) -> String;
     // Line 28: }
+    // Line 29: (blank)
+    // Line 30: pub struct Person;
+    // Line 31: (blank)
+    // Line 32: impl Greeter for Person {
+    // Line 33:     fn greet(&self) -> String {
+    // Line 34:         "hello".to_string()
+    // Line 35:     }
+    // Line 36: }
+    // Line 37: (blank)
+    // Line 38: // Intentional type error for diagnostics
+    // Line 39: pub fn broken() -> i32 {
+    // Line 40:     let x: String = 42;
+    // Line 41:     x
+    // Line 42: }
+    // Line 43: (blank)
+    // Line 44: // Call hierarchy target
+    // Line 45: pub fn caller() -> i32 {
+    // Line 46:     add(1, 2)
+    // Line 47: }
     let lib_rs = src_dir.join("lib.rs");
     std::fs::write(
         &lib_rs,
@@ -377,6 +439,24 @@ pub struct Point {
 impl Point {
     pub fn distance(&self, other: &Point) -> f64 {
         ((self.x - other.x).powi(2) + (self.y - other.y).powi(2)).sqrt()
+    }
+}
+
+// Pass 5 — Type-hierarchy target: a `Greeter` trait and a
+// `Person` struct implementing it. The smoke suite queries
+// `textDocument/prepareTypeHierarchy` at the `Greeter`
+// identifier and asserts that the returned item name is
+// `Greeter`. The follow-up `typeHierarchy/subtypes` request
+// must return `Person`.
+pub trait Greeter {
+    fn greet(&self) -> String;
+}
+
+pub struct Person;
+
+impl Greeter for Person {
+    fn greet(&self) -> String {
+        "hello".to_string()
     }
 }
 
@@ -403,15 +483,17 @@ pub fn caller() -> i32 {
         diagnostics_file: lib_rs.clone(),
         // `Point` struct on line 8, character 9 lands on the identifier.
         symbol_position: Position::new(8, 9),
-        // `add` call site: line 27, character 4.
-        definition_position: Position::new(27, 4),
+        // `add` call site: line 46, character 4.
+        definition_position: Position::new(46, 4),
         // `add` declaration: line 0, character 7.
         references_position: Position::new(0, 7),
-        // `add` call site: line 27, character 4.
-        hover_position: Position::new(27, 4),
+        // `add` call site: line 46, character 4.
+        hover_position: Position::new(46, 4),
         // No secondary source — position unused.
         cross_file_references_position: Position::new(0, 0),
-        expected_symbol_names: vec!["add", "greet", "Point", "broken", "caller"],
+        expected_symbol_names: vec![
+            "add", "greet", "Point", "Greeter", "Person", "broken", "caller",
+        ],
         language_id: "rust".to_string(),
         // Pass 3 — leave all new operation positions unset. The
         // existing Rust smoke suite exercises the four classic
@@ -419,7 +501,16 @@ pub fn caller() -> i32 {
         // hover) and does not opt into the new read-only and
         // preview operations yet.
         mutation_targets: MutationTargets::default(),
-        expected_capabilities: ExpectedCapabilities::default(),
+        expected_capabilities: ExpectedCapabilities {
+            // Pass 5 — Opt into the type-hierarchy check. The
+            // `rust_analyzer_profile` advertises
+            // `supports_type_hierarchy = true` via the
+            // `ObservedCapabilitiesOverride` (lsp-types 0.97
+            // does not expose the server-side field). The
+            // fixture exercises prepare + subtypes.
+            type_hierarchy: true,
+            ..Default::default()
+        },
         completions: Vec::new(),
         declaration_targets: Vec::new(),
         signature_help_targets: Vec::new(),
@@ -433,7 +524,23 @@ pub fn caller() -> i32 {
         hover_requirement: CompatibilityRequirement::KnownLimitation,
         shutdown_requirement: CompatibilityRequirement::Required,
         implementation_position: None,
-        type_hierarchy_targets: Vec::new(),
+        implementation_source: None,
+        code_action_position: None,
+        code_action_min_edit_bearing: 0,
+        code_action_allow_command_only: false,
+        // Pass 5 — query `textDocument/prepareTypeHierarchy` at
+        // the `Greeter` trait identifier on line 26 (column 9)
+        // and assert the returned item is `Greeter`. Follow up
+        // with `typeHierarchy/subtypes` and assert `Person`
+        // appears.
+        type_hierarchy_targets: vec![TypeHierarchyExpectation {
+            position: Position::new(26, 9),
+            min_items: 1,
+            expected_prepare_name: Some("Greeter".to_string()),
+            expected_subtype_substrings: vec!["Person".to_string()],
+            check_supertypes: true,
+            check_subtypes: true,
+        }],
     }
 }
 
@@ -549,6 +656,10 @@ def caller() -> int:
         hover_requirement: CompatibilityRequirement::RequiredIfAdvertised,
         shutdown_requirement: CompatibilityRequirement::Required,
         implementation_position: None,
+        implementation_source: None,
+        code_action_position: None,
+        code_action_min_edit_bearing: 0,
+        code_action_allow_command_only: false,
         type_hierarchy_targets: Vec::new(),
     }
 }
@@ -651,9 +762,15 @@ func Caller() int {
         hover_requirement: CompatibilityRequirement::RequiredIfAdvertised,
         shutdown_requirement: CompatibilityRequirement::KnownLimitation,
         implementation_position: Some(Position::new(7, 5)),
+        implementation_source: None,
+        code_action_position: None,
+        code_action_min_edit_bearing: 0,
+        code_action_allow_command_only: false,
         type_hierarchy_targets: vec![TypeHierarchyExpectation {
             position: Position::new(6, 5),
             min_items: 1,
+            expected_prepare_name: None,
+            expected_subtype_substrings: Vec::new(),
             check_supertypes: true,
             check_subtypes: true,
         }],
@@ -732,21 +849,35 @@ export function add(a: number, b: number): number {
     // Line 3:     return `Hello, ${name}!`;
     // Line 4: }
     // Line 5: (blank)
-    // Line 6: // Intentional type error for diagnostics
-    // Line 7: function broken(): number {
-    // Line 8:     const x: string = 42;
-    // Line 9:     return x;
-    // Line 10: }
-    // Line 11: (blank)
-    // Line 12: // Cross-file reference: uses `add` from helper.ts.
-    // Line 13: function caller(): number {
-    // Line 14:     return add(1, 2);
-    // Line 15: }
-    // Line 16: (blank)
-    // Line 17: // Completion site — `add.` would offer completion after typing.
-    // Line 18: const _completionSite = add;
-    // Line 19: // Signature-help site — calling `add(`
-    // Line 20: const _signatureSite = add(1, 2);
+    // Line 6: // Pass 3 — Real implementation target. Querying
+    // Line 7: // `textDocument/implementation` at the `greet`
+    // Line 8: // method on the `Greeter` interface must return
+    // Line 9: // `Person.greet` in the same file.
+    // Line 10: interface Greeter {
+    // Line 11:     greet(name: string): string;
+    // Line 12: }
+    // Line 13: (blank)
+    // Line 14: class Person implements Greeter {
+    // Line 15:     greet(name: string): string {
+    // Line 16:         return `Hello, ${name}`;
+    // Line 17:     }
+    // Line 18: }
+    // Line 19: (blank)
+    // Line 20: // Intentional type error for diagnostics
+    // Line 21: function broken(): number {
+    // Line 22:     const x: string = 42;
+    // Line 23:     return x;
+    // Line 24: }
+    // Line 25: (blank)
+    // Line 26: // Cross-file reference: uses `add` from helper.ts.
+    // Line 27: function caller(): number {
+    // Line 28:     return add(1, 2);
+    // Line 29: }
+    // Line 30: (blank)
+    // Line 31: // Completion site — `add` is referenced.
+    // Line 32: const _completionSite = add;
+    // Line 33: // Signature-help site — calling `add(`
+    // Line 34: const _signatureSite = add(1, 2);
     let main_ts = src_dir.join("main.ts");
     std::fs::write(
         &main_ts,
@@ -754,6 +885,20 @@ export function add(a: number, b: number): number {
 
 function greet(name: string): string {
     return `Hello, ${name}!`;
+}
+
+// Pass 3 — Real implementation target. Querying
+// `textDocument/implementation` at the `greet` method on the
+// `Greeter` interface must return `Person.greet` in the same
+// file. The harness drives the request from main.ts.
+interface Greeter {
+    greet(name: string): string;
+}
+
+class Person implements Greeter {
+    greet(name: string): string {
+        return `Hello, ${name}`;
+    }
 }
 
 // Intentional type error for diagnostics
@@ -784,15 +929,15 @@ const _signatureSite = add(1, 2);
         diagnostics_file: main_ts.clone(),
         // `greet` def on line 2, character 9.
         symbol_position: Position::new(2, 9),
-        // `add` call site in main.ts: line 14, character 11.
-        definition_position: Position::new(14, 11),
+        // `add` call site in main.ts: line 28, character 11.
+        definition_position: Position::new(28, 11),
         // `add` import use in main.ts: line 0, character 9 (lands on `add`).
         references_position: Position::new(0, 9),
-        // `add` call site: line 14, character 11.
-        hover_position: Position::new(14, 11),
+        // `add` call site: line 28, character 11.
+        hover_position: Position::new(28, 11),
         // `add` def in helper.ts: line 5, character 16.
         cross_file_references_position: Position::new(5, 16),
-        expected_symbol_names: vec!["greet", "broken", "caller"],
+        expected_symbol_names: vec!["greet", "Person", "broken", "caller"],
         language_id: "typescript".to_string(),
         // Pass 3 — TypeScript profile opts into the
         // implementation, signature help, and document
@@ -808,8 +953,9 @@ const _signatureSite = add(1, 2);
         completions: Vec::new(),
         declaration_targets: Vec::new(),
         signature_help_targets: vec![LocationExpectation {
-            // add(1, 2) at line 20 — cursor inside parentheses
-            position: Position::new(20, 29),
+            // add(1, 2) at line 34 — cursor inside parentheses
+            position: Position::new(34, 29),
+            source_file: None,
             min_locations: 0,
             expected_files: Vec::new(),
             expected_label_substrings: vec!["add".to_string()],
@@ -820,7 +966,16 @@ const _signatureSite = add(1, 2);
         references_requirement: CompatibilityRequirement::RequiredIfAdvertised,
         hover_requirement: CompatibilityRequirement::RequiredIfAdvertised,
         shutdown_requirement: CompatibilityRequirement::KnownLimitation,
-        implementation_position: None,
+        // Pass 3 — Real implementation target. Query at the
+        // `greet` method on the `Greeter` interface in main.ts
+        // (line 11, character 4). typescript-language-server is
+        // expected to return the `Person.greet` implementation in
+        // the same file.
+        implementation_position: Some(Position::new(11, 4)),
+        implementation_source: None,
+        code_action_position: None,
+        code_action_min_edit_bearing: 0,
+        code_action_allow_command_only: false,
         type_hierarchy_targets: Vec::new(),
     }
 }
@@ -955,10 +1110,15 @@ int caller() {
         mutation_targets: MutationTargets::default(),
         expected_capabilities: ExpectedCapabilities {
             declaration: true,
-            // clangd implementation requires a declaration in the primary
-            // source; the fixture only has declarations in widget.hpp.
-            // Querying from a usage site in main.cpp returns 0 results.
-            implementation: false,
+            // Pass 4 — exercise clangd implementation from the
+            // header declaration. The virtual `add` method on
+            // `WidgetBase` (in `include/widget.hpp`) has
+            // `Widget::add` (in `src/widget.cpp`) as its
+            // implementation. Querying from the header
+            // declaration is the correct way to drive this
+            // check; querying from a usage site in main.cpp
+            // returns 0 results.
+            implementation: true,
             document_highlight: true,
             // clangd does not support textDocument/prepareTypeHierarchy.
             ..Default::default()
@@ -972,11 +1132,18 @@ int caller() {
         references_requirement: CompatibilityRequirement::KnownLimitation,
         hover_requirement: CompatibilityRequirement::KnownLimitation,
         shutdown_requirement: CompatibilityRequirement::KnownLimitation,
-        // clangd implementation requires a declaration in the primary
-        // source file; the fixture only has declarations in widget.hpp.
-        // Kept for reference — not exercised because
-        // expected_capabilities.implementation is false.
-        implementation_position: Some(Position::new(7, 4)),
+        // Pass 4 — query at the `add` declaration in
+        // `include/widget.hpp` (line 3, character 16 in the
+        // header — the `add` identifier in
+        // `virtual int add(int a, int b) = 0;`).
+        implementation_position: Some(Position::new(3, 16)),
+        // Pass 4 — drive the implementation check from the
+        // header file, not the primary main.cpp. clangd resolves
+        // implementations by looking at the declaration site.
+        implementation_source: Some(widget_hpp.clone()),
+        code_action_position: None,
+        code_action_min_edit_bearing: 0,
+        code_action_allow_command_only: false,
         type_hierarchy_targets: Vec::new(),
     }
 }
@@ -993,28 +1160,43 @@ use egglsp::diagnostics::LspDiagnosticSnapshot;
 use egglsp::launch::LspLaunchSpec;
 
 /// Result of a single smoke check.
+///
+/// Pass 7 — status is now an explicit field rather than an
+/// inferred property of `result` + `requirement`. The new
+/// constructors (`passing`, `failing`, `skipped`, `unsupported`,
+/// `known_limit`) populate the field directly so the harness
+/// cannot accidentally represent a skipped check as `Passing` or
+/// an unsupported check as `PassingWithKnownLimits`. The legacy
+/// `pass` / `fail` constructors remain as thin shims that
+/// preserve the original test wiring while routing through the
+/// explicit status field.
 struct SmokeCheck {
     name: String,
-    result: Result<(), String>,
+    status: CompatibilityCheckStatus,
     requirement: CompatibilityRequirement,
+    detail: Option<String>,
     duration_ms: u64,
 }
 
 impl SmokeCheck {
-    fn pass(
+    /// Passing check: request was exercised and the semantic
+    /// assertion held.
+    fn passing(
         name: impl Into<String>,
         requirement: CompatibilityRequirement,
         duration_ms: u64,
     ) -> Self {
         Self {
             name: name.into(),
-            result: Ok(()),
+            status: CompatibilityCheckStatus::Passing,
             requirement,
+            detail: None,
             duration_ms,
         }
     }
 
-    fn fail(
+    /// Failing check: required semantic/protocol failure.
+    fn failing(
         name: impl Into<String>,
         requirement: CompatibilityRequirement,
         reason: impl Into<String>,
@@ -1022,28 +1204,110 @@ impl SmokeCheck {
     ) -> Self {
         Self {
             name: name.into(),
-            result: Err(reason.into()),
+            status: CompatibilityCheckStatus::Failing,
             requirement,
+            detail: Some(reason.into()),
             duration_ms,
         }
     }
 
-    fn status(&self) -> CompatibilityCheckStatus {
-        match (&self.result, self.requirement) {
-            (Ok(()), _) => CompatibilityCheckStatus::Passing,
-            (Err(_), CompatibilityRequirement::KnownLimitation) => {
-                CompatibilityCheckStatus::PassingWithKnownLimits
-            }
-            (Err(_), _) => CompatibilityCheckStatus::Failing,
+    /// Skipped check: fixture chose not to exercise this
+    /// operation. Distinct from `unsupported` — `skipped` means
+    /// the fixture never asked the server, while `unsupported`
+    /// means the server did not advertise the capability.
+    fn skipped(
+        name: impl Into<String>,
+        requirement: CompatibilityRequirement,
+        reason: impl Into<String>,
+        duration_ms: u64,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            status: CompatibilityCheckStatus::Skipped,
+            requirement,
+            detail: Some(reason.into()),
+            duration_ms,
+        }
+    }
+
+    /// Unsupported check: server did not advertise support.
+    /// `unsupported` is distinct from `skipped` and `failing`
+    /// and must never be reported as `Passing`.
+    fn unsupported(
+        name: impl Into<String>,
+        requirement: CompatibilityRequirement,
+        reason: impl Into<String>,
+        duration_ms: u64,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            status: CompatibilityCheckStatus::Unsupported,
+            requirement,
+            detail: Some(reason.into()),
+            duration_ms,
+        }
+    }
+
+    /// Known-limit check: a documented limitation that is
+    /// allowed to fail without failing the suite. The status
+    /// is `PassingWithKnownLimits` so `assert_required_checks`
+    /// does not fail, but the detail field records the
+    /// underlying failure reason.
+    fn known_limit(
+        name: impl Into<String>,
+        requirement: CompatibilityRequirement,
+        reason: impl Into<String>,
+        duration_ms: u64,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            status: CompatibilityCheckStatus::PassingWithKnownLimits,
+            requirement,
+            detail: Some(reason.into()),
+            duration_ms,
+        }
+    }
+
+    /// Legacy constructor — prefer the explicit `passing` /
+    /// `failing` / `skipped` / `unsupported` / `known_limit`
+    /// constructors.
+    fn pass(
+        name: impl Into<String>,
+        requirement: CompatibilityRequirement,
+        duration_ms: u64,
+    ) -> Self {
+        Self::passing(name, requirement, duration_ms)
+    }
+
+    /// Legacy constructor — prefer `failing` / `known_limit`
+    /// for explicit status semantics.
+    fn fail(
+        name: impl Into<String>,
+        requirement: CompatibilityRequirement,
+        reason: impl Into<String>,
+        duration_ms: u64,
+    ) -> Self {
+        // Infer `PassingWithKnownLimits` only when the
+        // requirement itself is `KnownLimitation`. This is the
+        // only case where the legacy `fail` constructor was
+        // implicitly producing a non-`Failing` status.
+        match requirement {
+            CompatibilityRequirement::KnownLimitation => Self::known_limit(
+                name,
+                requirement,
+                reason,
+                duration_ms,
+            ),
+            _ => Self::failing(name, requirement, reason, duration_ms),
         }
     }
 
     fn to_compatibility_check(&self) -> LspCompatibilityCheck {
         LspCompatibilityCheck {
             name: self.name.clone(),
-            status: self.status(),
+            status: self.status.clone(),
             requirement: self.requirement,
-            detail: self.result.as_ref().err().cloned(),
+            detail: self.detail.clone(),
             duration_ms: Some(self.duration_ms),
         }
     }
@@ -1275,6 +1539,7 @@ async fn run_smoke_suite(
                 None,
                 LspCapabilitySnapshot::default(),
                 &checks,
+                Vec::new(),
                 stderr_tail,
             );
         }
@@ -1300,6 +1565,7 @@ async fn run_smoke_suite(
                 None,
                 LspCapabilitySnapshot::default(),
                 &checks,
+                Vec::new(),
                 stderr_tail,
             );
         }
@@ -1345,6 +1611,7 @@ async fn run_smoke_suite(
                 None,
                 LspCapabilitySnapshot::default(),
                 &checks,
+                Vec::new(),
                 stderr_tail,
             );
         }
@@ -1576,9 +1843,10 @@ async fn run_smoke_suite(
             )),
         }
     } else {
-        checks.push(SmokeCheck::pass(
-            "document_symbols (skipped: not supported)",
+        checks.push(SmokeCheck::unsupported(
+            "document_symbols",
             CompatibilityRequirement::Optional,
+            "server did not advertise document symbols provider",
             0,
         ));
     }
@@ -1626,9 +1894,10 @@ async fn run_smoke_suite(
             )),
         }
     } else {
-        checks.push(SmokeCheck::pass(
-            "definition (skipped: not supported)",
+        checks.push(SmokeCheck::unsupported(
+            "definition",
             CompatibilityRequirement::Optional,
+            "server did not advertise definition provider",
             0,
         ));
     }
@@ -1760,9 +2029,10 @@ async fn run_smoke_suite(
             }
         }
     } else {
-        checks.push(SmokeCheck::pass(
-            "references (skipped: not supported)",
+        checks.push(SmokeCheck::unsupported(
+            "references",
             CompatibilityRequirement::Optional,
+            "server did not advertise references provider",
             0,
         ));
     }
@@ -1810,9 +2080,10 @@ async fn run_smoke_suite(
             )),
         }
     } else {
-        checks.push(SmokeCheck::pass(
-            "hover (skipped: not supported)",
+        checks.push(SmokeCheck::unsupported(
+            "hover",
             CompatibilityRequirement::Optional,
+            "server did not advertise hover provider",
             0,
         ));
     }
@@ -1850,31 +2121,118 @@ async fn run_smoke_suite(
     // Populate stderr_tail from the runtime — this is the real
     // captured stderr from the language server process, not a stub.
     stderr_tail = harness.runtime().stderr_tail_capped(20);
+    let (shutdown_request_sent, shutdown_response_received, graceful_exit_observed, force_kill_requested) = match &shutdown_result {
+        HarnessShutdownResult::Graceful { .. } => (true, true, true, false),
+        HarnessShutdownResult::ForceKilled { .. } => (true, true, false, true),
+        HarnessShutdownResult::TimeoutExpired { .. } => (true, false, false, true),
+    };
     match &shutdown_result {
-        HarnessShutdownResult::Graceful { .. } => checks.push(SmokeCheck::pass(
+        HarnessShutdownResult::Graceful { .. } => checks.push(SmokeCheck::passing(
             "shutdown",
             CompatibilityRequirement::Required,
             shutdown_ms,
         )),
-        HarnessShutdownResult::ForceKilled { .. } => checks.push(SmokeCheck::fail(
-            "shutdown",
-            fixture.shutdown_requirement,
-            "server did not exit within graceful deadline; force-killed (daemon mode)",
-            shutdown_ms,
-        )),
-        HarnessShutdownResult::TimeoutExpired { .. } => checks.push(SmokeCheck::fail(
-            "shutdown",
-            CompatibilityRequirement::Required,
-            stage_timeout_error(
-                &profile.server_id,
-                bin_path,
-                "shutdown",
-                REQUEST_TIMEOUT,
-                &stderr_tail,
-            ),
-            shutdown_ms,
-        )),
+        HarnessShutdownResult::ForceKilled { .. } => {
+            // Pass 10 — Per-server actionable shutdown
+            // evidence. A force-kill is a *failure* unless
+            // the fixture's `shutdown_requirement` is
+            // `KnownLimitation` (clangd and the Tier 2
+            // servers occasionally hang during the
+            // `shutdown`/`exit` exchange because they are
+            // daemon-mode processes that ignore the
+            // protocol shutdown signal). When classified as
+            // a known limitation, surface the action items
+            // in the failure detail so the
+            // `assert_required_checks` and
+            // `LspCompatibilityReport.stderr_tail` carry
+            // actionable context.
+            let stderr_excerpt: String = stderr_tail
+                .iter()
+                .rev()
+                .take(5)
+                .cloned()
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect::<Vec<_>>()
+                .join(" | ");
+            let detail = format!(
+                "server did not exit within graceful deadline; force-killed (daemon mode). \
+                 stderr_tail (last 5 lines): [{}]. \
+                 Action: increase shutdown deadline, treat as known limitation, or migrate off daemon mode.",
+                stderr_excerpt
+            );
+            match fixture.shutdown_requirement {
+                CompatibilityRequirement::KnownLimitation => {
+                    checks.push(SmokeCheck::known_limit(
+                        "shutdown",
+                        CompatibilityRequirement::KnownLimitation,
+                        detail,
+                        shutdown_ms,
+                    ));
+                }
+                _ => {
+                    checks.push(SmokeCheck::fail(
+                        "shutdown",
+                        fixture.shutdown_requirement,
+                        detail,
+                        shutdown_ms,
+                    ));
+                }
+            }
+        }
+        HarnessShutdownResult::TimeoutExpired { .. } => {
+            // Pass 10 — Same classification logic for
+            // `TimeoutExpired`; surface the stderr tail as
+            // actionable evidence.
+            let stderr_excerpt: String = stderr_tail
+                .iter()
+                .rev()
+                .take(5)
+                .cloned()
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect::<Vec<_>>()
+                .join(" | ");
+            let detail = format!(
+                "{}\nstderr_tail (last 5 lines): [{}]",
+                stage_timeout_error(
+                    &profile.server_id,
+                    bin_path,
+                    "shutdown",
+                    REQUEST_TIMEOUT,
+                    &stderr_tail,
+                ),
+                stderr_excerpt
+            );
+            match fixture.shutdown_requirement {
+                CompatibilityRequirement::KnownLimitation => {
+                    checks.push(SmokeCheck::known_limit(
+                        "shutdown",
+                        CompatibilityRequirement::KnownLimitation,
+                        detail,
+                        shutdown_ms,
+                    ));
+                }
+                _ => {
+                    checks.push(SmokeCheck::fail(
+                        "shutdown",
+                        CompatibilityRequirement::Required,
+                        detail,
+                        shutdown_ms,
+                    ));
+                }
+            }
+        }
     }
+
+    // Pass 6 — Emit per-operation compatibility records by
+    // walking the `checks` collection. Each check name maps to
+    // an `LspSemanticOperation` and the harness records whether
+    // the request was exercised, the LSP request succeeded, and
+    // the semantic assertion passed.
+    let operation_support = checks_to_operation_support(&checks, &caps);
 
     build_report(
         profile,
@@ -1883,6 +2241,7 @@ async fn run_smoke_suite(
         Some(readiness_ms),
         caps,
         &checks,
+        operation_support,
         stderr_tail,
     )
 }
@@ -1894,6 +2253,7 @@ fn build_report(
     readiness_ms: Option<u64>,
     capabilities: LspCapabilitySnapshot,
     checks: &[SmokeCheck],
+    operation_support: Vec<egglsp::compatibility::LspOperationCompatibility>,
     stderr_tail: Vec<String>,
 ) -> LspCompatibilityReport {
     LspCompatibilityReport {
@@ -1904,9 +2264,141 @@ fn build_report(
         readiness_ms,
         capabilities,
         checks: checks.iter().map(|c| c.to_compatibility_check()).collect(),
+        operation_support,
         stderr_tail,
         known_limitations: profile.known_limitations.clone(),
     }
+}
+
+/// Pass 6 — Map `SmokeCheck` results to per-operation
+/// `LspOperationCompatibility` records. Each record carries the
+/// `advertised`, `exercised`, `request_succeeded`, and
+/// `semantic_assertion_passed` flags so consumers can answer
+/// questions like "was implementation exercised?" without
+/// parsing the `checks` collection.
+fn checks_to_operation_support(
+    checks: &[SmokeCheck],
+    caps: &LspCapabilitySnapshot,
+) -> Vec<egglsp::compatibility::LspOperationCompatibility> {
+    use egglsp::capability::LspSemanticOperation;
+    use egglsp::compatibility::{
+        CompatibilityRequirement, LspOperationCompatibility,
+    };
+
+    // Map from check name prefix to the corresponding
+    // `LspSemanticOperation` and capability field. The
+    // advertised state is read from the live capability
+    // snapshot for accuracy.
+    let operations: &[(&str, LspSemanticOperation, bool)] = &[
+        (
+            "implementation",
+            LspSemanticOperation::Implementation,
+            caps.supports_implementation,
+        ),
+        (
+            "declaration",
+            LspSemanticOperation::Declaration,
+            caps.supports_declaration,
+        ),
+        (
+            "signatureHelp",
+            LspSemanticOperation::SignatureHelp,
+            caps.supports_signature_help,
+        ),
+        (
+            "workspaceSymbol",
+            LspSemanticOperation::WorkspaceSymbols,
+            caps.supports_workspace_symbols,
+        ),
+        (
+            "semanticTokens",
+            LspSemanticOperation::SemanticTokens,
+            caps.supports_semantic_tokens,
+        ),
+        (
+            "renamePreview",
+            LspSemanticOperation::Rename,
+            caps.supports_rename,
+        ),
+        (
+            "formatPreview",
+            LspSemanticOperation::DocumentFormatting,
+            caps.supports_document_formatting,
+        ),
+        (
+            "codeActions",
+            LspSemanticOperation::CodeAction,
+            caps.supports_code_actions,
+        ),
+        (
+            "typeHierarchy",
+            LspSemanticOperation::TypeHierarchy,
+            caps.supports_type_hierarchy,
+        ),
+        (
+            "completion",
+            LspSemanticOperation::Completion,
+            caps.supports_completion,
+        ),
+    ];
+
+    let mut out: Vec<LspOperationCompatibility> = Vec::new();
+    for (name, op, advertised) in operations {
+        let check = checks
+            .iter()
+            .find(|c| c.name == *name || c.name.starts_with(&format!("{name} (")));
+        let (exercised, request_succeeded, semantic_assertion_passed, requirement, known_limit) =
+            match check {
+                Some(c) => match c.status {
+                    CompatibilityCheckStatus::Passing => (
+                        true,
+                        true,
+                        true,
+                        c.requirement,
+                        None,
+                    ),
+                    CompatibilityCheckStatus::PassingWithKnownLimits => (
+                        true,
+                        true,
+                        false,
+                        c.requirement,
+                        c.detail.clone(),
+                    ),
+                    CompatibilityCheckStatus::Failing => (
+                        true,
+                        false,
+                        false,
+                        c.requirement,
+                        None,
+                    ),
+                    CompatibilityCheckStatus::Skipped => (
+                        false,
+                        false,
+                        false,
+                        c.requirement,
+                        None,
+                    ),
+                    CompatibilityCheckStatus::Unsupported => (
+                        false,
+                        false,
+                        false,
+                        c.requirement,
+                        None,
+                    ),
+                },
+                None => (false, false, false, CompatibilityRequirement::Optional, None),
+            };
+        out.push(LspOperationCompatibility {
+            operation: op.as_str().to_string(),
+            advertised: *advertised,
+            exercised,
+            request_succeeded,
+            semantic_assertion_passed,
+            requirement,
+            known_limit,
+        });
+    }
+    out
 }
 
 // ── Generalized Operation Checks (Pass 3) ──────────────────────────
@@ -1957,9 +2449,10 @@ async fn run_location_check(
     checks: &mut Vec<SmokeCheck>,
 ) {
     if !supports_op {
-        checks.push(SmokeCheck::pass(
-            format!("{operation} (skipped: not supported)"),
+        checks.push(SmokeCheck::unsupported(
+            operation.to_string(),
             CompatibilityRequirement::Optional,
+            format!("server did not advertise {operation} provider"),
             0,
         ));
         return;
@@ -1979,9 +2472,18 @@ async fn run_location_check(
             return;
         }
     };
+    // Pass 4 — clangd's `textDocument/implementation` is
+    // exercised from a header file (`include/widget.hpp`) so
+    // the request lands on a declaration, not a usage site. The
+    // expectation's `source_file` field overrides the default
+    // `primary_uri` when set.
+    let request_uri: url::Url = match &target.source_file {
+        Some(p) => url::Url::from_file_path(p).unwrap_or_else(|_| primary_uri.clone()),
+        None => primary_uri.clone(),
+    };
     let start = std::time::Instant::now();
     let params = serde_json::json!({
-        "textDocument": { "uri": primary_uri.as_str() },
+        "textDocument": { "uri": request_uri.as_str() },
         "position": { "line": target.position.line, "character": target.position.character },
     });
     let result = tokio::time::timeout(REQUEST_TIMEOUT, client.send_request(method, params)).await;
@@ -2123,9 +2625,10 @@ async fn run_type_hierarchy_check(
     checks: &mut Vec<SmokeCheck>,
 ) {
     if !supports_type_hierarchy {
-        checks.push(SmokeCheck::pass(
-            "typeHierarchy (skipped: not supported)",
+        checks.push(SmokeCheck::unsupported(
+            "typeHierarchy",
             CompatibilityRequirement::Optional,
+            "server did not advertise type hierarchy provider",
             0,
         ));
         return;
@@ -2179,6 +2682,26 @@ async fn run_type_hierarchy_check(
             ms,
         ));
         return;
+    }
+    // Pass 5 — when a fixture sets `expected_prepare_name`, at
+    // least one returned item must have that exact name. This
+    // guards against servers that return *any* hierarchy item
+    // (e.g. the enclosing namespace) without honoring the
+    // requested position.
+    if let Some(expected) = &target.expected_prepare_name {
+        let any_match = items.iter().any(|item| item.name == *expected);
+        if !any_match {
+            let returned: Vec<String> = items.iter().map(|i| i.name.clone()).collect();
+            checks.push(SmokeCheck::fail(
+                "typeHierarchy/prepare",
+                CompatibilityRequirement::RequiredIfAdvertised,
+                format!(
+                    "no prepare item matched expected name {expected:?}; got {returned:?}"
+                ),
+                ms,
+            ));
+            return;
+        }
     }
     checks.push(SmokeCheck::pass(
         format!("typeHierarchy/prepare ({} item(s))", items.len()),
@@ -2239,6 +2762,37 @@ async fn run_type_hierarchy_check(
         let ms = start.elapsed().as_millis() as u64;
         match result {
             Ok(Ok(subs)) => {
+                // Pass 5 — when the fixture sets
+                // `expected_subtype_substrings`, at least one
+                // subtype name must contain every expected
+                // substring. This guards against servers that
+                // return an empty subtype list without honoring
+                // the actual hierarchy.
+                if !target.expected_subtype_substrings.is_empty() {
+                    let missing: Vec<&str> = target
+                        .expected_subtype_substrings
+                        .iter()
+                        .filter(|needle| {
+                            !subs
+                                .iter()
+                                .any(|s| s.name.contains(needle.as_str()))
+                        })
+                        .map(|s| s.as_str())
+                        .collect();
+                    if !missing.is_empty() {
+                        let returned: Vec<String> =
+                            subs.iter().map(|s| s.name.clone()).collect();
+                        checks.push(SmokeCheck::fail(
+                            "typeHierarchy/subtypes",
+                            CompatibilityRequirement::RequiredIfAdvertised,
+                            format!(
+                                "no subtype matched expected substrings {missing:?}; got {returned:?}"
+                            ),
+                            ms,
+                        ));
+                        return;
+                    }
+                }
                 checks.push(SmokeCheck::pass(
                     format!("typeHierarchy/subtypes ({} item(s))", subs.len()),
                     CompatibilityRequirement::RequiredIfAdvertised,
@@ -2285,9 +2839,10 @@ async fn run_signature_help_check(
     checks: &mut Vec<SmokeCheck>,
 ) {
     if !supports_op {
-        checks.push(SmokeCheck::pass(
-            "signatureHelp (skipped: not supported)",
+        checks.push(SmokeCheck::unsupported(
+            "signatureHelp",
             CompatibilityRequirement::Optional,
+            "server did not advertise signatureHelp provider",
             0,
         ));
         return;
@@ -2404,9 +2959,10 @@ async fn run_workspace_symbol_check(
     checks: &mut Vec<SmokeCheck>,
 ) {
     if !supports_op {
-        checks.push(SmokeCheck::pass(
-            "workspaceSymbol (skipped: not supported)",
+        checks.push(SmokeCheck::unsupported(
+            "workspaceSymbol",
             CompatibilityRequirement::Optional,
+            "server did not advertise workspaceSymbol provider",
             0,
         ));
         return;
@@ -2528,9 +3084,10 @@ async fn run_completion_check(
     checks: &mut Vec<SmokeCheck>,
 ) {
     if !supports_op {
-        checks.push(SmokeCheck::pass(
-            "completion (skipped: not supported)",
+        checks.push(SmokeCheck::unsupported(
+            "completion",
             CompatibilityRequirement::Optional,
+            "server did not advertise completion provider",
             0,
         ));
         return;
@@ -2675,15 +3232,17 @@ async fn run_semantic_tokens_check(
     client: &LspClient,
     primary_uri: &url::Url,
     supports_op: bool,
+    legend: Option<&egglsp::SemanticTokenLegendSnapshot>,
     bin_path: &Path,
     server_id: &str,
     stderr_tail: &[String],
     checks: &mut Vec<SmokeCheck>,
 ) {
     if !supports_op {
-        checks.push(SmokeCheck::pass(
-            "semanticTokens (skipped: not supported)",
+        checks.push(SmokeCheck::unsupported(
+            "semanticTokens",
             CompatibilityRequirement::Optional,
+            "server did not advertise semantic tokens provider",
             0,
         ));
         return;
@@ -2701,8 +3260,8 @@ async fn run_semantic_tokens_check(
     match result {
         Ok(Ok(value)) => {
             if value.is_null() {
-                checks.push(SmokeCheck::pass(
-                    "semanticTokens (server returned null)",
+                checks.push(SmokeCheck::passing(
+                    "semanticTokens",
                     CompatibilityRequirement::RequiredIfAdvertised,
                     ms,
                 ));
@@ -2710,11 +3269,134 @@ async fn run_semantic_tokens_check(
             }
             match serde_json::from_value::<egglsp::lsp_types::SemanticTokens>(value) {
                 Ok(tokens) => {
-                    checks.push(SmokeCheck::pass(
-                        format!("semanticTokens ({} raw token(s))", tokens.data.len()),
-                        CompatibilityRequirement::RequiredIfAdvertised,
-                        ms,
-                    ));
+                    // Pass 9 — Decode the raw delta-encoded
+                    // stream via the production
+                    // `decode_semantic_tokens` helper. Fail the
+                    // check if the decoder rejects the stream
+                    // (out-of-range token type, overflow, etc).
+                    let Some(legend) = legend else {
+                        checks.push(SmokeCheck::fail(
+                            "semanticTokens",
+                            CompatibilityRequirement::RequiredIfAdvertised,
+                            "no semantic-token legend available; cannot decode raw stream",
+                            ms,
+                        ));
+                        return;
+                    };
+                    match egglsp::decode_semantic_tokens(&tokens.data, legend) {
+                        Ok(decoded) => {
+                            // Pass 9 — Validate every decoded
+                            // token's (line, start, length)
+                            // tuple is structurally sound: line
+                            // is bounded by the file's line
+                            // count, and the token's end
+                            // (start + length) does not run
+                            // past the end of its line.
+                            let file_path = primary_uri.to_file_path().ok();
+                            let line_texts: Option<Vec<String>> = file_path
+                                .as_ref()
+                                .and_then(|p| std::fs::read_to_string(p).ok())
+                                .map(|s| {
+                                    s.lines().map(|l| l.to_string()).collect()
+                                });
+                            let file_line_count =
+                                line_texts.as_ref().map(|v| v.len()).unwrap_or(0);
+                            let mut invalid = Vec::new();
+                            for tok in &decoded {
+                                let line_in_range = (tok.line as usize) < file_line_count
+                                    || file_line_count == 0;
+                                let length_in_range = if let Some(texts) = &line_texts {
+                                    if let Some(line_text) = texts.get(tok.line as usize) {
+                                        // LSP character offsets are
+                                        // UTF-16 code units, not
+                                        // bytes. Compare against
+                                        // the byte length for a
+                                        // conservative bound.
+                                        let line_bytes = line_text.len() as u32;
+                                        let end = tok.start.saturating_add(tok.length);
+                                        end <= line_bytes
+                                    } else {
+                                        false
+                                    }
+                                } else {
+                                    true
+                                };
+                                if !line_in_range || !length_in_range {
+                                    invalid.push(format!(
+                                        "({}, {}, {}, {})",
+                                        tok.line, tok.start, tok.length, tok.token_type
+                                    ));
+                                }
+                            }
+                            if !invalid.is_empty() {
+                                checks.push(SmokeCheck::fail(
+                                    "semanticTokens",
+                                    CompatibilityRequirement::RequiredIfAdvertised,
+                                    format!(
+                                        "{} decoded token(s) out of range: {}",
+                                        invalid.len(),
+                                        invalid.iter().take(5).cloned().collect::<Vec<_>>().join(", ")
+                                    ),
+                                    ms,
+                                ));
+                                return;
+                            }
+                            // Pass 9 — Verify the legend
+                            // matches the server's
+                            // `legend.tokenTypes` /
+                            // `legend.tokenModifiers` (the
+                            // server already encoded the
+                            // decoded-token types with that
+                            // legend, so a successful decode
+                            // is itself a legend check, but
+                            // we also assert the legend is
+                            // non-empty).
+                            if legend.token_types.is_empty() {
+                                checks.push(SmokeCheck::fail(
+                                    "semanticTokens",
+                                    CompatibilityRequirement::RequiredIfAdvertised,
+                                    "decoded tokens but legend.token_types is empty",
+                                    ms,
+                                ));
+                                return;
+                            }
+                            let token_type_counts: std::collections::BTreeMap<
+                                String,
+                                usize,
+                            > = decoded
+                                .iter()
+                                .fold(std::collections::BTreeMap::new(), |mut acc, t| {
+                                    *acc.entry(t.token_type.clone()).or_insert(0) += 1;
+                                    acc
+                                });
+                            let mut summary_parts: Vec<String> = token_type_counts
+                                .iter()
+                                .map(|(k, v)| format!("{k}={v}"))
+                                .collect();
+                            summary_parts.sort();
+                            let summary = summary_parts.join(", ");
+                            checks.push(SmokeCheck::passing(
+                                "semanticTokens",
+                                CompatibilityRequirement::RequiredIfAdvertised,
+                                ms,
+                            ));
+                            // Stash the per-type breakdown on
+                            // a side-channel check so the
+                            // human-readable report still
+                            // surfaces the legend summary.
+                            checks.push(SmokeCheck::passing(
+                                format!("semanticTokens decoded ({} raw, {} decoded, legend_types={}, breakdown=[{}])", tokens.data.len(), decoded.len(), legend.token_types.len(), summary),
+                                CompatibilityRequirement::Optional,
+                                ms,
+                            ));
+                        }
+                        Err(e) => checks.push(SmokeCheck::fail(
+                            "semanticTokens",
+                            CompatibilityRequirement::RequiredIfAdvertised,
+                            format!("decode failed: {e}"),
+                            ms,
+                        )),
+                    }
                 }
                 Err(e) => checks.push(SmokeCheck::fail(
                     "semanticTokens",
@@ -2762,9 +3444,10 @@ async fn run_rename_preview_check(
     checks: &mut Vec<SmokeCheck>,
 ) {
     if !supports_op {
-        checks.push(SmokeCheck::pass(
-            "renamePreview (skipped: not supported)",
+        checks.push(SmokeCheck::unsupported(
+            "renamePreview",
             CompatibilityRequirement::Optional,
+            "server did not advertise rename provider",
             0,
         ));
         return;
@@ -2772,9 +3455,10 @@ async fn run_rename_preview_check(
     let pos = match fixture.mutation_targets.rename {
         Some(p) => p,
         None => {
-            checks.push(SmokeCheck::pass(
-                "renamePreview (skipped: no mutation_targets.rename)",
+            checks.push(SmokeCheck::skipped(
+                "renamePreview",
                 CompatibilityRequirement::Optional,
+                "fixture did not declare mutation_targets.rename",
                 0,
             ));
             return;
@@ -2893,17 +3577,19 @@ async fn run_format_preview_check(
     checks: &mut Vec<SmokeCheck>,
 ) {
     if !supports_op {
-        checks.push(SmokeCheck::pass(
-            "formatPreview (skipped: not supported)",
+        checks.push(SmokeCheck::unsupported(
+            "formatPreview",
             CompatibilityRequirement::Optional,
+            "server did not advertise document formatting provider",
             0,
         ));
         return;
     }
     if !fixture.mutation_targets.format_preview_requested {
-        checks.push(SmokeCheck::pass(
-            "formatPreview (skipped: not requested by fixture)",
+        checks.push(SmokeCheck::skipped(
+            "formatPreview",
             CompatibilityRequirement::Optional,
+            "fixture did not request format preview",
             0,
         ));
         return;
@@ -3027,19 +3713,37 @@ async fn run_code_action_check(
     checks: &mut Vec<SmokeCheck>,
 ) {
     if !supports_op {
-        checks.push(SmokeCheck::pass(
-            "codeActions (skipped: not supported)",
+        checks.push(SmokeCheck::unsupported(
+            "codeActions",
             CompatibilityRequirement::Optional,
+            "server did not advertise codeActions provider",
             0,
         ));
         return;
     }
     let start = std::time::Instant::now();
+    // Pass 8 — Drive the code-action request with a
+    // deterministic range that includes the `_completionSite`
+    // / `_signatureSite` declarations so the server has a real
+    // opportunity to return an edit-bearing action (e.g. an
+    // organize-imports or quick-fix action). The previous
+    // harness used the (0,0)-(0,0) empty range, which gave the
+    // server no opportunity to surface an edit.
+    let request_position = fixture
+        .code_action_position
+        .unwrap_or(fixture.definition_position);
+    let request_range = lsp_types::Range {
+        start: request_position,
+        end: lsp_types::Position {
+            line: request_position.line,
+            character: request_position.character + 20,
+        },
+    };
     let params = serde_json::json!({
         "textDocument": { "uri": primary_uri.as_str() },
         "range": {
-            "start": { "line": 0, "character": 0 },
-            "end": { "line": 0, "character": 0 },
+            "start": { "line": request_range.start.line, "character": request_range.start.character },
+            "end": { "line": request_range.end.line, "character": request_range.end.character },
         },
         "context": { "diagnostics": [] },
     });
@@ -3051,15 +3755,26 @@ async fn run_code_action_check(
     let ms = start.elapsed().as_millis() as u64;
     match result {
         Ok(Ok(value)) => {
+            // Pass 8 — When the fixture opts into code-action
+            // validation (`code_action_min_edit_bearing` > 0),
+            // a null response is a failure: the server did not
+            // honor the request.
+            let min_edit_bearing = fixture.code_action_min_edit_bearing;
             if value.is_null() {
-                checks.push(SmokeCheck::pass(
-                    format!(
-                        "codeActions (null response; fixture={})",
-                        fixture.language_id
-                    ),
-                    CompatibilityRequirement::RequiredIfAdvertised,
-                    ms,
-                ));
+                if min_edit_bearing > 0 {
+                    checks.push(SmokeCheck::fail(
+                        "codeActions",
+                        CompatibilityRequirement::RequiredIfAdvertised,
+                        "expected at least 1 edit-bearing action; got null response",
+                        ms,
+                    ));
+                } else {
+                    checks.push(SmokeCheck::passing(
+                        "codeActions",
+                        CompatibilityRequirement::RequiredIfAdvertised,
+                        ms,
+                    ));
+                }
                 return;
             }
             // The response is an array of CodeActionOrCommand.
@@ -3086,13 +3801,74 @@ async fn run_code_action_check(
                         .iter()
                         .filter(|a| matches!(a, ActionOrCommand::CodeAction { edit: Some(_), .. }))
                         .count();
-                    checks.push(SmokeCheck::pass(
-                        format!(
-                            "codeActions ({} summary, {} with edit; fixture={})",
-                            actions.len(),
-                            edit_bearing,
-                            fixture.language_id
-                        ),
+                    let command_only = actions
+                        .iter()
+                        .filter(|a| match a {
+                            ActionOrCommand::Command { .. } => true,
+                            ActionOrCommand::CodeAction { edit: None, command: Some(_), .. } => true,
+                            _ => false,
+                        })
+                        .count();
+                    // Pass 8 — When the fixture opts into
+                    // code-action validation, an empty list is
+                    // a failure. 0 edit-bearing actions is a
+                    // failure. Command-only results are
+                    // exercised but not previewable; treat as
+                    // `KnownLimitation` unless the fixture
+                    // explicitly opts out via
+                    // `code_action_allow_command_only`.
+                    if min_edit_bearing > 0 {
+                        if actions.is_empty() {
+                            checks.push(SmokeCheck::fail(
+                                "codeActions",
+                                CompatibilityRequirement::RequiredIfAdvertised,
+                                "expected at least 1 action; got empty list",
+                                ms,
+                            ));
+                            return;
+                        }
+                        if edit_bearing == 0 {
+                            if command_only > 0
+                                && !fixture.code_action_allow_command_only
+                            {
+                                checks.push(SmokeCheck::known_limit(
+                                    "codeActions",
+                                    CompatibilityRequirement::KnownLimitation,
+                                    format!(
+                                        "{} command-only action(s); preview pipeline \
+                                         rejects command-only actions ({} total, 0 with edit)",
+                                        command_only,
+                                        actions.len()
+                                    ),
+                                    ms,
+                                ));
+                                return;
+                            }
+                            checks.push(SmokeCheck::fail(
+                                "codeActions",
+                                CompatibilityRequirement::RequiredIfAdvertised,
+                                format!(
+                                    "expected at least {min_edit_bearing} edit-bearing action(s); got {edit_bearing} ({} total)",
+                                    actions.len()
+                                ),
+                                ms,
+                            ));
+                            return;
+                        }
+                        if edit_bearing < min_edit_bearing {
+                            checks.push(SmokeCheck::fail(
+                                "codeActions",
+                                CompatibilityRequirement::RequiredIfAdvertised,
+                                format!(
+                                    "expected at least {min_edit_bearing} edit-bearing action(s); got {edit_bearing}"
+                                ),
+                                ms,
+                            ));
+                            return;
+                        }
+                    }
+                    checks.push(SmokeCheck::passing(
+                        "codeActions",
                         CompatibilityRequirement::RequiredIfAdvertised,
                         ms,
                     ));
@@ -3166,8 +3942,19 @@ async fn run_generalized_operation_checks(
             .unwrap_or(fixture.definition_position);
         let target = LocationExpectation {
             position: impl_position,
+            // Pass 4 — clangd queries from the header file
+            // (`include/widget.hpp`) so the implementation
+            // request lands on a declaration, not a usage site.
+            // Other fixtures (e.g. TypeScript) leave this as
+            // `None` and the harness falls back to the primary
+            // source.
+            source_file: fixture.implementation_source.clone(),
             min_locations: 1,
-            expected_files: Vec::new(),
+            // Pass 3 — when a fixture sets `expected_capabilities.implementation`,
+            // it should also declare a primary source where the implementing
+            // class is expected to live, so the implementation check
+            // actually exercises the response shape (not just the count).
+            expected_files: vec![fixture.primary_source.clone()],
             expected_label_substrings: Vec::new(),
         };
         run_location_check(
@@ -3258,6 +4045,7 @@ async fn run_generalized_operation_checks(
             client,
             primary_uri,
             caps.supports_semantic_tokens,
+            caps.details.semantic_token_legend.as_ref(),
             bin_path,
             server_id,
             stderr_tail,
@@ -3349,6 +4137,14 @@ fn format_check_line(check: &LspCompatibilityCheck) -> String {
 /// `RequiredIfAdvertised` check that is recorded (i.e. the server
 /// advertised the corresponding capability) is not `Failing`. Also
 /// requires the `initialize` and `shutdown` checks to be present.
+///
+/// Pass 7 — the rules are now status-driven. `Skipped` and
+/// `Unsupported` are first-class statuses that the assertion
+/// consults directly; the harness no longer infers semantics from
+/// check-name substrings. `Skipped` and `Unsupported` are
+/// intentionally distinct: a fixture that opts not to exercise an
+/// operation is `Skipped`; a server that does not advertise the
+/// capability is `Unsupported`.
 fn assert_required_checks(report: &LspCompatibilityReport) {
     let mut failures: Vec<String> = Vec::new();
 
@@ -3373,15 +4169,20 @@ fn assert_required_checks(report: &LspCompatibilityReport) {
                     format_check_line(check)
                 ));
             }
-            CompatibilityRequirement::RequiredIfAdvertised
-                if !passed
-                    && !is_skipped_check(&check.name)
-                    && !matches!(check.status, CompatibilityCheckStatus::Skipped) =>
-            {
-                failures.push(format!(
-                    "required-if-advertised check failed: {}",
-                    format_check_line(check)
-                ));
+            CompatibilityRequirement::RequiredIfAdvertised => {
+                // Pass 7 — only `Failing` status fails a
+                // `RequiredIfAdvertised` check. `Skipped` and
+                // `Unsupported` are allowed (Skipped = fixture
+                // did not exercise; Unsupported = server did not
+                // advertise). The legacy
+                // `is_skipped_check(&check.name)` substring
+                // check is gone — status is the only signal.
+                if matches!(check.status, CompatibilityCheckStatus::Failing) {
+                    failures.push(format!(
+                        "required-if-advertised check failed: {}",
+                        format_check_line(check)
+                    ));
+                }
             }
             _ => {}
         }
@@ -3403,10 +4204,6 @@ fn assert_required_checks(report: &LspCompatibilityReport) {
         }
         panic!("{msg}");
     }
-}
-
-fn is_skipped_check(name: &str) -> bool {
-    name.contains("skipped")
 }
 
 // ── Rust Analyzer Tests ────────────────────────────────────────────
@@ -3943,6 +4740,7 @@ async fn missing_diagnostics_readiness_times_out() {
 fn location_expectation_serializes() {
     let expectation = LocationExpectation {
         position: Position::new(3, 7),
+        source_file: None,
         min_locations: 2,
         expected_files: vec![PathBuf::from("src/lib.rs"), PathBuf::from("src/helper.rs")],
         expected_label_substrings: Vec::new(),

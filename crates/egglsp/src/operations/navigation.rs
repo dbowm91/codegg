@@ -110,6 +110,25 @@ impl LspOperations {
         }
     }
 
+    /// Inspect the explicit [`CapabilityDecision`] for `file_path`
+    /// and `op` without short-circuiting on the decision.
+    ///
+    /// `require_capability` collapses `Unsupported` and `Unknown`
+    /// into errors, which prevents callers that need to *react*
+    /// differently to the two (e.g. skipping `prepareRename` and
+    /// issuing `rename` directly when `prepareRename` is
+    /// unsupported, but failing closed when the capability is
+    /// still unknown) from making the right choice. Use this
+    /// helper when a flow needs the full three-way decision.
+    pub(crate) async fn capability_decision_for_file(
+        &self,
+        file_path: &Path,
+        op: LspSemanticOperation,
+    ) -> Result<CapabilityDecision, LspError> {
+        let (key, _) = self.service.get_or_create_client(file_path).await?;
+        Ok(self.service.capability_decision(&key, op).await)
+    }
+
     /// Return the first known client key, used as the routing target
     /// for workspace-scoped requests.
     async fn first_client_key(&self) -> Option<String> {

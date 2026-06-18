@@ -2814,6 +2814,60 @@ handoff live in
 - [x] Exact clangd pin documented (v18.1.8, checksum-verified LLVM archive)
 - [x] Phase 4 status updated to "complete for pinned Tier 1 and Tier 2 matrix"
 
+## Phase 4 Final Reporting and Semantic Validation Closure
+
+The Phase 4 pass table above was closed by an 11-pass reporting
+closure pass (`plans/lsp_phase4_final_reporting_and_semantic_validation_closure.md`)
+that tightens the public API, exercises real semantic assertions,
+and makes per-operation reporting a first-class citizen of the
+compatibility report.
+
+### Pass summary
+
+| Pass | Focus | What changed |
+|------|-------|--------------|
+| Pass 1 | Rename when prepareRename unsupported | `rename_preview_typed` now inspects `CapabilityDecision` directly: `Supported` → prepare-rename + rename; `Unsupported` → skip prepare-rename, call `textDocument/rename` directly with `old_name = None`; `Unknown` → fail-closed `LspError::NotInitialized`. A `NotRenameable` from prepare-rename still produces an empty structured preview (not an error). |
+| Pass 2 | Typed checked/raw operation split | Public checked APIs (`prepare_rename_typed`, `rename_preview_typed`, `format_preview_typed`, `code_action_summaries`) keep the convenience return shape. Raw wrappers (`prepare_rename_unchecked`, `rename_preview_unchecked`, `format_preview_unchecked`, `code_actions_unchecked`) are kept for the smoke harness. Internal callers updated. |
+| Pass 3 | Real implementation/type-hierarchy coverage | TypeScript fixture now contains a real `Greeter` interface + `Person` class implementing it (driving `textDocument/implementation` end-to-end). Rust fixture adds a `Greeter` trait + `Person` struct (driving `textDocument/prepareTypeHierarchy` + subtype matching). |
+| Pass 4 | Cross-source implementation check | `LocationExpectation.source_file` override lets the harness drive implementation from a header (clangd: `include/widget.hpp`) instead of the primary source. |
+| Pass 5 | Type-hierarchy semantic assertion | `TypeHierarchyExpectation.expected_prepare_name` + `expected_subtype_substrings` validate the prepared hierarchy item's name and that the subtype response mentions the expected concrete types. |
+| Pass 6 | `LspCompatibilityReport.operation_support` | New field carrying a `Vec<LspOperationCompatibility>` per-operation record with `advertised` / `exercised` / `request_succeeded` / `semantic_assertion_passed` flags. `#[serde(default)]` keeps older reports compatible. |
+| Pass 7 | First-class `Skipped` / `Unsupported` / `PassingWithKnownLimits` statuses | `SmokeCheck` gained explicit `status: CompatibilityCheckStatus` and constructors (`passing`, `failing`, `skipped`, `unsupported`, `known_limit`); `assert_required_checks` is now status-driven — it no longer fails on `Skipped` or `Unsupported`. |
+| Pass 8 | Code-action previewable-only assertions | `run_code_action_check` drives a non-empty range based on `code_action_position`; opt-in `code_action_min_edit_bearing: usize` (default 0) makes null / empty / 0-edit-bearing responses fail. Command-only results are classified as `KnownLimitation` unless `code_action_allow_command_only` is set. |
+| Pass 9 | Real `decode_semantic_tokens` in the harness | Smoke harness decodes the raw delta-encoded stream via `egglsp::decode_semantic_tokens` with the server's `SemanticTokenLegendSnapshot`, asserts each `(line, col, length)` tuple is in-range against the file's line/byte content, and verifies the legend is non-empty. A second optional check records the per-token-type breakdown for human-readable reports. |
+| Pass 10 | Per-server actionable shutdown evidence | `ForceKilled` / `TimeoutExpired` outcomes are classified against the fixture's `shutdown_requirement`: clangd's daemon-mode hang → `KnownLimitation` with a 5-line stderr-tail excerpt surfaced in the `SmokeCheck.detail` and on `LspCompatibilityReport.stderr_tail`. |
+| Pass 11 | Docs + final closure | `architecture/lsp.md`, `.opencode/skills/lsp/SKILL.md`, `AGENTS.md`, `README.md` updated; lib + integration suites green; this section added. |
+
+### Architectural invariants preserved
+
+- **Preview-only mutation boundary.** No new write paths added.
+  The new checked/raw split only changes the *shape* of public
+  return types; the underlying wire calls and edit-application
+  helpers are unchanged.
+- **No new `workspace/executeCommand` invocation.** Code-action
+  command-only results are rejected as a `KnownLimitation`
+  rather than executed.
+- **Fail-closed capability gating.** Rename on `Unknown`
+  prepare-rename capability now returns `NotInitialized` instead
+  of silently calling rename. The same fail-closed behavior
+  extends to semantic-token decoding (out-of-range token types
+  → `LspError::RequestFailed`).
+- **Backward-compatible report schema.** `operation_support`
+  is `#[serde(default)]`; older reports still deserialize.
+- **Bounded smoke checks.** File-size / line-count bounds are
+  enforced by reading the primary source file once per check
+  and bounding the O(file_size) validation per decoded token.
+
+### Pass 11 — Docs + final closure checklist
+
+- [x] `architecture/lsp.md` updated with this section
+- [x] `.opencode/skills/lsp/SKILL.md` references Phase 4 closure
+- [x] `AGENTS.md` module row updated to summarize closure
+- [x] `README.md` Phase 4 paragraph extended with closure summary
+- [x] `cargo test -p egglsp --lib -- --skip aggregate_grace` green (532 lib tests)
+- [x] `cargo test --features lsp-test-support --test lsp_composite_stdio` green (26 composite tests)
+- [x] `cargo build --tests -p egglsp --features lsp-real-server-tests` clean (5 pre-existing dead-code warnings, no errors)
+
 ## See Also
 
 - [.opencode/skills/lsp/SKILL.md](../.opencode/skills/lsp/SKILL.md) - LSP skill guide
