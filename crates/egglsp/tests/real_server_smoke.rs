@@ -249,7 +249,6 @@ impl Default for RenameExpectation {
 #[allow(dead_code)]
 #[derive(Default, Clone)]
 struct MutationTargets {
-    pub rename: Option<Position>,
     pub format: Option<Position>,
     pub completion: Option<Position>,
     pub signature_help: Option<Position>,
@@ -258,11 +257,6 @@ struct MutationTargets {
     /// other positions. The format check is gated on
     /// `format_preview_requested` instead.
     pub format_preview_requested: bool,
-    /// Rename-preview check is gated on `rename_preview_requested`.
-    /// Pass 2 — superseded by `rename_expectation`; retained
-    /// for backward compatibility with existing fixtures that
-    /// pre-date the typed expectation.
-    pub rename_preview_requested: bool,
 }
 
 /// Pass 3 — Capability flags the new operations check against. The
@@ -1092,12 +1086,9 @@ const _signatureSite = add(1, 2);
         mutation_targets: MutationTargets {
             // Pass 2 — `format_preview_requested` is still
             // used by the format preview check (no typed
-            // expectation yet). The legacy
-            // `rename_preview_requested` field is removed:
-            // rename is now driven exclusively by
-            // `rename_expectation`.
+            // expectation yet). Rename is now driven
+            // exclusively by `rename_expectation`.
             format_preview_requested: false,
-            rename_preview_requested: false,
             ..Default::default()
         },
         expected_capabilities: ExpectedCapabilities {
@@ -1152,8 +1143,9 @@ const _signatureSite = add(1, 2);
         // to return an edit-bearing quick-fix
         // (e.g. "Change '42' to '"42"'"). The check requires
         // at least one edit-bearing action; command-only
-        // responses are classified as `KnownLimitation`
-        // rather than failing the suite.
+        // responses cause the check to fail (the harness
+        // does not treat command-only as an acceptable
+        // fallback when edit-bearing actions are expected).
         code_action_position: Some(Position::new(22, 10)),
         code_action_min_edit_bearing: 1,
         code_action_allow_command_only: false,
@@ -5835,9 +5827,9 @@ async fn run_code_action_check(
                         if edit_bearing == 0 {
                             if command_only > 0 && !fixture.code_action_allow_command_only {
                                 emit(
-                                    SmokeCheck::known_limit(
+                                    SmokeCheck::fail(
                                         "codeAction",
-                                        CompatibilityRequirement::KnownLimitation,
+                                        CompatibilityRequirement::RequiredIfAdvertised,
                                         format!(
                                             "{} command-only action(s); preview pipeline \
                                              rejects command-only actions ({} total, 0 with edit)",
@@ -5853,11 +5845,8 @@ async fn run_code_action_check(
                                         request_succeeded: true,
                                         response_parsed: true,
                                         semantic_assertion_passed: false,
-                                        requirement: CompatibilityRequirement::KnownLimitation,
-                                        known_limit: Some(format!(
-                                            "{} command-only action(s); preview pipeline rejects command-only actions",
-                                            command_only
-                                        )),
+                                        requirement: CompatibilityRequirement::RequiredIfAdvertised,
+                                        known_limit: None,
                                     },
                                 );
                                 return;
@@ -6186,11 +6175,9 @@ async fn run_generalized_operation_checks(
     // `rename_expectation` (or the legacy
     // `expected_capabilities.rename` flag for fixtures that
     // opt in via the boolean). The legacy
-    // `mutation_targets.rename_preview_requested` field is
-    // no longer consulted; the harness now considers a
-    // `rename_expectation` to be the canonical opt-in so
-    // string-coupled booleans cannot mask a missing typed
-    // expectation.
+    // `mutation_targets.rename_preview_requested` field
+    // has been removed; `rename_expectation` is the
+    // canonical opt-in.
     if fixture.rename_expectation.is_some() || fixture.expected_capabilities.rename {
         run_rename_preview_check(
             client,
@@ -7128,12 +7115,10 @@ fn mutation_targets_default_is_empty() {
     // The default MutationTargets must have every field unset so
     // existing fixtures that do not opt into the new operations
     // see `None` everywhere.
-    assert!(targets.rename.is_none());
     assert!(targets.format.is_none());
     assert!(targets.completion.is_none());
     assert!(targets.signature_help.is_none());
     assert!(!targets.format_preview_requested);
-    assert!(!targets.rename_preview_requested);
 }
 
 #[test]
@@ -7287,13 +7272,6 @@ fn typescript_fixture_has_typed_rename_expectation() {
         .collect();
     assert!(expected_paths.iter().any(|n| n == "main.ts"));
     assert!(expected_paths.iter().any(|n| n == "helper.ts"));
-    // The legacy `rename_preview_requested` flag must be
-    // removed from the typescript fixture — the typed
-    // expectation is the canonical opt-in.
-    assert!(
-        !fixture.mutation_targets.rename_preview_requested,
-        "rename_preview_requested must be false for the typescript fixture"
-    );
 }
 
 #[test]
