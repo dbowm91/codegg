@@ -155,6 +155,18 @@ struct RealServerFixture {
     /// file (`include/widget.hpp`) because that is where the
     /// abstract declaration lives.
     implementation_source: Option<PathBuf>,
+    /// Pass 1 — explicit implementation expectations. Each entry
+    /// captures the source file the request is driven from, the
+    /// target position, and the set of files a semantically
+    /// correct response must mention (e.g. the override
+    /// declaration site or the implementation definition). When
+    /// `None`, the harness falls back to a single expectation
+    /// built from `implementation_source` /
+    /// `implementation_position` / `primary_source`. When `Some`,
+    /// the explicit list drives the assertion so no fixture can
+    /// silently assume `primary_source` is the only acceptable
+    /// target.
+    implementation_expectations: Vec<ImplementationExpectation>,
     /// Pass 8 — position the code-action request is driven
     /// from. When `None`, the harness falls back to
     /// `definition_position`.
@@ -243,6 +255,49 @@ struct LocationExpectation {
     /// at least one returned signature label. Empty means "server
     /// returned any non-empty signature list".
     pub expected_label_substrings: Vec<String>,
+}
+
+/// Pass 1 — Semantic assertion for
+/// `textDocument/implementation`. The harness drives the
+/// request from `source_file` at `position` and asserts that
+/// the returned locations mention at least one of the files in
+/// `expected_files` (typically the override declaration site
+/// and the implementation definition). The set is explicit per
+/// fixture so clangd is not rejected for returning the
+/// `include/widget.hpp` override declaration when the harness
+/// was implicitly anchored on `primary_source`.
+#[allow(dead_code)]
+#[derive(Clone)]
+struct ImplementationExpectation {
+    /// File the implementation request is driven from. The
+    /// harness converts this to a `file://` URI for the
+    /// request.
+    pub source_file: PathBuf,
+    pub position: Position,
+    /// Minimum number of locations the response must return.
+    /// Defaults to 1.
+    pub min_locations: usize,
+    /// Files the returned locations may mention. The check
+    /// passes when at least one returned location's URI ends
+    /// with (or equals) any of these paths.
+    pub expected_files: Vec<PathBuf>,
+    /// Substrings that must appear in at least one returned
+    /// location label. Optional — used for clangd where the
+    /// symbol name on the override declaration is the most
+    /// stable identifier.
+    pub expected_label_substrings: Vec<String>,
+}
+
+impl Default for ImplementationExpectation {
+    fn default() -> Self {
+        Self {
+            source_file: PathBuf::new(),
+            position: Position::new(0, 0),
+            min_locations: 1,
+            expected_files: Vec::new(),
+            expected_label_substrings: Vec::new(),
+        }
+    }
 }
 
 impl Default for LocationExpectation {
@@ -525,6 +580,9 @@ pub fn caller() -> i32 {
         shutdown_requirement: CompatibilityRequirement::Required,
         implementation_position: None,
         implementation_source: None,
+        // Pass 1 — no implementation expectations: the Rust
+        // fixture does not exercise the implementation check.
+        implementation_expectations: Vec::new(),
         code_action_position: None,
         code_action_min_edit_bearing: 0,
         code_action_allow_command_only: false,
@@ -657,6 +715,9 @@ def caller() -> int:
         shutdown_requirement: CompatibilityRequirement::Required,
         implementation_position: None,
         implementation_source: None,
+        // Pass 1 — no implementation expectations: the Python
+        // fixture does not exercise the implementation check.
+        implementation_expectations: Vec::new(),
         code_action_position: None,
         code_action_min_edit_bearing: 0,
         code_action_allow_command_only: false,
@@ -763,6 +824,20 @@ func Caller() int {
         shutdown_requirement: CompatibilityRequirement::KnownLimitation,
         implementation_position: Some(Position::new(7, 5)),
         implementation_source: None,
+        // Pass 1 — explicit implementation expectation. The
+        // `greet` method on `Person` (line 12) is the
+        // implementation of the `greet` method on the `Greeter`
+        // interface (line 7). Querying at the interface method
+        // returns `Person` in the same file. The expectation
+        // names `main.go` explicitly so the harness never
+        // assumes the implementation lives elsewhere.
+        implementation_expectations: vec![ImplementationExpectation {
+            source_file: main_go.clone(),
+            position: Position::new(7, 5),
+            min_locations: 1,
+            expected_files: vec![main_go.clone()],
+            expected_label_substrings: Vec::new(),
+        }],
         code_action_position: None,
         code_action_min_edit_bearing: 0,
         code_action_allow_command_only: false,
@@ -948,6 +1023,10 @@ const _signatureSite = add(1, 2);
             implementation: true,
             signature_help: true,
             document_highlight: true,
+            // Pass 5 — enable the code-actions check so the
+            // edit-bearing requirement is exercised against
+            // the type-mismatch diagnostic at line 22.
+            code_actions: true,
             ..Default::default()
         },
         completions: Vec::new(),
@@ -973,8 +1052,29 @@ const _signatureSite = add(1, 2);
         // the same file.
         implementation_position: Some(Position::new(11, 4)),
         implementation_source: None,
-        code_action_position: None,
-        code_action_min_edit_bearing: 0,
+        // Pass 1 — explicit implementation expectation. The
+        // `greet` method on `Person` (line 15) is the
+        // implementation of the `greet` method on the `Greeter`
+        // interface (line 11). Querying at the interface
+        // method returns `Person` in the same file.
+        implementation_expectations: vec![ImplementationExpectation {
+            source_file: main_ts.clone(),
+            position: Position::new(11, 4),
+            min_locations: 1,
+            expected_files: vec![main_ts.clone()],
+            expected_label_substrings: Vec::new(),
+        }],
+        // Pass 5 — land on the `x` identifier in
+        // `const x: string = 42;` (line 22). The 20-char
+        // range covers the type-mismatch diagnostic, so
+        // typescript-language-server has a real opportunity
+        // to return an edit-bearing quick-fix
+        // (e.g. "Change '42' to '"42"'"). The check requires
+        // at least one edit-bearing action; command-only
+        // responses are classified as `KnownLimitation`
+        // rather than failing the suite.
+        code_action_position: Some(Position::new(22, 10)),
+        code_action_min_edit_bearing: 1,
         code_action_allow_command_only: false,
         type_hierarchy_targets: Vec::new(),
     }
@@ -1141,6 +1241,22 @@ int caller() {
         // header file, not the primary main.cpp. clangd resolves
         // implementations by looking at the declaration site.
         implementation_source: Some(widget_hpp.clone()),
+        // Pass 1 — explicit implementation expectations.
+        // Querying the virtual `WidgetBase::add` declaration in
+        // `include/widget.hpp` returns the override declaration
+        // in `include/widget.hpp` AND the definition in
+        // `src/widget.cpp`. clangd is not rejected for returning
+        // either of those files. The previous generalized
+        // harness anchored on `primary_source` and would have
+        // flagged clangd as failing when it returned the
+        // semantically correct override location in the header.
+        implementation_expectations: vec![ImplementationExpectation {
+            source_file: widget_hpp.clone(),
+            position: Position::new(3, 16),
+            min_locations: 1,
+            expected_files: vec![widget_hpp.clone(), widget_cpp.clone()],
+            expected_label_substrings: Vec::new(),
+        }],
         code_action_position: None,
         code_action_min_edit_bearing: 0,
         code_action_allow_command_only: false,
@@ -1311,6 +1427,197 @@ impl SmokeCheck {
             duration_ms: Some(self.duration_ms),
         }
     }
+}
+
+/// Pass 2 — bundles a `checks` vector and an
+/// `operation_records` vector so the request-site helpers can
+/// append to both at once. The two collections are populated
+/// independently: `checks` is the human-readable summary;
+/// `operation_records` is the machine-readable per-operation
+/// matrix that distinguishes protocol success from semantic
+/// success.
+#[derive(Default)]
+struct CheckCollector {
+    checks: Vec<SmokeCheck>,
+    operation_records: Vec<egglsp::compatibility::LspOperationCompatibility>,
+}
+
+impl CheckCollector {
+    fn push(&mut self, check: SmokeCheck) {
+        self.checks.push(check);
+    }
+
+    fn push_with_operation(
+        &mut self,
+        check: SmokeCheck,
+        operation: impl Into<String>,
+        advertised: bool,
+    ) {
+        let op = operation.into();
+        let requirement = check.requirement;
+        let record =
+            operation_record_from_check(&op, advertised, requirement, &check);
+        self.checks.push(check);
+        self.operation_records.push(record);
+    }
+
+    fn push_unsupported_operation(
+        &mut self,
+        check: SmokeCheck,
+        operation: impl Into<String>,
+    ) {
+        let op = operation.into();
+        let requirement = check.requirement;
+        // Unsupported checks never exercise the operation, so
+        // both `request_succeeded` and `semantic_assertion_passed`
+        // are false. The `known_limit` field carries the documented
+        // reason from the check detail.
+        let record = egglsp::compatibility::LspOperationCompatibility {
+            operation: op,
+            advertised: false,
+            exercised: false,
+            request_succeeded: false,
+            semantic_assertion_passed: false,
+            requirement,
+            known_limit: None,
+        };
+        self.checks.push(check);
+        self.operation_records.push(record);
+    }
+}
+
+/// Pass 2 — convenience wrapper for the most common
+/// pattern: a check is `unsupported` when the server does not
+/// advertise the corresponding capability. Emits both the
+/// human-readable check and a machine-readable operation
+/// record that names the unsupported operation.
+fn record_unsupported(
+    collector: &mut CheckCollector,
+    operation: impl Into<String>,
+    requirement: CompatibilityRequirement,
+    reason: impl Into<String>,
+    duration_ms: u64,
+) {
+    let op = operation.into();
+    collector.push(SmokeCheck::unsupported(&op, requirement, reason, duration_ms));
+    collector.push_unsupported_operation(
+        SmokeCheck {
+            name: op.clone(),
+            status: CompatibilityCheckStatus::Unsupported,
+            requirement,
+            detail: None,
+            duration_ms,
+        },
+        op,
+    );
+}
+
+/// Build an `LspOperationCompatibility` record at a request site.
+///
+/// Pass 2 — emit operation records at the request site so the
+/// report's `operation_support` field carries the exact
+/// protocol and semantic outcomes observed at the request
+/// boundary, rather than reconstructing them from check names.
+///
+/// Each field maps directly to the LSP request lifecycle:
+/// - `operation`: stable LSP semantic operation name.
+/// - `advertised`: the live server's capability snapshot.
+/// - `exercised`: true when the harness actually sent a
+///   request for this operation.
+/// - `request_succeeded`: true when the LSP request
+///   returned without a protocol error.
+/// - `semantic_assertion_passed`: true when the response
+///   matched the fixture's expected outcome (e.g. expected
+///   file, expected label substring, expected item count).
+/// - `requirement`: how strictly the harness must enforce
+///   the check.
+/// - `known_limit`: optional documented limitation
+///   (e.g. daemon-mode shutdown hang).
+#[allow(clippy::too_many_arguments)]
+fn operation_record(
+    operation: impl Into<String>,
+    advertised: bool,
+    exercised: bool,
+    request_succeeded: bool,
+    semantic_assertion_passed: bool,
+    requirement: CompatibilityRequirement,
+    known_limit: Option<String>,
+) -> egglsp::compatibility::LspOperationCompatibility {
+    egglsp::compatibility::LspOperationCompatibility {
+        operation: operation.into(),
+        advertised,
+        exercised,
+        request_succeeded,
+        semantic_assertion_passed,
+        requirement,
+        known_limit,
+    }
+}
+
+/// Convert a `SmokeCheck` and the matching `advertised`
+/// capability flag into an `LspOperationCompatibility` record.
+///
+/// Pass 2 — this helper is the *request-site* mapping used by
+/// the `run_*_check` helpers. The harness no longer parses
+/// check names or prefixes to recover operation records;
+/// instead each `run_*_check` calls this once it knows the
+/// outcome. The mapping rules are documented inline so the
+/// semantics are obvious:
+/// - `Passing` → request succeeded AND semantic assertion
+///   passed.
+/// - `PassingWithKnownLimits` → request succeeded, semantic
+///   assertion failed, but the failure is documented.
+/// - `Failing` → request succeeded (we sent one), but
+///   semantic assertion failed and the requirement is strict.
+/// - `Skipped` → fixture chose not to exercise the
+///   operation; no request was sent.
+/// - `Unsupported` → server did not advertise the
+///   capability; no request was sent.
+fn operation_record_from_check(
+    operation: impl Into<String>,
+    advertised: bool,
+    requirement: CompatibilityRequirement,
+    check: &SmokeCheck,
+) -> egglsp::compatibility::LspOperationCompatibility {
+    let op: String = operation.into();
+    let (exercised, request_succeeded, semantic_assertion_passed, known_limit) =
+        match check.status {
+            CompatibilityCheckStatus::Passing => (true, true, true, None),
+            CompatibilityCheckStatus::PassingWithKnownLimits => {
+                (true, true, false, check.detail.clone())
+            }
+            CompatibilityCheckStatus::Failing => {
+                // Pass 2 — distinguish protocol failure from
+                // semantic failure by checking the detail
+                // message. The harness convention is to use
+                // the prefix `"malformed"` /
+                // `"stage ... timed out"` /
+                // `"<operation> failed: ..."` for protocol
+                // failures, and `"expected ..."` /
+                // `"no ..."` for semantic failures.
+                let detail = check.detail.as_deref().unwrap_or("");
+                let protocol_failure = detail.starts_with("malformed ")
+                    || detail.contains("timed out")
+                    || detail.starts_with("server did not exit within");
+                if protocol_failure {
+                    (true, false, false, None)
+                } else {
+                    // Semantic failure with strict requirement.
+                    (true, true, false, None)
+                }
+            }
+            CompatibilityCheckStatus::Skipped => (false, false, false, None),
+            CompatibilityCheckStatus::Unsupported => (false, false, false, None),
+        };
+    operation_record(
+        op,
+        advertised,
+        exercised,
+        request_succeeded,
+        semantic_assertion_passed,
+        requirement,
+        known_limit,
+    )
 }
 
 /// Format a stage-timeout error with actionable detail.
@@ -1540,6 +1847,7 @@ async fn run_smoke_suite(
                 LspCapabilitySnapshot::default(),
                 &checks,
                 Vec::new(),
+                None,
                 stderr_tail,
             );
         }
@@ -1566,6 +1874,7 @@ async fn run_smoke_suite(
                 LspCapabilitySnapshot::default(),
                 &checks,
                 Vec::new(),
+                None,
                 stderr_tail,
             );
         }
@@ -1612,6 +1921,7 @@ async fn run_smoke_suite(
                 LspCapabilitySnapshot::default(),
                 &checks,
                 Vec::new(),
+                None,
                 stderr_tail,
             );
         }
@@ -2097,6 +2407,12 @@ async fn run_smoke_suite(
     // fixture does not require touching the harness — only the
     // per-language constructor needs to opt in to the new
     // operations.
+    //
+    // Pass 2 — each helper now emits a paired
+    // `LspOperationCompatibility` record at the request site
+    // (no name parsing on the read path).
+    let mut operation_records: Vec<egglsp::compatibility::LspOperationCompatibility> =
+        Vec::new();
     run_generalized_operation_checks(
         &client,
         fixture,
@@ -2105,6 +2421,7 @@ async fn run_smoke_suite(
         bin_path,
         &profile.server_id,
         &mut checks,
+        &mut operation_records,
         &stderr_tail,
     )
     .await;
@@ -2227,13 +2544,16 @@ async fn run_smoke_suite(
         }
     }
 
-    // Pass 6 — Emit per-operation compatibility records by
-    // walking the `checks` collection. Each check name maps to
-    // an `LspSemanticOperation` and the harness records whether
-    // the request was exercised, the LSP request succeeded, and
-    // the semantic assertion passed.
-    let operation_support = checks_to_operation_support(&checks, &caps);
-
+    // Pass 2 — per-operation records are emitted at each
+    // request site by the helper functions. The previous
+    // `checks_to_operation_support` walk that mapped check
+    // names back to operations is removed; the operation record
+    // is now part of the same logical step as the request.
+    //
+    // Pass 6 — build a structured `LspShutdownTrace` from
+    // the harness's `HarnessShutdownResult` so daemon-mode
+    // hangs are distinguishable from stdio-mode hangs.
+    let shutdown_trace = build_shutdown_trace(&shutdown_result, shutdown_ms);
     build_report(
         profile,
         server_version,
@@ -2241,9 +2561,61 @@ async fn run_smoke_suite(
         Some(readiness_ms),
         caps,
         &checks,
-        operation_support,
+        operation_records,
+        Some(shutdown_trace),
         stderr_tail,
     )
+}
+
+/// Build a `LspShutdownTrace` from the harness result. The
+/// harness always launches the server as a stdio child, so
+/// `mode` is `OperationMode::Stdio` for the pinned Tier 1 +
+/// Tier 2 matrix. Future daemon-mode launches (e.g. clangd
+/// with `--background-index`) will set `OperationMode::Daemon`
+/// without changing the trace shape.
+fn build_shutdown_trace(
+    shutdown_result: &HarnessShutdownResult,
+    shutdown_ms: u64,
+) -> egglsp::compatibility::LspShutdownTrace {
+    use egglsp::compatibility::OperationMode;
+    match shutdown_result {
+        HarnessShutdownResult::Graceful { event, stderr_tail } => {
+            egglsp::compatibility::LspShutdownTrace {
+                requested: true,
+                server_exited: true,
+                exit_code: event.status,
+                signal: event.signal,
+                stderr_tail: stderr_tail.clone(),
+                duration_ms: shutdown_ms,
+                mode: OperationMode::Stdio,
+                force_kill_requested: false,
+            }
+        }
+        HarnessShutdownResult::ForceKilled { event, stderr_tail } => {
+            egglsp::compatibility::LspShutdownTrace {
+                requested: true,
+                server_exited: true,
+                exit_code: event.status,
+                signal: event.signal,
+                stderr_tail: stderr_tail.clone(),
+                duration_ms: shutdown_ms,
+                mode: OperationMode::Stdio,
+                force_kill_requested: true,
+            }
+        }
+        HarnessShutdownResult::TimeoutExpired { stderr_tail } => {
+            egglsp::compatibility::LspShutdownTrace {
+                requested: true,
+                server_exited: false,
+                exit_code: None,
+                signal: None,
+                stderr_tail: stderr_tail.clone(),
+                duration_ms: shutdown_ms,
+                mode: OperationMode::Stdio,
+                force_kill_requested: true,
+            }
+        }
+    }
 }
 
 fn build_report(
@@ -2254,6 +2626,7 @@ fn build_report(
     capabilities: LspCapabilitySnapshot,
     checks: &[SmokeCheck],
     operation_support: Vec<egglsp::compatibility::LspOperationCompatibility>,
+    shutdown_trace: Option<egglsp::compatibility::LspShutdownTrace>,
     stderr_tail: Vec<String>,
 ) -> LspCompatibilityReport {
     LspCompatibilityReport {
@@ -2265,140 +2638,10 @@ fn build_report(
         capabilities,
         checks: checks.iter().map(|c| c.to_compatibility_check()).collect(),
         operation_support,
+        shutdown_trace,
         stderr_tail,
         known_limitations: profile.known_limitations.clone(),
     }
-}
-
-/// Pass 6 — Map `SmokeCheck` results to per-operation
-/// `LspOperationCompatibility` records. Each record carries the
-/// `advertised`, `exercised`, `request_succeeded`, and
-/// `semantic_assertion_passed` flags so consumers can answer
-/// questions like "was implementation exercised?" without
-/// parsing the `checks` collection.
-fn checks_to_operation_support(
-    checks: &[SmokeCheck],
-    caps: &LspCapabilitySnapshot,
-) -> Vec<egglsp::compatibility::LspOperationCompatibility> {
-    use egglsp::capability::LspSemanticOperation;
-    use egglsp::compatibility::{
-        CompatibilityRequirement, LspOperationCompatibility,
-    };
-
-    // Map from check name prefix to the corresponding
-    // `LspSemanticOperation` and capability field. The
-    // advertised state is read from the live capability
-    // snapshot for accuracy.
-    let operations: &[(&str, LspSemanticOperation, bool)] = &[
-        (
-            "implementation",
-            LspSemanticOperation::Implementation,
-            caps.supports_implementation,
-        ),
-        (
-            "declaration",
-            LspSemanticOperation::Declaration,
-            caps.supports_declaration,
-        ),
-        (
-            "signatureHelp",
-            LspSemanticOperation::SignatureHelp,
-            caps.supports_signature_help,
-        ),
-        (
-            "workspaceSymbol",
-            LspSemanticOperation::WorkspaceSymbols,
-            caps.supports_workspace_symbols,
-        ),
-        (
-            "semanticTokens",
-            LspSemanticOperation::SemanticTokens,
-            caps.supports_semantic_tokens,
-        ),
-        (
-            "renamePreview",
-            LspSemanticOperation::Rename,
-            caps.supports_rename,
-        ),
-        (
-            "formatPreview",
-            LspSemanticOperation::DocumentFormatting,
-            caps.supports_document_formatting,
-        ),
-        (
-            "codeActions",
-            LspSemanticOperation::CodeAction,
-            caps.supports_code_actions,
-        ),
-        (
-            "typeHierarchy",
-            LspSemanticOperation::TypeHierarchy,
-            caps.supports_type_hierarchy,
-        ),
-        (
-            "completion",
-            LspSemanticOperation::Completion,
-            caps.supports_completion,
-        ),
-    ];
-
-    let mut out: Vec<LspOperationCompatibility> = Vec::new();
-    for (name, op, advertised) in operations {
-        let check = checks
-            .iter()
-            .find(|c| c.name == *name || c.name.starts_with(&format!("{name} (")));
-        let (exercised, request_succeeded, semantic_assertion_passed, requirement, known_limit) =
-            match check {
-                Some(c) => match c.status {
-                    CompatibilityCheckStatus::Passing => (
-                        true,
-                        true,
-                        true,
-                        c.requirement,
-                        None,
-                    ),
-                    CompatibilityCheckStatus::PassingWithKnownLimits => (
-                        true,
-                        true,
-                        false,
-                        c.requirement,
-                        c.detail.clone(),
-                    ),
-                    CompatibilityCheckStatus::Failing => (
-                        true,
-                        false,
-                        false,
-                        c.requirement,
-                        None,
-                    ),
-                    CompatibilityCheckStatus::Skipped => (
-                        false,
-                        false,
-                        false,
-                        c.requirement,
-                        None,
-                    ),
-                    CompatibilityCheckStatus::Unsupported => (
-                        false,
-                        false,
-                        false,
-                        c.requirement,
-                        None,
-                    ),
-                },
-                None => (false, false, false, CompatibilityRequirement::Optional, None),
-            };
-        out.push(LspOperationCompatibility {
-            operation: op.as_str().to_string(),
-            advertised: *advertised,
-            exercised,
-            request_succeeded,
-            semantic_assertion_passed,
-            requirement,
-            known_limit,
-        });
-    }
-    out
 }
 
 // ── Generalized Operation Checks (Pass 3) ──────────────────────────
@@ -2447,14 +2690,33 @@ async fn run_location_check(
     server_id: &str,
     stderr_tail: &[String],
     checks: &mut Vec<SmokeCheck>,
+    operation_records: &mut Vec<egglsp::compatibility::LspOperationCompatibility>,
 ) {
-    if !supports_op {
-        checks.push(SmokeCheck::unsupported(
-            operation.to_string(),
-            CompatibilityRequirement::Optional,
-            format!("server did not advertise {operation} provider"),
-            0,
+    // Pass 2 — local closure that emits both a check and a
+    // corresponding operation record so the request-site
+    // mapping is exact (no name parsing on the read path).
+    let mut emit = |check: SmokeCheck, advertised: bool| {
+        let op = check.name.clone();
+        let requirement = check.requirement;
+        operation_records.push(operation_record_from_check(
+            &op,
+            advertised,
+            requirement,
+            &check,
         ));
+        checks.push(check);
+    };
+    if !supports_op {
+        let op = operation.to_string();
+        emit(
+            SmokeCheck::unsupported(
+                op,
+                CompatibilityRequirement::Optional,
+                format!("server did not advertise {operation} provider"),
+                0,
+            ),
+            false,
+        );
         return;
     }
     let (method, parse_array) = match operation {
@@ -2463,12 +2725,15 @@ async fn run_location_check(
         "documentHighlight" => ("textDocument/documentHighlight", false),
         other => {
             tracing::error!("unknown location operation: {other}");
-            checks.push(SmokeCheck::fail(
-                operation,
-                CompatibilityRequirement::RequiredIfAdvertised,
-                format!("unknown location operation: {other}"),
-                0,
-            ));
+            emit(
+                SmokeCheck::fail(
+                    operation,
+                    CompatibilityRequirement::RequiredIfAdvertised,
+                    format!("unknown location operation: {other}"),
+                    0,
+                ),
+                true,
+            );
             return;
         }
     };
@@ -2491,15 +2756,18 @@ async fn run_location_check(
     match result {
         Ok(Ok(value)) => {
             if value.is_null() {
-                checks.push(SmokeCheck::fail(
-                    operation,
-                    CompatibilityRequirement::RequiredIfAdvertised,
-                    format!(
-                        "expected at least {} location(s); got 0 (server returned null)",
-                        target.min_locations
+                emit(
+                    SmokeCheck::fail(
+                        operation,
+                        CompatibilityRequirement::RequiredIfAdvertised,
+                        format!(
+                            "expected at least {} location(s); got 0 (server returned null)",
+                            target.min_locations
+                        ),
+                        ms,
                     ),
-                    ms,
-                ));
+                    true,
+                );
                 return;
             }
             // Normalize the response into Vec<LocationLink>.
@@ -2510,12 +2778,15 @@ async fn run_location_check(
                 ) {
                     Ok(gdr) => egglsp::operations::normalize_goto_response(gdr),
                     Err(e) => {
-                        checks.push(SmokeCheck::fail(
-                            operation,
-                            CompatibilityRequirement::RequiredIfAdvertised,
-                            format!("malformed {method} response: {e}"),
-                            ms,
-                        ));
+                        emit(
+                            SmokeCheck::fail(
+                                operation,
+                                CompatibilityRequirement::RequiredIfAdvertised,
+                                format!("malformed {method} response: {e}"),
+                                ms,
+                            ),
+                            true,
+                        );
                         return;
                     }
                 }
@@ -2541,27 +2812,33 @@ async fn run_location_check(
                             .collect()
                     }
                     Err(e) => {
-                        checks.push(SmokeCheck::fail(
-                            operation,
-                            CompatibilityRequirement::RequiredIfAdvertised,
-                            format!("malformed {method} response: {e}"),
-                            ms,
-                        ));
+                        emit(
+                            SmokeCheck::fail(
+                                operation,
+                                CompatibilityRequirement::RequiredIfAdvertised,
+                                format!("malformed {method} response: {e}"),
+                                ms,
+                            ),
+                            true,
+                        );
                         return;
                     }
                 }
             };
             if normalized.len() < target.min_locations {
-                checks.push(SmokeCheck::fail(
-                    operation,
-                    CompatibilityRequirement::RequiredIfAdvertised,
-                    format!(
-                        "expected at least {} location(s); got {}",
-                        target.min_locations,
-                        normalized.len()
+                emit(
+                    SmokeCheck::fail(
+                        operation,
+                        CompatibilityRequirement::RequiredIfAdvertised,
+                        format!(
+                            "expected at least {} location(s); got {}",
+                            target.min_locations,
+                            normalized.len()
+                        ),
+                        ms,
                     ),
-                    ms,
-                ));
+                    true,
+                );
                 return;
             }
             if !target.expected_files.is_empty() {
@@ -2577,36 +2854,48 @@ async fn run_location_check(
                         .iter()
                         .map(|l| l.target_uri.to_string())
                         .collect();
-                    checks.push(SmokeCheck::fail(
-                        operation,
-                        CompatibilityRequirement::RequiredIfAdvertised,
-                        format!(
-                            "no returned location matched any expected file (expected any of {:?}); got {:?}",
-                            target.expected_files, returned
+                    emit(
+                        SmokeCheck::fail(
+                            operation,
+                            CompatibilityRequirement::RequiredIfAdvertised,
+                            format!(
+                                "no returned location matched any expected file (expected any of {:?}); got {:?}",
+                                target.expected_files, returned
+                            ),
+                            ms,
                         ),
-                        ms,
-                    ));
+                        true,
+                    );
                     return;
                 }
             }
-            checks.push(SmokeCheck::pass(
-                format!("{operation} ({} found)", normalized.len()),
-                CompatibilityRequirement::RequiredIfAdvertised,
-                ms,
-            ));
+            emit(
+                SmokeCheck::pass(
+                    format!("{operation} ({} found)", normalized.len()),
+                    CompatibilityRequirement::RequiredIfAdvertised,
+                    ms,
+                ),
+                true,
+            );
         }
-        Ok(Err(e)) => checks.push(SmokeCheck::fail(
-            operation,
-            CompatibilityRequirement::RequiredIfAdvertised,
-            format!("{e}"),
-            ms,
-        )),
-        Err(_elapsed) => checks.push(SmokeCheck::fail(
-            operation,
-            CompatibilityRequirement::RequiredIfAdvertised,
-            stage_timeout_error(server_id, bin_path, operation, REQUEST_TIMEOUT, stderr_tail),
-            ms,
-        )),
+        Ok(Err(e)) => emit(
+            SmokeCheck::fail(
+                operation,
+                CompatibilityRequirement::RequiredIfAdvertised,
+                format!("{e}"),
+                ms,
+            ),
+            true,
+        ),
+        Err(_elapsed) => emit(
+            SmokeCheck::fail(
+                operation,
+                CompatibilityRequirement::RequiredIfAdvertised,
+                stage_timeout_error(server_id, bin_path, operation, REQUEST_TIMEOUT, stderr_tail),
+                ms,
+            ),
+            true,
+        ),
     }
 }
 
@@ -2623,14 +2912,34 @@ async fn run_type_hierarchy_check(
     server_id: &str,
     stderr_tail: &[String],
     checks: &mut Vec<SmokeCheck>,
+    operation_records: &mut Vec<egglsp::compatibility::LspOperationCompatibility>,
 ) {
-    if !supports_type_hierarchy {
-        checks.push(SmokeCheck::unsupported(
-            "typeHierarchy",
-            CompatibilityRequirement::Optional,
-            "server did not advertise type hierarchy provider",
-            0,
+    // Pass 2 — emit operation records at request sites. Each
+    // type-hierarchy sub-check maps to its own operation name
+    // (`typeHierarchy/prepare`, `typeHierarchy/supertypes`,
+    // `typeHierarchy/subtypes`) so Pass 4's distinct-records
+    // requirement is satisfied at the same time.
+    let mut emit = |check: SmokeCheck, advertised: bool| {
+        let op = check.name.clone();
+        let requirement = check.requirement;
+        operation_records.push(operation_record_from_check(
+            &op,
+            advertised,
+            requirement,
+            &check,
         ));
+        checks.push(check);
+    };
+    if !supports_type_hierarchy {
+        emit(
+            SmokeCheck::unsupported(
+                "typeHierarchy",
+                CompatibilityRequirement::Optional,
+                "server did not advertise type hierarchy provider",
+                0,
+            ),
+            false,
+        );
         return;
     }
 
@@ -2645,42 +2954,51 @@ async fn run_type_hierarchy_check(
     let items = match result {
         Ok(Ok(items)) => items,
         Ok(Err(e)) => {
-            checks.push(SmokeCheck::fail(
-                "typeHierarchy/prepare",
-                CompatibilityRequirement::RequiredIfAdvertised,
-                format!("{e}"),
-                ms,
-            ));
+            emit(
+                SmokeCheck::fail(
+                    "typeHierarchy/prepare",
+                    CompatibilityRequirement::RequiredIfAdvertised,
+                    format!("{e}"),
+                    ms,
+                ),
+                true,
+            );
             return;
         }
         Err(_elapsed) => {
-            checks.push(SmokeCheck::fail(
-                "typeHierarchy/prepare",
-                CompatibilityRequirement::RequiredIfAdvertised,
-                stage_timeout_error(
-                    server_id,
-                    bin_path,
+            emit(
+                SmokeCheck::fail(
                     "typeHierarchy/prepare",
-                    REQUEST_TIMEOUT,
-                    stderr_tail,
+                    CompatibilityRequirement::RequiredIfAdvertised,
+                    stage_timeout_error(
+                        server_id,
+                        bin_path,
+                        "typeHierarchy/prepare",
+                        REQUEST_TIMEOUT,
+                        stderr_tail,
+                    ),
+                    ms,
                 ),
-                ms,
-            ));
+                true,
+            );
             return;
         }
     };
 
     if items.len() < target.min_items {
-        checks.push(SmokeCheck::fail(
-            "typeHierarchy/prepare",
-            CompatibilityRequirement::RequiredIfAdvertised,
-            format!(
-                "expected at least {} item(s), got {}",
-                target.min_items,
-                items.len()
+        emit(
+            SmokeCheck::fail(
+                "typeHierarchy/prepare",
+                CompatibilityRequirement::RequiredIfAdvertised,
+                format!(
+                    "expected at least {} item(s), got {}",
+                    target.min_items,
+                    items.len()
+                ),
+                ms,
             ),
-            ms,
-        ));
+            true,
+        );
         return;
     }
     // Pass 5 — when a fixture sets `expected_prepare_name`, at
@@ -2692,22 +3010,28 @@ async fn run_type_hierarchy_check(
         let any_match = items.iter().any(|item| item.name == *expected);
         if !any_match {
             let returned: Vec<String> = items.iter().map(|i| i.name.clone()).collect();
-            checks.push(SmokeCheck::fail(
-                "typeHierarchy/prepare",
-                CompatibilityRequirement::RequiredIfAdvertised,
-                format!(
-                    "no prepare item matched expected name {expected:?}; got {returned:?}"
+            emit(
+                SmokeCheck::fail(
+                    "typeHierarchy/prepare",
+                    CompatibilityRequirement::RequiredIfAdvertised,
+                    format!(
+                        "no prepare item matched expected name {expected:?}; got {returned:?}"
+                    ),
+                    ms,
                 ),
-                ms,
-            ));
+                true,
+            );
             return;
         }
     }
-    checks.push(SmokeCheck::pass(
-        format!("typeHierarchy/prepare ({} item(s))", items.len()),
-        CompatibilityRequirement::RequiredIfAdvertised,
-        ms,
-    ));
+    emit(
+        SmokeCheck::pass(
+            format!("typeHierarchy/prepare ({} item(s))", items.len()),
+            CompatibilityRequirement::RequiredIfAdvertised,
+            ms,
+        ),
+        true,
+    );
 
     // typeHierarchy/supertypes
     if target.check_supertypes {
@@ -2720,33 +3044,42 @@ async fn run_type_hierarchy_check(
         let ms = start.elapsed().as_millis() as u64;
         match result {
             Ok(Ok(supers)) => {
-                checks.push(SmokeCheck::pass(
-                    format!("typeHierarchy/supertypes ({} item(s))", supers.len()),
-                    CompatibilityRequirement::RequiredIfAdvertised,
-                    ms,
-                ));
+                emit(
+                    SmokeCheck::pass(
+                        format!("typeHierarchy/supertypes ({} item(s))", supers.len()),
+                        CompatibilityRequirement::RequiredIfAdvertised,
+                        ms,
+                    ),
+                    true,
+                );
             }
             Ok(Err(e)) => {
-                checks.push(SmokeCheck::fail(
-                    "typeHierarchy/supertypes",
-                    CompatibilityRequirement::RequiredIfAdvertised,
-                    format!("{e}"),
-                    ms,
-                ));
+                emit(
+                    SmokeCheck::fail(
+                        "typeHierarchy/supertypes",
+                        CompatibilityRequirement::RequiredIfAdvertised,
+                        format!("{e}"),
+                        ms,
+                    ),
+                    true,
+                );
             }
             Err(_elapsed) => {
-                checks.push(SmokeCheck::fail(
-                    "typeHierarchy/supertypes",
-                    CompatibilityRequirement::RequiredIfAdvertised,
-                    stage_timeout_error(
-                        server_id,
-                        bin_path,
+                emit(
+                    SmokeCheck::fail(
                         "typeHierarchy/supertypes",
-                        REQUEST_TIMEOUT,
-                        stderr_tail,
+                        CompatibilityRequirement::RequiredIfAdvertised,
+                        stage_timeout_error(
+                            server_id,
+                            bin_path,
+                            "typeHierarchy/supertypes",
+                            REQUEST_TIMEOUT,
+                            stderr_tail,
+                        ),
+                        ms,
                     ),
-                    ms,
-                ));
+                    true,
+                );
             }
         }
     }
@@ -2782,44 +3115,56 @@ async fn run_type_hierarchy_check(
                     if !missing.is_empty() {
                         let returned: Vec<String> =
                             subs.iter().map(|s| s.name.clone()).collect();
-                        checks.push(SmokeCheck::fail(
-                            "typeHierarchy/subtypes",
-                            CompatibilityRequirement::RequiredIfAdvertised,
-                            format!(
-                                "no subtype matched expected substrings {missing:?}; got {returned:?}"
+                        emit(
+                            SmokeCheck::fail(
+                                "typeHierarchy/subtypes",
+                                CompatibilityRequirement::RequiredIfAdvertised,
+                                format!(
+                                    "no subtype matched expected substrings {missing:?}; got {returned:?}"
+                                ),
+                                ms,
                             ),
-                            ms,
-                        ));
+                            true,
+                        );
                         return;
                     }
                 }
-                checks.push(SmokeCheck::pass(
-                    format!("typeHierarchy/subtypes ({} item(s))", subs.len()),
-                    CompatibilityRequirement::RequiredIfAdvertised,
-                    ms,
-                ));
+                emit(
+                    SmokeCheck::pass(
+                        format!("typeHierarchy/subtypes ({} item(s))", subs.len()),
+                        CompatibilityRequirement::RequiredIfAdvertised,
+                        ms,
+                    ),
+                    true,
+                );
             }
             Ok(Err(e)) => {
-                checks.push(SmokeCheck::fail(
-                    "typeHierarchy/subtypes",
-                    CompatibilityRequirement::RequiredIfAdvertised,
-                    format!("{e}"),
-                    ms,
-                ));
+                emit(
+                    SmokeCheck::fail(
+                        "typeHierarchy/subtypes",
+                        CompatibilityRequirement::RequiredIfAdvertised,
+                        format!("{e}"),
+                        ms,
+                    ),
+                    true,
+                );
             }
             Err(_elapsed) => {
-                checks.push(SmokeCheck::fail(
-                    "typeHierarchy/subtypes",
-                    CompatibilityRequirement::RequiredIfAdvertised,
-                    stage_timeout_error(
-                        server_id,
-                        bin_path,
+                emit(
+                    SmokeCheck::fail(
                         "typeHierarchy/subtypes",
-                        REQUEST_TIMEOUT,
-                        stderr_tail,
+                        CompatibilityRequirement::RequiredIfAdvertised,
+                        stage_timeout_error(
+                            server_id,
+                            bin_path,
+                            "typeHierarchy/subtypes",
+                            REQUEST_TIMEOUT,
+                            stderr_tail,
+                        ),
+                        ms,
                     ),
-                    ms,
-                ));
+                    true,
+                );
             }
         }
     }
@@ -2837,14 +3182,30 @@ async fn run_signature_help_check(
     server_id: &str,
     stderr_tail: &[String],
     checks: &mut Vec<SmokeCheck>,
+    operation_records: &mut Vec<egglsp::compatibility::LspOperationCompatibility>,
 ) {
-    if !supports_op {
-        checks.push(SmokeCheck::unsupported(
-            "signatureHelp",
-            CompatibilityRequirement::Optional,
-            "server did not advertise signatureHelp provider",
-            0,
+    // Pass 2 — emit operation records at request sites.
+    let mut emit = |check: SmokeCheck, advertised: bool| {
+        let op = check.name.clone();
+        let requirement = check.requirement;
+        operation_records.push(operation_record_from_check(
+            &op,
+            advertised,
+            requirement,
+            &check,
         ));
+        checks.push(check);
+    };
+    if !supports_op {
+        emit(
+            SmokeCheck::unsupported(
+                "signatureHelp",
+                CompatibilityRequirement::Optional,
+                "server did not advertise signatureHelp provider",
+                0,
+            ),
+            false,
+        );
         return;
     }
     let start = std::time::Instant::now();
@@ -2865,30 +3226,39 @@ async fn run_signature_help_check(
                 // expectations are set. When the fixture explicitly
                 // expects signature help, null is a failure.
                 if target.expected_label_substrings.is_empty() {
-                    checks.push(SmokeCheck::pass(
-                        "signatureHelp (server returned null at this position)",
-                        CompatibilityRequirement::RequiredIfAdvertised,
-                        ms,
-                    ));
+                    emit(
+                        SmokeCheck::pass(
+                            "signatureHelp (server returned null at this position)",
+                            CompatibilityRequirement::RequiredIfAdvertised,
+                            ms,
+                        ),
+                        true,
+                    );
                 } else {
-                    checks.push(SmokeCheck::fail(
-                        "signatureHelp",
-                        CompatibilityRequirement::RequiredIfAdvertised,
-                        "server returned null but fixture expects signature help",
-                        ms,
-                    ));
+                    emit(
+                        SmokeCheck::fail(
+                            "signatureHelp",
+                            CompatibilityRequirement::RequiredIfAdvertised,
+                            "server returned null but fixture expects signature help",
+                            ms,
+                        ),
+                        true,
+                    );
                 }
                 return;
             }
             match serde_json::from_value::<egglsp::lsp_types::SignatureHelp>(value) {
                 Ok(help) => {
                     if help.signatures.is_empty() {
-                        checks.push(SmokeCheck::fail(
-                            "signatureHelp",
-                            CompatibilityRequirement::RequiredIfAdvertised,
-                            "server returned signatureHelp with 0 signatures",
-                            ms,
-                        ));
+                        emit(
+                            SmokeCheck::fail(
+                                "signatureHelp",
+                                CompatibilityRequirement::RequiredIfAdvertised,
+                                "server returned signatureHelp with 0 signatures",
+                                ms,
+                            ),
+                            true,
+                        );
                         return;
                     }
                     // Validate expected label substrings when provided.
@@ -2900,51 +3270,66 @@ async fn run_signature_help_check(
                             .collect();
                         for substr in &target.expected_label_substrings {
                             if !labels.iter().any(|l| l.contains(substr.as_str())) {
-                                checks.push(SmokeCheck::fail(
-                                    "signatureHelp",
-                                    CompatibilityRequirement::RequiredIfAdvertised,
-                                    format!(
-                                        "expected label containing '{}' but got {:?}",
-                                        substr, labels
+                                emit(
+                                    SmokeCheck::fail(
+                                        "signatureHelp",
+                                        CompatibilityRequirement::RequiredIfAdvertised,
+                                        format!(
+                                            "expected label containing '{}' but got {:?}",
+                                            substr, labels
+                                        ),
+                                        ms,
                                     ),
-                                    ms,
-                                ));
+                                    true,
+                                );
                                 return;
                             }
                         }
                     }
-                    checks.push(SmokeCheck::pass(
-                        format!("signatureHelp ({} signature(s))", help.signatures.len()),
-                        CompatibilityRequirement::RequiredIfAdvertised,
-                        ms,
-                    ));
+                    emit(
+                        SmokeCheck::pass(
+                            format!("signatureHelp ({} signature(s))", help.signatures.len()),
+                            CompatibilityRequirement::RequiredIfAdvertised,
+                            ms,
+                        ),
+                        true,
+                    );
                 }
-                Err(e) => checks.push(SmokeCheck::fail(
-                    "signatureHelp",
-                    CompatibilityRequirement::RequiredIfAdvertised,
-                    format!("malformed signatureHelp response: {e}"),
-                    ms,
-                )),
+                Err(e) => emit(
+                    SmokeCheck::fail(
+                        "signatureHelp",
+                        CompatibilityRequirement::RequiredIfAdvertised,
+                        format!("malformed signatureHelp response: {e}"),
+                        ms,
+                    ),
+                    true,
+                ),
             }
         }
-        Ok(Err(e)) => checks.push(SmokeCheck::fail(
-            "signatureHelp",
-            CompatibilityRequirement::RequiredIfAdvertised,
-            format!("{e}"),
-            ms,
-        )),
-        Err(_elapsed) => checks.push(SmokeCheck::fail(
-            "signatureHelp",
-            CompatibilityRequirement::RequiredIfAdvertised,
-            stage_timeout_error(
-                server_id,
-                bin_path,
+        Ok(Err(e)) => emit(
+            SmokeCheck::fail(
                 "signatureHelp",
-                REQUEST_TIMEOUT,
-                stderr_tail,
+                CompatibilityRequirement::RequiredIfAdvertised,
+                format!("{e}"),
+                ms,
             ),
-            ms,
-        )),
+            true,
+        ),
+        Err(_elapsed) => emit(
+            SmokeCheck::fail(
+                "signatureHelp",
+                CompatibilityRequirement::RequiredIfAdvertised,
+                stage_timeout_error(
+                    server_id,
+                    bin_path,
+                    "signatureHelp",
+                    REQUEST_TIMEOUT,
+                    stderr_tail,
+                ),
+                ms,
+            ),
+            true,
+        ),
     }
 }
 
@@ -2957,14 +3342,30 @@ async fn run_workspace_symbol_check(
     server_id: &str,
     stderr_tail: &[String],
     checks: &mut Vec<SmokeCheck>,
+    operation_records: &mut Vec<egglsp::compatibility::LspOperationCompatibility>,
 ) {
-    if !supports_op {
-        checks.push(SmokeCheck::unsupported(
-            "workspaceSymbol",
-            CompatibilityRequirement::Optional,
-            "server did not advertise workspaceSymbol provider",
-            0,
+    // Pass 2 — emit operation records at request sites.
+    let mut emit = |check: SmokeCheck, advertised: bool| {
+        let op = check.name.clone();
+        let requirement = check.requirement;
+        operation_records.push(operation_record_from_check(
+            &op,
+            advertised,
+            requirement,
+            &check,
         ));
+        checks.push(check);
+    };
+    if !supports_op {
+        emit(
+            SmokeCheck::unsupported(
+                "workspaceSymbol",
+                CompatibilityRequirement::Optional,
+                "server did not advertise workspaceSymbol provider",
+                0,
+            ),
+            false,
+        );
         return;
     }
     let start = std::time::Instant::now();
@@ -2978,15 +3379,18 @@ async fn run_workspace_symbol_check(
     match result {
         Ok(Ok(value)) => {
             if value.is_null() {
-                checks.push(SmokeCheck::fail(
-                    "workspaceSymbol",
-                    CompatibilityRequirement::RequiredIfAdvertised,
-                    format!(
-                        "expected at least {} symbol(s); got 0 (server returned null)",
-                        expectation.min_locations
+                emit(
+                    SmokeCheck::fail(
+                        "workspaceSymbol",
+                        CompatibilityRequirement::RequiredIfAdvertised,
+                        format!(
+                            "expected at least {} symbol(s); got 0 (server returned null)",
+                            expectation.min_locations
+                        ),
+                        ms,
                     ),
-                    ms,
-                ));
+                    true,
+                );
                 return;
             }
             // Normalize via the existing helper to handle both
@@ -2995,27 +3399,33 @@ async fn run_workspace_symbol_check(
                 match serde_json::from_value(value) {
                     Ok(r) => r,
                     Err(e) => {
-                        checks.push(SmokeCheck::fail(
-                            "workspaceSymbol",
-                            CompatibilityRequirement::RequiredIfAdvertised,
-                            format!("malformed workspace/symbol response: {e}"),
-                            ms,
-                        ));
+                        emit(
+                            SmokeCheck::fail(
+                                "workspaceSymbol",
+                                CompatibilityRequirement::RequiredIfAdvertised,
+                                format!("malformed workspace/symbol response: {e}"),
+                                ms,
+                            ),
+                            true,
+                        );
                         return;
                     }
                 };
             let symbols = egglsp::operations::normalize_workspace_symbol_response(response);
             if symbols.len() < expectation.min_locations {
-                checks.push(SmokeCheck::fail(
-                    "workspaceSymbol",
-                    CompatibilityRequirement::RequiredIfAdvertised,
-                    format!(
-                        "expected at least {} symbol(s); got {}",
-                        expectation.min_locations,
-                        symbols.len()
+                emit(
+                    SmokeCheck::fail(
+                        "workspaceSymbol",
+                        CompatibilityRequirement::RequiredIfAdvertised,
+                        format!(
+                            "expected at least {} symbol(s); got {}",
+                            expectation.min_locations,
+                            symbols.len()
+                        ),
+                        ms,
                     ),
-                    ms,
-                ));
+                    true,
+                );
                 return;
             }
             if !expectation.expected_files.is_empty() {
@@ -3029,46 +3439,58 @@ async fn run_workspace_symbol_check(
                 if !any_match {
                     let returned: Vec<String> =
                         symbols.iter().map(|s| s.location.uri.to_string()).collect();
-                    checks.push(SmokeCheck::fail(
-                        "workspaceSymbol",
-                        CompatibilityRequirement::RequiredIfAdvertised,
-                        format!(
-                            "no returned symbol matched any expected file (expected any of {:?}); got {:?}",
-                            expectation.expected_files, returned
+                    emit(
+                        SmokeCheck::fail(
+                            "workspaceSymbol",
+                            CompatibilityRequirement::RequiredIfAdvertised,
+                            format!(
+                                "no returned symbol matched any expected file (expected any of {:?}); got {:?}",
+                                expectation.expected_files, returned
+                            ),
+                            ms,
                         ),
-                        ms,
-                    ));
+                        true,
+                    );
                     return;
                 }
             }
-            checks.push(SmokeCheck::pass(
-                format!(
-                    "workspaceSymbol ({} found for query {:?})",
-                    symbols.len(),
-                    expectation.query
+            emit(
+                SmokeCheck::pass(
+                    format!(
+                        "workspaceSymbol ({} found for query {:?})",
+                        symbols.len(),
+                        expectation.query
+                    ),
+                    CompatibilityRequirement::RequiredIfAdvertised,
+                    ms,
                 ),
-                CompatibilityRequirement::RequiredIfAdvertised,
-                ms,
-            ));
+                true,
+            );
         }
-        Ok(Err(e)) => checks.push(SmokeCheck::fail(
-            "workspaceSymbol",
-            CompatibilityRequirement::RequiredIfAdvertised,
-            format!("{e}"),
-            ms,
-        )),
-        Err(_elapsed) => checks.push(SmokeCheck::fail(
-            "workspaceSymbol",
-            CompatibilityRequirement::RequiredIfAdvertised,
-            stage_timeout_error(
-                server_id,
-                bin_path,
+        Ok(Err(e)) => emit(
+            SmokeCheck::fail(
                 "workspaceSymbol",
-                REQUEST_TIMEOUT,
-                stderr_tail,
+                CompatibilityRequirement::RequiredIfAdvertised,
+                format!("{e}"),
+                ms,
             ),
-            ms,
-        )),
+            true,
+        ),
+        Err(_elapsed) => emit(
+            SmokeCheck::fail(
+                "workspaceSymbol",
+                CompatibilityRequirement::RequiredIfAdvertised,
+                stage_timeout_error(
+                    server_id,
+                    bin_path,
+                    "workspaceSymbol",
+                    REQUEST_TIMEOUT,
+                    stderr_tail,
+                ),
+                ms,
+            ),
+            true,
+        ),
     }
 }
 
@@ -3082,14 +3504,30 @@ async fn run_completion_check(
     server_id: &str,
     stderr_tail: &[String],
     checks: &mut Vec<SmokeCheck>,
+    operation_records: &mut Vec<egglsp::compatibility::LspOperationCompatibility>,
 ) {
-    if !supports_op {
-        checks.push(SmokeCheck::unsupported(
-            "completion",
-            CompatibilityRequirement::Optional,
-            "server did not advertise completion provider",
-            0,
+    // Pass 2 — emit operation records at request sites.
+    let mut emit = |check: SmokeCheck, advertised: bool| {
+        let op = check.name.clone();
+        let requirement = check.requirement;
+        operation_records.push(operation_record_from_check(
+            &op,
+            advertised,
+            requirement,
+            &check,
         ));
+        checks.push(check);
+    };
+    if !supports_op {
+        emit(
+            SmokeCheck::unsupported(
+                "completion",
+                CompatibilityRequirement::Optional,
+                "server did not advertise completion provider",
+                0,
+            ),
+            false,
+        );
         return;
     }
     let start = std::time::Instant::now();
@@ -3125,12 +3563,15 @@ async fn run_completion_check(
                             match items {
                                 Ok(items) => items,
                                 Err(e) => {
-                                    checks.push(SmokeCheck::fail(
-                                        "completion",
-                                        CompatibilityRequirement::RequiredIfAdvertised,
-                                        format!("malformed textDocument/completion response: {e}"),
-                                        ms,
-                                    ));
+                                    emit(
+                                        SmokeCheck::fail(
+                                            "completion",
+                                            CompatibilityRequirement::RequiredIfAdvertised,
+                                            format!("malformed textDocument/completion response: {e}"),
+                                            ms,
+                                        ),
+                                        true,
+                                    );
                                     return;
                                 }
                             }
@@ -3145,44 +3586,56 @@ async fn run_completion_check(
             }
         }
         Ok(Err(e)) => {
-            checks.push(SmokeCheck::fail(
-                "completion",
-                CompatibilityRequirement::RequiredIfAdvertised,
-                format!("{e}"),
-                ms,
-            ));
+            emit(
+                SmokeCheck::fail(
+                    "completion",
+                    CompatibilityRequirement::RequiredIfAdvertised,
+                    format!("{e}"),
+                    ms,
+                ),
+                true,
+            );
             return;
         }
         Err(_elapsed) => {
-            checks.push(SmokeCheck::fail(
-                "completion",
-                CompatibilityRequirement::RequiredIfAdvertised,
-                stage_timeout_error(
-                    server_id,
-                    bin_path,
+            emit(
+                SmokeCheck::fail(
                     "completion",
-                    REQUEST_TIMEOUT,
-                    stderr_tail,
+                    CompatibilityRequirement::RequiredIfAdvertised,
+                    stage_timeout_error(
+                        server_id,
+                        bin_path,
+                        "completion",
+                        REQUEST_TIMEOUT,
+                        stderr_tail,
+                    ),
+                    ms,
                 ),
-                ms,
-            ));
+                true,
+            );
             return;
         }
     };
     if expectation.expected_label_substrings.is_empty() {
         if candidates.is_empty() {
-            checks.push(SmokeCheck::fail(
-                "completion",
-                CompatibilityRequirement::RequiredIfAdvertised,
-                "server returned 0 completion candidates",
-                ms,
-            ));
+            emit(
+                SmokeCheck::fail(
+                    "completion",
+                    CompatibilityRequirement::RequiredIfAdvertised,
+                    "server returned 0 completion candidates",
+                    ms,
+                ),
+                true,
+            );
         } else {
-            checks.push(SmokeCheck::pass(
-                format!("completion ({} candidate(s))", candidates.len()),
-                CompatibilityRequirement::RequiredIfAdvertised,
-                ms,
-            ));
+            emit(
+                SmokeCheck::pass(
+                    format!("completion ({} candidate(s))", candidates.len()),
+                    CompatibilityRequirement::RequiredIfAdvertised,
+                    ms,
+                ),
+                true,
+            );
         }
         return;
     }
@@ -3200,27 +3653,33 @@ async fn run_completion_check(
         .map(|s| s.as_str())
         .collect();
     if matched.is_empty() {
-        checks.push(SmokeCheck::fail(
-            "completion",
-            CompatibilityRequirement::RequiredIfAdvertised,
-            format!(
-                "no completion label contained any of {:?}; got {} candidate(s): {:?}",
-                expectation.expected_label_substrings,
-                candidates.len(),
-                candidates
+        emit(
+            SmokeCheck::fail(
+                "completion",
+                CompatibilityRequirement::RequiredIfAdvertised,
+                format!(
+                    "no completion label contained any of {:?}; got {} candidate(s): {:?}",
+                    expectation.expected_label_substrings,
+                    candidates.len(),
+                    candidates
+                ),
+                ms,
             ),
-            ms,
-        ));
+            true,
+        );
     } else {
-        checks.push(SmokeCheck::pass(
-            format!(
-                "completion ({} matched label(s): {:?})",
-                matched.len(),
-                matched
+        emit(
+            SmokeCheck::pass(
+                format!(
+                    "completion ({} matched label(s): {:?})",
+                    matched.len(),
+                    matched
+                ),
+                CompatibilityRequirement::RequiredIfAdvertised,
+                ms,
             ),
-            CompatibilityRequirement::RequiredIfAdvertised,
-            ms,
-        ));
+            true,
+        );
     }
 }
 
@@ -3237,14 +3696,30 @@ async fn run_semantic_tokens_check(
     server_id: &str,
     stderr_tail: &[String],
     checks: &mut Vec<SmokeCheck>,
+    operation_records: &mut Vec<egglsp::compatibility::LspOperationCompatibility>,
 ) {
-    if !supports_op {
-        checks.push(SmokeCheck::unsupported(
-            "semanticTokens",
-            CompatibilityRequirement::Optional,
-            "server did not advertise semantic tokens provider",
-            0,
+    // Pass 2 — emit operation records at request sites.
+    let mut emit = |check: SmokeCheck, advertised: bool| {
+        let op = check.name.clone();
+        let requirement = check.requirement;
+        operation_records.push(operation_record_from_check(
+            &op,
+            advertised,
+            requirement,
+            &check,
         ));
+        checks.push(check);
+    };
+    if !supports_op {
+        emit(
+            SmokeCheck::unsupported(
+                "semanticTokens",
+                CompatibilityRequirement::Optional,
+                "server did not advertise semantic tokens provider",
+                0,
+            ),
+            false,
+        );
         return;
     }
     let start = std::time::Instant::now();
@@ -3260,11 +3735,14 @@ async fn run_semantic_tokens_check(
     match result {
         Ok(Ok(value)) => {
             if value.is_null() {
-                checks.push(SmokeCheck::passing(
-                    "semanticTokens",
-                    CompatibilityRequirement::RequiredIfAdvertised,
-                    ms,
-                ));
+                emit(
+                    SmokeCheck::passing(
+                        "semanticTokens",
+                        CompatibilityRequirement::RequiredIfAdvertised,
+                        ms,
+                    ),
+                    true,
+                );
                 return;
             }
             match serde_json::from_value::<egglsp::lsp_types::SemanticTokens>(value) {
@@ -3275,12 +3753,15 @@ async fn run_semantic_tokens_check(
                     // check if the decoder rejects the stream
                     // (out-of-range token type, overflow, etc).
                     let Some(legend) = legend else {
-                        checks.push(SmokeCheck::fail(
-                            "semanticTokens",
-                            CompatibilityRequirement::RequiredIfAdvertised,
-                            "no semantic-token legend available; cannot decode raw stream",
-                            ms,
-                        ));
+                        emit(
+                            SmokeCheck::fail(
+                                "semanticTokens",
+                                CompatibilityRequirement::RequiredIfAdvertised,
+                                "no semantic-token legend available; cannot decode raw stream",
+                                ms,
+                            ),
+                            true,
+                        );
                         return;
                     };
                     match egglsp::decode_semantic_tokens(&tokens.data, legend) {
@@ -3292,6 +3773,18 @@ async fn run_semantic_tokens_check(
                             // count, and the token's end
                             // (start + length) does not run
                             // past the end of its line.
+                            //
+                            // Pass 7 — Use the shared
+                            // encoding-aware conversion helper
+                            // (`egglsp::lsp_range_to_byte_offsets`)
+                            // so the bounds check uses the
+                            // negotiated position encoding
+                            // (UTF-16 by default). The previous
+                            // implementation compared the LSP
+                            // character offsets against the
+                            // line's UTF-8 byte length, which is
+                            // a conservative but not exact bound
+                            // for non-ASCII sources.
                             let file_path = primary_uri.to_file_path().ok();
                             let line_texts: Option<Vec<String>> = file_path
                                 .as_ref()
@@ -3307,14 +3800,27 @@ async fn run_semantic_tokens_check(
                                     || file_line_count == 0;
                                 let length_in_range = if let Some(texts) = &line_texts {
                                     if let Some(line_text) = texts.get(tok.line as usize) {
-                                        // LSP character offsets are
-                                        // UTF-16 code units, not
-                                        // bytes. Compare against
-                                        // the byte length for a
-                                        // conservative bound.
-                                        let line_bytes = line_text.len() as u32;
-                                        let end = tok.start.saturating_add(tok.length);
-                                        end <= line_bytes
+                                        // Use the negotiated
+                                        // encoding (UTF-16 by
+                                        // default) to convert
+                                        // the token's start +
+                                        // length to byte offsets.
+                                        // The check is exact: the
+                                        // end byte must be on a
+                                        // char boundary and not
+                                        // exceed the line's byte
+                                        // length.
+                                        match egglsp::lsp_range_to_byte_offsets(
+                                            line_text,
+                                            tok.start,
+                                            tok.length,
+                                            egglsp::PositionEncoding::Utf16,
+                                        ) {
+                                            Some((_start_byte, end_byte)) => {
+                                                end_byte <= line_text.len()
+                                            }
+                                            None => false,
+                                        }
                                     } else {
                                         false
                                     }
@@ -3329,16 +3835,19 @@ async fn run_semantic_tokens_check(
                                 }
                             }
                             if !invalid.is_empty() {
-                                checks.push(SmokeCheck::fail(
-                                    "semanticTokens",
-                                    CompatibilityRequirement::RequiredIfAdvertised,
-                                    format!(
-                                        "{} decoded token(s) out of range: {}",
-                                        invalid.len(),
-                                        invalid.iter().take(5).cloned().collect::<Vec<_>>().join(", ")
+                                emit(
+                                    SmokeCheck::fail(
+                                        "semanticTokens",
+                                        CompatibilityRequirement::RequiredIfAdvertised,
+                                        format!(
+                                            "{} decoded token(s) out of range: {}",
+                                            invalid.len(),
+                                            invalid.iter().take(5).cloned().collect::<Vec<_>>().join(", ")
+                                        ),
+                                        ms,
                                     ),
-                                    ms,
-                                ));
+                                    true,
+                                );
                                 return;
                             }
                             // Pass 9 — Verify the legend
@@ -3352,12 +3861,15 @@ async fn run_semantic_tokens_check(
                             // we also assert the legend is
                             // non-empty).
                             if legend.token_types.is_empty() {
-                                checks.push(SmokeCheck::fail(
-                                    "semanticTokens",
-                                    CompatibilityRequirement::RequiredIfAdvertised,
-                                    "decoded tokens but legend.token_types is empty",
-                                    ms,
-                                ));
+                                emit(
+                                    SmokeCheck::fail(
+                                        "semanticTokens",
+                                        CompatibilityRequirement::RequiredIfAdvertised,
+                                        "decoded tokens but legend.token_types is empty",
+                                        ms,
+                                    ),
+                                    true,
+                                );
                                 return;
                             }
                             let token_type_counts: std::collections::BTreeMap<
@@ -3375,55 +3887,73 @@ async fn run_semantic_tokens_check(
                                 .collect();
                             summary_parts.sort();
                             let summary = summary_parts.join(", ");
-                            checks.push(SmokeCheck::passing(
-                                "semanticTokens",
-                                CompatibilityRequirement::RequiredIfAdvertised,
-                                ms,
-                            ));
+                            emit(
+                                SmokeCheck::passing(
+                                    "semanticTokens",
+                                    CompatibilityRequirement::RequiredIfAdvertised,
+                                    ms,
+                                ),
+                                true,
+                            );
                             // Stash the per-type breakdown on
                             // a side-channel check so the
                             // human-readable report still
                             // surfaces the legend summary.
-                            checks.push(SmokeCheck::passing(
-                                format!("semanticTokens decoded ({} raw, {} decoded, legend_types={}, breakdown=[{}])", tokens.data.len(), decoded.len(), legend.token_types.len(), summary),
-                                CompatibilityRequirement::Optional,
-                                ms,
-                            ));
+                            emit(
+                                SmokeCheck::passing(
+                                    format!("semanticTokens decoded ({} raw, {} decoded, legend_types={}, breakdown=[{}])", tokens.data.len(), decoded.len(), legend.token_types.len(), summary),
+                                    CompatibilityRequirement::Optional,
+                                    ms,
+                                ),
+                                true,
+                            );
                         }
-                        Err(e) => checks.push(SmokeCheck::fail(
-                            "semanticTokens",
-                            CompatibilityRequirement::RequiredIfAdvertised,
-                            format!("decode failed: {e}"),
-                            ms,
-                        )),
+                        Err(e) => emit(
+                            SmokeCheck::fail(
+                                "semanticTokens",
+                                CompatibilityRequirement::RequiredIfAdvertised,
+                                format!("decode failed: {e}"),
+                                ms,
+                            ),
+                            true,
+                        ),
                     }
                 }
-                Err(e) => checks.push(SmokeCheck::fail(
-                    "semanticTokens",
-                    CompatibilityRequirement::RequiredIfAdvertised,
-                    format!("malformed semanticTokens response: {e}"),
-                    ms,
-                )),
+                Err(e) => emit(
+                    SmokeCheck::fail(
+                        "semanticTokens",
+                        CompatibilityRequirement::RequiredIfAdvertised,
+                        format!("malformed semanticTokens response: {e}"),
+                        ms,
+                    ),
+                    true,
+                ),
             }
         }
-        Ok(Err(e)) => checks.push(SmokeCheck::fail(
-            "semanticTokens",
-            CompatibilityRequirement::RequiredIfAdvertised,
-            format!("{e}"),
-            ms,
-        )),
-        Err(_elapsed) => checks.push(SmokeCheck::fail(
-            "semanticTokens",
-            CompatibilityRequirement::RequiredIfAdvertised,
-            stage_timeout_error(
-                server_id,
-                bin_path,
+        Ok(Err(e)) => emit(
+            SmokeCheck::fail(
                 "semanticTokens",
-                REQUEST_TIMEOUT,
-                stderr_tail,
+                CompatibilityRequirement::RequiredIfAdvertised,
+                format!("{e}"),
+                ms,
             ),
-            ms,
-        )),
+            true,
+        ),
+        Err(_elapsed) => emit(
+            SmokeCheck::fail(
+                "semanticTokens",
+                CompatibilityRequirement::RequiredIfAdvertised,
+                stage_timeout_error(
+                    server_id,
+                    bin_path,
+                    "semanticTokens",
+                    REQUEST_TIMEOUT,
+                    stderr_tail,
+                ),
+                ms,
+            ),
+            true,
+        ),
     }
 }
 
@@ -3442,49 +3972,74 @@ async fn run_rename_preview_check(
     server_id: &str,
     stderr_tail: &[String],
     checks: &mut Vec<SmokeCheck>,
+    operation_records: &mut Vec<egglsp::compatibility::LspOperationCompatibility>,
 ) {
-    if !supports_op {
-        checks.push(SmokeCheck::unsupported(
-            "renamePreview",
-            CompatibilityRequirement::Optional,
-            "server did not advertise rename provider",
-            0,
+    // Pass 2 — emit operation records at request sites.
+    let mut emit = |check: SmokeCheck, advertised: bool| {
+        let op = check.name.clone();
+        let requirement = check.requirement;
+        operation_records.push(operation_record_from_check(
+            &op,
+            advertised,
+            requirement,
+            &check,
         ));
+        checks.push(check);
+    };
+    if !supports_op {
+        emit(
+            SmokeCheck::unsupported(
+                "renamePreview",
+                CompatibilityRequirement::Optional,
+                "server did not advertise rename provider",
+                0,
+            ),
+            false,
+        );
         return;
     }
     let pos = match fixture.mutation_targets.rename {
         Some(p) => p,
         None => {
-            checks.push(SmokeCheck::skipped(
-                "renamePreview",
-                CompatibilityRequirement::Optional,
-                "fixture did not declare mutation_targets.rename",
-                0,
-            ));
+            emit(
+                SmokeCheck::skipped(
+                    "renamePreview",
+                    CompatibilityRequirement::Optional,
+                    "fixture did not declare mutation_targets.rename",
+                    0,
+                ),
+                true,
+            );
             return;
         }
     };
     let primary_path = match primary_uri.to_file_path() {
         Ok(p) => p,
         Err(_) => {
-            checks.push(SmokeCheck::fail(
-                "renamePreview",
-                CompatibilityRequirement::RequiredIfAdvertised,
-                "primary URI is not a file path",
-                0,
-            ));
+            emit(
+                SmokeCheck::fail(
+                    "renamePreview",
+                    CompatibilityRequirement::RequiredIfAdvertised,
+                    "primary URI is not a file path",
+                    0,
+                ),
+                true,
+            );
             return;
         }
     };
     let before_hash = match std::fs::read(&primary_path) {
         Ok(bytes) => egglsp::operations::sha256_hex(&bytes),
         Err(e) => {
-            checks.push(SmokeCheck::fail(
-                "renamePreview",
-                CompatibilityRequirement::RequiredIfAdvertised,
-                format!("failed to read primary file before preview: {e}"),
-                0,
-            ));
+            emit(
+                SmokeCheck::fail(
+                    "renamePreview",
+                    CompatibilityRequirement::RequiredIfAdvertised,
+                    format!("failed to read primary file before preview: {e}"),
+                    0,
+                ),
+                true,
+            );
             return;
         }
     };
@@ -3508,59 +4063,77 @@ async fn run_rename_preview_check(
     match result {
         Ok(Ok(value)) => {
             if !on_disk_unchanged {
-                checks.push(SmokeCheck::fail(
-                    "renamePreview",
-                    CompatibilityRequirement::Required,
-                    format!(
-                        "rename preview mutated on-disk file: before_hash={before_hash}, after_hash={:?}",
-                        after_hash
+                emit(
+                    SmokeCheck::fail(
+                        "renamePreview",
+                        CompatibilityRequirement::Required,
+                        format!(
+                            "rename preview mutated on-disk file: before_hash={before_hash}, after_hash={:?}",
+                            after_hash
+                        ),
+                        ms,
                     ),
-                    ms,
-                ));
+                    true,
+                );
                 return;
             }
             if value.is_null() {
-                checks.push(SmokeCheck::pass(
-                    format!("renamePreview (no edits; disk hash unchanged: {before_hash})"),
-                    CompatibilityRequirement::RequiredIfAdvertised,
-                    ms,
-                ));
+                emit(
+                    SmokeCheck::pass(
+                        format!("renamePreview (no edits; disk hash unchanged: {before_hash})"),
+                        CompatibilityRequirement::RequiredIfAdvertised,
+                        ms,
+                    ),
+                    true,
+                );
                 return;
             }
             match serde_json::from_value::<egglsp::lsp_types::WorkspaceEdit>(value) {
-                Ok(_edit) => checks.push(SmokeCheck::pass(
-                    format!(
-                        "renamePreview (server returned edits; disk hash unchanged: {before_hash})"
+                Ok(_edit) => emit(
+                    SmokeCheck::pass(
+                        format!(
+                            "renamePreview (server returned edits; disk hash unchanged: {before_hash})"
+                        ),
+                        CompatibilityRequirement::RequiredIfAdvertised,
+                        ms,
                     ),
-                    CompatibilityRequirement::RequiredIfAdvertised,
-                    ms,
-                )),
-                Err(e) => checks.push(SmokeCheck::fail(
-                    "renamePreview",
-                    CompatibilityRequirement::RequiredIfAdvertised,
-                    format!("malformed rename response: {e}"),
-                    ms,
-                )),
+                    true,
+                ),
+                Err(e) => emit(
+                    SmokeCheck::fail(
+                        "renamePreview",
+                        CompatibilityRequirement::RequiredIfAdvertised,
+                        format!("malformed rename response: {e}"),
+                        ms,
+                    ),
+                    true,
+                ),
             }
         }
-        Ok(Err(e)) => checks.push(SmokeCheck::fail(
-            "renamePreview",
-            CompatibilityRequirement::RequiredIfAdvertised,
-            format!("{e}"),
-            ms,
-        )),
-        Err(_elapsed) => checks.push(SmokeCheck::fail(
-            "renamePreview",
-            CompatibilityRequirement::RequiredIfAdvertised,
-            stage_timeout_error(
-                server_id,
-                bin_path,
+        Ok(Err(e)) => emit(
+            SmokeCheck::fail(
                 "renamePreview",
-                REQUEST_TIMEOUT,
-                stderr_tail,
+                CompatibilityRequirement::RequiredIfAdvertised,
+                format!("{e}"),
+                ms,
             ),
-            ms,
-        )),
+            true,
+        ),
+        Err(_elapsed) => emit(
+            SmokeCheck::fail(
+                "renamePreview",
+                CompatibilityRequirement::RequiredIfAdvertised,
+                stage_timeout_error(
+                    server_id,
+                    bin_path,
+                    "renamePreview",
+                    REQUEST_TIMEOUT,
+                    stderr_tail,
+                ),
+                ms,
+            ),
+            true,
+        ),
     }
 }
 
@@ -3575,46 +4148,71 @@ async fn run_format_preview_check(
     server_id: &str,
     stderr_tail: &[String],
     checks: &mut Vec<SmokeCheck>,
+    operation_records: &mut Vec<egglsp::compatibility::LspOperationCompatibility>,
 ) {
-    if !supports_op {
-        checks.push(SmokeCheck::unsupported(
-            "formatPreview",
-            CompatibilityRequirement::Optional,
-            "server did not advertise document formatting provider",
-            0,
+    // Pass 2 — emit operation records at request sites.
+    let mut emit = |check: SmokeCheck, advertised: bool| {
+        let op = check.name.clone();
+        let requirement = check.requirement;
+        operation_records.push(operation_record_from_check(
+            &op,
+            advertised,
+            requirement,
+            &check,
         ));
+        checks.push(check);
+    };
+    if !supports_op {
+        emit(
+            SmokeCheck::unsupported(
+                "formatPreview",
+                CompatibilityRequirement::Optional,
+                "server did not advertise document formatting provider",
+                0,
+            ),
+            false,
+        );
         return;
     }
     if !fixture.mutation_targets.format_preview_requested {
-        checks.push(SmokeCheck::skipped(
-            "formatPreview",
-            CompatibilityRequirement::Optional,
-            "fixture did not request format preview",
-            0,
-        ));
+        emit(
+            SmokeCheck::skipped(
+                "formatPreview",
+                CompatibilityRequirement::Optional,
+                "fixture did not request format preview",
+                0,
+            ),
+            true,
+        );
         return;
     }
     let primary_path = match primary_uri.to_file_path() {
         Ok(p) => p,
         Err(_) => {
-            checks.push(SmokeCheck::fail(
-                "formatPreview",
-                CompatibilityRequirement::RequiredIfAdvertised,
-                "primary URI is not a file path",
-                0,
-            ));
+            emit(
+                SmokeCheck::fail(
+                    "formatPreview",
+                    CompatibilityRequirement::RequiredIfAdvertised,
+                    "primary URI is not a file path",
+                    0,
+                ),
+                true,
+            );
             return;
         }
     };
     let before_hash = match std::fs::read(&primary_path) {
         Ok(bytes) => egglsp::operations::sha256_hex(&bytes),
         Err(e) => {
-            checks.push(SmokeCheck::fail(
-                "formatPreview",
-                CompatibilityRequirement::RequiredIfAdvertised,
-                format!("failed to read primary file before preview: {e}"),
-                0,
-            ));
+            emit(
+                SmokeCheck::fail(
+                    "formatPreview",
+                    CompatibilityRequirement::RequiredIfAdvertised,
+                    format!("failed to read primary file before preview: {e}"),
+                    0,
+                ),
+                true,
+            );
             return;
         }
     };
@@ -3640,60 +4238,78 @@ async fn run_format_preview_check(
     match result {
         Ok(Ok(value)) => {
             if !on_disk_unchanged {
-                checks.push(SmokeCheck::fail(
-                    "formatPreview",
-                    CompatibilityRequirement::Required,
-                    format!(
-                        "format preview mutated on-disk file: before_hash={before_hash}, after_hash={:?}",
-                        after_hash
+                emit(
+                    SmokeCheck::fail(
+                        "formatPreview",
+                        CompatibilityRequirement::Required,
+                        format!(
+                            "format preview mutated on-disk file: before_hash={before_hash}, after_hash={:?}",
+                            after_hash
+                        ),
+                        ms,
                     ),
-                    ms,
-                ));
+                    true,
+                );
                 return;
             }
             if value.is_null() {
-                checks.push(SmokeCheck::pass(
-                    format!("formatPreview (no edits; disk hash unchanged: {before_hash})"),
-                    CompatibilityRequirement::RequiredIfAdvertised,
-                    ms,
-                ));
+                emit(
+                    SmokeCheck::pass(
+                        format!("formatPreview (no edits; disk hash unchanged: {before_hash})"),
+                        CompatibilityRequirement::RequiredIfAdvertised,
+                        ms,
+                    ),
+                    true,
+                );
                 return;
             }
             match serde_json::from_value::<Vec<egglsp::lsp_types::TextEdit>>(value) {
-                Ok(edits) => checks.push(SmokeCheck::pass(
-                    format!(
-                        "formatPreview ({} edit(s); disk hash unchanged: {before_hash})",
-                        edits.len()
+                Ok(edits) => emit(
+                    SmokeCheck::pass(
+                        format!(
+                            "formatPreview ({} edit(s); disk hash unchanged: {before_hash})",
+                            edits.len()
+                        ),
+                        CompatibilityRequirement::RequiredIfAdvertised,
+                        ms,
                     ),
-                    CompatibilityRequirement::RequiredIfAdvertised,
-                    ms,
-                )),
-                Err(e) => checks.push(SmokeCheck::fail(
-                    "formatPreview",
-                    CompatibilityRequirement::RequiredIfAdvertised,
-                    format!("malformed format response: {e}"),
-                    ms,
-                )),
+                    true,
+                ),
+                Err(e) => emit(
+                    SmokeCheck::fail(
+                        "formatPreview",
+                        CompatibilityRequirement::RequiredIfAdvertised,
+                        format!("malformed format response: {e}"),
+                        ms,
+                    ),
+                    true,
+                ),
             }
         }
-        Ok(Err(e)) => checks.push(SmokeCheck::fail(
-            "formatPreview",
-            CompatibilityRequirement::RequiredIfAdvertised,
-            format!("{e}"),
-            ms,
-        )),
-        Err(_elapsed) => checks.push(SmokeCheck::fail(
-            "formatPreview",
-            CompatibilityRequirement::RequiredIfAdvertised,
-            stage_timeout_error(
-                server_id,
-                bin_path,
+        Ok(Err(e)) => emit(
+            SmokeCheck::fail(
                 "formatPreview",
-                REQUEST_TIMEOUT,
-                stderr_tail,
+                CompatibilityRequirement::RequiredIfAdvertised,
+                format!("{e}"),
+                ms,
             ),
-            ms,
-        )),
+            true,
+        ),
+        Err(_elapsed) => emit(
+            SmokeCheck::fail(
+                "formatPreview",
+                CompatibilityRequirement::RequiredIfAdvertised,
+                stage_timeout_error(
+                    server_id,
+                    bin_path,
+                    "formatPreview",
+                    REQUEST_TIMEOUT,
+                    stderr_tail,
+                ),
+                ms,
+            ),
+            true,
+        ),
     }
 }
 
@@ -3711,14 +4327,30 @@ async fn run_code_action_check(
     server_id: &str,
     stderr_tail: &[String],
     checks: &mut Vec<SmokeCheck>,
+    operation_records: &mut Vec<egglsp::compatibility::LspOperationCompatibility>,
 ) {
-    if !supports_op {
-        checks.push(SmokeCheck::unsupported(
-            "codeActions",
-            CompatibilityRequirement::Optional,
-            "server did not advertise codeActions provider",
-            0,
+    // Pass 2 — emit operation records at request sites.
+    let mut emit = |check: SmokeCheck, advertised: bool| {
+        let op = check.name.clone();
+        let requirement = check.requirement;
+        operation_records.push(operation_record_from_check(
+            &op,
+            advertised,
+            requirement,
+            &check,
         ));
+        checks.push(check);
+    };
+    if !supports_op {
+        emit(
+            SmokeCheck::unsupported(
+                "codeActions",
+                CompatibilityRequirement::Optional,
+                "server did not advertise codeActions provider",
+                0,
+            ),
+            false,
+        );
         return;
     }
     let start = std::time::Instant::now();
@@ -3762,18 +4394,24 @@ async fn run_code_action_check(
             let min_edit_bearing = fixture.code_action_min_edit_bearing;
             if value.is_null() {
                 if min_edit_bearing > 0 {
-                    checks.push(SmokeCheck::fail(
-                        "codeActions",
-                        CompatibilityRequirement::RequiredIfAdvertised,
-                        "expected at least 1 edit-bearing action; got null response",
-                        ms,
-                    ));
+                    emit(
+                        SmokeCheck::fail(
+                            "codeActions",
+                            CompatibilityRequirement::RequiredIfAdvertised,
+                            "expected at least 1 edit-bearing action; got null response",
+                            ms,
+                        ),
+                        true,
+                    );
                 } else {
-                    checks.push(SmokeCheck::passing(
-                        "codeActions",
-                        CompatibilityRequirement::RequiredIfAdvertised,
-                        ms,
-                    ));
+                    emit(
+                        SmokeCheck::passing(
+                            "codeActions",
+                            CompatibilityRequirement::RequiredIfAdvertised,
+                            ms,
+                        ),
+                        true,
+                    );
                 }
                 return;
             }
@@ -3819,86 +4457,110 @@ async fn run_code_action_check(
                     // `code_action_allow_command_only`.
                     if min_edit_bearing > 0 {
                         if actions.is_empty() {
-                            checks.push(SmokeCheck::fail(
-                                "codeActions",
-                                CompatibilityRequirement::RequiredIfAdvertised,
-                                "expected at least 1 action; got empty list",
-                                ms,
-                            ));
+                            emit(
+                                SmokeCheck::fail(
+                                    "codeActions",
+                                    CompatibilityRequirement::RequiredIfAdvertised,
+                                    "expected at least 1 action; got empty list",
+                                    ms,
+                                ),
+                                true,
+                            );
                             return;
                         }
                         if edit_bearing == 0 {
                             if command_only > 0
                                 && !fixture.code_action_allow_command_only
                             {
-                                checks.push(SmokeCheck::known_limit(
+                                emit(
+                                    SmokeCheck::known_limit(
+                                        "codeActions",
+                                        CompatibilityRequirement::KnownLimitation,
+                                        format!(
+                                            "{} command-only action(s); preview pipeline \
+                                             rejects command-only actions ({} total, 0 with edit)",
+                                            command_only,
+                                            actions.len()
+                                        ),
+                                        ms,
+                                    ),
+                                    true,
+                                );
+                                return;
+                            }
+                            emit(
+                                SmokeCheck::fail(
                                     "codeActions",
-                                    CompatibilityRequirement::KnownLimitation,
+                                    CompatibilityRequirement::RequiredIfAdvertised,
                                     format!(
-                                        "{} command-only action(s); preview pipeline \
-                                         rejects command-only actions ({} total, 0 with edit)",
-                                        command_only,
+                                        "expected at least {min_edit_bearing} edit-bearing action(s); got {edit_bearing} ({} total)",
                                         actions.len()
                                     ),
                                     ms,
-                                ));
-                                return;
-                            }
-                            checks.push(SmokeCheck::fail(
-                                "codeActions",
-                                CompatibilityRequirement::RequiredIfAdvertised,
-                                format!(
-                                    "expected at least {min_edit_bearing} edit-bearing action(s); got {edit_bearing} ({} total)",
-                                    actions.len()
                                 ),
-                                ms,
-                            ));
+                                true,
+                            );
                             return;
                         }
                         if edit_bearing < min_edit_bearing {
-                            checks.push(SmokeCheck::fail(
-                                "codeActions",
-                                CompatibilityRequirement::RequiredIfAdvertised,
-                                format!(
-                                    "expected at least {min_edit_bearing} edit-bearing action(s); got {edit_bearing}"
+                            emit(
+                                SmokeCheck::fail(
+                                    "codeActions",
+                                    CompatibilityRequirement::RequiredIfAdvertised,
+                                    format!(
+                                        "expected at least {min_edit_bearing} edit-bearing action(s); got {edit_bearing}"
+                                    ),
+                                    ms,
                                 ),
-                                ms,
-                            ));
+                                true,
+                            );
                             return;
                         }
                     }
-                    checks.push(SmokeCheck::passing(
+                    emit(
+                        SmokeCheck::passing(
+                            "codeActions",
+                            CompatibilityRequirement::RequiredIfAdvertised,
+                            ms,
+                        ),
+                        true,
+                    );
+                }
+                Err(e) => emit(
+                    SmokeCheck::fail(
                         "codeActions",
                         CompatibilityRequirement::RequiredIfAdvertised,
+                        format!("malformed codeAction response: {e}"),
                         ms,
-                    ));
-                }
-                Err(e) => checks.push(SmokeCheck::fail(
-                    "codeActions",
-                    CompatibilityRequirement::RequiredIfAdvertised,
-                    format!("malformed codeAction response: {e}"),
-                    ms,
-                )),
+                    ),
+                    true,
+                ),
             }
         }
-        Ok(Err(e)) => checks.push(SmokeCheck::fail(
-            "codeActions",
-            CompatibilityRequirement::RequiredIfAdvertised,
-            format!("{e}"),
-            ms,
-        )),
-        Err(_elapsed) => checks.push(SmokeCheck::fail(
-            "codeActions",
-            CompatibilityRequirement::RequiredIfAdvertised,
-            stage_timeout_error(
-                server_id,
-                bin_path,
+        Ok(Err(e)) => emit(
+            SmokeCheck::fail(
                 "codeActions",
-                REQUEST_TIMEOUT,
-                stderr_tail,
+                CompatibilityRequirement::RequiredIfAdvertised,
+                format!("{e}"),
+                ms,
             ),
-            ms,
-        )),
+            true,
+        ),
+        Err(_elapsed) => emit(
+            SmokeCheck::fail(
+                "codeActions",
+                CompatibilityRequirement::RequiredIfAdvertised,
+                stage_timeout_error(
+                    server_id,
+                    bin_path,
+                    "codeActions",
+                    REQUEST_TIMEOUT,
+                    stderr_tail,
+                ),
+                ms,
+            ),
+            true,
+        ),
     }
 }
 
@@ -3915,6 +4577,7 @@ async fn run_generalized_operation_checks(
     bin_path: &Path,
     server_id: &str,
     checks: &mut Vec<SmokeCheck>,
+    operation_records: &mut Vec<egglsp::compatibility::LspOperationCompatibility>,
     stderr_tail: &[String],
 ) {
     // Declaration
@@ -3930,6 +4593,7 @@ async fn run_generalized_operation_checks(
                 server_id,
                 stderr_tail,
                 checks,
+                operation_records,
             )
             .await;
         }
@@ -3937,38 +4601,69 @@ async fn run_generalized_operation_checks(
 
     // Implementation
     if fixture.expected_capabilities.implementation {
-        let impl_position = fixture
-            .implementation_position
-            .unwrap_or(fixture.definition_position);
-        let target = LocationExpectation {
-            position: impl_position,
-            // Pass 4 — clangd queries from the header file
-            // (`include/widget.hpp`) so the implementation
-            // request lands on a declaration, not a usage site.
-            // Other fixtures (e.g. TypeScript) leave this as
-            // `None` and the harness falls back to the primary
-            // source.
-            source_file: fixture.implementation_source.clone(),
-            min_locations: 1,
-            // Pass 3 — when a fixture sets `expected_capabilities.implementation`,
-            // it should also declare a primary source where the implementing
-            // class is expected to live, so the implementation check
-            // actually exercises the response shape (not just the count).
-            expected_files: vec![fixture.primary_source.clone()],
-            expected_label_substrings: Vec::new(),
-        };
-        run_location_check(
-            client,
-            primary_uri,
-            "implementation",
-            &target,
-            caps.supports_implementation,
-            bin_path,
-            server_id,
-            stderr_tail,
-            checks,
-        )
-        .await;
+        // Pass 1 — Prefer explicit per-fixture expectations.
+        // The harness never silently falls back to
+        // `primary_source`; fixtures that opt into the
+        // implementation check declare the file(s) a semantically
+        // correct response may mention. clangd's override
+        // declaration in `include/widget.hpp` and the
+        // definition in `src/widget.cpp` are both acceptable.
+        if !fixture.implementation_expectations.is_empty() {
+            for expectation in &fixture.implementation_expectations {
+                let target = LocationExpectation {
+                    position: expectation.position,
+                    source_file: Some(expectation.source_file.clone()),
+                    min_locations: expectation.min_locations,
+                    expected_files: expectation.expected_files.clone(),
+                    expected_label_substrings: expectation
+                        .expected_label_substrings
+                        .clone(),
+                };
+                run_location_check(
+                    client,
+                    primary_uri,
+                    "implementation",
+                    &target,
+                    caps.supports_implementation,
+                    bin_path,
+                    server_id,
+                    stderr_tail,
+                    checks,
+                    operation_records,
+                )
+                .await;
+            }
+        } else {
+            // Legacy fallback — preserves the Tier 1 fixture
+            // behavior for fixtures that have not yet opted
+            // into the typed expectation list. The harness
+            // synthesizes a single expectation from
+            // `implementation_source` /
+            // `implementation_position` / `primary_source`.
+            let impl_position = fixture
+                .implementation_position
+                .unwrap_or(fixture.definition_position);
+            let target = LocationExpectation {
+                position: impl_position,
+                source_file: fixture.implementation_source.clone(),
+                min_locations: 1,
+                expected_files: vec![fixture.primary_source.clone()],
+                expected_label_substrings: Vec::new(),
+            };
+            run_location_check(
+                client,
+                primary_uri,
+                "implementation",
+                &target,
+                caps.supports_implementation,
+                bin_path,
+                server_id,
+                stderr_tail,
+                checks,
+                operation_records,
+            )
+            .await;
+        }
     }
 
     // Document highlight
@@ -3984,6 +4679,7 @@ async fn run_generalized_operation_checks(
                 server_id,
                 stderr_tail,
                 checks,
+                operation_records,
             )
             .await;
         }
@@ -4000,6 +4696,7 @@ async fn run_generalized_operation_checks(
                 server_id,
                 stderr_tail,
                 checks,
+                operation_records,
             )
             .await;
         }
@@ -4017,6 +4714,7 @@ async fn run_generalized_operation_checks(
                 server_id,
                 stderr_tail,
                 checks,
+                operation_records,
             )
             .await;
         }
@@ -4034,6 +4732,7 @@ async fn run_generalized_operation_checks(
                 server_id,
                 stderr_tail,
                 checks,
+                operation_records,
             )
             .await;
         }
@@ -4050,6 +4749,7 @@ async fn run_generalized_operation_checks(
             server_id,
             stderr_tail,
             checks,
+            operation_records,
         )
         .await;
     }
@@ -4065,6 +4765,7 @@ async fn run_generalized_operation_checks(
             server_id,
             stderr_tail,
             checks,
+            operation_records,
         )
         .await;
     }
@@ -4081,6 +4782,7 @@ async fn run_generalized_operation_checks(
             server_id,
             stderr_tail,
             checks,
+            operation_records,
         )
         .await;
     }
@@ -4096,6 +4798,7 @@ async fn run_generalized_operation_checks(
             server_id,
             stderr_tail,
             checks,
+            operation_records,
         )
         .await;
     }
@@ -4114,6 +4817,7 @@ async fn run_generalized_operation_checks(
                 server_id,
                 stderr_tail,
                 checks,
+                operation_records,
             )
             .await;
         }
@@ -4133,18 +4837,96 @@ fn format_check_line(check: &LspCompatibilityCheck) -> String {
     )
 }
 
+/// Map a check name to whether the corresponding LSP capability
+/// was advertised by the server. Returns `None` if the check
+/// does not correspond to a capability (e.g. `initialize`,
+/// `shutdown`, `process_launch`, `readiness_wait`).
+///
+/// Pass 3 — `assert_required_checks` uses this helper to detect
+/// coverage gaps: a `RequiredIfAdvertised` check that is
+/// `Skipped` while the capability was advertised is a
+/// regression, not a benign skip. Returning `None` for
+/// non-capability checks keeps the rule scoped to operations.
+fn check_name_advertised(
+    name: &str,
+    caps: &egglsp::capability::LspCapabilitySnapshot,
+) -> Option<bool> {
+    // Pass 3 — match the check name's *prefix* against the
+    // capability name. The harness decorates successful checks
+    // with a count suffix (e.g. `"implementation (1 found)"`,
+    // `"signatureHelp (1 signature(s))"`, `"typeHierarchy/prepare (3 item(s))"`),
+    // so an exact-match lookup would miss every successful
+    // check. The prefix match here is order-sensitive: longer
+    // / more specific names are tried first.
+    if name.starts_with("typeHierarchy") {
+        return Some(caps.supports_type_hierarchy);
+    }
+    // Variable-format names (decorated with counts).
+    if name.starts_with("implementation")
+        || name.starts_with("implementation (")
+    {
+        return Some(caps.supports_implementation);
+    }
+    if name.starts_with("declaration") || name.starts_with("declaration (") {
+        return Some(caps.supports_declaration);
+    }
+    if name.starts_with("documentHighlight")
+        || name.starts_with("documentHighlight (")
+    {
+        return Some(caps.supports_document_highlight);
+    }
+    if name.starts_with("signatureHelp") || name.starts_with("signatureHelp (") {
+        return Some(caps.supports_signature_help);
+    }
+    if name.starts_with("workspaceSymbol")
+        || name.starts_with("workspaceSymbol (")
+    {
+        return Some(caps.supports_workspace_symbols);
+    }
+    if name.starts_with("semanticTokens") || name.starts_with("semanticTokens (") {
+        return Some(caps.supports_semantic_tokens);
+    }
+    if name.starts_with("renamePreview") || name.starts_with("renamePreview (") {
+        return Some(caps.supports_rename);
+    }
+    if name.starts_with("formatPreview") || name.starts_with("formatPreview (") {
+        return Some(caps.supports_document_formatting);
+    }
+    if name.starts_with("codeActions") || name.starts_with("codeActions (") {
+        return Some(caps.supports_code_actions);
+    }
+    if name.starts_with("completion") || name.starts_with("completion (") {
+        return Some(caps.supports_completion);
+    }
+    // Non-decorated check names.
+    match name {
+        "hover" => return Some(caps.supports_hover),
+        "references" => return Some(caps.supports_references),
+        _ => {}
+    }
+    None
+}
+
 /// Assert that every `Required` check is `Passing` and every
 /// `RequiredIfAdvertised` check that is recorded (i.e. the server
-/// advertised the corresponding capability) is not `Failing`. Also
-/// requires the `initialize` and `shutdown` checks to be present.
+/// advertised the corresponding capability) is not `Failing` or
+/// `Skipped`. Also requires the `initialize` and `shutdown`
+/// checks to be present.
 ///
-/// Pass 7 — the rules are now status-driven. `Skipped` and
+/// Pass 7 — the rules are status-driven. `Skipped` and
 /// `Unsupported` are first-class statuses that the assertion
 /// consults directly; the harness no longer infers semantics from
 /// check-name substrings. `Skipped` and `Unsupported` are
 /// intentionally distinct: a fixture that opts not to exercise an
 /// operation is `Skipped`; a server that does not advertise the
 /// capability is `Unsupported`.
+///
+/// Pass 3 — a `RequiredIfAdvertised` check that is `Skipped`
+/// while the matching capability is advertised is a regression:
+/// the server supports the operation but the harness did not
+/// exercise it. This catches silent coverage gaps where a
+/// fixture forgets to opt in to a capability the server
+/// actually provides.
 fn assert_required_checks(report: &LspCompatibilityReport) {
     let mut failures: Vec<String> = Vec::new();
 
@@ -4170,18 +4952,28 @@ fn assert_required_checks(report: &LspCompatibilityReport) {
                 ));
             }
             CompatibilityRequirement::RequiredIfAdvertised => {
-                // Pass 7 — only `Failing` status fails a
+                // Pass 7 — `Failing` status fails a
                 // `RequiredIfAdvertised` check. `Skipped` and
-                // `Unsupported` are allowed (Skipped = fixture
-                // did not exercise; Unsupported = server did not
-                // advertise). The legacy
-                // `is_skipped_check(&check.name)` substring
-                // check is gone — status is the only signal.
+                // `Unsupported` are NOT always allowed:
+                // Pass 3 — `Skipped` is allowed only when the
+                // capability was NOT advertised (e.g. the server
+                // never claimed to support the operation). When
+                // the capability WAS advertised, `Skipped` is a
+                // coverage gap and counts as a failure.
                 if matches!(check.status, CompatibilityCheckStatus::Failing) {
                     failures.push(format!(
                         "required-if-advertised check failed: {}",
                         format_check_line(check)
                     ));
+                } else if matches!(check.status, CompatibilityCheckStatus::Skipped) {
+                    let advertised =
+                        check_name_advertised(&check.name, &report.capabilities);
+                    if advertised == Some(true) {
+                        failures.push(format!(
+                            "required-if-advertised check skipped despite advertised capability: {}",
+                            format_check_line(check)
+                        ));
+                    }
                 }
             }
             _ => {}
@@ -4847,4 +5639,41 @@ fn matches_expected_file_handles_file_uri_prefix() {
     ));
     // Empty string returns false.
     assert!(!matches_expected_file("", &exp));
+}
+
+#[test]
+fn implementation_expectation_serializes() {
+    // Pass 1 — `ImplementationExpectation` is the typed contract
+    // fixtures use to assert that a returned implementation
+    // location mentions at least one of the explicitly listed
+    // files. Locking down Clone + Default catches regressions
+    // in the struct shape that would break the clangd fixture.
+    let expectation = ImplementationExpectation {
+        source_file: PathBuf::from("include/widget.hpp"),
+        position: Position::new(3, 16),
+        min_locations: 1,
+        expected_files: vec![
+            PathBuf::from("include/widget.hpp"),
+            PathBuf::from("src/widget.cpp"),
+        ],
+        expected_label_substrings: vec!["Widget::add".to_string()],
+    };
+    let copy = expectation.clone();
+    assert_eq!(copy.source_file, PathBuf::from("include/widget.hpp"));
+    assert_eq!(copy.position, Position::new(3, 16));
+    assert_eq!(copy.min_locations, 1);
+    assert_eq!(copy.expected_files.len(), 2);
+    assert_eq!(copy.expected_files[0], PathBuf::from("include/widget.hpp"));
+    assert_eq!(copy.expected_files[1], PathBuf::from("src/widget.cpp"));
+    assert_eq!(copy.expected_label_substrings, vec!["Widget::add"]);
+}
+
+#[test]
+fn implementation_expectation_default_is_sane() {
+    let expectation = ImplementationExpectation::default();
+    assert_eq!(expectation.position, Position::new(0, 0));
+    assert_eq!(expectation.min_locations, 1);
+    assert!(expectation.source_file.as_os_str().is_empty());
+    assert!(expectation.expected_files.is_empty());
+    assert!(expectation.expected_label_substrings.is_empty());
 }

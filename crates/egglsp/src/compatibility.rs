@@ -164,6 +164,77 @@ pub struct LspOperationCompatibility {
     pub known_limit: Option<String>,
 }
 
+/// Operation mode the server was launched in. `Stdio` is the
+/// canonical LSP transport: the harness talks to the server
+/// over stdin/stdout. `Daemon` is reserved for servers that
+/// detach or fork background workers (e.g. clangd's
+/// `--background-index` mode, typescript-language-server's
+/// `tsserver` child); the harness still drives the LSP
+/// transport but the underlying process graph is different.
+///
+/// Pass 6 — the smoke harness currently always uses
+/// `Stdio` because every pinned server is launched as a
+/// foreground child. The enum exists so daemon-mode hangs
+/// (force-kill) can be distinguished from stdio-mode hangs
+/// in the per-server `known_limitations` reporting.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum OperationMode {
+    /// Server runs as a foreground child of the harness, talking
+    /// JSON-RPC over stdin/stdout. This is the LSP standard
+    /// transport.
+    Stdio,
+    /// Server runs as a detached daemon or background worker
+    /// (`--background-index`, `tsserver`, etc.). The harness
+    /// drives the LSP transport but the underlying process
+    /// may ignore graceful shutdown signals.
+    Daemon,
+}
+
+/// Structured shutdown trace for a single compatibility
+/// run. Carries the request lifecycle (`requested` →
+/// `server_exited`), the exit classification, bounded stderr
+/// evidence, total duration, and the process operation mode.
+/// Downstream consumers (CI dashboards, regression triage)
+/// can read this field without parsing the `checks` array or
+/// the `stderr_tail` field on `LspCompatibilityReport`.
+///
+/// Pass 6 — daemon-mode force-kills (clangd with
+/// `--background-index`) are now distinguishable from
+/// stdio-mode force-kills (genuine protocol misbehavior).
+/// `serde(default)` keeps backward compatibility with older
+/// report JSON.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LspShutdownTrace {
+    /// True when the harness sent the LSP `shutdown` request
+    /// and `exit` notification before waiting for exit.
+    pub requested: bool,
+    /// True when the server exited (graceful or force-killed)
+    /// within the absolute deadline. False when the absolute
+    /// deadline expired without a reaped child.
+    pub server_exited: bool,
+    /// Process exit code when the child reaped. `None` when
+    /// killed by signal or when the absolute deadline expired.
+    pub exit_code: Option<i32>,
+    /// Signal that killed the process (Unix-only; `None` on
+    /// Windows or when the process exited normally).
+    pub signal: Option<i32>,
+    /// Bounded stderr tail captured before exit. Independent
+    /// of `LspCompatibilityReport.stderr_tail` so the
+    /// shutdown trace carries the relevant slice of evidence
+    /// even when the runtime buffer is full.
+    pub stderr_tail: Vec<String>,
+    /// Total wall-clock time spent in the shutdown sequence,
+    /// from the first `request_graceful_shutdown` call through
+    /// the final reap.
+    pub duration_ms: u64,
+    /// Process mode the server was launched in. Stdio
+    /// vs Daemon — see [`OperationMode`].
+    pub mode: OperationMode,
+    /// True when the harness force-killed the server. False
+    /// when the server exited gracefully within the deadline.
+    pub force_kill_requested: bool,
+}
+
 /// Server version information captured during test runs.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LspServerVersion {
@@ -188,6 +259,14 @@ pub struct LspCompatibilityReport {
     /// older report JSON that lacks this field.
     #[serde(default)]
     pub operation_support: Vec<LspOperationCompatibility>,
+    /// Pass 6 — structured shutdown trace. `None` when the
+    /// test bailed out before reaching the shutdown phase
+    /// (e.g. process launch failed). `Some(_)` carries the
+    /// full bounded shutdown lifecycle so daemon-mode hangs
+    /// and stdio-mode hangs are distinguishable. `serde(default)`
+    /// keeps backward compatibility with older report JSON.
+    #[serde(default)]
+    pub shutdown_trace: Option<LspShutdownTrace>,
     pub stderr_tail: Vec<String>,
     pub known_limitations: Vec<String>,
 }

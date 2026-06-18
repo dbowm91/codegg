@@ -31,6 +31,7 @@ pub mod language;
 pub mod launch;
 pub mod operations;
 pub mod overlay;
+pub mod position;
 pub mod restart;
 pub mod root;
 pub mod runtime;
@@ -96,6 +97,7 @@ pub use lsp_types;
 pub use overlay::{
     OverlayRestoreToken, OverlaySession, SemanticCheckPreview, SemanticSymbolSummary,
 };
+pub use position::{lsp_range_to_byte_offsets, lsp_units_to_byte_offset, PositionEncoding};
 pub use restart::{
     backoff_delay, restart_client_coordinator, LspClientDescriptor, RestartCompletion,
     RestartLease, RestartLeaseAcquisition, RestartOutcome, RestartShared, RestartTaskControl,

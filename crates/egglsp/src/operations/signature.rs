@@ -97,25 +97,12 @@ pub(crate) fn format_documentation_clamped(doc: &Documentation) -> String {
 /// byte offset within the given string. Returns `None` when the
 /// offset exceeds the string's length in UTF-16 code units or
 /// doesn't land on a char boundary.
+///
+/// Pass 7 — delegate to the shared `position` module helper so
+/// signature-label parameter offsets and semantic-token bounds
+/// validation share a single, encoding-aware implementation.
 pub(crate) fn lsp_units_to_byte_offset(text: &str, units: u32) -> Option<usize> {
-    if units == 0 {
-        return Some(0);
-    }
-    let mut byte_offset = 0;
-    let mut unit_offset = 0;
-    for c in text.chars() {
-        let char_units = c.len_utf16() as u32;
-        // If the target is within this character, it's not on a boundary.
-        if unit_offset + char_units > units {
-            return None;
-        }
-        unit_offset += char_units;
-        byte_offset += c.len_utf8();
-        if unit_offset == units {
-            return Some(byte_offset);
-        }
-    }
-    None
+    crate::position::lsp_units_to_byte_offset(text, units, crate::position::PositionEncoding::Utf16)
 }
 
 pub(crate) fn resolve_parameter_label(sig_label: &str, label: &ParameterLabel) -> String {
