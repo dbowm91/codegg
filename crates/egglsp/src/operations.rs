@@ -6,7 +6,7 @@ use similar::TextDiff;
 use tracing::trace;
 use url::Url;
 
-use crate::capability::{LspCapabilitySnapshot, SemanticTokenLegendSnapshot};
+use crate::capability::{CapabilityDecision, LspCapabilitySnapshot, SemanticTokenLegendSnapshot};
 use crate::client::url_to_uri;
 use crate::edit::{
     preview_text_edits_for_file, preview_workspace_edit, validate_path_against_root,
@@ -857,22 +857,24 @@ impl LspOperations {
     /// Fail fast with a structured [`LspUnavailable`] when the server
     /// does not advertise the requested operation.
     ///
-    /// Fail-open semantics: if the snapshot is unavailable (client
-    /// still initializing, or no caps published yet), the request is
-    /// allowed to proceed — the server will respond (likely with
-    /// `null` / empty) and the caller can decide what to do.
+    /// When the snapshot is unavailable (client still initializing, or
+    /// no caps published yet), the state is classified as
+    /// [`CapabilityDecision::Unknown`] and logged explicitly. The
+    /// request is allowed to proceed for backward compatibility.
     async fn require_capability(
         &self,
         file_path: &Path,
         op: LspSemanticOperation,
     ) -> Result<(), LspError> {
-        let Some(snapshot) = self.capability_snapshot_for_file(file_path).await else {
-            return Ok(());
-        };
-        if let Some(u) = snapshot.unavailable(op) {
-            return Err(LspError::Unavailable(u));
+        let (key, _) = self.service.get_or_create_client(file_path).await?;
+        match self.service.capability_decision(&key, op).await {
+            CapabilityDecision::Supported => Ok(()),
+            CapabilityDecision::Unsupported(u) => Err(LspError::Unavailable(u)),
+            CapabilityDecision::Unknown { operation, reason } => {
+                tracing::debug!(?operation, reason, "capability unknown; allowing request");
+                Ok(())
+            }
         }
-        Ok(())
     }
 
     pub async fn go_to_definition(
@@ -1074,9 +1076,11 @@ impl LspOperations {
             LspError::NotInitialized("no LSP client available for workspace_symbols".to_string())
         })?;
 
-        if let Some(snapshot) = self.capability_snapshot_for_any_key(&key).await {
-            if let Some(u) = snapshot.unavailable(LspSemanticOperation::WorkspaceSymbols) {
-                return Err(LspError::Unavailable(u));
+        match self.service.capability_decision(&key, LspSemanticOperation::WorkspaceSymbols).await {
+            CapabilityDecision::Supported => {}
+            CapabilityDecision::Unsupported(u) => return Err(LspError::Unavailable(u)),
+            CapabilityDecision::Unknown { operation, reason } => {
+                tracing::debug!(?operation, reason, "capability unknown; allowing workspace_symbols request");
             }
         }
 
@@ -1097,25 +1101,6 @@ impl LspOperations {
 
         let response: WorkspaceSymbolResponse = serde_json::from_value(resp)?;
         Ok(normalize_workspace_symbol_response(response))
-    }
-
-    /// Look up the [`LspCapabilitySnapshot`] for an arbitrary client
-    /// key (used by workspace-scoped operations where no file path is
-    /// available).
-    async fn capability_snapshot_for_any_key(&self, key: &str) -> Option<LspCapabilitySnapshot> {
-        // Prefer the stored override-aware snapshot.
-        if let Some(snap) = self.service.normalized_capabilities_for_key(key).await {
-            return Some(snap);
-        }
-        // Fallback: rebuild from raw capabilities (should not happen in
-        // normal operation after initialization completes).
-        let caps = self.service.get_capabilities_for_key(key).await?;
-        let server_name = key.split(':').next_back().map(String::from);
-        Some(LspCapabilitySnapshot::from_capabilities(
-            &caps,
-            server_name.as_deref(),
-            None,
-        ))
     }
 
     /// Return the first known client key, used as the routing target

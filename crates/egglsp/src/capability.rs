@@ -287,6 +287,25 @@ impl LspUnavailable {
     }
 }
 
+/// Explicit decision about whether a capability is available.
+///
+/// This is distinct from a simple boolean — it surfaces the
+/// `Unknown` case so callers can reason about initialization state
+/// rather than silently treating absent capabilities as supported.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CapabilityDecision {
+    /// Server explicitly supports this operation.
+    Supported,
+    /// Server does not support this operation.
+    Unsupported(LspUnavailable),
+    /// Capability state is not yet known (client still initializing
+    /// or capabilities not yet published).
+    Unknown {
+        operation: LspSemanticOperation,
+        reason: String,
+    },
+}
+
 /// Profile-level override for capabilities that cannot be discovered
 /// from `ServerCapabilities` alone.
 ///
@@ -496,6 +515,17 @@ impl LspCapabilitySnapshot {
             u = u.with_language_id(l.clone());
         }
         Some(u)
+    }
+
+    /// Make an explicit capability decision for the given operation.
+    pub fn decide(&self, op: LspSemanticOperation) -> CapabilityDecision {
+        if self.supports(op) {
+            CapabilityDecision::Supported
+        } else {
+            CapabilityDecision::Unsupported(self.unavailable(op).unwrap_or_else(|| {
+                LspUnavailable::new(op, "unknown reason")
+            }))
+        }
     }
 }
 
@@ -1303,6 +1333,37 @@ mod tests {
         assert!(
             snap_with_override.unavailable(LspSemanticOperation::TypeHierarchy).is_none(),
             "type hierarchy must be available after profile override"
+        );
+    }
+
+    // ── Pass 4: CapabilityDecision tests ───────────────────────────
+
+    #[test]
+    fn capability_decision_supported_when_true() {
+        let snap = sample_snapshot();
+        assert_eq!(
+            snap.decide(LspSemanticOperation::Definition),
+            CapabilityDecision::Supported
+        );
+    }
+
+    #[test]
+    fn capability_decision_unsupported_when_false() {
+        let snap = minimal_snapshot();
+        match snap.decide(LspSemanticOperation::WorkspaceSymbols) {
+            CapabilityDecision::Unsupported(u) => {
+                assert!(u.reason.contains("pylsp"));
+            }
+            other => panic!("expected Unsupported, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn capability_decision_security_context_always_supported() {
+        let snap = minimal_snapshot();
+        assert_eq!(
+            snap.decide(LspSemanticOperation::SecurityContext),
+            CapabilityDecision::Supported
         );
     }
 }

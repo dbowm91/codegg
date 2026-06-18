@@ -2199,6 +2199,23 @@ impl LspService {
         client.get_normalized_capabilities().await
     }
 
+    /// Make an explicit capability decision for the given client key and
+    /// operation. Returns [`CapabilityDecision::Unknown`] when the client
+    /// has not published capabilities yet.
+    pub async fn capability_decision(
+        &self,
+        key: &str,
+        op: crate::capability::LspSemanticOperation,
+    ) -> crate::capability::CapabilityDecision {
+        match self.normalized_capabilities_for_key(key).await {
+            Some(snap) => snap.decide(op),
+            None => crate::capability::CapabilityDecision::Unknown {
+                operation: op,
+                reason: format!("capabilities not yet published for {key}"),
+            },
+        }
+    }
+
     /// Returns `true` if the client for `key` has received at least
     /// one `publishDiagnostics` notification from the server.
     pub async fn has_observed_push_diagnostics_for_key(&self, key: &str) -> bool {

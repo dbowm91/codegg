@@ -42,7 +42,8 @@ pub mod supervisor;
 pub mod writer;
 
 pub use capability::{
-    LspCapabilitySnapshot, LspSemanticOperation, LspUnavailable, SemanticTokenLegendSnapshot,
+    CapabilityDecision, LspCapabilitySnapshot, LspSemanticOperation, LspUnavailable,
+    SemanticTokenLegendSnapshot,
 };
 pub use client::{
     ClientTransportSnapshot, DiagnosticCacheEntry, JsonRpcId, LspClient, LspClientHealthSnapshot,
