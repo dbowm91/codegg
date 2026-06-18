@@ -15,20 +15,20 @@ use crate::error::LspError;
 /// Shared writer that serializes JSON-RPC messages into Content-Length framed
 /// output on the LSP server's stdin.
 pub struct LspWriter<W = tokio::process::ChildStdin> {
-    writer: Arc<Mutex<W>>,
+    writer: Arc<Mutex<Option<W>>>,
 }
 
 impl LspWriter<tokio::process::ChildStdin> {
     pub fn new(stdin: tokio::process::ChildStdin) -> Self {
         Self {
-            writer: Arc::new(Mutex::new(stdin)),
+            writer: Arc::new(Mutex::new(Some(stdin))),
         }
     }
 }
 
 impl<W: tokio::io::AsyncWrite + Send + Sync + Unpin> LspWriter<W> {
     /// Construct from an existing shared writer handle.
-    pub fn from_inner(writer: Arc<Mutex<W>>) -> Self {
+    pub fn from_inner(writer: Arc<Mutex<Option<W>>>) -> Self {
         Self { writer }
     }
 
@@ -41,7 +41,10 @@ impl<W: tokio::io::AsyncWrite + Send + Sync + Unpin> LspWriter<W> {
     /// Send a raw JSON string as a Content-Length framed message.
     pub async fn send_raw_string(&self, msg: &str) -> Result<(), LspError> {
         let content = format!("Content-Length: {}\r\n\r\n{}", msg.len(), msg);
-        let mut w = self.writer.lock().await;
+        let mut guard = self.writer.lock().await;
+        let w = guard
+            .as_mut()
+            .ok_or_else(|| LspError::RequestFailed("writer is closed".to_string()))?;
         w.write_all(content.as_bytes())
             .await
             .map_err(|e| LspError::RequestFailed(format!("write failed: {}", e)))?;
@@ -119,8 +122,21 @@ impl<W: tokio::io::AsyncWrite + Send + Sync + Unpin> LspWriter<W> {
     }
 
     /// Clone the underlying writer handle (for passing to background tasks).
-    pub fn clone_inner(&self) -> Arc<Mutex<W>> {
+    pub fn clone_inner(&self) -> Arc<Mutex<Option<W>>> {
         self.writer.clone()
+    }
+
+    /// Close the underlying writer by taking ownership of it.
+    ///
+    /// After this call, any subsequent writes will fail with a broken-pipe
+    /// error. This is used during shutdown to signal stdin EOF to the
+    /// server process, which many LSP servers require before they exit.
+    pub async fn close(&self) {
+        let mut guard = self.writer.lock().await;
+        // Take the inner writer, dropping it and closing the pipe.
+        if let Some(w) = guard.take() {
+            drop(w);
+        }
     }
 }
 
@@ -170,7 +186,7 @@ mod tests {
     fn make_mock() -> (LspWriter<MockWriter>, tokio::sync::mpsc::Receiver<Vec<u8>>) {
         let (tx, rx) = tokio::sync::mpsc::channel(64);
         let writer = LspWriter {
-            writer: Arc::new(Mutex::new(MockWriter { tx })),
+            writer: Arc::new(Mutex::new(Some(MockWriter { tx }))),
         };
         (writer, rx)
     }

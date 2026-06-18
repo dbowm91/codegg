@@ -193,7 +193,7 @@ pub fn rust_analyzer_profile() -> LspCompatibilityProfile {
                 "checkOnSave": { "enable": false },
             },
         }),
-        readiness_policy: LspReadinessPolicy::WaitForProgressEndOrTimeout {
+        readiness_policy: LspReadinessPolicy::WaitForDiagnosticsOrTimeout {
             timeout: Duration::from_secs(30),
         },
         restart_policy: LspRestartPolicy::default(),

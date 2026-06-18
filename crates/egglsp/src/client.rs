@@ -886,7 +886,7 @@ impl LspClient {
         server_generation: Arc<AtomicU64>,
         observed_push_diagnostics: Arc<AtomicBool>,
         server_id: String,
-        writer: Arc<tokio::sync::Mutex<tokio::process::ChildStdin>>,
+        writer: Arc<tokio::sync::Mutex<Option<tokio::process::ChildStdin>>>,
         server_request_context: ServerRequestContext,
         server_request_timeout: Duration,
     ) {
@@ -3451,7 +3451,7 @@ mod tests {
         let (client_half, server_half) = tokio::io::duplex(64);
         drop(server_half);
 
-        let writer = LspWriter::from_inner(Arc::new(tokio::sync::Mutex::new(client_half)));
+        let writer = LspWriter::from_inner(Arc::new(tokio::sync::Mutex::new(Some(client_half))));
 
         let pending: super::PendingMap = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
         let id = JsonRpcId::Number(1);
@@ -3477,7 +3477,7 @@ mod tests {
     async fn timeout_emits_cancel_notification() {
         // Set up a duplex pair: the client writes to client_half, we read from server_half.
         let (client_half, server_half) = tokio::io::duplex(4096);
-        let writer = LspWriter::from_inner(Arc::new(tokio::sync::Mutex::new(client_half)));
+        let writer = LspWriter::from_inner(Arc::new(tokio::sync::Mutex::new(Some(client_half))));
 
         let pending: super::PendingMap = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
         let id = JsonRpcId::Number(7);
@@ -3589,7 +3589,7 @@ mod tests {
         let (client_half, _server_half) = tokio::io::duplex(64);
         drop(_server_half);
 
-        let writer = LspWriter::from_inner(Arc::new(tokio::sync::Mutex::new(client_half)));
+        let writer = LspWriter::from_inner(Arc::new(tokio::sync::Mutex::new(Some(client_half))));
 
         let pending: PendingMap = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
         let id = JsonRpcId::Number(1);
@@ -3643,7 +3643,7 @@ mod tests {
         // pair whose server half never responds, then race against a short
         // timeout to trigger the same cleanup as send_request's timeout branch.
         let (client_half, _server_half) = tokio::io::duplex(4096);
-        let writer = LspWriter::from_inner(Arc::new(tokio::sync::Mutex::new(client_half)));
+        let writer = LspWriter::from_inner(Arc::new(tokio::sync::Mutex::new(Some(client_half))));
 
         let pending: super::PendingMap = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
         let id = JsonRpcId::Number(42);
@@ -3679,7 +3679,7 @@ mod tests {
         // the pending entry, then send a $/cancelRequest notification and verify
         // it arrives on the server side of the duplex.
         let (client_half, server_half) = tokio::io::duplex(4096);
-        let writer = LspWriter::from_inner(Arc::new(tokio::sync::Mutex::new(client_half)));
+        let writer = LspWriter::from_inner(Arc::new(tokio::sync::Mutex::new(Some(client_half))));
 
         let pending: super::PendingMap = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
         let id = JsonRpcId::Number(77);

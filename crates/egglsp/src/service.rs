@@ -389,6 +389,9 @@ async fn terminate_runtime(
                 }
             }
         }
+        // Close the writer (stdin) to signal EOF to the server.
+        // Many LSP servers require this before they exit.
+        client.writer.close().await;
     }
 
     // Step 3: await the runtime's exit event under the graceful
