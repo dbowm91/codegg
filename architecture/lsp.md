@@ -2827,7 +2827,7 @@ compatibility report.
 | Pass | Focus | What changed |
 |------|-------|--------------|
 | Pass 1 | Rename when prepareRename unsupported | `rename_preview_typed` now inspects `CapabilityDecision` directly: `Supported` → prepare-rename + rename; `Unsupported` → skip prepare-rename, call `textDocument/rename` directly with `old_name = None`; `Unknown` → fail-closed `LspError::NotInitialized`. A `NotRenameable` from prepare-rename still produces an empty structured preview (not an error). |
-| Pass 2 | Typed checked/raw operation split | Public checked APIs (`prepare_rename_typed`, `rename_preview_typed`, `format_preview_typed`, `code_action_summaries`) keep the convenience return shape. Raw wrappers (`prepare_rename_unchecked`, `rename_preview_unchecked`, `format_preview_unchecked`, `code_actions_unchecked`) are kept for the smoke harness. Internal callers updated. |
+| Pass 2 | Typed checked/raw operation split | Public checked APIs (`prepare_rename_typed`, `rename_preview_typed`, `format_preview_typed`, `code_action_summaries`) keep the convenience return shape. Raw wrappers (`prepare_rename_unchecked`, `rename_preview_unchecked`, `format_preview_unchecked`, `code_actions_unchecked`) are kept for the smoke harness. **Internal callers updated** — `src/tool/lsp.rs` `renamePreview` and `formatPreview` handlers now call the typed methods (Pass-2 invariant: no model-facing tool path calls an unchecked wrapper). |
 | Pass 3 | Real implementation/type-hierarchy coverage | TypeScript fixture now contains a real `Greeter` interface + `Person` class implementing it (driving `textDocument/implementation` end-to-end). Rust fixture adds a `Greeter` trait + `Person` struct (driving `textDocument/prepareTypeHierarchy` + subtype matching). |
 | Pass 4 | Cross-source implementation check | `LocationExpectation.source_file` override lets the harness drive implementation from a header (clangd: `include/widget.hpp`) instead of the primary source. |
 | Pass 5 | Type-hierarchy semantic assertion | `TypeHierarchyExpectation.expected_prepare_name` + `expected_subtype_substrings` validate the prepared hierarchy item's name and that the subtype response mentions the expected concrete types. |
@@ -2867,6 +2867,7 @@ compatibility report.
 - [x] `cargo test -p egglsp --lib -- --skip aggregate_grace` green (532 lib tests)
 - [x] `cargo test --features lsp-test-support --test lsp_composite_stdio` green (26 composite tests)
 - [x] `cargo build --tests -p egglsp --features lsp-real-server-tests` clean (5 pre-existing dead-code warnings, no errors)
+- [x] Pass-2 model-facing invariant: `src/tool/lsp.rs` `renamePreview` and `formatPreview` handlers now route through `rename_preview_typed` / `format_preview_typed`; no model-facing path calls an unchecked wrapper directly.
 
 ## See Also
 
