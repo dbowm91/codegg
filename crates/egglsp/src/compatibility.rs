@@ -322,11 +322,11 @@ pub fn typescript_language_server_profile() -> LspCompatibilityProfile {
                 },
             },
         }),
-        // typescript-language-server reports project-loading progress
-        // via `$/progress`. Wait for the end of that progress stream
-        // before declaring the client ready, with a 20s safety net.
-        readiness_policy: LspReadinessPolicy::WaitForProgressEndOrTimeout {
-            timeout: Duration::from_secs(20),
+        // typescript-language-server sends diagnostics once the project
+        // is loaded. Use diagnostics as the readiness signal with a
+        // generous timeout for large projects.
+        readiness_policy: LspReadinessPolicy::WaitForDiagnosticsOrTimeout {
+            timeout: Duration::from_secs(30),
         },
         restart_policy: LspRestartPolicy::default(),
         known_limitations: vec![
