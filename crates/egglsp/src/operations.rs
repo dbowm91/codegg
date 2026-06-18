@@ -826,6 +826,12 @@ impl LspOperations {
         file_path: &Path,
     ) -> Option<LspCapabilitySnapshot> {
         let (key, _) = self.service.get_or_create_client(file_path).await.ok()?;
+        // Prefer the stored override-aware snapshot.
+        if let Some(snap) = self.service.normalized_capabilities_for_key(&key).await {
+            return Some(snap);
+        }
+        // Fallback: rebuild from raw capabilities (should not happen in
+        // normal operation after initialization completes).
         let caps = self.service.get_capabilities_for_key(&key).await?;
         let lang = detect_language(file_path.to_str().unwrap_or(""));
         let server_name = key.split(':').next_back().map(String::from);
@@ -1085,6 +1091,12 @@ impl LspOperations {
     /// key (used by workspace-scoped operations where no file path is
     /// available).
     async fn capability_snapshot_for_any_key(&self, key: &str) -> Option<LspCapabilitySnapshot> {
+        // Prefer the stored override-aware snapshot.
+        if let Some(snap) = self.service.normalized_capabilities_for_key(key).await {
+            return Some(snap);
+        }
+        // Fallback: rebuild from raw capabilities (should not happen in
+        // normal operation after initialization completes).
         let caps = self.service.get_capabilities_for_key(key).await?;
         let server_name = key.split(':').next_back().map(String::from);
         Some(LspCapabilitySnapshot::from_capabilities(

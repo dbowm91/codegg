@@ -2185,6 +2185,20 @@ impl LspService {
         x
     }
 
+    /// Return the stored normalized capability snapshot for the given key.
+    ///
+    /// This is the override-aware snapshot computed once at initialization.
+    /// Returns `None` when the client has not completed initialization yet
+    /// or the key is unknown.
+    pub async fn normalized_capabilities_for_key(
+        &self,
+        key: &str,
+    ) -> Option<crate::capability::LspCapabilitySnapshot> {
+        let clients = self.clients.read().await;
+        let client = clients.get(key)?;
+        client.get_normalized_capabilities().await
+    }
+
     pub async fn get_or_create_client_for_file(
         &self,
         file_path: &Path,
@@ -3146,6 +3160,32 @@ impl LspService {
                 client
                     .initialize(descriptor.initialization_options.clone())
                     .await?;
+
+                // 2b. Compute and store the override-aware normalized snapshot.
+                {
+                    let caps_snapshot = client.capabilities.lock().await.clone();
+                    if let Some(ref caps) = caps_snapshot {
+                        let profile =
+                            super::compatibility::profile_for_server(&descriptor.server_id);
+                        let override_caps = profile
+                            .as_ref()
+                            .map(|p| p.observed_capabilities.clone())
+                            .unwrap_or_default();
+                        // Resolve language_id from the server definition.
+                        let lang = super::server::server_definitions()
+                            .iter()
+                            .find(|s| s.id == descriptor.server_id.as_str())
+                            .and_then(|s| s.languages.first().copied());
+                        let normalized =
+                            crate::capability::LspCapabilitySnapshot::from_capabilities_with_override(
+                                caps,
+                                Some(&descriptor.server_id),
+                                lang,
+                                &override_caps,
+                            );
+                        client.set_normalized_capabilities(normalized).await;
+                    }
+                }
 
                 // 3. Send `initialized` notification.
                 client.send_initialized().await?;
@@ -4188,6 +4228,31 @@ async fn run_initialization_attempt(
                 return Err(LspError::InitializationCancelled("shutting down".to_string()));
             }
         };
+
+        // Compute and store the override-aware normalized snapshot once.
+        // This ensures all consumers get the same snapshot (with profile
+        // overrides applied) without rebuilding from raw capabilities.
+        {
+            let caps_snapshot = client.capabilities.lock().await.clone();
+            if let Some(ref caps) = caps_snapshot {
+                let profile = super::compatibility::profile_for_server(server.id);
+                let override_caps = profile
+                    .as_ref()
+                    .map(|p| p.observed_capabilities.clone())
+                    .unwrap_or_default();
+                // Use the first language from the server definition as the
+                // language_id hint for the snapshot.
+                let lang = server.languages.first().copied();
+                let normalized =
+                    crate::capability::LspCapabilitySnapshot::from_capabilities_with_override(
+                        caps,
+                        Some(server.id),
+                        lang,
+                        &override_caps,
+                    );
+                client.set_normalized_capabilities(normalized).await;
+            }
+        }
 
         tokio::select! {
             result = client.send_initialized() => { result?; }

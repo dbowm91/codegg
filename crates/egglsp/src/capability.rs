@@ -1149,4 +1149,36 @@ mod tests {
         assert!(!snap.supports_document_formatting);
         assert!(!snap.supports_range_formatting);
     }
+
+    #[test]
+    fn profile_override_survives_operation_gating() {
+        // Build capabilities WITHOUT type hierarchy advertised.
+        let mut caps = ServerCapabilities::default();
+        caps.call_hierarchy_provider =
+            Some(lsp_types::CallHierarchyServerCapability::Simple(true));
+
+        // Without overrides, type hierarchy must be false.
+        let snap_no_override = LspCapabilitySnapshot::from_capabilities(&caps, Some("gopls"), Some("go"));
+        assert!(
+            !snap_no_override.supports_type_hierarchy,
+            "type hierarchy must NOT be inferred from call hierarchy"
+        );
+        assert!(snap_no_override.unavailable(LspSemanticOperation::TypeHierarchy).is_some());
+
+        // With the profile override, type hierarchy must be true.
+        let override_caps = ObservedCapabilitiesOverride {
+            type_hierarchy: Some(true),
+        };
+        let snap_with_override = LspCapabilitySnapshot::from_capabilities_with_override(
+            &caps,
+            Some("gopls"),
+            Some("go"),
+            &override_caps,
+        );
+        assert!(snap_with_override.supports_type_hierarchy);
+        assert!(
+            snap_with_override.unavailable(LspSemanticOperation::TypeHierarchy).is_none(),
+            "type hierarchy must be available after profile override"
+        );
+    }
 }

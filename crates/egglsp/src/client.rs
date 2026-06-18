@@ -514,6 +514,10 @@ pub struct LspClient {
     pub writer: LspWriter,
     pub request_id: AtomicU64,
     pub capabilities: Arc<Mutex<Option<ServerCapabilities>>>,
+    /// Pre-computed, override-aware normalized capability snapshot.
+    /// Stored once during initialization so all consumers get the
+    /// same snapshot (with profile overrides) without rebuilding.
+    pub normalized_capabilities: Arc<Mutex<Option<crate::capability::LspCapabilitySnapshot>>>,
     pub opened_files: Mutex<HashMap<String, i32>>,
     /// Tracks when each file was last opened or changed, for diagnostics warm-up detection.
     pub last_content_change_at: Mutex<HashMap<String, Instant>>,
@@ -709,6 +713,7 @@ impl LspClient {
             writer,
             request_id: AtomicU64::new(0),
             capabilities: Arc::new(Mutex::new(None)),
+            normalized_capabilities: Arc::new(Mutex::new(None)),
             opened_files: Mutex::new(HashMap::new()),
             last_content_change_at: Mutex::new(HashMap::new()),
             diagnostics,
@@ -831,6 +836,7 @@ impl LspClient {
             writer,
             request_id: AtomicU64::new(0),
             capabilities: Arc::new(Mutex::new(None)),
+            normalized_capabilities: Arc::new(Mutex::new(None)),
             opened_files: Mutex::new(HashMap::new()),
             last_content_change_at: Mutex::new(HashMap::new()),
             diagnostics,
@@ -1067,6 +1073,22 @@ impl LspClient {
     pub async fn send_initialized(&self) -> Result<(), LspError> {
         self.send_notification("initialized", serde_json::json!({}))
             .await
+    }
+
+    /// Store the pre-computed normalized capability snapshot.
+    /// Called once after initialization when profile overrides are known.
+    pub async fn set_normalized_capabilities(
+        &self,
+        snap: crate::capability::LspCapabilitySnapshot,
+    ) {
+        *self.normalized_capabilities.lock().await = Some(snap);
+    }
+
+    /// Retrieve the stored normalized capability snapshot.
+    pub async fn get_normalized_capabilities(
+        &self,
+    ) -> Option<crate::capability::LspCapabilitySnapshot> {
+        self.normalized_capabilities.lock().await.clone()
     }
 
     pub async fn open_file(&self, uri: &Url, text: &str, version: i32) -> Result<(), LspError> {

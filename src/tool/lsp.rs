@@ -569,6 +569,12 @@ impl LspTool {
         file: &std::path::Path,
     ) -> Option<egglsp::LspCapabilitySnapshot> {
         let (key, _) = self.service.get_or_create_client(file).await.ok()?;
+        // Prefer the stored override-aware snapshot.
+        if let Some(snap) = self.service.normalized_capabilities_for_key(&key).await {
+            return Some(snap);
+        }
+        // Fallback: rebuild from raw capabilities (should not happen in
+        // normal operation after initialization completes).
         let caps = self.service.get_capabilities_for_key(&key).await?;
         let lang = crate::lsp::language::detect_language(file.to_str().unwrap_or(""));
         let server_name = key.split(':').next_back().map(String::from);
