@@ -208,6 +208,7 @@ pub fn rust_analyzer_profile() -> LspCompatibilityProfile {
         // callers see the correct capability.
         observed_capabilities: crate::capability::ObservedCapabilitiesOverride {
             type_hierarchy: Some(true),
+            type_hierarchy_tested_version: Some("2024-11-25".to_string()),
         },
     }
 }
@@ -292,6 +293,7 @@ pub fn gopls_profile() -> LspCompatibilityProfile {
         ],
         observed_capabilities: crate::capability::ObservedCapabilitiesOverride {
             type_hierarchy: Some(true),
+            type_hierarchy_tested_version: Some("v0.16.1".to_string()),
         },
     }
 }
@@ -378,6 +380,7 @@ pub fn clangd_profile() -> LspCompatibilityProfile {
         ],
         observed_capabilities: crate::capability::ObservedCapabilitiesOverride {
             type_hierarchy: Some(true),
+            type_hierarchy_tested_version: Some("18".to_string()),
         },
     }
 }

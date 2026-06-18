@@ -316,6 +316,12 @@ pub enum CapabilityDecision {
 pub struct ObservedCapabilitiesOverride {
     /// If `Some`, override `supports_type_hierarchy`.
     pub type_hierarchy: Option<bool>,
+    /// Version at which the override was observed (for documentation
+    /// and CI reproducibility). The string is opaque — it may be a
+    /// date (`2024-11-25`), a semver (`v0.16.1`), or a major version
+    /// (`18`), matching whatever the project uses to pin the server.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub type_hierarchy_tested_version: Option<String>,
 }
 
 impl LspCapabilitySnapshot {
@@ -755,6 +761,7 @@ mod tests {
         caps.call_hierarchy_provider = Some(lsp_types::CallHierarchyServerCapability::Simple(true));
         let override_caps = ObservedCapabilitiesOverride {
             type_hierarchy: Some(true),
+            type_hierarchy_tested_version: Some("v0.16.1".to_string()),
         };
         let snap = LspCapabilitySnapshot::from_capabilities_with_override(
             &caps,
@@ -1322,6 +1329,7 @@ mod tests {
         // With the profile override, type hierarchy must be true.
         let override_caps = ObservedCapabilitiesOverride {
             type_hierarchy: Some(true),
+            type_hierarchy_tested_version: None,
         };
         let snap_with_override = LspCapabilitySnapshot::from_capabilities_with_override(
             &caps,

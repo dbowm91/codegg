@@ -27,6 +27,11 @@ jobs:
           rustup component add rust-analyzer
           echo "CODEGG_RA_BIN=$(which rust-analyzer)" >> $GITHUB_ENV
 
+      - name: Record server versions
+        run: |
+          echo "=== Server Versions ==="
+          rust-analyzer --version
+
       - name: Run rust-analyzer smoke tests
         run: |
           cargo test -p egglsp \
@@ -53,6 +58,11 @@ jobs:
         run: |
           npm install -g basedpyright@1.13.1
           echo "CODEGG_PYRIGHT_BIN=$(which basedpyright-langserver || which basedpyright)" >> $GITHUB_ENV
+
+      - name: Record server versions
+        run: |
+          echo "=== Server Versions ==="
+          basedpyright --version || basedpyright-langserver --version
 
       - name: Run basedpyright smoke tests
         run: |
@@ -86,6 +96,11 @@ jobs:
           go install golang.org/x/tools/gopls@v0.16.1
           echo "CODEGG_GOPLS_BIN=$(which gopls)" >> $GITHUB_ENV
 
+      - name: Record server versions
+        run: |
+          echo "=== Server Versions ==="
+          gopls version
+
       - name: Run gopls smoke tests
         run: |
           cargo test -p egglsp \
@@ -118,6 +133,12 @@ jobs:
           npm install -g typescript-language-server@4.3.3 typescript@5.5.4
           echo "CODEGG_TS_LS_BIN=$(which typescript-language-server)" >> $GITHUB_ENV
 
+      - name: Record server versions
+        run: |
+          echo "=== Server Versions ==="
+          typescript-language-server --version
+          tsc --version
+
       - name: Run typescript-language-server smoke tests
         run: |
           cargo test -p egglsp \
@@ -142,12 +163,17 @@ jobs:
 
       - name: Install clangd 18
         run: |
-          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo apt-key add -
-          echo "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-18 main" | sudo tee /etc/apt/sources.list.d/llvm.list
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | gpg --dearmor | sudo tee /usr/share/keyrings/llvm-archive-keyring.gpg > /dev/null
+          echo "deb [signed-by=/usr/share/keyrings/llvm-archive-keyring.gpg] http://apt.llvm.org/jammy/ llvm-toolchain-jammy-18 main" | sudo tee /etc/apt/sources.list.d/llvm.list
           sudo apt-get update
           sudo apt-get install -y clangd-18
           sudo update-alternatives --install /usr/bin/clangd clangd /usr/bin/clangd-18 100
           echo "CODEGG_CLANGD_BIN=$(which clangd)" >> $GITHUB_ENV
+
+      - name: Record server versions
+        run: |
+          echo "=== Server Versions ==="
+          clangd --version
 
       - name: Run clangd smoke tests
         run: |
