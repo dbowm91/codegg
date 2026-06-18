@@ -1018,7 +1018,16 @@ const _signatureSite = add(1, 2);
         // implementation, signature help, and document
         // highlight checks the plan calls out for
         // typescript-language-server.
-        mutation_targets: MutationTargets::default(),
+        // Pass 8 — exercise the rename preview against the
+        // cross-file `add` import (line 0, char 9). A correct
+        // response must touch both `src/main.ts` and
+        // `src/helper.ts`; the harness verifies both files
+        // are present in the returned `WorkspaceEdit`.
+        mutation_targets: MutationTargets {
+            rename: Some(Position::new(0, 9)),
+            rename_preview_requested: true,
+            ..Default::default()
+        },
         expected_capabilities: ExpectedCapabilities {
             implementation: true,
             signature_help: true,
@@ -2666,6 +2675,159 @@ fn matches_expected_file(returned: &str, expected: &Path) -> bool {
     returned_path.ends_with(expected) || expected.ends_with(returned_path)
 }
 
+/// Pass 8 — Compute the LSP character range of the
+/// identifier at `(line, character)` by walking back to the
+/// start of the identifier and forward to its end. Returns
+/// `None` when the line is out of bounds or the position does
+/// not land on an identifier character (alphanumeric, `_`).
+/// The harness uses this range to verify that a rename
+/// `WorkspaceEdit` covers the identifier the user requested
+/// to rename — a server that returns edits for unrelated
+/// positions would otherwise pass the structural
+/// WorkspaceEdit deserialization check.
+fn identifier_range_at(lines: &[&str], line: usize, character: usize) -> Option<(u32, u32)> {
+    let line_text = *lines.get(line)?;
+    let bytes = line_text.as_bytes();
+    let mut start = character;
+    while start > 0 {
+        let prev = line_text[..start].char_indices().last();
+        match prev {
+            Some((idx, c)) if is_identifier_char(c) => {
+                start = idx;
+            }
+            _ => break,
+        }
+    }
+    let mut end = character;
+    while end < bytes.len() {
+        let c = line_text[end..].chars().next()?;
+        if is_identifier_char(c) {
+            end += c.len_utf8();
+        } else {
+            break;
+        }
+    }
+    if start == end {
+        return None;
+    }
+    let start_u32 = u32::try_from(start).ok()?;
+    let end_u32 = u32::try_from(end).ok()?;
+    Some((start_u32, end_u32))
+}
+
+fn is_identifier_char(c: char) -> bool {
+    c.is_alphanumeric() || c == '_'
+}
+
+/// Pass 8 — Outcome of a structural rename `WorkspaceEdit`
+/// evaluation. The harness classifies the response into one
+/// of three states:
+/// - `Pass { matched_files, range_covers_pos }`: the edit
+///   touches at least one expected file and at least one
+///   edit's range overlaps with the identifier range at `pos`.
+/// - `NoFileMatch`: the edit exists but does not touch
+///   `primary_source` or `secondary_source`.
+/// - `RangeMissesIdentifier`: the edit touches an expected
+///   file but the range does not cover the identifier at
+///   `pos`.
+#[derive(Debug, PartialEq, Eq)]
+enum RenameEvaluation {
+    Pass {
+        matched_files: usize,
+        range_covers_pos: bool,
+    },
+    NoFileMatch,
+    RangeMissesIdentifier,
+}
+
+/// Pass 8 — Evaluate a `WorkspaceEdit` returned from
+/// `textDocument/rename`. Walks both `changes` and
+/// `document_changes` to find edits that match the fixture's
+/// expected file set, then verifies at least one such edit's
+/// range covers the identifier at `identifier_range`.
+fn evaluate_rename_workspace_edit(
+    edit: &egglsp::lsp_types::WorkspaceEdit,
+    expected_files: &[&std::path::Path],
+    identifier_range: Option<(u32, u32)>,
+) -> RenameEvaluation {
+    use egglsp::lsp_types::DocumentChanges;
+    let mut matched_files: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
+    let mut any_range_covers_identifier = false;
+    let range_covers = |te: &egglsp::lsp_types::TextEdit,
+                        id_start: u32,
+                        id_end: u32|
+     -> bool {
+        te.range.start.character <= id_start
+            && te.range.end.character >= id_end
+            && te.range.start.line == te.range.end.line
+    };
+    // `WorkspaceEdit.changes` — HashMap<Url, Vec<TextEdit>>.
+    if let Some(changes) = &edit.changes {
+        for (uri, edits) in changes {
+            let uri_str = uri.as_str();
+            if expected_files.iter().any(|e| matches_expected_file(uri_str, e)) {
+                matched_files.insert(uri_str.to_string());
+                if let Some((id_start, id_end)) = identifier_range {
+                    if edits.iter().any(|te| range_covers(te, id_start, id_end)) {
+                        any_range_covers_identifier = true;
+                    }
+                }
+            }
+        }
+    }
+    // `WorkspaceEdit.document_changes` — `DocumentChanges`
+    // enum with two variants: `Edits(Vec<TextDocumentEdit>)` and
+    // `Operations(Vec<DocumentChangeOperation>)`. Only the
+    // edits variant carries text edits; resource operations
+    // (create/rename/delete) are skipped.
+    if let Some(doc_changes) = &edit.document_changes {
+        match doc_changes {
+            DocumentChanges::Edits(text_doc_edits) => {
+                for text_doc_edit in text_doc_edits {
+                    let uri_str = text_doc_edit.text_document.uri.as_str();
+                    if expected_files.iter().any(|e| matches_expected_file(uri_str, e)) {
+                        matched_files.insert(uri_str.to_string());
+                        if let Some((id_start, id_end)) = identifier_range {
+                            // `edits` is `Vec<OneOf<TextEdit,
+                            // AnnotatedTextEdit>>`. Both variants
+                            // carry a `range`; pull it out via
+                            // the `OneOf` accessor.
+                            use egglsp::lsp_types::OneOf;
+                            let covers = text_doc_edit.edits.iter().any(|te| {
+                                let r = match te {
+                                    OneOf::Left(t) => &t.range,
+                                    OneOf::Right(t) => &t.text_edit.range,
+                                };
+                                r.start.character <= id_start
+                                    && r.end.character >= id_end
+                                    && r.start.line == r.end.line
+                            });
+                            if covers {
+                                any_range_covers_identifier = true;
+                            }
+                        }
+                    }
+                }
+            }
+            DocumentChanges::Operations(_) => {
+                // Resource operations only — no text edits to
+                // evaluate.
+            }
+        }
+    }
+    if matched_files.is_empty() {
+        RenameEvaluation::NoFileMatch
+    } else if !any_range_covers_identifier && identifier_range.is_some() {
+        RenameEvaluation::RangeMissesIdentifier
+    } else {
+        RenameEvaluation::Pass {
+            matched_files: matched_files.len(),
+            range_covers_pos: any_range_covers_identifier,
+        }
+    }
+}
+
 /// Run a single location-style operation (declaration,
 /// implementation, document highlight) and append a `SmokeCheck` to
 /// `checks`. The check is `RequiredIfAdvertised` when the
@@ -4089,16 +4251,84 @@ async fn run_rename_preview_check(
                 return;
             }
             match serde_json::from_value::<egglsp::lsp_types::WorkspaceEdit>(value) {
-                Ok(_edit) => emit(
-                    SmokeCheck::pass(
-                        format!(
-                            "renamePreview (server returned edits; disk hash unchanged: {before_hash})"
+                Ok(edit) => {
+                    // Pass 8 — Strengthen rename smoke semantics.
+                    // A semantically correct rename response must
+                    // (a) touch at least one file in the fixture's
+                    // `primary_source` or `secondary_source` set, and
+                    // (b) include an edit whose range covers the
+                    // identifier at `pos` (clipped to the identifier
+                    // bounds so a server that returns a wider range
+                    // is not rejected for being generous).
+                    let expected_files: Vec<&std::path::Path> = fixture
+                        .secondary_source
+                        .as_ref()
+                        .map(|s| vec![primary_path.as_path(), s.as_path()])
+                        .unwrap_or_else(|| vec![primary_path.as_path()]);
+                    let primary_contents = match std::fs::read_to_string(&primary_path) {
+                        Ok(s) => s,
+                        Err(e) => {
+                            emit(
+                                SmokeCheck::fail(
+                                    "renamePreview",
+                                    CompatibilityRequirement::RequiredIfAdvertised,
+                                    format!(
+                                        "failed to read primary file for identifier clipping: {e}"
+                                    ),
+                                    ms,
+                                ),
+                                true,
+                            );
+                            return;
+                        }
+                    };
+                    let lines: Vec<&str> = primary_contents.lines().collect();
+                    let identifier_range = identifier_range_at(
+                        &lines,
+                        pos.line as usize,
+                        pos.character as usize,
+                    );
+                    let summary = evaluate_rename_workspace_edit(
+                        &edit,
+                        &expected_files,
+                        identifier_range,
+                    );
+                    match summary {
+                        RenameEvaluation::Pass {
+                            matched_files,
+                            range_covers_pos,
+                        } => emit(
+                            SmokeCheck::pass(
+                                format!(
+                                    "renamePreview (server returned edits touching {} file(s); \
+                                     range covers pos: {range_covers_pos}; disk hash unchanged: {before_hash})",
+                                    matched_files
+                                ),
+                                CompatibilityRequirement::RequiredIfAdvertised,
+                                ms,
+                            ),
+                            true,
                         ),
-                        CompatibilityRequirement::RequiredIfAdvertised,
-                        ms,
-                    ),
-                    true,
-                ),
+                        RenameEvaluation::NoFileMatch => emit(
+                            SmokeCheck::fail(
+                                "renamePreview",
+                                CompatibilityRequirement::RequiredIfAdvertised,
+                                "rename response did not touch any expected file (primary_source or secondary_source)",
+                                ms,
+                            ),
+                            true,
+                        ),
+                        RenameEvaluation::RangeMissesIdentifier => emit(
+                            SmokeCheck::fail(
+                                "renamePreview",
+                                CompatibilityRequirement::RequiredIfAdvertised,
+                                "rename response touched an expected file but the edit range did not cover the identifier at pos",
+                                ms,
+                            ),
+                            true,
+                        ),
+                    }
+                }
                 Err(e) => emit(
                     SmokeCheck::fail(
                         "renamePreview",
