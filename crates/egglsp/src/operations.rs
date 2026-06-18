@@ -65,10 +65,7 @@ impl SignatureHelpSummary {
             .iter()
             .map(|sig| SignatureInfoSummary {
                 label: sig.label.clone(),
-                documentation: sig
-                    .documentation
-                    .as_ref()
-                    .map(format_documentation_clamped),
+                documentation: sig.documentation.as_ref().map(format_documentation_clamped),
                 parameters: sig
                     .parameters
                     .as_ref()
@@ -185,11 +182,11 @@ impl PrepareRenameResult {
                     placeholder: Some(placeholder),
                 }
             }
-            Some(PrepareRenameResponse::DefaultBehavior { default_behavior: _ }) => {
-                PrepareRenameResult::DefaultBehavior {
-                    range: lsp_types::Range::default(),
-                }
-            }
+            Some(PrepareRenameResponse::DefaultBehavior {
+                default_behavior: _,
+            }) => PrepareRenameResult::DefaultBehavior {
+                range: lsp_types::Range::default(),
+            },
         }
     }
 
@@ -1049,19 +1046,14 @@ impl LspOperations {
     /// nested (`Vec<WorkspaceSymbol>`) shape depending on the
     /// negotiated capabilities. Both are normalized to
     /// `Vec<SymbolInformation>`.
-    pub async fn workspace_symbols(
-        &self,
-        query: &str,
-    ) -> Result<Vec<SymbolInformation>, LspError> {
+    pub async fn workspace_symbols(&self, query: &str) -> Result<Vec<SymbolInformation>, LspError> {
         // workspace/symbol has no file path; pick a key from the
         // service-level client inventory. If there are no clients we
         // still allow the request to proceed (the service will route
         // it through `send_request` which uses the JSON-RPC routing
         // infrastructure).
         let key = self.first_client_key().await.ok_or_else(|| {
-            LspError::NotInitialized(
-                "no LSP client available for workspace_symbols".to_string(),
-            )
+            LspError::NotInitialized("no LSP client available for workspace_symbols".to_string())
         })?;
 
         if let Some(snapshot) = self.capability_snapshot_for_any_key(&key).await {
@@ -1092,10 +1084,7 @@ impl LspOperations {
     /// Look up the [`LspCapabilitySnapshot`] for an arbitrary client
     /// key (used by workspace-scoped operations where no file path is
     /// available).
-    async fn capability_snapshot_for_any_key(
-        &self,
-        key: &str,
-    ) -> Option<LspCapabilitySnapshot> {
+    async fn capability_snapshot_for_any_key(&self, key: &str) -> Option<LspCapabilitySnapshot> {
         let caps = self.service.get_capabilities_for_key(key).await?;
         let server_name = key.split(':').next_back().map(String::from);
         Some(LspCapabilitySnapshot::from_capabilities(
@@ -1897,7 +1886,15 @@ impl LspOperations {
         }
 
         let actions = self
-            .code_actions(file_path, start_line, start_col, end_line, end_col, diagnostics, only)
+            .code_actions(
+                file_path,
+                start_line,
+                start_col,
+                end_line,
+                end_col,
+                diagnostics,
+                only,
+            )
             .await?;
 
         Ok(actions
@@ -1940,7 +1937,15 @@ impl LspOperations {
         }
 
         let actions = self
-            .code_actions(file_path, start_line, start_col, end_line, end_col, diagnostics, only)
+            .code_actions(
+                file_path,
+                start_line,
+                start_col,
+                end_line,
+                end_col,
+                diagnostics,
+                only,
+            )
             .await?;
 
         let action = actions.get(action_index).ok_or_else(|| {
@@ -2042,15 +2047,13 @@ impl LspOperations {
 
         // Verify the on-disk file is unchanged (defense-in-depth
         // even though no mutating call was made).
-        let after_disk_hash = sha256_hex(
-            &tokio::fs::read(file_path).await.map_err(|e| {
-                LspError::RequestFailed(format!(
-                    "failed to re-read file {}: {}",
-                    file_path.display(),
-                    e
-                ))
-            })?,
-        );
+        let after_disk_hash = sha256_hex(&tokio::fs::read(file_path).await.map_err(|e| {
+            LspError::RequestFailed(format!(
+                "failed to re-read file {}: {}",
+                file_path.display(),
+                e
+            ))
+        })?);
         if after_disk_hash != before_hash {
             return Err(LspError::RequestFailed(format!(
                 "format_preview_typed: on-disk file {} changed unexpectedly \
@@ -2484,11 +2487,7 @@ fn utf16_to_byte_index(text: &str, line: u32, character: u32) -> Option<usize> {
 /// Build a bounded unified diff (capped at
 /// [`FORMATTING_PREVIEW_MAX_DIFF_BYTES`]) of `before` vs
 /// `after` for `file_path`. Returns `(diff, truncated)`.
-fn build_bounded_unified_diff(
-    before: &str,
-    after: &str,
-    file_path: &Path,
-) -> (String, bool) {
+fn build_bounded_unified_diff(before: &str, after: &str, file_path: &Path) -> (String, bool) {
     if before == after {
         return (String::new(), false);
     }
@@ -2993,8 +2992,7 @@ mod tests {
             },
         ];
         let v = serde_json::to_value(&original).expect("serialize");
-        let decoded: Vec<DocumentHighlight> =
-            serde_json::from_value(v).expect("deserialize");
+        let decoded: Vec<DocumentHighlight> = serde_json::from_value(v).expect("deserialize");
         assert_eq!(decoded, original);
         assert_eq!(decoded[0].kind, Some(DocumentHighlightKind::TEXT));
         assert_eq!(decoded[1].kind, Some(DocumentHighlightKind::READ));
@@ -3007,7 +3005,8 @@ mod tests {
     #[test]
     fn capability_snapshot_reports_declaration_as_unavailable_when_unset() {
         let caps = ServerCapabilities::default();
-        let snap = LspCapabilitySnapshot::from_capabilities(&caps, Some("rust-analyzer"), Some("rust"));
+        let snap =
+            LspCapabilitySnapshot::from_capabilities(&caps, Some("rust-analyzer"), Some("rust"));
         assert!(!snap.supports(LspSemanticOperation::Declaration));
         let u = snap.unavailable(LspSemanticOperation::Declaration).unwrap();
         assert_eq!(u.operation, "declaration");
@@ -3023,14 +3022,17 @@ mod tests {
         let snap =
             LspCapabilitySnapshot::from_capabilities(&caps, Some("rust-analyzer"), Some("rust"));
         assert!(snap.supports(LspSemanticOperation::Implementation));
-        assert!(snap.unavailable(LspSemanticOperation::Implementation).is_none());
+        assert!(snap
+            .unavailable(LspSemanticOperation::Implementation)
+            .is_none());
     }
 
     #[test]
     fn capability_snapshot_reports_document_highlight_as_available_when_set() {
         let mut caps = ServerCapabilities::default();
         caps.document_highlight_provider = Some(OneOf::Left(true));
-        let snap = LspCapabilitySnapshot::from_capabilities(&caps, Some("tsls"), Some("typescript"));
+        let snap =
+            LspCapabilitySnapshot::from_capabilities(&caps, Some("tsls"), Some("typescript"));
         assert!(snap.supports(LspSemanticOperation::DocumentHighlight));
     }
 
@@ -3039,7 +3041,9 @@ mod tests {
         let caps = ServerCapabilities::default();
         let snap = LspCapabilitySnapshot::from_capabilities(&caps, Some("pylsp"), Some("python"));
         assert!(!snap.supports(LspSemanticOperation::WorkspaceSymbols));
-        let u = snap.unavailable(LspSemanticOperation::WorkspaceSymbols).unwrap();
+        let u = snap
+            .unavailable(LspSemanticOperation::WorkspaceSymbols)
+            .unwrap();
         assert_eq!(u.operation, "workspaceSymbol");
         assert!(u.reason.contains("pylsp"));
     }
@@ -3674,7 +3678,10 @@ mod tests {
         ));
         assert_eq!(s.kind.as_deref(), Some("refactor.extract"));
         assert!(!s.preferred);
-        assert_eq!(s.disabled_reason.as_deref(), Some("cursor not on a function"));
+        assert_eq!(
+            s.disabled_reason.as_deref(),
+            Some("cursor not on a function")
+        );
     }
 
     #[test]
@@ -3758,7 +3765,9 @@ mod tests {
             "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
         );
         assert_eq!(h.len(), 64);
-        assert!(h.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+        assert!(h
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
     }
 
     #[test]
@@ -3803,11 +3812,8 @@ mod tests {
             big_before.push_str(&before);
             big_after.push_str(&after);
         }
-        let (diff, truncated) = build_bounded_unified_diff(
-            &big_before,
-            &big_after,
-            Path::new("big.rs"),
-        );
+        let (diff, truncated) =
+            build_bounded_unified_diff(&big_before, &big_after, Path::new("big.rs"));
         assert!(truncated, "expected truncation flag for oversize diff");
         assert!(diff.contains("truncated"));
         // The truncated output must not exceed the cap by more
@@ -3976,7 +3982,9 @@ mod tests {
         }));
         let snap = LspCapabilitySnapshot::from_capabilities(&caps, Some("s"), Some("rust"));
         assert!(snap.supports(LspSemanticOperation::PrepareRename));
-        assert!(snap.unavailable(LspSemanticOperation::PrepareRename).is_none());
+        assert!(snap
+            .unavailable(LspSemanticOperation::PrepareRename)
+            .is_none());
     }
 
     #[test]
@@ -3989,5 +3997,4 @@ mod tests {
             .unavailable(LspSemanticOperation::DocumentFormatting)
             .is_none());
     }
-
 }

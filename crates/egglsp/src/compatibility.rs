@@ -613,9 +613,13 @@ mod tests {
         let p = clangd_profile();
         assert_eq!(p.server_id, "clangd");
         assert_eq!(p.executable_candidates, vec!["clangd".to_string()]);
-        assert!(p.default_args.contains(&"--background-index=false".to_string()));
+        assert!(p
+            .default_args
+            .contains(&"--background-index=false".to_string()));
         assert!(p.default_args.contains(&"--clang-tidy=0".to_string()));
-        assert!(p.root_markers.contains(&"compile_commands.json".to_string()));
+        assert!(p
+            .root_markers
+            .contains(&"compile_commands.json".to_string()));
         assert!(p.root_markers.contains(&"compile_flags.txt".to_string()));
         assert!(p.root_markers.contains(&"CMakeLists.txt".to_string()));
         assert!(p.root_markers.contains(&".git".to_string()));
@@ -704,7 +708,9 @@ mod tests {
             ),
         }
         // clangd-specific root markers must be present.
-        assert!(p.root_markers.contains(&"compile_commands.json".to_string()));
+        assert!(p
+            .root_markers
+            .contains(&"compile_commands.json".to_string()));
         // clangd must disable clang-tidy by default to avoid
         // requiring clang-tidy configuration in every fixture.
         assert!(

@@ -185,11 +185,7 @@ pub struct LspUnavailable {
 impl std::fmt::Display for LspUnavailable {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match (&self.server, &self.language_id) {
-            (Some(s), Some(l)) => write!(
-                f,
-                "{} ({}/{}) — {}",
-                self.operation, s, l, self.reason
-            ),
+            (Some(s), Some(l)) => write!(f, "{} ({}/{}) — {}", self.operation, s, l, self.reason),
             (Some(s), None) => write!(f, "{} ({}) — {}", self.operation, s, self.reason),
             (None, Some(l)) => write!(f, "{} ({}) — {}", self.operation, l, self.reason),
             (None, None) => write!(f, "{} — {}", self.operation, self.reason),
@@ -609,8 +605,7 @@ mod tests {
         // ServerCapabilities with call_hierarchy_provider but no
         // observed override → supports_type_hierarchy must be false.
         let mut caps = ServerCapabilities::default();
-        caps.call_hierarchy_provider =
-            Some(lsp_types::CallHierarchyServerCapability::Simple(true));
+        caps.call_hierarchy_provider = Some(lsp_types::CallHierarchyServerCapability::Simple(true));
         let snap = LspCapabilitySnapshot::from_capabilities(&caps, Some("s"), Some("rust"));
         assert!(snap.supports_call_hierarchy);
         assert!(
@@ -622,8 +617,7 @@ mod tests {
     #[test]
     fn type_hierarchy_override_flips_default() {
         let mut caps = ServerCapabilities::default();
-        caps.call_hierarchy_provider =
-            Some(lsp_types::CallHierarchyServerCapability::Simple(true));
+        caps.call_hierarchy_provider = Some(lsp_types::CallHierarchyServerCapability::Simple(true));
         let override_caps = ObservedCapabilitiesOverride {
             type_hierarchy: Some(true),
         };
@@ -761,14 +755,14 @@ mod tests {
 
         // diagnostic_provider → pull true.
         let mut caps = ServerCapabilities::default();
-        caps.diagnostic_provider = Some(
-            lsp_types::DiagnosticServerCapabilities::Options(lsp_types::DiagnosticOptions {
+        caps.diagnostic_provider = Some(lsp_types::DiagnosticServerCapabilities::Options(
+            lsp_types::DiagnosticOptions {
                 identifier: None,
                 inter_file_dependencies: false,
                 workspace_diagnostics: false,
                 work_done_progress_options: Default::default(),
-            }),
-        );
+            },
+        ));
         let snap2 = LspCapabilitySnapshot::from_capabilities(&caps, Some("s"), Some("rust"));
         assert!(!snap2.supports_push_diagnostics);
         assert!(snap2.supports_pull_diagnostics);
@@ -821,15 +815,11 @@ mod tests {
         caps.declaration_provider = Some(lsp_types::DeclarationCapability::Simple(true));
         caps.implementation_provider =
             Some(lsp_types::ImplementationProviderCapability::Simple(true));
-        caps.document_highlight_provider =
-            Some(lsp_types::OneOf::Left(true));
+        caps.document_highlight_provider = Some(lsp_types::OneOf::Left(true));
         caps.inlay_hint_provider = Some(lsp_types::OneOf::Left(true));
-        caps.folding_range_provider = Some(
-            lsp_types::FoldingRangeProviderCapability::Simple(true),
-        );
-        caps.selection_range_provider = Some(
-            lsp_types::SelectionRangeProviderCapability::Simple(true),
-        );
+        caps.folding_range_provider = Some(lsp_types::FoldingRangeProviderCapability::Simple(true));
+        caps.selection_range_provider =
+            Some(lsp_types::SelectionRangeProviderCapability::Simple(true));
         caps.document_link_provider = Some(lsp_types::DocumentLinkOptions {
             resolve_provider: None,
             work_done_progress_options: Default::default(),

@@ -2880,9 +2880,7 @@ impl Tool for LspTool {
                 let end_line_input = parsed.end_line.unwrap_or(start_line_input);
                 let end_col_input = parsed.end_column.unwrap_or(start_col_input);
                 let action_index = parsed.action_index.ok_or_else(|| {
-                    ToolError::Execution(
-                        "action_index required for codeActionPreview".to_string(),
-                    )
+                    ToolError::Execution("action_index required for codeActionPreview".to_string())
                 })?;
                 let only = parsed.only.as_ref().map(|kinds| {
                     kinds
@@ -2904,11 +2902,7 @@ impl Tool for LspTool {
                     )
                     .await
                     .map_err(|e| ToolError::Execution(format!("codeActionPreview: {e}")))?;
-                let total_edits: usize = preview
-                    .affected_files
-                    .iter()
-                    .map(|f| f.edits.len())
-                    .sum();
+                let total_edits: usize = preview.affected_files.iter().map(|f| f.edits.len()).sum();
                 let output = LspToolOutput {
                     operation: "codeActionPreview".to_string(),
                     file_path: file_path_str,

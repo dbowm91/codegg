@@ -65,9 +65,9 @@ pub use hunk_context::{
     HunkDescriptor, HunkEvidence, HunkLineRange, HunkSourceNavigationLimits,
     HunkSourceNavigationRequest, HunkSourceNavigationResponse,
 };
-pub use operations::select_source_action_edit;
 pub use operations::completion_kind_to_string;
 pub use operations::decode_semantic_tokens;
+pub use operations::select_source_action_edit;
 pub use operations::CompletionCandidate;
 pub use operations::DecodedSemanticToken;
 pub use operations::LspOperations;
@@ -75,8 +75,8 @@ pub use operations::SourceActionPreviewKind;
 pub use operations::COMPLETION_DETAIL_MAX_CHARS;
 pub use operations::{
     CodeActionPreview, CodeActionSummary, FormattingPreview, PrepareRenameResult, RenamePreview,
-    CODE_ACTION_SUMMARY_DEFAULT_MAX, FORMATTING_PREVIEW_MAX_DIFF_BYTES,
-    RENAME_PREVIEW_MAX_EDITS, RENAME_PREVIEW_MAX_FILES,
+    CODE_ACTION_SUMMARY_DEFAULT_MAX, FORMATTING_PREVIEW_MAX_DIFF_BYTES, RENAME_PREVIEW_MAX_EDITS,
+    RENAME_PREVIEW_MAX_FILES,
 };
 pub use semantic_context::{
     SemanticContextCaps, SemanticContextIntent, SemanticContextRequest, SemanticContextResponse,

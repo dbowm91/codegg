@@ -260,9 +260,7 @@ impl From<egglsp::LspError> for LspError {
             egglsp::LspError::InvalidConfig(s) => {
                 LspError::RequestFailed(format!("invalid configuration: {s}"))
             }
-            egglsp::LspError::Unavailable(u) => {
-                LspError::Unsupported(u)
-            }
+            egglsp::LspError::Unavailable(u) => LspError::Unsupported(u),
         }
     }
 }

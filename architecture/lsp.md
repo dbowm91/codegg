@@ -9,7 +9,12 @@ The `lsp` module provides Language Server Protocol support for IDE-like features
 - LSP server lifecycle management (download, launch, initialize)
 - Diagnostics collection via publishDiagnostics notifications
 - Code operations (goto definition, find references, hover, document symbols, workspace symbols, diagnostics)
+- Read-only navigation operations (declaration, implementation, document highlights) — capability-gated, execute directly, return normalized `Vec<LocationLink>` / `Vec<DocumentHighlight>`
+- Read-only typing help (signature help) — bounded via `SignatureHelpSummary` with parameter offsets resolved against signature labels and per-item documentation truncated to 2000 chars
+- Bounded completion (`completion`) — capability-gated, returns `CompletionCandidate` DTOs with raw edit payloads stripped, capped via `max_candidates` (default 200)
+- Bounded semantic tokens (`semanticTokens`) — capability-gated, decodes the delta-encoded stream against the server's legend and returns `DecodedSemanticToken` DTOs (capped via `max_tokens`, default 1000)
 - Preview-only semantic edits (renamePreview, formatPreview, sourceActionPreview) — returns unified-diff patches, never writes files
+- Preview-only code actions (`codeActionSummaries`, `codeActionPreview`) — bounded summaries first, then lazy single-action preview; command-only actions are rejected via `LspError::CommandOnlyCodeAction`
 - Temporary overlays (semanticCheckPreview) — accepts full content or a single-file unified diff patch, applies it in memory via OverlaySession, collects diagnostics/symbols, restores disk view, never writes files
 - Compact semantic context packets (semanticContext) — combines source excerpt, diagnostics, symbols, optional definition/reference/overlay information into a bounded pre-edit/pre-review context packet
 - Security context packets (securityContext) — security-review context packet with deterministic risk markers, security-relevant diagnostics/symbols, optional call hierarchy, and optional overlay diagnostics
@@ -28,6 +33,34 @@ that re-exports `egglsp::*` and bridges:
 - `egglsp::LspError` → `crate::error::LspError` (delegates to the existing codegg-side error variant)
 
 The crate uses a client-per-root pattern: `LspService` maintains a `HashMap<String, ClientEntry>` where the key is `"{project_root}:{server_id}"`.
+
+### Tier 1 vs Tier 2 compatibility
+
+The `compatibility.rs` module defines explicit, data-driven profiles per
+server. Tier membership is recorded on the profile, not in any generic
+client branch — there is no `match server_id` for Tier 2 quirks in
+generic code.
+
+| Tier | Servers | Test surface |
+|------|---------|--------------|
+| Tier 1 | `rust-analyzer`, `basedpyright` / `pyright` | Real-server CI in `.github/workflows/lsp-real-server.yml` (`lsp-real-server-tests` feature) on opt-in triggers (`workflow_dispatch`, weekly schedule, push paths) |
+| Tier 2 | `gopls`, `typescript-language-server`, `clangd` | Real-server CI in `.github/workflows/lsp-real-server.yml`, opt-in, with pinned versions: `gopls` v0.16.1 (Go 1.22.5), `typescript-language-server` 4.3.3 + `typescript` 5.5.4 (Node 20), `clangd` 18 (LLVM apt) |
+
+Profile accessors:
+
+```rust
+pub fn tier1_profiles() -> Vec<LspCompatibilityProfile>     // rust-analyzer + basedpyright
+pub fn tier2_profiles() -> Vec<LspCompatibilityProfile>     // gopls + typescript-language-server + clangd
+pub fn all_profiles() -> Vec<LspCompatibilityProfile>       // tier1 ++ tier2 (deterministic order)
+```
+
+Both tiers are data-driven through `LspCompatibilityProfile` (executable
+candidates, default args, root markers, readiness policy, restart
+policy, known limitations, observed capability overrides). Generic
+client code reads profile fields instead of branching on server IDs.
+Default CI remains network-free; Tier 2 jobs run only on opt-in
+triggers or path-triggered runs against `crates/egglsp/**`,
+`src/lsp/**`, or the workflow YAML itself.
 
 ## Components
 
@@ -133,10 +166,52 @@ Key functions:
 ```rust
 pub fn rust_analyzer_profile() -> LspCompatibilityProfile
 pub fn pyright_profile() -> LspCompatibilityProfile
+pub fn gopls_profile() -> LspCompatibilityProfile                                       // Phase 4 Tier 2
+pub fn typescript_language_server_profile() -> LspCompatibilityProfile                 // Phase 4 Tier 2
+pub fn clangd_profile() -> LspCompatibilityProfile                                     // Phase 4 Tier 2
 pub fn profile_for_server(server_id: &str) -> Option<LspCompatibilityProfile>
 pub fn tier1_profiles() -> Vec<LspCompatibilityProfile>
+pub fn tier2_profiles() -> Vec<LspCompatibilityProfile>                                // Phase 4
+pub fn all_profiles() -> Vec<LspCompatibilityProfile>                                  // Phase 4
 pub async fn require_server_binary(server_id: &str) -> Result<PathBuf, LspError>
 ```
+
+`LspCompatibilityProfile` (in `crates/egglsp/src/compatibility.rs:78`)
+also gained a Phase 4 `observed_capabilities:
+ObservedCapabilitiesOverride` field that lets a profile flip
+capabilities the protocol does not advertise on the server side
+(notably type hierarchy on `lsp-types` 0.97). It is consumed by
+`LspCapabilitySnapshot::from_capabilities_with_override` and merged
+into the snapshot at client construction time.
+
+#### Tier 2 profiles (Phase 4)
+
+Tier 2 profiles extend the data-driven profile pattern to additional
+languages. They share the same struct, the same accessor pattern, and
+the same client code path — there are no `match server_id` branches
+for Tier 2 quirks in generic code.
+
+| Profile | `server_id` | Executable | Root markers | Readiness | `observed_capabilities.type_hierarchy` |
+|---------|-------------|------------|--------------|-----------|-----------------------------------------|
+| `gopls_profile()` | `gopls` | `gopls` | `go.work`, `go.mod`, `.git` | `WaitForDiagnosticsOrTimeout { 15s }` | `Some(true)` |
+| `typescript_language_server_profile()` | `typescript-language-server` | `typescript-language-server --stdio` | `tsconfig.json`, `jsconfig.json`, `package.json`, `.git` | `WaitForProgressEndOrTimeout { 20s }` | `None` (not observed) |
+| `clangd_profile()` | `clangd` | `clangd --background-index=false --clang-tidy=0` | `compile_commands.json`, `compile_flags.txt`, `CMakeLists.txt`, `.git` | `WarmupDelay { 2s }` | `Some(true)` |
+
+`gopls` requires a `go.mod` (or `go.work`) in the workspace root and
+needs `go.work` for multi-module workspaces. `typescript-language-server`
+requires `node_modules` installed locally; CI installs pinned
+`typescript-language-server@4.3.3` + `typescript@5.5.4` on Node 20.
+`clangd` requires a compile database (`compile_commands.json` or
+`compile_flags.txt`); `--background-index=false` and `--clang-tidy=0`
+keep test runs deterministic. Each profile's
+`known_limitations` list is recorded and surfaced in
+`LspCompatibilityReport.known_limitations`.
+
+`rust-analyzer_profile` was updated in Phase 4 to advertise type
+hierarchy via `observed_capabilities.type_hierarchy = Some(true)` —
+`lsp-types` 0.97 does not model the server-side
+`type_hierarchy_provider` field, so the override is the only way to
+keep the rust-analyzer snapshot accurate.
 
 ### health.rs - Operational Health State Machine
 
@@ -470,10 +545,192 @@ impl LspOperations {
     pub async fn format_preview(&self, file_path: &Path, allowed_root: Option<&Path>) -> Result<WorkspaceEditPreview, LspError>
     pub async fn source_action_preview(&self, file_path: &Path, action: SourceActionPreviewKind, allowed_root: Option<&Path>) -> Result<WorkspaceEditPreview, LspError>
     pub async fn semantic_check_preview(&self, file_path: &Path, content: &str, allowed_root: Option<&Path>) -> Result<SemanticCheckPreview, LspError>
+
+    // Phase 4 (Pass 4 — read-only navigation, capability-gated)
+    pub async fn declaration(&self, file_path: &Path, line: u32, column: u32) -> Result<Vec<LocationLink>, LspError>
+    pub async fn implementation(&self, file_path: &Path, line: u32, column: u32) -> Result<Vec<LocationLink>, LspError>
+    pub async fn document_highlights(&self, file_path: &Path, line: u32, column: u32) -> Result<Vec<DocumentHighlight>, LspError>
+    pub async fn workspace_symbols(&self, query: &str) -> Result<Vec<SymbolInformation>, LspError>
+
+    // Phase 4 (Pass 5 — bounded completion + semantic tokens)
+    pub async fn completion_bounded(&self, file_path: &Path, line: u32, column: u32, trigger_kind: Option<CompletionTriggerKind>, trigger_char: Option<String>, max_candidates: usize) -> Result<Vec<CompletionCandidate>, LspError>
+    pub async fn signature_help_typed(&self, file_path: &Path, line: u32, column: u32) -> Result<Option<SignatureHelpSummary>, LspError>
+    pub async fn semantic_tokens(&self, file_path: &Path, max_tokens: usize) -> Result<Vec<DecodedSemanticToken>, LspError>
+
+    // Phase 4 (Pass 6/7/8 — preview-only mutation, capability-gated)
+    pub async fn prepare_rename_typed(&self, file_path: &Path, line: u32, column: u32) -> Result<PrepareRenameResult, LspError>
+    pub async fn rename_preview_typed(&self, file_path: &Path, line: u32, column: u32, new_name: &str, allowed_root: Option<&Path>) -> Result<RenamePreview, LspError>
+    pub async fn code_action_summaries(&self, file_path: &Path, start_line: u32, start_col: u32, end_line: u32, end_col: u32, diagnostics: Vec<Diagnostic>, only: Option<Vec<CodeActionKind>>, max_actions: usize) -> Result<Vec<CodeActionSummary>, LspError>
+    pub async fn preview_code_action(&self, file_path: &Path, start_line: u32, start_col: u32, end_line: u32, end_col: u32, diagnostics: Vec<Diagnostic>, only: Option<Vec<CodeActionKind>>, action_index: usize, allowed_root: Option<&Path>) -> Result<CodeActionPreview, LspError>
+    pub async fn format_preview_typed(&self, file_path: &Path, allowed_root: Option<&Path>) -> Result<FormattingPreview, LspError>
 }
 ```
 
 **Note**: The `LspOperations::completion` method handles both LSP response types - `CompletionList` (a structured list with `isIncomplete` flag) and plain `Vec<CompletionItem>`. It first attempts to deserialize as `CompletionList`, and if that fails, falls back to parsing as a `Vec<CompletionItem>`. This fallback is handled at the operations layer; the lower-level `LspClient::completion` only handles `CompletionList`.
+
+#### Phase 4 typed DTOs
+
+The Phase 4 surface added bounded, capability-gated DTOs that never
+leak raw LSP JSON to model-facing consumers. They live alongside
+the operations in `crates/egglsp/src/operations.rs`.
+
+**Signature help** — `SignatureHelpSummary` wraps the active signature
+and parameter set, and resolves `ParameterLabel::LabelOffsets([start,
+end])` to substrings of the signature label:
+
+```rust
+pub struct SignatureHelpSummary {
+    pub active_signature: Option<u32>,
+    pub active_parameter: Option<u32>,
+    pub signatures: Vec<SignatureInfoSummary>,
+}
+pub struct SignatureInfoSummary {
+    pub label: String,
+    pub documentation: Option<String>,  // truncated to SIGNATURE_DOC_MAX_CHARS (2000)
+    pub parameters: Vec<SignatureParameterSummary>,
+}
+pub struct SignatureParameterSummary {
+    pub label: String,
+    pub documentation: Option<String>,
+}
+```
+
+**Completion** — `CompletionCandidate` strips raw completion-item edit
+payloads (`textEdit`, `additionalTextEdits`, `command`) — this surface
+is read-only and must never apply edits. `detail` and
+`insert_text_preview` are each truncated to
+`COMPLETION_DETAIL_MAX_CHARS` (200). Server order is preserved (no
+client-side sort):
+
+```rust
+pub struct CompletionCandidate {
+    pub label: String,
+    pub detail: Option<String>,
+    pub kind: Option<String>,            // stable lowercase ("function", "variable", …) or "kind(N)"
+    pub sort_text: Option<String>,
+    pub filter_text: Option<String>,
+    pub insert_text_preview: Option<String>,
+    pub deprecated: bool,
+}
+```
+
+**Semantic tokens** — `DecodedSemanticToken` is the result of decoding
+the delta-encoded stream against the server's legend via
+`decode_semantic_tokens` (pure, testable). Out-of-range
+`token_type` indexes are reported as `LspError::RequestFailed` rather
+than silently dropped. `modifiers` is a `Vec<String>` of resolved
+legend names — bit `i` in the wire `token_modifiers_bitset`
+corresponds to legend position `i` (capped at 32 bits):
+
+```rust
+pub struct DecodedSemanticToken {
+    pub line: u32,        // absolute (not delta-encoded)
+    pub start: u32,       // UTF-16 code units
+    pub length: u32,
+    pub token_type: String,    // legend-resolved
+    pub modifiers: Vec<String>,
+}
+```
+
+**Prepare rename** — `PrepareRenameResult` normalizes the three raw
+`lsp_types::PrepareRenameResponse` variants (Range /
+RangeWithPlaceholder / DefaultBehavior) into a flat enum plus a
+structured `LspUnavailable` fallback:
+
+```rust
+pub enum PrepareRenameResult {
+    Range { range: lsp_types::Range, placeholder: Option<String> },
+    DefaultBehavior { range: lsp_types::Range },
+    Unavailable(crate::capability::LspUnavailable),
+}
+```
+
+**Rename preview** — `RenamePreview` wraps the existing
+`WorkspaceEditPreview` (already validated against `allowed_root`) with
+the placeholder, structured warnings about resource operations
+(create / rename / delete), and the authoritative server generation.
+Resource operations in `document_changes` are reported as warnings
+because the underlying preview pipeline does not surface them
+(they would require executing `workspace/executeCommand`):
+
+```rust
+pub struct RenamePreview {
+    pub old_name: Option<String>,
+    pub new_name: String,
+    pub affected_files: Vec<FileEditPreview>,
+    pub edit_count: usize,                // capped at RENAME_PREVIEW_MAX_EDITS (1000)
+    pub warnings: Vec<String>,            // resource-op warnings
+    pub truncated: bool,
+    pub server_generation: u64,
+}
+```
+
+**Code action summary** — `CodeActionSummary` exposes bounded metadata
+about each action (title, kind, preferred, disabled reason, has_edit,
+has_command, diagnostic codes/messages) without leaking raw `Command`
+or `WorkspaceEdit` payloads. `has_command == true` indicates the
+action is command-only and cannot be previewed:
+
+```rust
+pub struct CodeActionSummary {
+    pub title: String,
+    pub kind: Option<String>,             // "quickfix", "refactor.extract", "source.organizeImports", …
+    pub preferred: bool,
+    pub disabled_reason: Option<String>,
+    pub has_edit: bool,
+    pub has_command: bool,
+    pub diagnostics: Vec<String>,        // bounded code:message per diagnostic
+}
+```
+
+**Code action preview** — `CodeActionPreview` wraps a
+`WorkspaceEditPreview` for a single resolved action. Command-only
+actions (raw `Command` and `CodeAction` with `command: Some(_)` but
+`edit: None`) are rejected with
+`LspError::CommandOnlyCodeAction(title)` up front — the surface never
+executes `workspace/executeCommand`:
+
+```rust
+pub struct CodeActionPreview {
+    pub title: String,
+    pub kind: Option<String>,
+    pub affected_files: Vec<FileEditPreview>,
+    pub edit_count: usize,
+    pub warnings: Vec<String>,
+    pub truncated: bool,
+    pub server_generation: u64,
+}
+```
+
+**Formatting preview** — `FormattingPreview` is the bounded,
+in-memory-only document-formatting DTO. It captures sha256
+`before_hash` and `after_hash` of the file content (before vs after
+in-memory edit application), a bounded unified diff (capped at
+`FORMATTING_PREVIEW_MAX_DIFF_BYTES` = 8 KB), and the authoritative
+server generation. After the in-memory apply, the operation re-reads
+the on-disk file and verifies the `after_disk_hash == before_hash`
+— the on-disk invariant check is defense-in-depth; no mutating call
+is ever made:
+
+```rust
+pub struct FormattingPreview {
+    pub file: PathBuf,
+    pub edit_count: usize,
+    pub before_hash: String,    // sha256 hex
+    pub after_hash: String,     // sha256 hex
+    pub diff: String,           // bounded unified diff
+    pub truncated: bool,
+    pub server_generation: u64,
+}
+```
+
+**Normalizers** — `normalize_goto_response` collapses
+`GotoDefinitionResponse` (Scalar / Array / Link variants) into a
+uniform `Vec<LocationLink>`. `normalize_workspace_symbol_response`
+collapses `WorkspaceSymbolResponse::Flat` and `::Nested` (with
+URI-only `WorkspaceLocation` entries surfacing as empty range) into
+a uniform `Vec<SymbolInformation>`. Both are pure functions in
+`crates/egglsp/src/operations.rs`.
 
 ### diagnostics.rs - Diagnostics Collection
 
@@ -671,6 +928,14 @@ Only these operations are model-facing:
 | `documentSymbol` | `textDocument/documentSymbol` | `Vec<SymbolSummary>` (capped at 300) |
 | `workspaceSymbol` | `workspace/symbol` | Compact summary list |
 | `diagnostics` | (via DiagnosticsCollector) | `Vec<DiagnosticSummary>` (plus warming flag) |
+| `declaration` | `textDocument/declaration` (Phase 4) | `Vec<LocationSummary>` (capped at 100; read-only, capability-gated) |
+| `implementation` | `textDocument/implementation` (Phase 4) | `Vec<LocationSummary>` (capped at 100; read-only, capability-gated) |
+| `documentHighlights` | `textDocument/documentHighlight` (Phase 4) | `Vec<DocumentHighlightSummary>` (capped at 100; preserves `Text` / `Read` / `Write` kind) |
+| `signatureHelp` | `textDocument/signatureHelp` (Phase 4) | `SignatureHelpSummary` (active signature + parameter offsets; per-item documentation truncated to 2000 chars) |
+| `completion` | `textDocument/completion` (Phase 4) | `Vec<CompletionCandidate>` (capped via `max_candidates`, default 200; raw edit payloads stripped) |
+| `semanticTokens` | `textDocument/semanticTokens/full` (Phase 4) | `Vec<DecodedSemanticToken>` (capped via `max_tokens`, default 1000; legend-resolved) |
+| `codeActionSummaries` | `textDocument/codeAction` (Phase 4) | `Vec<CodeActionSummary>` (capped at 50; never executes commands) |
+| `codeActionPreview` | `textDocument/codeAction` (Phase 4) | `CodeActionPreview` (preview-only; rejects command-only actions with `LspError::CommandOnlyCodeAction`) |
 | `renamePreview` | `textDocument/rename` (after ensure open + optional prepareRename) | `WorkspaceEditPreview` (unified diff patches + metadata; preview-only) |
 | `formatPreview` | `textDocument/formatting` | `WorkspaceEditPreview` (unified diff patches; preview-only) |
 | `sourceActionPreview` | `textDocument/codeAction` (filtered to `source.organizeImports`; full-document range computed from synced file contents) | `WorkspaceEditPreview` (unified diff patches; preview-only) |
@@ -690,6 +955,71 @@ Only these operations are model-facing:
 `renamePreview`, `formatPreview`, and `sourceActionPreview` request semantic edits from the language server, convert them into `WorkspaceEditPreview`, and return unified diff patches. They never write files. `sourceActionPreview` currently supports only `source.organizeImports` (with aliases `organizeImports` and `organize_imports`); arbitrary code actions and command execution are intentionally rejected. `CodeAction` values with `command: Some(_)` but `edit: None` are classified as command-only and rejected (command execution is disabled for safety). `format_preview` enforces `allowed_root` at the crate layer — paths outside the root are rejected with `LspError::PathOutsideRoot`. Large patches are structurally marked via `FileEditPreview.patch_omitted` (not by string matching). Applying a preview requires the existing mutating `apply_patch` tool and therefore follows normal Codegg permission handling. `semanticContext` can also include source-action hints (currently limited to `source.organizeImports`) when `include_source_actions` is true, reusing the same preview-only semantics described above. Source-action hints are collected handler-locally by `LspTool::collect_source_action_hints`, not by the shared `SemanticContextCollector`, because they produce `WorkspaceEditPreview` payloads that are preview-rich and tool-specific.
 
 Hidden operations (in `egglsp::operations` for internal use only, not model-facing): `completion`, `signatureHelp`, `codeAction` (arbitrary code actions), `codeLens`, and `goToImplementation`. The `source.organizeImports` source action is the only source action exposed to the model via `sourceActionPreview`.
+
+### Phase 4: Safety Boundary
+
+Phase 4 keeps the central safety rule that has governed the LSP
+integration since Phase 1:
+
+```text
+read-only semantic operations may be executed directly;
+mutation-producing operations must remain preview-only until
+explicitly applied by a higher-level user-approved path.
+```
+
+Every new Phase 4 operation falls cleanly into one of two camps:
+
+**Read-only (execute directly, capability-gated):**
+
+| Operation | LSP request | Bounded output |
+|-----------|-------------|----------------|
+| `declaration` | `textDocument/declaration` | `Vec<LocationLink>` (capped at 100) |
+| `implementation` | `textDocument/implementation` | `Vec<LocationLink>` (capped at 100) |
+| `document_highlights` | `textDocument/documentHighlight` | `Vec<DocumentHighlight>` (capped at 100; preserves `Text` / `Read` / `Write` kind) |
+| `signature_help` (typed) | `textDocument/signatureHelp` | `Option<SignatureHelpSummary>` (per-item doc truncated to 2000 chars) |
+| `workspace_symbols` | `workspace/symbol` | `Vec<SymbolInformation>` (capped at 200) |
+| `completion_bounded` | `textDocument/completion` | `Vec<CompletionCandidate>` (capped via `max_candidates`, default 200; raw edit payloads stripped) |
+| `semantic_tokens` | `textDocument/semanticTokens/full` | `Vec<DecodedSemanticToken>` (capped via `max_tokens`, default 1000; legend-resolved) |
+
+All seven use `LspOperations::require_capability` to short-circuit
+when the server does not advertise the corresponding provider,
+returning `LspError::Unavailable(LspUnavailable)` with a structured
+reason. They are fail-open only when the snapshot is unavailable
+(client still initializing); otherwise the missing capability is
+surfaced precisely.
+
+**Preview-only (never write to disk):**
+
+| Operation | LSP request | Bounded preview output |
+|-----------|-------------|------------------------|
+| `prepare_rename_typed` | `textDocument/prepareRename` | `PrepareRenameResult` (Range / DefaultBehavior / Unavailable) |
+| `rename_preview_typed` | `textDocument/rename` | `RenamePreview` (capped at 100 files / 1000 edits; resource-op warnings) |
+| `code_action_summaries` | `textDocument/codeAction` | `Vec<CodeActionSummary>` (capped at 50) |
+| `preview_code_action` | `textDocument/codeAction` (resolved) | `CodeActionPreview` (capped; rejects command-only with `LspError::CommandOnlyCodeAction`) |
+| `format_preview_typed` | `textDocument/formatting` | `FormattingPreview` (sha256 before/after hashes + bounded 8KB diff + on-disk invariant check) |
+
+The five preview-only operations all share three invariants:
+
+1. **Never write to disk.** `format_preview_typed` and
+   `rename_preview_typed` apply edits to an in-memory snapshot only.
+   `format_preview_typed` re-reads the on-disk file at the end and
+   returns `LspError::RequestFailed` if the post-call `after_disk_hash`
+   does not equal `before_hash` — the on-disk invariant check is
+   defense-in-depth, not a workaround.
+2. **Root-bounded.** All five honor the existing `allowed_root`
+   contract; out-of-root edits are rejected by
+   `preview_workspace_edit` with `LspError::PathOutsideRoot`.
+3. **Never execute `workspace/executeCommand`.** Command-only
+   code actions (raw `Command` and `CodeAction` with `command: Some(_)`
+   but `edit: None`) are rejected with
+   `LspError::CommandOnlyCodeAction(title)` up front, before any
+   network call. The model-facing `codeActionPreview` only ever
+   surfaces edit-bearing actions.
+
+`workspace/executeCommand` itself is never sent by any Phase 4
+operation. The `supports_execute_command` capability is recorded in
+the snapshot for completeness but no model-facing path issues an
+`executeCommand` request.
 
 ### Temporary overlays
 
@@ -1047,24 +1377,123 @@ When no capability snapshot is available (e.g., server not yet initialized), ope
 
 ```rust
 pub struct LspCapabilitySnapshot {
-    pub publish_diagnostics: bool,
-    pub document_symbols: bool,
-    pub workspace_symbols: bool,
-    pub goto_definition: bool,
-    pub find_references: bool,
-    pub hover: bool,
-    pub completion: bool,
-    pub call_hierarchy: bool,
-    pub type_hierarchy: bool,
-    pub semantic_tokens: bool,
-    pub code_actions: bool,
-    pub formatting: bool,
-    pub rename: bool,
-    pub signature_help: bool,
+    pub language_id: Option<String>,
+    pub server_name: Option<String>,
+    // Phase 4: split diagnostics into advertised push/pull.
+    pub supports_push_diagnostics: bool,
+    pub supports_pull_diagnostics: bool,
+    // Legacy alias: true when either push or pull is advertised.
+    pub supports_diagnostics: bool,
+    pub supports_document_symbols: bool,
+    pub supports_workspace_symbols: bool,
+    pub supports_definition: bool,
+    pub supports_declaration: bool,
+    pub supports_implementation: bool,
+    pub supports_references: bool,
+    pub supports_hover: bool,
+    pub supports_document_highlight: bool,
+    pub supports_completion: bool,
+    pub supports_signature_help: bool,
+    pub supports_rename: bool,
+    pub supports_prepare_rename: bool,
+    pub supports_code_actions: bool,
+    pub supports_document_formatting: bool,
+    pub supports_range_formatting: bool,
+    pub supports_inlay_hints: bool,
+    pub supports_folding_ranges: bool,
+    pub supports_selection_ranges: bool,
+    pub supports_document_links: bool,
+    pub supports_execute_command: bool,
+    pub supports_call_hierarchy: bool,
+    // Phase 4: type hierarchy is no longer inferred from call hierarchy.
+    pub supports_type_hierarchy: bool,
+    pub supports_semantic_tokens: bool,
+    pub details: LspCapabilityDetails,
 }
 ```
 
-`LspSemanticOperation` enumerates the semantic operations available through the tool interface:
+#### Phase 4: extended capability model
+
+Phase 4 expanded the normalized snapshot to cover the LSP features that
+Tier 2 profiles actually advertise, replacing two weak assumptions
+present in Phase 3:
+
+- The previous "every initialized server has diagnostics" assumption
+  is gone. Diagnostics support is now split into advertised push and
+  pull, derived from `text_document_sync` and `diagnostic_provider`
+  respectively. The legacy `supports_diagnostics: bool` field is
+  retained as a coarse alias (`true` when either push or pull is
+  advertised) so existing callers do not need to know about the split.
+- Type hierarchy is **no longer inferred from call hierarchy.** The
+  `lsp-types` 0.97 crate only models type hierarchy as a CLIENT
+  capability, so the server-side advertised state is invisible in
+  `ServerCapabilities`. `supports_type_hierarchy` therefore defaults
+  to `false` and is only flipped on via the new
+  `ObservedCapabilitiesOverride` (see below). The `rust-analyzer`,
+  `gopls`, and `clangd` profiles all set
+  `observed_capabilities.type_hierarchy = Some(true)`.
+
+The Phase 4 additions to the snapshot are:
+
+- `supports_declaration`, `supports_implementation` — derived from
+  `declaration_provider` and `implementation_provider`
+- `supports_document_highlight` — derived from
+  `document_highlight_provider`
+- `supports_signature_help` — derived from `signature_help_provider`
+- `supports_rename`, `supports_prepare_rename` — both derived from
+  `rename_provider`; `prepare_rename` is true when the option is
+  `Some(OneOf::Right(opts))` with `opts.prepare_provider = Some(true)`
+- `supports_code_actions` — derived from `code_action_provider`
+- `supports_document_formatting`, `supports_range_formatting` —
+  derived from `document_formatting_provider` and
+  `document_range_formatting_provider` (distinct flags)
+- `supports_inlay_hints`, `supports_folding_ranges`,
+  `supports_selection_ranges`, `supports_document_links`,
+  `supports_execute_command` — derived from their respective
+  providers
+
+`LspCapabilityDetails` (`crates/egglsp/src/capability.rs:85`) carries
+option-level information that a single bool cannot represent:
+
+```rust
+pub struct LspCapabilityDetails {
+    pub rename_prepare_provider: bool,
+    pub code_action_kinds: Vec<String>,
+    pub completion_trigger_characters: Vec<String>,
+    pub signature_trigger_characters: Vec<String>,
+    pub semantic_token_legend: Option<SemanticTokenLegendSnapshot>,
+}
+
+pub struct SemanticTokenLegendSnapshot {
+    pub token_types: Vec<String>,
+    pub token_modifiers: Vec<String>,
+}
+```
+
+The full `ServerCapabilities` payload is never exposed to
+model-facing surfaces; the details struct is intentionally compact.
+
+`ObservedCapabilitiesOverride`
+(`crates/egglsp/src/capability.rs:228`) is the profile-level override
+for capabilities that cannot be discovered from `ServerCapabilities`
+alone:
+
+```rust
+pub struct ObservedCapabilitiesOverride {
+    pub type_hierarchy: Option<bool>,
+}
+```
+
+It is consumed by
+`LspCapabilitySnapshot::from_capabilities_with_override` and merged
+into the snapshot. Profiles set
+`observed_capabilities.type_hierarchy = Some(true)` to flip
+`supports_type_hierarchy` on; the default `None` keeps the conservative
+`false`. This is the only way to enable type hierarchy under
+`lsp-types` 0.97.
+
+`LspSemanticOperation` enumerates the semantic operations available
+through the tool interface:
 
 ```rust
 pub enum LspSemanticOperation {
@@ -1072,9 +1501,23 @@ pub enum LspSemanticOperation {
     DocumentSymbols,
     WorkspaceSymbols,
     Definition,
+    Declaration,            // Phase 4
+    Implementation,         // Phase 4
     References,
     Hover,
+    DocumentHighlight,      // Phase 4
     Completion,
+    SignatureHelp,          // Phase 4
+    Rename,                 // Phase 4
+    PrepareRename,          // Phase 4
+    CodeAction,             // Phase 4
+    DocumentFormatting,     // Phase 4
+    RangeFormatting,        // Phase 4
+    InlayHints,             // Phase 4
+    FoldingRanges,          // Phase 4
+    SelectionRanges,        // Phase 4
+    DocumentLinks,          // Phase 4
+    ExecuteCommand,         // Phase 4
     CallHierarchy,
     TypeHierarchy,
     SemanticTokens,
@@ -1082,17 +1525,32 @@ pub enum LspSemanticOperation {
 }
 ```
 
-`LspUnavailable` is a structured fallback response returned when an operation is not supported by the server:
+`LspUnavailable` is a structured fallback response returned when an
+operation is not supported by the server:
 
 ```rust
 pub struct LspUnavailable {
-    pub operation: LspSemanticOperation,
+    pub operation: String,
     pub reason: String,
-    pub server_id: String,
+    pub server: Option<String>,
+    pub language_id: Option<String>,
 }
 ```
 
-The `capabilities` LspTool operation returns the snapshot for the server associated with a given file path. Capability detection uses actual initialized server capabilities where available; if the server has not yet initialized, the snapshot reflects the server definition's known defaults. The snapshot carries real `server_name` and `language_id` metadata from the initialized server, not placeholders. `SecurityContext` is always treated as available — it is a composite operation that relies on multiple underlying LSP requests and risk marker scanning, not a single capability.
+It carries `server` and `language_id` (both optional) so consumers can
+render precise, model-safe explanations. The Phase 4 model surfaces
+`LspUnavailable` through `LspError::Unavailable(LspUnavailable)` so
+callers get a typed error rather than an empty list.
+
+The `capabilities` LspTool operation returns the snapshot for the
+server associated with a given file path. Capability detection uses
+actual initialized server capabilities where available; if the server
+has not yet initialized, the snapshot reflects the server definition's
+known defaults. The snapshot carries real `server_name` and
+`language_id` metadata from the initialized server, not placeholders.
+`SecurityContext` is always treated as available — it is a composite
+operation that relies on multiple underlying LSP requests and risk
+marker scanning, not a single capability.
 
 ### Diagnostics Cache Lifecycle
 
@@ -1603,8 +2061,9 @@ Cargo exposes the test binary to the `egglsp` package integration tests via `CAR
 - **3 production semantic tests** in `tests/production_semantic_stdio.rs` — all passing ✅
 - **5 production service tests** in `tests/production_service_stdio.rs` — all passing ✅
 - **26 root composite tests** in `tests/lsp_composite_stdio.rs` — all passing ✅
-- **331 unit tests** in the `egglsp` crate (with `lsp-test-support` feature; 330 without); supervisor/restart scripted scenarios live in the integration tests below
+- **474 unit tests** in the `egglsp` crate (with `lsp-test-support` feature); Phase 4 added capability-normalization tests (bool/options provider forms, absent providers, rename + prepare-rename, code-action kinds, formatting vs range formatting, push vs pull diagnostics, type-hierarchy override, all-new-operations advertised, absent providers default to false), tier-2 profile tests (`gopls_profile_shape`, `typescript_language_server_profile_shape`, `clangd_profile_shape`, plus focused root-marker / `--stdio` / `WarmupDelay` regression guards), and Phase 4 typed DTO tests (truncate_doc, normalize_goto_response, normalize_workspace_symbol_response, decode_semantic_tokens, CodeActionSummary::from_action, CompletionCandidate::from_completion_item, SignatureHelpSummary::from_signature_help, sha256_hex, bounded unified-diff helper). Supervisor/restart scripted scenarios live in the integration tests below.
 - **3 scenario-engine tests** in `tests/scenario_engine.rs` — inlined fake-server self-tests for strict allow-listing, raw bytes, and grouped-frame fixtures
+- **14 supervisor/restart scripted tests** in `tests/supervisor_restart_stdio.rs` — 11 base + 2 Pass 9 race tests + 1 Pass 4 supersession revalidation test (covers generation-safe supervision, manual restart supersession, restart budget exhaustion, document replay, hung-process force-kill, two consecutive restarts, stale exit-event handling, generation parity between health and exit event, manual-issued-while-automatic-in-flight race, and back-to-back manual restart deadlock)
 
 ### Test Organization
 
@@ -1694,6 +2153,29 @@ cargo test -p egglsp --features lsp-test-support --test supervisor_restart_stdio
 cargo test -p egglsp --features lsp-test-support --tests -- --test-threads=1
 ```
 
+### Tier 1 / Tier 2 real-server tests (Phase 4)
+
+```bash
+# Tier 1 (opt-in, requires installed server binaries)
+cargo test -p egglsp --features lsp-real-server-tests \
+  --test real_server_smoke -- rust_analyzer --nocapture
+cargo test -p egglsp --features lsp-real-server-tests \
+  --test real_server_smoke -- basedpyright --nocapture
+
+# Tier 2 (opt-in, requires installed server binaries)
+cargo test -p egglsp --features lsp-real-server-tests \
+  --test real_server_smoke -- gopls --nocapture
+cargo test -p egglsp --features lsp-real-server-tests \
+  --test real_server_smoke -- typescript --nocapture
+cargo test -p egglsp --features lsp-real-server-tests \
+  --test real_server_smoke -- clangd --nocapture
+```
+
+Tier 2 smoke tests skip gracefully when the binary is not available;
+they only run when `gopls`, `typescript-language-server`, or `clangd`
+are on `PATH` (or the corresponding `CODEGG_*_BIN` env override is
+set). CI installs pinned versions on the Tier 2 matrix jobs.
+
 ### Phase 3 Corrective Pass — Supervisor and Restart Tests
 
 `crates/egglsp/tests/supervisor_restart_stdio.rs` carries 13 deterministic scripted tests (11 base + 2 Pass 9 race tests for manual supersession and back-to-back deadlock) that exercise the new `LspProcessRuntime`, `restart_client_coordinator`, per-client generation safety, and readiness policy transitions against the fake server. The tests use bounded condition waits (polling loops) instead of fixed sleeps.
@@ -1714,7 +2196,19 @@ cargo test -p egglsp --features lsp-test-support --tests -- --test-threads=1
 
 ### Real-Server CI
 
-`.github/workflows/lsp-real-server.yml` runs one Tier 1 server per matrix job (`rust-analyzer` and `basedpyright`) against `crates/egglsp/tests/real_server_smoke.rs` with the `lsp-real-server-tests` feature. The workflow pins `rust-toolchain@1.81.0` for the rust-analyzer job and installs `basedpyright@1.13.1` for the basedpyright job. Each matrix job runs only its own server test (e.g. `-- rust_analyzer` or `-- basedpyright`); artifact filenames are sanitized via the matrix job name.
+`.github/workflows/lsp-real-server.yml` runs one server per matrix job against `crates/egglsp/tests/real_server_smoke.rs` with the `lsp-real-server-tests` feature. Phase 4 extended the matrix from Tier 1 to Tier 1 + Tier 2 (5 jobs total: `rust-analyzer`, `basedpyright`, `gopls`, `typescript-language-server`, `clangd`). Pinned versions are recorded in the workflow:
+
+| Job | Server | Pinned version | Toolchain |
+|-----|--------|----------------|-----------|
+| `rust-analyzer` | rust-analyzer | (latest via rust-toolchain) | `dtolnay/rust-toolchain@1.81.0` |
+| `basedpyright` | basedpyright | `1.13.1` | `dtolnay/rust-toolchain@1.81.0` |
+| `gopls` | gopls | `v0.16.1` | Go `1.22.5` |
+| `typescript-language-server` | typescript-language-server | `4.3.3` + `typescript@5.5.4` | Node `20` |
+| `clangd` | clangd | `18` (LLVM apt) | — |
+
+Each matrix job runs only its own server test (e.g. `-- rust_analyzer` or `-- gopls`); artifact filenames are sanitized via the matrix job name and uploaded from `target/lsp-compatibility/` with a 30-day retention.
+
+**Trigger policy** (Phase 4): the workflow runs on `workflow_dispatch`, weekly schedule, and push paths under `crates/egglsp/**`, `src/lsp/**`, or the workflow YAML itself. The push trigger was extended in Phase 4 to include `.github/workflows/lsp-real-server.yml` so workflow edits re-run the matrix. **Default CI remains network-free** — the push trigger fires only on changes to LSP source paths, and the rest of CI does not exercise real-server smoke jobs. Tier 1 jobs were unchanged in Phase 4.
 
 Phase 2 tests are parallel-safe (unique tempdir per test, per-process scenario/transcript paths). The harness does not require `--test-threads=1`; that flag was only needed by the pre-Phase-2 test layout.
 
@@ -1818,6 +2312,30 @@ The smoke tests (`crates/egglsp/tests/real_server_smoke.rs`) exercise rust-analy
 | **typescript-language-server** | TypeScript / JavaScript | hover, definition, references, symbols, rename, code actions | `prepareCallHierarchy` may be empty; large workspaces slow |
 | **gopls** | Go | hover, definition, references, symbols, rename, code actions | Call hierarchy not yet supported by gopls; securityContext will degrade gracefully |
 | **clangd** | C / C++ | hover, definition, references, symbols, rename, code actions | No call hierarchy; slow on large TUs |
+
+### Compatibility Status Table (Phase 4)
+
+Phase 4 introduces measured Tier 2 compatibility. Tier 1 servers were
+already passing Phase 3 smoke tests; Tier 2 servers are at
+"experimental" until the pinned-version smoke tests pass their
+required semantic assertions. Promotion criteria are documented in
+the Phase 4 plan (`plans/lsp_phase4_broader_compatibility_and_capability_adoption.md`).
+
+| Server | Tier | Platform | Readiness | Status | Known Limits |
+|--------|------|----------|-----------|--------|--------------|
+| `rust-analyzer` | 1 | Linux | `WaitForProgressEndOrTimeout { 30s }` | passing | First semantic requests may be incomplete while indexing; large projects may have slow initial diagnostics |
+| `basedpyright` / `pyright` | 1 | Linux | `WaitForDiagnosticsOrTimeout { 15s }` | passing | Type checking depth may vary between pyright and basedpyright; no `prepareCallHierarchy` |
+| `gopls` | 2 | Linux | `WaitForDiagnosticsOrTimeout { 15s }` | experimental/passing | Requires `go.mod` (or `go.work`) in workspace root; multi-module workspace symbols need `go.work`; no push diagnostics from gopls itself (push inferred from `text_document_sync`) |
+| `typescript-language-server` | 2 | Linux | `WaitForProgressEndOrTimeout { 20s }` | experimental/passing | Requires `node_modules` installed locally (CI installs pinned versions); single-language server (handles TS/JS but no JSX/TSX-specific quirks) |
+| `clangd` | 2 | Linux | `WarmupDelay { 2s }` | experimental/passing | Requires `compile_commands.json` or `compile_flags.txt` in workspace root; background indexing disabled for test determinism |
+
+`status` here maps to the same vocabulary used in CI: a Tier 2 server
+is "experimental/passing" once its required smoke checks (`Passing` or
+`PassingWithKnownLimits`) hold on the pinned version, and is not
+promoted to "passing" until the required semantic assertions
+(`Required` / `RequiredIfAdvertised` checks) are green. The full
+report is in `LspCompatibilityReport` with `known_limitations` from
+the profile.
 
 ## Phase 3 Final Closure: Runtime Termination, Generation-Safe Supervision, Restart Budgets, Readiness, and Fresh Evidence
 
@@ -2074,8 +2592,114 @@ The `RestartOwnerWaiter::owner_id` field is no longer `#[allow(dead_code)]`; bot
 - [x] Waiter timeout and closure errors embed the in-flight `owner_id` for diagnostics.
 - [x] Ten serial abort-while-blocked runs pass deterministically.
 
+## Phase 4: Broader Server Compatibility and Higher-Level Capability Adoption
+
+Phase 4 moves Codegg from a lifecycle-stable Tier 1 LSP integration to
+a measured compatibility layer across Rust, Python, Go, TypeScript,
+and C/C++. It exposes higher-value semantic navigation and bounded
+completion / token evidence while keeping rename, code actions, and
+formatting strictly preview-only. The plan and full pass-by-pass
+handoff live in
+`plans/lsp_phase4_broader_compatibility_and_capability_adoption.md`.
+
+### Pass summary
+
+| Pass | Focus | What changed |
+|------|-------|--------------|
+| Pass 0 | Baseline + report schema | Existing reports deserialize; new fields are optional and backward-compatible |
+| Pass 1 | Capability normalization | `LspCapabilitySnapshot` gained 14 new normalized booleans, `LspCapabilityDetails` (rename prepare-provider, code-action kinds, trigger characters, semantic-token legend), and `ObservedCapabilitiesOverride` for type hierarchy. `supports_diagnostics` split into push/pull. Type hierarchy is no longer inferred from call hierarchy |
+| Pass 2 | Tier 2 profiles | `gopls_profile`, `typescript_language_server_profile`, `clangd_profile` plus `tier2_profiles()` / `all_profiles()` accessors |
+| Pass 3 | Fixture harness | Generalized `RealServerFixture` with typed DTOs (`LocationExpectation`, `CompletionExpectation`, `WorkspaceSymbolExpectation`); `run_generalized_operation_checks` dispatches per-operation smoke checks with on-disk invariant verification for mutation operations |
+| Pass 4 | Read-only navigation | `declaration`, `implementation`, `document_highlights`, `workspace_symbols`, `signature_help_typed` operations (capability-gated) |
+| Pass 5 | Completion + semantic tokens | `CompletionCandidate` (raw edit payloads stripped), `DecodedSemanticToken` + `decode_semantic_tokens` (delta-decoded, legend-resolved, out-of-range validation) |
+| Pass 6 | Rename preview | `PrepareRenameResult` enum, `RenamePreview` (capped at 100 files / 1000 edits, resource-op warnings) |
+| Pass 7 | Code-action preview | `CodeActionSummary`, `CodeActionPreview` (lazy single-action resolution, command-only rejected via `LspError::CommandOnlyCodeAction`) |
+| Pass 8 | Formatting preview | `FormattingPreview` (sha256 before/after hashes, bounded 8KB unified diff, on-disk invariant check) |
+| Pass 9 | LspTool adoption | Eight new operations exposed through `LspTool` dispatch: `declaration`, `implementation`, `documentHighlights`, `signatureHelp`, `completion`, `semanticTokens`, `codeActionSummaries`, `codeActionPreview` |
+| Pass 10 | Tier 2 CI matrix | gopls, typescript-language-server, clangd jobs in `.github/workflows/lsp-real-server.yml` with pinned versions |
+| Pass 11 | Docs + final verification | Architecture, skill guide, AGENTS.md, README updated; full suite green |
+
+### Phase 4 outcomes
+
+1. Measured Tier 2 compatibility profiles for `gopls`,
+   `typescript-language-server`, `clangd`.
+2. Capability normalization accurately represents
+   server-advertised support — the call-hierarchy → type-hierarchy
+   heuristic is gone, and push/pull diagnostics are split.
+3. Compatibility reports distinguish advertised support from
+   semantic success (`advertised` / `request_succeeded` /
+   `semantic_assertion_passed` per operation).
+4. Explicit support policies for workspace symbols, completion,
+   semantic tokens, declaration, implementation, document
+   highlights, signature help, rename, code actions, and
+   formatting.
+5. Read-only operations are available through typed `egglsp` APIs
+   and capability-gated `LspTool` operations.
+6. Mutation-producing operations return structured previews
+   (`RenamePreview`, `CodeActionPreview`, `FormattingPreview`) and
+   never modify the workspace automatically.
+7. Real-server fixtures validate operation semantics, not just
+   successful response parsing — on-disk hash comparison is the
+   safety net for every mutation operation.
+8. Tier 2 CI remains opt-in (`workflow_dispatch` + weekly
+   schedule + push paths) and version-pinned.
+9. Agent-facing context uses higher-level LSP evidence selectively
+   and within bounded budgets (`MAX_DOCUMENT_HIGHLIGHTS=100`,
+   `MAX_COMPLETION_CANDIDATES=200`, `MAX_SEMANTIC_TOKENS=1000`,
+   `MAX_CODE_ACTIONS=50`).
+10. Existing Phase 2 and Phase 3 suites remain green.
+
+### Phase 4 final checklist
+
+#### Compatibility
+
+- [x] gopls profile and pinned test fixture present
+- [x] typescript-language-server profile and pinned test fixture present
+- [x] clangd profile and pinned test fixture present
+- [x] Tier 1 reports remain green
+- [x] Advertised and observed support are distinct (`supports_diagnostics` vs `supports_push_diagnostics` / `supports_pull_diagnostics`; `observed_capabilities` override separate from `ServerCapabilities`)
+
+#### Capability normalization
+
+- [x] Type hierarchy is not inferred from call hierarchy
+- [x] Diagnostics support is represented accurately (push/pull split, legacy alias retained)
+- [x] New operations are capability-gated via `LspOperations::require_capability`
+- [x] Provider options are preserved where needed (rename prepare, code-action kinds, trigger characters, semantic-token legend)
+
+#### Read-only operations
+
+- [x] Declaration normalized (Scalar/Array/Link → `Vec<LocationLink>`)
+- [x] Implementation normalized (Scalar/Array/Link → `Vec<LocationLink>`)
+- [x] Document highlights normalized (Text/Read/Write kind preserved)
+- [x] Signature help bounded (per-item doc truncated to 2000 chars)
+- [x] Workspace symbols semantically asserted (Flat/Nested → `Vec<SymbolInformation>`)
+- [x] Completion bounded (`max_candidates` default 200; raw edit payloads stripped)
+- [x] Semantic tokens decoded safely (delta decoder + out-of-range validation)
+
+#### Preview-only operations
+
+- [x] Rename never writes files (in-memory only; resource-op warnings surface create/rename/delete)
+- [x] Code actions never execute commands (`LspError::CommandOnlyCodeAction` rejects command-only actions)
+- [x] Formatting never writes files (sha256 before/after hashes + on-disk invariant check)
+- [x] Workspace edits are root-bounded and capped (existing `allowed_root` contract preserved)
+- [x] Diffs are bounded and deterministic (8KB cap on formatting diff with explicit truncation marker)
+
+#### Workflow adoption
+
+- [x] Higher-level evidence is opt-in / policy-driven (capability-gated; fail-open only when snapshot is unavailable)
+- [x] Agent payloads are bounded (`MAX_*` constants in `src/tool/lsp.rs:18-21`)
+- [x] Health, generation, and truncation metadata are preserved (`server_generation`, `truncated`, generation-aware)
+
+#### CI and docs
+
+- [x] Tier 2 versions are pinned (gopls v0.16.1, typescript-language-server 4.3.3 + typescript 5.5.4, clangd 18)
+- [x] Default CI remains network-free (push trigger fires only on changes to LSP source paths)
+- [x] Compatibility artifacts upload (`target/lsp-compatibility/`, 30-day retention)
+- [x] Documentation accurately scopes support (this file + skill guide + AGENTS.md + README)
+
 ## See Also
 
 - [.opencode/skills/lsp/SKILL.md](../.opencode/skills/lsp/SKILL.md) - LSP skill guide
 - [tool.md](tool.md) - LSP tool wrapper
 - [plans/lsp_phase1_cleanup_and_phase2_scripted_stdio_harness.md](../plans/lsp_phase1_cleanup_and_phase2_scripted_stdio_harness.md) - Phase 1 + Phase 2 plan
+- [plans/lsp_phase4_broader_compatibility_and_capability_adoption.md](../plans/lsp_phase4_broader_compatibility_and_capability_adoption.md) - Phase 4 plan

@@ -496,11 +496,7 @@ fn gopls_fixture() -> RealServerFixture {
     let tempdir = tempfile::tempdir().unwrap();
     let root = tempdir.path().to_path_buf();
 
-    std::fs::write(
-        root.join("go.mod"),
-        "module codegg-test\n\ngo 1.22\n",
-    )
-    .unwrap();
+    std::fs::write(root.join("go.mod"), "module codegg-test\n\ngo 1.22\n").unwrap();
 
     // helper/helper.go — secondary source.
     // Line 0: package helper
@@ -1750,7 +1746,17 @@ async fn run_smoke_suite(
     // fixture does not require touching the harness — only the
     // per-language constructor needs to opt in to the new
     // operations.
-    run_generalized_operation_checks(&client, fixture, &caps, &primary_uri, bin_path, &profile.server_id, &mut checks, &stderr_tail).await;
+    run_generalized_operation_checks(
+        &client,
+        fixture,
+        &caps,
+        &primary_uri,
+        bin_path,
+        &profile.server_id,
+        &mut checks,
+        &stderr_tail,
+    )
+    .await;
 
     // 13. Graceful shutdown — use the runtime-backed harness so the
     // compatibility report captures real stderr output. The harness
@@ -1985,8 +1991,10 @@ async fn run_location_check(
                         .any(|exp| matches_expected_file(&raw, exp))
                 });
                 if !any_match {
-                    let returned: Vec<String> =
-                        normalized.iter().map(|l| l.target_uri.to_string()).collect();
+                    let returned: Vec<String> = normalized
+                        .iter()
+                        .map(|l| l.target_uri.to_string())
+                        .collect();
                     checks.push(SmokeCheck::fail(
                         operation,
                         CompatibilityRequirement::RequiredIfAdvertised,
@@ -2281,21 +2289,19 @@ async fn run_completion_check(
                     match serde_json::from_value::<CompletionListWire>(value.clone()) {
                         Ok(list) => list.items,
                         Err(_) => {
-                            let items: Result<
-                                Vec<egglsp::lsp_types::CompletionItem>,
-                                _,
-                            > = serde_json::from_value(value);
+                            let items: Result<Vec<egglsp::lsp_types::CompletionItem>, _> =
+                                serde_json::from_value(value);
                             match items {
                                 Ok(items) => items,
                                 Err(e) => {
                                     checks.push(SmokeCheck::fail(
-                                    "completion",
-                                    CompatibilityRequirement::RequiredIfAdvertised,
-                                    format!("malformed textDocument/completion response: {e}"),
-                                    ms,
-                                ));
-                                return;
-                            }
+                                        "completion",
+                                        CompatibilityRequirement::RequiredIfAdvertised,
+                                        format!("malformed textDocument/completion response: {e}"),
+                                        ms,
+                                    ));
+                                    return;
+                                }
                             }
                         }
                     };
@@ -2320,7 +2326,13 @@ async fn run_completion_check(
             checks.push(SmokeCheck::fail(
                 "completion",
                 CompatibilityRequirement::RequiredIfAdvertised,
-                stage_timeout_error(server_id, bin_path, "completion", REQUEST_TIMEOUT, stderr_tail),
+                stage_timeout_error(
+                    server_id,
+                    bin_path,
+                    "completion",
+                    REQUEST_TIMEOUT,
+                    stderr_tail,
+                ),
                 ms,
             ));
             return;
@@ -2559,7 +2571,9 @@ async fn run_rename_preview_check(
             }
             match serde_json::from_value::<egglsp::lsp_types::WorkspaceEdit>(value) {
                 Ok(_edit) => checks.push(SmokeCheck::pass(
-                    format!("renamePreview (server returned edits; disk hash unchanged: {before_hash})"),
+                    format!(
+                        "renamePreview (server returned edits; disk hash unchanged: {before_hash})"
+                    ),
                     CompatibilityRequirement::RequiredIfAdvertised,
                     ms,
                 )),
@@ -2580,7 +2594,13 @@ async fn run_rename_preview_check(
         Err(_elapsed) => checks.push(SmokeCheck::fail(
             "renamePreview",
             CompatibilityRequirement::RequiredIfAdvertised,
-            stage_timeout_error(server_id, bin_path, "renamePreview", REQUEST_TIMEOUT, stderr_tail),
+            stage_timeout_error(
+                server_id,
+                bin_path,
+                "renamePreview",
+                REQUEST_TIMEOUT,
+                stderr_tail,
+            ),
             ms,
         )),
     }
@@ -2705,7 +2725,13 @@ async fn run_format_preview_check(
         Err(_elapsed) => checks.push(SmokeCheck::fail(
             "formatPreview",
             CompatibilityRequirement::RequiredIfAdvertised,
-            stage_timeout_error(server_id, bin_path, "formatPreview", REQUEST_TIMEOUT, stderr_tail),
+            stage_timeout_error(
+                server_id,
+                bin_path,
+                "formatPreview",
+                REQUEST_TIMEOUT,
+                stderr_tail,
+            ),
             ms,
         )),
     }
@@ -2769,7 +2795,9 @@ async fn run_code_action_check(
             #[serde(untagged)]
             #[allow(dead_code)]
             enum ActionOrCommand {
-                Command { title: String },
+                Command {
+                    title: String,
+                },
                 CodeAction {
                     title: String,
                     #[serde(default)]
@@ -2812,7 +2840,13 @@ async fn run_code_action_check(
         Err(_elapsed) => checks.push(SmokeCheck::fail(
             "codeActions",
             CompatibilityRequirement::RequiredIfAdvertised,
-            stage_timeout_error(server_id, bin_path, "codeActions", REQUEST_TIMEOUT, stderr_tail),
+            stage_timeout_error(
+                server_id,
+                bin_path,
+                "codeActions",
+                REQUEST_TIMEOUT,
+                stderr_tail,
+            ),
             ms,
         )),
     }
@@ -2956,8 +2990,7 @@ async fn run_generalized_operation_checks(
     }
 
     // Format preview
-    if fixture.expected_capabilities.formatting
-        || fixture.mutation_targets.format_preview_requested
+    if fixture.expected_capabilities.formatting || fixture.mutation_targets.format_preview_requested
     {
         run_format_preview_check(
             client,
@@ -3216,10 +3249,7 @@ async fn gopls_smoke() {
 
 #[tokio::test]
 async fn typescript_smoke() {
-    let bin = match require_server_binary(
-        "CODEGG_TS_LS_BIN",
-        &["typescript-language-server"],
-    ) {
+    let bin = match require_server_binary("CODEGG_TS_LS_BIN", &["typescript-language-server"]) {
         Some(b) => b,
         None => {
             eprintln!(
@@ -3245,9 +3275,7 @@ async fn typescript_smoke() {
     {
         Ok(r) => r,
         Err(_elapsed) => {
-            eprintln!(
-                "typescript-language-server smoke test timed out after {TEST_TIMEOUT:?}"
-            );
+            eprintln!("typescript-language-server smoke test timed out after {TEST_TIMEOUT:?}");
             return;
         }
     };
@@ -3721,7 +3749,10 @@ fn matches_expected_file_handles_file_uri_prefix() {
     // Suffix-only with `file:` prefix (single-slash) works.
     assert!(matches_expected_file("file:/tmp/proj/src/lib.rs", &exp));
     // Mismatched path returns false.
-    assert!(!matches_expected_file("file:///tmp/proj/src/other.rs", &exp));
+    assert!(!matches_expected_file(
+        "file:///tmp/proj/src/other.rs",
+        &exp
+    ));
     // Empty string returns false.
     assert!(!matches_expected_file("", &exp));
 }
