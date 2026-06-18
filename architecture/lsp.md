@@ -184,10 +184,12 @@ capabilities the protocol does not advertise on the server side
 `LspCapabilitySnapshot::from_capabilities_with_override` and merged
 into the snapshot at client construction time.
 
-#### Tier 2 profiles (Phase 4)
+#### Tier 2 profiles (Phase 4 corrective validation in progress)
 
-Tier 2 profiles extend the data-driven profile pattern to additional
-languages. They share the same struct, the same accessor pattern, and
+Phase 4 corrective validation in progress; Tier 2 profiles and operations
+are implemented but compatibility remains experimental pending pinned
+real-server evidence. Tier 2 profiles extend the data-driven profile
+pattern to additional languages. They share the same struct, the same accessor pattern, and
 the same client code path — there are no `match server_id` branches
 for Tier 2 quirks in generic code.
 
@@ -524,7 +526,23 @@ pub struct DiagnosticEntry { ... } // internal
 
 `notif_tx`/`notif_rx` and direct `read_response`/`read_notification` paths have been removed; stdout is exclusively owned by the background reader.
 
-### operations.rs - High-Level Operations
+### operations/ - High-Level Operations (Phase 4 module layout)
+
+The operations layer was refactored in Phase 4 from a single `operations.rs`
+file into a module directory with per-concern files:
+
+```
+crates/egglsp/src/operations/
+├── mod.rs              # LspOperations struct, shared helpers (sha256_hex, VersionedFileEvidence)
+├── navigation.rs       # declaration, implementation, document_highlights, require_capability
+├── signature.rs        # signature_help_typed, lsp_units_to_byte_offset (UTF-16-aware)
+├── completion.rs       # completion_bounded, CompletionCandidate construction
+├── code_actions.rs     # code_action_summaries, preview_code_action, CodeActionSummary
+├── rename.rs           # prepare_rename_typed, rename_preview_typed, PrepareRenameResult, RenamePreview
+├── formatting.rs       # format_preview_typed, FormattingPreview (with base_stale, final_disk_hash)
+├── semantic_tokens.rs  # semantic_tokens, decode_semantic_tokens (checked arithmetic overflow)
+└── overlay_ops.rs      # semantic_check_preview (OverlaySession integration)
+```
 
 ```rust
 pub struct LspOperations {
@@ -571,12 +589,17 @@ impl LspOperations {
 #### Phase 4 typed DTOs
 
 The Phase 4 surface added bounded, capability-gated DTOs that never
-leak raw LSP JSON to model-facing consumers. They live alongside
-the operations in `crates/egglsp/src/operations.rs`.
+leak raw LSP JSON to model-facing consumers. They live in
+`crates/egglsp/src/operations/` (per-concern modules: `rename.rs`,
+`formatting.rs`, `signature.rs`, `completion.rs`, `code_actions.rs`,
+`semantic_tokens.rs`, `navigation.rs`, `overlay_ops.rs`).
 
 **Signature help** — `SignatureHelpSummary` wraps the active signature
 and parameter set, and resolves `ParameterLabel::LabelOffsets([start,
-end])` to substrings of the signature label:
+end])` to substrings of the signature label. Offset decoding uses the
+UTF-16-aware `lsp_units_to_byte_offset()` helper (in
+`operations/signature.rs`) which correctly handles multi-byte
+characters including CJK:
 
 ```rust
 pub struct SignatureHelpSummary {
@@ -616,11 +639,14 @@ pub struct CompletionCandidate {
 
 **Semantic tokens** — `DecodedSemanticToken` is the result of decoding
 the delta-encoded stream against the server's legend via
-`decode_semantic_tokens` (pure, testable). Out-of-range
-`token_type` indexes are reported as `LspError::RequestFailed` rather
-than silently dropped. `modifiers` is a `Vec<String>` of resolved
-legend names — bit `i` in the wire `token_modifiers_bitset`
-corresponds to legend position `i` (capped at 32 bits):
+`decode_semantic_tokens` (pure, testable, in `operations/semantic_tokens.rs`).
+Delta overflow is rejected via checked arithmetic (`checked_add`/`checked_sub`)
+which returns `LspError::RequestFailed` on underflow rather than panicking.
+Out-of-range `token_type` indexes are reported as
+`LspError::RequestFailed` rather than silently dropped. `modifiers` is a
+`Vec<String>` of resolved legend names — bit `i` in the wire
+`token_modifiers_bitset` corresponds to legend position `i` (capped at
+32 bits):
 
 ```rust
 pub struct DecodedSemanticToken {
@@ -635,12 +661,15 @@ pub struct DecodedSemanticToken {
 **Prepare rename** — `PrepareRenameResult` normalizes the three raw
 `lsp_types::PrepareRenameResponse` variants (Range /
 RangeWithPlaceholder / DefaultBehavior) into a flat enum plus a
-structured `LspUnavailable` fallback:
+structured `LspUnavailable` fallback. A `null` response from the
+server maps to `NotRenameable`; `DefaultBehavior` no longer carries a
+range (the client uses its own identifier-aware selection):
 
 ```rust
 pub enum PrepareRenameResult {
     Range { range: lsp_types::Range, placeholder: Option<String> },
-    DefaultBehavior { range: lsp_types::Range },
+    DefaultBehavior,
+    NotRenameable,
     Unavailable(crate::capability::LspUnavailable),
 }
 ```
@@ -648,10 +677,11 @@ pub enum PrepareRenameResult {
 **Rename preview** — `RenamePreview` wraps the existing
 `WorkspaceEditPreview` (already validated against `allowed_root`) with
 the placeholder, structured warnings about resource operations
-(create / rename / delete), and the authoritative server generation.
-Resource operations in `document_changes` are reported as warnings
-because the underlying preview pipeline does not surface them
-(they would require executing `workspace/executeCommand`):
+(create / rename / delete), `base_stale` for concurrent-edit
+detection, and the authoritative server generation. Resource
+operations in `document_changes` are reported as warnings because
+the underlying preview pipeline does not surface them (they would
+require executing `workspace/executeCommand`):
 
 ```rust
 pub struct RenamePreview {
@@ -662,6 +692,7 @@ pub struct RenamePreview {
     pub warnings: Vec<String>,            // resource-op warnings
     pub truncated: bool,
     pub server_generation: u64,
+    pub base_stale: bool,                 // true if target file changed during rename
 }
 ```
 
@@ -704,23 +735,27 @@ pub struct CodeActionPreview {
 
 **Formatting preview** — `FormattingPreview` is the bounded,
 in-memory-only document-formatting DTO. It captures sha256
-`before_hash` and `after_hash` of the file content (before vs after
-in-memory edit application), a bounded unified diff (capped at
-`FORMATTING_PREVIEW_MAX_DIFF_BYTES` = 8 KB), and the authoritative
-server generation. After the in-memory apply, the operation re-reads
-the on-disk file and verifies the `after_disk_hash == before_hash`
-— the on-disk invariant check is defense-in-depth; no mutating call
-is ever made:
+`before_hash` and `final_disk_hash` of the file content (before
+formatting and after in-memory edit application), a bounded unified
+diff (capped at `FORMATTING_PREVIEW_MAX_DIFF_BYTES` = 8 KB), and the
+authoritative server generation. `base_stale` is `true` when the
+on-disk content changed between the request and the response (i.e.
+`final_disk_hash != before_hash`); this allows callers to detect
+concurrent edits. After the in-memory apply, the operation re-reads
+the on-disk file and returns `LspError::RequestFailed` if
+`final_disk_hash != before_hash` — the on-disk invariant check is
+defense-in-depth; no mutating call is ever made:
 
 ```rust
 pub struct FormattingPreview {
     pub file: PathBuf,
     pub edit_count: usize,
-    pub before_hash: String,    // sha256 hex
-    pub after_hash: String,     // sha256 hex
-    pub diff: String,           // bounded unified diff
+    pub before_hash: String,        // sha256 hex (file content at request time)
+    pub final_disk_hash: String,    // sha256 hex (file content after in-memory edit)
+    pub diff: String,               // bounded unified diff
     pub truncated: bool,
     pub server_generation: u64,
+    pub base_stale: bool,           // true if on-disk content changed during request
 }
 ```
 

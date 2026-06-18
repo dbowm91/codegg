@@ -20,7 +20,7 @@ The LSP implementation lives in the `egglsp` workspace crate (`crates/egglsp/`).
 
 LSP is exposed as a native tool via `LspTool`, returning compact agent-facing summaries (not raw LSP JSON). Model-facing line and column are 1-indexed; the wrapper converts to LSP 0-indexed.
 
-**Phase 4** adds broader server compatibility (gopls, typescript-language-server, clangd) and higher-level capabilities (declaration, implementation, document highlights, signature help, workspace symbols, bounded completion, semantic tokens, preview-only rename / code actions / formatting). Read-only operations execute directly and are capability-gated; mutation-producing operations return structured previews only and never modify the workspace. The Phase 4 changes preserve the central safety rule from earlier phases:
+**Phase 4** corrective validation in progress — broader server compatibility (gopls, typescript-language-server, clangd) and higher-level capabilities (declaration, implementation, document highlights, signature help, workspace symbols, bounded completion, semantic tokens, preview-only rename / code actions / formatting). Read-only operations execute directly and are capability-gated; mutation-producing operations return structured previews only and never modify the workspace. The Phase 4 changes preserve the central safety rule from earlier phases:
 
 ```text
 read-only semantic operations may be executed directly;
@@ -43,7 +43,7 @@ crates/egglsp/src/          # Authoritative LSP implementation
 ├── health.rs               # LspOperationalState, health state machine, snapshots, context_note()
 ├── language.rs             # Language detection from file extensions
 ├── launch.rs               # Process spawning, Content-Length framing, background stderr drain
-├── operations.rs           # LspOperations - goto definition, hover, etc.
+├── operations/         # Per-concern modules: navigation.rs, signature.rs, completion.rs, code_actions.rs, rename.rs, formatting.rs, semantic_tokens.rs, overlay_ops.rs, mod.rs
 ├── overlay.rs              # OverlaySession, OverlayRestoreToken, semantic check preview (content or patch)
 ├── restart.rs              # LspClientDescriptor, RestartTrigger, restart_client_coordinator
 ├── root.rs                 # Project root detection
@@ -375,7 +375,11 @@ Tracks open documents for replay after server restart. `OpenDocumentSnapshot` ca
 
 ## Tier 1 vs Tier 2
 
-Server maturity is tracked on the profile, not in any generic client branch — there is no `match server_id` for Tier 2 quirks. Profile accessors live in `crates/egglsp/src/compatibility.rs`:
+Phase 4 corrective validation in progress; Tier 2 profiles and operations
+are implemented but compatibility remains experimental pending pinned
+real-server evidence. Server maturity is tracked on the profile, not in
+any generic client branch — there is no `match server_id` for Tier 2
+quirks. Profile accessors live in `crates/egglsp/src/compatibility.rs`:
 
 ```rust
 pub fn tier1_profiles() -> Vec<LspCompatibilityProfile>     // rust-analyzer + basedpyright
@@ -415,11 +419,16 @@ pub supports_execute_command: bool,     // workspace/executeCommand (recorded, n
 
 ### Push vs pull diagnostics
 
-Diagnostics are no longer assumed to be supported by every initialized server. The snapshot splits:
+Diagnostics are no longer assumed to be supported by every initialized server.
+Push diagnostics (`supports_push_diagnostics`) are **observed** from actual
+`publishDiagnostics` notifications — the field is `true` when the server
+has pushed at least one `publishDiagnostics` for any file, not derived from
+text synchronization settings. Pull diagnostics (`supports_pull_diagnostics`)
+are **advertised** via the `diagnostic_provider` capability. The snapshot splits:
 
 ```rust
-pub supports_push_diagnostics: bool,    // textDocumentSync present (conservative protocol-level signal)
-pub supports_pull_diagnostics: bool,    // diagnostic_provider advertised
+pub supports_push_diagnostics: bool,    // observed from actual publishDiagnostics notifications
+pub supports_pull_diagnostics: bool,    // advertised via diagnostic_provider capability
 pub supports_diagnostics: bool,         // legacy alias: push || pull
 ```
 
@@ -581,7 +590,7 @@ pub struct LspTool {
 }
 ```
 
-Operations available via tool:
+Operations available via tool (24 operations total):
 - `goToDefinition`
 - `findReferences`
 - `hover`
@@ -591,13 +600,13 @@ Operations available via tool:
 - `declaration` (Phase 4 — read-only; requires line+column; returns `Vec<LocationSummary>` capped at 100; capability-gated on `supports_declaration`)
 - `implementation` (Phase 4 — read-only; requires line+column; returns `Vec<LocationSummary>` capped at 100; capability-gated on `supports_implementation`)
 - `documentHighlights` (Phase 4 — read-only; requires line+column; returns `Vec<DocumentHighlightSummary>` capped at 100; preserves `Text` / `Read` / `Write` kind; capability-gated on `supports_document_highlight`)
-- `signatureHelp` (Phase 4 — read-only; requires line+column; returns `Option<SignatureHelpSummary>` with active signature + parameter offsets; per-item doc truncated to 2000 chars; capability-gated on `supports_signature_help`)
+- `signatureHelp` (Phase 4 — read-only; requires line+column; returns `Option<SignatureHelpSummary>` with active signature + parameter offsets resolved via UTF-16-aware `lsp_units_to_byte_offset()`; per-item doc truncated to 2000 chars; capability-gated on `supports_signature_help`)
 - `completion` (Phase 4 — read-only; requires line+column; optional `trigger_kind`, `trigger_char`, `max_candidates` (default 200); returns `Vec<CompletionCandidate>` with raw edit payloads stripped; capability-gated on `supports_completion`)
-- `semanticTokens` (Phase 4 — read-only; optional `max_tokens` (default 1000); returns `Vec<DecodedSemanticToken>` with legend-resolved type/modifier names; capability-gated on `supports_semantic_tokens`)
+- `semanticTokens` (Phase 4 — read-only; optional `max_tokens` (default 1000); returns `Vec<DecodedSemanticToken>` with legend-resolved type/modifier names; delta overflow rejected via checked arithmetic; capability-gated on `supports_semantic_tokens`)
 - `codeActionSummaries` (Phase 4 — preview-only; requires a position range and optional `only` kind filter + `max_actions` (default 50); returns bounded `CodeActionSummary` records — never executes commands; never exposes raw `WorkspaceEdit` or `Command` payloads; capability-gated on `supports_code_actions`)
 - `codeActionPreview` (Phase 4 — preview-only; requires a position range, an `action_index` (1-based, derived from `codeActionSummaries`), and optional `only` kind filter; returns `CodeActionPreview` wrapping a root-bounded `WorkspaceEditPreview`; rejects command-only actions with `LspError::CommandOnlyCodeAction`)
-- `renamePreview` (preview-only; returns `WorkspaceEditPreview` {title, files:[{file, original_hash, edits, patch}], total_*, truncated}; never mutates)
-- `formatPreview` (preview-only; same `WorkspaceEditPreview` shape)
+- `renamePreview` (preview-only; `RenamePreview` with `base_stale` for concurrent-edit detection; never mutates)
+- `formatPreview` (preview-only; `FormattingPreview` with sha256 `before_hash`/`final_disk_hash` + `base_stale` flag + bounded 8KB diff + on-disk invariant check)
 - `sourceActionPreview` (preview-only; same `WorkspaceEditPreview` shape; accepts `action` parameter — currently only `source.organizeImports` with aliases `organizeImports`/`organize_imports`; command-only actions are rejected because command execution is disabled)
 - `semanticCheckPreview` (accepts either `content` or a single-file unified diff `patch`; patch input is applied in memory against `file_path` via `OverlaySession` (`apply_overlay`/`restore`), collects diagnostics + symbols, restores disk content, never writes disk; multi-file patches are unsupported in this pass; operation-level root enforcement via `allowed_root`; returns `SemanticCheckPreview` with `diagnostics_may_still_be_warming`, `diagnostics`, `diagnostics_error`, `symbols`, `symbols_error`, `restored_disk_view`, `restore_error`; `execute_structured` sets `success=false` when `restore_error` is present)
 - `semanticContext` (combines multiple LSP requests; returns `SemanticContextPacket` with bounded source excerpt + diagnostics + symbols + optional definitions/references/overlay + optional source-action hints + optional call/type hierarchy; read-only, bounded; per-section errors via `definitions_error`, `references_error`; overlay limits tracked by `overlay_diagnostics_truncated`; `result_count` includes overlay items and available source-action hints; source excerpt truncation is UTF-8-safe via char-boundary cutting; `include_source_actions` boolean input, default false, populates `source_actions` array of `SemanticSourceActionHint` objects; `include_call_hierarchy` boolean input, default false, populates `call_hierarchy` section with incoming/outgoing callers; `include_type_hierarchy` boolean input, default false, populates `type_hierarchy` section with supertypes/subtypes; overlay translation stays handler-local because patch/content handling is tool-specific)
@@ -1009,14 +1018,38 @@ Converts via `From<&LspError> for SharedInitError` and `into_lsp_error()` back t
 
 `egglsp::capability` provides a normalized boolean view of `ServerCapabilities` returned by the initialized LSP server.
 
+### Capability Normalization Helpers
+
+Phase 4 corrected capability normalization so the snapshot accurately reflects what the server actually advertised. Two internal helpers drive the normalization:
+
+- `one_of_bool_or_options_supported()` — handles `Option<OneOf<bool, Options>>` provider fields. Returns `true` when the field is `Some(OneOf::Left(true))` or `Some(OneOf::Right(opts))`; `false` when absent, `None`, or `Some(OneOf::Left(false))`.
+- `enum_simple_supported()` — handles `Option<E>` provider fields where the enum variant itself signals support (e.g., `DeclarationOptions`, `ImplementationOptions`). Returns `true` when the variant is present.
+
+Unknown capabilities are surfaced via `CapabilityDecision`:
+
+```rust
+pub enum CapabilityDecision {
+    Supported,
+    Unsupported(LspUnavailable),
+    Unknown { operation: LspSemanticOperation, reason: &'static str },
+}
+```
+
+`LspCapabilitySnapshot::decide(op)` returns the decision; `Unknown` is logged explicitly when the snapshot cannot determine support.
+
+### Stored Capability Snapshot
+
+A single authoritative override-aware `LspCapabilitySnapshot` is stored per client at initialization time, via `LspService::normalized_capabilities_for_key(key)`. The snapshot is built from `ServerCapabilities` with profile-level `ObservedCapabilitiesOverride` merged (e.g. type hierarchy). Capability queries (`semanticContext`, `securityContext`, read-only navigation) all consult this stored snapshot rather than re-deriving capabilities per request.
+
 ### LspCapabilitySnapshot
 
 ```rust
 pub struct LspCapabilitySnapshot {
     pub language_id: Option<String>,
     pub server_name: Option<String>,
-    // Phase 4: split diagnostics into advertised push/pull.
+    // Phase 4: push diagnostics observed from actual publishDiagnostics notifications.
     pub supports_push_diagnostics: bool,
+    // Phase 4: pull diagnostics advertised via diagnostic_provider capability.
     pub supports_pull_diagnostics: bool,
     pub supports_diagnostics: bool,                       // legacy alias: push || pull
     pub supports_document_symbols: bool,
@@ -1651,9 +1684,9 @@ The 11-pass follow-up (`plans/lsp_phase3_restart_ownership_and_cleanup_final_gap
 - **Pass 6 — Readiness and workflow adoption**: `LspClient` tracks `ProgressState` (active `$/progress` tokens + last progress timestamp) and exposes `progress_snapshot`, `wait_for_progress_end`, `wait_for_first_diagnostics`, `operational_summary`. `LspService::wait_for_readiness(key, policy)` honors all four `LspReadinessPolicy` variants and returns `ReadinessResult::Ready { elapsed }` or `Degraded { reason, elapsed }`. `LspOperationalState::context_note()` is appended to `SemanticContextResponse.notes`, `SecurityContextPacket.notes`, and hunk source context summary lines.
 - **Pass 7 — CI and docs**: `.github/workflows/lsp-real-server.yml` pins `rust-toolchain@1.81.0` (rust-analyzer job) and `basedpyright@1.13.1`; each matrix job runs only its own server test (`-- rust_analyzer` or `-- basedpyright`); artifact filenames are sanitized.
 
-## Phase 4: Broader Compatibility & Higher-Level Capability Adoption
+## Phase 4: Broader Compatibility & Higher-Level Capability Adoption (corrective validation in progress)
 
-Phase 4 (`plans/lsp_phase4_broader_compatibility_and_capability_adoption.md`) broadens language-server coverage and exposes higher-value LSP capabilities, while preserving the safety rule established in earlier phases: read-only semantic operations may execute directly, mutation-producing operations must remain preview-only. All Phase 4 surface lives in `crates/egglsp/`; generic client code reads profile fields instead of branching on server IDs.
+Phase 4 (`plans/lsp_phase4_broader_compatibility_and_capability_adoption.md`) broadens language-server coverage and exposes higher-value LSP capabilities, while preserving the safety rule established in earlier phases: read-only semantic operations may execute directly, mutation-producing operations must remain preview-only. Tier 2 profiles and operations are implemented but compatibility remains experimental pending pinned real-server evidence. All Phase 4 surface lives in `crates/egglsp/`; generic client code reads profile fields instead of branching on server IDs.
 
 ### Pass 0 — Baseline and report schema
 
