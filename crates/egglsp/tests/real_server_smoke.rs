@@ -207,11 +207,13 @@ struct LocationExpectation {
     /// to 1 for simple "did the server return *anything*" checks.
     pub min_locations: usize,
     /// Files (relative to fixture root, or absolute) that the
-    /// returned locations should reference. The check passes when
-    /// at least one returned location points into a file whose
-    /// path ends with one of these suffixes — this avoids
-    /// platform-specific absolute-path comparisons.
+    /// returned locations should mention. Empty means any file is
+    /// acceptable.
     pub expected_files: Vec<PathBuf>,
+    /// For signature-help checks: substrings that must appear in
+    /// at least one returned signature label. Empty means "server
+    /// returned any non-empty signature list".
+    pub expected_label_substrings: Vec<String>,
 }
 
 impl Default for LocationExpectation {
@@ -220,6 +222,7 @@ impl Default for LocationExpectation {
             position: Position::new(0, 0),
             min_locations: 1,
             expected_files: Vec::new(),
+            expected_label_substrings: Vec::new(),
         }
     }
 }
@@ -804,7 +807,13 @@ const _signatureSite = add(1, 2);
         },
         completions: Vec::new(),
         declaration_targets: Vec::new(),
-        signature_help_targets: Vec::new(),
+        signature_help_targets: vec![LocationExpectation {
+            // add(1, 2) at line 20 — cursor inside parentheses
+            position: Position::new(20, 29),
+            min_locations: 0,
+            expected_files: Vec::new(),
+            expected_label_substrings: vec!["add".to_string()],
+        }],
         workspace_symbol_query: None,
         document_highlight_targets: Vec::new(),
         warmup_after_ready: Duration::ZERO,
@@ -2297,14 +2306,23 @@ async fn run_signature_help_check(
     match result {
         Ok(Ok(value)) => {
             if value.is_null() {
-                // None is a legitimate response (server has no
-                // help at this position). Record a pass with a
-                // note in the detail.
-                checks.push(SmokeCheck::pass(
-                    "signatureHelp (server returned null at this position)",
-                    CompatibilityRequirement::RequiredIfAdvertised,
-                    ms,
-                ));
+                // Null is a legitimate response when no label
+                // expectations are set. When the fixture explicitly
+                // expects signature help, null is a failure.
+                if target.expected_label_substrings.is_empty() {
+                    checks.push(SmokeCheck::pass(
+                        "signatureHelp (server returned null at this position)",
+                        CompatibilityRequirement::RequiredIfAdvertised,
+                        ms,
+                    ));
+                } else {
+                    checks.push(SmokeCheck::fail(
+                        "signatureHelp",
+                        CompatibilityRequirement::RequiredIfAdvertised,
+                        "server returned null but fixture expects signature help",
+                        ms,
+                    ));
+                }
                 return;
             }
             match serde_json::from_value::<egglsp::lsp_types::SignatureHelp>(value) {
@@ -2317,6 +2335,28 @@ async fn run_signature_help_check(
                             ms,
                         ));
                         return;
+                    }
+                    // Validate expected label substrings when provided.
+                    if !target.expected_label_substrings.is_empty() {
+                        let labels: Vec<&str> = help
+                            .signatures
+                            .iter()
+                            .map(|s| s.label.as_str())
+                            .collect();
+                        for substr in &target.expected_label_substrings {
+                            if !labels.iter().any(|l| l.contains(substr.as_str())) {
+                                checks.push(SmokeCheck::fail(
+                                    "signatureHelp",
+                                    CompatibilityRequirement::RequiredIfAdvertised,
+                                    format!(
+                                        "expected label containing '{}' but got {:?}",
+                                        substr, labels
+                                    ),
+                                    ms,
+                                ));
+                                return;
+                            }
+                        }
                     }
                     checks.push(SmokeCheck::pass(
                         format!("signatureHelp ({} signature(s))", help.signatures.len()),
@@ -3128,6 +3168,7 @@ async fn run_generalized_operation_checks(
             position: impl_position,
             min_locations: 1,
             expected_files: Vec::new(),
+            expected_label_substrings: Vec::new(),
         };
         run_location_check(
             client,
@@ -3904,6 +3945,7 @@ fn location_expectation_serializes() {
         position: Position::new(3, 7),
         min_locations: 2,
         expected_files: vec![PathBuf::from("src/lib.rs"), PathBuf::from("src/helper.rs")],
+        expected_label_substrings: Vec::new(),
     };
     // Clone to exercise the Clone impl.
     let copy = expectation.clone();
