@@ -2258,9 +2258,7 @@ async fn lsp_schema_includes_documentHighlights_and_signatureHelp() {
     let ops = params["properties"]["operation"]["enum"]
         .as_array()
         .expect("operation.enum should be an array");
-    assert!(ops
-        .iter()
-        .any(|v| v.as_str() == Some("documentHighlights")));
+    assert!(ops.iter().any(|v| v.as_str() == Some("documentHighlights")));
     assert!(ops.iter().any(|v| v.as_str() == Some("signatureHelp")));
 }
 
@@ -2287,9 +2285,7 @@ async fn lsp_schema_includes_codeActionSummaries_and_codeActionPreview() {
     assert!(ops
         .iter()
         .any(|v| v.as_str() == Some("codeActionSummaries")));
-    assert!(ops
-        .iter()
-        .any(|v| v.as_str() == Some("codeActionPreview")));
+    assert!(ops.iter().any(|v| v.as_str() == Some("codeActionPreview")));
 }
 
 #[tokio::test]
@@ -2413,9 +2409,7 @@ async fn semanticTokens_requires_file_path() {
         }))
         .await
         .unwrap_err();
-    assert!(
-        matches!(err, ToolError::Execution(ref m) if m.contains("file_path"))
-    );
+    assert!(matches!(err, ToolError::Execution(ref m) if m.contains("file_path")));
 }
 
 #[tokio::test]
@@ -2429,9 +2423,7 @@ async fn codeActionSummaries_requires_file_path_and_range() {
         }))
         .await
         .unwrap_err();
-    assert!(
-        matches!(err, ToolError::Execution(ref m) if m.contains("start_line"))
-    );
+    assert!(matches!(err, ToolError::Execution(ref m) if m.contains("start_line")));
 }
 
 #[tokio::test]
@@ -2449,9 +2441,7 @@ async fn codeActionPreview_requires_action_index() {
         }))
         .await
         .unwrap_err();
-    assert!(
-        matches!(err, ToolError::Execution(ref m) if m.contains("action_index"))
-    );
+    assert!(matches!(err, ToolError::Execution(ref m) if m.contains("action_index")));
 }
 
 #[tokio::test]
@@ -2464,7 +2454,5 @@ async fn workspaceSymbol_requires_symbol() {
         }))
         .await
         .unwrap_err();
-    assert!(
-        matches!(err, ToolError::Execution(ref m) if m.contains("symbol"))
-    );
+    assert!(matches!(err, ToolError::Execution(ref m) if m.contains("symbol")));
 }

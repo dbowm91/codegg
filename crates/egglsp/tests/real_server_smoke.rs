@@ -143,6 +143,11 @@ struct RealServerFixture {
     /// position the harness should request documentHighlight at and a
     /// minimum count + set of expected files.
     document_highlight_targets: Vec<LocationExpectation>,
+    warmup_after_ready: Duration,
+    references_requirement: CompatibilityRequirement,
+    hover_requirement: CompatibilityRequirement,
+    shutdown_requirement: CompatibilityRequirement,
+    implementation_position: Option<Position>,
 }
 
 /// Pass 3 — Per-operation positions for the new read-only and
@@ -384,6 +389,11 @@ pub fn caller() -> i32 {
         signature_help_targets: Vec::new(),
         workspace_symbol_query: None,
         document_highlight_targets: Vec::new(),
+        warmup_after_ready: Duration::ZERO,
+        references_requirement: CompatibilityRequirement::RequiredIfAdvertised,
+        hover_requirement: CompatibilityRequirement::RequiredIfAdvertised,
+        shutdown_requirement: CompatibilityRequirement::Required,
+        implementation_position: None,
     }
 }
 
@@ -494,6 +504,11 @@ def caller() -> int:
         signature_help_targets: Vec::new(),
         workspace_symbol_query: None,
         document_highlight_targets: Vec::new(),
+        warmup_after_ready: Duration::ZERO,
+        references_requirement: CompatibilityRequirement::RequiredIfAdvertised,
+        hover_requirement: CompatibilityRequirement::RequiredIfAdvertised,
+        shutdown_requirement: CompatibilityRequirement::Required,
+        implementation_position: None,
     }
 }
 
@@ -527,31 +542,6 @@ func Add(a, b int) int {
     .unwrap();
 
     // main.go — primary source.
-    // Line 0: package main
-    // Line 1: (blank)
-    // Line 2: import (
-    // Line 3:     "codegg-test/helper"
-    // Line 4: )
-    // Line 5: (blank)
-    // Line 6: type Point struct {
-    // Line 7:     X int
-    // Line 8:     Y int
-    // Line 9: }
-    // Line 10: (blank)
-    // Line 11: func main() {
-    // Line 12:     _ = helper.Add(1, 2)
-    // Line 13: }
-    // Line 14: (blank)
-    // Line 15: // Intentional type error for diagnostics
-    // Line 16: func Broken() int {
-    // Line 17:     var x string = 42
-    // Line 18:     return len(x)
-    // Line 19: }
-    // Line 20: (blank)
-    // Line 21: // Caller of helper.Add for cross-file references.
-    // Line 22: func Caller() int {
-    // Line 23:     return helper.Add(3, 4)
-    // Line 24: }
     let main_go = root.join("main.go");
     std::fs::write(
         &main_go,
@@ -561,12 +551,17 @@ import (
 	"codegg-test/helper"
 )
 
-type Point struct {
-	X int
-	Y int
+type Greeter interface {
+	Greet() string
 }
 
+type Person struct{}
+
+func (Person) Greet() string { return "hello" }
+
 func main() {
+	var g Greeter = Person{}
+	_ = g.Greet()
 	_ = helper.Add(1, 2)
 }
 
@@ -591,31 +586,17 @@ func Caller() int {
         primary_source: main_go.clone(),
         secondary_source: Some(helper_go.clone()),
         diagnostics_file: main_go.clone(),
-        // `Point` type on line 6, character 5 (lands on `type` keyword).
-        symbol_position: Position::new(6, 5),
-        // `helper.Add` call site in main.go: line 12, character 12 (lands on `Add`).
-        definition_position: Position::new(12, 12),
-        // `helper.Add` call site in main.go: line 12, character 12 (declaration is in helper.go).
-        references_position: Position::new(12, 12),
-        // `helper.Add` call site: line 12, character 12.
-        hover_position: Position::new(12, 12),
-        // `Add` def in helper/helper.go: line 2, character 5.
+        symbol_position: Position::new(8, 5),
+        definition_position: Position::new(15, 12),
+        references_position: Position::new(15, 12),
+        hover_position: Position::new(15, 12),
         cross_file_references_position: Position::new(2, 5),
-        expected_symbol_names: vec!["main", "Point", "Broken", "Caller"],
+        expected_symbol_names: vec!["main", "Greeter", "Person", "Broken", "Caller"],
         language_id: "go".to_string(),
-        // Pass 3 — gopls is the first consumer of the
-        // generalized harness. Enable the new operations the
-        // plan calls out for Tier 2 Go checks (implementation
-        // and workspace symbols) plus completion (gopls
-        // resolves imported identifiers).
         mutation_targets: MutationTargets::default(),
         expected_capabilities: ExpectedCapabilities {
-            // gopls: implementation returns null for concrete types
-            // without separate interface implementations (Go lacks
-            // trait-like semantics). Disable to avoid false negatives.
             workspace_symbols: true,
-            // Other capabilities stay false until a Tier 2
-            // fixture is built to exercise them.
+            implementation: true,
             ..Default::default()
         },
         completions: Vec::new(),
@@ -623,6 +604,11 @@ func Caller() int {
         signature_help_targets: Vec::new(),
         workspace_symbol_query: None,
         document_highlight_targets: Vec::new(),
+        warmup_after_ready: Duration::from_secs(10),
+        references_requirement: CompatibilityRequirement::RequiredIfAdvertised,
+        hover_requirement: CompatibilityRequirement::RequiredIfAdvertised,
+        shutdown_requirement: CompatibilityRequirement::KnownLimitation,
+        implementation_position: Some(Position::new(8, 5)),
     }
 }
 
@@ -776,6 +762,11 @@ const _signatureSite = add(1, 2);
         signature_help_targets: Vec::new(),
         workspace_symbol_query: None,
         document_highlight_targets: Vec::new(),
+        warmup_after_ready: Duration::ZERO,
+        references_requirement: CompatibilityRequirement::RequiredIfAdvertised,
+        hover_requirement: CompatibilityRequirement::RequiredIfAdvertised,
+        shutdown_requirement: CompatibilityRequirement::KnownLimitation,
+        implementation_position: None,
     }
 }
 
@@ -810,21 +801,17 @@ fn clangd_fixture() -> RealServerFixture {
     std::fs::create_dir_all(&src_dir).unwrap();
 
     // include/widget.hpp — declaration.
-    // Line 0: #pragma once
-    // Line 1: (blank)
-    // Line 2: class Widget {
-    // Line 3: public:
-    // Line 4:     int add(int a, int b);
-    // Line 5:     int broken();
-    // Line 6: };
     let widget_hpp = include_dir.join("widget.hpp");
     std::fs::write(
         &widget_hpp,
         r#"#pragma once
 
-class Widget {
-public:
-    int add(int a, int b);
+struct WidgetBase {
+    virtual int add(int a, int b) = 0;
+};
+
+struct Widget final : WidgetBase {
+    int add(int a, int b) override;
     int broken();
 };
 "#,
@@ -832,16 +819,6 @@ public:
     .unwrap();
 
     // src/widget.cpp — definition (secondary source for cross-file references).
-    // Line 0: #include "widget.hpp"
-    // Line 1: (blank)
-    // Line 2: int Widget::add(int a, int b) {
-    // Line 3:     return a + b;
-    // Line 4: }
-    // Line 5: (blank)
-    // Line 6: int Widget::broken() {
-    // Line 7:     // Intentional type mismatch for diagnostics.
-    // Line 8:     return "not an int";
-    // Line 9: }
     let widget_cpp = src_dir.join("widget.cpp");
     std::fs::write(
         &widget_cpp,
@@ -916,18 +893,12 @@ int caller() {
         hover_position: Position::new(8, 13),
         // `Widget::add` definition in widget.cpp: line 2, character 12.
         cross_file_references_position: Position::new(2, 12),
-        expected_symbol_names: vec!["greet", "main", "caller"],
+        expected_symbol_names: vec!["greet", "main", "caller", "WidgetBase", "Widget"],
         language_id: "cpp".to_string(),
-        // Pass 3 — clangd opts into the declaration,
-        // implementation, and document highlight checks the
-        // plan calls out for the C++ profile.
         mutation_targets: MutationTargets::default(),
         expected_capabilities: ExpectedCapabilities {
             declaration: true,
-            // clangd: implementation requires virtual methods or
-            // interfaces; Widget::add is a concrete method.
-            // references/hover may not resolve on member access
-            // patterns depending on compile_commands.json setup.
+            implementation: true,
             document_highlight: true,
             ..Default::default()
         },
@@ -936,6 +907,11 @@ int caller() {
         signature_help_targets: Vec::new(),
         workspace_symbol_query: None,
         document_highlight_targets: Vec::new(),
+        warmup_after_ready: Duration::ZERO,
+        references_requirement: CompatibilityRequirement::KnownLimitation,
+        hover_requirement: CompatibilityRequirement::KnownLimitation,
+        shutdown_requirement: CompatibilityRequirement::KnownLimitation,
+        implementation_position: None,
     }
 }
 
@@ -1418,10 +1394,8 @@ async fn run_smoke_suite(
         ));
     }
 
-    // gopls sends diagnostics before full indexing completes.
-    // Add a warmup delay so hover/definition/references work.
-    if profile.server_id == "gopls" {
-        tokio::time::sleep(Duration::from_secs(10)).await;
+    if !fixture.warmup_after_ready.is_zero() {
+        tokio::time::sleep(fixture.warmup_after_ready).await;
     }
 
     // 7. Diagnostics intent check.
@@ -1643,15 +1617,9 @@ async fn run_smoke_suite(
                 ms,
             ));
         } else {
-            // clangd: member-access references may not resolve with minimal fixture
-            let req = if profile.server_id == "clangd" {
-                CompatibilityRequirement::KnownLimitation
-            } else {
-                CompatibilityRequirement::RequiredIfAdvertised
-            };
             checks.push(SmokeCheck::fail(
                 "references",
-                req,
+                fixture.references_requirement,
                 detail.unwrap_or_else(|| "0 references found".to_string()),
                 ms,
             ));
@@ -1693,14 +1661,9 @@ async fn run_smoke_suite(
                             ms,
                         ));
                     } else {
-                        let req = if profile.server_id == "clangd" {
-                            CompatibilityRequirement::KnownLimitation
-                        } else {
-                            CompatibilityRequirement::RequiredIfAdvertised
-                        };
                         checks.push(SmokeCheck::fail(
                             "cross-file references",
-                            req,
+                            fixture.references_requirement,
                             check.detail.unwrap_or_else(|| "<no detail>".to_string()),
                             ms,
                         ));
@@ -1751,19 +1714,12 @@ async fn run_smoke_suite(
                     ms,
                 ));
             }
-            Ok(Ok(None)) => {
-                let req = if profile.server_id == "clangd" {
-                    CompatibilityRequirement::KnownLimitation
-                } else {
-                    CompatibilityRequirement::RequiredIfAdvertised
-                };
-                checks.push(SmokeCheck::fail(
-                    "hover",
-                    req,
-                    "no hover returned at fixture position",
-                    ms,
-                ))
-            }
+            Ok(Ok(None)) => checks.push(SmokeCheck::fail(
+                "hover",
+                fixture.hover_requirement,
+                "no hover returned at fixture position",
+                ms,
+            )),
             Ok(Err(e)) => checks.push(SmokeCheck::fail(
                 "hover",
                 CompatibilityRequirement::RequiredIfAdvertised,
@@ -1830,25 +1786,12 @@ async fn run_smoke_suite(
             CompatibilityRequirement::Required,
             shutdown_ms,
         )),
-        HarnessShutdownResult::ForceKilled { .. } => {
-            // gopls and typescript-language-server run as background
-            // daemons; shutdown/exit closes the LSP connection but the
-            // daemon persists until killed. Treat as known limitation.
-            let req = if matches!(
-                profile.server_id.as_str(),
-                "gopls" | "typescript-language-server" | "clangd"
-            ) {
-                CompatibilityRequirement::KnownLimitation
-            } else {
-                CompatibilityRequirement::Required
-            };
-            checks.push(SmokeCheck::fail(
-                "shutdown",
-                req,
-                "server did not exit within graceful deadline; force-killed (daemon mode)",
-                shutdown_ms,
-            ))
-        }
+        HarnessShutdownResult::ForceKilled { .. } => checks.push(SmokeCheck::fail(
+            "shutdown",
+            fixture.shutdown_requirement,
+            "server did not exit within graceful deadline; force-killed (daemon mode)",
+            shutdown_ms,
+        )),
         HarnessShutdownResult::TimeoutExpired { .. } => checks.push(SmokeCheck::fail(
             "shutdown",
             CompatibilityRequirement::Required,
@@ -2954,14 +2897,9 @@ async fn run_generalized_operation_checks(
 
     // Implementation
     if fixture.expected_capabilities.implementation {
-        // Use the definition_position by default, but for Go the
-        // implementation query must target a type, not a function.
-        let impl_position = if server_id == "gopls" {
-            // `Point` type on line 6, character 5.
-            Position::new(6, 5)
-        } else {
-            fixture.definition_position
-        };
+        let impl_position = fixture
+            .implementation_position
+            .unwrap_or(fixture.definition_position);
         let target = LocationExpectation {
             position: impl_position,
             min_locations: 1,

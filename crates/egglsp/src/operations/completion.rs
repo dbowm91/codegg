@@ -6,8 +6,8 @@ use tracing::trace;
 use crate::client::url_to_uri;
 use crate::error::LspError;
 
-use super::signature::truncate_doc;
 use super::semantic_tokens::DecodedSemanticToken;
+use super::signature::truncate_doc;
 use super::LspOperations;
 
 /// Default cap on per-completion `detail` strings and `insertText`
@@ -211,8 +211,11 @@ impl LspOperations {
         trigger_char: Option<String>,
         max_candidates: usize,
     ) -> Result<Vec<CompletionCandidate>, LspError> {
-        self.require_capability(file_path, crate::capability::LspSemanticOperation::Completion)
-            .await?;
+        self.require_capability(
+            file_path,
+            crate::capability::LspSemanticOperation::Completion,
+        )
+        .await?;
         let items = self
             .completion(file_path, line, column, trigger_kind, trigger_char)
             .await?;
@@ -239,8 +242,11 @@ impl LspOperations {
         file_path: &Path,
         max_tokens: usize,
     ) -> Result<Vec<DecodedSemanticToken>, LspError> {
-        self.require_capability(file_path, crate::capability::LspSemanticOperation::SemanticTokens)
-            .await?;
+        self.require_capability(
+            file_path,
+            crate::capability::LspSemanticOperation::SemanticTokens,
+        )
+        .await?;
         let (key, _root) = self.service.get_or_create_client(file_path).await?;
         let uri = url_to_uri(&url::Url::from_file_path(file_path).map_err(|_| {
             LspError::LaunchFailed(format!("invalid file path: {}", file_path.display()))
@@ -297,8 +303,11 @@ impl LspOperations {
         line: u32,
         column: u32,
     ) -> Result<Option<super::signature::SignatureHelpSummary>, LspError> {
-        self.require_capability(file_path, crate::capability::LspSemanticOperation::SignatureHelp)
-            .await?;
+        self.require_capability(
+            file_path,
+            crate::capability::LspSemanticOperation::SignatureHelp,
+        )
+        .await?;
         let (key, _root) = self.service.get_or_create_client(file_path).await?;
         let uri = url_to_uri(&url::Url::from_file_path(file_path).map_err(|_| {
             LspError::LaunchFailed(format!("invalid file path: {}", file_path.display()))
@@ -332,7 +341,9 @@ impl LspOperations {
                 return Ok(None);
             }
         };
-        Ok(super::signature::SignatureHelpSummary::from_signature_help(&help))
+        Ok(super::signature::SignatureHelpSummary::from_signature_help(
+            &help,
+        ))
     }
 
     /// Backwards-compatible string rendering of signature help.
@@ -343,7 +354,9 @@ impl LspOperations {
         column: u32,
     ) -> Result<Option<String>, LspError> {
         match self.signature_help_typed(file_path, line, column).await? {
-            Some(summary) => Ok(Some(super::signature::format_signature_help_typed(&summary))),
+            Some(summary) => Ok(Some(super::signature::format_signature_help_typed(
+                &summary,
+            ))),
             None => Ok(None),
         }
     }

@@ -33,9 +33,7 @@ use serde::{Deserialize, Serialize};
 /// Returns `true` only when the value is `Some(OneOf::Left(true))` or
 /// `Some(OneOf::Right(_))`. Treats `Some(OneOf::Left(false))` and
 /// `None` as unsupported.
-fn one_of_bool_or_options_supported<T>(
-    value: &Option<lsp_types::OneOf<bool, T>>,
-) -> bool {
+fn one_of_bool_or_options_supported<T>(value: &Option<lsp_types::OneOf<bool, T>>) -> bool {
     match value {
         Some(lsp_types::OneOf::Left(enabled)) => *enabled,
         Some(lsp_types::OneOf::Right(_)) => true,
@@ -48,6 +46,16 @@ fn one_of_bool_or_options_supported<T>(
 /// Returns `true` for `Simple(true)` or any non-Simple variant.
 fn enum_simple_supported(value: &impl EnumCapability) -> bool {
     value.is_enabled()
+}
+
+fn code_action_provider_supported(
+    provider: &Option<lsp_types::CodeActionProviderCapability>,
+) -> bool {
+    match provider {
+        Some(lsp_types::CodeActionProviderCapability::Simple(enabled)) => *enabled,
+        Some(lsp_types::CodeActionProviderCapability::Options(_)) => true,
+        None => false,
+    }
 }
 
 /// Trait for enum capability types that have a `Simple(bool)` variant.
@@ -392,7 +400,7 @@ impl LspCapabilitySnapshot {
         });
 
         // Code action — `Option<CodeActionProviderCapability>` enum.
-        let supports_code_actions = caps.code_action_provider.is_some();
+        let supports_code_actions = code_action_provider_supported(&caps.code_action_provider);
 
         // Formatting — `Option<OneOf<bool, _>>`.
         let supports_document_formatting =
@@ -528,9 +536,10 @@ impl LspCapabilitySnapshot {
         if self.supports(op) {
             CapabilityDecision::Supported
         } else {
-            CapabilityDecision::Unsupported(self.unavailable(op).unwrap_or_else(|| {
-                LspUnavailable::new(op, "unknown reason")
-            }))
+            CapabilityDecision::Unsupported(
+                self.unavailable(op)
+                    .unwrap_or_else(|| LspUnavailable::new(op, "unknown reason")),
+            )
         }
     }
 }
@@ -922,7 +931,10 @@ mod tests {
             lsp_types::TextDocumentSyncOptions::default(),
         ));
         let snap = LspCapabilitySnapshot::from_capabilities(&caps, Some("s"), Some("rust"));
-        assert!(!snap.supports_push_diagnostics, "push must NOT be derived from text_sync");
+        assert!(
+            !snap.supports_push_diagnostics,
+            "push must NOT be derived from text_sync"
+        );
         assert!(!snap.supports_pull_diagnostics);
         assert!(
             !snap.supports_diagnostics,
@@ -949,7 +961,10 @@ mod tests {
             snap.supports(LspSemanticOperation::Diagnostics),
             "diagnostics should be true after push is observed"
         );
-        assert!(snap.supports_diagnostics, "legacy alias must reflect observation");
+        assert!(
+            snap.supports_diagnostics,
+            "legacy alias must reflect observation"
+        );
     }
 
     #[test]
@@ -968,7 +983,10 @@ mod tests {
         assert!(snap.supports_pull_diagnostics);
         assert!(!snap.observed_push_diagnostics);
         assert!(!snap.supports_push_diagnostics);
-        assert!(snap.supports_diagnostics, "pull alone should set legacy alias");
+        assert!(
+            snap.supports_diagnostics,
+            "pull alone should set legacy alias"
+        );
         assert!(snap.supports(LspSemanticOperation::Diagnostics));
     }
 
@@ -1140,31 +1158,31 @@ mod tests {
     #[test]
     fn one_of_options_is_supported() {
         let mut caps = ServerCapabilities::default();
-        caps.document_highlight_provider =
-            Some(lsp_types::OneOf::Right(lsp_types::DocumentHighlightOptions {
+        caps.document_highlight_provider = Some(lsp_types::OneOf::Right(
+            lsp_types::DocumentHighlightOptions {
                 work_done_progress_options: Default::default(),
-            }));
+            },
+        ));
         caps.rename_provider = Some(lsp_types::OneOf::Right(RenameOptions {
             prepare_provider: None,
             work_done_progress_options: Default::default(),
         }));
-        caps.document_formatting_provider =
-            Some(lsp_types::OneOf::Right(lsp_types::DocumentFormattingOptions {
+        caps.document_formatting_provider = Some(lsp_types::OneOf::Right(
+            lsp_types::DocumentFormattingOptions {
                 work_done_progress_options: Default::default(),
-            }));
+            },
+        ));
         caps.document_range_formatting_provider = Some(lsp_types::OneOf::Right(
             lsp_types::DocumentRangeFormattingOptions {
                 work_done_progress_options: Default::default(),
             },
         ));
-        caps.references_provider =
-            Some(lsp_types::OneOf::Right(lsp_types::ReferencesOptions {
-                work_done_progress_options: Default::default(),
-            }));
-        caps.definition_provider =
-            Some(lsp_types::OneOf::Right(lsp_types::DefinitionOptions {
-                work_done_progress_options: Default::default(),
-            }));
+        caps.references_provider = Some(lsp_types::OneOf::Right(lsp_types::ReferencesOptions {
+            work_done_progress_options: Default::default(),
+        }));
+        caps.definition_provider = Some(lsp_types::OneOf::Right(lsp_types::DefinitionOptions {
+            work_done_progress_options: Default::default(),
+        }));
         caps.document_symbol_provider =
             Some(lsp_types::OneOf::Right(lsp_types::DocumentSymbolOptions {
                 label: None,
@@ -1175,13 +1193,12 @@ mod tests {
                 work_done_progress_options: Default::default(),
                 resolve_provider: None,
             }));
-        caps.inlay_hint_provider =
-            Some(lsp_types::OneOf::Right(lsp_types::InlayHintServerCapabilities::Options(
-                lsp_types::InlayHintOptions {
-                    work_done_progress_options: Default::default(),
-                    resolve_provider: None,
-                },
-            )));
+        caps.inlay_hint_provider = Some(lsp_types::OneOf::Right(
+            lsp_types::InlayHintServerCapabilities::Options(lsp_types::InlayHintOptions {
+                work_done_progress_options: Default::default(),
+                resolve_provider: None,
+            }),
+        ));
         let snap = LspCapabilitySnapshot::from_capabilities(&caps, Some("s"), Some("rust"));
         assert!(snap.supports_document_highlight);
         assert!(snap.supports_rename);
@@ -1219,41 +1236,38 @@ mod tests {
     #[test]
     fn enum_options_variant_is_supported() {
         let mut caps = ServerCapabilities::default();
-        caps.declaration_provider =
-            Some(lsp_types::DeclarationCapability::Options(lsp_types::DeclarationOptions {
+        caps.declaration_provider = Some(lsp_types::DeclarationCapability::Options(
+            lsp_types::DeclarationOptions {
                 work_done_progress_options: Default::default(),
-            }));
-        caps.implementation_provider =
-            Some(lsp_types::ImplementationProviderCapability::Options(
-                lsp_types::StaticTextDocumentRegistrationOptions {
-                    document_selector: None,
-                    id: None,
-                },
-            ));
+            },
+        ));
+        caps.implementation_provider = Some(lsp_types::ImplementationProviderCapability::Options(
+            lsp_types::StaticTextDocumentRegistrationOptions {
+                document_selector: None,
+                id: None,
+            },
+        ));
         caps.hover_provider = Some(lsp_types::HoverProviderCapability::Options(
             lsp_types::HoverOptions {
                 work_done_progress_options: Default::default(),
             },
         ));
-        caps.folding_range_provider =
-            Some(lsp_types::FoldingRangeProviderCapability::Options(
-                lsp_types::StaticTextDocumentColorProviderOptions {
-                    document_selector: None,
-                    id: None,
-                },
-            ));
-        caps.selection_range_provider =
-            Some(lsp_types::SelectionRangeProviderCapability::Options(
-                lsp_types::SelectionRangeOptions {
-                    work_done_progress_options: Default::default(),
-                },
-            ));
-        caps.call_hierarchy_provider =
-            Some(lsp_types::CallHierarchyServerCapability::Options(
-                lsp_types::CallHierarchyOptions {
-                    work_done_progress_options: Default::default(),
-                },
-            ));
+        caps.folding_range_provider = Some(lsp_types::FoldingRangeProviderCapability::Options(
+            lsp_types::StaticTextDocumentColorProviderOptions {
+                document_selector: None,
+                id: None,
+            },
+        ));
+        caps.selection_range_provider = Some(lsp_types::SelectionRangeProviderCapability::Options(
+            lsp_types::SelectionRangeOptions {
+                work_done_progress_options: Default::default(),
+            },
+        ));
+        caps.call_hierarchy_provider = Some(lsp_types::CallHierarchyServerCapability::Options(
+            lsp_types::CallHierarchyOptions {
+                work_done_progress_options: Default::default(),
+            },
+        ));
         let snap = LspCapabilitySnapshot::from_capabilities(&caps, Some("s"), Some("rust"));
         assert!(snap.supports_declaration);
         assert!(snap.supports_implementation);
@@ -1315,16 +1329,18 @@ mod tests {
     fn profile_override_survives_operation_gating() {
         // Build capabilities WITHOUT type hierarchy advertised.
         let mut caps = ServerCapabilities::default();
-        caps.call_hierarchy_provider =
-            Some(lsp_types::CallHierarchyServerCapability::Simple(true));
+        caps.call_hierarchy_provider = Some(lsp_types::CallHierarchyServerCapability::Simple(true));
 
         // Without overrides, type hierarchy must be false.
-        let snap_no_override = LspCapabilitySnapshot::from_capabilities(&caps, Some("gopls"), Some("go"));
+        let snap_no_override =
+            LspCapabilitySnapshot::from_capabilities(&caps, Some("gopls"), Some("go"));
         assert!(
             !snap_no_override.supports_type_hierarchy,
             "type hierarchy must NOT be inferred from call hierarchy"
         );
-        assert!(snap_no_override.unavailable(LspSemanticOperation::TypeHierarchy).is_some());
+        assert!(snap_no_override
+            .unavailable(LspSemanticOperation::TypeHierarchy)
+            .is_some());
 
         // With the profile override, type hierarchy must be true.
         let override_caps = ObservedCapabilitiesOverride {
@@ -1339,7 +1355,9 @@ mod tests {
         );
         assert!(snap_with_override.supports_type_hierarchy);
         assert!(
-            snap_with_override.unavailable(LspSemanticOperation::TypeHierarchy).is_none(),
+            snap_with_override
+                .unavailable(LspSemanticOperation::TypeHierarchy)
+                .is_none(),
             "type hierarchy must be available after profile override"
         );
     }
@@ -1373,5 +1391,46 @@ mod tests {
             snap.decide(LspSemanticOperation::SecurityContext),
             CapabilityDecision::Supported
         );
+    }
+
+    #[test]
+    fn code_action_none_is_unsupported() {
+        let caps = ServerCapabilities::default();
+        let snap = LspCapabilitySnapshot::from_capabilities(&caps, Some("s"), Some("rust"));
+        assert!(!snap.supports_code_actions);
+        assert!(!snap.supports(LspSemanticOperation::CodeAction));
+    }
+
+    #[test]
+    fn code_action_simple_false_is_unsupported() {
+        let mut caps = ServerCapabilities::default();
+        caps.code_action_provider = Some(lsp_types::CodeActionProviderCapability::Simple(false));
+        let snap = LspCapabilitySnapshot::from_capabilities(&caps, Some("s"), Some("rust"));
+        assert!(!snap.supports_code_actions);
+        assert!(!snap.supports(LspSemanticOperation::CodeAction));
+    }
+
+    #[test]
+    fn code_action_simple_true_is_supported() {
+        let mut caps = ServerCapabilities::default();
+        caps.code_action_provider = Some(lsp_types::CodeActionProviderCapability::Simple(true));
+        let snap = LspCapabilitySnapshot::from_capabilities(&caps, Some("s"), Some("rust"));
+        assert!(snap.supports_code_actions);
+        assert!(snap.supports(LspSemanticOperation::CodeAction));
+    }
+
+    #[test]
+    fn code_action_options_is_supported() {
+        let mut caps = ServerCapabilities::default();
+        caps.code_action_provider = Some(lsp_types::CodeActionProviderCapability::Options(
+            CodeActionOptions {
+                code_action_kinds: None,
+                work_done_progress_options: Default::default(),
+                resolve_provider: None,
+            },
+        ));
+        let snap = LspCapabilitySnapshot::from_capabilities(&caps, Some("s"), Some("rust"));
+        assert!(snap.supports_code_actions);
+        assert!(snap.supports(LspSemanticOperation::CodeAction));
     }
 }

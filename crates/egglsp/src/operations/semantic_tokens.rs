@@ -78,9 +78,19 @@ pub fn decode_semantic_tokens(
             .clone();
         let mut modifiers = Vec::new();
         let bitset = tok.token_modifiers_bitset;
-        // Modifier bits beyond the legend length are silently ignored.
-        // The LSP spec says the client should ignore bits it doesn't
-        // recognize, so this is correct behavior.
+        let known_mask = if legend.token_modifiers.len() >= 32 {
+            u32::MAX
+        } else {
+            (1u32 << legend.token_modifiers.len()) - 1
+        };
+        let unknown_bits = bitset & !known_mask;
+        if unknown_bits != 0 {
+            return Err(LspError::RequestFailed(format!(
+                "semantic token modifier bits {:#x} are outside the legend ({} known modifiers)",
+                unknown_bits,
+                legend.token_modifiers.len()
+            )));
+        }
         for (bit, name) in legend.token_modifiers.iter().enumerate() {
             if bit >= 32 {
                 break;
@@ -368,7 +378,7 @@ mod tests {
     }
 
     #[test]
-    fn decode_semantic_tokens_modifier_bits_beyond_legend_are_ignored() {
+    fn decode_semantic_tokens_modifier_bits_beyond_legend_is_error() {
         let tokens = vec![SemanticToken {
             delta_line: 0,
             delta_start: 0,
@@ -377,8 +387,84 @@ mod tests {
             token_modifiers_bitset: 0b100101,
         }];
         let l = legend(&["function"], &["declaration", "readonly"]);
+        let err = decode_semantic_tokens(&tokens, &l).expect_err("must fail");
+        match err {
+            LspError::RequestFailed(msg) => {
+                assert!(
+                    msg.contains("modifier bits"),
+                    "expected 'modifier bits' in error: {msg}"
+                );
+            }
+            other => panic!("expected RequestFailed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn modifier_bits_within_legend_decode() {
+        let tokens = vec![SemanticToken {
+            delta_line: 0,
+            delta_start: 0,
+            length: 1,
+            token_type: 0,
+            token_modifiers_bitset: 0b11,
+        }];
+        let l = legend(&["function"], &["declaration", "readonly"]);
         let decoded = decode_semantic_tokens(&tokens, &l).expect("decode");
-        assert_eq!(decoded[0].modifiers, vec!["declaration"]);
+        assert_eq!(decoded[0].modifiers, vec!["declaration", "readonly"]);
+    }
+
+    #[test]
+    fn empty_modifier_legend_rejects_nonzero_bitset() {
+        let tokens = vec![SemanticToken {
+            delta_line: 0,
+            delta_start: 0,
+            length: 1,
+            token_type: 0,
+            token_modifiers_bitset: 1,
+        }];
+        let l = legend(&["function"], &[]);
+        let err = decode_semantic_tokens(&tokens, &l).expect_err("must fail");
+        match err {
+            LspError::RequestFailed(msg) => {
+                assert!(
+                    msg.contains("modifier bits"),
+                    "expected 'modifier bits' in error: {msg}"
+                );
+            }
+            other => panic!("expected RequestFailed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn legend_over_32_entries_handles_protocol_limit() {
+        let mods: Vec<String> = (0..40).map(|i| format!("mod{i}")).collect();
+        let tokens = vec![SemanticToken {
+            delta_line: 0,
+            delta_start: 0,
+            length: 1,
+            token_type: 0,
+            token_modifiers_bitset: u32::MAX,
+        }];
+        let l = SemanticTokenLegendSnapshot {
+            token_types: vec!["function".to_string()],
+            token_modifiers: mods,
+        };
+        let decoded = decode_semantic_tokens(&tokens, &l).expect("decode");
+        assert_eq!(decoded[0].modifiers.len(), 32);
+    }
+
+    #[test]
+    fn zero_bitset_with_nonempty_legend_is_valid() {
+        let tokens = vec![SemanticToken {
+            delta_line: 0,
+            delta_start: 0,
+            length: 1,
+            token_type: 0,
+            token_modifiers_bitset: 0,
+        }];
+        let l = legend(&["function"], &["declaration", "readonly"]);
+        let decoded = decode_semantic_tokens(&tokens, &l).expect("decode");
+        assert!(decoded[0].modifiers.is_empty());
     }
 
     // ---- capability gating: semantic tokens ----

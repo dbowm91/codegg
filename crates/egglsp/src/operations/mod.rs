@@ -11,17 +11,17 @@ pub use code_actions::{
     select_source_action_edit, CodeActionPreview, CodeActionSummary, SourceActionPreviewKind,
     CODE_ACTION_SUMMARY_DEFAULT_MAX,
 };
-pub use completion::{CompletionCandidate, completion_kind_to_string, COMPLETION_DETAIL_MAX_CHARS};
+pub use completion::{completion_kind_to_string, CompletionCandidate, COMPLETION_DETAIL_MAX_CHARS};
 pub use formatting::{
-    FormattingPreview, VersionedFileEvidence, document_end_position_utf16, sha256_hex,
+    document_end_position_utf16, sha256_hex, FormattingPreview, VersionedFileEvidence,
     FORMATTING_PREVIEW_MAX_DIFF_BYTES,
 };
-pub use navigation::{
-    normalize_goto_response, normalize_workspace_symbol_response,
-};
+pub use navigation::{normalize_goto_response, normalize_workspace_symbol_response};
 pub use overlay_ops::HierarchyDirection;
-pub use rename::{PrepareRenameResult, RenamePreview, RENAME_PREVIEW_MAX_EDITS, RENAME_PREVIEW_MAX_FILES};
-pub use semantic_tokens::{DecodedSemanticToken, decode_semantic_tokens};
+pub use rename::{
+    PrepareRenameResult, RenamePreview, RENAME_PREVIEW_MAX_EDITS, RENAME_PREVIEW_MAX_FILES,
+};
+pub use semantic_tokens::{decode_semantic_tokens, DecodedSemanticToken};
 pub use signature::{
     SignatureHelpSummary, SignatureInfoSummary, SignatureParameterSummary, SIGNATURE_DOC_MAX_CHARS,
 };

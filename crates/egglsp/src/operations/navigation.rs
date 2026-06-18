@@ -7,7 +7,6 @@ use url::Url;
 use crate::capability::{CapabilityDecision, LspCapabilitySnapshot, LspSemanticOperation};
 use crate::client::url_to_uri;
 use crate::error::LspError;
-use crate::language::detect_language;
 
 use super::signature::format_hover_contents;
 use super::LspOperations;
@@ -81,32 +80,7 @@ impl LspOperations {
         file_path: &Path,
     ) -> Option<LspCapabilitySnapshot> {
         let (key, _) = self.service.get_or_create_client(file_path).await.ok()?;
-        // Prefer the stored override-aware snapshot.
-        if let Some(mut snap) = self.service.normalized_capabilities_for_key(&key).await {
-            // Augment with observation state: if the client has
-            // received a publishDiagnostics notification, mark the
-            // snapshot accordingly so supports_diagnostics reflects
-            // observed behavior.
-            if self.service.has_observed_push_diagnostics_for_key(&key).await
-                && !snap.observed_push_diagnostics
-            {
-                snap.observed_push_diagnostics = true;
-                snap.supports_diagnostics = snap.supports_pull_diagnostics
-                    || snap.observed_push_diagnostics
-                    || snap.supports_push_diagnostics;
-            }
-            return Some(snap);
-        }
-        // Fallback: rebuild from raw capabilities (should not happen in
-        // normal operation after initialization completes).
-        let caps = self.service.get_capabilities_for_key(&key).await?;
-        let lang = detect_language(file_path.to_str().unwrap_or(""));
-        let server_name = key.split(':').next_back().map(String::from);
-        Some(LspCapabilitySnapshot::from_capabilities(
-            &caps,
-            server_name.as_deref(),
-            lang,
-        ))
+        self.service.effective_capabilities_for_key(&key).await
     }
 
     /// Fail fast with a structured [`LspUnavailable`] when the server
@@ -125,10 +99,14 @@ impl LspOperations {
         match self.service.capability_decision(&key, op).await {
             CapabilityDecision::Supported => Ok(()),
             CapabilityDecision::Unsupported(u) => Err(LspError::Unavailable(u)),
-            CapabilityDecision::Unknown { operation, reason } => {
-                tracing::debug!(?operation, reason, "capability unknown; allowing request");
-                Ok(())
-            }
+            CapabilityDecision::Unknown {
+                operation,
+                reason: _,
+            } => Err(LspError::NotInitialized(format!(
+                "capability {} is not yet known for {}",
+                operation.as_str(),
+                file_path.display(),
+            ))),
         }
     }
 
@@ -319,11 +297,21 @@ impl LspOperations {
             LspError::NotInitialized("no LSP client available for workspace_symbols".to_string())
         })?;
 
-        match self.service.capability_decision(&key, LspSemanticOperation::WorkspaceSymbols).await {
+        match self
+            .service
+            .capability_decision(&key, LspSemanticOperation::WorkspaceSymbols)
+            .await
+        {
             CapabilityDecision::Supported => {}
             CapabilityDecision::Unsupported(u) => return Err(LspError::Unavailable(u)),
-            CapabilityDecision::Unknown { operation, reason } => {
-                tracing::debug!(?operation, reason, "capability unknown; allowing workspace_symbols request");
+            CapabilityDecision::Unknown {
+                operation,
+                reason: _,
+            } => {
+                return Err(LspError::NotInitialized(format!(
+                    "capability {} is not yet known for workspace_symbols",
+                    operation.as_str(),
+                )));
             }
         }
 
@@ -484,7 +472,7 @@ impl LspOperations {
 mod tests {
     use super::*;
     use crate::capability::{LspCapabilitySnapshot, LspSemanticOperation};
-    use lsp_types::{Uri, ServerCapabilities, OneOf};
+    use lsp_types::{OneOf, ServerCapabilities, Uri};
     use std::str::FromStr;
 
     fn uri(s: &str) -> Uri {
@@ -751,6 +739,15 @@ mod tests {
     }
 
     // ---- capability gating: completion ----
+
+    #[test]
+    fn unknown_capability_returns_not_initialized_via_decision() {
+        let caps = ServerCapabilities::default();
+        let snap = LspCapabilitySnapshot::from_capabilities(&caps, Some("s"), Some("rust"));
+        assert!(snap.supports(LspSemanticOperation::SecurityContext));
+        let decision = snap.decide(LspSemanticOperation::TypeHierarchy);
+        assert!(matches!(decision, CapabilityDecision::Unsupported(_)));
+    }
 
     #[test]
     fn capability_snapshot_reports_completion_as_unavailable_when_unset() {

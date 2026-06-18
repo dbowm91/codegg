@@ -431,7 +431,7 @@ fn utf16_position_to_byte_offset(text: &str, line: u32, character: u32) -> Resul
     )))
 }
 
-fn apply_text_edits(text: &str, edits: &[TextEdit]) -> Result<String, LspError> {
+pub fn apply_text_edits(text: &str, edits: &[TextEdit]) -> Result<String, LspError> {
     if edits.is_empty() {
         return Ok(text.to_string());
     }

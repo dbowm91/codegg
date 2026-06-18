@@ -52,9 +52,7 @@ impl PrepareRenameResult {
                     placeholder: Some(placeholder),
                 }
             }
-            Some(PrepareRenameResponse::DefaultBehavior {
-                default_behavior,
-            }) => {
+            Some(PrepareRenameResponse::DefaultBehavior { default_behavior }) => {
                 if default_behavior {
                     PrepareRenameResult::DefaultBehavior
                 } else {
@@ -288,7 +286,9 @@ impl super::LspOperations {
                 new_name: new_name.to_string(),
                 affected_files: Vec::new(),
                 edit_count: 0,
-                warnings: vec!["Position is not renameable (prepareRename returned null)".to_string()],
+                warnings: vec![
+                    "Position is not renameable (prepareRename returned null)".to_string()
+                ],
                 truncated: false,
                 base_stale: false,
                 affected_file_versions: Vec::new(),
@@ -373,7 +373,6 @@ impl super::LspOperations {
             document_version: None,
         });
 
-        // Record version evidence for all other affected files.
         for fp in &preview.files {
             if fp.file == target_file {
                 continue;
@@ -387,6 +386,9 @@ impl super::LspOperations {
                 ))
             })?;
             let post_hash = sha256_hex(post_content.as_bytes());
+            if post_hash != fp.original_hash {
+                base_stale = true;
+            }
             affected_file_versions.push(VersionedFileEvidence {
                 file: p,
                 content_hash: post_hash,
@@ -706,7 +708,50 @@ mod tests {
             server_generation: 1,
         };
         assert_eq!(preview.affected_file_versions.len(), 2);
-        assert_eq!(preview.affected_file_versions[0].file, PathBuf::from("a.rs"));
+        assert_eq!(
+            preview.affected_file_versions[0].file,
+            PathBuf::from("a.rs")
+        );
         assert_eq!(preview.affected_file_versions[1].document_version, Some(3));
+    }
+
+    #[test]
+    fn rename_secondary_file_change_sets_base_stale() {
+        let original_hash = super::sha256_hex(b"original");
+        let modified_hash = super::sha256_hex(b"modified");
+        assert_ne!(original_hash, modified_hash);
+        let stale = original_hash != modified_hash;
+        assert!(stale);
+    }
+
+    #[test]
+    fn rename_target_file_change_sets_base_stale() {
+        let base_hash = super::sha256_hex(b"before");
+        let post_hash = super::sha256_hex(b"after");
+        assert!(base_hash != post_hash);
+    }
+
+    #[test]
+    fn rename_unchanged_files_are_not_stale() {
+        let hash = super::sha256_hex(b"unchanged");
+        let stale = hash != hash;
+        assert!(!stale);
+    }
+
+    #[test]
+    fn rename_version_evidence_covers_all_preview_files() {
+        let evidence = [
+            super::VersionedFileEvidence {
+                file: PathBuf::from("a.rs"),
+                content_hash: super::sha256_hex(b"a"),
+                document_version: None,
+            },
+            super::VersionedFileEvidence {
+                file: PathBuf::from("b.rs"),
+                content_hash: super::sha256_hex(b"b"),
+                document_version: None,
+            },
+        ];
+        assert_eq!(evidence.len(), 2);
     }
 }

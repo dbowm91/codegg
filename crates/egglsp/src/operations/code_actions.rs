@@ -248,9 +248,7 @@ impl LspOperations {
         };
 
         let params = serde_json::to_value(CodeActionParams {
-            text_document: TextDocumentIdentifier {
-                uri,
-            },
+            text_document: TextDocumentIdentifier { uri },
             range,
             context: CodeActionContext {
                 diagnostics,
@@ -444,9 +442,7 @@ impl LspOperations {
         let end = document_end_position_utf16(&text);
 
         let params = serde_json::to_value(CodeActionParams {
-            text_document: TextDocumentIdentifier {
-                uri,
-            },
+            text_document: TextDocumentIdentifier { uri },
             range: Range {
                 start: Position {
                     line: 0,
@@ -482,7 +478,7 @@ impl LspOperations {
 mod tests {
     use super::*;
     use crate::capability::{LspCapabilitySnapshot, LspSemanticOperation, LspUnavailable};
-    use lsp_types::{Uri, ServerCapabilities};
+    use lsp_types::{ServerCapabilities, Uri};
     use std::str::FromStr;
 
     fn uri(s: &str) -> Uri {

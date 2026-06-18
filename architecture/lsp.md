@@ -44,7 +44,7 @@ generic code.
 | Tier | Servers | Test surface |
 |------|---------|--------------|
 | Tier 1 | `rust-analyzer`, `basedpyright` / `pyright` | Real-server CI in `.github/workflows/lsp-real-server.yml` (`lsp-real-server-tests` feature) on opt-in triggers (`workflow_dispatch`, weekly schedule, push paths) |
-| Tier 2 | `gopls`, `typescript-language-server`, `clangd` | Real-server CI in `.github/workflows/lsp-real-server.yml`, opt-in, with pinned versions: `gopls` v0.16.1 (Go 1.22.5), `typescript-language-server` 4.3.3 + `typescript` 5.5.4 (Node 20), `clangd` 18 (LLVM apt) |
+| Tier 2 | `gopls`, `typescript-language-server`, `clangd` | Real-server CI in `.github/workflows/lsp-real-server.yml`, opt-in, with pinned versions: `gopls` v0.16.1 (Go 1.22.5), `typescript-language-server` 4.3.3 + `typescript` 5.5.4 (Node 20), `clangd` 18.1.3 (LLVM apt, checksum-verified archive) |
 
 Profile accessors:
 
@@ -184,12 +184,11 @@ capabilities the protocol does not advertise on the server side
 `LspCapabilitySnapshot::from_capabilities_with_override` and merged
 into the snapshot at client construction time.
 
-#### Tier 2 profiles (Phase 4 corrective validation in progress)
+#### Tier 2 profiles (Phase 4 complete for pinned matrix)
 
-Phase 4 corrective validation in progress; Tier 2 profiles and operations
-are implemented but compatibility remains experimental pending pinned
-real-server evidence. Tier 2 profiles extend the data-driven profile
-pattern to additional languages. They share the same struct, the same accessor pattern, and
+Phase 4 complete for the pinned Tier 1 and Tier 2 matrix; compatibility
+outside pinned versions remains experimental. Tier 2 profiles extend the
+data-driven profile pattern to additional languages. They share the same struct, the same accessor pattern, and
 the same client code path — there are no `match server_id` branches
 for Tier 2 quirks in generic code.
 
@@ -197,7 +196,7 @@ for Tier 2 quirks in generic code.
 |---------|-------------|------------|--------------|-----------|-----------------------------------------|
 | `gopls_profile()` | `gopls` | `gopls` | `go.work`, `go.mod`, `.git` | `WaitForDiagnosticsOrTimeout { 15s }` | `Some(true)` |
 | `typescript_language_server_profile()` | `typescript-language-server` | `typescript-language-server --stdio` | `tsconfig.json`, `jsconfig.json`, `package.json`, `.git` | `WaitForProgressEndOrTimeout { 20s }` | `None` (not observed) |
-| `clangd_profile()` | `clangd` | `clangd --background-index=false --clang-tidy=0` | `compile_commands.json`, `compile_flags.txt`, `CMakeLists.txt`, `.git` | `WarmupDelay { 2s }` | `Some(true)` |
+| `clangd_profile()` | `clangd` | `clangd --background-index=false --clang-tidy=0` | `compile_commands.json`, `compile_flags.txt`, `CMakeLists.txt`, `.git` | `WarmupDelay { 2s }` | `Some(true)` | pinned v18.1.3 (checksum-verified LLVM archive) |
 
 `gopls` requires a `go.mod` (or `go.work`) in the workspace root and
 needs `go.work` for multi-module workspaces. `typescript-language-server`
@@ -643,7 +642,12 @@ the delta-encoded stream against the server's legend via
 Delta overflow is rejected via checked arithmetic (`checked_add`/`checked_sub`)
 which returns `LspError::RequestFailed` on underflow rather than panicking.
 Out-of-range `token_type` indexes are reported as
-`LspError::RequestFailed` rather than silently dropped. `modifiers` is a
+`LspError::RequestFailed` rather than silently dropped. **Strict
+semantic-token modifier policy** — out-of-range modifier bits (bit
+position `>= legend.token_modifiers.len()`) are now rejected with
+`LspError::RequestFailed` rather than silently ignored. This ensures
+the decoded `modifiers: Vec<String>` is always legend-consistent and
+no phantom modifiers leak to consumers. `modifiers` is a
 `Vec<String>` of resolved legend names — bit `i` in the wire
 `token_modifiers_bitset` corresponds to legend position `i` (capped at
 32 bits):
@@ -678,7 +682,13 @@ pub enum PrepareRenameResult {
 `WorkspaceEditPreview` (already validated against `allowed_root`) with
 the placeholder, structured warnings about resource operations
 (create / rename / delete), `base_stale` for concurrent-edit
-detection, and the authoritative server generation. Resource
+detection, and the authoritative server generation. **Per-file
+stale-base evidence** — `base_stale` is now a `Vec<StaleBaseFile>`
+listing each file whose on-disk content diverged from the snapshot
+used during rename computation (with `file`, `expected_hash`,
+`actual_hash`). This replaces the single boolean with precise
+per-file staleness metadata so callers can decide whether to warn
+the user about concurrent edits on specific files. Resource
 operations in `document_changes` are reported as warnings because
 the underlying preview pipeline does not surface them (they would
 require executing `workspace/executeCommand`):
@@ -692,7 +702,14 @@ pub struct RenamePreview {
     pub warnings: Vec<String>,            // resource-op warnings
     pub truncated: bool,
     pub server_generation: u64,
-    pub base_stale: bool,                 // true if target file changed during rename
+    pub base_stale: bool,                 // true if any file changed during rename
+    pub stale_files: Vec<StaleBaseFile>,  // per-file stale-base evidence
+}
+
+pub struct StaleBaseFile {
+    pub file: PathBuf,
+    pub expected_hash: String,
+    pub actual_hash: String,
 }
 ```
 
@@ -741,7 +758,11 @@ diff (capped at `FORMATTING_PREVIEW_MAX_DIFF_BYTES` = 8 KB), and the
 authoritative server generation. `base_stale` is `true` when the
 on-disk content changed between the request and the response (i.e.
 `final_disk_hash != before_hash`); this allows callers to detect
-concurrent edits. After the in-memory apply, the operation re-reads
+concurrent edits. **Raw-edit formatting fidelity** — the formatting
+preview now preserves the server's raw `TextEdit` payloads (with
+`newText` intact) in the `FileEditPreview` entries, so the applying
+tool receives the exact text the server intended rather than a
+re-derived diff. After the in-memory apply, the operation re-reads
 the on-disk file and returns `LspError::RequestFailed` if
 `final_disk_hash != before_hash` — the on-disk invariant check is
 defense-in-depth; no mutating call is ever made:
@@ -968,7 +989,7 @@ Only these operations are model-facing:
 | `documentHighlights` | `textDocument/documentHighlight` (Phase 4) | `Vec<DocumentHighlightSummary>` (capped at 100; preserves `Text` / `Read` / `Write` kind) |
 | `signatureHelp` | `textDocument/signatureHelp` (Phase 4) | `SignatureHelpSummary` (active signature + parameter offsets; per-item documentation truncated to 2000 chars) |
 | `completion` | `textDocument/completion` (Phase 4) | `Vec<CompletionCandidate>` (capped via `max_candidates`, default 200; raw edit payloads stripped) |
-| `semanticTokens` | `textDocument/semanticTokens/full` (Phase 4) | `Vec<DecodedSemanticToken>` (capped via `max_tokens`, default 1000; legend-resolved) |
+| `semanticTokens` | `textDocument/semanticTokens/full` (Phase 4) | `Vec<DecodedSemanticToken>` (capped via `max_tokens`, default 1000; legend-resolved; strict modifier policy) |
 | `codeActionSummaries` | `textDocument/codeAction` (Phase 4) | `Vec<CodeActionSummary>` (capped at 50; never executes commands) |
 | `codeActionPreview` | `textDocument/codeAction` (Phase 4) | `CodeActionPreview` (preview-only; rejects command-only actions with `LspError::CommandOnlyCodeAction`) |
 | `renamePreview` | `textDocument/rename` (after ensure open + optional prepareRename) | `WorkspaceEditPreview` (unified diff patches + metadata; preview-only) |
@@ -1014,7 +1035,7 @@ Every new Phase 4 operation falls cleanly into one of two camps:
 | `signature_help` (typed) | `textDocument/signatureHelp` | `Option<SignatureHelpSummary>` (per-item doc truncated to 2000 chars) |
 | `workspace_symbols` | `workspace/symbol` | `Vec<SymbolInformation>` (capped at 200) |
 | `completion_bounded` | `textDocument/completion` | `Vec<CompletionCandidate>` (capped via `max_candidates`, default 200; raw edit payloads stripped) |
-| `semantic_tokens` | `textDocument/semanticTokens/full` | `Vec<DecodedSemanticToken>` (capped via `max_tokens`, default 1000; legend-resolved) |
+| `semantic_tokens` | `textDocument/semanticTokens/full` | `Vec<DecodedSemanticToken>` (capped via `max_tokens`, default 1000; legend-resolved; strict modifier policy) |
 
 All seven use `LspOperations::require_capability` to short-circuit
 when the server does not advertise the corresponding provider,
@@ -1028,10 +1049,10 @@ surfaced precisely.
 | Operation | LSP request | Bounded preview output |
 |-----------|-------------|------------------------|
 | `prepare_rename_typed` | `textDocument/prepareRename` | `PrepareRenameResult` (Range / DefaultBehavior / Unavailable) |
-| `rename_preview_typed` | `textDocument/rename` | `RenamePreview` (capped at 100 files / 1000 edits; resource-op warnings) |
+| `rename_preview_typed` | `textDocument/rename` | `RenamePreview` (capped at 100 files / 1000 edits; resource-op warnings; per-file stale-base evidence) |
 | `code_action_summaries` | `textDocument/codeAction` | `Vec<CodeActionSummary>` (capped at 50) |
 | `preview_code_action` | `textDocument/codeAction` (resolved) | `CodeActionPreview` (capped; rejects command-only with `LspError::CommandOnlyCodeAction`) |
-| `format_preview_typed` | `textDocument/formatting` | `FormattingPreview` (sha256 before/after hashes + bounded 8KB diff + on-disk invariant check) |
+| `format_preview_typed` | `textDocument/formatting` | `FormattingPreview` (sha256 before/after hashes + bounded 8KB diff + on-disk invariant check; raw TextEdit payloads preserved in FileEditPreview) |
 
 The five preview-only operations all share three invariants:
 
@@ -1050,6 +1071,13 @@ The five preview-only operations all share three invariants:
    `LspError::CommandOnlyCodeAction(title)` up front, before any
    network call. The model-facing `codeActionPreview` only ever
    surfaces edit-bearing actions.
+
+4. **Per-file stale-base evidence.** Both `RenamePreview` and
+   `FormattingPreview` report per-file staleness metadata
+   (`stale_files: Vec<StaleBaseFile>`) so callers can identify
+   exactly which files diverged from the snapshot used during
+   computation. The `base_stale` boolean is retained for
+   backward-compatible quick checks.
 
 `workspace/executeCommand` itself is never sent by any Phase 4
 operation. The `supports_execute_command` capability is recorded in
@@ -1404,7 +1432,11 @@ The `semanticContext` and `securityContext` handlers check `LspCapabilitySnapsho
 - **call expansion** (securityContext): a note `"call expansion not supported by server (call hierarchy required)"` is appended and `call_expansion` is `None`.
 - **type hierarchy** (semanticContext): the `type_hierarchy` field is `None` (no request made).
 
-When no capability snapshot is available (e.g., server not yet initialized), operations default to attempting the call (fail-open). This ensures degraded-but-functional behavior when capabilities cannot be determined.
+When no capability snapshot is available (e.g., server not yet initialized), operations default to attempting the call (fail-open). This ensures degraded-but-functional behavior when capabilities cannot be determined. **Phase 4 Pass 13: fail-closed unknown capability policy** — the snapshot now distinguishes `Supported`, `Unsupported`, and `Unknown` for each capability. `Unknown` (provider not present in `ServerCapabilities` at all) is treated as unsupported for gating purposes; only explicit `Some(...)` provider values produce `Supported`. This prevents an absent provider from being silently treated as available.
+
+### Effective Capability Snapshots
+
+`LspService::effective_capabilities_for_key(key)` returns the resolved capability snapshot for a client key, incorporating both the server-advertised capabilities and any profile-level `ObservedCapabilitiesOverride`. This is the canonical accessor used by all capability-gated operations. When the snapshot is `None` (server not yet initialized), callers receive the fail-open fallback described below.
 
 ### Capability Discovery and Normalization
 
@@ -1666,6 +1698,12 @@ The `age_ms` field is the age in milliseconds since diagnostics were received fr
 - `"diagnostics unavailable: no LSP diagnostic evidence available"` (for `Unavailable`)
 
 This allows the security review workflow to make informed decisions about diagnostic reliability when synthesizing findings.
+
+### Observed Diagnostics Integration
+
+`LspCapabilitySnapshot` now incorporates diagnostics observations from actual `publishDiagnostics` notifications. The `supports_push_diagnostics` boolean is derived from observed push notifications, not from the `text_document_sync` field alone — this captures the real behavior of servers that advertise text sync but never emit diagnostics, or vice versa. The snapshot is updated on each incoming `publishDiagnostics` notification and persisted across restarts via `snapshot_diagnostics_for_restart` / `install_retained_diagnostics`.
+
+The `effective_capabilities_for_key` accessor merges the stored override-aware snapshot with observed push-diagnostics state, ensuring runtime observations are reflected in all downstream capability checks. This eliminates the gap between server-advertised capabilities and actual runtime behavior.
 
 ## Shared Semantic Context API
 
@@ -2239,7 +2277,7 @@ set). CI installs pinned versions on the Tier 2 matrix jobs.
 | `basedpyright` | basedpyright | `1.13.1` | `dtolnay/rust-toolchain@1.81.0` |
 | `gopls` | gopls | `v0.16.1` | Go `1.22.5` |
 | `typescript-language-server` | typescript-language-server | `4.3.3` + `typescript@5.5.4` | Node `20` |
-| `clangd` | clangd | `18` (LLVM apt) | — |
+| `clangd` | clangd | `18` (LLVM apt, checksum-verified LLVM 18.1.3 archive) | — |
 
 Each matrix job runs only its own server test (e.g. `-- rust_analyzer` or `-- gopls`); artifact filenames are sanitized via the matrix job name and uploaded from `target/lsp-compatibility/` with a 30-day retention.
 
@@ -2362,7 +2400,7 @@ the Phase 4 plan (`plans/lsp_phase4_broader_compatibility_and_capability_adoptio
 | `basedpyright` / `pyright` | 1 | Linux | `WaitForDiagnosticsOrTimeout { 15s }` | passing | Type checking depth may vary between pyright and basedpyright; no `prepareCallHierarchy` |
 | `gopls` | 2 | Linux | `WaitForDiagnosticsOrTimeout { 15s }` | passing (pinned v0.16.1) | Requires `go.mod` (or `go.work`) in workspace root; multi-module workspace symbols need `go.work`; no push diagnostics from gopls itself (push inferred from `text_document_sync`); daemon mode persists after shutdown/exit (known limitation) |
 | `typescript-language-server` | 2 | Linux | `WaitForDiagnosticsOrTimeout { 30s }` | passing (pinned v4.3.3) | Requires `node_modules` installed locally (CI installs pinned versions); single-language server (handles TS/JS but no JSX/TSX-specific quirks); daemon mode persists after shutdown/exit (known limitation) |
-| `clangd` | 2 | Linux | `WarmupDelay { 2s }` | passing (pinned v18.1.3) | Requires `compile_commands.json` or `compile_flags.txt` in workspace root; background indexing disabled for test determinism; daemon mode persists after shutdown/exit (known limitation); references/hover may not resolve on member-access patterns with minimal fixtures |
+| `clangd` | 2 | Linux | `WarmupDelay { 2s }` | passing (pinned v18.1.3, checksum-verified LLVM 18.1.3 archive) | Requires `compile_commands.json` or `compile_flags.txt` in workspace root; background indexing disabled for test determinism; daemon mode persists after shutdown/exit (known limitation); references/hover may not resolve on member-access patterns with minimal fixtures |
 
 `status` here maps to the same vocabulary used in CI: a Tier 2 server
 is "passing" once its required smoke checks (`Passing` or
@@ -2374,7 +2412,7 @@ the profile.
 
 ## Phase 3 Final Closure: Runtime Termination, Generation-Safe Supervision, Restart Budgets, Readiness, and Fresh Evidence
 
-**Phase 3 supervision and restart lifecycle complete for Tier 1 servers; broader language/server compatibility remains future work.** Phase 3 final closure is the corrective pass that turned the structurally complete Phase 3 scaffolding into an operationally trustworthy lifecycle. The 10-pass sequence (Pass 1 through Pass 10) makes the runtime, restart, and freshness invariants explicit, the 11-pass addendum locks down the remove-before-signal handshake, and the 12-pass final cleanup makes the async release cancellation-safe. The 14 supervisor/restart scenarios pass repeatedly, the production test surface is green, and the 26 root composite tests pass.
+**Phase 3 supervision and restart lifecycle complete for Tier 1 servers; broader language/server compatibility remains future work.** Phase 3 final closure is the corrective pass that turned the structurally complete Phase 3 scaffolding into an operationally trustworthy lifecycle. The 10-pass sequence (Pass 1 through Pass 10) makes the runtime, restart, and freshness invariants explicit, the 11-pass addendum locks down the remove-before-signal handshake, and the 12-pass final cleanup makes the async release cancellation-safe. The 14 supervisor/restart scenarios pass repeatedly, the production test surface is green, and the 26 root composite tests pass. **Phase 4 complete for the pinned Tier 1 and Tier 2 matrix; compatibility outside pinned versions remains experimental.**
 
 ### Generation-Aware Runtime Map
 
@@ -2575,7 +2613,7 @@ Two new adversarial unit tests in `crates/egglsp/src/restart.rs` lock the invari
 
 The `RestartOwnerWaiter::owner_id` field is no longer `#[allow(dead_code)]`; both error variants now use it for diagnostics.
 
-**Status.** Phase 3 supervision and restart lifecycle is complete for Tier 1 servers; broader language/server compatibility remains future work.
+**Status.** Phase 3 supervision and restart lifecycle is complete for Tier 1 servers; broader language/server compatibility remains future work. **Phase 4 complete for the pinned Tier 1 and Tier 2 matrix; compatibility outside pinned versions remains experimental.**
 
 ### Final Invariant Checklist
 
@@ -2627,7 +2665,7 @@ The `RestartOwnerWaiter::owner_id` field is no longer `#[allow(dead_code)]`; bot
 - [x] Waiter timeout and closure errors embed the in-flight `owner_id` for diagnostics.
 - [x] Ten serial abort-while-blocked runs pass deterministically.
 
-## Phase 4: Broader Server Compatibility and Higher-Level Capability Adoption
+## Phase 4: Broader Server Compatibility and Higher-Level Capability Adoption (Complete for Pinned Matrix)
 
 Phase 4 moves Codegg from a lifecycle-stable Tier 1 LSP integration to
 a measured compatibility layer across Rust, Python, Go, TypeScript,
@@ -2636,6 +2674,8 @@ completion / token evidence while keeping rename, code actions, and
 formatting strictly preview-only. The plan and full pass-by-pass
 handoff live in
 `plans/lsp_phase4_broader_compatibility_and_capability_adoption.md`.
+
+**Phase 4 complete for the pinned Tier 1 and Tier 2 matrix; compatibility outside pinned versions remains experimental.**
 
 ### Pass summary
 
@@ -2646,13 +2686,15 @@ handoff live in
 | Pass 2 | Tier 2 profiles | `gopls_profile`, `typescript_language_server_profile`, `clangd_profile` plus `tier2_profiles()` / `all_profiles()` accessors |
 | Pass 3 | Fixture harness | Generalized `RealServerFixture` with typed DTOs (`LocationExpectation`, `CompletionExpectation`, `WorkspaceSymbolExpectation`); `run_generalized_operation_checks` dispatches per-operation smoke checks with on-disk invariant verification for mutation operations |
 | Pass 4 | Read-only navigation | `declaration`, `implementation`, `document_highlights`, `workspace_symbols`, `signature_help_typed` operations (capability-gated) |
-| Pass 5 | Completion + semantic tokens | `CompletionCandidate` (raw edit payloads stripped), `DecodedSemanticToken` + `decode_semantic_tokens` (delta-decoded, legend-resolved, out-of-range validation) |
-| Pass 6 | Rename preview | `PrepareRenameResult` enum, `RenamePreview` (capped at 100 files / 1000 edits, resource-op warnings) |
+| Pass 5 | Completion + semantic tokens | `CompletionCandidate` (raw edit payloads stripped), `DecodedSemanticToken` + `decode_semantic_tokens` (delta-decoded, legend-resolved, out-of-range validation, strict modifier policy) |
+| Pass 6 | Rename preview | `PrepareRenameResult` enum, `RenamePreview` (capped at 100 files / 1000 edits, resource-op warnings, per-file stale-base evidence) |
 | Pass 7 | Code-action preview | `CodeActionSummary`, `CodeActionPreview` (lazy single-action resolution, command-only rejected via `LspError::CommandOnlyCodeAction`) |
-| Pass 8 | Formatting preview | `FormattingPreview` (sha256 before/after hashes, bounded 8KB unified diff, on-disk invariant check) |
+| Pass 8 | Formatting preview | `FormattingPreview` (sha256 before/after hashes, bounded 8KB unified diff, on-disk invariant check, raw TextEdit preservation) |
 | Pass 9 | LspTool adoption | Eight new operations exposed through `LspTool` dispatch: `declaration`, `implementation`, `documentHighlights`, `signatureHelp`, `completion`, `semanticTokens`, `codeActionSummaries`, `codeActionPreview` |
 | Pass 10 | Tier 2 CI matrix | gopls, typescript-language-server, clangd jobs in `.github/workflows/lsp-real-server.yml` with pinned versions |
 | Pass 11 | Docs + final verification | Architecture, skill guide, AGENTS.md, README updated; full suite green |
+| Pass 12 | Per-server shutdown results | Tier 2 shutdown failures classified as `KnownLimitation`; exact clangd pin (checksum-verified LLVM 18.1.3 archive); data-driven smoke expectations (no server-ID branches) |
+| Pass 13 | Architecture docs + final closure | LSP architecture documentation updated for Phase 4 closure: fail-closed unknown capability policy, effective capability snapshots, observed diagnostics integration, raw-edit formatting fidelity, per-file stale-base evidence, strict semantic-token modifier policy, real implementation fixtures, data-driven smoke expectations, per-server shutdown results, exact clangd pin |
 
 ### Phase 4 outcomes
 
@@ -2683,6 +2725,32 @@ handoff live in
    `MAX_COMPLETION_CANDIDATES=200`, `MAX_SEMANTIC_TOKENS=1000`,
    `MAX_CODE_ACTIONS=50`).
 10. Existing Phase 2 and Phase 3 suites remain green.
+11. **Fail-closed unknown capability policy** — `Unknown` capability
+    state (provider absent from `ServerCapabilities`) is treated as
+    unsupported for gating, preventing silent availability of absent
+    providers.
+12. **Effective capability snapshots** — `effective_capabilities_for_key`
+    merges override-aware snapshots with observed push-diagnostics
+    state for runtime-accurate capability resolution.
+13. **Observed diagnostics integration** — `supports_push_diagnostics`
+    is derived from actual `publishDiagnostics` notifications, not
+    from `text_document_sync` alone.
+14. **Raw-edit formatting fidelity** — `FormattingPreview` preserves
+    server raw `TextEdit` payloads in `FileEditPreview` entries.
+15. **Per-file stale-base evidence** — `RenamePreview` and
+    `FormattingPreview` report per-file staleness metadata instead
+    of a single boolean.
+16. **Strict semantic-token modifier policy** — out-of-range modifier
+    bits are rejected with `LspError::RequestFailed`.
+17. **Real implementation fixtures** — gopls uses `Greeter`/`Person`
+    interface fixtures; clangd uses `WidgetBase`/`Widget` virtual
+    base fixtures.
+18. **Data-driven smoke expectations** — no server-ID branches in
+    smoke test logic; behavior is driven by fixture/profile data.
+19. **Per-server shutdown results** — Tier 2 shutdown failures are
+    classified as `KnownLimitation`, not hard errors.
+20. **Exact clangd pin** — `clangd` v18.1.3 from a checksum-verified
+    LLVM 18.1.3 archive.
 
 ### Phase 4 final checklist
 
@@ -2709,15 +2777,15 @@ handoff live in
 - [x] Signature help bounded (per-item doc truncated to 2000 chars)
 - [x] Workspace symbols semantically asserted (Flat/Nested → `Vec<SymbolInformation>`)
 - [x] Completion bounded (`max_candidates` default 200; raw edit payloads stripped)
-- [x] Semantic tokens decoded safely (delta decoder + out-of-range validation)
+- [x] Semantic tokens decoded safely (delta decoder + out-of-range validation + strict modifier policy)
 
 #### Preview-only operations
 
-- [x] Rename never writes files (in-memory only; resource-op warnings surface create/rename/delete)
+- [x] Rename never writes files (in-memory only; resource-op warnings surface create/rename/delete; per-file stale-base evidence)
 - [x] Code actions never execute commands (`LspError::CommandOnlyCodeAction` rejects command-only actions)
-- [x] Formatting never writes files (sha256 before/after hashes + on-disk invariant check)
+- [x] Formatting never writes files (sha256 before/after hashes + on-disk invariant check + raw TextEdit preservation)
 - [x] Workspace edits are root-bounded and capped (existing `allowed_root` contract preserved)
-- [x] Diffs are bounded and deterministic (8KB cap on formatting diff with explicit truncation marker)
+- [x] Diffs are bounded and deterministic (8KB cap on formatting diff with explicit truncation marker; raw TextEdit payloads preserved)
 
 #### Workflow adoption
 
@@ -2727,10 +2795,24 @@ handoff live in
 
 #### CI and docs
 
-- [x] Tier 2 versions are pinned (gopls v0.16.1, typescript-language-server 4.3.3 + typescript 5.5.4, clangd 18)
+- [x] Tier 2 versions are pinned (gopls v0.16.1, typescript-language-server 4.3.3 + typescript 5.5.4, clangd 18.1.3 checksum-verified)
 - [x] Default CI remains network-free (push trigger fires only on changes to LSP source paths)
 - [x] Compatibility artifacts upload (`target/lsp-compatibility/`, 30-day retention)
 - [x] Documentation accurately scopes support (this file + skill guide + AGENTS.md + README)
+
+#### Pass 13 — Architecture docs + final closure
+
+- [x] Fail-closed unknown capability policy documented (`Unknown` = unsupported)
+- [x] Effective capability snapshots (`effective_capabilities_for_key`) documented
+- [x] Observed diagnostics integration documented (push diagnostics derived from actual notifications)
+- [x] Raw-edit formatting fidelity documented (server raw TextEdit payloads preserved)
+- [x] Per-file stale-base evidence documented (per-file `StaleBaseFile` DTO)
+- [x] Strict semantic-token modifier policy documented (out-of-range bits rejected)
+- [x] Real implementation fixtures documented (gopls interface, clangd virtual base)
+- [x] Data-driven smoke expectations documented (no server-ID branches)
+- [x] Per-server shutdown results documented (Tier 2 shutdown = KnownLimitation)
+- [x] Exact clangd pin documented (v18.1.3, checksum-verified LLVM archive)
+- [x] Phase 4 status updated to "complete for pinned Tier 1 and Tier 2 matrix"
 
 ## See Also
 

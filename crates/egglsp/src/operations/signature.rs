@@ -492,9 +492,12 @@ mod tests {
 
     #[test]
     fn lsp_unavailable_display_includes_server_and_language_when_known() {
-        let u = crate::capability::LspUnavailable::new(LspSemanticOperation::Declaration, "no provider")
-            .with_server("rust-analyzer")
-            .with_language_id("rust");
+        let u = crate::capability::LspUnavailable::new(
+            LspSemanticOperation::Declaration,
+            "no provider",
+        )
+        .with_server("rust-analyzer")
+        .with_language_id("rust");
         let s = u.to_string();
         assert!(s.contains("declaration"));
         assert!(s.contains("rust-analyzer"));
@@ -504,7 +507,10 @@ mod tests {
 
     #[test]
     fn lsp_unavailable_display_falls_back_when_unknown() {
-        let u = crate::capability::LspUnavailable::new(LspSemanticOperation::Implementation, "no provider");
+        let u = crate::capability::LspUnavailable::new(
+            LspSemanticOperation::Implementation,
+            "no provider",
+        );
         let s = u.to_string();
         assert!(s.contains("implementation"));
         assert!(s.contains("no provider"));

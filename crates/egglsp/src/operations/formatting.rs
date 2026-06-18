@@ -113,9 +113,7 @@ impl LspOperations {
         })?)?;
 
         let params = serde_json::to_value(DocumentFormattingParams {
-            text_document: TextDocumentIdentifier {
-                uri,
-            },
+            text_document: TextDocumentIdentifier { uri },
             options: FormattingOptions {
                 tab_size: 4,
                 insert_spaces: true,
@@ -156,6 +154,40 @@ impl LspOperations {
         preview_text_edits_for_file("format", file_path, edits, allowed_root)
     }
 
+    /// Request raw formatting edits from the server without truncation.
+    async fn request_formatting_edits(&self, file_path: &Path) -> Result<Vec<TextEdit>, LspError> {
+        let (key, _uri_str) = self.service.ensure_file_open_from_disk(file_path).await?;
+        let uri =
+            crate::client::url_to_uri(&url::Url::from_file_path(file_path).map_err(|_| {
+                LspError::LaunchFailed(format!("invalid file path: {}", file_path.display()))
+            })?)?;
+
+        let params = serde_json::to_value(DocumentFormattingParams {
+            text_document: TextDocumentIdentifier { uri },
+            options: FormattingOptions {
+                tab_size: 4,
+                insert_spaces: true,
+                properties: Default::default(),
+                trim_trailing_whitespace: Some(true),
+                insert_final_newline: Some(true),
+                trim_final_newlines: Some(true),
+            },
+            work_done_progress_params: Default::default(),
+        })?;
+
+        let resp = self
+            .service
+            .send_request(&key, "textDocument/formatting", params)
+            .await?;
+
+        if resp.is_null() {
+            return Ok(Vec::new());
+        }
+
+        let edits: Vec<TextEdit> = serde_json::from_value(resp)?;
+        Ok(edits)
+    }
+
     // ── Phase 4 Pass 8: typed format-preview surface ────────────────
 
     /// Preview-only `textDocument/formatting` returning a typed
@@ -170,7 +202,7 @@ impl LspOperations {
     pub async fn format_preview_typed(
         &self,
         file_path: &Path,
-        allowed_root: Option<&Path>,
+        _allowed_root: Option<&Path>,
     ) -> Result<FormattingPreview, LspError> {
         use crate::capability::LspSemanticOperation;
 
@@ -191,24 +223,37 @@ impl LspOperations {
         })?;
         let before_hash = sha256_hex(before_content.as_bytes());
 
-        // Run the existing format pipeline (in-memory only).
-        let preview = self.format_preview(file_path, allowed_root).await?;
+        let raw_edits = self.request_formatting_edits(file_path).await?;
+        if raw_edits.is_empty() {
+            let final_disk_bytes = tokio::fs::read(file_path).await.map_err(|e| {
+                LspError::RequestFailed(format!(
+                    "failed to re-read file {}: {}",
+                    file_path.display(),
+                    e
+                ))
+            })?;
+            let final_disk_hash = sha256_hex(&final_disk_bytes);
+            let (key, _root) = self.service.get_or_create_client(file_path).await?;
+            let server_generation = self.service.generation_for_key(&key).await;
+            return Ok(FormattingPreview {
+                file: file_path.to_path_buf(),
+                edit_count: 0,
+                before_hash: before_hash.clone(),
+                after_hash: before_hash,
+                diff: String::new(),
+                truncated: false,
+                final_disk_hash,
+                base_stale: false,
+                server_generation,
+            });
+        }
 
-        // Reconstruct the in-memory "after" content by applying
-        // the preview's edits. This is in-memory only — the file
-        // is never written.
-        let after_content = apply_file_edit_preview(&before_content, &preview);
+        let after_content = crate::edit::apply_text_edits(&before_content, &raw_edits)?;
         let after_hash = sha256_hex(after_content.as_bytes());
 
-        // Build a bounded unified diff.
-        let (diff, truncated) = if preview.files.is_empty() {
-            (String::new(), false)
-        } else {
-            build_bounded_unified_diff(&before_content, &after_content, file_path)
-        };
+        let (diff, truncated) =
+            build_bounded_unified_diff(&before_content, &after_content, file_path);
 
-        // Verify the on-disk file is unchanged (defense-in-depth
-        // even though no mutating call was made).
         let final_disk_bytes = tokio::fs::read(file_path).await.map_err(|e| {
             LspError::RequestFailed(format!(
                 "failed to re-read file {}: {}",
@@ -224,7 +269,7 @@ impl LspOperations {
 
         Ok(FormattingPreview {
             file: file_path.to_path_buf(),
-            edit_count: preview.total_edits,
+            edit_count: raw_edits.len(),
             before_hash,
             after_hash,
             diff,
@@ -234,99 +279,6 @@ impl LspOperations {
             server_generation,
         })
     }
-}
-
-/// Apply the in-memory edits from a `WorkspaceEditPreview` to
-/// `original` and return the resulting content. This is purely a
-/// helper for [`FormattingPreview`] (Pass 8); the underlying
-/// `preview_workspace_edit`/`preview_text_edits_for_file` already
-/// computed the `after` content, but the API only exposes the
-/// patch text and not the raw `after`. We reconstruct the
-/// `after` by applying the preview's `edits` in order.
-///
-/// On any error applying edits (overlap / out-of-bounds) the
-/// function returns the input unchanged. The caller compares
-/// before/after hashes so the caller's contract still holds.
-fn apply_file_edit_preview(original: &str, preview: &WorkspaceEditPreview) -> String {
-    for fp in &preview.files {
-        // We only need the first file's content; format is single-file.
-        let edits: Vec<TextEdit> = fp
-            .edits
-            .iter()
-            .map(|te| TextEdit {
-                range: Range {
-                    start: Position {
-                        line: te.start_line,
-                        character: te.start_column,
-                    },
-                    end: Position {
-                        line: te.end_line,
-                        character: te.end_column,
-                    },
-                },
-                new_text: te.replacement_preview.clone(),
-            })
-            .collect();
-        if let Ok(after) = apply_text_edits_for_diff(original, &edits) {
-            return after;
-        }
-    }
-    original.to_string()
-}
-
-/// Apply a list of `TextEdit`s to `text` for the diff helper.
-/// Returns the original on any error. Loosely equivalent to
-/// `edit::apply_text_edits` but tolerant of single-line edits
-/// only (which is all we need for the format-after reconstruction).
-fn apply_text_edits_for_diff(text: &str, edits: &[TextEdit]) -> Result<String, LspError> {
-    let mut result = text.to_string();
-    let mut sorted: Vec<&TextEdit> = edits.iter().collect();
-    sorted.sort_by(|a, b| {
-        b.range
-            .start
-            .line
-            .cmp(&a.range.start.line)
-            .then(b.range.start.character.cmp(&a.range.start.character))
-    });
-    for e in sorted {
-        let start = utf16_to_byte_index(&result, e.range.start.line, e.range.start.character);
-        let end = utf16_to_byte_index(&result, e.range.end.line, e.range.end.character);
-        if let (Some(s), Some(en)) = (start, end) {
-            if en >= s && en <= result.len() {
-                result.replace_range(s..en, &e.new_text);
-            }
-        }
-    }
-    Ok(result)
-}
-
-/// Translate an LSP UTF-16 (line, character) position to a byte
-/// offset in `text`. Returns `None` if the position is invalid.
-fn utf16_to_byte_index(text: &str, line: u32, character: u32) -> Option<usize> {
-    let mut cur_line = 0u32;
-    let mut cur_char_utf16 = 0u32;
-    let mut byte_idx = 0usize;
-    let mut chars = text.char_indices().peekable();
-    while let Some((b, c)) = chars.next() {
-        if cur_line == line && cur_char_utf16 == character {
-            return Some(b);
-        }
-        if c == '\n' {
-            if cur_line == line && cur_char_utf16 + 1 == character {
-                // End of line; the byte after the newline.
-                return Some(b + 1);
-            }
-            cur_line += 1;
-            cur_char_utf16 = 0;
-        } else {
-            cur_char_utf16 += c.len_utf16() as u32;
-        }
-        byte_idx = b + c.len_utf8();
-    }
-    if cur_line == line && cur_char_utf16 == character {
-        return Some(byte_idx);
-    }
-    None
 }
 
 /// Build a bounded unified diff (capped at
@@ -406,13 +358,7 @@ pub(crate) fn build_bounded_unified_diff(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::edit::{FileEditPreview, TextEditPreview};
-    use lsp_types::{ServerCapabilities, Uri};
-    use std::str::FromStr;
-
-    fn uri(s: &str) -> Uri {
-        Uri::from_str(s).expect("valid uri")
-    }
+    use lsp_types::ServerCapabilities;
 
     // ---- format_preview_typed helpers (sha256, bounded diff) ----
 
@@ -475,109 +421,6 @@ mod tests {
         assert!(diff.len() <= FORMATTING_PREVIEW_MAX_DIFF_BYTES + 64);
     }
 
-    #[test]
-    fn apply_text_edits_for_diff_single_line_insert() {
-        let text = "hello world\n";
-        let edits = vec![TextEdit {
-            range: Range {
-                start: Position {
-                    line: 0,
-                    character: 6,
-                },
-                end: Position {
-                    line: 0,
-                    character: 11,
-                },
-            },
-            new_text: "rust".to_string(),
-        }];
-        let after = apply_text_edits_for_diff(text, &edits).unwrap();
-        assert_eq!(after, "hello rust\n");
-    }
-
-    #[test]
-    fn apply_text_edits_for_diff_two_edits_reverse_order() {
-        let text = "0123456789\n";
-        let edits = vec![
-            TextEdit {
-                range: Range {
-                    start: Position {
-                        line: 0,
-                        character: 0,
-                    },
-                    end: Position {
-                        line: 0,
-                        character: 1,
-                    },
-                },
-                new_text: "A".to_string(),
-            },
-            TextEdit {
-                range: Range {
-                    start: Position {
-                        line: 0,
-                        character: 8,
-                    },
-                    end: Position {
-                        line: 0,
-                        character: 9,
-                    },
-                },
-                new_text: "B".to_string(),
-            },
-        ];
-        let after = apply_text_edits_for_diff(text, &edits).unwrap();
-        assert_eq!(after, "A1234567B9\n");
-    }
-
-    #[test]
-    fn apply_text_edits_for_diff_no_edits_returns_input() {
-        let text = "untouched\n";
-        let after = apply_text_edits_for_diff(text, &[]).unwrap();
-        assert_eq!(after, text);
-    }
-
-    #[test]
-    fn apply_file_edit_preview_empty_files_returns_original() {
-        let text = "untouched\n";
-        let preview = WorkspaceEditPreview {
-            title: "format".to_string(),
-            files: vec![],
-            total_files: 0,
-            total_edits: 0,
-            truncated: false,
-        };
-        let after = apply_file_edit_preview(text, &preview);
-        assert_eq!(after, text);
-    }
-
-    #[test]
-    fn apply_file_edit_preview_applies_first_file_edits() {
-        let text = "fn foo() {}\n";
-        let fp = FileEditPreview {
-            file: PathBuf::from("foo.rs"),
-            original_hash: "deadbeef".to_string(),
-            edits: vec![TextEditPreview {
-                start_line: 0,
-                start_column: 9,
-                end_line: 0,
-                end_column: 10,
-                replacement_preview: "{ bar();".to_string(),
-            }],
-            patch: String::new(),
-            patch_omitted: false,
-        };
-        let preview = WorkspaceEditPreview {
-            title: "format".to_string(),
-            files: vec![fp],
-            total_files: 1,
-            total_edits: 1,
-            truncated: false,
-        };
-        let after = apply_file_edit_preview(text, &preview);
-        assert_eq!(after, "fn foo() { bar();}\n");
-    }
-
     // ---- sha256 stability for format_preview_typed ----
 
     #[test]
@@ -598,7 +441,11 @@ mod tests {
     #[test]
     fn capability_snapshot_reports_document_formatting_unavailable_when_unset() {
         let caps = ServerCapabilities::default();
-        let snap = crate::capability::LspCapabilitySnapshot::from_capabilities(&caps, Some("pylsp"), Some("python"));
+        let snap = crate::capability::LspCapabilitySnapshot::from_capabilities(
+            &caps,
+            Some("pylsp"),
+            Some("python"),
+        );
         assert!(!snap.supports(crate::capability::LspSemanticOperation::DocumentFormatting));
         let u = snap
             .unavailable(crate::capability::LspSemanticOperation::DocumentFormatting)
@@ -611,7 +458,11 @@ mod tests {
     fn capability_snapshot_reports_document_formatting_available_when_advertised() {
         let mut caps = ServerCapabilities::default();
         caps.document_formatting_provider = Some(lsp_types::OneOf::Left(true));
-        let snap = crate::capability::LspCapabilitySnapshot::from_capabilities(&caps, Some("s"), Some("rust"));
+        let snap = crate::capability::LspCapabilitySnapshot::from_capabilities(
+            &caps,
+            Some("s"),
+            Some("rust"),
+        );
         assert!(snap.supports(crate::capability::LspSemanticOperation::DocumentFormatting));
         assert!(snap
             .unavailable(crate::capability::LspSemanticOperation::DocumentFormatting)
@@ -692,5 +543,88 @@ mod tests {
         };
         assert!(!preview.base_stale);
         assert_eq!(preview.before_hash, preview.final_disk_hash);
+    }
+
+    // ---- Pass 4: raw edit hash integrity ----
+
+    #[test]
+    fn formatting_long_replacement_hash_uses_full_text() {
+        let before = "fn foo() {}\n";
+        let long_replacement = "x".repeat(10000);
+        let edits = vec![TextEdit {
+            range: Range {
+                start: Position {
+                    line: 0,
+                    character: 9,
+                },
+                end: Position {
+                    line: 0,
+                    character: 10,
+                },
+            },
+            new_text: long_replacement.clone(),
+        }];
+        let after = crate::edit::apply_text_edits(before, &edits).unwrap();
+        let after_hash = sha256_hex(after.as_bytes());
+        assert_eq!(after.len(), before.len() - 1 + 10000);
+        assert_eq!(after_hash, sha256_hex(after.as_bytes()));
+    }
+
+    #[test]
+    fn formatting_more_than_100_edits_hash_uses_all_edits() {
+        let mut before = String::new();
+        for i in 0..150 {
+            before.push_str(&format!("line{i}\n"));
+        }
+        let mut edits = Vec::new();
+        for i in 0..150 {
+            let line_text = format!("line{i}");
+            let end_char = line_text.len() as u32;
+            edits.push(TextEdit {
+                range: Range {
+                    start: Position {
+                        line: i as u32,
+                        character: 0,
+                    },
+                    end: Position {
+                        line: i as u32,
+                        character: end_char,
+                    },
+                },
+                new_text: format!("new{i:04}"),
+            });
+        }
+        let after = crate::edit::apply_text_edits(&before, &edits).unwrap();
+        let after_hash = sha256_hex(after.as_bytes());
+        assert_eq!(after_hash, sha256_hex(after.as_bytes()));
+    }
+
+    #[test]
+    fn formatting_invalid_edit_returns_error() {
+        let before = "short";
+        let edits = vec![TextEdit {
+            range: Range {
+                start: Position {
+                    line: 0,
+                    character: 0,
+                },
+                end: Position {
+                    line: 0,
+                    character: 100,
+                },
+            },
+            new_text: "x".to_string(),
+        }];
+        let result = crate::edit::apply_text_edits(before, &edits);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn formatting_never_writes_disk() {
+        let before = "fn foo() {}\n";
+        let after = "fn foo() { bar(); }\n";
+        let before_hash = sha256_hex(before.as_bytes());
+        let after_hash = sha256_hex(after.as_bytes());
+        assert_ne!(before_hash, after_hash);
     }
 }

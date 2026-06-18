@@ -2199,6 +2199,25 @@ impl LspService {
         client.get_normalized_capabilities().await
     }
 
+    /// Return the effective capability snapshot for `key`, merging
+    /// the stored override-aware snapshot with any observed push-diagnostics
+    /// state from the live client. This is the single authoritative accessor
+    /// for capability decisions.
+    pub async fn effective_capabilities_for_key(
+        &self,
+        key: &str,
+    ) -> Option<crate::capability::LspCapabilitySnapshot> {
+        let mut snap = self.normalized_capabilities_for_key(key).await?;
+        if self.has_observed_push_diagnostics_for_key(key).await && !snap.observed_push_diagnostics
+        {
+            snap.observed_push_diagnostics = true;
+            snap.supports_diagnostics = snap.supports_pull_diagnostics
+                || snap.observed_push_diagnostics
+                || snap.supports_push_diagnostics;
+        }
+        Some(snap)
+    }
+
     /// Make an explicit capability decision for the given client key and
     /// operation. Returns [`CapabilityDecision::Unknown`] when the client
     /// has not published capabilities yet.
@@ -2207,7 +2226,7 @@ impl LspService {
         key: &str,
         op: crate::capability::LspSemanticOperation,
     ) -> crate::capability::CapabilityDecision {
-        match self.normalized_capabilities_for_key(key).await {
+        match self.effective_capabilities_for_key(key).await {
             Some(snap) => snap.decide(op),
             None => crate::capability::CapabilityDecision::Unknown {
                 operation: op,

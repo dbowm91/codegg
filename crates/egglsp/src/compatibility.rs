@@ -601,8 +601,8 @@ mod tests {
         assert!(p.root_markers.contains(&".git".to_string()));
         assert_eq!(
             p.readiness_policy,
-            LspReadinessPolicy::WaitForProgressEndOrTimeout {
-                timeout: Duration::from_secs(20)
+            LspReadinessPolicy::WaitForDiagnosticsOrTimeout {
+                timeout: Duration::from_secs(30)
             }
         );
         assert_eq!(p.restart_policy, LspRestartPolicy::default());
