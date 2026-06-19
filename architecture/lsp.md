@@ -186,7 +186,7 @@ into the snapshot at client construction time.
 
 #### Tier 2 profiles (Phase 4 complete for pinned matrix)
 
-Phase 4 complete for the pinned Tier 1 and Tier 2 matrix; compatibility
+Phase 4 functionally complete; final cleanup and five-server evidence verification in progress; compatibility
 outside pinned versions remains experimental. Tier 2 profiles extend the
 data-driven profile pattern to additional languages. They share the same struct, the same accessor pattern, and
 the same client code path — there are no `match server_id` branches
@@ -2412,7 +2412,7 @@ the profile.
 
 ## Phase 3 Final Closure: Runtime Termination, Generation-Safe Supervision, Restart Budgets, Readiness, and Fresh Evidence
 
-**Phase 3 supervision and restart lifecycle complete for Tier 1 servers; broader language/server compatibility remains future work.** Phase 3 final closure is the corrective pass that turned the structurally complete Phase 3 scaffolding into an operationally trustworthy lifecycle. The 10-pass sequence (Pass 1 through Pass 10) makes the runtime, restart, and freshness invariants explicit, the 11-pass addendum locks down the remove-before-signal handshake, and the 12-pass final cleanup makes the async release cancellation-safe. The 14 supervisor/restart scenarios pass repeatedly, the production test surface is green, and the 26 root composite tests pass. **Phase 4 complete for the pinned Tier 1 and Tier 2 matrix; compatibility outside pinned versions remains experimental.**
+**Phase 3 supervision and restart lifecycle complete for Tier 1 servers; broader language/server compatibility remains future work.** Phase 3 final closure is the corrective pass that turned the structurally complete Phase 3 scaffolding into an operationally trustworthy lifecycle. The 10-pass sequence (Pass 1 through Pass 10) makes the runtime, restart, and freshness invariants explicit, the 11-pass addendum locks down the remove-before-signal handshake, and the 12-pass final cleanup makes the async release cancellation-safe. The 14 supervisor/restart scenarios pass repeatedly, the production test surface is green, and the 26 root composite tests pass. **Phase 4 functionally complete; final cleanup and five-server evidence verification in progress; compatibility outside pinned versions remains experimental.**
 
 ### Generation-Aware Runtime Map
 
@@ -2613,7 +2613,7 @@ Two new adversarial unit tests in `crates/egglsp/src/restart.rs` lock the invari
 
 The `RestartOwnerWaiter::owner_id` field is no longer `#[allow(dead_code)]`; both error variants now use it for diagnostics.
 
-**Status.** Phase 3 supervision and restart lifecycle is complete for Tier 1 servers; broader language/server compatibility remains future work. **Phase 4 complete for the pinned Tier 1 and Tier 2 matrix; compatibility outside pinned versions remains experimental.**
+**Status.** Phase 3 supervision and restart lifecycle is complete for Tier 1 servers; broader language/server compatibility remains future work. **Phase 4 functionally complete; final cleanup and five-server evidence verification in progress; compatibility outside pinned versions remains experimental.**
 
 ### Final Invariant Checklist
 
@@ -2675,7 +2675,7 @@ formatting strictly preview-only. The plan and full pass-by-pass
 handoff live in
 `plans/lsp_phase4_broader_compatibility_and_capability_adoption.md`.
 
-**Phase 4 complete for the pinned Tier 1 and Tier 2 matrix; compatibility outside pinned versions remains experimental.**
+**Phase 4 functionally complete; final cleanup and five-server evidence verification in progress; compatibility outside pinned versions remains experimental.**
 
 ### Pass summary
 

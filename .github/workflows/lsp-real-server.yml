@@ -200,9 +200,7 @@ jobs:
   # read this manifest to locate the evidence used to
   # close Phase 4 without parsing per-server JSON. The
   # job runs after all per-server jobs complete and
-  # fails fast if any per-server artifact is missing
-  # (which signals that a server was skipped or a test
-  # crashed before writing the report).
+  # fails if any per-server artifact is missing or invalid.
   matrix-summary:
     needs:
       - rust-analyzer
@@ -210,22 +208,22 @@ jobs:
       - gopls
       - typescript-language-server
       - clangd
-    if: always()
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - name: Download all per-server artifacts
         uses: actions/download-artifact@v4
         with:
-          path: target/lsp-compatibility/
-      - name: Verify matrix manifest exists
+          pattern: lsp-compat-*
+          path: target/lsp-compatibility/downloaded
+      - name: Aggregate matrix manifest
         run: |
-          if [ ! -f target/lsp-compatibility/matrix-manifest.json ]; then
-            echo "::error::matrix-manifest.json missing — at least one server did not write a report"
-            exit 1
-          fi
-          echo "=== Matrix manifest ==="
-          cat target/lsp-compatibility/matrix-manifest.json
+          python3 scripts/aggregate_lsp_compatibility_manifest.py \
+            --input target/lsp-compatibility/downloaded \
+            --output target/lsp-compatibility/matrix-manifest.json \
+            --expected-commit "$GITHUB_SHA" \
+            --expected-run-id "$GITHUB_RUN_ID"
       - name: Upload aggregated matrix manifest
         if: always()
         uses: actions/upload-artifact@v4

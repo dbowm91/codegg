@@ -1619,6 +1619,65 @@ struct OperationOutcome {
 }
 
 impl OperationOutcome {
+    /// Validate that the outcome fields satisfy formal invariants.
+    /// Call this before `into_record` to catch impossible state
+    /// combinations early.
+    fn validate(&self) -> Result<(), String> {
+        if self.semantic_assertion_passed {
+            if !self.exercised {
+                return Err(format!(
+                    "operation {}: semantic_assertion_passed requires exercised",
+                    self.operation
+                ));
+            }
+            if !self.request_succeeded {
+                return Err(format!(
+                    "operation {}: semantic_assertion_passed requires request_succeeded",
+                    self.operation
+                ));
+            }
+            if !self.response_parsed {
+                return Err(format!(
+                    "operation {}: semantic_assertion_passed requires response_parsed",
+                    self.operation
+                ));
+            }
+        }
+        if self.response_parsed && !self.request_succeeded {
+            return Err(format!(
+                "operation {}: response_parsed requires request_succeeded",
+                self.operation
+            ));
+        }
+        if self.request_succeeded && !self.exercised {
+            return Err(format!(
+                "operation {}: request_succeeded requires exercised",
+                self.operation
+            ));
+        }
+        if !self.exercised {
+            if self.request_succeeded {
+                return Err(format!(
+                    "operation {}: !exercised requires !request_succeeded",
+                    self.operation
+                ));
+            }
+            if self.response_parsed {
+                return Err(format!(
+                    "operation {}: !exercised requires !response_parsed",
+                    self.operation
+                ));
+            }
+            if self.semantic_assertion_passed {
+                return Err(format!(
+                    "operation {}: !exercised requires !semantic_assertion_passed",
+                    self.operation
+                ));
+            }
+        }
+        Ok(())
+    }
+
     /// Convenience constructor for the unsupported branch —
     /// the server did not advertise the capability so the
     /// harness never sent a request.
@@ -1658,7 +1717,10 @@ impl OperationOutcome {
     }
 
     /// Build an `LspOperationCompatibility` for emission.
+    /// Validates invariants before constructing the record.
     fn into_record(self) -> egglsp::compatibility::LspOperationCompatibility {
+        self.validate()
+            .unwrap_or_else(|e| panic!("invalid OperationOutcome: {e}"));
         egglsp::compatibility::LspOperationCompatibility {
             operation: self.operation,
             advertised: self.advertised,
@@ -5153,7 +5215,7 @@ async fn run_rename_preview_check(
                             advertised: true,
                             exercised: true,
                             request_succeeded: true,
-                            response_parsed: false,
+                            response_parsed: true,
                             semantic_assertion_passed: true,
                             requirement: CompatibilityRequirement::RequiredIfAdvertised,
                             known_limit: None,
@@ -5549,7 +5611,7 @@ async fn run_format_preview_check(
                         advertised: true,
                         exercised: true,
                         request_succeeded: true,
-                        response_parsed: false,
+                        response_parsed: true,
                         semantic_assertion_passed: true,
                         requirement: CompatibilityRequirement::RequiredIfAdvertised,
                         known_limit: None,
@@ -6333,34 +6395,24 @@ fn assert_required_checks(report: &LspCompatibilityReport) {
 
         // Allow `KnownLimitation` records to pass even when
         // the semantic assertion failed, as long as the
-        // protocol sequence succeeded and the harness
-        // exercised the operation. The plan calls for
-        // preserving the exact protocol/parse/semantic
-        // fields so reviewers can read them from the JSON
-        // report.
+        // protocol sequence succeeded, the harness
+        // exercised the operation, and a non-empty reason
+        // is documented. The plan calls for preserving the
+        // exact protocol/parse/semantic fields so reviewers
+        // can read them from the JSON report.
+        let known_limit_is_documented = record
+            .known_limit
+            .as_ref()
+            .map_or(false, |s| !s.is_empty());
         let known_limitation_ok = record.requirement
             == egglsp::compatibility::CompatibilityRequirement::KnownLimitation
             && exercised
             && protocol_ok
-            && parsed_ok;
-
-        // Allow a `Required` check to pass when its
-        // `PassingWithKnownLimits` is documented in the
-        // companion `checks` vector. The harness
-        // historically routed `Required + force-killed` to
-        // `PassingWithKnownLimits` for clangd and the
-        // Tier 2 servers; we preserve that escape hatch by
-        // checking the companion check.
-        let check_status = report
-            .checks
-            .iter()
-            .find(|c| c.name == record.operation)
-            .map(|c| c.status.clone());
-        let known_limit_check_ok =
-            check_status == Some(CompatibilityCheckStatus::PassingWithKnownLimits);
+            && parsed_ok
+            && known_limit_is_documented;
 
         let all_pass = exercised && protocol_ok && parsed_ok && semantic_ok;
-        let passes = all_pass || known_limitation_ok || known_limit_check_ok;
+        let passes = all_pass || known_limitation_ok;
 
         match record.requirement {
             egglsp::compatibility::CompatibilityRequirement::Required => {
@@ -6403,13 +6455,19 @@ fn assert_required_checks(report: &LspCompatibilityReport) {
                 // `KnownLimitation` records must have been
                 // exercised (otherwise the documented
                 // limitation is not actually being verified)
-                // and the protocol sequence must have
-                // succeeded. The `known_limit` field carries
-                // the documented reason; the suite never
-                // fails on this branch.
+                // and a non-empty reason must be documented.
+                // The `known_limit` field carries the documented
+                // reason; the suite never fails on this branch
+                // when the limitation is properly documented.
                 if !exercised {
                     failures.push(format!(
                         "known-limitation record was not exercised: {}",
+                        format_operation_line(record)
+                    ));
+                }
+                if !known_limit_is_documented {
+                    failures.push(format!(
+                        "known-limitation record missing documented reason: {}",
                         format_operation_line(record)
                     ));
                 }
@@ -6678,23 +6736,16 @@ fn write_report(report: &LspCompatibilityReport, server_label: &str) {
     update_matrix_manifest(report, server_label, &filename);
 }
 
-/// Pass 9 — Append or update the matrix manifest at
-/// `target/lsp-compatibility/matrix-manifest.json`. The
-/// manifest carries the git commit SHA, the
-/// `GITHUB_RUN_ID` env var (when present), and one entry
-/// per server with the artifact path and exact version.
-/// Reviewers read this file to locate the evidence used
-/// to close Phase 4 without parsing per-server JSON.
-///
-/// The manifest is overwritten on each call so a fresh
-/// `cargo test` run produces a deterministic snapshot.
+/// Pass 9 — Write a per-server manifest at
+/// `target/lsp-compatibility/<server_label>/server-manifest.json`.
+/// Each server writes to its own subdirectory so the CI
+/// artifact merger produces five distinct manifest files
+/// rather than overwriting one shared file.
 fn update_matrix_manifest(
     report: &LspCompatibilityReport,
     server_label: &str,
     artifact_filename: &str,
 ) {
-    let report_dir = std::path::PathBuf::from("target/lsp-compatibility");
-    let manifest_path = report_dir.join("matrix-manifest.json");
     let commit = std::process::Command::new("git")
         .args(["rev-parse", "HEAD"])
         .output()
@@ -6707,48 +6758,31 @@ fn update_matrix_manifest(
             }
         });
     let workflow_run_id = std::env::var("GITHUB_RUN_ID").ok();
-    let entry = serde_json::json!({
+    let manifest = serde_json::json!({
+        "commit": commit.clone().unwrap_or_else(|| "unknown".to_string()),
+        "workflow_run_id": workflow_run_id.clone().unwrap_or_default(),
+        "server_label": server_label,
         "server_id": report.server_id,
         "server_version": report.server_version,
-        "artifact": format!("target/lsp-compatibility/{artifact_filename}"),
+        "report_path": format!("target/lsp-compatibility/{artifact_filename}"),
         "position_encoding": report.position_encoding.map(|e| e.as_str()),
         "position_encoding_assumed": report.position_encoding_assumed,
         "operation_records": report.operation_support.len(),
         "checks": report.checks.len(),
     });
-    let mut manifest: serde_json::Value = if manifest_path.exists() {
-        std::fs::read_to_string(&manifest_path)
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_else(|| serde_json::json!({}))
-    } else {
-        serde_json::json!({})
-    };
-    if manifest.get("commit").is_none() {
-        manifest["commit"] =
-            serde_json::Value::String(commit.clone().unwrap_or_else(|| "unknown".to_string()));
-    }
-    if manifest.get("workflow_run_id").is_none() {
-        if let Some(id) = workflow_run_id.clone() {
-            manifest["workflow_run_id"] = serde_json::Value::String(id);
-        }
-    }
-    let servers = manifest
-        .as_object_mut()
-        .unwrap()
-        .entry("servers".to_string())
-        .or_insert_with(|| serde_json::json!({}));
-    servers[server_label] = entry;
+    let server_dir = std::path::PathBuf::from("target/lsp-compatibility").join(server_label);
+    let _ = std::fs::create_dir_all(&server_dir);
+    let manifest_path = server_dir.join("server-manifest.json");
     let json = match serde_json::to_string_pretty(&manifest) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("failed to serialize matrix manifest: {e}");
+            eprintln!("failed to serialize server manifest: {e}");
             return;
         }
     };
     if let Err(e) = std::fs::write(&manifest_path, &json) {
         eprintln!(
-            "failed to write matrix manifest to {}: {e}",
+            "failed to write server manifest to {}: {e}",
             manifest_path.display()
         );
     }

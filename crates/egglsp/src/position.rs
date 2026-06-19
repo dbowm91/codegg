@@ -129,20 +129,25 @@ fn lsp_utf16_to_byte_offset(text: &str, units: u32) -> Option<usize> {
 /// UTF-32 specialization — one `char` == one unit. The
 /// conversion is therefore equivalent to finding the byte
 /// offset of the `units`-th `char` in the string.
+/// Returns `None` if `units` exceeds the character count.
 fn lsp_utf32_to_byte_offset(text: &str, units: u32) -> Option<usize> {
     if units == 0 {
         return Some(0);
     }
-    let mut byte_offset: usize = 0;
-    let mut char_index: u32 = 0;
+    let mut count = 0u32;
+    let mut byte_offset = 0usize;
     for c in text.chars() {
-        if char_index == units {
+        if count == units {
             return Some(byte_offset);
         }
-        char_index += 1;
+        count = count.checked_add(1)?;
         byte_offset += c.len_utf8();
     }
-    None
+    if count == units {
+        Some(byte_offset)
+    } else {
+        None
+    }
 }
 
 /// Convert a range (start, length) expressed in `units` of the
@@ -392,5 +397,52 @@ mod tests {
     #[test]
     fn default_encoding_is_utf16() {
         assert_eq!(PositionEncoding::default(), PositionEncoding::Utf16);
+    }
+
+    #[test]
+    fn utf32_exact_end_is_valid() {
+        let text = "漢";
+        assert_eq!(
+            lsp_units_to_byte_offset(text, 0, PositionEncoding::Utf32),
+            Some(0)
+        );
+        assert_eq!(
+            lsp_units_to_byte_offset(text, 1, PositionEncoding::Utf32),
+            Some(3)
+        );
+        assert_eq!(
+            lsp_units_to_byte_offset(text, 2, PositionEncoding::Utf32),
+            None
+        );
+    }
+
+    #[test]
+    fn utf32_past_end_is_none() {
+        let text = "hello";
+        assert_eq!(
+            lsp_units_to_byte_offset(text, 6, PositionEncoding::Utf32),
+            None
+        );
+        let text2 = "café";
+        assert_eq!(
+            lsp_units_to_byte_offset(text2, 5, PositionEncoding::Utf32),
+            None
+        );
+    }
+
+    #[test]
+    fn utf32_zero_is_valid() {
+        assert_eq!(
+            lsp_units_to_byte_offset("", 0, PositionEncoding::Utf32),
+            Some(0)
+        );
+        assert_eq!(
+            lsp_units_to_byte_offset("hello", 0, PositionEncoding::Utf32),
+            Some(0)
+        );
+        assert_eq!(
+            lsp_units_to_byte_offset("café", 0, PositionEncoding::Utf32),
+            Some(0)
+        );
     }
 }
