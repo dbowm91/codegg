@@ -86,21 +86,19 @@ pub fn lsp_units_to_byte_offset(
     }
 }
 
-/// UTF-8 specialization — every byte is exactly one unit, so
-/// the offset lands on a byte boundary by definition.
-///
-/// Note: we do NOT reject mid-character byte offsets via
-/// `str::is_char_boundary()`. In UTF-8, every byte offset is
-/// a valid position; a mid-character offset is the server's
-/// responsibility, not the converter's. No mainstream LSP
-/// server negotiates UTF-8 (they all use UTF-16), so this
-/// path is rarely exercised in practice.
+/// UTF-8 specialization — every byte is exactly one unit, but
+/// we reject offsets that land in the middle of a multi-byte
+/// character. Only Rust `str` character boundaries are valid
+/// return values from all encoding paths.
 fn lsp_utf8_to_byte_offset(text: &str, units: u32) -> Option<usize> {
-    let len = text.len();
-    if (units as usize) > len {
+    let offset = units as usize;
+    if offset > text.len() {
         return None;
     }
-    Some(units as usize)
+    if !text.is_char_boundary(offset) {
+        return None;
+    }
+    Some(offset)
 }
 
 /// UTF-16 specialization — the common case. Walks the string
@@ -287,15 +285,22 @@ mod tests {
 
     #[test]
     fn utf16_offset_in_middle_of_multibyte_char_rejects() {
-        let text = "你";
+        // U+1F600 (GRINNING FACE) is 2 UTF-16 units (surrogate pair)
+        // and 4 UTF-8 bytes. Offset 1 lands mid-character.
+        let text = "\u{1F600}";
         assert_eq!(
             lsp_units_to_byte_offset(text, 0, PositionEncoding::Utf16),
             Some(0)
         );
-        // 1 UTF-16 unit lands in the middle of `你`.
+        // 1 UTF-16 unit lands in the middle of the surrogate pair.
         assert_eq!(
             lsp_units_to_byte_offset(text, 1, PositionEncoding::Utf16),
             None
+        );
+        // 2 UTF-16 units is the end of the character.
+        assert_eq!(
+            lsp_units_to_byte_offset(text, 2, PositionEncoding::Utf16),
+            Some(4)
         );
     }
 
@@ -325,8 +330,13 @@ mod tests {
         let text = "café";
         // UTF-8 bytes: c=0, a=1, f=2, é=3,4 — length 5.
         assert_eq!(
+            lsp_units_to_byte_offset(text, 3, PositionEncoding::Utf8),
+            Some(3)
+        );
+        // Byte 4 is the second byte of 'é' — not a character boundary.
+        assert_eq!(
             lsp_units_to_byte_offset(text, 4, PositionEncoding::Utf8),
-            Some(4)
+            None
         );
         assert_eq!(
             lsp_units_to_byte_offset(text, 5, PositionEncoding::Utf8),
@@ -339,20 +349,36 @@ mod tests {
     }
 
     #[test]
-    fn utf8_mid_character_offset_is_valid_byte_position() {
-        // In UTF-8, every byte offset is a valid position.
-        // Byte 1 of "你" (3-byte CJK character) is a valid
-        // byte offset — the server is responsible for sending
-        // correct offsets, not the converter.
+    fn utf8_mid_character_offset_rejects() {
+        // Offsets landing inside a multi-byte character are rejected.
         let text = "hi你ok";
         // h=0, i=1, 你=2,3,4, o=5, k=6 — length 7.
         assert_eq!(
+            lsp_units_to_byte_offset(text, 0, PositionEncoding::Utf8),
+            Some(0)
+        );
+        assert_eq!(
+            lsp_units_to_byte_offset(text, 1, PositionEncoding::Utf8),
+            Some(1)
+        );
+        // Byte 2 is the start of '你' — valid boundary.
+        assert_eq!(
+            lsp_units_to_byte_offset(text, 2, PositionEncoding::Utf8),
+            Some(2)
+        );
+        // Bytes 3 and 4 are inside '你' — not character boundaries.
+        assert_eq!(
             lsp_units_to_byte_offset(text, 3, PositionEncoding::Utf8),
-            Some(3)
+            None
         );
         assert_eq!(
             lsp_units_to_byte_offset(text, 4, PositionEncoding::Utf8),
-            Some(4)
+            None
+        );
+        // Byte 5 is the start of 'o' — valid boundary.
+        assert_eq!(
+            lsp_units_to_byte_offset(text, 5, PositionEncoding::Utf8),
+            Some(5)
         );
     }
 
@@ -468,6 +494,94 @@ mod tests {
         assert_eq!(
             lsp_units_to_byte_offset("café", 0, PositionEncoding::Utf32),
             Some(0)
+        );
+    }
+
+    #[test]
+    fn utf32_exact_end_ascii() {
+        let text = "hello";
+        // 5 ASCII chars → offset 5 is the exact end.
+        assert_eq!(
+            lsp_units_to_byte_offset(text, 5, PositionEncoding::Utf32),
+            Some(5)
+        );
+        assert_eq!(
+            lsp_units_to_byte_offset(text, 6, PositionEncoding::Utf32),
+            None
+        );
+    }
+
+    #[test]
+    fn utf32_exact_end_non_ascii() {
+        let text = "café";
+        // 4 chars: c(0), a(1), f(2), é(3) → byte offset 5 is the exact end.
+        assert_eq!(
+            lsp_units_to_byte_offset(text, 4, PositionEncoding::Utf32),
+            Some(5)
+        );
+        assert_eq!(
+            lsp_units_to_byte_offset(text, 5, PositionEncoding::Utf32),
+            None
+        );
+    }
+
+    #[test]
+    fn utf32_past_end_rejected() {
+        let text = "ab";
+        assert_eq!(
+            lsp_units_to_byte_offset(text, 3, PositionEncoding::Utf32),
+            None
+        );
+        assert_eq!(
+            lsp_units_to_byte_offset(text, 100, PositionEncoding::Utf32),
+            None
+        );
+    }
+
+    #[test]
+    fn utf8_offset_inside_multibyte_character_is_none() {
+        // "你" occupies bytes 2..5 in "hi你ok".
+        let text = "hi你ok";
+        assert_eq!(
+            lsp_units_to_byte_offset(text, 3, PositionEncoding::Utf8),
+            None
+        );
+        assert_eq!(
+            lsp_units_to_byte_offset(text, 4, PositionEncoding::Utf8),
+            None
+        );
+    }
+
+    #[test]
+    fn utf8_character_boundary_after_multibyte_is_some() {
+        // "hi你ok" — byte 5 is the start of 'o', a valid boundary.
+        let text = "hi你ok";
+        assert_eq!(
+            lsp_units_to_byte_offset(text, 5, PositionEncoding::Utf8),
+            Some(5)
+        );
+    }
+
+    #[test]
+    fn utf8_exact_end_is_some() {
+        let text = "café";
+        // 5 bytes total; offset 5 is the exact end.
+        assert_eq!(
+            lsp_units_to_byte_offset(text, 5, PositionEncoding::Utf8),
+            Some(5)
+        );
+    }
+
+    #[test]
+    fn utf8_past_end_is_none() {
+        let text = "café";
+        assert_eq!(
+            lsp_units_to_byte_offset(text, 6, PositionEncoding::Utf8),
+            None
+        );
+        assert_eq!(
+            lsp_units_to_byte_offset(text, 100, PositionEncoding::Utf8),
+            None
         );
     }
 }

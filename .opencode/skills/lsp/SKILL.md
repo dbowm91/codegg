@@ -379,7 +379,7 @@ Tracks open documents for replay after server restart. `OpenDocumentSnapshot` ca
 
 ## Tier 1 vs Tier 2
 
-Phase 4 complete for the exact pinned Tier 1 and Tier 2 matrix. All five real-server jobs pass on one commit; the aggregate manifest verifies consistent run metadata, report completeness, typed operation invariants, required-operation success, shutdown traces, and exact version evidence. Compatibility outside the pinned matrix remains experimental. Server maturity is tracked on the profile, not in
+Phase 4 complete for the exact pinned Tier 1 and Tier 2 matrix. All five real-server jobs pass on one commit; the aggregate manifest verifies consistent run metadata, report completeness, typed operation invariants, required-operation success, shutdown traces, and exact version evidence. Compatibility outside the pinned matrix remains experimental. Phase 4 final closure added: UTF-8 position offset safety (char boundary enforcement), deterministic force-kill test (SIGTERM-ignoring fixture), known-limitation scope validation (Protocol:/Semantic: prefix), and GitHub artifact layout aggregation test. Server maturity is tracked on the profile, not in
 any generic client branch — there is no `match server_id` for Tier 2
 quirks. Profile accessors live in `crates/egglsp/src/compatibility.rs`:
 

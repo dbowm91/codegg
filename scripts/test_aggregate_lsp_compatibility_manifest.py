@@ -332,6 +332,66 @@ def test_compute_summary_counts(tmp_path: Path):
     assert counts["required_operations_passing"] == 5  # Only Diagnostics * 5
     assert counts["known_limitations"] == 0  # TypeHierarchy is not exercised
     assert counts["semantic_failures"] == 5  # Rename * 5 servers
+    assert counts["protocol_known_limitations"] == 0
+    assert counts["semantic_known_limitations"] == 0
+
+
+# --- Test: known_limitation_scope_classification ---
+
+def test_known_limitation_scope_classification(tmp_path: Path):
+    """KnownLimitation records are classified by Protocol:/Semantic: prefix."""
+    commit = "abc123"
+    run_id = "run-1"
+
+    ops = [
+        {
+            "operation": "Shutdown",
+            "advertised": True,
+            "exercised": True,
+            "request_succeeded": False,
+            "response_parsed": False,
+            "semantic_assertion_passed": False,
+            "requirement": "KnownLimitation",
+            "known_limit": "Protocol: daemon-mode shutdown hang; force-killed",
+        },
+        {
+            "operation": "Hover",
+            "advertised": True,
+            "exercised": True,
+            "request_succeeded": True,
+            "response_parsed": True,
+            "semantic_assertion_passed": False,
+            "requirement": "KnownLimitation",
+            "known_limit": "Semantic: ContentModified during file processing",
+        },
+        {
+            "operation": "TypeHierarchy",
+            "advertised": False,
+            "exercised": True,
+            "request_succeeded": False,
+            "response_parsed": False,
+            "semantic_assertion_passed": False,
+            "requirement": "KnownLimitation",
+            "known_limit": "Server returns -32601 for prepareTypeHierarchy",
+        },
+    ]
+
+    for label in EXPECTED_SERVERS:
+        manifest = _make_manifest(label, commit=commit, run_id=run_id)
+        report = _make_report(server_id=label, operation_support=ops)
+        _write_server_dir(tmp_path, label, manifest, report)
+
+    servers = {}
+    for label in EXPECTED_SERVERS:
+        servers[label] = _make_manifest(label, commit=commit, run_id=run_id)
+
+    counts = compute_summary_counts(tmp_path, servers)
+    # 3 exercised KnownLimitation ops * 5 servers = 15
+    assert counts["known_limitations"] == 15
+    # Protocol: Shutdown * 5 = 5 protocol known limitations
+    assert counts["protocol_known_limitations"] == 5
+    # Semantic: Hover * 5 + unprefixed TypeHierarchy * 5 = 10 semantic
+    assert counts["semantic_known_limitations"] == 10
 
 
 # --- Test: validate_reports checks shutdown_trace ---
@@ -353,3 +413,63 @@ def test_fails_when_shutdown_trace_missing(tmp_path: Path):
 
     report_errors = validate_reports(tmp_path, servers)
     assert any("shutdown_trace" in e for e in report_errors)
+
+
+# --- Test: aggregates_github_download_artifact_directory_layout ---
+
+def test_aggregates_github_download_artifact_directory_layout(tmp_path: Path):
+    """Mirrors GitHub actions/download-artifact output layout with nested artifact dirs."""
+    downloaded = tmp_path / "downloaded"
+    downloaded.mkdir()
+
+    commit = "deadbeef12345678"
+    run_id = "test-run-123"
+
+    artifact_dirs = {
+        "rust-analyzer": "lsp-compat-rust-analyzer",
+        "basedpyright": "lsp-compat-basedpyright",
+        "gopls": "lsp-compat-gopls",
+        "typescript-language-server": "lsp-compat-typescript-language-server",
+        "clangd": "lsp-compat-clangd",
+    }
+
+    for server_id, artifact_name in artifact_dirs.items():
+        report_filename = f"{server_id}-report.json"
+        manifest = _make_manifest(
+            server_label=server_id,
+            commit=commit,
+            run_id=run_id,
+            server_id=server_id,
+            report_path=f"{artifact_name}/{report_filename}",
+        )
+        report = _make_report(server_id=server_id)
+
+        artifact_dir = downloaded / artifact_name
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+
+        with open(artifact_dir / "server-manifest.json", "w") as f:
+            json.dump(manifest, f)
+        with open(artifact_dir / report_filename, "w") as f:
+            json.dump(report, f)
+
+    # Verify the directory structure matches expected layout
+    for server_id, artifact_name in artifact_dirs.items():
+        manifest_file = downloaded / artifact_name / "server-manifest.json"
+        report_file = downloaded / artifact_name / f"{server_id}-report.json"
+        assert manifest_file.exists(), f"Missing manifest: {manifest_file}"
+        assert report_file.exists(), f"Missing report: {report_file}"
+
+    # Run the full aggregation pipeline
+    manifests = find_server_manifests(downloaded)
+    assert len(manifests) == 5, f"Expected 5 manifests, found {len(manifests)}"
+
+    loaded = [(m, load_manifest(m)) for m in manifests]
+    servers, errors = validate_manifests(loaded, commit, run_id)
+    assert errors == [], f"Unexpected validation errors: {errors}"
+    assert set(servers.keys()) == set(EXPECTED_SERVERS)
+
+    report_errors = validate_reports(downloaded, servers)
+    assert report_errors == [], f"Unexpected report errors: {report_errors}"
+
+    summary = compute_summary_counts(downloaded, servers)
+    assert summary["required_operations"] > 0

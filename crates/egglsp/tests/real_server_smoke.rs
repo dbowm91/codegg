@@ -6945,6 +6945,101 @@ async fn smoke_harness_force_kills_hung_server() {
     );
 }
 
+/// Test 2b: Force-kill a process that ignores SIGTERM.
+///
+/// Unlike `smoke_harness_force_kills_hung_server` (which uses
+/// `/bin/sleep` and may exit gracefully when stdin is closed),
+/// this test uses a shell command that explicitly traps and
+/// ignores SIGTERM, ensuring the process can only be terminated
+/// by SIGKILL. This validates the force-kill path deterministically.
+#[cfg(unix)]
+#[tokio::test]
+async fn smoke_harness_force_kills_process_that_ignores_stdin_close() {
+    let spec = egglsp::LspLaunchSpec::new(
+        "harness-sigterm-ignorer",
+        Path::new("/bin/sh"),
+        vec![
+            "-c".to_string(),
+            "trap '' TERM; while true; do sleep 60; done".to_string(),
+        ],
+        vec![],
+        vec![],
+        vec![],
+    );
+
+    let root = std::env::temp_dir();
+    let workspace_config = serde_json::Value::Null;
+    let client_options = egglsp::LspClientOptions::default();
+
+    let client = match tokio::time::timeout(
+        INIT_TIMEOUT,
+        egglsp::LspClient::new_with_launch_spec(spec, &root, workspace_config, client_options),
+    )
+    .await
+    {
+        Ok(Ok(c)) => c,
+        _ => {
+            eprintln!("SKIP: failed to spawn test process");
+            return;
+        }
+    };
+
+    let harness = match RealServerHarness::new(Arc::new(client)).await {
+        Some(h) => h,
+        None => {
+            eprintln!("SKIP: failed to wire harness");
+            return;
+        }
+    };
+
+    // Short graceful deadline (200ms) forces the force-kill path.
+    // Longer absolute deadline (3s) gives the SIGKILL + reap time.
+    let result = harness
+        .shutdown_and_collect(Duration::from_millis(200), Duration::from_secs(3))
+        .await;
+
+    // The process traps SIGTERM and loops forever, so it must be
+    // force-killed (SIGKILL). Graceful exit is not possible.
+    match &result {
+        HarnessShutdownResult::ForceKilled {
+            force_kill_succeeded,
+            child_reaped,
+            ..
+        } => {
+            assert!(
+                *force_kill_succeeded,
+                "force_kill_succeeded must be true for a SIGTERM-ignoring process"
+            );
+            assert!(
+                *child_reaped,
+                "child_reaped must be true — the SIGKILL must reap the child"
+            );
+        }
+        other => {
+            panic!(
+                "expected ForceKilled for a SIGTERM-ignoring process, got: {:?}",
+                std::mem::discriminant(other)
+            );
+        }
+    }
+
+    // Verify the shutdown trace carries the expected fields.
+    let trace = build_shutdown_trace(&result, 0);
+    assert!(
+        trace.force_kill_requested,
+        "trace.force_kill_requested must be true"
+    );
+    assert!(
+        trace.force_kill_succeeded,
+        "trace.force_kill_succeeded must be true"
+    );
+    assert!(trace.child_reaped, "trace.child_reaped must be true");
+    assert!(
+        !trace.graceful_exit_observed,
+        "graceful_exit_observed must be false — the process ignores SIGTERM"
+    );
+}
+
 /// Test 3: Progress readiness failure is reported.
 ///
 /// Verifies that `LspClient::wait_for_progress_end` returns `false`

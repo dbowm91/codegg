@@ -167,10 +167,17 @@ def compute_summary_counts(
     input_dir: Path,
     servers: Dict[str, Dict],
 ) -> Dict:
-    """Compute aggregate counts from all reports."""
+    """Compute aggregate counts from all reports.
+
+    Known limitations are classified by scope using a prefix convention:
+    - "Protocol:" prefix — protocol-level limitations (shutdown hang, force-kill)
+    - "Semantic:" prefix or no prefix — semantic-level limitations
+    """
     required_ops = 0
     required_passing = 0
     known_limitations = 0
+    protocol_known_limitations = 0
+    semantic_known_limitations = 0
     protocol_failures = 0
     semantic_failures = 0
 
@@ -209,11 +216,17 @@ def compute_summary_counts(
             elif req == "KnownLimitation":
                 if exercised:
                     known_limitations += 1
+                    if known_limit and known_limit.startswith("Protocol:"):
+                        protocol_known_limitations += 1
+                    else:
+                        semantic_known_limitations += 1
 
     return {
         "required_operations": required_ops,
         "required_operations_passing": required_passing,
         "known_limitations": known_limitations,
+        "protocol_known_limitations": protocol_known_limitations,
+        "semantic_known_limitations": semantic_known_limitations,
         "protocol_failures": protocol_failures,
         "semantic_failures": semantic_failures,
     }

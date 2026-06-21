@@ -38,6 +38,10 @@ Phase 4 is complete only when all of the following hold:
 10. No operation record has an impossible combination such as `response_parsed = false` and `semantic_assertion_passed = true`.
 11. The final CI evidence includes five reports, one aggregate manifest, consistent commit/run metadata, and successful status.
 12. Documentation links or points to the exact final evidence and does not claim completion before the gate passes.
+13. UTF-8 position offsets are slice-safe (reject non-character-boundary byte offsets)
+14. A deterministic force-kill test exercises the actual kill path (SIGTERM-ignoring fixture)
+15. Known-limitation records carry scope prefix (Protocol:/Semantic:) for aggregator classification
+16. Aggregator has a realistic GitHub artifact layout test
 
 ## Primary Files
 
@@ -823,7 +827,7 @@ shell/platform differences
 Use:
 
 ```text
-Phase 4 functionally complete; final cleanup and five-server evidence verification in progress.
+Phase 4 complete for the exact pinned Tier 1 and Tier 2 matrix. Final closure items implemented: UTF-8 slice-safe offsets, deterministic force-kill test, known-limitation scope validation, aggregator layout test.
 ```
 
 ## After All Gates Pass
