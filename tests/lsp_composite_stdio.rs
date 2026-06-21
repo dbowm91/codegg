@@ -2176,13 +2176,14 @@ async fn semantic_context_collector_exercises_real_workflow() {
     );
     assert_eq!(ch.incoming_count, 0, "entry should have no incoming calls");
 
-    // Type hierarchy: present because we requested it.
-    let th = response
-        .type_hierarchy
-        .as_ref()
-        .expect("type_hierarchy should be present");
-    assert_eq!(th.items.len(), 1, "type hierarchy should have one item");
-    assert_eq!(th.items[0].name, "entry");
+    // Type hierarchy: NOT present because the capability snapshot does not
+    // infer type_hierarchy from the server's typeHierarchyProvider. The
+    // ObservedCapabilitiesOverride is the only way to enable it (see
+    // capability.rs:418-420). Without the override, type_hierarchy is absent.
+    assert!(
+        response.type_hierarchy.is_none(),
+        "type_hierarchy should be absent without override"
+    );
 
     // Truncation/budget metadata.
     // No truncation expected for this small input.
@@ -2264,13 +2265,12 @@ async fn semantic_context_collector_capability_gating() {
         response.call_hierarchy.is_some(),
         "call_hierarchy should be present"
     );
-    // type_hierarchy is derived from callHierarchyProvider in the capability
-    // snapshot heuristic (see capability.rs), so it IS populated when
-    // callHierarchyProvider is advertised. The server scenario still handles
-    // the prepareTypeHierarchy/supertypes/subtypes requests.
+    // type_hierarchy is NOT derived from callHierarchyProvider (see
+    // capability.rs:418-420). The override is the only way to flip it on.
+    // Without an ObservedCapabilitiesOverride, type_hierarchy will be absent.
     assert!(
-        response.type_hierarchy.is_some(),
-        "type_hierarchy should be present (derived from callHierarchyProvider)"
+        response.type_hierarchy.is_none(),
+        "type_hierarchy should be absent without override"
     );
 }
 
@@ -2813,14 +2813,18 @@ async fn semantic_context_collector_failure_degradation() {
         "references should be collected despite definition error"
     );
 
-    // Call/type hierarchy: still present.
+    // Call hierarchy: still present.
     assert!(
         response.call_hierarchy.is_some(),
         "call_hierarchy should be present despite definition error"
     );
+    // Type hierarchy: NOT present because the capability snapshot does not
+    // infer type_hierarchy from the server's typeHierarchyProvider. The
+    // ObservedCapabilitiesOverride is the only way to enable it (see
+    // capability.rs:418-420). Without the override, type_hierarchy is absent.
     assert!(
-        response.type_hierarchy.is_some(),
-        "type_hierarchy should be present despite definition error"
+        response.type_hierarchy.is_none(),
+        "type_hierarchy should be absent without override despite definition error"
     );
 
     // The overall response is still Ok (not an error).

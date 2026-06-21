@@ -426,14 +426,14 @@ pub fn rust_analyzer_profile() -> LspCompatibilityProfile {
             "First semantic requests may be incomplete while indexing".to_string(),
             "Large projects may have slow initial diagnostics".to_string(),
         ],
-        // Phase 4: rust-analyzer supports type hierarchy, but
-        // `lsp-types` 0.97 does not expose a server-side
-        // `type_hierarchy_provider` field. The override flips the
-        // normalized flag on so `semanticContext` / `typeHierarchy`
-        // callers see the correct capability.
+        // Phase 4: rust-analyzer does not reliably support
+        // `textDocument/prepareTypeHierarchy` (returns -32601
+        // "unknown request" on v1.95.0). The override defaults
+        // to `false` so callers do not attempt unsupported
+        // hierarchy requests.
         observed_capabilities: crate::capability::ObservedCapabilitiesOverride {
-            type_hierarchy: Some(true),
-            type_hierarchy_tested_version: Some("2024-11-25".to_string()),
+            type_hierarchy: Some(false),
+            type_hierarchy_tested_version: Some("1.95.0".to_string()),
         },
     }
 }
@@ -477,12 +477,12 @@ pub fn pyright_profile() -> LspCompatibilityProfile {
 /// Returns the compatibility profile for `gopls` (the official Go
 /// language server).
 ///
-/// gopls supports type hierarchy, but `lsp-types` 0.97 only models
-/// type hierarchy as a CLIENT capability, so the server-side
-/// advertised state is not visible in `ServerCapabilities`. The
-/// profile's [`observed_capabilities`] field flips
-/// `supports_type_hierarchy` on so generic client code can route
-/// `typeHierarchy` requests to gopls.
+/// gopls v0.16.1 advertises type hierarchy support but returns
+/// LSP error -32601 "JSON RPC method not found:
+/// \"PrepareTypeHierarchy\" not yet implemented" when the request
+/// is sent. The profile's [`observed_capabilities`] field sets
+/// `supports_type_hierarchy` to `false` so generic client code
+/// does not attempt unsupported hierarchy requests.
 pub fn gopls_profile() -> LspCompatibilityProfile {
     LspCompatibilityProfile {
         server_id: "gopls".to_string(),
@@ -517,7 +517,11 @@ pub fn gopls_profile() -> LspCompatibilityProfile {
             "Workspace symbols need go.work for multi-module workspaces".to_string(),
         ],
         observed_capabilities: crate::capability::ObservedCapabilitiesOverride {
-            type_hierarchy: Some(true),
+            // gopls v0.16.1 advertises type hierarchy but returns
+            // -32601 "PrepareTypeHierarchy not yet implemented".
+            // Override to false so the harness does not attempt
+            // unsupported hierarchy requests.
+            type_hierarchy: Some(false),
             type_hierarchy_tested_version: Some("v0.16.1".to_string()),
         },
     }
@@ -804,8 +808,8 @@ mod tests {
             }
         );
         assert_eq!(p.restart_policy, LspRestartPolicy::default());
-        // Type hierarchy is observed on gopls.
-        assert_eq!(p.observed_capabilities.type_hierarchy, Some(true));
+        // gopls v0.16.1 advertises but does not implement type hierarchy.
+        assert_eq!(p.observed_capabilities.type_hierarchy, Some(false));
         assert!(!p.known_limitations.is_empty());
     }
 
@@ -990,14 +994,14 @@ mod tests {
 
     #[test]
     fn observed_capabilities_default_for_tier1() {
-        // pyright has no override; rust-analyzer advertises type
-        // hierarchy via the override (lsp-types 0.97 has no
-        // server-side field for it).
+        // pyright has no override; rust-analyzer overrides type
+        // hierarchy to false (v1.95.0 returns -32601 "unknown
+        // request" for textDocument/prepareTypeHierarchy).
         let ra = rust_analyzer_profile();
         assert_eq!(
             ra.observed_capabilities.type_hierarchy,
-            Some(true),
-            "rust-analyzer profile must declare type hierarchy via the override"
+            Some(false),
+            "rust-analyzer profile must override type hierarchy to false"
         );
         let py = pyright_profile();
         assert_eq!(py.observed_capabilities.type_hierarchy, None);
