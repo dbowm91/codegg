@@ -88,6 +88,13 @@ pub fn lsp_units_to_byte_offset(
 
 /// UTF-8 specialization — every byte is exactly one unit, so
 /// the offset lands on a byte boundary by definition.
+///
+/// Note: we do NOT reject mid-character byte offsets via
+/// `str::is_char_boundary()`. In UTF-8, every byte offset is
+/// a valid position; a mid-character offset is the server's
+/// responsibility, not the converter's. No mainstream LSP
+/// server negotiates UTF-8 (they all use UTF-16), so this
+/// path is rarely exercised in practice.
 fn lsp_utf8_to_byte_offset(text: &str, units: u32) -> Option<usize> {
     let len = text.len();
     if (units as usize) > len {
@@ -328,6 +335,24 @@ mod tests {
         assert_eq!(
             lsp_units_to_byte_offset(text, 6, PositionEncoding::Utf8),
             None
+        );
+    }
+
+    #[test]
+    fn utf8_mid_character_offset_is_valid_byte_position() {
+        // In UTF-8, every byte offset is a valid position.
+        // Byte 1 of "你" (3-byte CJK character) is a valid
+        // byte offset — the server is responsible for sending
+        // correct offsets, not the converter.
+        let text = "hi你ok";
+        // h=0, i=1, 你=2,3,4, o=5, k=6 — length 7.
+        assert_eq!(
+            lsp_units_to_byte_offset(text, 3, PositionEncoding::Utf8),
+            Some(3)
+        );
+        assert_eq!(
+            lsp_units_to_byte_offset(text, 4, PositionEncoding::Utf8),
+            Some(4)
         );
     }
 
