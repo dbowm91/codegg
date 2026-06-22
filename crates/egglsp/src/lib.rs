@@ -20,11 +20,15 @@ pub mod capability;
 pub mod client;
 pub mod compatibility;
 pub mod config;
+pub mod context;
+pub mod context_renderer;
+pub mod degradation_policy;
 pub mod diagnostics;
 pub mod document_sync;
 pub mod download;
 pub mod edit;
 pub mod error;
+pub mod evidence_collector;
 pub mod health;
 pub mod hunk_context;
 pub mod language;
@@ -32,14 +36,17 @@ pub mod launch;
 pub mod operations;
 pub mod overlay;
 pub mod position;
+pub mod preview_registry;
 pub mod restart;
 pub mod root;
 pub mod runtime;
+pub mod security_context;
 pub mod semantic_context;
 pub mod server;
 pub mod server_request;
 pub mod service;
 pub mod supervisor;
+pub mod tui_summary;
 pub mod writer;
 
 pub use capability::{
@@ -56,12 +63,23 @@ pub use compatibility::{
     LspServerVersion,
 };
 pub use config::{LspConfig, LspRule};
+pub use context::{
+    dedup_context_items, default_budget, enforce_context_budget, rank_context_items, HunkRange,
+    LineRange, LspContextBudget, LspContextItem, LspContextItemKind, LspContextMode,
+    LspContextPacket, LspContextPacketMode, LspContextRequest, LspContextScore,
+    LspContextTruncation, LspEvidenceFreshness, LspEvidenceProvenance, LspPreviewArtifact,
+    LspRiskMode,
+};
 pub use diagnostics::{
     DiagnosticsCollector, DiagnosticsOutput, LspDiagnosticFreshness, LspDiagnosticSnapshot,
     LspDiagnosticSource,
 };
 pub use document_sync::{OpenDocumentRegistry, OpenDocumentSnapshot};
 pub use error::LspError;
+pub use evidence_collector::{
+    collect_context, collect_hunk_context, item_kind_from_severity, make_provenance,
+    LspContextError, LspEvidenceProvider,
+};
 pub use health::{LspOperationalHealthSnapshot, LspOperationalState};
 pub use hunk_context::{
     HunkDescriptor, HunkEvidence, HunkLineRange, HunkSourceNavigationLimits,

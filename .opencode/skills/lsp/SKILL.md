@@ -1855,6 +1855,41 @@ shutdown and position-encoding evidence are preserved, and
 the complete artifact manifest is available. Compatibility
 outside pinned versions remains experimental.
 
+## Phase 5: Agent Context and Workflow Integration
+
+Phase 5 turns the LSP substrate into bounded, explainable, and safe agent context.
+
+### New Modules
+
+```
+crates/egglsp/src/
+├── context.rs              # LspContextPacket, LspContextRequest, LspContextBudget, LspContextItem, LspContextMode
+├── evidence_collector.rs   # LspEvidenceProvider trait, collect_context(), collect_hunk_context()
+├── security_context.rs     # SecurityRiskTag, SecurityEvidenceSummary, tag_security_risks()
+├── context_renderer.rs     # render_lsp_context_for_agent(), render_lsp_status_line(), ModelTier
+├── preview_registry.rs     # PreviewArtifactRegistry, PreviewArtifactEntry
+├── tui_summary.rs          # LspTuiSummary, render_tui_status_line(), render_tui_summary_detail()
+└── degradation_policy.rs   # evaluate_degradation(), LspContextDegradeDecision
+
+tests/
+└── phase5_context_integration.rs  # 18 composite tests
+```
+
+### Key Concepts
+
+- **Context packets** carry bounded LSP evidence with provenance (server, generation, freshness, capability decision)
+- **Budget enforcement** is deterministic: per-file → category → file count → byte budget
+- **Dedup** by kind+file+range+symbol+message hash
+- **Ranking**: hunk-local > errors > same-file > definitions > fresh > short
+- **Three modes**: Disabled (no calls), Opportunistic (partial on failure), Required (error on failure)
+- **Preview artifacts** are registered but never applied (`applied=false`)
+- **Agent rendering** is tier-aware: Small omits refs/hover, Workhorse includes them, Frontier is broader
+- **TUI summary** shows server status, counts, truncation, stale state
+
+### Safety
+
+No LSP preview mutates disk. `workspace/executeCommand` is never invoked.
+
 ## See Also
 
 - [tool.md](tool.md) - LSP tool wrapper

@@ -2994,6 +2994,92 @@ shutdown and position-encoding evidence are preserved, and
 the complete artifact manifest is available. Compatibility
 outside pinned versions remains experimental.
 
+## Phase 5: Agent Context and Workflow Integration
+
+Phase 5 turns the LSP substrate into bounded, explainable, and safe agent context. The goal is not more protocol breadth — it is making LSP evidence useful to Codegg workflows.
+
+### Context Packet Model
+
+Core types in `crates/egglsp/src/context.rs`:
+
+- **`LspContextPacket`** — assembled collection: request, items, previews, notes, truncation metadata
+- **`LspContextRequest`** — enum: `File`, `Hunk`, `Symbol`, `Review` — describes what evidence to collect
+- **`LspContextBudget`** — configurable limits: files (10), ranges/file (5), diagnostics (20), references (30), symbols (30), completions (10), tokens (200), bytes (32KB)
+- **`LspContextItem`** — single evidence piece with kind, file, range, message, excerpt, provenance, and score
+- **`LspEvidenceProvenance`** — server_id, generation, operation, freshness, capability decision, age
+- **`LspContextMode`** — `Disabled` / `Opportunistic` / `Required` (default: Opportunistic)
+
+### Evidence Collector
+
+`crates/egglsp/src/evidence_collector.rs` provides:
+
+- **`LspEvidenceProvider` trait** — async trait with 9 methods for dependency-injected LSP operations (diagnostics, symbols, definitions, references, implementations, hover, highlights, operational state, server info)
+- **`collect_context()`** — main entry point dispatching on request kind; handles all three modes; deduplicates, ranks, and enforces budget
+- **`collect_hunk_context()`** — hunk-specific collection: diagnostics overlapping hunk ranges, definitions/references at center line, per-hunk reference caps
+
+### Budget Enforcement
+
+Deterministic truncation: per-file ranges → category limits → file count → byte budget. All truncation reflected in `LspContextTruncation` and `packet.notes`.
+
+### Deduplication
+
+Dedup key: `kind + file + normalized range + symbol + message hash`. Diagnostics at different sites are not merged.
+
+### Ranking
+
+Priority order: hunk-local items > errors > same-file > definitions/declarations > fresh evidence > short excerpts.
+
+### Security Context Integration
+
+`crates/egglsp/src/security_context.rs`:
+
+- **`SecurityRiskTag`** — deterministic risk tags: `ChangedPublicApi`, `DiagnosticsIntroducedInHunk`, `BroadReferences`, `ImplementationHierarchyAffected`
+- **`SecurityEvidenceSummary`** — compact summary extracted from context packets for security review use
+
+### Agent Context Renderer
+
+`crates/egglsp/src/context_renderer.rs`:
+
+- **`render_lsp_context_for_agent()`** — renders context packet into concise text for agent prompts; tier-aware (Small gets diagnostics + hunk-local defs; Workhorse adds refs + hover; Frontier broader)
+- **`render_lsp_status_line()`** — one-line status: "LSP: ready | rust-analyzer gen=3 | 4 diagnostics, 2 refs, truncated"
+
+### Preview Artifact Registry
+
+`crates/egglsp/src/preview_registry.rs`:
+
+- **`PreviewArtifactRegistry`** — stores preview metadata (id, edits, hashes, stale-base, provenance, created_at, applied=false)
+- Phase 5 previews are never applied; `applied` field is always false
+
+### TUI Summary
+
+`crates/egglsp/src/tui_summary.rs`:
+
+- **`LspTuiSummary`** — server status, counts, truncation/stale flags, preview info, notes
+- **`render_tui_status_line()`** — compact one-liner for status bar
+- **`render_tui_summary_detail()`** — multi-line detail panel
+
+### Degradation Policy
+
+`crates/egglsp/src/degradation_policy.rs`:
+
+- **`evaluate_degradation()`** — pure function: Disabled→Skip, Opportunistic+unavailable→Partial, Required+unavailable→Fail
+
+### Safety Rules
+
+```text
+read-only semantic operations may be executed directly;
+mutation-producing LSP operations remain preview-only;
+no workspace/executeCommand is executed by Codegg automatically.
+```
+
+### Tests
+
+Phase 5 adds 18 composite integration tests in `tests/phase5_context_integration.rs` covering budget enforcement, dedup/ranking, security risk tags, agent rendering, preview non-mutation, degradation decisions, TUI summaries, and full pipeline flows.
+
+### Status
+
+Phase 5 complete. Codegg can assemble bounded, provenance-rich LSP context packets for hunk, symbol, review, security, and agent workflows. Mutation-producing LSP operations remain preview-only, unsupported/stale/degraded states are explicit, and deterministic tests cover budget, fallback, preview safety, and rendering behavior.
+
 ## See Also
 
 - [.opencode/skills/lsp/SKILL.md](../.opencode/skills/lsp/SKILL.md) - LSP skill guide

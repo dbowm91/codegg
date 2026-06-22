@@ -1,0 +1,364 @@
+//! Security review context integration.
+//!
+//! Provides compact risk-tagged summaries from [`LspContextPacket`]
+//! for use in the security review workflow.
+
+use std::path::PathBuf;
+
+use crate::context::{LspContextItem, LspContextItemKind, LspContextPacket};
+
+// ---------------------------------------------------------------------------
+// Security risk tags
+// ---------------------------------------------------------------------------
+
+/// Risk classification tags derived from LSP evidence for security review.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum SecurityRiskTag {
+    /// Definitions or declarations are in changed files — public API surface.
+    ChangedPublicApi,
+    /// Auth/security-sensitive files have definitions or declarations.
+    ChangedAuthSecuritySensitive,
+    /// Unsafe, FFI, network, filesystem, or process-related code is touched.
+    ChangedUnsafeFfiNetworkFsProcess,
+    /// More than 10 references found — broad call surface.
+    BroadReferences,
+    /// Diagnostics introduced within a hunk range.
+    DiagnosticsIntroducedInHunk,
+    /// Implementations or hierarchy items are affected by the change.
+    ImplementationHierarchyAffected,
+}
+
+impl std::fmt::Display for SecurityRiskTag {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ChangedPublicApi => write!(f, "changed_public_api"),
+            Self::ChangedAuthSecuritySensitive => write!(f, "changed_auth_security_sensitive"),
+            Self::ChangedUnsafeFfiNetworkFsProcess => {
+                write!(f, "changed_unsafe_ffi_network_fs_process")
+            }
+            Self::BroadReferences => write!(f, "broad_references"),
+            Self::DiagnosticsIntroducedInHunk => write!(f, "diagnostics_introduced_in_hunk"),
+            Self::ImplementationHierarchyAffected => write!(f, "implementation_hierarchy_affected"),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Security evidence summary
+// ---------------------------------------------------------------------------
+
+/// Compact summary extracted from a context packet for security review use.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SecurityEvidenceSummary {
+    /// Number of diagnostic items in the packet.
+    pub diagnostics_count: usize,
+    /// Number of reference items.
+    pub references_count: usize,
+    /// Number of definition items.
+    pub definitions_count: usize,
+    /// Number of implementation items.
+    pub implementations_count: usize,
+    /// Risk tags applied to this evidence.
+    pub risk_tags: Vec<SecurityRiskTag>,
+    /// Whether any evidence item is stale.
+    pub stale: bool,
+    /// Whether any evidence was truncated.
+    pub truncated: bool,
+    /// Server that produced the evidence.
+    pub server_id: Option<String>,
+    /// Accumulated notes from evidence collection.
+    pub notes: Vec<String>,
+}
+
+// ---------------------------------------------------------------------------
+// Functions
+// ---------------------------------------------------------------------------
+
+/// Extract a compact [`SecurityEvidenceSummary`] from a context packet.
+pub fn build_security_evidence_summary(packet: &LspContextPacket) -> SecurityEvidenceSummary {
+    let mut diagnostics_count = 0usize;
+    let mut references_count = 0usize;
+    let mut definitions_count = 0usize;
+    let mut implementations_count = 0usize;
+    let mut stale = false;
+    let mut server_id: Option<String> = None;
+
+    for item in &packet.items {
+        match item.kind {
+            LspContextItemKind::Diagnostic => diagnostics_count += 1,
+            LspContextItemKind::Reference => references_count += 1,
+            LspContextItemKind::Definition | LspContextItemKind::Declaration => {
+                definitions_count += 1
+            }
+            LspContextItemKind::Implementation => implementations_count += 1,
+            _ => {}
+        }
+
+        if matches!(
+            item.provenance.freshness,
+            crate::context::LspEvidenceFreshness::Stale
+                | crate::context::LspEvidenceFreshness::PossiblyStale
+        ) {
+            stale = true;
+        }
+
+        if server_id.is_none() && !item.provenance.server_id.is_empty() {
+            server_id = Some(item.provenance.server_id.clone());
+        }
+    }
+
+    let changed_files: Vec<PathBuf> = match &packet.request {
+        crate::context::LspContextRequest::Review { changed_files, .. } => changed_files.clone(),
+        crate::context::LspContextRequest::File { file, .. } => vec![file.clone()],
+        _ => Vec::new(),
+    };
+
+    let risk_tags = tag_security_risks(&packet.items, &changed_files);
+
+    let truncated = packet.truncation.bytes_truncated
+        || packet.truncation.files_truncated
+        || packet.truncation.diagnostics_truncated
+        || packet.truncation.references_truncated;
+
+    let notes = packet.notes.clone();
+
+    SecurityEvidenceSummary {
+        diagnostics_count,
+        references_count,
+        definitions_count,
+        implementations_count,
+        risk_tags,
+        stale,
+        truncated,
+        server_id,
+        notes,
+    }
+}
+
+/// Deterministically tag security risks based on context items and changed files.
+pub fn tag_security_risks(
+    items: &[LspContextItem],
+    changed_files: &[PathBuf],
+) -> Vec<SecurityRiskTag> {
+    let mut tags = Vec::new();
+
+    let changed_set: std::collections::HashSet<&PathBuf> = changed_files.iter().collect();
+
+    // Definitions/declarations in changed files → ChangedPublicApi.
+    let has_defs_in_changed = items.iter().any(|i| {
+        matches!(
+            i.kind,
+            LspContextItemKind::Definition | LspContextItemKind::Declaration
+        ) && changed_set.contains(&i.file)
+    });
+    if has_defs_in_changed {
+        tags.push(SecurityRiskTag::ChangedPublicApi);
+    }
+
+    // Implementations/hierarchy affected.
+    let has_impls = items
+        .iter()
+        .any(|i| matches!(i.kind, LspContextItemKind::Implementation));
+    if has_impls {
+        tags.push(SecurityRiskTag::ImplementationHierarchyAffected);
+    }
+
+    // Diagnostics in changed files → DiagnosticsIntroducedInHunk.
+    let has_diag_in_changed = items
+        .iter()
+        .any(|i| i.kind == LspContextItemKind::Diagnostic && changed_set.contains(&i.file));
+    if has_diag_in_changed {
+        tags.push(SecurityRiskTag::DiagnosticsIntroducedInHunk);
+    }
+
+    // Broad references (> 10).
+    let ref_count = items
+        .iter()
+        .filter(|i| i.kind == LspContextItemKind::Reference)
+        .count();
+    if ref_count > 10 {
+        tags.push(SecurityRiskTag::BroadReferences);
+    }
+
+    tags
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::context::{
+        LspContextPacket, LspContextPacketMode, LspContextRequest, LspContextScore,
+        LspEvidenceFreshness, LspEvidenceProvenance, LspRiskMode,
+    };
+
+    fn make_item(
+        kind: LspContextItemKind,
+        file: &str,
+        line: Option<u32>,
+        message: &str,
+    ) -> LspContextItem {
+        LspContextItem {
+            kind,
+            file: PathBuf::from(file),
+            line,
+            column: None,
+            message: message.to_string(),
+            symbol: None,
+            provenance: LspEvidenceProvenance {
+                server_id: "test-server".to_string(),
+                server_generation: Some(1),
+                operation: "test".to_string(),
+                freshness: LspEvidenceFreshness::Fresh,
+                capability_decision: None,
+                document_version: None,
+                age_ms: None,
+                post_restart: false,
+            },
+            score: LspContextScore {
+                priority: 10,
+                is_hunk_local: false,
+                is_error: false,
+                is_same_file: false,
+                freshness_rank: 0,
+            },
+            payload: None,
+        }
+    }
+
+    #[test]
+    fn test_security_summary_from_context_packet() {
+        let packet = LspContextPacket {
+            request: LspContextRequest::Review {
+                changed_files: vec![PathBuf::from("a.rs"), PathBuf::from("b.rs")],
+                hunks: Vec::new(),
+                risk_mode: LspRiskMode::Standard,
+            },
+            items: vec![
+                make_item(
+                    LspContextItemKind::Diagnostic,
+                    "a.rs",
+                    Some(5),
+                    "error: unused",
+                ),
+                make_item(
+                    LspContextItemKind::Diagnostic,
+                    "b.rs",
+                    Some(10),
+                    "warn: dead_code",
+                ),
+                make_item(LspContextItemKind::Reference, "c.rs", Some(1), "ref: foo"),
+                make_item(LspContextItemKind::Definition, "a.rs", Some(0), "def: bar"),
+                make_item(
+                    LspContextItemKind::Implementation,
+                    "d.rs",
+                    Some(3),
+                    "impl: baz",
+                ),
+            ],
+            previews: Vec::new(),
+            mode: LspContextPacketMode::Opportunistic,
+            notes: vec!["test note".to_string()],
+            truncation: Default::default(),
+        };
+
+        let summary = build_security_evidence_summary(&packet);
+        assert_eq!(summary.diagnostics_count, 2);
+        assert_eq!(summary.references_count, 1);
+        assert_eq!(summary.definitions_count, 1);
+        assert_eq!(summary.implementations_count, 1);
+        assert_eq!(summary.server_id, Some("test-server".to_string()));
+        assert_eq!(summary.notes, vec!["test note"]);
+        assert!(!summary.truncated);
+        assert!(!summary.stale);
+        assert!(summary
+            .risk_tags
+            .contains(&SecurityRiskTag::ChangedPublicApi));
+        assert!(summary
+            .risk_tags
+            .contains(&SecurityRiskTag::DiagnosticsIntroducedInHunk));
+        assert!(summary
+            .risk_tags
+            .contains(&SecurityRiskTag::ImplementationHierarchyAffected));
+    }
+
+    #[test]
+    fn test_security_risk_tagging() {
+        let items = vec![
+            make_item(LspContextItemKind::Definition, "a.rs", Some(0), "def"),
+            make_item(LspContextItemKind::Diagnostic, "a.rs", Some(5), "err"),
+        ];
+        let changed_files = vec![PathBuf::from("a.rs")];
+        let tags = tag_security_risks(&items, &changed_files);
+        assert!(tags.contains(&SecurityRiskTag::ChangedPublicApi));
+        assert!(tags.contains(&SecurityRiskTag::DiagnosticsIntroducedInHunk));
+        assert!(!tags.contains(&SecurityRiskTag::BroadReferences));
+    }
+
+    #[test]
+    fn test_security_summary_empty_packet() {
+        let packet = LspContextPacket {
+            request: LspContextRequest::Review {
+                changed_files: Vec::new(),
+                hunks: Vec::new(),
+                risk_mode: LspRiskMode::Standard,
+            },
+            items: Vec::new(),
+            previews: Vec::new(),
+            mode: LspContextPacketMode::Opportunistic,
+            notes: Vec::new(),
+            truncation: Default::default(),
+        };
+
+        let summary = build_security_evidence_summary(&packet);
+        assert_eq!(summary.diagnostics_count, 0);
+        assert_eq!(summary.references_count, 0);
+        assert_eq!(summary.definitions_count, 0);
+        assert_eq!(summary.implementations_count, 0);
+        assert!(summary.risk_tags.is_empty());
+        assert!(summary.notes.is_empty());
+        assert!(!summary.stale);
+        assert!(!summary.truncated);
+    }
+
+    #[test]
+    fn test_broad_references_tag() {
+        let items: Vec<LspContextItem> = (0..15)
+            .map(|i| {
+                make_item(
+                    LspContextItemKind::Reference,
+                    &format!("f{i}.rs"),
+                    Some(i),
+                    &format!("ref {i}"),
+                )
+            })
+            .collect();
+        let tags = tag_security_risks(&items, &[]);
+        assert!(tags.contains(&SecurityRiskTag::BroadReferences));
+    }
+
+    #[test]
+    fn test_stale_detection() {
+        let mut item = make_item(LspContextItemKind::Diagnostic, "a.rs", Some(0), "err");
+        item.provenance.freshness = LspEvidenceFreshness::Stale;
+
+        let packet = LspContextPacket {
+            request: LspContextRequest::Review {
+                changed_files: vec![PathBuf::from("a.rs")],
+                hunks: Vec::new(),
+                risk_mode: LspRiskMode::Standard,
+            },
+            items: vec![item],
+            previews: Vec::new(),
+            mode: LspContextPacketMode::Opportunistic,
+            notes: Vec::new(),
+            truncation: Default::default(),
+        };
+
+        let summary = build_security_evidence_summary(&packet);
+        assert!(summary.stale);
+    }
+}

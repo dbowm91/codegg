@@ -1,0 +1,1761 @@
+//! LSP evidence collector with trait-based dependency injection.
+//!
+//! [`LspEvidenceProvider`] abstracts LSP operations so the collector
+//! can be tested without a live server. The core [`collect_context`]
+//! function assembles an [`LspContextPacket`] from provider results,
+//! enforcing budget and recording provenance for every item.
+//!
+//! # Design
+//!
+//! - [`LspEvidenceProvider`] is the trait that concrete adapters implement.
+//! - [`collect_context`] is the main entry point for all request kinds.
+//! - [`collect_hunk_context`] specializes in hunk-aware collection.
+//! - [`make_provenance`] and [`item_kind_from_severity`] are helpers.
+
+use std::path::{Path, PathBuf};
+
+use async_trait::async_trait;
+use tracing::debug;
+
+use crate::context::{
+    LspContextBudget, LspContextItem, LspContextItemKind, LspContextMode, LspContextPacket,
+    LspContextPacketMode, LspContextRequest, LspContextScore, LspEvidenceFreshness,
+    LspEvidenceProvenance, LspRiskMode,
+};
+use crate::error::LspError;
+
+// ---------------------------------------------------------------------------
+// Error
+// ---------------------------------------------------------------------------
+
+/// Errors specific to context collection.
+#[derive(Debug, thiserror::Error)]
+pub enum LspContextError {
+    /// LSP server is not reachable or not initialized.
+    #[error("LSP unavailable: {0}")]
+    Unavailable(String),
+    /// LSP server is reachable but degraded.
+    #[error("LSP degraded: {0}")]
+    Degraded(String),
+    /// A required operation failed.
+    #[error("Required operation failed: {0}")]
+    RequiredFailed(String),
+    /// Provider returned an LSP error.
+    #[error("Provider error: {0}")]
+    Provider(#[from] LspError),
+}
+
+// ---------------------------------------------------------------------------
+// Provider trait
+// ---------------------------------------------------------------------------
+
+/// Abstracts LSP operations for testable evidence collection.
+///
+/// Implementors return simplified tuple results so the collector
+/// logic can be exercised with lightweight mocks.
+#[async_trait]
+pub trait LspEvidenceProvider: Send + Sync {
+    /// Diagnostics for a file. Returns `(severity, message, range_text)`.
+    async fn diagnostics_for_file(
+        &self,
+        file: &Path,
+    ) -> Result<Vec<(String, String, String)>, LspError>;
+
+    /// Document symbols. Returns `(name, kind, range_text)`.
+    async fn document_symbols(
+        &self,
+        file: &Path,
+    ) -> Result<Vec<(String, String, String)>, LspError>;
+
+    /// Go-to-definition. Returns `(file_path, range_text)`.
+    async fn go_to_definition(
+        &self,
+        file: &Path,
+        line: u32,
+        column: u32,
+    ) -> Result<Vec<(String, String)>, LspError>;
+
+    /// Find references. Returns `(file_path, range_text)`.
+    async fn find_references(
+        &self,
+        file: &Path,
+        line: u32,
+        column: u32,
+    ) -> Result<Vec<(String, String)>, LspError>;
+
+    /// Implementations. Returns `(file_path, range_text)`.
+    async fn implementations(
+        &self,
+        file: &Path,
+        line: u32,
+        column: u32,
+    ) -> Result<Vec<(String, String)>, LspError>;
+
+    /// Hover text at a position.
+    async fn hover(&self, file: &Path, line: u32, column: u32) -> Result<Option<String>, LspError>;
+
+    /// Document highlights. Returns range_texts.
+    async fn document_highlights(
+        &self,
+        file: &Path,
+        line: u32,
+        column: u32,
+    ) -> Result<Vec<String>, LspError>;
+
+    /// Operational state label (e.g. "ready", "initializing").
+    async fn operational_state(&self) -> String;
+
+    /// Returns `(server_id, generation)`.
+    async fn server_info(&self) -> (Option<String>, Option<u64>);
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/// Build provenance metadata for a context item.
+pub fn make_provenance(
+    server_id: &str,
+    generation: Option<u64>,
+    operation: &str,
+    freshness: LspEvidenceFreshness,
+) -> LspEvidenceProvenance {
+    LspEvidenceProvenance {
+        server_id: server_id.to_string(),
+        server_generation: generation,
+        operation: operation.to_string(),
+        freshness,
+        capability_decision: None,
+        document_version: None,
+        age_ms: None,
+        post_restart: generation.map_or(false, |g| g > 1),
+    }
+}
+
+/// Map a diagnostic severity string to an [`LspContextItemKind`].
+pub fn item_kind_from_severity(severity: &str) -> LspContextItemKind {
+    match severity.to_lowercase().as_str() {
+        "error" | "hint" | "information" | "warning" => LspContextItemKind::Diagnostic,
+        _ => LspContextItemKind::Diagnostic,
+    }
+}
+
+/// Map diagnostic severity to an `is_error` flag.
+fn severity_is_error(severity: &str) -> bool {
+    matches!(
+        severity.to_lowercase().as_str(),
+        "error" | "1" | "diagnosticseverity::error"
+    )
+}
+
+/// Map freshness to a rank (lower = fresher).
+fn freshness_rank(f: LspEvidenceFreshness) -> u32 {
+    match f {
+        LspEvidenceFreshness::Fresh => 0,
+        LspEvidenceFreshness::PossiblyStale => 1,
+        LspEvidenceFreshness::Stale | LspEvidenceFreshness::RetainedAfterRestart => 2,
+        LspEvidenceFreshness::Unknown => 3,
+    }
+}
+
+/// Determine evidence freshness from operational state.
+fn freshness_for_state(state: &str) -> LspEvidenceFreshness {
+    match state {
+        "ready" => LspEvidenceFreshness::Fresh,
+        "indexing" | "degraded" => LspEvidenceFreshness::PossiblyStale,
+        "initializing" | "starting" => LspEvidenceFreshness::Unknown,
+        _ => LspEvidenceFreshness::Stale,
+    }
+}
+
+/// Create an operational note item.
+fn operational_note(message: String, provenance: LspEvidenceProvenance) -> LspContextItem {
+    LspContextItem {
+        kind: LspContextItemKind::OperationalNote,
+        file: PathBuf::new(),
+        line: None,
+        column: None,
+        message,
+        symbol: None,
+        provenance,
+        score: LspContextScore {
+            priority: 0,
+            is_hunk_local: false,
+            is_error: false,
+            is_same_file: false,
+            freshness_rank: 0,
+        },
+        payload: None,
+    }
+}
+
+/// Parse a range_text like "(1:5)-(3:10)" into (line, column) of the start.
+///
+/// Handles formats: `(line:col)-(line:col)`, `(line:col)-(line:col`, etc.
+fn parse_range_start(range_text: &str) -> (Option<u32>, Option<u32>) {
+    // Find the first parenthesized segment or the first "line:col" pair.
+    let trimmed = range_text.trim();
+    // Try to find `(` ... `:` ... `)` for the start position.
+    if let Some(open) = trimmed.find('(') {
+        let rest = &trimmed[open + 1..];
+        if let Some(close) = rest.find(')') {
+            let inner = &rest[..close];
+            let nums: Vec<&str> = inner.split(':').collect();
+            if nums.len() >= 2 {
+                let line = nums[0].parse::<u32>().ok().map(|l| l.saturating_sub(1));
+                let col = nums[1].parse::<u32>().ok().map(|c| c.saturating_sub(1));
+                return (line, col);
+            }
+        }
+    }
+    // Fallback: no parens, try bare "line:col" or just "line".
+    let nums: Vec<&str> = trimmed.split(':').collect();
+    if nums.len() >= 2 {
+        let line = nums[0].parse::<u32>().ok().map(|l| l.saturating_sub(1));
+        let col = nums[1].parse::<u32>().ok().map(|c| c.saturating_sub(1));
+        return (line, col);
+    }
+    if let Ok(n) = trimmed.parse::<u32>() {
+        return (Some(n.saturating_sub(1)), None);
+    }
+    (None, None)
+}
+
+/// Check if a diagnostic line falls within a range.
+fn line_in_range(line: u32, start: u32, end: u32) -> bool {
+    line >= start && line < end
+}
+
+// ---------------------------------------------------------------------------
+// Core collection
+// ---------------------------------------------------------------------------
+
+/// Main collection function that assembles an [`LspContextPacket`].
+///
+/// Dispatches on the request kind and delegates to the provider for
+/// each capability-gated operation. Errors from the provider are
+/// surfaced as operational notes (Opportunistic) or propagated
+/// (Required).
+pub async fn collect_context(
+    provider: &dyn LspEvidenceProvider,
+    request: &LspContextRequest,
+    budget: &LspContextBudget,
+    mode: &LspContextMode,
+) -> Result<LspContextPacket, LspContextError> {
+    // Disabled mode: return empty packet with note.
+    if *mode == LspContextPacketMode::Disabled {
+        let (_, gen) = provider.server_info().await;
+        let prov = make_provenance("unknown", gen, "disabled", LspEvidenceFreshness::Unknown);
+        return Ok(LspContextPacket {
+            request: request.clone(),
+            items: vec![operational_note(
+                "LSP context collection is disabled".to_string(),
+                prov,
+            )],
+            previews: Vec::new(),
+            mode: *mode,
+            notes: vec!["disabled".to_string()],
+            truncation: Default::default(),
+        });
+    }
+
+    let state = provider.operational_state().await;
+    let (server_id, generation) = provider.server_info().await;
+    let sid = server_id.as_deref().unwrap_or("unknown");
+    let freshness = freshness_for_state(&state);
+
+    // If server is not usable and mode is Required, fail immediately.
+    if !is_usable_state(&state) && *mode == LspContextPacketMode::Required {
+        return Err(LspContextError::RequiredFailed(format!(
+            "LSP server not usable in Required mode: {state}"
+        )));
+    }
+
+    let mut items = Vec::new();
+    let mut notes = Vec::new();
+
+    // If server is not usable, return partial note (Opportunistic).
+    if !is_usable_state(&state) {
+        let prov = make_provenance(sid, generation, "operational_state", freshness);
+        items.push(operational_note(format!("LSP state: {state}"), prov));
+        return Ok(build_packet(request, mode, items, notes));
+    }
+
+    match request {
+        LspContextRequest::File {
+            file,
+            line_ranges,
+            include_symbols,
+            include_diagnostics,
+        } => {
+            collect_file_context(
+                provider,
+                file,
+                line_ranges,
+                *include_symbols,
+                *include_diagnostics,
+                budget,
+                sid,
+                generation,
+                freshness,
+                &mut items,
+                &mut notes,
+            )
+            .await;
+        }
+        LspContextRequest::Hunk {
+            file,
+            hunks,
+            include_references,
+            include_definitions,
+            include_security_evidence: _,
+        } => {
+            let hunk_items = collect_hunk_context(
+                provider,
+                file,
+                hunks,
+                *include_references,
+                *include_definitions,
+                budget,
+            )
+            .await;
+            match hunk_items {
+                Ok(mut h) => items.append(&mut h),
+                Err(e) => {
+                    let prov = make_provenance(sid, generation, "hunk_context", freshness);
+                    if *mode == LspContextPacketMode::Required {
+                        return Err(LspContextError::RequiredFailed(e.to_string()));
+                    }
+                    notes.push(format!("hunk context degraded: {e}"));
+                    items.push(operational_note(format!("hunk context error: {e}"), prov));
+                }
+            }
+        }
+        LspContextRequest::Symbol {
+            file,
+            position,
+            include_references,
+            include_implementations,
+            include_call_like_context: _,
+        } => {
+            collect_symbol_context(
+                provider,
+                file,
+                position.line,
+                position.character,
+                *include_references,
+                *include_implementations,
+                budget,
+                sid,
+                generation,
+                freshness,
+                &mut items,
+                &mut notes,
+            )
+            .await;
+        }
+        LspContextRequest::Review {
+            changed_files,
+            hunks: _,
+            risk_mode,
+        } => {
+            collect_review_context(
+                provider,
+                changed_files,
+                *risk_mode,
+                budget,
+                sid,
+                generation,
+                freshness,
+                &mut items,
+                &mut notes,
+            )
+            .await;
+        }
+    }
+
+    // Dedup.
+    items = crate::context::dedup_context_items(items);
+
+    // Rank.
+    crate::context::rank_context_items(&mut items, request);
+
+    let mut packet = build_packet(request, mode, items, notes);
+
+    // Enforce budget.
+    crate::context::enforce_context_budget(&mut packet);
+
+    Ok(packet)
+}
+
+fn is_usable_state(state: &str) -> bool {
+    matches!(state, "ready" | "indexing" | "degraded")
+}
+
+fn build_packet(
+    request: &LspContextRequest,
+    mode: &LspContextMode,
+    items: Vec<LspContextItem>,
+    notes: Vec<String>,
+) -> LspContextPacket {
+    LspContextPacket {
+        request: request.clone(),
+        items,
+        previews: Vec::new(),
+        mode: *mode,
+        notes,
+        truncation: Default::default(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// File context
+// ---------------------------------------------------------------------------
+
+async fn collect_file_context(
+    provider: &dyn LspEvidenceProvider,
+    file: &Path,
+    line_ranges: &[crate::context::LineRange],
+    include_symbols: bool,
+    include_diagnostics: bool,
+    budget: &LspContextBudget,
+    sid: &str,
+    generation: Option<u64>,
+    freshness: LspEvidenceFreshness,
+    items: &mut Vec<LspContextItem>,
+    notes: &mut Vec<String>,
+) {
+    // Diagnostics
+    if include_diagnostics {
+        match provider.diagnostics_for_file(file).await {
+            Ok(diagnostics) => {
+                let prov = make_provenance(sid, generation, "textDocument/diagnostic", freshness);
+                let mut count = 0;
+                for (severity, message, range_text) in &diagnostics {
+                    if count >= budget.max_diagnostics {
+                        notes.push(format!(
+                            "diagnostics truncated at {}",
+                            budget.max_diagnostics
+                        ));
+                        break;
+                    }
+                    let (line, column) = parse_range_start(range_text);
+                    // Filter by line ranges if provided.
+                    if !line_ranges.is_empty() {
+                        let in_range = line_ranges
+                            .iter()
+                            .any(|r| line.map_or(false, |l| line_in_range(l, r.start, r.end)));
+                        if !in_range {
+                            continue;
+                        }
+                    }
+                    items.push(LspContextItem {
+                        kind: LspContextItemKind::Diagnostic,
+                        file: file.to_path_buf(),
+                        line,
+                        column,
+                        message: message.clone(),
+                        symbol: None,
+                        provenance: prov.clone(),
+                        score: LspContextScore {
+                            priority: if severity_is_error(severity) { 10 } else { 5 },
+                            is_hunk_local: false,
+                            is_error: severity_is_error(severity),
+                            is_same_file: true,
+                            freshness_rank: freshness_rank(freshness),
+                        },
+                        payload: None,
+                    });
+                    count += 1;
+                }
+            }
+            Err(e) => {
+                debug!("diagnostics_for_file failed: {e}");
+                let prov = make_provenance(sid, generation, "textDocument/diagnostic", freshness);
+                notes.push(format!("diagnostics: {e}"));
+                items.push(operational_note(
+                    format!("diagnostics unavailable: {e}"),
+                    prov,
+                ));
+            }
+        }
+    }
+
+    // Symbols
+    if include_symbols {
+        match provider.document_symbols(file).await {
+            Ok(symbols) => {
+                let prov =
+                    make_provenance(sid, generation, "textDocument/documentSymbol", freshness);
+                let mut count = 0;
+                for (name, kind, range_text) in &symbols {
+                    if count >= budget.max_symbols {
+                        notes.push(format!("symbols truncated at {}", budget.max_symbols));
+                        break;
+                    }
+                    let (line, column) = parse_range_start(range_text);
+                    items.push(LspContextItem {
+                        kind: LspContextItemKind::WorkspaceSymbol,
+                        file: file.to_path_buf(),
+                        line,
+                        column,
+                        message: format!("{name} ({kind})"),
+                        symbol: Some(name.clone()),
+                        provenance: prov.clone(),
+                        score: LspContextScore {
+                            priority: 8,
+                            is_hunk_local: false,
+                            is_error: false,
+                            is_same_file: true,
+                            freshness_rank: freshness_rank(freshness),
+                        },
+                        payload: None,
+                    });
+                    count += 1;
+                }
+            }
+            Err(e) => {
+                debug!("document_symbols failed: {e}");
+                let prov =
+                    make_provenance(sid, generation, "textDocument/documentSymbol", freshness);
+                notes.push(format!("symbols: {e}"));
+                items.push(operational_note(format!("symbols unavailable: {e}"), prov));
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Hunk context
+// ---------------------------------------------------------------------------
+
+/// Collect hunk-aware evidence for a single file.
+///
+/// For each hunk, collects diagnostics overlapping the range and
+/// definitions/references at the center line.
+pub async fn collect_hunk_context(
+    provider: &dyn LspEvidenceProvider,
+    file: &Path,
+    hunks: &[crate::context::HunkRange],
+    include_references: bool,
+    include_definitions: bool,
+    budget: &LspContextBudget,
+) -> Result<Vec<LspContextItem>, LspContextError> {
+    let (server_id, generation) = provider.server_info().await;
+    let sid = server_id.as_deref().unwrap_or("unknown");
+    let state = provider.operational_state().await;
+    let freshness = freshness_for_state(&state);
+
+    let mut items = Vec::new();
+
+    // Collect all diagnostics once, then filter per hunk.
+    let all_diagnostics = provider
+        .diagnostics_for_file(file)
+        .await
+        .unwrap_or_default();
+
+    let prov_diag = make_provenance(sid, generation, "textDocument/diagnostic", freshness);
+
+    for hunk in hunks {
+        // Diagnostics overlapping this hunk.
+        for (severity, message, range_text) in &all_diagnostics {
+            let (line, _col) = parse_range_start(range_text);
+            if let Some(l) = line {
+                if line_in_range(l, hunk.start, hunk.end) {
+                    items.push(LspContextItem {
+                        kind: LspContextItemKind::Diagnostic,
+                        file: file.to_path_buf(),
+                        line: Some(l),
+                        column: None,
+                        message: message.clone(),
+                        symbol: None,
+                        provenance: prov_diag.clone(),
+                        score: LspContextScore {
+                            priority: if severity_is_error(severity) { 15 } else { 10 },
+                            is_hunk_local: true,
+                            is_error: severity_is_error(severity),
+                            is_same_file: true,
+                            freshness_rank: freshness_rank(freshness),
+                        },
+                        payload: None,
+                    });
+                }
+            }
+        }
+
+        // Center line for definitions/references.
+        let center = hunk.start + (hunk.end.saturating_sub(hunk.start)) / 2;
+
+        // Definitions at center.
+        if include_definitions {
+            match provider.go_to_definition(file, center, 0).await {
+                Ok(defs) => {
+                    let prov =
+                        make_provenance(sid, generation, "textDocument/definition", freshness);
+                    for (def_file, range_text) in &defs {
+                        let (line, column) = parse_range_start(range_text);
+                        items.push(LspContextItem {
+                            kind: LspContextItemKind::Definition,
+                            file: PathBuf::from(def_file),
+                            line,
+                            column,
+                            message: format!("definition: {range_text}"),
+                            symbol: None,
+                            provenance: prov.clone(),
+                            score: LspContextScore {
+                                priority: 12,
+                                is_hunk_local: def_file == file.to_str().unwrap_or(""),
+                                is_error: false,
+                                is_same_file: def_file == file.to_str().unwrap_or(""),
+                                freshness_rank: freshness_rank(freshness),
+                            },
+                            payload: None,
+                        });
+                    }
+                }
+                Err(e) => {
+                    debug!("go_to_definition at hunk center failed: {e}");
+                }
+            }
+        }
+
+        // References at center (capped per hunk).
+        if include_references {
+            match provider.find_references(file, center, 0).await {
+                Ok(refs) => {
+                    let prov =
+                        make_provenance(sid, generation, "textDocument/references", freshness);
+                    let cap = budget.max_references / hunks.len().max(1);
+                    for (ref_file, range_text) in refs.iter().take(cap) {
+                        let (line, column) = parse_range_start(range_text);
+                        items.push(LspContextItem {
+                            kind: LspContextItemKind::Reference,
+                            file: PathBuf::from(ref_file),
+                            line,
+                            column,
+                            message: format!("reference: {range_text}"),
+                            symbol: None,
+                            provenance: prov.clone(),
+                            score: LspContextScore {
+                                priority: 7,
+                                is_hunk_local: ref_file == file.to_str().unwrap_or(""),
+                                is_error: false,
+                                is_same_file: ref_file == file.to_str().unwrap_or(""),
+                                freshness_rank: freshness_rank(freshness),
+                            },
+                            payload: None,
+                        });
+                    }
+                }
+                Err(e) => {
+                    debug!("find_references at hunk center failed: {e}");
+                }
+            }
+        }
+    }
+
+    Ok(items)
+}
+
+// ---------------------------------------------------------------------------
+// Symbol context
+// ---------------------------------------------------------------------------
+
+async fn collect_symbol_context(
+    provider: &dyn LspEvidenceProvider,
+    file: &Path,
+    line: u32,
+    column: u32,
+    include_references: bool,
+    include_implementations: bool,
+    budget: &LspContextBudget,
+    sid: &str,
+    generation: Option<u64>,
+    freshness: LspEvidenceFreshness,
+    items: &mut Vec<LspContextItem>,
+    notes: &mut Vec<String>,
+) {
+    // Definition
+    match provider.go_to_definition(file, line, column).await {
+        Ok(defs) => {
+            let prov = make_provenance(sid, generation, "textDocument/definition", freshness);
+            for (def_file, range_text) in &defs {
+                let (l, c) = parse_range_start(range_text);
+                items.push(LspContextItem {
+                    kind: LspContextItemKind::Definition,
+                    file: PathBuf::from(def_file),
+                    line: l,
+                    column: c,
+                    message: format!("definition: {range_text}"),
+                    symbol: None,
+                    provenance: prov.clone(),
+                    score: LspContextScore {
+                        priority: 12,
+                        is_hunk_local: false,
+                        is_error: false,
+                        is_same_file: def_file == file.to_str().unwrap_or(""),
+                        freshness_rank: freshness_rank(freshness),
+                    },
+                    payload: None,
+                });
+            }
+        }
+        Err(e) => {
+            notes.push(format!("definition: {e}"));
+        }
+    }
+
+    // References
+    if include_references {
+        match provider.find_references(file, line, column).await {
+            Ok(refs) => {
+                let prov = make_provenance(sid, generation, "textDocument/references", freshness);
+                for (ref_file, range_text) in refs.iter().take(budget.max_references) {
+                    let (l, c) = parse_range_start(range_text);
+                    items.push(LspContextItem {
+                        kind: LspContextItemKind::Reference,
+                        file: PathBuf::from(ref_file),
+                        line: l,
+                        column: c,
+                        message: format!("reference: {range_text}"),
+                        symbol: None,
+                        provenance: prov.clone(),
+                        score: LspContextScore {
+                            priority: 7,
+                            is_hunk_local: false,
+                            is_error: false,
+                            is_same_file: ref_file == file.to_str().unwrap_or(""),
+                            freshness_rank: freshness_rank(freshness),
+                        },
+                        payload: None,
+                    });
+                }
+            }
+            Err(e) => {
+                notes.push(format!("references: {e}"));
+            }
+        }
+    }
+
+    // Implementations
+    if include_implementations {
+        match provider.implementations(file, line, column).await {
+            Ok(impls) => {
+                let prov =
+                    make_provenance(sid, generation, "textDocument/implementation", freshness);
+                for (impl_file, range_text) in &impls {
+                    let (l, c) = parse_range_start(range_text);
+                    items.push(LspContextItem {
+                        kind: LspContextItemKind::Implementation,
+                        file: PathBuf::from(impl_file),
+                        line: l,
+                        column: c,
+                        message: format!("implementation: {range_text}"),
+                        symbol: None,
+                        provenance: prov.clone(),
+                        score: LspContextScore {
+                            priority: 9,
+                            is_hunk_local: false,
+                            is_error: false,
+                            is_same_file: impl_file == file.to_str().unwrap_or(""),
+                            freshness_rank: freshness_rank(freshness),
+                        },
+                        payload: None,
+                    });
+                }
+            }
+            Err(e) => {
+                notes.push(format!("implementations: {e}"));
+            }
+        }
+    }
+
+    // Hover
+    match provider.hover(file, line, column).await {
+        Ok(Some(text)) => {
+            let prov = make_provenance(sid, generation, "textDocument/hover", freshness);
+            items.push(LspContextItem {
+                kind: LspContextItemKind::Hover,
+                file: file.to_path_buf(),
+                line: Some(line),
+                column: Some(column),
+                message: text,
+                symbol: None,
+                provenance: prov,
+                score: LspContextScore {
+                    priority: 6,
+                    is_hunk_local: false,
+                    is_error: false,
+                    is_same_file: true,
+                    freshness_rank: freshness_rank(freshness),
+                },
+                payload: None,
+            });
+        }
+        Ok(None) => {}
+        Err(e) => {
+            notes.push(format!("hover: {e}"));
+        }
+    }
+
+    // Document highlights
+    match provider.document_highlights(file, line, column).await {
+        Ok(highlights) => {
+            let prov =
+                make_provenance(sid, generation, "textDocument/documentHighlight", freshness);
+            for range_text in &highlights {
+                let (l, c) = parse_range_start(range_text);
+                items.push(LspContextItem {
+                    kind: LspContextItemKind::DocumentHighlight,
+                    file: file.to_path_buf(),
+                    line: l,
+                    column: c,
+                    message: format!("highlight: {range_text}"),
+                    symbol: None,
+                    provenance: prov.clone(),
+                    score: LspContextScore {
+                        priority: 5,
+                        is_hunk_local: false,
+                        is_error: false,
+                        is_same_file: true,
+                        freshness_rank: freshness_rank(freshness),
+                    },
+                    payload: None,
+                });
+            }
+        }
+        Err(e) => {
+            notes.push(format!("highlights: {e}"));
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Review context
+// ---------------------------------------------------------------------------
+
+async fn collect_review_context(
+    provider: &dyn LspEvidenceProvider,
+    changed_files: &[PathBuf],
+    risk_mode: LspRiskMode,
+    budget: &LspContextBudget,
+    sid: &str,
+    generation: Option<u64>,
+    freshness: LspEvidenceFreshness,
+    items: &mut Vec<LspContextItem>,
+    notes: &mut Vec<String>,
+) {
+    let files_cap = budget.max_files.min(changed_files.len());
+    for file in changed_files.iter().take(files_cap) {
+        // Diagnostics
+        match provider.diagnostics_for_file(file).await {
+            Ok(diagnostics) => {
+                let prov = make_provenance(sid, generation, "textDocument/diagnostic", freshness);
+                for (severity, message, range_text) in
+                    diagnostics.iter().take(budget.max_diagnostics)
+                {
+                    let (line, column) = parse_range_start(range_text);
+                    items.push(LspContextItem {
+                        kind: LspContextItemKind::Diagnostic,
+                        file: file.to_path_buf(),
+                        line,
+                        column,
+                        message: message.clone(),
+                        symbol: None,
+                        provenance: prov.clone(),
+                        score: LspContextScore {
+                            priority: if severity_is_error(severity) { 10 } else { 5 },
+                            is_hunk_local: false,
+                            is_error: severity_is_error(severity),
+                            is_same_file: true,
+                            freshness_rank: freshness_rank(freshness),
+                        },
+                        payload: None,
+                    });
+                }
+            }
+            Err(e) => {
+                notes.push(format!("diagnostics for {}: {e}", file.display()));
+            }
+        }
+
+        // References are only collected in Standard/Aggressive risk modes.
+        if matches!(risk_mode, LspRiskMode::Standard | LspRiskMode::Aggressive) {
+            // Collect symbols first to find positions for references.
+            if let Ok(symbols) = provider.document_symbols(file).await {
+                let prov_ref =
+                    make_provenance(sid, generation, "textDocument/references", freshness);
+                let mut ref_count = 0;
+                for (_name, _kind, range_text) in &symbols {
+                    if ref_count >= budget.max_references {
+                        break;
+                    }
+                    let (line, _col) = parse_range_start(range_text);
+                    if let Some(l) = line {
+                        if let Ok(refs) = provider.find_references(file, l, 0).await {
+                            for (ref_file, ref_range) in &refs {
+                                let (rl, rc) = parse_range_start(ref_range);
+                                items.push(LspContextItem {
+                                    kind: LspContextItemKind::Reference,
+                                    file: PathBuf::from(ref_file),
+                                    line: rl,
+                                    column: rc,
+                                    message: format!("reference: {ref_range}"),
+                                    symbol: None,
+                                    provenance: prov_ref.clone(),
+                                    score: LspContextScore {
+                                        priority: 7,
+                                        is_hunk_local: false,
+                                        is_error: false,
+                                        is_same_file: ref_file == file.to_str().unwrap_or(""),
+                                        freshness_rank: freshness_rank(freshness),
+                                    },
+                                    payload: None,
+                                });
+                                ref_count += 1;
+                                if ref_count >= budget.max_references {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Definitions for first symbol in each file (always).
+        if let Ok(symbols) = provider.document_symbols(file).await {
+            if let Some((_name, _kind, range_text)) = symbols.first() {
+                let (line, col) = parse_range_start(range_text);
+                if let (Some(l), Some(c)) = (line, col) {
+                    if let Ok(defs) = provider.go_to_definition(file, l, c).await {
+                        let prov =
+                            make_provenance(sid, generation, "textDocument/definition", freshness);
+                        for (def_file, def_range) in &defs {
+                            let (dl, dc) = parse_range_start(def_range);
+                            items.push(LspContextItem {
+                                kind: LspContextItemKind::Definition,
+                                file: PathBuf::from(def_file),
+                                line: dl,
+                                column: dc,
+                                message: format!("definition: {def_range}"),
+                                symbol: None,
+                                provenance: prov.clone(),
+                                score: LspContextScore {
+                                    priority: 12,
+                                    is_hunk_local: false,
+                                    is_error: false,
+                                    is_same_file: def_file == file.to_str().unwrap_or(""),
+                                    freshness_rank: freshness_rank(freshness),
+                                },
+                                payload: None,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    struct MockProvider {
+        diagnostics: Mutex<Vec<(String, String, String)>>,
+        symbols: Mutex<Vec<(String, String, String)>>,
+        defs: Mutex<Vec<(String, String)>>,
+        refs: Mutex<Vec<(String, String)>>,
+        impls: Mutex<Vec<(String, String)>>,
+        hover_text: Mutex<Option<String>>,
+        highlights: Mutex<Vec<String>>,
+        state: Mutex<String>,
+        server_id: Mutex<Option<String>>,
+        generation: Mutex<Option<u64>>,
+    }
+
+    impl MockProvider {
+        fn new() -> Self {
+            Self {
+                diagnostics: Mutex::new(Vec::new()),
+                symbols: Mutex::new(Vec::new()),
+                defs: Mutex::new(Vec::new()),
+                refs: Mutex::new(Vec::new()),
+                impls: Mutex::new(Vec::new()),
+                hover_text: Mutex::new(None),
+                highlights: Mutex::new(Vec::new()),
+                state: Mutex::new("ready".to_string()),
+                server_id: Mutex::new(Some("test-server".to_string())),
+                generation: Mutex::new(Some(1)),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl LspEvidenceProvider for MockProvider {
+        async fn diagnostics_for_file(
+            &self,
+            _file: &Path,
+        ) -> Result<Vec<(String, String, String)>, LspError> {
+            Ok(self.diagnostics.lock().unwrap().clone())
+        }
+
+        async fn document_symbols(
+            &self,
+            _file: &Path,
+        ) -> Result<Vec<(String, String, String)>, LspError> {
+            Ok(self.symbols.lock().unwrap().clone())
+        }
+
+        async fn go_to_definition(
+            &self,
+            _file: &Path,
+            _line: u32,
+            _column: u32,
+        ) -> Result<Vec<(String, String)>, LspError> {
+            Ok(self.defs.lock().unwrap().clone())
+        }
+
+        async fn find_references(
+            &self,
+            _file: &Path,
+            _line: u32,
+            _column: u32,
+        ) -> Result<Vec<(String, String)>, LspError> {
+            Ok(self.refs.lock().unwrap().clone())
+        }
+
+        async fn implementations(
+            &self,
+            _file: &Path,
+            _line: u32,
+            _column: u32,
+        ) -> Result<Vec<(String, String)>, LspError> {
+            Ok(self.impls.lock().unwrap().clone())
+        }
+
+        async fn hover(
+            &self,
+            _file: &Path,
+            _line: u32,
+            _column: u32,
+        ) -> Result<Option<String>, LspError> {
+            Ok(self.hover_text.lock().unwrap().clone())
+        }
+
+        async fn document_highlights(
+            &self,
+            _file: &Path,
+            _line: u32,
+            _column: u32,
+        ) -> Result<Vec<String>, LspError> {
+            Ok(self.highlights.lock().unwrap().clone())
+        }
+
+        async fn operational_state(&self) -> String {
+            self.state.lock().unwrap().clone()
+        }
+
+        async fn server_info(&self) -> (Option<String>, Option<u64>) {
+            (
+                self.server_id.lock().unwrap().clone(),
+                *self.generation.lock().unwrap(),
+            )
+        }
+    }
+
+    #[tokio::test]
+    async fn test_collector_returns_diagnostics_with_provenance() {
+        let provider = MockProvider::new();
+        *provider.diagnostics.lock().unwrap() = vec![(
+            "error".to_string(),
+            "unused variable `x`".to_string(),
+            "(3:5)-(3:10)".to_string(),
+        )];
+
+        let request = LspContextRequest::File {
+            file: PathBuf::from("test.rs"),
+            line_ranges: vec![],
+            include_symbols: false,
+            include_diagnostics: true,
+        };
+        let budget = LspContextBudget::default();
+        let mode = LspContextMode::Opportunistic;
+
+        let packet = collect_context(&provider, &request, &budget, &mode)
+            .await
+            .unwrap();
+
+        assert_eq!(packet.items.len(), 1);
+        let item = &packet.items[0];
+        assert_eq!(item.kind, LspContextItemKind::Diagnostic);
+        assert_eq!(item.message, "unused variable `x`");
+        assert_eq!(item.line, Some(2)); // 0-indexed
+        assert_eq!(item.column, Some(4));
+        assert!(item.provenance.server_id.starts_with("test"));
+        assert_eq!(item.provenance.operation, "textDocument/diagnostic");
+    }
+
+    #[tokio::test]
+    async fn test_collector_returns_definition_excerpt() {
+        let provider = MockProvider::new();
+        *provider.defs.lock().unwrap() =
+            vec![("src/lib.rs".to_string(), "(10:0)-(10:20)".to_string())];
+
+        let request = LspContextRequest::Symbol {
+            file: PathBuf::from("test.rs"),
+            position: lsp_types::Position::new(5, 0),
+            include_references: false,
+            include_implementations: false,
+            include_call_like_context: false,
+        };
+        let budget = LspContextBudget::default();
+        let mode = LspContextMode::Opportunistic;
+
+        let packet = collect_context(&provider, &request, &budget, &mode)
+            .await
+            .unwrap();
+
+        let defs: Vec<_> = packet
+            .items
+            .iter()
+            .filter(|i| i.kind == LspContextItemKind::Definition)
+            .collect();
+        assert_eq!(defs.len(), 1);
+        assert_eq!(defs[0].file, PathBuf::from("src/lib.rs"));
+        assert_eq!(defs[0].line, Some(9)); // 0-indexed
+    }
+
+    #[tokio::test]
+    async fn test_collector_limits_references() {
+        let provider = MockProvider::new();
+        *provider.refs.lock().unwrap() = (0..100)
+            .map(|i| (format!("file_{i}.rs"), format!("(1:0)-(1:10)")))
+            .collect();
+
+        let request = LspContextRequest::Symbol {
+            file: PathBuf::from("test.rs"),
+            position: lsp_types::Position::new(5, 0),
+            include_references: true,
+            include_implementations: false,
+            include_call_like_context: false,
+        };
+        let mut budget = LspContextBudget::default();
+        budget.max_references = 5;
+        let mode = LspContextMode::Opportunistic;
+
+        let packet = collect_context(&provider, &request, &budget, &mode)
+            .await
+            .unwrap();
+
+        let refs: Vec<_> = packet
+            .items
+            .iter()
+            .filter(|i| i.kind == LspContextItemKind::Reference)
+            .collect();
+        assert!(
+            refs.len() <= 5,
+            "expected <= 5 references, got {}",
+            refs.len()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_collector_records_unsupported_notes() {
+        // When a provider returns an error, we get an operational note.
+        struct FailProvider;
+        #[async_trait]
+        impl LspEvidenceProvider for FailProvider {
+            async fn diagnostics_for_file(
+                &self,
+                _: &Path,
+            ) -> Result<Vec<(String, String, String)>, LspError> {
+                Err(LspError::NotInitialized("no server".into()))
+            }
+            async fn document_symbols(
+                &self,
+                _: &Path,
+            ) -> Result<Vec<(String, String, String)>, LspError> {
+                Ok(vec![])
+            }
+            async fn go_to_definition(
+                &self,
+                _: &Path,
+                _: u32,
+                _: u32,
+            ) -> Result<Vec<(String, String)>, LspError> {
+                Ok(vec![])
+            }
+            async fn find_references(
+                &self,
+                _: &Path,
+                _: u32,
+                _: u32,
+            ) -> Result<Vec<(String, String)>, LspError> {
+                Ok(vec![])
+            }
+            async fn implementations(
+                &self,
+                _: &Path,
+                _: u32,
+                _: u32,
+            ) -> Result<Vec<(String, String)>, LspError> {
+                Ok(vec![])
+            }
+            async fn hover(&self, _: &Path, _: u32, _: u32) -> Result<Option<String>, LspError> {
+                Ok(None)
+            }
+            async fn document_highlights(
+                &self,
+                _: &Path,
+                _: u32,
+                _: u32,
+            ) -> Result<Vec<String>, LspError> {
+                Ok(vec![])
+            }
+            async fn operational_state(&self) -> String {
+                "ready".to_string()
+            }
+            async fn server_info(&self) -> (Option<String>, Option<u64>) {
+                (Some("fail".to_string()), Some(1))
+            }
+        }
+
+        let request = LspContextRequest::File {
+            file: PathBuf::from("test.rs"),
+            line_ranges: vec![],
+            include_symbols: false,
+            include_diagnostics: true,
+        };
+        let budget = LspContextBudget::default();
+        let mode = LspContextMode::Opportunistic;
+
+        let packet = collect_context(&FailProvider, &request, &budget, &mode)
+            .await
+            .unwrap();
+
+        // Should have an operational note about the failure.
+        let notes: Vec<_> = packet
+            .items
+            .iter()
+            .filter(|i| i.kind == LspContextItemKind::OperationalNote)
+            .collect();
+        assert!(!notes.is_empty(), "expected operational note for failure");
+    }
+
+    #[tokio::test]
+    async fn test_collector_handles_unknown_capability_fail_closed_when_required() {
+        // Required mode + unavailable server → RequiredFailed error.
+        struct UnavailRequiredProvider;
+        #[async_trait]
+        impl LspEvidenceProvider for UnavailRequiredProvider {
+            async fn diagnostics_for_file(
+                &self,
+                _: &Path,
+            ) -> Result<Vec<(String, String, String)>, LspError> {
+                Ok(vec![])
+            }
+            async fn document_symbols(
+                &self,
+                _: &Path,
+            ) -> Result<Vec<(String, String, String)>, LspError> {
+                Ok(vec![])
+            }
+            async fn go_to_definition(
+                &self,
+                _: &Path,
+                _: u32,
+                _: u32,
+            ) -> Result<Vec<(String, String)>, LspError> {
+                Ok(vec![])
+            }
+            async fn find_references(
+                &self,
+                _: &Path,
+                _: u32,
+                _: u32,
+            ) -> Result<Vec<(String, String)>, LspError> {
+                Ok(vec![])
+            }
+            async fn implementations(
+                &self,
+                _: &Path,
+                _: u32,
+                _: u32,
+            ) -> Result<Vec<(String, String)>, LspError> {
+                Ok(vec![])
+            }
+            async fn hover(&self, _: &Path, _: u32, _: u32) -> Result<Option<String>, LspError> {
+                Ok(None)
+            }
+            async fn document_highlights(
+                &self,
+                _: &Path,
+                _: u32,
+                _: u32,
+            ) -> Result<Vec<String>, LspError> {
+                Ok(vec![])
+            }
+            async fn operational_state(&self) -> String {
+                "failed".to_string()
+            }
+            async fn server_info(&self) -> (Option<String>, Option<u64>) {
+                (None, None)
+            }
+        }
+
+        let request = LspContextRequest::Hunk {
+            file: PathBuf::from("test.rs"),
+            hunks: vec![crate::context::HunkRange {
+                start: 0,
+                end: 5,
+                original_start: None,
+                original_end: None,
+            }],
+            include_references: false,
+            include_definitions: true,
+            include_security_evidence: false,
+        };
+        let budget = LspContextBudget::default();
+
+        let result = collect_context(
+            &UnavailRequiredProvider,
+            &request,
+            &budget,
+            &LspContextMode::Required,
+        )
+        .await;
+
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            LspContextError::RequiredFailed(_) => {}
+            other => panic!("expected RequiredFailed, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_collector_does_not_execute_code_actions() {
+        // Verify that code actions are never called — the provider has no
+        // such method and we never invoke it.
+        let provider = MockProvider::new();
+        let request = LspContextRequest::File {
+            file: PathBuf::from("test.rs"),
+            line_ranges: vec![],
+            include_symbols: true,
+            include_diagnostics: true,
+        };
+        let budget = LspContextBudget::default();
+        let mode = LspContextMode::Opportunistic;
+
+        let packet = collect_context(&provider, &request, &budget, &mode)
+            .await
+            .unwrap();
+
+        // No code action items.
+        let code_actions: Vec<_> = packet
+            .items
+            .iter()
+            .filter(|i| {
+                i.provenance.operation.contains("codeAction")
+                    || i.provenance.operation.contains("code_action")
+            })
+            .collect();
+        assert!(code_actions.is_empty(), "should not execute code actions");
+    }
+
+    #[tokio::test]
+    async fn test_collector_does_not_apply_rename_or_formatting() {
+        let provider = MockProvider::new();
+        let request = LspContextRequest::Review {
+            changed_files: vec![PathBuf::from("test.rs")],
+            hunks: vec![],
+            risk_mode: LspRiskMode::Standard,
+        };
+        let budget = LspContextBudget::default();
+        let mode = LspContextMode::Opportunistic;
+
+        let packet = collect_context(&provider, &request, &budget, &mode)
+            .await
+            .unwrap();
+
+        // No rename/formatting operations.
+        for item in &packet.items {
+            assert!(
+                !item.provenance.operation.contains("rename"),
+                "should not perform rename"
+            );
+            assert!(
+                !item.provenance.operation.contains("format"),
+                "should not perform formatting"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_hunk_context_prefers_changed_range_diagnostics() {
+        let provider = MockProvider::new();
+        *provider.diagnostics.lock().unwrap() = vec![
+            (
+                "error".to_string(),
+                "in hunk".to_string(),
+                "(3:0)-(3:10)".to_string(),
+            ),
+            (
+                "warning".to_string(),
+                "outside hunk".to_string(),
+                "(20:0)-(20:10)".to_string(),
+            ),
+        ];
+
+        let hunks = vec![crate::context::HunkRange {
+            start: 0,
+            end: 5,
+            original_start: None,
+            original_end: None,
+        }];
+
+        let items = collect_hunk_context(
+            &provider,
+            PathBuf::from("test.rs").as_path(),
+            &hunks,
+            false,
+            false,
+            &LspContextBudget::default(),
+        )
+        .await
+        .unwrap();
+
+        // Only the in-hunk diagnostic should be present.
+        let diagnostics: Vec<_> = items
+            .iter()
+            .filter(|i| i.kind == LspContextItemKind::Diagnostic)
+            .collect();
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].message, "in hunk");
+        assert!(diagnostics[0].score.is_hunk_local);
+    }
+
+    #[tokio::test]
+    async fn test_hunk_context_includes_enclosing_symbol() {
+        let provider = MockProvider::new();
+        *provider.defs.lock().unwrap() = vec![("test.rs".to_string(), "(2:0)-(2:30)".to_string())];
+
+        let hunks = vec![crate::context::HunkRange {
+            start: 3,
+            end: 6,
+            original_start: None,
+            original_end: None,
+        }];
+
+        let items = collect_hunk_context(
+            &provider,
+            PathBuf::from("test.rs").as_path(),
+            &hunks,
+            false,
+            true,
+            &LspContextBudget::default(),
+        )
+        .await
+        .unwrap();
+
+        let defs: Vec<_> = items
+            .iter()
+            .filter(|i| i.kind == LspContextItemKind::Definition)
+            .collect();
+        assert_eq!(defs.len(), 1);
+        assert_eq!(defs[0].file, PathBuf::from("test.rs"));
+    }
+
+    #[tokio::test]
+    async fn test_hunk_context_caps_references() {
+        let provider = MockProvider::new();
+        *provider.refs.lock().unwrap() = (0..50)
+            .map(|i| (format!("file_{i}.rs"), format!("(1:0)-(1:10)")))
+            .collect();
+
+        let hunks = vec![crate::context::HunkRange {
+            start: 0,
+            end: 5,
+            original_start: None,
+            original_end: None,
+        }];
+
+        let mut budget = LspContextBudget::default();
+        budget.max_references = 5;
+
+        let items = collect_hunk_context(
+            &provider,
+            PathBuf::from("test.rs").as_path(),
+            &hunks,
+            true,
+            false,
+            &budget,
+        )
+        .await
+        .unwrap();
+
+        let refs: Vec<_> = items
+            .iter()
+            .filter(|i| i.kind == LspContextItemKind::Reference)
+            .collect();
+        assert!(refs.len() <= 5, "expected <= 5 refs, got {}", refs.len());
+    }
+
+    #[tokio::test]
+    async fn test_hunk_context_degrades_without_lsp() {
+        // Opportunistic mode should return empty items when server is unusable.
+        struct UnavailProvider;
+        #[async_trait]
+        impl LspEvidenceProvider for UnavailProvider {
+            async fn diagnostics_for_file(
+                &self,
+                _: &Path,
+            ) -> Result<Vec<(String, String, String)>, LspError> {
+                Ok(vec![])
+            }
+            async fn document_symbols(
+                &self,
+                _: &Path,
+            ) -> Result<Vec<(String, String, String)>, LspError> {
+                Ok(vec![])
+            }
+            async fn go_to_definition(
+                &self,
+                _: &Path,
+                _: u32,
+                _: u32,
+            ) -> Result<Vec<(String, String)>, LspError> {
+                Ok(vec![])
+            }
+            async fn find_references(
+                &self,
+                _: &Path,
+                _: u32,
+                _: u32,
+            ) -> Result<Vec<(String, String)>, LspError> {
+                Ok(vec![])
+            }
+            async fn implementations(
+                &self,
+                _: &Path,
+                _: u32,
+                _: u32,
+            ) -> Result<Vec<(String, String)>, LspError> {
+                Ok(vec![])
+            }
+            async fn hover(&self, _: &Path, _: u32, _: u32) -> Result<Option<String>, LspError> {
+                Ok(None)
+            }
+            async fn document_highlights(
+                &self,
+                _: &Path,
+                _: u32,
+                _: u32,
+            ) -> Result<Vec<String>, LspError> {
+                Ok(vec![])
+            }
+            async fn operational_state(&self) -> String {
+                "failed".to_string()
+            }
+            async fn server_info(&self) -> (Option<String>, Option<u64>) {
+                (None, None)
+            }
+        }
+
+        let request = LspContextRequest::File {
+            file: PathBuf::from("test.rs"),
+            line_ranges: vec![],
+            include_symbols: false,
+            include_diagnostics: true,
+        };
+        let budget = LspContextBudget::default();
+        let mode = LspContextMode::Opportunistic;
+
+        let packet = collect_context(&UnavailProvider, &request, &budget, &mode)
+            .await
+            .unwrap();
+
+        // Should return a degraded note, not real diagnostics.
+        let notes: Vec<_> = packet
+            .items
+            .iter()
+            .filter(|i| i.kind == LspContextItemKind::OperationalNote)
+            .collect();
+        assert!(!notes.is_empty(), "expected degraded note");
+    }
+
+    #[tokio::test]
+    async fn test_required_mode_fails_when_server_unavailable() {
+        struct UnavailProvider;
+        #[async_trait]
+        impl LspEvidenceProvider for UnavailProvider {
+            async fn diagnostics_for_file(
+                &self,
+                _: &Path,
+            ) -> Result<Vec<(String, String, String)>, LspError> {
+                Ok(vec![])
+            }
+            async fn document_symbols(
+                &self,
+                _: &Path,
+            ) -> Result<Vec<(String, String, String)>, LspError> {
+                Ok(vec![])
+            }
+            async fn go_to_definition(
+                &self,
+                _: &Path,
+                _: u32,
+                _: u32,
+            ) -> Result<Vec<(String, String)>, LspError> {
+                Ok(vec![])
+            }
+            async fn find_references(
+                &self,
+                _: &Path,
+                _: u32,
+                _: u32,
+            ) -> Result<Vec<(String, String)>, LspError> {
+                Ok(vec![])
+            }
+            async fn implementations(
+                &self,
+                _: &Path,
+                _: u32,
+                _: u32,
+            ) -> Result<Vec<(String, String)>, LspError> {
+                Ok(vec![])
+            }
+            async fn hover(&self, _: &Path, _: u32, _: u32) -> Result<Option<String>, LspError> {
+                Ok(None)
+            }
+            async fn document_highlights(
+                &self,
+                _: &Path,
+                _: u32,
+                _: u32,
+            ) -> Result<Vec<String>, LspError> {
+                Ok(vec![])
+            }
+            async fn operational_state(&self) -> String {
+                "failed".to_string()
+            }
+            async fn server_info(&self) -> (Option<String>, Option<u64>) {
+                (None, None)
+            }
+        }
+
+        let request = LspContextRequest::File {
+            file: PathBuf::from("test.rs"),
+            line_ranges: vec![],
+            include_symbols: false,
+            include_diagnostics: true,
+        };
+        let budget = LspContextBudget::default();
+
+        let result = collect_context(
+            &UnavailProvider,
+            &request,
+            &budget,
+            &LspContextMode::Required,
+        )
+        .await;
+
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            LspContextError::RequiredFailed(_) => {}
+            other => panic!("expected RequiredFailed, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_opportunistic_returns_partial_when_server_unavailable() {
+        struct PartialProvider;
+        #[async_trait]
+        impl LspEvidenceProvider for PartialProvider {
+            async fn diagnostics_for_file(
+                &self,
+                _: &Path,
+            ) -> Result<Vec<(String, String, String)>, LspError> {
+                Ok(vec![(
+                    "error".to_string(),
+                    "diag".to_string(),
+                    "(1:0)-(1:5)".to_string(),
+                )])
+            }
+            async fn document_symbols(
+                &self,
+                _: &Path,
+            ) -> Result<Vec<(String, String, String)>, LspError> {
+                Err(LspError::NotInitialized("not ready".into()))
+            }
+            async fn go_to_definition(
+                &self,
+                _: &Path,
+                _: u32,
+                _: u32,
+            ) -> Result<Vec<(String, String)>, LspError> {
+                Err(LspError::NotInitialized("not ready".into()))
+            }
+            async fn find_references(
+                &self,
+                _: &Path,
+                _: u32,
+                _: u32,
+            ) -> Result<Vec<(String, String)>, LspError> {
+                Ok(vec![])
+            }
+            async fn implementations(
+                &self,
+                _: &Path,
+                _: u32,
+                _: u32,
+            ) -> Result<Vec<(String, String)>, LspError> {
+                Ok(vec![])
+            }
+            async fn hover(&self, _: &Path, _: u32, _: u32) -> Result<Option<String>, LspError> {
+                Ok(None)
+            }
+            async fn document_highlights(
+                &self,
+                _: &Path,
+                _: u32,
+                _: u32,
+            ) -> Result<Vec<String>, LspError> {
+                Ok(vec![])
+            }
+            async fn operational_state(&self) -> String {
+                "ready".to_string()
+            }
+            async fn server_info(&self) -> (Option<String>, Option<u64>) {
+                (Some("partial".to_string()), Some(1))
+            }
+        }
+
+        let request = LspContextRequest::File {
+            file: PathBuf::from("test.rs"),
+            line_ranges: vec![],
+            include_symbols: true,
+            include_diagnostics: true,
+        };
+        let budget = LspContextBudget::default();
+        let mode = LspContextMode::Opportunistic;
+
+        let packet = collect_context(&PartialProvider, &request, &budget, &mode)
+            .await
+            .unwrap();
+
+        // Should have diagnostic + operational notes for failed operations.
+        let diags: Vec<_> = packet
+            .items
+            .iter()
+            .filter(|i| i.kind == LspContextItemKind::Diagnostic)
+            .collect();
+        assert_eq!(diags.len(), 1, "diagnostic should survive");
+    }
+}
