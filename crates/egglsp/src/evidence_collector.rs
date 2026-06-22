@@ -974,6 +974,48 @@ async fn collect_symbol_context(
             notes.push(format!("semanticTokens: {e}"));
         }
     }
+
+    // Workspace symbols (bounded summary of matching symbols).
+    // Only collected in review/standard+ risk modes for efficiency.
+    if budget.max_symbols > 0 {
+        match provider.workspace_symbols("").await {
+            Ok(symbols) => {
+                let prov = make_provenance(sid, generation, "workspace/symbol", freshness);
+                let before = symbols.len();
+                let capped: Vec<_> = symbols.iter().take(budget.max_symbols).collect();
+                if capped.len() < before {
+                    notes.push(format!(
+                        "workspaceSymbols truncated at {} of {}",
+                        capped.len(),
+                        before
+                    ));
+                }
+                for (name, kind, file_path, range_text) in &capped {
+                    let (l, c) = parse_range_start(range_text);
+                    items.push(LspContextItem {
+                        kind: LspContextItemKind::WorkspaceSymbol,
+                        file: PathBuf::from(file_path),
+                        line: l,
+                        column: c,
+                        message: format!("{kind}: {name}"),
+                        symbol: Some(name.clone()),
+                        provenance: prov.clone(),
+                        score: LspContextScore {
+                            priority: 3,
+                            is_hunk_local: false,
+                            is_error: false,
+                            is_same_file: file_path == file.to_str().unwrap_or(""),
+                            freshness_rank: freshness_rank(freshness),
+                        },
+                        payload: None,
+                    });
+                }
+            }
+            Err(e) => {
+                notes.push(format!("workspaceSymbols: {e}"));
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

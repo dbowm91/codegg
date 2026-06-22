@@ -3074,7 +3074,7 @@ no workspace/executeCommand is executed by Codegg automatically.
 
 ### Tests
 
-Phase 5 adds 26 composite integration tests in `tests/phase5_context_integration.rs` covering budget enforcement, dedup/ranking, security risk tags, agent rendering, preview non-mutation, degradation decisions, TUI summaries, security packet diagnostics/references/truncation/staleness, and hunk context scoping. The `LspEvidenceProvider` trait covers all 9 planned operation kinds: diagnostics, document symbols, definitions, references, implementations, hover, signature help, completion, semantic tokens, and workspace symbols.
+Phase 5 adds 28 composite integration tests in `tests/phase5_context_integration.rs` covering budget enforcement, dedup/ranking, security risk tags, agent rendering, preview non-mutation, degradation decisions, TUI summaries, security packet diagnostics/references/truncation/staleness, and hunk context scoping. The `LspEvidenceProvider` trait covers all 9 planned operation kinds: diagnostics, document symbols, definitions, references, implementations, hover, signature help, completion, semantic tokens, and workspace symbols.
 
 ### Status
 

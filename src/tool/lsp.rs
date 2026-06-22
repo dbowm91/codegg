@@ -524,6 +524,61 @@ impl LspTool {
         self
     }
 
+    /// Access the underlying LSP service for context assembly and status queries.
+    pub fn service(&self) -> &Arc<crate::lsp::service::LspService> {
+        &self.service
+    }
+
+    /// Render a compact LSP status section for injection into the agent
+    /// system prompt.  Returns `None` when the LSP server is not
+    /// available or has no active clients.
+    pub async fn lsp_context_for_agent(&self) -> Option<String> {
+        let status_line = self.lsp_status_line().await?;
+        Some(format!("\n\n## LSP Context\n{status_line}\n"))
+    }
+
+    /// Return a compact one-line LSP status string for the TUI status bar.
+    /// Returns `None` when the LSP server is not available.
+    pub async fn lsp_status_line(&self) -> Option<String> {
+        use egglsp::tui_summary::{render_tui_status_line, LspTuiSummary};
+
+        let keys = self.service.client_keys().await;
+        if keys.is_empty() {
+            return None;
+        }
+
+        let mut server_id: Option<String> = None;
+        let mut server_generation: Option<u64> = None;
+        let mut status_str = "unknown".to_string();
+        let mut stale = false;
+
+        for key in &keys {
+            if let Some(state) = self.service.operational_state_for_key(key).await {
+                let gen = self.service.generation_for_key(key).await;
+                server_id = Some(key.clone());
+                server_generation = Some(gen);
+                status_str = state.label().to_string();
+                stale = !matches!(state, egglsp::health::LspOperationalState::Ready);
+            }
+        }
+
+        let summary = LspTuiSummary {
+            server_status: status_str,
+            server_id,
+            server_generation,
+            diagnostics_count: 0,
+            references_count: 0,
+            definitions_count: 0,
+            truncated: false,
+            stale,
+            preview_count: 0,
+            preview_stale: false,
+            notes: Vec::new(),
+            operational_notes: Vec::new(),
+        };
+        Some(render_tui_status_line(&summary))
+    }
+
     fn resolve_file_from_str(&self, p: &str) -> Result<PathBuf, ToolError> {
         let original = if p.starts_with('/') {
             PathBuf::from(p)

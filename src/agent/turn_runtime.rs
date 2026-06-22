@@ -34,6 +34,9 @@ pub struct TurnRunInput {
     pub event_log: Arc<super::super::core::event_log::EventLog>,
     /// Unique identifier for this turn, used in event publishing.
     pub turn_id: String,
+    /// Shared LSP service for injecting LSP context into the system prompt.
+    /// `None` when LSP is not available (e.g. socket mode).
+    pub lsp_service: Option<Arc<crate::lsp::service::LspService>>,
 }
 
 /// Minimal output from a turn execution.
@@ -87,6 +90,7 @@ impl TurnRuntime for DefaultTurnRuntime {
             memory_store,
             event_log,
             turn_id,
+            lsp_service,
         } = input;
 
         // ── Provider resolution ──────────────────────────────────────
@@ -177,6 +181,17 @@ impl TurnRuntime for DefaultTurnRuntime {
             String::new()
         };
         system.push_str(&goal_context);
+
+        // ── LSP context ──────────────────────────────────────────────
+        if let Some(ref svc) = lsp_service {
+            use crate::tool::lsp::LspTool;
+            use std::path::PathBuf;
+            let root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+            let tool = LspTool::new(Arc::clone(svc)).with_allowed_root(root);
+            if let Some(lsp_ctx) = tool.lsp_context_for_agent().await {
+                system.push_str(&lsp_ctx);
+            }
+        }
 
         if plan_mode {
             system.push_str("\n\n");

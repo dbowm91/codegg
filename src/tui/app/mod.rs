@@ -1778,6 +1778,16 @@ impl App {
             .set_subagent_count(self.session_state.subagent_count);
         self.status_bar
             .set_goal(self.active_goal.as_ref().map(format_goal_status_line));
+
+        // Populate LSP status from the shared LspTool when available.
+        if let Some(ref lsp_tool) = self.lsp_tool {
+            let handle = tokio::runtime::Handle::current();
+            let lsp_status = handle.block_on(lsp_tool.lsp_status_line());
+            self.status_bar.set_lsp_status(lsp_status);
+        } else {
+            self.status_bar.set_lsp_status(None);
+        }
+
         frame.render_widget(&self.status_bar, area);
     }
 
@@ -8691,6 +8701,7 @@ mod remote_core_loader_tests {
             None,
             Some(pool),
             crate::config::schema::Config::default(),
+            None,
         ));
 
         let req = new_request("snap".into(), CoreRequest::SnapshotModels);
@@ -8737,6 +8748,7 @@ mod remote_core_loader_tests {
             Some(scheduler),
             Some(pool),
             crate::config::schema::Config::default(),
+            None,
         ));
 
         let mut app = App::new_for_testing("/tmp".to_string());
@@ -8770,6 +8782,7 @@ mod remote_core_loader_tests {
             None,
             Some(pool),
             crate::config::schema::Config::default(),
+            None,
         ))
     }
 

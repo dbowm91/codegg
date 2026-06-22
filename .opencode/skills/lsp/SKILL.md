@@ -1872,7 +1872,7 @@ crates/egglsp/src/
 └── degradation_policy.rs   # evaluate_degradation(), LspContextDegradeDecision
 
 tests/
-└── phase5_context_integration.rs  # 18 composite tests
+└── phase5_context_integration.rs  # 28 composite tests
 ```
 
 ### Key Concepts

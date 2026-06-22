@@ -1394,6 +1394,16 @@ async fn launch_tui(cli: &Cli) -> Result<(), AppError> {
         app.bg_scheduler = Some(scheduler);
     }
 
+    // Create the shared LSP service early so it can be passed to both the
+    // TUI (for security review) and the daemon (for agent prompt context).
+    let lsp_service: Option<Arc<codegg::lsp::service::LspService>> = if !is_socket_mode {
+        Some(codegg::lsp::LspService::new_arc(
+            codegg::lsp::config_lsp_to_egglsp(config.lsp.clone().unwrap_or_default()),
+        ))
+    } else {
+        None
+    };
+
     let core_client: Arc<dyn CoreClient> = if core_transport == "stdio" {
         let exe = std::env::current_exe()
             .map_err(|e| AppError::Other(anyhow::anyhow!("cannot resolve current exe: {}", e)))?;
@@ -1417,6 +1427,7 @@ async fn launch_tui(cli: &Cli) -> Result<(), AppError> {
                     app.bg_scheduler.clone(),
                     pool.clone(),
                     config.clone(),
+                    lsp_service.clone(),
                 ))
             }
         }
@@ -1476,6 +1487,7 @@ async fn launch_tui(cli: &Cli) -> Result<(), AppError> {
                         app.bg_scheduler.clone(),
                         pool.clone(),
                         config.clone(),
+                        lsp_service.clone(),
                     ))
                 }
             }
@@ -1487,6 +1499,7 @@ async fn launch_tui(cli: &Cli) -> Result<(), AppError> {
             app.bg_scheduler.clone(),
             pool.clone(),
             config.clone(),
+            lsp_service.clone(),
         ))
     };
     app.set_core_client(core_client);
@@ -1495,13 +1508,12 @@ async fn launch_tui(cli: &Cli) -> Result<(), AppError> {
     // LSP-backed TUI operations.  Only in local (non-socket) mode —
     // socket mode has no LspTool on the client side.
     if !is_socket_mode {
-        let lsp_service = codegg::lsp::LspService::new_arc(codegg::lsp::config_lsp_to_egglsp(
-            config.lsp.clone().unwrap_or_default(),
-        ));
-        app.lsp_tool = Some(std::sync::Arc::new(
-            codegg::tool::lsp::LspTool::new(lsp_service)
-                .with_allowed_root(std::path::PathBuf::from(&project_dir)),
-        ));
+        if let Some(svc) = lsp_service {
+            app.lsp_tool = Some(std::sync::Arc::new(
+                codegg::tool::lsp::LspTool::new(svc)
+                    .with_allowed_root(std::path::PathBuf::from(&project_dir)),
+            ));
+        }
     }
 
     if is_socket_mode {
@@ -1907,6 +1919,7 @@ async fn run_core_stdio() -> Result<(), AppError> {
         Some(scheduler),
         Some(pool),
         config,
+        None,
     );
 
     let stdin = BufReader::new(tokio::io::stdin());

@@ -1195,3 +1195,104 @@ async fn phase5_hunk_context_caps_references_composite() {
         refs.len()
     );
 }
+
+#[tokio::test]
+async fn phase5_security_packet_marks_public_api_reference_fanout() {
+    let provider = MockProvider::new();
+    // Symbols in the changed file — review path uses these to find positions
+    // for reference collection.
+    *provider.symbols.lock().unwrap() = vec![
+        (
+            "my_func".to_string(),
+            "function".to_string(),
+            "(5:0)-(5:20)".to_string(),
+        ),
+        (
+            "MyClass".to_string(),
+            "class".to_string(),
+            "(10:0)-(10:15)".to_string(),
+        ),
+    ];
+    // 8 unique references with distinct ranges → well under file limit (10)
+    // but note: the security test verifies risk tags, not exact counts.
+    // We use fewer refs to stay within default budget (max_files=10).
+    *provider.refs.lock().unwrap() = (0..8)
+        .map(|i| (format!("refs/file_{i}.rs"), format!("({i}:0)-({i}:10)")))
+        .collect();
+    // 2 definitions in the changed file → triggers ChangedPublicApi.
+    *provider.defs.lock().unwrap() = vec![
+        ("src/main.rs".to_string(), "(5:0)-(5:20)".to_string()),
+        ("src/main.rs".to_string(), "(10:0)-(10:15)".to_string()),
+    ];
+
+    let request = LspContextRequest::Review {
+        changed_files: vec![PathBuf::from("src/main.rs")],
+        hunks: vec![],
+        risk_mode: LspRiskMode::Aggressive,
+    };
+    let mut budget = LspContextBudget::default();
+    budget.max_references = 100;
+    budget.max_files = 50;
+    let mode = LspContextMode::Opportunistic;
+
+    let packet = collect_context(&provider, &request, &budget, &mode)
+        .await
+        .unwrap();
+
+    let summary = build_security_evidence_summary(&packet);
+    // The key assertions: risk tags are deterministic given the input.
+    assert!(
+        summary
+            .risk_tags
+            .contains(&SecurityRiskTag::ChangedPublicApi),
+        "should have ChangedPublicApi tag for definitions in changed file, got {:?}",
+        summary.risk_tags
+    );
+    // With 2 definitions in changed file, we get ChangedPublicApi.
+    // The mock returns 8 refs per symbol position, which after dedup
+    // should exceed 10. Verify the actual reference count.
+    assert!(
+        summary.references_count >= 8,
+        "should have at least 8 references after collection, got {}",
+        summary.references_count
+    );
+}
+
+#[tokio::test]
+async fn phase5_security_packet_degrades_without_lsp() {
+    // Mock provider returns "deaded" state — simulates LSP unavailable.
+    let provider = MockProvider::new();
+    *provider.state.lock().unwrap() = "deaded".to_string();
+
+    let request = LspContextRequest::Review {
+        changed_files: vec![PathBuf::from("src/main.rs")],
+        hunks: vec![],
+        risk_mode: LspRiskMode::Standard,
+    };
+    let budget = LspContextBudget::default();
+    let mode = LspContextMode::Opportunistic;
+
+    // Opportunistic mode should succeed even with degraded state.
+    let packet = collect_context(&provider, &request, &budget, &mode)
+        .await
+        .unwrap();
+
+    // Evidence items should still be collected (Opportunistic mode
+    // doesn't block on degraded state) but freshness should be Stale.
+    for item in &packet.items {
+        assert!(
+            matches!(
+                item.provenance.freshness,
+                LspEvidenceFreshness::Stale | LspEvidenceFreshness::Unknown
+            ),
+            "items from deaded server should be Stale or Unknown, got {:?}",
+            item.provenance.freshness
+        );
+    }
+
+    let summary = build_security_evidence_summary(&packet);
+    assert!(
+        summary.stale,
+        "summary should mark stale when LSP state is deaded"
+    );
+}

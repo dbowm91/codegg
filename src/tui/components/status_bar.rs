@@ -19,6 +19,9 @@ pub struct StatusBarWidget {
     /// Active goal indicator, if any. Cached string so we don't pay
     /// snapshot formatting cost on every render.
     pub goal_str: Option<String>,
+    /// Compact LSP status line (e.g. "LSP: ready | rust-analyzer gen=3").
+    /// Cached string populated by the App before each render.
+    pub lsp_status: Option<String>,
 }
 
 impl StatusBarWidget {
@@ -34,6 +37,7 @@ impl StatusBarWidget {
             subagent_count: 0,
             undo_message: None,
             goal_str: None,
+            lsp_status: None,
         }
     }
 
@@ -77,6 +81,11 @@ impl StatusBarWidget {
 
     pub fn clear_undo_message(&mut self) {
         self.undo_message = None;
+    }
+
+    /// Set the compact LSP status line. `None` clears the indicator.
+    pub fn set_lsp_status(&mut self, lsp_status: Option<String>) {
+        self.lsp_status = lsp_status;
     }
 }
 
@@ -165,6 +174,14 @@ impl Widget for &StatusBarWidget {
                 Style::default()
                     .fg(self.theme.primary)
                     .add_modifier(Modifier::BOLD),
+            ));
+        }
+
+        if let Some(ref lsp) = self.lsp_status {
+            middle_spans.push(Span::styled("  ", Style::default()));
+            middle_spans.push(Span::styled(
+                lsp.clone(),
+                Style::default().fg(self.theme.secondary),
             ));
         }
 

@@ -26,6 +26,9 @@ pub struct CoreRuntimeDeps {
     ///
     /// Always present: defaults to [`crate::agent::turn_runtime::DefaultTurnRuntime`].
     pub turn_runtime: Arc<dyn TurnRuntime>,
+    /// Shared LSP service for context assembly in agent prompts.
+    /// `None` in socket/remote mode; `Some` in local mode.
+    pub lsp_service: Option<Arc<crate::lsp::service::LspService>>,
 }
 
 impl Clone for CoreRuntimeDeps {
@@ -35,6 +38,7 @@ impl Clone for CoreRuntimeDeps {
             memory_store: self.memory_store.clone(),
             legacy_agent: self.legacy_agent.clone(),
             turn_runtime: Arc::clone(&self.turn_runtime),
+            lsp_service: self.lsp_service.clone(),
         }
     }
 }
@@ -54,6 +58,7 @@ impl CoreRuntimeDeps {
                 bg_scheduler,
             },
             turn_runtime: Arc::new(crate::agent::turn_runtime::DefaultTurnRuntime),
+            lsp_service: None,
         }
     }
 
@@ -68,12 +73,19 @@ impl CoreRuntimeDeps {
             memory_store,
             legacy_agent,
             turn_runtime,
+            lsp_service: None,
         }
     }
 
     /// Builder-style setter for the turn runtime.
     pub fn with_turn_runtime(mut self, runtime: Arc<dyn TurnRuntime>) -> Self {
         self.turn_runtime = runtime;
+        self
+    }
+
+    /// Builder-style setter for the shared LSP service.
+    pub fn with_lsp_service(mut self, service: Arc<crate::lsp::service::LspService>) -> Self {
+        self.lsp_service = Some(service);
         self
     }
 }

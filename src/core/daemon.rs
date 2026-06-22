@@ -563,6 +563,7 @@ impl CoreDaemon {
                     memory_store: self.deps.memory_store.clone(),
                     event_log: Arc::clone(&self.event_log),
                     turn_id: turn_id.clone(),
+                    lsp_service: self.deps.lsp_service.clone(),
                 };
                 let turn_output = self.deps.turn_runtime.run_turn(turn_input).await?;
 
