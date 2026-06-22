@@ -438,6 +438,35 @@ impl std::fmt::Display for AgentContextSource {
 // ---------------------------------------------------------------------------
 
 /// The assembled collection of LSP evidence ready for budget enforcement.
+///
+/// # Canonical context packet
+///
+/// `LspContextPacket` is the **canonical Phase 5 agent/review context
+/// packet** — the internal model that the agent prompt path,
+/// `render_lsp_context_for_agent`, the `PreviewArtifactRegistry`,
+/// `SecurityEvidenceSummary`, and `LspTuiSummary` all consume.
+///
+/// Every `LspContextItem` carries full provenance (server_id,
+/// generation, freshness, capability decision, post-restart flag),
+/// which lets downstream renderers and TUI summaries distinguish
+/// fresh vs. stale evidence, attribute every line of context to a
+/// specific server generation, and report unsupported operations
+/// without parsing strings.
+///
+/// # Relationship to `SemanticContextPacket`
+///
+/// The tool-local [`SemanticContextPacket`] (defined in
+/// `src/tool/lsp.rs`) is a *separate, tool-facing* DTO that drives
+/// the `semanticContext` tool operation and carries extra fields
+/// specific to that tool (source excerpt, call/type hierarchy,
+/// overlay summary, source-action hints). It is not the canonical
+/// context packet. Tool output for `semanticContext` continues to
+/// flow through `SemanticContextPacket`; richer agent/review
+/// contexts flow through `LspContextPacket` via the
+/// `ServiceLspEvidenceProvider` defined in
+/// `crates/egglsp/src/evidence_adapter.rs`. The two are bridged by
+/// `SemanticContextPacket::into_lsp_context_packet` when callers
+/// want to fold a tool response into the canonical packet.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LspContextPacket {
     /// Request that produced this packet.

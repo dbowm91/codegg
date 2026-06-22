@@ -126,6 +126,32 @@ struct WorkspaceSymbolSummary {
     container_name: Option<String>,
 }
 
+/// Tool-facing context packet returned by the `semanticContext`
+/// tool operation.
+///
+/// # Boundary vs. `egglsp::LspContextPacket`
+///
+/// `SemanticContextPacket` is the **legacy/tool-specific** response
+/// shape for the `semanticContext` tool operation. It is intentionally
+/// a richer, per-target DTO (with source excerpt, call/type hierarchy,
+/// overlay summary, and source-action hints) than the canonical
+/// [`egglsp::LspContextPacket`].
+///
+/// The **canonical Phase 5 agent/review context packet** is
+/// [`egglsp::LspContextPacket`] (see `crates/egglsp/src/context.rs`).
+/// It is what `render_lsp_context_for_agent`, the
+/// `PreviewArtifactRegistry`, `SecurityEvidenceSummary`, and
+/// `LspTuiSummary` consume. The two are not equivalent: callers that
+/// want to fold a `SemanticContextPacket` into the canonical model
+/// should use `SemanticContextPacket::into_lsp_context_packet` (in
+/// `src/lsp/semantic_context.rs`).
+///
+/// # Coordinate convention
+///
+/// All line/column values inside this struct are **1-indexed** (the
+/// convention used by `LocationSummary`, `DiagnosticSummary`, etc.).
+/// [`egglsp::LspContextPacket`] uses **0-indexed** lines. The bridge
+/// function handles the conversion.
 #[derive(Serialize)]
 struct SemanticContextPacket {
     file: String,
@@ -3346,6 +3372,292 @@ impl SemanticContextPacket {
             restore_error: summary.restore_error.clone(),
         }
     }
+
+    /// Bridge this tool-local packet into the canonical Phase 5
+    /// [`egglsp::LspContextPacket`].
+    ///
+    /// Use this when an agent prompt or review workflow wants to
+    /// fold a `semanticContext` tool response into the canonical
+    /// context model. Provenance (server_id, generation, freshness,
+    /// post_restart) is propagated from `diagnostic_evidence` when
+    /// present; otherwise unknown defaults are used. Line/column
+    /// values are converted from the 1-indexed tool convention to
+    /// the 0-indexed canonical convention. Source excerpt, call/type
+    /// hierarchy, overlay, and source-action hints are **not**
+    /// carried into the canonical packet — those are tool-specific
+    /// and stay on `SemanticContextPacket`. Truncation flags are
+    /// mapped; per-section truncation notes are appended to
+    /// `packet.truncation.notes`.
+    fn into_lsp_context_packet(
+        self,
+        mode: egglsp::LspContextMode,
+    ) -> egglsp::LspContextPacket {
+        use egglsp::context::{
+            AgentContextSource, LspContextItem, LspContextItemKind, LspContextPacket,
+            LspContextRequest, LspContextScore, LspContextTruncation, LspEvidenceFreshness,
+            LspEvidenceProvenance, LspPreviewArtifact,
+        };
+
+        let primary_file = std::path::PathBuf::from(&self.file);
+
+        let (server_id, server_generation, freshness, post_restart, age_ms) =
+            match self.diagnostic_evidence.as_ref() {
+                Some(meta) => {
+                    let age_ms_u = if meta.age_ms < 0 { 0 } else { meta.age_ms as u64 };
+                    (
+                        Some(format!("server:{}", self.file)),
+                        meta.server_generation,
+                        map_tool_freshness(meta.freshness),
+                        meta.post_restart,
+                        Some(age_ms_u),
+                    )
+                }
+                None => (None, None, LspEvidenceFreshness::Unknown, false, None),
+            };
+
+        let mut items = Vec::new();
+
+        // Diagnostics → Diagnostic items (0-indexed).
+        for d in &self.diagnostics {
+            items.push(LspContextItem {
+                kind: LspContextItemKind::Diagnostic,
+                file: primary_file.clone(),
+                range: None,
+                line: Some(d.line.saturating_sub(1)),
+                column: Some(d.column.saturating_sub(1)),
+                message: d.message.clone(),
+                symbol: None,
+                source: Some(AgentContextSource::LspContext),
+                provenance: LspEvidenceProvenance {
+                    server_id: server_id.clone().unwrap_or_else(|| "unknown".to_string()),
+                    server_generation,
+                    operation: "textDocument/diagnostic".to_string(),
+                    freshness,
+                    capability_decision: Some("supported".to_string()),
+                    document_version: None,
+                    age_ms,
+                    post_restart,
+                },
+                score: LspContextScore {
+                    priority: severity_priority(&d.severity),
+                    is_hunk_local: false,
+                    is_error: d.severity.eq_ignore_ascii_case("error")
+                        || d.severity == "1"
+                        || d.severity == "DiagnosticSeverity::Error",
+                    is_same_file: true,
+                    freshness_rank: freshness_rank(freshness),
+                },
+                payload: None,
+            });
+        }
+
+        // Symbols → WorkspaceSymbol items.
+        for s in &self.symbols {
+            items.push(LspContextItem {
+                kind: LspContextItemKind::WorkspaceSymbol,
+                file: primary_file.clone(),
+                range: None,
+                line: Some(s.start_line.saturating_sub(1)),
+                column: Some(s.start_column.saturating_sub(1)),
+                message: format!("{} ({})", s.name, s.kind),
+                symbol: Some(s.name.clone()),
+                source: Some(AgentContextSource::LspContext),
+                provenance: LspEvidenceProvenance {
+                    server_id: server_id.clone().unwrap_or_else(|| "unknown".to_string()),
+                    server_generation,
+                    operation: "textDocument/documentSymbol".to_string(),
+                    freshness,
+                    capability_decision: Some("supported".to_string()),
+                    document_version: None,
+                    age_ms,
+                    post_restart,
+                },
+                score: LspContextScore {
+                    priority: 6,
+                    is_hunk_local: false,
+                    is_error: false,
+                    is_same_file: true,
+                    freshness_rank: freshness_rank(freshness),
+                },
+                payload: None,
+            });
+        }
+
+        // Definitions → Definition items.
+        for l in &self.definitions {
+            items.push(LspContextItem {
+                kind: LspContextItemKind::Definition,
+                file: std::path::PathBuf::from(&l.file),
+                range: None,
+                line: Some(l.start_line.saturating_sub(1)),
+                column: Some(l.start_column.saturating_sub(1)),
+                message: format!("definition at {}:{}", l.file, l.start_line),
+                symbol: None,
+                source: Some(AgentContextSource::LspContext),
+                provenance: LspEvidenceProvenance {
+                    server_id: server_id.clone().unwrap_or_else(|| "unknown".to_string()),
+                    server_generation,
+                    operation: "textDocument/definition".to_string(),
+                    freshness,
+                    capability_decision: Some("supported".to_string()),
+                    document_version: None,
+                    age_ms,
+                    post_restart,
+                },
+                score: LspContextScore {
+                    priority: 7,
+                    is_hunk_local: false,
+                    is_error: false,
+                    is_same_file: l.file == self.file,
+                    freshness_rank: freshness_rank(freshness),
+                },
+                payload: None,
+            });
+        }
+
+        // References → Reference items.
+        for l in &self.references {
+            items.push(LspContextItem {
+                kind: LspContextItemKind::Reference,
+                file: std::path::PathBuf::from(&l.file),
+                range: None,
+                line: Some(l.start_line.saturating_sub(1)),
+                column: Some(l.start_column.saturating_sub(1)),
+                message: format!("reference at {}:{}", l.file, l.start_line),
+                symbol: None,
+                source: Some(AgentContextSource::LspContext),
+                provenance: LspEvidenceProvenance {
+                    server_id: server_id.clone().unwrap_or_else(|| "unknown".to_string()),
+                    server_generation,
+                    operation: "textDocument/references".to_string(),
+                    freshness,
+                    capability_decision: Some("supported".to_string()),
+                    document_version: None,
+                    age_ms,
+                    post_restart,
+                },
+                score: LspContextScore {
+                    priority: 5,
+                    is_hunk_local: false,
+                    is_error: false,
+                    is_same_file: l.file == self.file,
+                    freshness_rank: freshness_rank(freshness),
+                },
+                payload: None,
+            });
+        }
+
+        let mut notes = Vec::new();
+        if let Some(err) = &self.current_diagnostics_error {
+            notes.push(format!("diagnostics: {err}"));
+        }
+        if let Some(err) = &self.current_symbols_error {
+            notes.push(format!("symbols: {err}"));
+        }
+        if let Some(err) = &self.definitions_error {
+            notes.push(format!("definitions: {err}"));
+        }
+        if let Some(err) = &self.references_error {
+            notes.push(format!("references: {err}"));
+        }
+
+        let mut truncation = LspContextTruncation {
+            diagnostics_truncated: self.limits.diagnostics_truncated,
+            symbols_truncated: self.limits.symbols_truncated,
+            references_truncated: self.limits.references_truncated,
+            ..Default::default()
+        };
+        for tr in &self.section_truncations {
+            truncation.notes.push(format!(
+                "section {} truncated: {}/{} (limit {})",
+                tr.section,
+                tr.emitted_count,
+                tr.original_count
+                    .map(|c| c.to_string())
+                    .unwrap_or_else(|| "?".to_string()),
+                tr.limit
+            ));
+        }
+
+        // Source-action hints that produced a preview become
+        // preview artifacts on the canonical packet.
+        let mut previews = Vec::new();
+        for hint in &self.source_actions {
+            if let Some(p) = &hint.preview {
+                previews.push(LspPreviewArtifact::CodeAction {
+                    description: format!("{} ({})", hint.action, p.title),
+                    kind: Some(hint.action.clone()),
+                });
+            }
+        }
+
+        let request = LspContextRequest::File {
+            file: primary_file.clone(),
+            line_ranges: self
+                .target
+                .as_ref()
+                .map(|t| {
+                    vec![egglsp::context::LineRange {
+                        start: t.line.saturating_sub(1),
+                        end: t.line.saturating_sub(1) + 1,
+                    }]
+                })
+                .unwrap_or_default(),
+            include_symbols: true,
+            include_diagnostics: true,
+        };
+
+        LspContextPacket {
+            request,
+            items,
+            previews,
+            preview_ids: Vec::new(),
+            mode,
+            workspace_root: None,
+            generated_at: None,
+            server_id,
+            server_generation,
+            operational_state: None,
+            budget: None,
+            notes,
+            truncation,
+        }
+    }
+}
+
+fn severity_priority(severity: &str) -> u32 {
+    if severity.eq_ignore_ascii_case("error") || severity == "1" || severity == "DiagnosticSeverity::Error" {
+        10
+    } else if severity.eq_ignore_ascii_case("warning") || severity == "2" || severity == "DiagnosticSeverity::Warning" {
+        7
+    } else {
+        4
+    }
+}
+
+fn freshness_rank(f: egglsp::LspEvidenceFreshness) -> u32 {
+    use egglsp::LspEvidenceFreshness;
+    match f {
+        LspEvidenceFreshness::Fresh => 0,
+        LspEvidenceFreshness::PossiblyStale => 1,
+        LspEvidenceFreshness::Stale | LspEvidenceFreshness::RetainedAfterRestart => 2,
+        LspEvidenceFreshness::StaleAfterEdit => 3,
+        LspEvidenceFreshness::ServerGenerationMismatch => 4,
+        LspEvidenceFreshness::Unknown => 5,
+    }
+}
+
+fn map_tool_freshness(
+    f: crate::lsp::diagnostics::LspDiagnosticFreshness,
+) -> egglsp::LspEvidenceFreshness {
+    use crate::lsp::diagnostics::LspDiagnosticFreshness;
+    use egglsp::LspEvidenceFreshness;
+    match f {
+        LspDiagnosticFreshness::Fresh => LspEvidenceFreshness::Fresh,
+        LspDiagnosticFreshness::PossiblyStale => LspEvidenceFreshness::PossiblyStale,
+        LspDiagnosticFreshness::Stale => LspEvidenceFreshness::Stale,
+        LspDiagnosticFreshness::Unavailable => LspEvidenceFreshness::StaleAfterEdit,
+    }
 }
 
 #[cfg(test)]
@@ -5973,5 +6285,216 @@ diff --git a/src/lib.rs b/src/lib.rs
             assert_eq!(diag, MAX_CONTEXT_DIAGNOSTICS);
             assert_eq!(refs, MAX_CONTEXT_REFERENCES);
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Pass 1: SemanticContextPacket ↔ LspContextPacket bridge tests
+    // -----------------------------------------------------------------------
+
+    fn make_bridge_packet() -> SemanticContextPacket {
+        use egglsp::semantic_context::SemanticSectionTruncation;
+        SemanticContextPacket {
+            file: "src/lib.rs".to_string(),
+            target: Some(SemanticContextTarget {
+                line: 10,
+                column: 4,
+            }),
+            excerpt: SourceExcerpt {
+                start_line: 9,
+                end_line: 11,
+                text: "line".to_string(),
+            },
+            diagnostics: vec![DiagnosticSummary {
+                file: "src/lib.rs".to_string(),
+                line: 12,
+                column: 5,
+                severity: "error".to_string(),
+                source: Some("rust-analyzer".to_string()),
+                code: Some("E0001".to_string()),
+                message: "unused variable".to_string(),
+            }],
+            current_diagnostics_error: None,
+            diagnostic_evidence: Some(DiagnosticEvidenceMeta {
+                freshness: crate::lsp::diagnostics::LspDiagnosticFreshness::Fresh,
+                source: crate::lsp::diagnostics::LspDiagnosticSource::Pushed,
+                age_ms: 100,
+                usable_evidence: true,
+                server_generation: Some(3),
+                post_restart: false,
+            }),
+            overlay: None,
+            symbols: vec![SymbolSummary {
+                name: "main".to_string(),
+                kind: "Function".to_string(),
+                file: "src/lib.rs".to_string(),
+                start_line: 9,
+                start_column: 1,
+                end_line: 11,
+                end_column: 2,
+            }],
+            current_symbols_error: None,
+            definitions: vec![LocationSummary {
+                file: "src/lib.rs".to_string(),
+                start_line: 20,
+                start_column: 0,
+                end_line: 20,
+                end_column: 10,
+            }],
+            definitions_error: None,
+            references: vec![
+                LocationSummary {
+                    file: "src/lib.rs".to_string(),
+                    start_line: 30,
+                    start_column: 0,
+                    end_line: 30,
+                    end_column: 10,
+                },
+                LocationSummary {
+                    file: "src/main.rs".to_string(),
+                    start_line: 5,
+                    start_column: 0,
+                    end_line: 5,
+                    end_column: 10,
+                },
+            ],
+            references_error: None,
+            source_actions: Vec::new(),
+            section_truncations: vec![SemanticSectionTruncation {
+                section: "diagnostics".to_string(),
+                original_count: Some(50),
+                emitted_count: 20,
+                limit: 20,
+            }],
+            call_hierarchy: None,
+            type_hierarchy: None,
+            limits: SemanticContextLimits {
+                diagnostics_truncated: true,
+                symbols_truncated: false,
+                references_truncated: false,
+                overlay_diagnostics_truncated: false,
+                excerpt_truncated: false,
+            },
+        }
+    }
+
+    #[test]
+    fn semantic_context_to_lsp_packet_preserves_diagnostics() {
+        use egglsp::context::{LspContextItemKind, LspContextMode};
+        let packet = make_bridge_packet().into_lsp_context_packet(LspContextMode::Opportunistic);
+        let diagnostics: Vec<_> = packet
+            .items
+            .iter()
+            .filter(|i| i.kind == LspContextItemKind::Diagnostic)
+            .collect();
+        assert_eq!(diagnostics.len(), 1);
+        // Tool uses 1-indexed lines; canonical packet uses 0-indexed.
+        assert_eq!(diagnostics[0].line, Some(11));
+        assert_eq!(diagnostics[0].column, Some(4));
+        assert!(diagnostics[0].score.is_error);
+    }
+
+    #[test]
+    fn semantic_context_to_lsp_packet_propagates_provenance() {
+        use egglsp::context::LspContextItemKind;
+        use egglsp::LspEvidenceFreshness;
+        let packet = make_bridge_packet().into_lsp_context_packet(egglsp::LspContextMode::Opportunistic);
+        assert_eq!(packet.server_generation, Some(3));
+        assert_eq!(packet.items[0].provenance.server_generation, Some(3));
+        assert_eq!(packet.items[0].provenance.freshness, LspEvidenceFreshness::Fresh);
+        assert!(!packet.items[0].provenance.post_restart);
+    }
+
+    #[test]
+    fn semantic_context_to_lsp_packet_maps_truncation() {
+        use egglsp::context::LspContextMode;
+        let packet = make_bridge_packet().into_lsp_context_packet(LspContextMode::Opportunistic);
+        assert!(packet.truncation.diagnostics_truncated);
+        assert!(!packet.truncation.references_truncated);
+        assert!(packet
+            .truncation
+            .notes
+            .iter()
+            .any(|n| n.contains("diagnostics")));
+    }
+
+    #[test]
+    fn semantic_context_to_lsp_packet_includes_definitions_and_references() {
+        use egglsp::context::{LspContextItemKind, LspContextMode};
+        let packet = make_bridge_packet().into_lsp_context_packet(LspContextMode::Opportunistic);
+        let defs = packet
+            .items
+            .iter()
+            .filter(|i| i.kind == LspContextItemKind::Definition)
+            .count();
+        let refs = packet
+            .items
+            .iter()
+            .filter(|i| i.kind == LspContextItemKind::Reference)
+            .count();
+        assert_eq!(defs, 1);
+        assert_eq!(refs, 2);
+    }
+
+    #[test]
+    fn semantic_context_to_lsp_packet_marks_cross_file_references() {
+        use egglsp::context::{LspContextItemKind, LspContextMode};
+        let packet = make_bridge_packet().into_lsp_context_packet(LspContextMode::Opportunistic);
+        let cross = packet
+            .items
+            .iter()
+            .find(|i| {
+                i.kind == LspContextItemKind::Reference && i.file == std::path::PathBuf::from("src/main.rs")
+            })
+            .expect("cross-file reference");
+        assert!(!cross.score.is_same_file);
+    }
+
+    #[test]
+    fn semantic_context_to_lsp_packet_target_sets_line_range() {
+        use egglsp::context::{LspContextMode, LspContextRequest};
+        let packet = make_bridge_packet().into_lsp_context_packet(LspContextMode::Opportunistic);
+        match &packet.request {
+            LspContextRequest::File { line_ranges, .. } => {
+                // 1-indexed input 10 → 0-indexed range [9, 10).
+                assert_eq!(line_ranges.len(), 1);
+                assert_eq!(line_ranges[0].start, 9);
+                assert_eq!(line_ranges[0].end, 10);
+            }
+            _ => panic!("expected File request"),
+        }
+    }
+
+    #[test]
+    fn semantic_context_to_lsp_packet_unknown_evidence_yields_unknown_freshness() {
+        use egglsp::context::LspContextItemKind;
+        use egglsp::LspEvidenceFreshness;
+        let mut packet = make_bridge_packet();
+        packet.diagnostic_evidence = None;
+        let lsp_packet = packet.into_lsp_context_packet(egglsp::LspContextMode::Opportunistic);
+        let diag = lsp_packet
+            .items
+            .iter()
+            .find(|i| i.kind == LspContextItemKind::Diagnostic)
+            .expect("diagnostic");
+        assert_eq!(diag.provenance.freshness, LspEvidenceFreshness::Unknown);
+        assert!(lsp_packet.server_id.is_none());
+        assert!(lsp_packet.server_generation.is_none());
+    }
+
+    #[test]
+    fn semantic_context_to_lsp_packet_preserves_errors_in_notes() {
+        use egglsp::context::LspContextMode;
+        let mut packet = make_bridge_packet();
+        packet.definitions_error = Some("goToDefinition failed".to_string());
+        packet.references_error = Some("findReferences timed out".to_string());
+        let lsp_packet = packet.into_lsp_context_packet(LspContextMode::Opportunistic);
+        assert!(lsp_packet
+            .notes
+            .iter()
+            .any(|n| n.contains("definitions")));
+        assert!(lsp_packet
+            .notes
+            .iter()
+            .any(|n| n.contains("references")));
     }
 }
