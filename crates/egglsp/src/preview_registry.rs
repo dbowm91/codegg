@@ -265,4 +265,101 @@ mod tests {
         reg.mark_stale("nonexistent");
         assert!(reg.is_empty());
     }
+
+    #[test]
+    fn test_registered_entry_applied_field_is_false() {
+        let mut reg = PreviewArtifactRegistry::new();
+        let id = reg.register(
+            make_artifact(),
+            vec!["a.rs".to_string()],
+            HashMap::new(),
+            "server".to_string(),
+        );
+        let entry = reg.get(&id).unwrap();
+        assert!(
+            !entry.applied,
+            "Phase 5 preview artifacts must never be marked as applied"
+        );
+    }
+
+    #[test]
+    fn test_populate_preview_ids_matches_by_discriminant() {
+        use crate::context::{LspContextPacket, LspContextPacketMode, LspContextRequest};
+
+        let mut reg = PreviewArtifactRegistry::new();
+        // Register a Rename artifact.
+        let id = reg.register(
+            LspPreviewArtifact::Rename {
+                description: "foo -> bar".to_string(),
+                edit_count: 2,
+            },
+            vec!["a.rs".to_string()],
+            HashMap::new(),
+            "server".to_string(),
+        );
+
+        let mut packet = LspContextPacket {
+            request: LspContextRequest::File {
+                file: std::path::PathBuf::from("a.rs"),
+                line_ranges: vec![],
+                include_symbols: false,
+                include_diagnostics: false,
+            },
+            items: vec![],
+            previews: vec![
+                LspPreviewArtifact::Rename {
+                    description: "other".to_string(),
+                    edit_count: 1,
+                },
+                LspPreviewArtifact::Formatting {
+                    description: "fmt".to_string(),
+                    content_hash: None,
+                },
+            ],
+            preview_ids: vec![],
+            mode: LspContextPacketMode::Opportunistic,
+            workspace_root: None,
+            generated_at: None,
+            server_id: None,
+            server_generation: None,
+            operational_state: None,
+            budget: None,
+            notes: vec![],
+            truncation: Default::default(),
+        };
+
+        let matched = reg.populate_preview_ids(&mut packet);
+        assert_eq!(matched, 1, "only the Rename preview should match");
+        assert_eq!(packet.preview_ids.len(), 2, "one ID per preview slot");
+        assert_eq!(
+            packet.preview_ids[0], id,
+            "Rename should get the registered ID"
+        );
+        assert!(
+            packet.preview_ids[1].is_empty(),
+            "Formatting should get an empty ID (no match)"
+        );
+    }
+
+    #[test]
+    fn test_preview_entry_never_mutates_disk() {
+        let mut reg = PreviewArtifactRegistry::new();
+        let hashes = HashMap::from([("src/lib.rs".to_string(), "original_hash".to_string())]);
+        let id = reg.register(
+            LspPreviewArtifact::Formatting {
+                description: "format src/lib.rs".to_string(),
+                content_hash: Some("new_hash".to_string()),
+            },
+            vec!["src/lib.rs".to_string()],
+            hashes.clone(),
+            "rust-analyzer".to_string(),
+        );
+        let entry = reg.get(&id).unwrap();
+        // Original hashes are preserved, not overwritten.
+        assert_eq!(entry.original_hashes, hashes);
+        // The entry is marked as not applied — the preview is purely informational.
+        assert!(!entry.applied);
+        // stale_base starts false (no disk mutation has occurred).
+        assert!(!entry.stale_base);
+    }
 }

@@ -594,4 +594,99 @@ mod tests {
         assert!(detail.contains("0 fresh"));
         assert!(detail.contains("Notes: (none)"));
     }
+
+    #[test]
+    fn summary_stale_counts_in_detail() {
+        let items = vec![
+            {
+                let mut i = make_item(LspContextItemKind::Diagnostic, "a.rs", "fresh");
+                i.provenance.freshness = LspEvidenceFreshness::Fresh;
+                i
+            },
+            {
+                let mut i = make_item(LspContextItemKind::Diagnostic, "a.rs", "stale");
+                i.provenance.freshness = LspEvidenceFreshness::Stale;
+                i
+            },
+            {
+                let mut i = make_item(LspContextItemKind::Diagnostic, "a.rs", "retained");
+                i.provenance.freshness = LspEvidenceFreshness::RetainedAfterRestart;
+                i
+            },
+            {
+                let mut i = make_item(LspContextItemKind::Diagnostic, "a.rs", "pos stale");
+                i.provenance.freshness = LspEvidenceFreshness::PossiblyStale;
+                i
+            },
+            {
+                let mut i = make_item(LspContextItemKind::Diagnostic, "a.rs", "stale after edit");
+                i.provenance.freshness = LspEvidenceFreshness::StaleAfterEdit;
+                i
+            },
+        ];
+        let packet = make_packet(items, LspContextPacketMode::Opportunistic);
+        let registry = PreviewArtifactRegistry::new();
+        let summary = build_tui_summary(&packet, &registry);
+        let detail = render_tui_summary_detail(&summary);
+
+        assert_eq!(summary.fresh_count, 1);
+        // Stale + RetainedAfterRestart + ServerGenerationMismatch → stale_freshness_count
+        assert_eq!(summary.stale_freshness_count, 2);
+        // PossiblyStale + StaleAfterEdit → possibly_stale_count
+        assert_eq!(summary.possibly_stale_count, 2);
+        assert!(summary.stale);
+        assert!(detail.contains("1 fresh, 2 stale, 2 possibly-stale"));
+    }
+
+    #[test]
+    fn summary_preview_ids_appear_in_detail() {
+        let items = vec![make_item(LspContextItemKind::Diagnostic, "a.rs", "err")];
+        let packet = make_packet(items, LspContextPacketMode::Opportunistic);
+        let mut registry = PreviewArtifactRegistry::new();
+        for i in 0..3 {
+            registry.register(
+                LspPreviewArtifact::Rename {
+                    description: format!("rename {i}"),
+                    edit_count: 1,
+                },
+                vec![format!("file{i}.rs")],
+                std::collections::HashMap::new(),
+                "rust-analyzer".to_string(),
+            );
+        }
+        let summary = build_tui_summary(&packet, &registry);
+        let detail = render_tui_summary_detail(&summary);
+
+        assert_eq!(summary.preview_count, 3);
+        assert_eq!(summary.preview_ids.len(), 3);
+        assert!(detail.contains("Previews:"));
+        assert!(detail.contains("3 pending"));
+    }
+
+    #[test]
+    fn summary_unsupported_operations_appear_in_detail() {
+        let items = vec![
+            {
+                let mut i = make_item(LspContextItemKind::Reference, "a.rs", "ref");
+                i.provenance.operation = "findReferences".to_string();
+                i.provenance.capability_decision = Some("implementation not supported".to_string());
+                i
+            },
+            {
+                let mut i = make_item(LspContextItemKind::Definition, "a.rs", "def");
+                i.provenance.operation = "goToImplementation".to_string();
+                i.provenance.capability_decision = Some("not supported by server".to_string());
+                i
+            },
+        ];
+        let packet = make_packet(items, LspContextPacketMode::Opportunistic);
+        let registry = PreviewArtifactRegistry::new();
+        let summary = build_tui_summary(&packet, &registry);
+        let detail = render_tui_summary_detail(&summary);
+
+        assert_eq!(summary.unsupported_operations.len(), 2);
+        assert!(detail.contains("Unsupported:"));
+        assert!(detail.contains("findReferences"));
+        assert!(detail.contains("goToImplementation"));
+    }
 }

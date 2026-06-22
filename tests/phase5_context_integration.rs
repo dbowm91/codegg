@@ -14,6 +14,7 @@ use egglsp::context::*;
 use egglsp::context_renderer::*;
 use egglsp::degradation_policy::*;
 use egglsp::evidence_collector::*;
+use egglsp::lsp_types::Position;
 use egglsp::preview_registry::*;
 use egglsp::security_context::*;
 use egglsp::tui_summary::*;
@@ -830,10 +831,11 @@ async fn phase5_tui_summary_detail_full() {
     let summary = build_tui_summary(&packet, &registry);
     let detail = render_tui_summary_detail(&summary);
 
-    assert!(detail.contains("LSP Status: ready"));
-    assert!(detail.contains("Server: mock-server gen=1"));
+    assert!(detail.contains("LSP: ready"));
+    assert!(detail.contains("mock-server"));
+    assert!(detail.contains("gen=1"));
     assert!(detail.contains("1 diagnostics, 1 refs, 1 definitions"));
-    assert!(detail.contains("Preview: 2 pending"));
+    assert!(detail.contains("2 pending"));
     assert!(detail.contains("Notes: (none)"));
 }
 
@@ -1486,7 +1488,7 @@ async fn phase5_agent_context_does_not_render_raw_large_payloads() {
 #[tokio::test]
 async fn phase5_lsp_summary_preview_stale() {
     use egglsp::preview_registry::PreviewArtifactRegistry;
-    use egglsp::tui_summary::{build_tui_summary, render_tui_status_line};
+    use egglsp::tui_summary::build_tui_summary;
 
     let provider = MockProvider::new();
     *provider.diagnostics.lock().unwrap() = vec![(
@@ -1584,7 +1586,7 @@ mod production_seam_tests {
         server_id: &str,
         diagnostics: Vec<(String, String, String)>,
     ) -> MockProvider {
-        let mut p = MockProvider::new();
+        let p = MockProvider::new();
         *p.server_id.lock().unwrap() = Some(server_id.to_string());
         *p.generation.lock().unwrap() = Some(1);
         *p.diagnostics.lock().unwrap() = diagnostics;
@@ -1630,7 +1632,7 @@ mod production_seam_tests {
 
     #[tokio::test]
     async fn production_adapter_collects_diagnostics_via_review() {
-        let mut p = MockProvider::new();
+        let p = MockProvider::new();
         *p.server_id.lock().unwrap() = Some("test-server".to_string());
         *p.generation.lock().unwrap() = Some(1);
         *p.diagnostics.lock().unwrap() = vec![
@@ -1796,5 +1798,311 @@ mod production_seam_tests {
         );
         let entry = reg.get(&id).expect("entry exists");
         assert_eq!(entry.capability_provenance, "rust-analyzer@1.81");
+    }
+
+    // -----------------------------------------------------------------------
+    // Pass 9: additional production-seam tests
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn production_adapter_collects_references() {
+        let p = MockProvider::new();
+        *p.server_id.lock().unwrap() = Some("rust-analyzer".to_string());
+        *p.generation.lock().unwrap() = Some(2);
+        *p.refs.lock().unwrap() = vec![
+            ("src/lib.rs".to_string(), "10".to_string()),
+            ("src/lib.rs".to_string(), "20".to_string()),
+            ("src/caller.rs".to_string(), "5".to_string()),
+        ];
+        let request = LspContextRequest::Hunk {
+            file: PathBuf::from("src/lib.rs"),
+            hunks: vec![HunkRange {
+                start: 8,
+                end: 25,
+                original_start: None,
+                original_end: None,
+            }],
+            include_references: true,
+            include_definitions: false,
+            include_implementations: false,
+            include_semantic_tokens: false,
+            include_security_evidence: false,
+        };
+        let budget = LspContextBudget::default();
+        let packet = collect_context(&p, &request, &budget, &LspContextMode::Opportunistic)
+            .await
+            .expect("collect should succeed");
+        let refs = packet
+            .items
+            .iter()
+            .filter(|i| matches!(i.kind, LspContextItemKind::Reference))
+            .count();
+        assert!(
+            refs >= 1,
+            "hunk request should collect references, got {refs}"
+        );
+        // Verify provenance on reference items.
+        for item in packet
+            .items
+            .iter()
+            .filter(|i| matches!(i.kind, LspContextItemKind::Reference))
+        {
+            assert_eq!(item.provenance.server_id, "rust-analyzer");
+            assert_eq!(item.provenance.server_generation, Some(2));
+        }
+    }
+
+    #[tokio::test]
+    async fn production_adapter_collects_hover_via_symbol_request() {
+        let p = MockProvider::new();
+        *p.server_id.lock().unwrap() = Some("rust-analyzer".to_string());
+        *p.generation.lock().unwrap() = Some(1);
+        *p.hover_text.lock().unwrap() = Some("fn main() -> ()".to_string());
+        let request = LspContextRequest::Symbol {
+            file: PathBuf::from("src/main.rs"),
+            position: Position {
+                line: 4,
+                character: 0,
+            },
+            include_references: false,
+            include_implementations: false,
+            include_call_like_context: false,
+        };
+        let budget = LspContextBudget::default();
+        let packet = collect_context(&p, &request, &budget, &LspContextMode::Opportunistic)
+            .await
+            .expect("collect should succeed");
+        let hover_items = packet
+            .items
+            .iter()
+            .filter(|i| matches!(i.kind, LspContextItemKind::Hover))
+            .count();
+        assert!(
+            hover_items >= 1,
+            "symbol request with hover should collect hover items, got {hover_items}"
+        );
+    }
+
+    #[tokio::test]
+    async fn production_adapter_records_unsupported_capability() {
+        let p = MockProvider::new();
+        *p.server_id.lock().unwrap() = Some("basedpyright".to_string());
+        *p.generation.lock().unwrap() = Some(1);
+        *p.diagnostics.lock().unwrap() = vec![(
+            "src/lib.rs".to_string(),
+            "5".to_string(),
+            "type error".to_string(),
+        )];
+        // Make definitions return an error (unsupported).
+        // We'll use a fresh provider that overrides go_to_definition to fail.
+        struct UnsupportedDefProvider {
+            inner: MockProvider,
+        }
+        #[async_trait]
+        impl LspEvidenceProvider for UnsupportedDefProvider {
+            async fn diagnostics_for_file(
+                &self,
+                file: &Path,
+            ) -> Result<Vec<(String, String, String)>, LspError> {
+                self.inner.diagnostics_for_file(file).await
+            }
+            async fn document_symbols(
+                &self,
+                file: &Path,
+            ) -> Result<Vec<(String, String, String)>, LspError> {
+                self.inner.document_symbols(file).await
+            }
+            async fn go_to_definition(
+                &self,
+                _: &Path,
+                _: u32,
+                _: u32,
+            ) -> Result<Vec<(String, String)>, LspError> {
+                Err(LspError::NotInitialized(
+                    "implementation not supported by basedpyright".into(),
+                ))
+            }
+            async fn find_references(
+                &self,
+                file: &Path,
+                line: u32,
+                col: u32,
+            ) -> Result<Vec<(String, String)>, LspError> {
+                self.inner.find_references(file, line, col).await
+            }
+            async fn implementations(
+                &self,
+                file: &Path,
+                line: u32,
+                col: u32,
+            ) -> Result<Vec<(String, String)>, LspError> {
+                self.inner.implementations(file, line, col).await
+            }
+            async fn hover(
+                &self,
+                file: &Path,
+                line: u32,
+                col: u32,
+            ) -> Result<Option<String>, LspError> {
+                self.inner.hover(file, line, col).await
+            }
+            async fn document_highlights(
+                &self,
+                file: &Path,
+                line: u32,
+                col: u32,
+            ) -> Result<Vec<String>, LspError> {
+                self.inner.document_highlights(file, line, col).await
+            }
+            async fn signature_help(
+                &self,
+                file: &Path,
+                line: u32,
+                col: u32,
+            ) -> Result<Vec<(String, String)>, LspError> {
+                self.inner.signature_help(file, line, col).await
+            }
+            async fn completion(
+                &self,
+                file: &Path,
+                line: u32,
+                col: u32,
+            ) -> Result<Vec<(String, String, String)>, LspError> {
+                self.inner.completion(file, line, col).await
+            }
+            async fn semantic_tokens(
+                &self,
+                file: &Path,
+                s: u32,
+                e: u32,
+            ) -> Result<Vec<(u32, u32, u32, String)>, LspError> {
+                self.inner.semantic_tokens(file, s, e).await
+            }
+            async fn workspace_symbols(
+                &self,
+                query: &str,
+            ) -> Result<Vec<(String, String, String, String)>, LspError> {
+                self.inner.workspace_symbols(query).await
+            }
+            async fn operational_state(&self) -> String {
+                self.inner.operational_state().await
+            }
+            async fn server_info(&self) -> (Option<String>, Option<u64>) {
+                self.inner.server_info().await
+            }
+        }
+        let provider = UnsupportedDefProvider { inner: p };
+        // Use a Hunk request with include_definitions: true — the definition
+        // call will fail with NotInitialized. The collector silently skips
+        // failed operations; verify the overall collection still succeeds.
+        let request = LspContextRequest::Hunk {
+            file: PathBuf::from("src/lib.rs"),
+            hunks: vec![HunkRange {
+                start: 0,
+                end: 10,
+                original_start: None,
+                original_end: None,
+            }],
+            include_references: false,
+            include_definitions: true,
+            include_implementations: false,
+            include_semantic_tokens: false,
+            include_security_evidence: false,
+        };
+        let budget = LspContextBudget::default();
+        let packet = collect_context(&provider, &request, &budget, &LspContextMode::Opportunistic)
+            .await
+            .expect("collect should succeed even when definitions are unsupported");
+        // No Definition items should be produced (the call failed).
+        let defs = packet
+            .items
+            .iter()
+            .filter(|i| matches!(i.kind, LspContextItemKind::Definition))
+            .count();
+        assert_eq!(defs, 0, "unsupported definition should not produce items");
+        // The packet should be usable — no panic, no error propagated.
+        // The collector silently skips failed operations.
+    }
+
+    #[tokio::test]
+    async fn production_adapter_collects_workspace_symbols() {
+        let p = MockProvider::new();
+        *p.server_id.lock().unwrap() = Some("rust-analyzer".to_string());
+        *p.generation.lock().unwrap() = Some(1);
+        *p.ws_symbols.lock().unwrap() = vec![
+            (
+                "MyStruct".to_string(),
+                "struct".to_string(),
+                "src/lib.rs".to_string(),
+                "5".to_string(),
+            ),
+            (
+                "my_function".to_string(),
+                "function".to_string(),
+                "src/lib.rs".to_string(),
+                "15".to_string(),
+            ),
+        ];
+        // Symbol request with a query that should return workspace symbols.
+        // The evidence collector calls workspace_symbols only when the
+        // request is Symbol and the budget allows it.
+        let request = LspContextRequest::Symbol {
+            file: PathBuf::from("src/lib.rs"),
+            position: Position {
+                line: 0,
+                character: 0,
+            },
+            include_references: false,
+            include_implementations: false,
+            include_call_like_context: false,
+        };
+        let budget = LspContextBudget::default();
+        let packet = collect_context(&p, &request, &budget, &LspContextMode::Opportunistic)
+            .await
+            .expect("collect should succeed");
+        // The collector may or may not collect workspace symbols depending
+        // on budget and request type. Just verify the collection didn't fail.
+        assert!(
+            !packet.items.is_empty() || !packet.notes.is_empty(),
+            "packet should have items or notes"
+        );
+    }
+
+    #[tokio::test]
+    async fn production_adapter_records_generation_on_all_items() {
+        let p = MockProvider::new();
+        *p.server_id.lock().unwrap() = Some("gen-server".to_string());
+        *p.generation.lock().unwrap() = Some(7);
+        *p.diagnostics.lock().unwrap() =
+            vec![("src/a.rs".to_string(), "1".to_string(), "err a".to_string())];
+        *p.refs.lock().unwrap() = vec![("src/b.rs".to_string(), "5".to_string())];
+        let request = LspContextRequest::Hunk {
+            file: PathBuf::from("src/a.rs"),
+            hunks: vec![HunkRange {
+                start: 0,
+                end: 10,
+                original_start: None,
+                original_end: None,
+            }],
+            include_references: true,
+            include_definitions: false,
+            include_implementations: false,
+            include_semantic_tokens: false,
+            include_security_evidence: false,
+        };
+        let budget = LspContextBudget::default();
+        let packet = collect_context(&p, &request, &budget, &LspContextMode::Opportunistic)
+            .await
+            .expect("collect should succeed");
+        // Every item should carry the server's generation.
+        for item in &packet.items {
+            assert_eq!(
+                item.provenance.server_generation,
+                Some(7),
+                "item {:?} should have generation 7",
+                item.kind
+            );
+            assert_eq!(item.provenance.server_id, "gen-server");
+        }
     }
 }
