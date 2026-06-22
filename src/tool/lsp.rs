@@ -65,6 +65,11 @@ struct LspToolOutput<T> {
     result_count: usize,
     truncated: bool,
     results: T,
+    /// Identifier of the registered preview artifact, when this
+    /// operation produced a preview-only mutation. `None` for
+    /// read-only operations.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    preview_id: Option<String>,
 }
 
 #[derive(Serialize, Clone)]
@@ -520,6 +525,14 @@ fn document_highlight_kind_to_string(
 pub struct LspTool {
     service: Arc<crate::lsp::service::LspService>,
     allowed_root: PathBuf,
+    /// Shared registry of preview-only mutation artifacts. Populated
+    /// by `renamePreview`, `formatPreview`, `sourceActionPreview`,
+    /// and `codeActionPreview` so downstream consumers
+    /// (security review, hunk navigation, TUI panel) can resolve
+    /// a preview by ID and detect staleness. Behind a `Mutex` so
+    /// the async tool path can register without `await` holding
+    /// the lock.
+    preview_registry: parking_lot::Mutex<egglsp::preview_registry::PreviewArtifactRegistry>,
 }
 
 impl std::fmt::Debug for LspTool {
@@ -527,6 +540,7 @@ impl std::fmt::Debug for LspTool {
         f.debug_struct("LspTool")
             .field("service", &Arc::as_ptr(&self.service))
             .field("allowed_root", &self.allowed_root)
+            .field("preview_registry_len", &self.preview_registry.lock().len())
             .finish()
     }
 }
@@ -542,12 +556,38 @@ impl LspTool {
         Self {
             service,
             allowed_root: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            preview_registry: parking_lot::Mutex::new(
+                egglsp::preview_registry::PreviewArtifactRegistry::new(),
+            ),
         }
     }
 
     pub fn with_allowed_root(mut self, root: PathBuf) -> Self {
         self.allowed_root = root;
         self
+    }
+
+    /// Borrow the shared preview artifact registry for read-only
+    /// inspection (TUI panels, security review, etc.).
+    pub fn preview_registry(
+        &self,
+    ) -> parking_lot::MutexGuard<'_, egglsp::preview_registry::PreviewArtifactRegistry> {
+        self.preview_registry.lock()
+    }
+
+    /// Register a preview artifact with the shared registry. Called
+    /// from each preview-producing operation after the LSP response
+    /// is verified.
+    fn register_preview_artifact(
+        &self,
+        artifact: egglsp::context::LspPreviewArtifact,
+        file_edits: Vec<String>,
+        original_hashes: std::collections::HashMap<String, String>,
+        provenance: String,
+    ) -> String {
+        self.preview_registry
+            .lock()
+            .register(artifact, file_edits, original_hashes, provenance)
     }
 
     /// Access the underlying LSP service for context assembly and status queries.
@@ -1759,6 +1799,7 @@ impl Tool for LspTool {
                     result_count: summaries.len(),
                     truncated: false,
                     results: summaries,
+                    preview_id: None,
                 };
                 serde_json::to_string_pretty(&output)
                     .map_err(|e| ToolError::Execution(format!("serialize: {e}")))?
@@ -1792,6 +1833,7 @@ impl Tool for LspTool {
                     result_count: summaries.len(),
                     truncated,
                     results: summaries,
+                    preview_id: None,
                 };
                 serde_json::to_string_pretty(&output)
                     .map_err(|e| ToolError::Execution(format!("serialize: {e}")))?
@@ -1823,6 +1865,7 @@ impl Tool for LspTool {
                     result_count: if summary.contents.is_empty() { 0 } else { 1 },
                     truncated,
                     results: summary,
+                    preview_id: None,
                 };
                 serde_json::to_string_pretty(&output)
                     .map_err(|e| ToolError::Execution(format!("serialize: {e}")))?
@@ -1843,6 +1886,7 @@ impl Tool for LspTool {
                     result_count: summaries.len(),
                     truncated: remaining == 0,
                     results: summaries,
+                    preview_id: None,
                 };
                 serde_json::to_string_pretty(&output)
                     .map_err(|e| ToolError::Execution(format!("serialize: {e}")))?
@@ -1896,6 +1940,7 @@ impl Tool for LspTool {
                     result_count: result.diagnostics.len(),
                     truncated: false,
                     results: result,
+                    preview_id: None,
                 };
                 serde_json::to_string_pretty(&output)
                     .map_err(|e| ToolError::Execution(format!("serialize: {e}")))?
@@ -1993,6 +2038,7 @@ impl Tool for LspTool {
                     result_count: summaries.len(),
                     truncated,
                     results: summaries,
+                    preview_id: None,
                 };
                 serde_json::to_string_pretty(&output)
                     .map_err(|e| ToolError::Execution(format!("serialize: {e}")))?
@@ -2014,13 +2060,44 @@ impl Tool for LspTool {
                     )
                     .await
                     .map_err(|e| ToolError::Execution(format!("renamePreview: {e}")))?;
+
+                // Register with the shared preview registry so
+                // downstream consumers (security review, hunk
+                // navigation, TUI panel) can resolve by ID.
+                let mut hashes = std::collections::HashMap::new();
+                let mut files = Vec::new();
+                for v in &preview.affected_file_versions {
+                    files.push(v.file.display().to_string());
+                    hashes.insert(v.file.display().to_string(), v.content_hash.clone());
+                }
+                let artifact = egglsp::context::LspPreviewArtifact::Rename {
+                    description: format!(
+                        "rename {} -> {} ({} edits)",
+                        preview.old_name.as_deref().unwrap_or("?"),
+                        preview.new_name,
+                        preview.edit_count
+                    ),
+                    edit_count: preview.edit_count,
+                };
+                let provenance = format!(
+                    "rename:{}:{}:{}",
+                    preview.old_name.as_deref().unwrap_or("?"),
+                    preview.new_name,
+                    files.len()
+                );
+                let preview_id = self
+                    .register_preview_artifact(artifact, files, hashes, provenance);
+
                 let output = LspToolOutput {
                     operation: "renamePreview".to_string(),
                     file_path: file_path_str,
                     result_count: preview.edit_count,
                     truncated: preview.truncated,
                     results: preview,
+                    preview_id: None,
                 };
+                let mut output = output;
+                output.preview_id = Some(preview_id);
                 serde_json::to_string_pretty(&output)
                     .map_err(|e| ToolError::Execution(format!("serialize: {e}")))?
             }
@@ -2030,12 +2107,23 @@ impl Tool for LspTool {
                     .format_preview_typed(&file, Some(&self.allowed_root))
                     .await
                     .map_err(|e| ToolError::Execution(format!("formatPreview: {e}")))?;
+                let artifact = egglsp::context::LspPreviewArtifact::Formatting {
+                    description: format!("format {} ({} edits)", file.display(), preview.edit_count),
+                    content_hash: Some(preview.before_hash.clone()),
+                };
+                let mut hashes = std::collections::HashMap::new();
+                hashes.insert(file.display().to_string(), preview.before_hash.clone());
+                let files = vec![file.display().to_string()];
+                let provenance = format!("format:{}", file.display());
+                let preview_id =
+                    self.register_preview_artifact(artifact, files, hashes, provenance);
                 let output = LspToolOutput {
                     operation: "formatPreview".to_string(),
                     file_path: file_path_str,
                     result_count: preview.edit_count,
                     truncated: preview.truncated,
                     results: preview,
+                    preview_id: Some(preview_id),
                 };
                 serde_json::to_string_pretty(&output)
                     .map_err(|e| ToolError::Execution(format!("serialize: {e}")))?
@@ -2051,12 +2139,31 @@ impl Tool for LspTool {
                     .source_action_preview(&file, kind, Some(&self.allowed_root))
                     .await
                     .map_err(|e| ToolError::Execution(format!("sourceActionPreview: {e}")))?;
+                let mut files: Vec<String> = Vec::new();
+                let mut hashes = std::collections::HashMap::new();
+                for f in &preview.files {
+                    files.push(f.file.display().to_string());
+                    hashes.insert(f.file.display().to_string(), f.original_hash.clone());
+                }
+                let artifact = egglsp::context::LspPreviewArtifact::CodeAction {
+                    description: format!(
+                        "{}: {} edits across {} files",
+                        action_str,
+                        preview.total_edits,
+                        preview.total_files
+                    ),
+                    kind: Some(action_str.to_string()),
+                };
+                let provenance = format!("source-action:{action_str}:{}", file.display());
+                let preview_id =
+                    self.register_preview_artifact(artifact, files, hashes, provenance);
                 let output = LspToolOutput {
                     operation: "sourceActionPreview".to_string(),
                     file_path: file_path_str,
                     result_count: preview.total_edits,
                     truncated: preview.truncated,
                     results: preview,
+                    preview_id: Some(preview_id),
                 };
                 serde_json::to_string_pretty(&output)
                     .map_err(|e| ToolError::Execution(format!("serialize: {e}")))?
@@ -2079,6 +2186,7 @@ impl Tool for LspTool {
                         + summary.outgoing.len(),
                     truncated: summary.truncated,
                     results: summary,
+                    preview_id: None,
                 };
                 serde_json::to_string_pretty(&output)
                     .map_err(|e| ToolError::Execution(format!("serialize: {e}")))?
@@ -2101,6 +2209,7 @@ impl Tool for LspTool {
                         + summary.subtypes.len(),
                     truncated: summary.truncated,
                     results: summary,
+                    preview_id: None,
                 };
                 serde_json::to_string_pretty(&output)
                     .map_err(|e| ToolError::Execution(format!("serialize: {e}")))?
@@ -2156,6 +2265,7 @@ impl Tool for LspTool {
                     result_count: result.diagnostics.len() + result.symbols.len(),
                     truncated: false,
                     results: result,
+                    preview_id: None,
                 };
                 serde_json::to_string_pretty(&output)
                     .map_err(|e| ToolError::Execution(format!("serialize: {e}")))?
@@ -2394,6 +2504,7 @@ impl Tool for LspTool {
                     result_count,
                     truncated: packet_truncated,
                     results: packet,
+                    preview_id: None,
                 };
                 serde_json::to_string_pretty(&output)
                     .map_err(|e| ToolError::Execution(format!("serialize: {e}")))?
@@ -2786,6 +2897,7 @@ impl Tool for LspTool {
                     result_count,
                     truncated,
                     results: packet,
+                    preview_id: None,
                 };
                 serde_json::to_string_pretty(&output)
                     .map_err(|e| ToolError::Execution(format!("serialize: {e}")))?
@@ -2853,6 +2965,7 @@ impl Tool for LspTool {
                     result_count: response.hunks.len(),
                     truncated: response.truncated,
                     results: response,
+                    preview_id: None,
                 };
                 serde_json::to_string_pretty(&output)
                     .map_err(|e| ToolError::Execution(format!("serialize: {e}")))?
@@ -2886,6 +2999,7 @@ impl Tool for LspTool {
                     result_count: summaries.len(),
                     truncated,
                     results: summaries,
+                    preview_id: None,
                 };
                 serde_json::to_string_pretty(&output)
                     .map_err(|e| ToolError::Execution(format!("serialize: {e}")))?
@@ -2919,6 +3033,7 @@ impl Tool for LspTool {
                     result_count: summaries.len(),
                     truncated,
                     results: summaries,
+                    preview_id: None,
                 };
                 serde_json::to_string_pretty(&output)
                     .map_err(|e| ToolError::Execution(format!("serialize: {e}")))?
@@ -2954,6 +3069,7 @@ impl Tool for LspTool {
                     result_count: summaries.len(),
                     truncated,
                     results: summaries,
+                    preview_id: None,
                 };
                 serde_json::to_string_pretty(&output)
                     .map_err(|e| ToolError::Execution(format!("serialize: {e}")))?
@@ -2973,6 +3089,7 @@ impl Tool for LspTool {
                     result_count,
                     truncated: false,
                     results: help,
+                    preview_id: None,
                 };
                 serde_json::to_string_pretty(&output)
                     .map_err(|e| ToolError::Execution(format!("serialize: {e}")))?
@@ -3009,6 +3126,7 @@ impl Tool for LspTool {
                     result_count: candidates.len(),
                     truncated: false,
                     results: candidates,
+                    preview_id: None,
                 };
                 serde_json::to_string_pretty(&output)
                     .map_err(|e| ToolError::Execution(format!("serialize: {e}")))?
@@ -3026,6 +3144,7 @@ impl Tool for LspTool {
                     result_count: tokens.len(),
                     truncated: false,
                     results: tokens,
+                    preview_id: None,
                 };
                 serde_json::to_string_pretty(&output)
                     .map_err(|e| ToolError::Execution(format!("serialize: {e}")))?
@@ -3066,6 +3185,7 @@ impl Tool for LspTool {
                     result_count: actions.len(),
                     truncated: false,
                     results: actions,
+                    preview_id: None,
                 };
                 serde_json::to_string_pretty(&output)
                     .map_err(|e| ToolError::Execution(format!("serialize: {e}")))?
@@ -3104,12 +3224,36 @@ impl Tool for LspTool {
                     .await
                     .map_err(|e| ToolError::Execution(format!("codeActionPreview: {e}")))?;
                 let total_edits: usize = preview.affected_files.iter().map(|f| f.edits.len()).sum();
+                let mut files: Vec<String> = Vec::new();
+                let mut hashes = std::collections::HashMap::new();
+                for f in &preview.affected_files {
+                    files.push(f.file.display().to_string());
+                    hashes.insert(f.file.display().to_string(), f.original_hash.clone());
+                }
+                let artifact = egglsp::context::LspPreviewArtifact::CodeAction {
+                    description: format!(
+                        "{} ({} edits, {} files)",
+                        preview.title,
+                        total_edits,
+                        preview.affected_files.len()
+                    ),
+                    kind: preview.kind.clone(),
+                };
+                let provenance = format!(
+                    "code-action:{}:{}:{}",
+                    preview.title,
+                    action_index,
+                    file.display()
+                );
+                let preview_id =
+                    self.register_preview_artifact(artifact, files, hashes, provenance);
                 let output = LspToolOutput {
                     operation: "codeActionPreview".to_string(),
                     file_path: file_path_str,
                     result_count: total_edits,
                     truncated: preview.truncated,
                     results: preview,
+                    preview_id: Some(preview_id),
                 };
                 serde_json::to_string_pretty(&output)
                     .map_err(|e| ToolError::Execution(format!("serialize: {e}")))?
@@ -6857,5 +7001,133 @@ diff --git a/src/lib.rs b/src/lib.rs
         // Empty input is treated as "no metadata" → status-only path.
         // With no clients, that path returns None.
         assert!(tool.lsp_context_for_agent_with_input(Some(&empty)).await.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // Pass 4: PreviewArtifactRegistry wiring tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn new_tool_has_empty_preview_registry() {
+        use std::path::PathBuf;
+        let service = crate::lsp::service::LspService::new_arc(
+            crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
+        );
+        let tool = LspTool::new(service).with_allowed_root(PathBuf::from("/tmp"));
+        assert!(tool.preview_registry().is_empty());
+        assert_eq!(tool.preview_registry().len(), 0);
+    }
+
+    #[test]
+    fn register_preview_artifact_assigns_id_and_provenance() {
+        use egglsp::context::LspPreviewArtifact;
+        use std::path::PathBuf;
+        let service = crate::lsp::service::LspService::new_arc(
+            crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
+        );
+        let tool = LspTool::new(service).with_allowed_root(PathBuf::from("/tmp"));
+        let artifact = LspPreviewArtifact::Formatting {
+            description: "test format".to_string(),
+            content_hash: Some("abc123".to_string()),
+        };
+        let mut hashes = std::collections::HashMap::new();
+        hashes.insert("src/lib.rs".to_string(), "abc123".to_string());
+        let id = tool.register_preview_artifact(
+            artifact,
+            vec!["src/lib.rs".to_string()],
+            hashes,
+            "format:src/lib.rs".to_string(),
+        );
+        assert!(id.starts_with("preview-"));
+        let registry = tool.preview_registry();
+        assert!(!registry.is_empty());
+        assert_eq!(registry.len(), 1);
+        let entry = registry.get(&id).expect("entry exists");
+        assert!(!entry.applied);
+        assert!(!entry.stale_base);
+        assert_eq!(entry.capability_provenance, "format:src/lib.rs");
+        assert_eq!(entry.file_edits, vec!["src/lib.rs".to_string()]);
+        assert_eq!(
+            entry.original_hashes.get("src/lib.rs").map(String::as_str),
+            Some("abc123")
+        );
+    }
+
+    #[test]
+    fn multiple_registrations_get_distinct_ids() {
+        use egglsp::context::LspPreviewArtifact;
+        use std::path::PathBuf;
+        let service = crate::lsp::service::LspService::new_arc(
+            crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
+        );
+        let tool = LspTool::new(service).with_allowed_root(PathBuf::from("/tmp"));
+        let mut ids = Vec::new();
+        for i in 0..3 {
+            let artifact = LspPreviewArtifact::Rename {
+                description: format!("rename {i}"),
+                edit_count: i,
+            };
+            let id = tool.register_preview_artifact(
+                artifact,
+                vec![format!("file{i}.rs")],
+                std::collections::HashMap::new(),
+                format!("rename:{i}"),
+            );
+            ids.push(id);
+        }
+        // All IDs must be distinct even when called in tight succession.
+        let unique: std::collections::HashSet<_> = ids.iter().collect();
+        assert_eq!(unique.len(), 3);
+        assert_eq!(tool.preview_registry().len(), 3);
+    }
+
+    #[test]
+    fn populate_preview_ids_attaches_ids_to_packet() {
+        use egglsp::context::{
+            LspContextPacket, LspContextRequest, LspContextPacketMode, LspPreviewArtifact,
+        };
+        use std::path::PathBuf;
+        let service = crate::lsp::service::LspService::new_arc(
+            crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
+        );
+        let tool = LspTool::new(service).with_allowed_root(PathBuf::from("/tmp"));
+        let artifact = LspPreviewArtifact::Formatting {
+            description: "fmt".to_string(),
+            content_hash: None,
+        };
+        let _id = tool.register_preview_artifact(
+            artifact,
+            vec![],
+            std::collections::HashMap::new(),
+            "test".to_string(),
+        );
+        let mut packet = LspContextPacket {
+            request: LspContextRequest::File {
+                file: PathBuf::from("src/lib.rs"),
+                line_ranges: vec![],
+                include_symbols: false,
+                include_diagnostics: false,
+            },
+            items: vec![],
+            previews: vec![],
+            preview_ids: vec![],
+            mode: LspContextPacketMode::Opportunistic,
+            workspace_root: None,
+            generated_at: None,
+            server_id: None,
+            server_generation: None,
+            operational_state: None,
+            budget: None,
+            notes: vec![],
+            truncation: egglsp::context::LspContextTruncation::default(),
+        };
+        packet.previews.push(LspPreviewArtifact::Formatting {
+            description: "fmt".to_string(),
+            content_hash: None,
+        });
+        let count = tool.preview_registry().populate_preview_ids(&mut packet);
+        assert_eq!(count, 1);
+        assert!(!packet.preview_ids.is_empty());
+        assert!(!packet.preview_ids[0].is_empty());
     }
 }
