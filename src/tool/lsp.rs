@@ -7130,4 +7130,260 @@ diff --git a/src/lib.rs b/src/lib.rs
         assert!(!packet.preview_ids.is_empty());
         assert!(!packet.preview_ids[0].is_empty());
     }
+
+    // -----------------------------------------------------------------------
+    // Pass 7: Model-tier rendering tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn model_tier_for_profile_maps_families() {
+        // Frontier families
+        assert_eq!(
+            egglsp::model_tier_for_profile("frontierreasoning"),
+            egglsp::ModelTier::Frontier
+        );
+        assert_eq!(
+            egglsp::model_tier_for_profile("default"),
+            egglsp::ModelTier::Frontier
+        );
+        assert_eq!(
+            egglsp::model_tier_for_profile("frontier_executor"),
+            egglsp::ModelTier::Frontier
+        );
+        // Small tier
+        assert_eq!(
+            egglsp::model_tier_for_profile("tool_fragile"),
+            egglsp::ModelTier::Small
+        );
+        // Workhorse default for unknown families
+        assert_eq!(
+            egglsp::model_tier_for_profile("unknown"),
+            egglsp::ModelTier::Workhorse
+        );
+    }
+
+    #[test]
+    fn model_tier_for_profile_is_case_insensitive() {
+        assert_eq!(
+            egglsp::model_tier_for_profile("FrontierReasoning"),
+            egglsp::ModelTier::Frontier
+        );
+        assert_eq!(
+            egglsp::model_tier_for_profile("TOOL_FRAGILE"),
+            egglsp::ModelTier::Small
+        );
+    }
+
+    #[test]
+    fn renderer_uses_tier_to_filter_sections() {
+        use egglsp::context::{
+            LspContextItem, LspContextItemKind, LspContextPacket, LspContextPacketMode,
+            LspContextRequest, LspContextScore, LspEvidenceFreshness, LspEvidenceProvenance,
+            LspRiskMode, LineRange,
+        };
+        use std::path::PathBuf;
+        let file = PathBuf::from("src/lib.rs");
+        // 1) cross-file definition, 2) hunk-local definition, 3) diagnostic, 4) reference
+        let items = vec![
+            LspContextItem {
+                kind: LspContextItemKind::Definition,
+                file: PathBuf::from("src/other.rs"),
+                range: None,
+                line: Some(5),
+                column: None,
+                message: "definition".to_string(),
+                symbol: Some("foo".to_string()),
+                source: None,
+                provenance: LspEvidenceProvenance {
+                    server_id: "test".to_string(),
+                    server_generation: Some(1),
+                    operation: "goToDefinition".to_string(),
+                    freshness: LspEvidenceFreshness::Fresh,
+                    capability_decision: None,
+                    document_version: None,
+                    age_ms: None,
+                    post_restart: false,
+                },
+                score: LspContextScore {
+                    priority: 10,
+                    is_hunk_local: false,
+                    is_error: false,
+                    is_same_file: false,
+                    freshness_rank: 0,
+                },
+                payload: None,
+            },
+            LspContextItem {
+                kind: LspContextItemKind::Definition,
+                file: file.clone(),
+                range: Some(LineRange { start: 5, end: 10 }),
+                line: Some(5),
+                column: None,
+                message: "hunk-local def".to_string(),
+                symbol: Some("bar".to_string()),
+                source: None,
+                provenance: LspEvidenceProvenance {
+                    server_id: "test".to_string(),
+                    server_generation: Some(1),
+                    operation: "goToDefinition".to_string(),
+                    freshness: LspEvidenceFreshness::Fresh,
+                    capability_decision: None,
+                    document_version: None,
+                    age_ms: None,
+                    post_restart: false,
+                },
+                score: LspContextScore {
+                    priority: 30,
+                    is_hunk_local: true,
+                    is_error: false,
+                    is_same_file: true,
+                    freshness_rank: 0,
+                },
+                payload: None,
+            },
+            LspContextItem {
+                kind: LspContextItemKind::Diagnostic,
+                file: file.clone(),
+                range: None,
+                line: Some(7),
+                column: None,
+                message: "warn".to_string(),
+                symbol: None,
+                source: None,
+                provenance: LspEvidenceProvenance {
+                    server_id: "test".to_string(),
+                    server_generation: Some(1),
+                    operation: "diagnostics".to_string(),
+                    freshness: LspEvidenceFreshness::Fresh,
+                    capability_decision: None,
+                    document_version: None,
+                    age_ms: None,
+                    post_restart: false,
+                },
+                score: LspContextScore {
+                    priority: 25,
+                    is_hunk_local: true,
+                    is_error: false,
+                    is_same_file: true,
+                    freshness_rank: 0,
+                },
+                payload: None,
+            },
+        ];
+        let packet = LspContextPacket {
+            request: LspContextRequest::Review {
+                changed_files: vec![file.clone()],
+                hunks: vec![],
+                risk_mode: LspRiskMode::Standard,
+            },
+            items,
+            previews: vec![],
+            preview_ids: vec![],
+            mode: LspContextPacketMode::Opportunistic,
+            workspace_root: None,
+            generated_at: None,
+            server_id: None,
+            server_generation: None,
+            operational_state: None,
+            budget: None,
+            notes: vec![],
+            truncation: egglsp::context::LspContextTruncation::default(),
+        };
+
+        // Small tier: only hunk-local definitions are rendered.
+        let small_config = egglsp::LspContextRenderConfig {
+            model_tier: egglsp::ModelTier::Small,
+            ..Default::default()
+        };
+        let small_rendered =
+            egglsp::render_lsp_context_for_agent(&packet, &small_config);
+        assert!(small_rendered.contains("bar"), "small tier should include hunk-local def");
+        assert!(!small_rendered.contains("foo"), "small tier should not include cross-file def");
+
+        // Frontier tier: includes both definitions.
+        let frontier_config = egglsp::LspContextRenderConfig {
+            model_tier: egglsp::ModelTier::Frontier,
+            ..Default::default()
+        };
+        let frontier_rendered =
+            egglsp::render_lsp_context_for_agent(&packet, &frontier_config);
+        assert!(frontier_rendered.contains("bar"));
+        assert!(frontier_rendered.contains("foo"));
+    }
+
+    #[test]
+    fn renderer_keeps_truncation_notes_visible_across_tiers() {
+        use egglsp::context::{
+            LspContextItem, LspContextItemKind, LspContextPacket, LspContextPacketMode,
+            LspContextRequest, LspContextScore, LspContextTruncation, LspEvidenceFreshness,
+            LspEvidenceProvenance, LspRiskMode,
+        };
+        use std::path::PathBuf;
+        let file = PathBuf::from("src/lib.rs");
+        let items = vec![LspContextItem {
+            kind: LspContextItemKind::Reference,
+            file: file.clone(),
+            range: None,
+            line: Some(5),
+            column: None,
+            message: "ref".to_string(),
+            symbol: None,
+            source: None,
+            provenance: LspEvidenceProvenance {
+                server_id: "test".to_string(),
+                server_generation: Some(1),
+                operation: "findReferences".to_string(),
+                freshness: LspEvidenceFreshness::Fresh,
+                capability_decision: None,
+                document_version: None,
+                age_ms: None,
+                post_restart: false,
+            },
+            score: LspContextScore {
+                priority: 10,
+                is_hunk_local: false,
+                is_error: false,
+                is_same_file: true,
+                freshness_rank: 0,
+            },
+            payload: None,
+        }];
+        let mut truncation = LspContextTruncation::default();
+        truncation.references_truncated = true;
+        truncation.notes.push("references truncated at 5".to_string());
+        let packet = LspContextPacket {
+            request: LspContextRequest::Review {
+                changed_files: vec![file],
+                hunks: vec![],
+                risk_mode: LspRiskMode::Standard,
+            },
+            items,
+            previews: vec![],
+            preview_ids: vec![],
+            mode: LspContextPacketMode::Opportunistic,
+            workspace_root: None,
+            generated_at: None,
+            server_id: None,
+            server_generation: None,
+            operational_state: None,
+            budget: None,
+            notes: vec![],
+            truncation,
+        };
+        for tier in [
+            egglsp::ModelTier::Small,
+            egglsp::ModelTier::Workhorse,
+            egglsp::ModelTier::Frontier,
+        ] {
+            let config = egglsp::LspContextRenderConfig {
+                model_tier: tier,
+                ..Default::default()
+            };
+            let rendered = egglsp::render_lsp_context_for_agent(&packet, &config);
+            assert!(
+                rendered.contains("references truncated"),
+                "{tier:?} should keep truncation notes visible: {rendered}"
+            );
+        }
+    }
 }
