@@ -28,6 +28,7 @@ pub mod document_sync;
 pub mod download;
 pub mod edit;
 pub mod error;
+pub mod evidence_adapter;
 pub mod evidence_collector;
 pub mod health;
 pub mod hunk_context;
@@ -76,6 +77,9 @@ pub use diagnostics::{
 };
 pub use document_sync::{OpenDocumentRegistry, OpenDocumentSnapshot};
 pub use error::LspError;
+pub use evidence_adapter::{
+    EvidenceOperation, ServiceLspEvidenceProvider,
+};
 pub use evidence_collector::{
     collect_context, collect_hunk_context, item_kind_from_severity, make_provenance,
     LspContextError, LspEvidenceProvider,
