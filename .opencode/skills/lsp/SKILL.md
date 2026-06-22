@@ -1865,14 +1865,16 @@ Phase 5 turns the LSP substrate into bounded, explainable, and safe agent contex
 crates/egglsp/src/
 ├── context.rs              # LspContextPacket, LspContextRequest, LspContextBudget, LspContextItem, LspContextMode
 ├── evidence_collector.rs   # LspEvidenceProvider trait, collect_context(), collect_hunk_context()
-├── security_context.rs     # SecurityRiskTag, SecurityEvidenceSummary, tag_security_risks()
-├── context_renderer.rs     # render_lsp_context_for_agent(), render_lsp_status_line(), ModelTier
+├── security_context.rs     # SecurityRiskTag, SecurityEvidenceSummary, build_security_evidence_summary(), build_security_lsp_context_request()
+├── context_renderer.rs     # render_lsp_context_for_agent(), render_lsp_status_line(), ModelTier, model_tier_for_profile()
 ├── preview_registry.rs     # PreviewArtifactRegistry, PreviewArtifactEntry
 ├── tui_summary.rs          # LspTuiSummary, render_tui_status_line(), render_tui_summary_detail()
-└── degradation_policy.rs   # evaluate_degradation(), LspContextDegradeDecision
+├── degradation_policy.rs   # evaluate_degradation(), LspContextDegradeDecision
+├── evidence_adapter.rs     # ServiceLspEvidenceProvider (production adapter for the live LspService)
+└── hunk_context.rs         # HunkDescriptor, HunkEvidence, hunk_response_to_context_items()
 
 tests/
-└── phase5_context_integration.rs  # 28 composite tests
+└── phase5_context_integration.rs  # 40 composite tests (33 pre-existing + 7 production-seam)
 ```
 
 ### Key Concepts
@@ -1882,13 +1884,28 @@ tests/
 - **Dedup** by kind+file+range+symbol+message hash
 - **Ranking**: hunk-local > errors > same-file > definitions > fresh > short
 - **Three modes**: Disabled (no calls), Opportunistic (partial on failure), Required (error on failure)
-- **Preview artifacts** are registered but never applied (`applied=false`)
-- **Agent rendering** is tier-aware: Small omits refs/hover, Workhorse includes them, Frontier is broader
-- **TUI summary** shows server status, counts, truncation, stale state
+- **Preview artifacts** are registered but never applied (`applied=false`); `LspTool` owns an internal `PreviewArtifactRegistry` and every `LspToolOutput` carries a `preview_id: Option<String>`
+- **Agent rendering** is tier-aware: Small omits refs/hover, Workhorse includes them, Frontier is broader; `model_tier_for_profile()` is best-effort string match
+- **TUI summary** shows server status, counts, truncation, stale state, total items, freshness breakdown, preview ids, and unsupported operations
+- **Hunk navigation bridge** converts `HunkSourceNavigationResponse` to `Vec<LspContextItem>` tagged with `AgentContextSource::Hunk`; truncated responses are marked `LspEvidenceFreshness::PossiblyStale`
+- **Security review integration** requests context via `LspContextRequest::Review` with `LspRiskMode::Aggressive`; `SecurityEvidenceSummary.public_api_fanout` counts distinct reference files in the reviewed changed files
+- **Production evidence adapter** (`ServiceLspEvidenceProvider`) wires `LspEvidenceProvider` to the live `LspService`, capturing `EvidenceOperation` provenance on every item
+
+### Canonical packet boundary (Pass 1)
+
+`LspContextPacket` in `crates/egglsp/src/context.rs` is the single source of truth. The legacy tool-local `SemanticContextPacket` bridges via `into_lsp_context_packet()` and `from_lsp_context_packet()`. New callers should consume the canonical packet directly.
+
+### Agent context input (Pass 3)
+
+`LspAgentContextInput` is threaded through `TurnRunInput` so the agent loop can pass workflow metadata (changed files, hunks, active file, optional `ModelTier` override) to `LspTool::lsp_context_for_agent_with_input()`. `is_empty()` and `has_workflow_metadata()` agree on the same definition: mode flags alone are not workflow metadata.
+
+### Production-seam tests (Pass 9)
+
+Seven new tests in `tests/phase5_context_integration.rs::production_seam_tests` exercise the production adapter (`ServiceLspEvidenceProvider`), the hunk navigation bridge, the security bridge, and the preview registry end-to-end via the existing `MockProvider` infrastructure — no real or fake LSP server required.
 
 ### Safety
 
-No LSP preview mutates disk. `workspace/executeCommand` is never invoked.
+No LSP preview mutates disk. `workspace/executeCommand` is never invoked. The preview registry's `applied` field is always `false`.
 
 ## See Also
 

@@ -3080,6 +3080,72 @@ Phase 5 adds 33 composite integration tests in `tests/phase5_context_integration
 
 Phase 5 complete. Codegg can assemble bounded, provenance-rich LSP context packets for hunk, symbol, review, security, and agent workflows. Mutation-producing LSP operations remain preview-only, unsupported/stale/degraded states are explicit, and deterministic tests cover budget, fallback, preview safety, and rendering behavior.
 
+## Phase 5 Completion Hardening and Workflow Depth (Passes 1–10)
+
+Phase 5 was further hardened to make every piece of the agent-context pipeline production-shaped, security-shaped, and observably correct. The hardening covered ten passes that touch the canonical packet boundary, the production evidence adapter, agent wiring, preview registry integration, security review integration, hunk navigation, model-tier rendering, TUI summary depth, and a final regression + docs closure.
+
+### Pass 1 — Canonical packet boundary
+
+The legacy `SemanticContextPacket` (a tool-local presentation envelope) is no longer the canonical context type. `LspContextPacket` in `crates/egglsp/src/context.rs` is the single source of truth. A bidirectional bridge `into_lsp_context_packet()` / `from_lsp_context_packet()` lives on the legacy packet for the one tool-local DTO that downstream consumers still depend on. All new callers use the canonical packet directly.
+
+### Pass 2 — Production evidence adapter
+
+`crates/egglsp/src/evidence_adapter.rs` adds `ServiceLspEvidenceProvider`, a real adapter that wires the `LspEvidenceProvider` trait to the live `LspService`. Each collected item captures `EvidenceOperation` (the LSP method invoked) so callers can verify which path produced each item. The adapter holds a side-channel `last_provenance` for test introspection.
+
+### Pass 3 — Agent wiring
+
+`crates/codegg-core` and `src/agent/turn_runtime.rs` thread `LspAgentContextInput` through `TurnRunInput`. `LspAgentContextInput` carries workflow metadata (changed files, hunks, active file) and an optional `ModelTier` override. `is_empty()` and `has_workflow_metadata()` agree on the same definition: mode flags alone are not metadata, and an empty workflow is empty even if a mode is set. The agent loop calls `LspTool::lsp_context_for_agent_with_input()` instead of `lsp_context_for_agent()` whenever the input is present, with 12 new unit tests covering equality, emptiness, and metadata.
+
+### Pass 4 — Preview registry integration
+
+`LspTool` now owns an internal `PreviewArtifactRegistry`. Every `LspToolOutput` carries an optional `preview_id: Option<String>` (skipped from serialization when absent). The four preview-bearing operations — `renamePreview`, `formatPreview`, `sourceActionPreview`, `codeActionPreview` — register their artifact with provenance before returning. Four new tests cover registry round-trips.
+
+### Pass 5 — Security review integration
+
+`build_security_evidence_summary()` counts the new `public_api_fanout` field (distinct reference files in the security review's changed files). `build_security_lsp_context_request()` produces an `LspContextRequest::Review` with `LspRiskMode::Aggressive` for the security review path (the workflow review request uses `Standard`, the default is `LspRiskMode::default()`). Seven new tests in `src/security/lsp_executor.rs` cover request shapes, fanout counting, and aggression mode.
+
+### Pass 6 — Hunk navigation bridge
+
+`crates/egglsp/src/hunk_context.rs` adds `hunk_response_to_context_items()` — a pure function that converts `HunkSourceNavigationResponse` into `Vec<LspContextItem>` tagged with `AgentContextSource::Hunk`. Items carry `LspEvidenceFreshness::PossiblyStale` when the response was truncated and `Fresh` otherwise. Enclosing symbols become `WorkspaceSymbol` items, definitions and references become `Definition` / `Reference` items, diagnostics become `Diagnostic` items with `is_error` reflecting severity. Nine new tests cover happy path, truncation, empty hunk, and multi-file cases.
+
+### Pass 7 — Model-tier rendering in production
+
+`model_tier_for_profile()` is exposed for production callers. The renderer applies tier-aware section filtering: `Small` shows only diagnostics + hunk-local definitions; `Workhorse` adds references + hover; `Frontier` shows the full packet including semantic tokens and call hierarchy. The mapping is best-effort string match (lowercased exact equality), with four new tests covering the canonical profile names and case insensitivity.
+
+### Pass 8 — TUI summary depth
+
+`LspTuiSummary` is extended (additive only) with `total_items`, `fresh_count`, `stale_freshness_count`, `possibly_stale_count`, `preview_ids`, and `unsupported_operations`. The TUI now has access to a richer one-liner (`render_tui_status_line`) and a multi-line detail panel (`render_tui_summary_detail`). A new `LspTool::lsp_summary_detail()` method exposes the same builder for the security review panel. All seven `LspEvidenceFreshness` variants are mapped in the summary. Six new tests cover the new fields.
+
+### Pass 9 — Production-seam integration tests
+
+`tests/phase5_context_integration.rs` gains 7 production-seam tests under `production_seam_tests` module. The new tests use the existing `MockProvider` infrastructure (no real or fake LSP server required) to verify end-to-end behavior of:
+
+- the production adapter's diagnostics collection
+- the production adapter's reference collection via review path
+- provenance + freshness carry-over from the provider to items
+- preview registry round-trips with capability provenance
+- the hunk navigation bridge's `AgentContextSource::Hunk` tagging
+- the security bridge's `public_api_fanout` counting
+- the registry's provenance preservation
+
+Total test count for `phase5_context_integration.rs`: 40 (33 pre-existing + 7 new).
+
+### Pass 10 — Regression and docs closure
+
+- `cargo fmt` over all 9 hardening commits (one consolidation commit)
+- `cargo check --workspace --all-targets --all-features`: zero new errors, no new clippy warnings
+- `cargo test --workspace --all-features`: 1610 passing, 1 pre-existing flake (`remote_core_loader_tests::load_models_via_core_populates_state`) unrelated to Phase 5
+- This documentation pass
+
+### Architectural invariants preserved
+
+- **No LSP writes**: All preview operations remain preview-only; `applied: false` is enforced.
+- **Read-only semantic context**: Source-action hints, code actions, and renaming stay preview-only.
+- **No `workspace/executeCommand`**: Command-only code actions rejected with `LspError::CommandOnlyCodeAction`.
+- **Bounded context**: Budget enforcement, dedup, and ranking unchanged from the original Phase 5 spec.
+- **Production adapter ≠ execution**: The adapter is a thin wrapper that calls into the existing `LspTool` API. No new LSP code paths were added.
+- **Provider is the source of truth**: `ServiceLspEvidenceProvider` does not synthesize responses; it only forwards them.
+
 ## See Also
 
 - [.opencode/skills/lsp/SKILL.md](../.opencode/skills/lsp/SKILL.md) - LSP skill guide
