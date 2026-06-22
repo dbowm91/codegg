@@ -688,7 +688,24 @@ impl LspTool {
     /// Return a compact one-line LSP status string for the TUI status bar.
     /// Returns `None` when the LSP server is not available.
     pub async fn lsp_status_line(&self) -> Option<String> {
-        use egglsp::tui_summary::{render_tui_status_line, LspTuiSummary};
+        self.build_lsp_summary().await.map(|s| {
+            use egglsp::tui_summary::render_tui_status_line;
+            render_tui_status_line(&s)
+        })
+    }
+
+    /// Return a multi-line LSP detail summary for the TUI detail panel.
+    /// Returns `None` when the LSP server is not available.
+    pub async fn lsp_summary_detail(&self) -> Option<String> {
+        self.build_lsp_summary().await.map(|s| {
+            use egglsp::tui_summary::render_tui_summary_detail;
+            render_tui_summary_detail(&s)
+        })
+    }
+
+    /// Build a fresh `LspTuiSummary` from the live service + registry.
+    async fn build_lsp_summary(&self) -> Option<egglsp::tui_summary::LspTuiSummary> {
+        use egglsp::tui_summary::LspTuiSummary;
 
         let keys = self.service.client_keys().await;
         if keys.is_empty() {
@@ -699,6 +716,7 @@ impl LspTool {
         let mut server_generation: Option<u64> = None;
         let mut status_str = "unknown".to_string();
         let mut stale = false;
+        let mut notes: Vec<String> = Vec::new();
 
         for key in &keys {
             if let Some(state) = self.service.operational_state_for_key(key).await {
@@ -706,25 +724,43 @@ impl LspTool {
                 server_id = Some(key.clone());
                 server_generation = Some(gen);
                 status_str = state.label().to_string();
+                if let Some(note) = state.context_note() {
+                    notes.push(note);
+                }
                 stale = !matches!(state, egglsp::health::LspOperationalState::Ready);
             }
         }
 
-        let summary = LspTuiSummary {
+        // Snapshot the preview registry for summary.
+        let preview_count = self.preview_registry().len();
+        let preview_stale = self.preview_registry().recent(preview_count).iter().any(|e| e.stale_base);
+        let preview_ids: Vec<String> = self
+            .preview_registry()
+            .recent(8)
+            .iter()
+            .map(|e| e.id.clone())
+            .collect();
+
+        Some(LspTuiSummary {
             server_status: status_str,
             server_id,
             server_generation,
             diagnostics_count: 0,
             references_count: 0,
             definitions_count: 0,
+            total_items: 0,
             truncated: false,
             stale,
-            preview_count: 0,
-            preview_stale: false,
-            notes: Vec::new(),
+            stale_freshness_count: 0,
+            possibly_stale_count: 0,
+            fresh_count: 0,
+            preview_count,
+            preview_stale,
+            preview_ids,
+            unsupported_operations: Vec::new(),
+            notes,
             operational_notes: Vec::new(),
-        };
-        Some(render_tui_status_line(&summary))
+        })
     }
 
     fn resolve_file_from_str(&self, p: &str) -> Result<PathBuf, ToolError> {
@@ -7385,5 +7421,44 @@ diff --git a/src/lib.rs b/src/lib.rs
                 "{tier:?} should keep truncation notes visible: {rendered}"
             );
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Pass 8: TUI summary detail tests
+    // -----------------------------------------------------------------------
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn lsp_summary_detail_returns_none_without_clients() {
+        use std::path::PathBuf;
+        let service = crate::lsp::service::LspService::new_arc(
+            crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
+        );
+        let tool = LspTool::new(service).with_allowed_root(PathBuf::from("/tmp"));
+        assert!(tool.lsp_summary_detail().await.is_none());
+        assert!(tool.lsp_status_line().await.is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn lsp_summary_detail_includes_preview_count() {
+        use std::path::PathBuf;
+        let service = crate::lsp::service::LspService::new_arc(
+            crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
+        );
+        let tool = LspTool::new(service).with_allowed_root(PathBuf::from("/tmp"));
+        // Register a preview.
+        let _id = tool.register_preview_artifact(
+            egglsp::context::LspPreviewArtifact::Formatting {
+                description: "test".to_string(),
+                content_hash: None,
+            },
+            vec!["src/lib.rs".to_string()],
+            std::collections::HashMap::new(),
+            "test".to_string(),
+        );
+        // No clients → still None (consistent with status line).
+        assert!(tool.lsp_summary_detail().await.is_none());
+        assert!(tool.lsp_status_line().await.is_none());
+        // But the registry has the entry.
+        assert_eq!(tool.preview_registry().len(), 1);
     }
 }
