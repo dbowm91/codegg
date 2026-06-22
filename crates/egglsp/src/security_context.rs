@@ -5,7 +5,7 @@
 
 use std::path::PathBuf;
 
-use crate::context::{LspContextItem, LspContextItemKind, LspContextPacket};
+use crate::context::{LineRange, LspContextItem, LspContextItemKind, LspContextPacket};
 
 // ---------------------------------------------------------------------------
 // Security risk tags
@@ -155,6 +155,65 @@ pub fn tag_security_risks(
         tags.push(SecurityRiskTag::ChangedPublicApi);
     }
 
+    // Auth/security-sensitive file detection.
+    let auth_patterns = [
+        "auth",
+        "login",
+        "session",
+        "token",
+        "password",
+        "credential",
+        "oauth",
+        "jwt",
+        "csrf",
+        "permission",
+        "role",
+        "rbac",
+    ];
+    let has_auth_sensitive = changed_files.iter().any(|f| {
+        let name = f.to_string_lossy().to_lowercase();
+        auth_patterns.iter().any(|p| name.contains(p))
+    }) || items.iter().any(|i| {
+        let msg = i.message.to_lowercase();
+        auth_patterns.iter().any(|p| msg.contains(p))
+    });
+    if has_auth_sensitive {
+        tags.push(SecurityRiskTag::ChangedAuthSecuritySensitive);
+    }
+
+    // Unsafe/FFI/network/fs/process code detection.
+    let unsafe_patterns = [
+        "unsafe",
+        "ffi",
+        "extern",
+        "raw_ptr",
+        "transmute",
+        "network",
+        "socket",
+        "tcp",
+        "udp",
+        "http",
+        "filesystem",
+        "fs::",
+        "std::fs",
+        "File::",
+        "process",
+        "Command::",
+        "std::process",
+    ];
+    let has_unsafe_code = items.iter().any(|i| {
+        let msg = i.message.to_lowercase();
+        unsafe_patterns.iter().any(|p| msg.contains(p))
+    }) || changed_files.iter().any(|f| {
+        let name = f.to_string_lossy().to_lowercase();
+        ["unsafe", "ffi", "extern", "syscall", "process"]
+            .iter()
+            .any(|p| name.contains(p))
+    });
+    if has_unsafe_code {
+        tags.push(SecurityRiskTag::ChangedUnsafeFfiNetworkFsProcess);
+    }
+
     // Implementations/hierarchy affected.
     let has_impls = items
         .iter()
@@ -204,10 +263,15 @@ mod tests {
         LspContextItem {
             kind,
             file: PathBuf::from(file),
+            range: line.map(|l| LineRange {
+                start: l,
+                end: l + 1,
+            }),
             line,
             column: None,
             message: message.to_string(),
             symbol: None,
+            source: None,
             provenance: LspEvidenceProvenance {
                 server_id: "test-server".to_string(),
                 server_generation: Some(1),
@@ -260,7 +324,14 @@ mod tests {
                 ),
             ],
             previews: Vec::new(),
+            preview_ids: Vec::new(),
             mode: LspContextPacketMode::Opportunistic,
+            workspace_root: None,
+            generated_at: None,
+            server_id: None,
+            server_generation: None,
+            operational_state: None,
+            budget: None,
             notes: vec!["test note".to_string()],
             truncation: Default::default(),
         };
@@ -308,7 +379,14 @@ mod tests {
             },
             items: Vec::new(),
             previews: Vec::new(),
+            preview_ids: Vec::new(),
             mode: LspContextPacketMode::Opportunistic,
+            workspace_root: None,
+            generated_at: None,
+            server_id: None,
+            server_generation: None,
+            operational_state: None,
+            budget: None,
             notes: Vec::new(),
             truncation: Default::default(),
         };
@@ -353,7 +431,14 @@ mod tests {
             },
             items: vec![item],
             previews: Vec::new(),
+            preview_ids: Vec::new(),
             mode: LspContextPacketMode::Opportunistic,
+            workspace_root: None,
+            generated_at: None,
+            server_id: None,
+            server_generation: None,
+            operational_state: None,
+            budget: None,
             notes: Vec::new(),
             truncation: Default::default(),
         };

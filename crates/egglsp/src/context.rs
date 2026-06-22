@@ -141,6 +141,8 @@ pub enum LspContextRequest {
         hunks: Vec<HunkRange>,
         include_references: bool,
         include_definitions: bool,
+        include_implementations: bool,
+        include_semantic_tokens: bool,
         include_security_evidence: bool,
     },
     /// Collect symbol-centric evidence (references, implementations,
@@ -178,6 +180,10 @@ pub enum LspEvidenceFreshness {
     Stale,
     /// Evidence retained from a previous server generation after restart.
     RetainedAfterRestart,
+    /// File was edited after this evidence was collected.
+    StaleAfterEdit,
+    /// Server generation does not match the expected generation.
+    ServerGenerationMismatch,
     /// Freshness unknown.
     Unknown,
 }
@@ -274,7 +280,10 @@ pub struct LspContextItem {
     pub kind: LspContextItemKind,
     /// File this evidence pertains to.
     pub file: PathBuf,
-    /// Optional line number (0-indexed).
+    /// Optional line range (start inclusive, end exclusive).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub range: Option<LineRange>,
+    /// Optional line number (0-indexed). Kept for backward compatibility.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub line: Option<u32>,
     /// Optional column number (0-indexed).
@@ -285,6 +294,9 @@ pub struct LspContextItem {
     /// Optional symbol name associated with this item.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub symbol: Option<String>,
+    /// Where this evidence originated in the agent workflow.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<AgentContextSource>,
     /// Provenance metadata.
     pub provenance: LspEvidenceProvenance,
     /// Scoring metadata for ranking.
@@ -302,6 +314,10 @@ impl LspContextItem {
         self.file.hash(&mut hasher);
         self.line.hash(&mut hasher);
         self.column.hash(&mut hasher);
+        if let Some(ref r) = self.range {
+            r.start.hash(&mut hasher);
+            r.end.hash(&mut hasher);
+        }
         self.symbol.hash(&mut hasher);
         self.message.hash(&mut hasher);
         hasher.finish()
@@ -312,13 +328,28 @@ impl LspContextItem {
 // Preview artifacts
 // ---------------------------------------------------------------------------
 
-/// Opaque identifiers for preview-only mutation artifacts (rename,
-/// formatting, code action). These are never written to disk.
+/// Preview-only mutation artifacts (rename, formatting, code action).
+/// These are never written to disk.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum LspPreviewArtifact {
-    Rename(String),
-    Formatting(String),
-    CodeAction(String),
+    Rename {
+        /// Human-readable description of the rename.
+        description: String,
+        /// Number of file edits in the preview.
+        edit_count: usize,
+    },
+    Formatting {
+        /// Human-readable description of the formatting change.
+        description: String,
+        /// SHA-256 hash of the formatted content.
+        content_hash: Option<String>,
+    },
+    CodeAction {
+        /// Human-readable description of the code action.
+        description: String,
+        /// Action kind (e.g. "quickfix", "refactor").
+        kind: Option<String>,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -415,8 +446,29 @@ pub struct LspContextPacket {
     pub items: Vec<LspContextItem>,
     /// Preview artifacts (rename/format/code-action previews).
     pub previews: Vec<LspPreviewArtifact>,
+    /// Registry IDs for preview artifacts, parallel to `previews`.
+    #[serde(default)]
+    pub preview_ids: Vec<String>,
     /// Mode used during collection.
     pub mode: LspContextPacketMode,
+    /// Workspace root this packet was collected against.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workspace_root: Option<PathBuf>,
+    /// When this packet was generated (millis since epoch).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub generated_at: Option<u64>,
+    /// Server that produced the evidence.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub server_id: Option<String>,
+    /// Server generation at time of collection.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub server_generation: Option<u64>,
+    /// Operational state summary at time of collection.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub operational_state: Option<String>,
+    /// Budget used during collection.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub budget: Option<LspContextBudget>,
     /// Operational notes (e.g. "LSP state: indexing").
     #[serde(default)]
     pub notes: Vec<String>,
@@ -692,10 +744,15 @@ mod tests {
         LspContextItem {
             kind,
             file: PathBuf::from(file),
+            range: line.map(|l| LineRange {
+                start: l,
+                end: l + 1,
+            }),
             line,
             column: None,
             message: message.to_string(),
             symbol: None,
+            source: None,
             provenance: LspEvidenceProvenance {
                 server_id: "test".to_string(),
                 server_generation: Some(1),
@@ -754,7 +811,14 @@ mod tests {
                 })
                 .collect(),
             previews: Vec::new(),
+            preview_ids: Vec::new(),
             mode: LspContextPacketMode::default(),
+            workspace_root: None,
+            generated_at: None,
+            server_id: None,
+            server_generation: None,
+            operational_state: None,
+            budget: None,
             notes: Vec::new(),
             truncation: LspContextTruncation::default(),
         };
@@ -788,7 +852,14 @@ mod tests {
                 })
                 .collect(),
             previews: Vec::new(),
+            preview_ids: Vec::new(),
             mode: LspContextPacketMode::default(),
+            workspace_root: None,
+            generated_at: None,
+            server_id: None,
+            server_generation: None,
+            operational_state: None,
+            budget: None,
             notes: Vec::new(),
             truncation: LspContextTruncation::default(),
         };
@@ -822,7 +893,14 @@ mod tests {
                 })
                 .collect(),
             previews: Vec::new(),
+            preview_ids: Vec::new(),
             mode: LspContextPacketMode::default(),
+            workspace_root: None,
+            generated_at: None,
+            server_id: None,
+            server_generation: None,
+            operational_state: None,
+            budget: None,
             notes: Vec::new(),
             truncation: LspContextTruncation::default(),
         };
@@ -864,7 +942,14 @@ mod tests {
                 })
                 .collect(),
             previews: Vec::new(),
+            preview_ids: Vec::new(),
             mode: LspContextPacketMode::default(),
+            workspace_root: None,
+            generated_at: None,
+            server_id: None,
+            server_generation: None,
+            operational_state: None,
+            budget: None,
             notes: Vec::new(),
             truncation: LspContextTruncation::default(),
         };
@@ -898,6 +983,8 @@ mod tests {
             }],
             include_references: false,
             include_definitions: false,
+            include_implementations: false,
+            include_semantic_tokens: false,
             include_security_evidence: false,
         };
 

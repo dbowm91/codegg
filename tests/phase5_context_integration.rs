@@ -286,10 +286,12 @@ fn make_item(
     LspContextItem {
         kind,
         file: PathBuf::from(file),
+        range: None,
         line,
         column: None,
         message: message.to_string(),
         symbol: None,
+        source: None,
         provenance: LspEvidenceProvenance {
             server_id: "mock-server".to_string(),
             server_generation: Some(1),
@@ -321,7 +323,14 @@ fn make_packet_with_items(items: Vec<LspContextItem>) -> LspContextPacket {
         },
         items,
         previews: Vec::new(),
+        preview_ids: Vec::new(),
         mode: LspContextPacketMode::Opportunistic,
+        workspace_root: None,
+        generated_at: None,
+        server_id: None,
+        server_generation: None,
+        operational_state: None,
+        budget: None,
         notes: Vec::new(),
         truncation: Default::default(),
     }
@@ -356,7 +365,14 @@ async fn phase5_context_packet_budget_enforcement() {
         },
         items,
         previews: Vec::new(),
+        preview_ids: Vec::new(),
         mode: LspContextPacketMode::default(),
+        workspace_root: None,
+        generated_at: None,
+        server_id: None,
+        server_generation: None,
+        operational_state: None,
+        budget: None,
         notes: Vec::new(),
         truncation: Default::default(),
     };
@@ -431,7 +447,14 @@ async fn phase5_security_summary_risk_tags() {
             ),
         ],
         previews: Vec::new(),
+        preview_ids: Vec::new(),
         mode: LspContextPacketMode::Opportunistic,
+        workspace_root: None,
+        generated_at: None,
+        server_id: None,
+        server_generation: None,
+        operational_state: None,
+        budget: None,
         notes: Vec::new(),
         truncation: Default::default(),
     };
@@ -475,21 +498,30 @@ async fn phase5_preview_artifact_non_mutating() {
     let mut registry = PreviewArtifactRegistry::new();
 
     let id1 = registry.register(
-        LspPreviewArtifact::Rename("foo -> bar".to_string()),
+        LspPreviewArtifact::Rename {
+            description: "foo -> bar".to_string(),
+            edit_count: 2,
+        },
         vec!["a.rs".to_string()],
         HashMap::new(),
         "mock-server".to_string(),
     );
 
     let id2 = registry.register(
-        LspPreviewArtifact::Formatting("fmt a.rs".to_string()),
+        LspPreviewArtifact::Formatting {
+            description: "fmt a.rs".to_string(),
+            content_hash: None,
+        },
         vec!["a.rs".to_string()],
         HashMap::new(),
         "mock-server".to_string(),
     );
 
     let id3 = registry.register(
-        LspPreviewArtifact::CodeAction("organize imports".to_string()),
+        LspPreviewArtifact::CodeAction {
+            description: "organize imports".to_string(),
+            kind: None,
+        },
         vec!["b.rs".to_string()],
         HashMap::new(),
         "mock-server".to_string(),
@@ -565,7 +597,14 @@ async fn phase5_tui_summary_states() {
         },
         items: Vec::new(),
         previews: Vec::new(),
+        preview_ids: Vec::new(),
         mode: LspContextPacketMode::Disabled,
+        workspace_root: None,
+        generated_at: None,
+        server_id: None,
+        server_generation: None,
+        operational_state: None,
+        budget: None,
         notes: Vec::new(),
         truncation: Default::default(),
     };
@@ -669,6 +708,8 @@ async fn phase5_full_pipeline_hunk_request() {
         &hunks,
         true,
         true,
+        false,
+        false,
         &LspContextBudget::default(),
     )
     .await
@@ -768,13 +809,19 @@ async fn phase5_tui_summary_detail_full() {
 
     let mut registry = PreviewArtifactRegistry::new();
     registry.register(
-        LspPreviewArtifact::Rename("foo -> bar".to_string()),
+        LspPreviewArtifact::Rename {
+            description: "foo -> bar".to_string(),
+            edit_count: 2,
+        },
         vec!["a.rs".to_string()],
         HashMap::new(),
         "mock-server".to_string(),
     );
     registry.register(
-        LspPreviewArtifact::Formatting("fmt".to_string()),
+        LspPreviewArtifact::Formatting {
+            description: "fmt".to_string(),
+            content_hash: None,
+        },
         vec![],
         HashMap::new(),
         "mock-server".to_string(),
@@ -828,7 +875,14 @@ async fn phase5_security_summary_empty_packet() {
         },
         items: Vec::new(),
         previews: Vec::new(),
+        preview_ids: Vec::new(),
         mode: LspContextPacketMode::Opportunistic,
+        workspace_root: None,
+        generated_at: None,
+        server_id: None,
+        server_generation: None,
+        operational_state: None,
+        budget: None,
         notes: Vec::new(),
         truncation: Default::default(),
     };
@@ -1099,6 +1153,8 @@ async fn phase5_hunk_context_does_not_include_unrelated_file_flood() {
         &hunks,
         false,
         false,
+        false,
+        false,
         &LspContextBudget::default(),
     )
     .await
@@ -1140,6 +1196,8 @@ async fn phase5_hunk_context_marks_stale_evidence() {
         &hunks,
         false,
         false,
+        false,
+        false,
         &LspContextBudget::default(),
     )
     .await
@@ -1179,6 +1237,8 @@ async fn phase5_hunk_context_caps_references_composite() {
         PathBuf::from("test.rs").as_path(),
         &hunks,
         true,
+        false,
+        false,
         false,
         &budget,
     )
@@ -1294,5 +1354,208 @@ async fn phase5_security_packet_degrades_without_lsp() {
     assert!(
         summary.stale,
         "summary should mark stale when LSP state is deaded"
+    );
+}
+
+#[tokio::test]
+async fn phase5_budget_limits_ranges_per_file() {
+    use egglsp::context::enforce_context_budget;
+
+    let provider = MockProvider::new();
+    // Put 8 diagnostics in one file — exceeds max_ranges_per_file (5).
+    *provider.diagnostics.lock().unwrap() = (0..8)
+        .map(|i| {
+            (
+                "warning".to_string(),
+                format!("warn {i}"),
+                format!("({i}:0)-({i}:10)"),
+            )
+        })
+        .collect();
+
+    let request = LspContextRequest::File {
+        file: PathBuf::from("a.rs"),
+        line_ranges: vec![],
+        include_symbols: false,
+        include_diagnostics: true,
+    };
+    let budget = LspContextBudget::default();
+    let mode = LspContextMode::Opportunistic;
+
+    let mut packet = collect_context(&provider, &request, &budget, &mode)
+        .await
+        .unwrap();
+
+    let before = packet.items.len();
+    let truncation = enforce_context_budget(&mut packet);
+    let after = packet.items.len();
+
+    assert!(
+        after <= before,
+        "enforce_context_budget should not add items"
+    );
+    // With 8 diagnostics in one file and max_ranges_per_file=5, some
+    // items should be removed even though max_diagnostics=20.
+    assert!(
+        after <= 5,
+        "per-file range limit should cap at 5, got {after} items; truncation notes: {:?}",
+        truncation.notes
+    );
+}
+
+#[tokio::test]
+async fn phase5_agent_context_omits_disabled_section() {
+    use egglsp::context_renderer::{
+        render_lsp_context_for_agent, LspContextRenderConfig, ModelTier,
+    };
+
+    let provider = MockProvider::new();
+    *provider.diagnostics.lock().unwrap() = vec![(
+        "error".to_string(),
+        "err".to_string(),
+        "(0:0)-(0:10)".to_string(),
+    )];
+
+    let request = LspContextRequest::Review {
+        changed_files: vec![PathBuf::from("a.rs")],
+        hunks: vec![],
+        risk_mode: LspRiskMode::Standard,
+    };
+    let budget = LspContextBudget::default();
+    let mode = LspContextMode::Opportunistic;
+
+    let packet = collect_context(&provider, &request, &budget, &mode)
+        .await
+        .unwrap();
+
+    // Small tier: diagnostics shown, references omitted, hover omitted.
+    let config_small = LspContextRenderConfig {
+        model_tier: ModelTier::Small,
+        ..Default::default()
+    };
+    let rendered = render_lsp_context_for_agent(&packet, &config_small);
+    assert!(rendered.contains("## Diagnostics"));
+    assert!(!rendered.contains("## References"));
+    assert!(!rendered.contains("## Hover/Signature"));
+
+    // Workhorse: diagnostics and references shown.
+    let config_workhorse = LspContextRenderConfig {
+        model_tier: ModelTier::Workhorse,
+        ..Default::default()
+    };
+    let rendered = render_lsp_context_for_agent(&packet, &config_workhorse);
+    assert!(rendered.contains("## Diagnostics"));
+}
+
+#[tokio::test]
+async fn phase5_agent_context_does_not_render_raw_large_payloads() {
+    use egglsp::context_renderer::{render_lsp_context_for_agent, LspContextRenderConfig};
+
+    let provider = MockProvider::new();
+    *provider.diagnostics.lock().unwrap() = vec![(
+        "error".to_string(),
+        "x".repeat(5000),
+        "(0:0)-(0:10)".to_string(),
+    )];
+
+    let request = LspContextRequest::Review {
+        changed_files: vec![PathBuf::from("a.rs")],
+        hunks: vec![],
+        risk_mode: LspRiskMode::Standard,
+    };
+    let budget = LspContextBudget::default();
+    let mode = LspContextMode::Opportunistic;
+
+    let packet = collect_context(&provider, &request, &budget, &mode)
+        .await
+        .unwrap();
+
+    let config = LspContextRenderConfig::default();
+    let rendered = render_lsp_context_for_agent(&packet, &config);
+
+    // The message should be truncated, not dumped raw.
+    assert!(
+        rendered.len() < 3000,
+        "rendered output should be bounded, got {} bytes",
+        rendered.len()
+    );
+    // Should contain the truncation marker.
+    assert!(rendered.contains("|"), "should have item separator");
+}
+
+#[tokio::test]
+async fn phase5_lsp_summary_preview_stale() {
+    use egglsp::preview_registry::PreviewArtifactRegistry;
+    use egglsp::tui_summary::{build_tui_summary, render_tui_status_line};
+
+    let provider = MockProvider::new();
+    *provider.diagnostics.lock().unwrap() = vec![(
+        "error".to_string(),
+        "err".to_string(),
+        "(0:0)-(0:10)".to_string(),
+    )];
+
+    let request = LspContextRequest::Review {
+        changed_files: vec![PathBuf::from("a.rs")],
+        hunks: vec![],
+        risk_mode: LspRiskMode::Standard,
+    };
+    let budget = LspContextBudget::default();
+    let mode = LspContextMode::Opportunistic;
+
+    let packet = collect_context(&provider, &request, &budget, &mode)
+        .await
+        .unwrap();
+
+    let mut registry = PreviewArtifactRegistry::new();
+    let id = registry.register(
+        egglsp::context::LspPreviewArtifact::Rename {
+            description: "foo -> bar".to_string(),
+            edit_count: 1,
+        },
+        vec!["a.rs".to_string()],
+        std::collections::HashMap::new(),
+        "rust-analyzer".to_string(),
+    );
+    registry.mark_stale(&id);
+
+    let summary = build_tui_summary(&packet, &registry);
+    assert!(
+        summary.preview_stale,
+        "summary should mark preview_stale when registry has stale entry"
+    );
+}
+
+#[tokio::test]
+async fn phase5_initializing_state_records_note() {
+    let provider = MockProvider::new();
+    *provider.state.lock().unwrap() = "initializing".to_string();
+
+    let request = LspContextRequest::Review {
+        changed_files: vec![PathBuf::from("a.rs")],
+        hunks: vec![],
+        risk_mode: LspRiskMode::Standard,
+    };
+    let budget = LspContextBudget::default();
+    let mode = LspContextMode::Opportunistic;
+
+    let packet = collect_context(&provider, &request, &budget, &mode)
+        .await
+        .unwrap();
+
+    // Should have at least one operational note about the state.
+    let notes: Vec<_> = packet
+        .items
+        .iter()
+        .filter(|i| i.kind == LspContextItemKind::OperationalNote)
+        .collect();
+    assert!(
+        !notes.is_empty(),
+        "initializing state should produce an operational note"
+    );
+    assert!(
+        notes.iter().any(|n| n.message.contains("initializing")),
+        "note should mention initializing, got: {:?}",
+        notes.iter().map(|n| &n.message).collect::<Vec<_>>()
     );
 }

@@ -239,10 +239,12 @@ mod tests {
         crate::context::LspContextItem {
             kind,
             file: PathBuf::from(file),
+            range: None,
             line: None,
             column: None,
             message: message.to_string(),
             symbol: None,
+            source: None,
             provenance: LspEvidenceProvenance {
                 server_id: "rust-analyzer".to_string(),
                 server_generation: Some(3),
@@ -277,7 +279,14 @@ mod tests {
             },
             items,
             previews: Vec::new(),
+            preview_ids: Vec::new(),
             mode,
+            workspace_root: None,
+            generated_at: None,
+            server_id: None,
+            server_generation: None,
+            operational_state: None,
+            budget: None,
             notes: Vec::new(),
             truncation: Default::default(),
         }
@@ -351,7 +360,10 @@ mod tests {
         let packet = make_packet(items, LspContextPacketMode::Opportunistic);
         let mut registry = PreviewArtifactRegistry::new();
         registry.register(
-            LspPreviewArtifact::Rename("foo -> bar".to_string()),
+            LspPreviewArtifact::Rename {
+                description: "foo -> bar".to_string(),
+                edit_count: 1,
+            },
             vec!["a.rs".to_string()],
             std::collections::HashMap::new(),
             "rust-analyzer".to_string(),

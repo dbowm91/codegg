@@ -3,7 +3,9 @@
 //! Renders [`LspContextPacket`] into concise, readable text blocks
 //! suitable for agent prompts. No raw JSON is ever dumped.
 
-use crate::context::{LspContextItem, LspContextItemKind, LspContextPacket, LspPreviewArtifact};
+use crate::context::{
+    LineRange, LspContextItem, LspContextItemKind, LspContextPacket, LspPreviewArtifact,
+};
 
 // ---------------------------------------------------------------------------
 // Model tier
@@ -34,6 +36,11 @@ impl std::fmt::Display for ModelTier {
             Self::Frontier => write!(f, "frontier"),
         }
     }
+}
+
+/// Render a model tier as a human-readable string.
+pub fn render_model_tier(tier: ModelTier) -> String {
+    tier.to_string()
 }
 
 // ---------------------------------------------------------------------------
@@ -98,6 +105,8 @@ fn render_item_line(item: &LspContextItem) -> String {
         crate::context::LspEvidenceFreshness::PossiblyStale => "possibly_stale",
         crate::context::LspEvidenceFreshness::Stale => "stale",
         crate::context::LspEvidenceFreshness::RetainedAfterRestart => "retained",
+        crate::context::LspEvidenceFreshness::StaleAfterEdit => "stale_after_edit",
+        crate::context::LspEvidenceFreshness::ServerGenerationMismatch => "gen_mismatch",
         crate::context::LspEvidenceFreshness::Unknown => "unknown",
     };
 
@@ -318,9 +327,13 @@ fn build_previews_section(
     let mut lines = Vec::new();
     for preview in &packet.previews {
         let label = match preview {
-            LspPreviewArtifact::Rename(desc) => format!("Rename: {desc}"),
-            LspPreviewArtifact::Formatting(desc) => format!("Formatting: {desc}"),
-            LspPreviewArtifact::CodeAction(desc) => format!("CodeAction: {desc}"),
+            LspPreviewArtifact::Rename { description, .. } => format!("Rename: {description}"),
+            LspPreviewArtifact::Formatting { description, .. } => {
+                format!("Formatting: {description}")
+            }
+            LspPreviewArtifact::CodeAction { description, .. } => {
+                format!("CodeAction: {description}")
+            }
         };
         lines.push(format!("{label} — Preview only; not applied."));
     }
@@ -476,10 +489,15 @@ mod tests {
         LspContextItem {
             kind,
             file: PathBuf::from(file),
+            range: line.map(|l| LineRange {
+                start: l,
+                end: l + 1,
+            }),
             line,
             column: None,
             message: message.to_string(),
             symbol: None,
+            source: None,
             provenance: LspEvidenceProvenance {
                 server_id: "rust-analyzer".to_string(),
                 server_generation: Some(3),
@@ -513,7 +531,14 @@ mod tests {
             },
             items,
             previews,
+            preview_ids: Vec::new(),
             mode: LspContextPacketMode::Opportunistic,
+            workspace_root: None,
+            generated_at: None,
+            server_id: None,
+            server_generation: None,
+            operational_state: None,
+            budget: None,
             notes: Vec::new(),
             truncation: Default::default(),
         }

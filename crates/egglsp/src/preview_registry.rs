@@ -110,6 +110,25 @@ impl PreviewArtifactRegistry {
     pub fn len(&self) -> usize {
         self.entries.len()
     }
+
+    /// Populate `packet.preview_ids` from registry entries that match
+    /// the packet's previews by kind. Returns the number of IDs populated.
+    pub fn populate_preview_ids(&self, packet: &mut crate::context::LspContextPacket) -> usize {
+        let mut count = 0;
+        for preview in &packet.previews {
+            let matching =
+                self.entries.iter().rev().find(|e| {
+                    std::mem::discriminant(&e.artifact) == std::mem::discriminant(preview)
+                });
+            if let Some(entry) = matching {
+                packet.preview_ids.push(entry.id.clone());
+                count += 1;
+            } else {
+                packet.preview_ids.push(String::new());
+            }
+        }
+        count
+    }
 }
 
 impl Default for PreviewArtifactRegistry {
@@ -127,7 +146,10 @@ mod tests {
     use super::*;
 
     fn make_artifact() -> LspPreviewArtifact {
-        LspPreviewArtifact::Rename("rename foo -> bar".to_string())
+        LspPreviewArtifact::Rename {
+            description: "rename foo -> bar".to_string(),
+            edit_count: 1,
+        }
     }
 
     #[test]
@@ -153,7 +175,10 @@ mod tests {
         let mut reg = PreviewArtifactRegistry::new();
         for i in 0..5 {
             reg.register(
-                LspPreviewArtifact::Formatting(format!("fmt {i}")),
+                LspPreviewArtifact::Formatting {
+                    description: format!("fmt {i}"),
+                    content_hash: None,
+                },
                 vec![],
                 HashMap::new(),
                 "server".to_string(),
@@ -163,11 +188,15 @@ mod tests {
         let recent = reg.recent(3);
         assert_eq!(recent.len(), 3);
         match &recent[0].artifact {
-            LspPreviewArtifact::Formatting(s) => assert!(s.contains("fmt 2")),
+            LspPreviewArtifact::Formatting {
+                description: ref s, ..
+            } => assert!(s.contains("fmt 2")),
             _ => panic!("expected Formatting"),
         }
         match &recent[2].artifact {
-            LspPreviewArtifact::Formatting(s) => assert!(s.contains("fmt 4")),
+            LspPreviewArtifact::Formatting {
+                description: ref s, ..
+            } => assert!(s.contains("fmt 4")),
             _ => panic!("expected Formatting"),
         }
     }
@@ -205,7 +234,10 @@ mod tests {
         assert_eq!(reg.len(), 1);
 
         reg.register(
-            LspPreviewArtifact::CodeAction("action".to_string()),
+            LspPreviewArtifact::CodeAction {
+                description: "action".to_string(),
+                kind: None,
+            },
             vec![],
             HashMap::new(),
             "s".to_string(),

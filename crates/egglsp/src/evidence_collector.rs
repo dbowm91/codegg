@@ -184,7 +184,9 @@ fn freshness_rank(f: LspEvidenceFreshness) -> u32 {
         LspEvidenceFreshness::Fresh => 0,
         LspEvidenceFreshness::PossiblyStale => 1,
         LspEvidenceFreshness::Stale | LspEvidenceFreshness::RetainedAfterRestart => 2,
-        LspEvidenceFreshness::Unknown => 3,
+        LspEvidenceFreshness::StaleAfterEdit => 3,
+        LspEvidenceFreshness::ServerGenerationMismatch => 4,
+        LspEvidenceFreshness::Unknown => 5,
     }
 }
 
@@ -201,6 +203,8 @@ fn freshness_for_state(state: &str) -> LspEvidenceFreshness {
 /// Create an operational note item.
 fn operational_note(message: String, provenance: LspEvidenceProvenance) -> LspContextItem {
     LspContextItem {
+        range: None,
+        source: None,
         kind: LspContextItemKind::OperationalNote,
         file: PathBuf::new(),
         line: None,
@@ -283,7 +287,14 @@ pub async fn collect_context(
                 prov,
             )],
             previews: Vec::new(),
+            preview_ids: Vec::new(),
             mode: *mode,
+            workspace_root: None,
+            generated_at: None,
+            server_id: None,
+            server_generation: None,
+            operational_state: None,
+            budget: None,
             notes: vec!["disabled".to_string()],
             truncation: Default::default(),
         });
@@ -338,6 +349,8 @@ pub async fn collect_context(
             hunks,
             include_references,
             include_definitions,
+            include_implementations,
+            include_semantic_tokens,
             include_security_evidence: _,
         } => {
             let hunk_items = collect_hunk_context(
@@ -346,6 +359,8 @@ pub async fn collect_context(
                 hunks,
                 *include_references,
                 *include_definitions,
+                *include_implementations,
+                *include_semantic_tokens,
                 budget,
             )
             .await;
@@ -432,7 +447,14 @@ fn build_packet(
         request: request.clone(),
         items,
         previews: Vec::new(),
+        preview_ids: Vec::new(),
         mode: *mode,
+        workspace_root: None,
+        generated_at: None,
+        server_id: None,
+        server_generation: None,
+        operational_state: None,
+        budget: None,
         notes,
         truncation: Default::default(),
     }
@@ -480,6 +502,8 @@ async fn collect_file_context(
                         }
                     }
                     items.push(LspContextItem {
+                        range: None,
+                        source: None,
                         kind: LspContextItemKind::Diagnostic,
                         file: file.to_path_buf(),
                         line,
@@ -525,12 +549,14 @@ async fn collect_file_context(
                     }
                     let (line, column) = parse_range_start(range_text);
                     items.push(LspContextItem {
+                        range: None,
                         kind: LspContextItemKind::WorkspaceSymbol,
                         file: file.to_path_buf(),
                         line,
                         column,
                         message: format!("{name} ({kind})"),
                         symbol: Some(name.clone()),
+                        source: None,
                         provenance: prov.clone(),
                         score: LspContextScore {
                             priority: 8,
@@ -561,14 +587,17 @@ async fn collect_file_context(
 
 /// Collect hunk-aware evidence for a single file.
 ///
-/// For each hunk, collects diagnostics overlapping the range and
-/// definitions/references at the center line.
+/// For each hunk, collects diagnostics overlapping the range,
+/// definitions/references/implementations at the center line,
+/// and a semantic token summary.
 pub async fn collect_hunk_context(
     provider: &dyn LspEvidenceProvider,
     file: &Path,
     hunks: &[crate::context::HunkRange],
     include_references: bool,
     include_definitions: bool,
+    include_implementations: bool,
+    include_semantic_tokens: bool,
     budget: &LspContextBudget,
 ) -> Result<Vec<LspContextItem>, LspContextError> {
     let (server_id, generation) = provider.server_info().await;
@@ -593,6 +622,8 @@ pub async fn collect_hunk_context(
             if let Some(l) = line {
                 if line_in_range(l, hunk.start, hunk.end) {
                     items.push(LspContextItem {
+                        range: None,
+                        source: None,
                         kind: LspContextItemKind::Diagnostic,
                         file: file.to_path_buf(),
                         line: Some(l),
@@ -625,6 +656,8 @@ pub async fn collect_hunk_context(
                     for (def_file, range_text) in &defs {
                         let (line, column) = parse_range_start(range_text);
                         items.push(LspContextItem {
+                            range: None,
+                            source: None,
                             kind: LspContextItemKind::Definition,
                             file: PathBuf::from(def_file),
                             line,
@@ -659,6 +692,8 @@ pub async fn collect_hunk_context(
                     for (ref_file, range_text) in refs.iter().take(cap) {
                         let (line, column) = parse_range_start(range_text);
                         items.push(LspContextItem {
+                            range: None,
+                            source: None,
                             kind: LspContextItemKind::Reference,
                             file: PathBuf::from(ref_file),
                             line,
@@ -680,6 +715,86 @@ pub async fn collect_hunk_context(
                 Err(e) => {
                     debug!("find_references at hunk center failed: {e}");
                 }
+            }
+        }
+
+        // Implementations at center (capped per hunk).
+        if include_implementations {
+            match provider.implementations(file, center, 0).await {
+                Ok(impls) => {
+                    let prov =
+                        make_provenance(sid, generation, "textDocument/implementation", freshness);
+                    let cap = budget.max_references / hunks.len().max(1);
+                    for (impl_file, range_text) in impls.iter().take(cap) {
+                        let (line, column) = parse_range_start(range_text);
+                        items.push(LspContextItem {
+                            range: None,
+                            source: None,
+                            kind: LspContextItemKind::Implementation,
+                            file: PathBuf::from(impl_file),
+                            line,
+                            column,
+                            message: format!("implementation: {range_text}"),
+                            symbol: None,
+                            provenance: prov.clone(),
+                            score: LspContextScore {
+                                priority: 9,
+                                is_hunk_local: impl_file == file.to_str().unwrap_or(""),
+                                is_error: false,
+                                is_same_file: impl_file == file.to_str().unwrap_or(""),
+                                freshness_rank: freshness_rank(freshness),
+                            },
+                            payload: None,
+                        });
+                    }
+                }
+                Err(e) => {
+                    debug!("implementations at hunk center failed: {e}");
+                }
+            }
+        }
+    }
+
+    // Semantic token summary (file-level, not per-hunk).
+    if include_semantic_tokens {
+        match provider.semantic_tokens(file, 0, u32::MAX).await {
+            Ok(tokens) => {
+                let prov =
+                    make_provenance(sid, generation, "textDocument/semanticTokens", freshness);
+                // Summarize by token type counts.
+                let mut type_counts: std::collections::HashMap<String, usize> =
+                    std::collections::HashMap::new();
+                for (_line, _col, _len, token_type) in &tokens {
+                    *type_counts.entry(token_type.clone()).or_insert(0) += 1;
+                }
+                if !type_counts.is_empty() {
+                    let summary: Vec<String> = type_counts
+                        .iter()
+                        .map(|(t, c)| format!("{t}: {c}"))
+                        .collect();
+                    items.push(LspContextItem {
+                        range: None,
+                        source: None,
+                        kind: LspContextItemKind::SemanticTokenSummary,
+                        file: file.to_path_buf(),
+                        line: None,
+                        column: None,
+                        message: format!("semantic tokens: {}", summary.join(", ")),
+                        symbol: None,
+                        provenance: prov,
+                        score: LspContextScore {
+                            priority: 2,
+                            is_hunk_local: false,
+                            is_error: false,
+                            is_same_file: true,
+                            freshness_rank: freshness_rank(freshness),
+                        },
+                        payload: None,
+                    });
+                }
+            }
+            Err(e) => {
+                debug!("semantic_tokens failed: {e}");
             }
         }
     }
@@ -712,6 +827,8 @@ async fn collect_symbol_context(
             for (def_file, range_text) in &defs {
                 let (l, c) = parse_range_start(range_text);
                 items.push(LspContextItem {
+                    range: None,
+                    source: None,
                     kind: LspContextItemKind::Definition,
                     file: PathBuf::from(def_file),
                     line: l,
@@ -743,6 +860,8 @@ async fn collect_symbol_context(
                 for (ref_file, range_text) in refs.iter().take(budget.max_references) {
                     let (l, c) = parse_range_start(range_text);
                     items.push(LspContextItem {
+                        range: None,
+                        source: None,
                         kind: LspContextItemKind::Reference,
                         file: PathBuf::from(ref_file),
                         line: l,
@@ -776,6 +895,8 @@ async fn collect_symbol_context(
                 for (impl_file, range_text) in &impls {
                     let (l, c) = parse_range_start(range_text);
                     items.push(LspContextItem {
+                        range: None,
+                        source: None,
                         kind: LspContextItemKind::Implementation,
                         file: PathBuf::from(impl_file),
                         line: l,
@@ -805,6 +926,8 @@ async fn collect_symbol_context(
         Ok(Some(text)) => {
             let prov = make_provenance(sid, generation, "textDocument/hover", freshness);
             items.push(LspContextItem {
+                range: None,
+                source: None,
                 kind: LspContextItemKind::Hover,
                 file: file.to_path_buf(),
                 line: Some(line),
@@ -836,6 +959,8 @@ async fn collect_symbol_context(
             for range_text in &highlights {
                 let (l, c) = parse_range_start(range_text);
                 items.push(LspContextItem {
+                    range: None,
+                    source: None,
                     kind: LspContextItemKind::DocumentHighlight,
                     file: file.to_path_buf(),
                     line: l,
@@ -865,6 +990,7 @@ async fn collect_symbol_context(
             let prov = make_provenance(sid, generation, "textDocument/signatureHelp", freshness);
             for (label, documentation) in &signatures {
                 items.push(LspContextItem {
+                    range: None,
                     kind: LspContextItemKind::SignatureHelp,
                     file: file.to_path_buf(),
                     line: Some(line),
@@ -875,6 +1001,7 @@ async fn collect_symbol_context(
                         format!("{label}: {documentation}")
                     },
                     symbol: Some(label.clone()),
+                    source: None,
                     provenance: prov.clone(),
                     score: LspContextScore {
                         priority: 6,
@@ -904,12 +1031,14 @@ async fn collect_symbol_context(
                     format!("{label} ({kind}): {detail}")
                 };
                 items.push(LspContextItem {
+                    range: None,
                     kind: LspContextItemKind::CompletionSummary,
                     file: file.to_path_buf(),
                     line: Some(line),
                     column: Some(column),
                     message: summary,
                     symbol: Some(label.clone()),
+                    source: None,
                     provenance: prov.clone(),
                     score: LspContextScore {
                         priority: 4,
@@ -952,6 +1081,8 @@ async fn collect_symbol_context(
                 .collect();
             if !summary.is_empty() {
                 items.push(LspContextItem {
+                    range: None,
+                    source: None,
                     kind: LspContextItemKind::SemanticTokenSummary,
                     file: file.to_path_buf(),
                     line: Some(line.saturating_sub(5)),
@@ -993,12 +1124,14 @@ async fn collect_symbol_context(
                 for (name, kind, file_path, range_text) in &capped {
                     let (l, c) = parse_range_start(range_text);
                     items.push(LspContextItem {
+                        range: None,
                         kind: LspContextItemKind::WorkspaceSymbol,
                         file: PathBuf::from(file_path),
                         line: l,
                         column: c,
                         message: format!("{kind}: {name}"),
                         symbol: Some(name.clone()),
+                        source: None,
                         provenance: prov.clone(),
                         score: LspContextScore {
                             priority: 3,
@@ -1052,6 +1185,8 @@ async fn collect_review_context(
                 for (severity, message, range_text) in &capped {
                     let (line, column) = parse_range_start(range_text);
                     items.push(LspContextItem {
+                        range: None,
+                        source: None,
                         kind: LspContextItemKind::Diagnostic,
                         file: file.to_path_buf(),
                         line,
@@ -1092,6 +1227,8 @@ async fn collect_review_context(
                             for (ref_file, ref_range) in &refs {
                                 let (rl, rc) = parse_range_start(ref_range);
                                 items.push(LspContextItem {
+                                    range: None,
+                                    source: None,
                                     kind: LspContextItemKind::Reference,
                                     file: PathBuf::from(ref_file),
                                     line: rl,
@@ -1130,6 +1267,8 @@ async fn collect_review_context(
                         for (def_file, def_range) in &defs {
                             let (dl, dc) = parse_range_start(def_range);
                             items.push(LspContextItem {
+                                range: None,
+                                source: None,
                                 kind: LspContextItemKind::Definition,
                                 file: PathBuf::from(def_file),
                                 line: dl,
@@ -1148,6 +1287,124 @@ async fn collect_review_context(
                             });
                         }
                     }
+                }
+            }
+        }
+
+        // Implementations for first symbol in each file (Standard/Aggressive).
+        if matches!(risk_mode, LspRiskMode::Standard | LspRiskMode::Aggressive) {
+            if let Ok(symbols) = provider.document_symbols(file).await {
+                if let Some((_name, _kind, range_text)) = symbols.first() {
+                    let (line, col) = parse_range_start(range_text);
+                    if let (Some(l), Some(c)) = (line, col) {
+                        if let Ok(impls) = provider.implementations(file, l, c).await {
+                            let prov = make_provenance(
+                                sid,
+                                generation,
+                                "textDocument/implementation",
+                                freshness,
+                            );
+                            for (impl_file, impl_range) in &impls {
+                                let (il, ic) = parse_range_start(impl_range);
+                                items.push(LspContextItem {
+                                    range: None,
+                                    source: None,
+                                    kind: LspContextItemKind::Implementation,
+                                    file: PathBuf::from(impl_file),
+                                    line: il,
+                                    column: ic,
+                                    message: format!("implementation: {impl_range}"),
+                                    symbol: None,
+                                    provenance: prov.clone(),
+                                    score: LspContextScore {
+                                        priority: 9,
+                                        is_hunk_local: false,
+                                        is_error: false,
+                                        is_same_file: impl_file == file.to_str().unwrap_or(""),
+                                        freshness_rank: freshness_rank(freshness),
+                                    },
+                                    payload: None,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Hover for first symbol in each file (Standard/Aggressive).
+        if matches!(risk_mode, LspRiskMode::Standard | LspRiskMode::Aggressive) {
+            if let Ok(symbols) = provider.document_symbols(file).await {
+                if let Some((_name, _kind, range_text)) = symbols.first() {
+                    let (line, col) = parse_range_start(range_text);
+                    if let (Some(l), Some(c)) = (line, col) {
+                        if let Ok(Some(text)) = provider.hover(file, l, c).await {
+                            let prov =
+                                make_provenance(sid, generation, "textDocument/hover", freshness);
+                            items.push(LspContextItem {
+                                range: None,
+                                source: None,
+                                kind: LspContextItemKind::Hover,
+                                file: file.to_path_buf(),
+                                line: Some(l),
+                                column: Some(c),
+                                message: text,
+                                symbol: None,
+                                provenance: prov,
+                                score: LspContextScore {
+                                    priority: 6,
+                                    is_hunk_local: false,
+                                    is_error: false,
+                                    is_same_file: true,
+                                    freshness_rank: freshness_rank(freshness),
+                                },
+                                payload: None,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        // Semantic token summary for each file (Aggressive only).
+        if matches!(risk_mode, LspRiskMode::Aggressive) {
+            match provider.semantic_tokens(file, 0, u32::MAX).await {
+                Ok(tokens) => {
+                    let prov =
+                        make_provenance(sid, generation, "textDocument/semanticTokens", freshness);
+                    let mut type_counts: std::collections::HashMap<String, usize> =
+                        std::collections::HashMap::new();
+                    for (_line, _col, _len, token_type) in &tokens {
+                        *type_counts.entry(token_type.clone()).or_insert(0) += 1;
+                    }
+                    if !type_counts.is_empty() {
+                        let summary: Vec<String> = type_counts
+                            .iter()
+                            .map(|(t, c)| format!("{t}: {c}"))
+                            .collect();
+                        items.push(LspContextItem {
+                            range: None,
+                            source: None,
+                            kind: LspContextItemKind::SemanticTokenSummary,
+                            file: file.to_path_buf(),
+                            line: None,
+                            column: None,
+                            message: format!("semantic tokens: {}", summary.join(", ")),
+                            symbol: None,
+                            provenance: prov,
+                            score: LspContextScore {
+                                priority: 2,
+                                is_hunk_local: false,
+                                is_error: false,
+                                is_same_file: true,
+                                freshness_rank: freshness_rank(freshness),
+                            },
+                            payload: None,
+                        });
+                    }
+                }
+                Err(e) => {
+                    debug!("semantic_tokens failed: {e}");
                 }
             }
         }
@@ -1618,6 +1875,8 @@ mod tests {
             }],
             include_references: false,
             include_definitions: true,
+            include_implementations: false,
+            include_semantic_tokens: false,
             include_security_evidence: false,
         };
         let budget = LspContextBudget::default();
@@ -1724,6 +1983,8 @@ mod tests {
             &hunks,
             false,
             false,
+            false,
+            false,
             &LspContextBudget::default(),
         )
         .await
@@ -1757,6 +2018,8 @@ mod tests {
             &hunks,
             false,
             true,
+            false,
+            false,
             &LspContextBudget::default(),
         )
         .await
@@ -1792,6 +2055,8 @@ mod tests {
             PathBuf::from("test.rs").as_path(),
             &hunks,
             true,
+            false,
+            false,
             false,
             &budget,
         )
