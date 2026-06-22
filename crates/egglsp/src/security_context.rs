@@ -58,6 +58,9 @@ pub struct SecurityEvidenceSummary {
     pub definitions_count: usize,
     /// Number of implementation items.
     pub implementations_count: usize,
+    /// Number of distinct files touched by reference items
+    /// (the public API fanout from a changed definition).
+    pub public_api_fanout: usize,
     /// Risk tags applied to this evidence.
     pub risk_tags: Vec<SecurityRiskTag>,
     /// Whether any evidence item is stale.
@@ -82,11 +85,17 @@ pub fn build_security_evidence_summary(packet: &LspContextPacket) -> SecurityEvi
     let mut implementations_count = 0usize;
     let mut stale = false;
     let mut server_id: Option<String> = None;
+    let mut public_api_fanout_files: std::collections::HashSet<PathBuf> =
+        std::collections::HashSet::new();
 
     for item in &packet.items {
         match item.kind {
             LspContextItemKind::Diagnostic => diagnostics_count += 1,
-            LspContextItemKind::Reference => references_count += 1,
+            LspContextItemKind::Reference => {
+                references_count += 1;
+                // Each reference contributes to the public API fanout.
+                public_api_fanout_files.insert(item.file.clone());
+            }
             LspContextItemKind::Definition | LspContextItemKind::Declaration => {
                 definitions_count += 1
             }
@@ -127,11 +136,30 @@ pub fn build_security_evidence_summary(packet: &LspContextPacket) -> SecurityEvi
         references_count,
         definitions_count,
         implementations_count,
+        public_api_fanout: public_api_fanout_files.len(),
         risk_tags,
         stale,
         truncated,
         server_id,
         notes,
+    }
+}
+
+/// Build an [`LspContextRequest::Review`] tailored for security review.
+///
+/// Always uses [`LspRiskMode::Aggressive`] so the budget prioritises
+/// risk-bearing items (changed public API, unsafe code, auth
+/// patterns, broad references, diagnostics) over generic symbols.
+/// Preview artifacts are NOT included — security review never
+/// executes code actions, and the renderer omits previews.
+pub fn build_security_lsp_context_request(
+    changed_files: &[PathBuf],
+    hunks: &[crate::hunk_context::HunkDescriptor],
+) -> crate::context::LspContextRequest {
+    crate::context::LspContextRequest::Review {
+        changed_files: changed_files.to_vec(),
+        hunks: hunks.to_vec(),
+        risk_mode: crate::context::LspRiskMode::Aggressive,
     }
 }
 
@@ -445,5 +473,78 @@ mod tests {
 
         let summary = build_security_evidence_summary(&packet);
         assert!(summary.stale);
+    }
+
+    #[test]
+    fn test_public_api_fanout_counts_distinct_files() {
+        let items = vec![
+            make_item(LspContextItemKind::Reference, "a.rs", Some(1), "ref"),
+            make_item(LspContextItemKind::Reference, "a.rs", Some(2), "ref"),
+            make_item(LspContextItemKind::Reference, "b.rs", Some(3), "ref"),
+            make_item(LspContextItemKind::Reference, "c.rs", Some(4), "ref"),
+            make_item(LspContextItemKind::Reference, "c.rs", Some(5), "ref"),
+        ];
+        let packet = LspContextPacket {
+            request: LspContextRequest::Review {
+                changed_files: vec![PathBuf::from("lib.rs")],
+                hunks: Vec::new(),
+                risk_mode: LspRiskMode::Aggressive,
+            },
+            items,
+            previews: Vec::new(),
+            preview_ids: Vec::new(),
+            mode: LspContextPacketMode::Opportunistic,
+            workspace_root: None,
+            generated_at: None,
+            server_id: None,
+            server_generation: None,
+            operational_state: None,
+            budget: None,
+            notes: Vec::new(),
+            truncation: Default::default(),
+        };
+        let summary = build_security_evidence_summary(&packet);
+        assert_eq!(summary.references_count, 5);
+        assert_eq!(summary.public_api_fanout, 3);
+    }
+
+    #[test]
+    fn test_build_security_lsp_context_request_uses_aggressive() {
+        use crate::context::{LspContextRequest, LspRiskMode};
+        use crate::hunk_context::HunkDescriptor;
+        let files = vec![PathBuf::from("a.rs"), PathBuf::from("b.rs")];
+        let hunks = vec![HunkDescriptor {
+            id: "a.rs:0:1-3".to_string(),
+            file_path: "a.rs".to_string(),
+            old_range: None,
+            new_range: None,
+            header: Some("@@ -1,3 +1,3 @@".to_string()),
+            added_lines: 1,
+            removed_lines: 1,
+            context_lines: 2,
+        }];
+        let req = build_security_lsp_context_request(&files, &hunks);
+        match req {
+            LspContextRequest::Review { changed_files, hunks: req_hunks, risk_mode } => {
+                assert_eq!(changed_files, files);
+                assert_eq!(req_hunks.len(), 1);
+                assert_eq!(risk_mode, LspRiskMode::Aggressive);
+            }
+            _ => panic!("expected Review request"),
+        }
+    }
+
+    #[test]
+    fn test_build_security_lsp_context_request_with_empty_inputs() {
+        use crate::context::{LspContextRequest, LspRiskMode};
+        let req = build_security_lsp_context_request(&[], &[]);
+        match req {
+            LspContextRequest::Review { changed_files, hunks, risk_mode } => {
+                assert!(changed_files.is_empty());
+                assert!(hunks.is_empty());
+                assert_eq!(risk_mode, LspRiskMode::Aggressive);
+            }
+            _ => panic!("expected Review request"),
+        }
     }
 }

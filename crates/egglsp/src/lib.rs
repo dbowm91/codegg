@@ -68,6 +68,10 @@ pub use context_renderer::model_tier_for_profile;
 pub use context_renderer::{
     render_lsp_context_for_agent, LspContextRenderConfig, ModelTier,
 };
+pub use security_context::{
+    build_security_evidence_summary, build_security_lsp_context_request, SecurityEvidenceSummary,
+    SecurityRiskTag,
+};
 pub use context::{
     dedup_context_items, default_budget, enforce_context_budget, rank_context_items,
     AgentContextSource, HunkRange, LineRange, LspContextBudget, LspContextItem, LspContextItemKind,
