@@ -64,6 +64,10 @@ pub use compatibility::{
     LspServerVersion,
 };
 pub use config::{LspConfig, LspRule};
+pub use context_renderer::model_tier_for_profile;
+pub use context_renderer::{
+    render_lsp_context_for_agent, LspContextRenderConfig, ModelTier,
+};
 pub use context::{
     dedup_context_items, default_budget, enforce_context_budget, rank_context_items,
     AgentContextSource, HunkRange, LineRange, LspContextBudget, LspContextItem, LspContextItemKind,

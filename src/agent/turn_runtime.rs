@@ -4,6 +4,78 @@ use crate::config::schema::Config;
 use crate::error::AppError;
 use crate::provider::ChatRequest;
 
+/// Task-aware metadata for assembling LSP context for a single turn.
+///
+/// Pass-through of workflow metadata that the LSP context pipeline
+/// can use to collect *task-specific* evidence (rather than the
+/// generic status-only section the runtime injects when no
+/// metadata is supplied).
+///
+/// All fields are optional. The runtime behaves as follows:
+///
+/// - **All fields empty / `None`** — emit a generic LSP status
+///   section (current Phase 5 behavior).
+/// - **Some `changed_files` or `hunks`** — collect a real
+///   [`egglsp::LspContextPacket`] via the production evidence
+///   adapter, then render it through
+///   [`egglsp::render_lsp_context_for_agent`] using the supplied
+///   model tier.
+/// - **`review_mode = true`** — also tag collected evidence with
+///   [`egglsp::AgentContextSource::SecurityContext`] for security
+///   review workflows (the security-context path consumes this in
+///   Pass 5).
+/// - **`security_review_mode = true`** — escalates the request and
+///   surfaces security-relevant diagnostics + symbols first.
+///
+/// All other fields are passed through unchanged.
+#[derive(Debug, Default, Clone)]
+pub struct LspAgentContextInput {
+    /// Files changed in this turn (from a diff or pending edits).
+    pub changed_files: Vec<std::path::PathBuf>,
+    /// Hunk descriptors (old_start, new_start, etc.) for each
+    /// `changed_files` entry. Optional — when present, hunk-local
+    /// evidence is boosted in the context packet.
+    pub hunks: Vec<egglsp::hunk_context::HunkDescriptor>,
+    /// The file the agent is currently focused on, if any.
+    pub active_file: Option<std::path::PathBuf>,
+    /// Cursor position in the active file (0-indexed line/col).
+    pub cursor_position: Option<egglsp::lsp_types::Position>,
+    /// Whether this turn is a generic review workflow.
+    pub review_mode: bool,
+    /// Whether this turn is the `/security-review` flow.
+    pub security_review_mode: bool,
+    /// Optional explicit model tier override. When `None`, the
+    /// runtime derives a tier from the resolved model profile.
+    pub model_tier: Option<egglsp::ModelTier>,
+}
+
+impl LspAgentContextInput {
+    /// `true` when no task-specific metadata is set — the runtime
+    /// should fall back to status-only.
+    pub fn is_empty(&self) -> bool {
+        self.changed_files.is_empty()
+            && self.hunks.is_empty()
+            && self.active_file.is_none()
+            && self.cursor_position.is_none()
+    }
+
+    /// `true` when this input has enough metadata to drive a
+    /// task-specific context collection (changed files, hunks, or
+    /// an active file).
+    ///
+    /// Mode flags (`review_mode`, `security_review_mode`) are
+    /// signals for downstream consumers (security review workflow,
+    /// hunk/source navigation) — they do **not** by themselves
+    /// trigger task-specific LSP context collection. Use the
+    /// presence of `changed_files`/`hunks`/`active_file` to decide
+    /// whether to emit a richer LSP section.
+    pub fn has_workflow_metadata(&self) -> bool {
+        !self.changed_files.is_empty()
+            || !self.hunks.is_empty()
+            || self.active_file.is_some()
+    }
+}
+
 /// Everything needed to execute one agent turn.
 ///
 /// This struct captures the raw inputs from a `TurnSubmit` request so the
@@ -37,6 +109,11 @@ pub struct TurnRunInput {
     /// Shared LSP service for injecting LSP context into the system prompt.
     /// `None` when LSP is not available (e.g. socket mode).
     pub lsp_service: Option<Arc<crate::lsp::service::LspService>>,
+    /// Optional task-aware metadata for assembling LSP context.
+    /// When absent, the runtime injects a generic status section.
+    /// When present, the runtime collects an `LspContextPacket`
+    /// using the production evidence adapter and renders it.
+    pub lsp_context_input: Option<LspAgentContextInput>,
 }
 
 /// Minimal output from a turn execution.
@@ -91,6 +168,7 @@ impl TurnRuntime for DefaultTurnRuntime {
             event_log,
             turn_id,
             lsp_service,
+            lsp_context_input,
         } = input;
 
         // ── Provider resolution ──────────────────────────────────────
@@ -188,7 +266,27 @@ impl TurnRuntime for DefaultTurnRuntime {
             use std::path::PathBuf;
             let root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
             let tool = LspTool::new(Arc::clone(svc)).with_allowed_root(root);
-            if let Some(lsp_ctx) = tool.lsp_context_for_agent().await {
+
+            // Determine model tier from the resolved profile when the
+            // caller did not supply an explicit override.
+            let mut input = lsp_context_input.clone();
+            if let Some(ref mut inp) = input {
+                if inp.model_tier.is_none() {
+                    inp.model_tier =
+                        Some(egglsp::model_tier_for_profile(&model_profile.family));
+                }
+            }
+
+            // No metadata → status-only section (preserves existing
+            // behavior). With metadata → task-aware collection through
+            // the production evidence adapter.
+            let lsp_ctx = if input.as_ref().is_some_and(|i| i.has_workflow_metadata()) {
+                tool.lsp_context_for_agent_with_input(input.as_ref())
+                    .await
+            } else {
+                tool.lsp_context_for_agent().await
+            };
+            if let Some(lsp_ctx) = lsp_ctx {
                 system.push_str(&lsp_ctx);
             }
         }

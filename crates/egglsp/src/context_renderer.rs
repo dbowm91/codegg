@@ -43,6 +43,27 @@ pub fn render_model_tier(tier: ModelTier) -> String {
     tier.to_string()
 }
 
+/// Map a prompt-profile family or name into an [`ModelTier`].
+///
+/// This is a best-effort classification that callers can override by
+/// passing an explicit `ModelTier` to the renderer. The mapping is
+/// deliberately conservative:
+///
+/// - `FrontierReasoning`, `FrontierExecutor`, `LongContextPlanner`,
+///   `Default` → `Frontier`
+/// - `FastExecutor`, `LocalStrict`, `ToolFragile` → `Small`
+/// - everything else (including unknown names) → `Workhorse`
+pub fn model_tier_for_profile(family: &str) -> ModelTier {
+    let f = family.to_ascii_lowercase();
+    match f.as_str() {
+        "frontierreasoning" | "frontier_executor" | "frontiere executor" | "frontier"
+        | "longcontextplanner" | "long_context_planner" | "default" => ModelTier::Frontier,
+        "fastexecutor" | "fast_executor" | "localstrict" | "local_strict" | "toolfragile"
+        | "tool_fragile" => ModelTier::Small,
+        _ => ModelTier::Workhorse,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Render config
 // ---------------------------------------------------------------------------
