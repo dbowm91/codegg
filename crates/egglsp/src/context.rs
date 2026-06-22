@@ -363,6 +363,46 @@ impl Default for LspContextPacketMode {
 pub type LspContextMode = LspContextPacketMode;
 
 // ---------------------------------------------------------------------------
+// Agent context source
+// ---------------------------------------------------------------------------
+
+/// Identifies where a piece of evidence originated in the agent workflow.
+///
+/// Used by prompt assemblers and TUI summaries to label evidence provenance
+/// beyond the raw LSP operation name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum AgentContextSource {
+    /// Evidence from repository search or file browsing.
+    RepositorySearch,
+    /// Evidence from a diff or patch.
+    Diff,
+    /// Evidence from hunk/source navigation.
+    Hunk,
+    /// Evidence from diagnostics (errors, warnings).
+    Diagnostics,
+    /// Evidence assembled by the LSP context pipeline.
+    LspContext,
+    /// Evidence from the security review workflow.
+    SecurityContext,
+    /// Evidence provided directly by the user.
+    UserProvided,
+}
+
+impl std::fmt::Display for AgentContextSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::RepositorySearch => write!(f, "repository_search"),
+            Self::Diff => write!(f, "diff"),
+            Self::Hunk => write!(f, "hunk"),
+            Self::Diagnostics => write!(f, "diagnostics"),
+            Self::LspContext => write!(f, "lsp_context"),
+            Self::SecurityContext => write!(f, "security_context"),
+            Self::UserProvided => write!(f, "user_provided"),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Packet
 // ---------------------------------------------------------------------------
 

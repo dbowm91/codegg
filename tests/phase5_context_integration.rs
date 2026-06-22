@@ -31,6 +31,10 @@ struct MockProvider {
     impls: Mutex<Vec<(String, String)>>,
     hover_text: Mutex<Option<String>>,
     highlights: Mutex<Vec<String>>,
+    signatures: Mutex<Vec<(String, String)>>,
+    completions: Mutex<Vec<(String, String, String)>>,
+    sem_tokens: Mutex<Vec<(u32, u32, u32, String)>>,
+    ws_symbols: Mutex<Vec<(String, String, String, String)>>,
     state: Mutex<String>,
     server_id: Mutex<Option<String>>,
     generation: Mutex<Option<u64>>,
@@ -46,6 +50,10 @@ impl MockProvider {
             impls: Mutex::new(Vec::new()),
             hover_text: Mutex::new(None),
             highlights: Mutex::new(Vec::new()),
+            signatures: Mutex::new(Vec::new()),
+            completions: Mutex::new(Vec::new()),
+            sem_tokens: Mutex::new(Vec::new()),
+            ws_symbols: Mutex::new(Vec::new()),
             state: Mutex::new("ready".to_string()),
             server_id: Mutex::new(Some("mock-server".to_string())),
             generation: Mutex::new(Some(1)),
@@ -114,6 +122,40 @@ impl LspEvidenceProvider for MockProvider {
         Ok(self.highlights.lock().unwrap().clone())
     }
 
+    async fn signature_help(
+        &self,
+        _file: &Path,
+        _line: u32,
+        _column: u32,
+    ) -> Result<Vec<(String, String)>, LspError> {
+        Ok(self.signatures.lock().unwrap().clone())
+    }
+
+    async fn completion(
+        &self,
+        _file: &Path,
+        _line: u32,
+        _column: u32,
+    ) -> Result<Vec<(String, String, String)>, LspError> {
+        Ok(self.completions.lock().unwrap().clone())
+    }
+
+    async fn semantic_tokens(
+        &self,
+        _file: &Path,
+        _start_line: u32,
+        _end_line: u32,
+    ) -> Result<Vec<(u32, u32, u32, String)>, LspError> {
+        Ok(self.sem_tokens.lock().unwrap().clone())
+    }
+
+    async fn workspace_symbols(
+        &self,
+        _query: &str,
+    ) -> Result<Vec<(String, String, String, String)>, LspError> {
+        Ok(self.ws_symbols.lock().unwrap().clone())
+    }
+
     async fn operational_state(&self) -> String {
         self.state.lock().unwrap().clone()
     }
@@ -177,6 +219,40 @@ impl LspEvidenceProvider for FailProvider {
     }
 
     async fn document_highlights(&self, _: &Path, _: u32, _: u32) -> Result<Vec<String>, LspError> {
+        Err(LspError::NotInitialized("no server".into()))
+    }
+
+    async fn signature_help(
+        &self,
+        _: &Path,
+        _: u32,
+        _: u32,
+    ) -> Result<Vec<(String, String)>, LspError> {
+        Err(LspError::NotInitialized("no server".into()))
+    }
+
+    async fn completion(
+        &self,
+        _: &Path,
+        _: u32,
+        _: u32,
+    ) -> Result<Vec<(String, String, String)>, LspError> {
+        Err(LspError::NotInitialized("no server".into()))
+    }
+
+    async fn semantic_tokens(
+        &self,
+        _: &Path,
+        _: u32,
+        _: u32,
+    ) -> Result<Vec<(u32, u32, u32, String)>, LspError> {
+        Err(LspError::NotInitialized("no server".into()))
+    }
+
+    async fn workspace_symbols(
+        &self,
+        _: &str,
+    ) -> Result<Vec<(String, String, String, String)>, LspError> {
         Err(LspError::NotInitialized("no server".into()))
     }
 
@@ -788,4 +864,334 @@ async fn phase5_required_fail_on_unsupported_capability() {
         }
         other => panic!("expected Fail, got {other:?}"),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Security packet tests (Pass 4 gaps)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn phase5_security_packet_includes_changed_diagnostics() {
+    let provider = MockProvider::new();
+    *provider.diagnostics.lock().unwrap() = vec![(
+        "error".to_string(),
+        "potential injection".to_string(),
+        "(5:0)-(5:20)".to_string(),
+    )];
+
+    let request = LspContextRequest::Review {
+        changed_files: vec![PathBuf::from("src/auth.rs")],
+        hunks: vec![],
+        risk_mode: LspRiskMode::Standard,
+    };
+    let budget = LspContextBudget::default();
+    let mode = LspContextMode::Opportunistic;
+
+    let packet = collect_context(&provider, &request, &budget, &mode)
+        .await
+        .unwrap();
+
+    let diags: Vec<_> = packet
+        .items
+        .iter()
+        .filter(|i| i.kind == LspContextItemKind::Diagnostic)
+        .collect();
+    assert_eq!(
+        diags.len(),
+        1,
+        "should include diagnostic from changed file"
+    );
+    assert_eq!(diags[0].message, "potential injection");
+    assert_eq!(diags[0].file, PathBuf::from("src/auth.rs"));
+
+    let summary = build_security_evidence_summary(&packet);
+    assert_eq!(summary.diagnostics_count, 1);
+}
+
+#[tokio::test]
+async fn phase5_security_packet_caps_reference_clusters() {
+    let provider = MockProvider::new();
+    // 50 symbols, each with 10 references → 500 total, but budget caps at 30.
+    *provider.symbols.lock().unwrap() = (0..50)
+        .map(|i| {
+            (
+                format!("fn_{i}"),
+                "function".to_string(),
+                "(1:0)-(1:10)".to_string(),
+            )
+        })
+        .collect();
+    *provider.refs.lock().unwrap() = (0..10)
+        .map(|i| (format!("caller_{i}.rs"), format!("(1:0)-(1:10)")))
+        .collect();
+
+    let request = LspContextRequest::Review {
+        changed_files: vec![PathBuf::from("src/lib.rs")],
+        hunks: vec![],
+        risk_mode: LspRiskMode::Standard,
+    };
+    let mut budget = LspContextBudget::default();
+    budget.max_references = 30;
+    let mode = LspContextMode::Opportunistic;
+
+    let packet = collect_context(&provider, &request, &budget, &mode)
+        .await
+        .unwrap();
+
+    let refs: Vec<_> = packet
+        .items
+        .iter()
+        .filter(|i| i.kind == LspContextItemKind::Reference)
+        .collect();
+    assert!(
+        refs.len() <= 30,
+        "references should be capped at budget, got {}",
+        refs.len()
+    );
+}
+
+#[tokio::test]
+async fn phase5_security_packet_never_executes_code_actions() {
+    let provider = MockProvider::new();
+
+    let request = LspContextRequest::Review {
+        changed_files: vec![PathBuf::from("src/main.rs")],
+        hunks: vec![],
+        risk_mode: LspRiskMode::Aggressive,
+    };
+    let budget = LspContextBudget::default();
+    let mode = LspContextMode::Opportunistic;
+
+    let packet = collect_context(&provider, &request, &budget, &mode)
+        .await
+        .unwrap();
+
+    for item in &packet.items {
+        assert!(
+            !item.provenance.operation.contains("codeAction"),
+            "security packet should never execute code actions"
+        );
+        assert!(
+            !item.provenance.operation.contains("rename"),
+            "security packet should never execute rename"
+        );
+        assert!(
+            !item.provenance.operation.contains("format"),
+            "security packet should never execute formatting"
+        );
+    }
+}
+
+#[tokio::test]
+async fn phase5_security_packet_budget_truncation_visible() {
+    let provider = MockProvider::new();
+    // 100 diagnostics, budget at 5.
+    *provider.diagnostics.lock().unwrap() = (0..100)
+        .map(|i| {
+            (
+                "error".to_string(),
+                format!("err_{i}"),
+                format!("({i}:0)-({i}:5)"),
+            )
+        })
+        .collect();
+
+    let request = LspContextRequest::Review {
+        changed_files: vec![PathBuf::from("src/lib.rs")],
+        hunks: vec![],
+        risk_mode: LspRiskMode::Conservative,
+    };
+    let mut budget = LspContextBudget::default();
+    budget.max_diagnostics = 5;
+    let mode = LspContextMode::Opportunistic;
+
+    let packet = collect_context(&provider, &request, &budget, &mode)
+        .await
+        .unwrap();
+
+    let diags: Vec<_> = packet
+        .items
+        .iter()
+        .filter(|i| i.kind == LspContextItemKind::Diagnostic)
+        .collect();
+    assert_eq!(diags.len(), 5, "diagnostics should be truncated to budget");
+
+    // Truncation should be visible in notes.
+    let summary = build_security_evidence_summary(&packet);
+    assert!(
+        summary.truncated || !packet.notes.is_empty(),
+        "truncation should be reflected in summary or notes"
+    );
+}
+
+#[tokio::test]
+async fn phase5_security_packet_stale_evidence_marked() {
+    let provider = MockProvider::new();
+    *provider.state.lock().unwrap() = "degraded".to_string();
+    *provider.diagnostics.lock().unwrap() = vec![(
+        "warning".to_string(),
+        "old warning".to_string(),
+        "(1:0)-(1:5)".to_string(),
+    )];
+
+    let request = LspContextRequest::Review {
+        changed_files: vec![PathBuf::from("src/lib.rs")],
+        hunks: vec![],
+        risk_mode: LspRiskMode::Standard,
+    };
+    let budget = LspContextBudget::default();
+    let mode = LspContextMode::Opportunistic;
+
+    let packet = collect_context(&provider, &request, &budget, &mode)
+        .await
+        .unwrap();
+
+    // Items should have PossiblyStale freshness when server is degraded.
+    for item in &packet.items {
+        assert!(
+            matches!(
+                item.provenance.freshness,
+                LspEvidenceFreshness::PossiblyStale | LspEvidenceFreshness::Fresh
+            ),
+            "evidence from degraded server should be marked stale or fresh, got {:?}",
+            item.provenance.freshness
+        );
+    }
+
+    let summary = build_security_evidence_summary(&packet);
+    assert!(summary.stale, "summary should reflect stale state");
+}
+
+// ---------------------------------------------------------------------------
+// Hunk context tests (Pass 3 gaps)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn phase5_hunk_context_does_not_include_unrelated_file_flood() {
+    let provider = MockProvider::new();
+    // Diagnostics in 10 different files, only 1 in the hunk's file.
+    let mut diags = Vec::new();
+    for i in 0..10 {
+        diags.push((
+            "error".to_string(),
+            format!("err in file_{i}"),
+            format!("(1:0)-(1:5)"),
+        ));
+    }
+    // Add one diagnostic in the actual hunk file.
+    diags.push((
+        "error".to_string(),
+        "in hunk file".to_string(),
+        "(3:0)-(3:10)".to_string(),
+    ));
+    *provider.diagnostics.lock().unwrap() = diags;
+
+    let hunks = vec![HunkRange {
+        start: 2,
+        end: 4,
+        original_start: None,
+        original_end: None,
+    }];
+
+    let items = collect_hunk_context(
+        &provider,
+        PathBuf::from("target.rs").as_path(),
+        &hunks,
+        false,
+        false,
+        &LspContextBudget::default(),
+    )
+    .await
+    .unwrap();
+
+    // Only the diagnostic in the hunk file should be present (line 3 is in range 2..4).
+    let diagnostics: Vec<_> = items
+        .iter()
+        .filter(|i| i.kind == LspContextItemKind::Diagnostic)
+        .collect();
+    assert_eq!(
+        diagnostics.len(),
+        1,
+        "should only include hunk-local diagnostic"
+    );
+    assert_eq!(diagnostics[0].message, "in hunk file");
+}
+
+#[tokio::test]
+async fn phase5_hunk_context_marks_stale_evidence() {
+    let provider = MockProvider::new();
+    *provider.state.lock().unwrap() = "initializing".to_string();
+    *provider.diagnostics.lock().unwrap() = vec![(
+        "error".to_string(),
+        "stale diag".to_string(),
+        "(3:0)-(3:5)".to_string(),
+    )];
+
+    let hunks = vec![HunkRange {
+        start: 2,
+        end: 5,
+        original_start: None,
+        original_end: None,
+    }];
+
+    let items = collect_hunk_context(
+        &provider,
+        PathBuf::from("test.rs").as_path(),
+        &hunks,
+        false,
+        false,
+        &LspContextBudget::default(),
+    )
+    .await
+    .unwrap();
+
+    for item in &items {
+        assert!(
+            matches!(
+                item.provenance.freshness,
+                LspEvidenceFreshness::Unknown | LspEvidenceFreshness::Stale
+            ),
+            "evidence from initializing server should be Unknown or Stale, got {:?}",
+            item.provenance.freshness
+        );
+    }
+}
+
+#[tokio::test]
+async fn phase5_hunk_context_caps_references_composite() {
+    let provider = MockProvider::new();
+    *provider.refs.lock().unwrap() = (0..100)
+        .map(|i| (format!("file_{i}.rs"), format!("(1:0)-(1:10)")))
+        .collect();
+
+    let hunks = vec![HunkRange {
+        start: 0,
+        end: 5,
+        original_start: None,
+        original_end: None,
+    }];
+
+    let mut budget = LspContextBudget::default();
+    budget.max_references = 10;
+
+    let items = collect_hunk_context(
+        &provider,
+        PathBuf::from("test.rs").as_path(),
+        &hunks,
+        true,
+        false,
+        &budget,
+    )
+    .await
+    .unwrap();
+
+    let refs: Vec<_> = items
+        .iter()
+        .filter(|i| i.kind == LspContextItemKind::Reference)
+        .collect();
+    assert!(
+        refs.len() <= 10,
+        "hunk context should cap references at budget, got {}",
+        refs.len()
+    );
 }

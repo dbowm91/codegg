@@ -102,6 +102,36 @@ pub trait LspEvidenceProvider: Send + Sync {
         column: u32,
     ) -> Result<Vec<String>, LspError>;
 
+    /// Signature help at a position. Returns `(label, documentation)`.
+    async fn signature_help(
+        &self,
+        file: &Path,
+        line: u32,
+        column: u32,
+    ) -> Result<Vec<(String, String)>, LspError>;
+
+    /// Completion candidates at a position. Returns `(label, kind, detail)`.
+    async fn completion(
+        &self,
+        file: &Path,
+        line: u32,
+        column: u32,
+    ) -> Result<Vec<(String, String, String)>, LspError>;
+
+    /// Semantic tokens for a file range. Returns `(line, col, length, token_type)`.
+    async fn semantic_tokens(
+        &self,
+        file: &Path,
+        start_line: u32,
+        end_line: u32,
+    ) -> Result<Vec<(u32, u32, u32, String)>, LspError>;
+
+    /// Workspace-wide symbol search. Returns `(name, kind, file_path, range_text)`.
+    async fn workspace_symbols(
+        &self,
+        query: &str,
+    ) -> Result<Vec<(String, String, String, String)>, LspError>;
+
     /// Operational state label (e.g. "ready", "initializing").
     async fn operational_state(&self) -> String;
 
@@ -828,6 +858,122 @@ async fn collect_symbol_context(
             notes.push(format!("highlights: {e}"));
         }
     }
+
+    // Signature help
+    match provider.signature_help(file, line, column).await {
+        Ok(signatures) => {
+            let prov = make_provenance(sid, generation, "textDocument/signatureHelp", freshness);
+            for (label, documentation) in &signatures {
+                items.push(LspContextItem {
+                    kind: LspContextItemKind::SignatureHelp,
+                    file: file.to_path_buf(),
+                    line: Some(line),
+                    column: Some(column),
+                    message: if documentation.is_empty() {
+                        label.clone()
+                    } else {
+                        format!("{label}: {documentation}")
+                    },
+                    symbol: Some(label.clone()),
+                    provenance: prov.clone(),
+                    score: LspContextScore {
+                        priority: 6,
+                        is_hunk_local: false,
+                        is_error: false,
+                        is_same_file: true,
+                        freshness_rank: freshness_rank(freshness),
+                    },
+                    payload: None,
+                });
+            }
+        }
+        Err(e) => {
+            notes.push(format!("signatureHelp: {e}"));
+        }
+    }
+
+    // Completion summary (top candidates only)
+    match provider.completion(file, line, column).await {
+        Ok(completions) => {
+            let prov = make_provenance(sid, generation, "textDocument/completion", freshness);
+            let cap = budget.max_completion_items;
+            for (label, kind, detail) in completions.iter().take(cap) {
+                let summary = if detail.is_empty() {
+                    format!("{label} ({kind})")
+                } else {
+                    format!("{label} ({kind}): {detail}")
+                };
+                items.push(LspContextItem {
+                    kind: LspContextItemKind::CompletionSummary,
+                    file: file.to_path_buf(),
+                    line: Some(line),
+                    column: Some(column),
+                    message: summary,
+                    symbol: Some(label.clone()),
+                    provenance: prov.clone(),
+                    score: LspContextScore {
+                        priority: 4,
+                        is_hunk_local: false,
+                        is_error: false,
+                        is_same_file: true,
+                        freshness_rank: freshness_rank(freshness),
+                    },
+                    payload: None,
+                });
+            }
+            if completions.len() > cap {
+                notes.push(format!(
+                    "completions truncated at {cap} of {}",
+                    completions.len()
+                ));
+            }
+        }
+        Err(e) => {
+            notes.push(format!("completion: {e}"));
+        }
+    }
+
+    // Semantic tokens (bounded summary, not raw tokens)
+    match provider
+        .semantic_tokens(file, line.saturating_sub(5), line + 10)
+        .await
+    {
+        Ok(tokens) => {
+            let prov = make_provenance(sid, generation, "textDocument/semanticTokens", freshness);
+            // Summarize: count unique token types in the range.
+            let mut type_counts: std::collections::HashMap<String, usize> =
+                std::collections::HashMap::new();
+            for (_l, _c, _len, token_type) in &tokens {
+                *type_counts.entry(token_type.clone()).or_insert(0) += 1;
+            }
+            let summary: Vec<_> = type_counts
+                .iter()
+                .map(|(t, c)| format!("{t}({c})"))
+                .collect();
+            if !summary.is_empty() {
+                items.push(LspContextItem {
+                    kind: LspContextItemKind::SemanticTokenSummary,
+                    file: file.to_path_buf(),
+                    line: Some(line.saturating_sub(5)),
+                    column: None,
+                    message: format!("semantic tokens: {}", summary.join(", ")),
+                    symbol: None,
+                    provenance: prov,
+                    score: LspContextScore {
+                        priority: 3,
+                        is_hunk_local: false,
+                        is_error: false,
+                        is_same_file: true,
+                        freshness_rank: freshness_rank(freshness),
+                    },
+                    payload: None,
+                });
+            }
+        }
+        Err(e) => {
+            notes.push(format!("semanticTokens: {e}"));
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -851,9 +997,17 @@ async fn collect_review_context(
         match provider.diagnostics_for_file(file).await {
             Ok(diagnostics) => {
                 let prov = make_provenance(sid, generation, "textDocument/diagnostic", freshness);
-                for (severity, message, range_text) in
-                    diagnostics.iter().take(budget.max_diagnostics)
-                {
+                let before = diagnostics.len();
+                let capped: Vec<_> = diagnostics.iter().take(budget.max_diagnostics).collect();
+                if capped.len() < before {
+                    notes.push(format!(
+                        "diagnostics truncated at {} of {} for {}",
+                        capped.len(),
+                        before,
+                        file.display()
+                    ));
+                }
+                for (severity, message, range_text) in &capped {
                     let (line, column) = parse_range_start(range_text);
                     items.push(LspContextItem {
                         kind: LspContextItemKind::Diagnostic,
@@ -975,6 +1129,10 @@ mod tests {
         impls: Mutex<Vec<(String, String)>>,
         hover_text: Mutex<Option<String>>,
         highlights: Mutex<Vec<String>>,
+        signatures: Mutex<Vec<(String, String)>>,
+        completions: Mutex<Vec<(String, String, String)>>,
+        sem_tokens: Mutex<Vec<(u32, u32, u32, String)>>,
+        ws_symbols: Mutex<Vec<(String, String, String, String)>>,
         state: Mutex<String>,
         server_id: Mutex<Option<String>>,
         generation: Mutex<Option<u64>>,
@@ -990,6 +1148,10 @@ mod tests {
                 impls: Mutex::new(Vec::new()),
                 hover_text: Mutex::new(None),
                 highlights: Mutex::new(Vec::new()),
+                signatures: Mutex::new(Vec::new()),
+                completions: Mutex::new(Vec::new()),
+                sem_tokens: Mutex::new(Vec::new()),
+                ws_symbols: Mutex::new(Vec::new()),
                 state: Mutex::new("ready".to_string()),
                 server_id: Mutex::new(Some("test-server".to_string())),
                 generation: Mutex::new(Some(1)),
@@ -1056,6 +1218,40 @@ mod tests {
             _column: u32,
         ) -> Result<Vec<String>, LspError> {
             Ok(self.highlights.lock().unwrap().clone())
+        }
+
+        async fn signature_help(
+            &self,
+            _file: &Path,
+            _line: u32,
+            _column: u32,
+        ) -> Result<Vec<(String, String)>, LspError> {
+            Ok(self.signatures.lock().unwrap().clone())
+        }
+
+        async fn completion(
+            &self,
+            _file: &Path,
+            _line: u32,
+            _column: u32,
+        ) -> Result<Vec<(String, String, String)>, LspError> {
+            Ok(self.completions.lock().unwrap().clone())
+        }
+
+        async fn semantic_tokens(
+            &self,
+            _file: &Path,
+            _start_line: u32,
+            _end_line: u32,
+        ) -> Result<Vec<(u32, u32, u32, String)>, LspError> {
+            Ok(self.sem_tokens.lock().unwrap().clone())
+        }
+
+        async fn workspace_symbols(
+            &self,
+            _query: &str,
+        ) -> Result<Vec<(String, String, String, String)>, LspError> {
+            Ok(self.ws_symbols.lock().unwrap().clone())
         }
 
         async fn operational_state(&self) -> String {
@@ -1219,6 +1415,36 @@ mod tests {
             ) -> Result<Vec<String>, LspError> {
                 Ok(vec![])
             }
+            async fn signature_help(
+                &self,
+                _: &Path,
+                _: u32,
+                _: u32,
+            ) -> Result<Vec<(String, String)>, LspError> {
+                Ok(vec![])
+            }
+            async fn completion(
+                &self,
+                _: &Path,
+                _: u32,
+                _: u32,
+            ) -> Result<Vec<(String, String, String)>, LspError> {
+                Ok(vec![])
+            }
+            async fn semantic_tokens(
+                &self,
+                _: &Path,
+                _: u32,
+                _: u32,
+            ) -> Result<Vec<(u32, u32, u32, String)>, LspError> {
+                Ok(vec![])
+            }
+            async fn workspace_symbols(
+                &self,
+                _: &str,
+            ) -> Result<Vec<(String, String, String, String)>, LspError> {
+                Ok(vec![])
+            }
             async fn operational_state(&self) -> String {
                 "ready".to_string()
             }
@@ -1300,6 +1526,36 @@ mod tests {
                 _: u32,
                 _: u32,
             ) -> Result<Vec<String>, LspError> {
+                Ok(vec![])
+            }
+            async fn signature_help(
+                &self,
+                _: &Path,
+                _: u32,
+                _: u32,
+            ) -> Result<Vec<(String, String)>, LspError> {
+                Ok(vec![])
+            }
+            async fn completion(
+                &self,
+                _: &Path,
+                _: u32,
+                _: u32,
+            ) -> Result<Vec<(String, String, String)>, LspError> {
+                Ok(vec![])
+            }
+            async fn semantic_tokens(
+                &self,
+                _: &Path,
+                _: u32,
+                _: u32,
+            ) -> Result<Vec<(u32, u32, u32, String)>, LspError> {
+                Ok(vec![])
+            }
+            async fn workspace_symbols(
+                &self,
+                _: &str,
+            ) -> Result<Vec<(String, String, String, String)>, LspError> {
                 Ok(vec![])
             }
             async fn operational_state(&self) -> String {
@@ -1560,6 +1816,36 @@ mod tests {
             ) -> Result<Vec<String>, LspError> {
                 Ok(vec![])
             }
+            async fn signature_help(
+                &self,
+                _: &Path,
+                _: u32,
+                _: u32,
+            ) -> Result<Vec<(String, String)>, LspError> {
+                Ok(vec![])
+            }
+            async fn completion(
+                &self,
+                _: &Path,
+                _: u32,
+                _: u32,
+            ) -> Result<Vec<(String, String, String)>, LspError> {
+                Ok(vec![])
+            }
+            async fn semantic_tokens(
+                &self,
+                _: &Path,
+                _: u32,
+                _: u32,
+            ) -> Result<Vec<(u32, u32, u32, String)>, LspError> {
+                Ok(vec![])
+            }
+            async fn workspace_symbols(
+                &self,
+                _: &str,
+            ) -> Result<Vec<(String, String, String, String)>, LspError> {
+                Ok(vec![])
+            }
             async fn operational_state(&self) -> String {
                 "failed".to_string()
             }
@@ -1640,6 +1926,36 @@ mod tests {
                 _: u32,
                 _: u32,
             ) -> Result<Vec<String>, LspError> {
+                Ok(vec![])
+            }
+            async fn signature_help(
+                &self,
+                _: &Path,
+                _: u32,
+                _: u32,
+            ) -> Result<Vec<(String, String)>, LspError> {
+                Ok(vec![])
+            }
+            async fn completion(
+                &self,
+                _: &Path,
+                _: u32,
+                _: u32,
+            ) -> Result<Vec<(String, String, String)>, LspError> {
+                Ok(vec![])
+            }
+            async fn semantic_tokens(
+                &self,
+                _: &Path,
+                _: u32,
+                _: u32,
+            ) -> Result<Vec<(u32, u32, u32, String)>, LspError> {
+                Ok(vec![])
+            }
+            async fn workspace_symbols(
+                &self,
+                _: &str,
+            ) -> Result<Vec<(String, String, String, String)>, LspError> {
                 Ok(vec![])
             }
             async fn operational_state(&self) -> String {
@@ -1727,6 +2043,36 @@ mod tests {
                 _: u32,
                 _: u32,
             ) -> Result<Vec<String>, LspError> {
+                Ok(vec![])
+            }
+            async fn signature_help(
+                &self,
+                _: &Path,
+                _: u32,
+                _: u32,
+            ) -> Result<Vec<(String, String)>, LspError> {
+                Ok(vec![])
+            }
+            async fn completion(
+                &self,
+                _: &Path,
+                _: u32,
+                _: u32,
+            ) -> Result<Vec<(String, String, String)>, LspError> {
+                Ok(vec![])
+            }
+            async fn semantic_tokens(
+                &self,
+                _: &Path,
+                _: u32,
+                _: u32,
+            ) -> Result<Vec<(u32, u32, u32, String)>, LspError> {
+                Ok(vec![])
+            }
+            async fn workspace_symbols(
+                &self,
+                _: &str,
+            ) -> Result<Vec<(String, String, String, String)>, LspError> {
                 Ok(vec![])
             }
             async fn operational_state(&self) -> String {

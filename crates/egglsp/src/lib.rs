@@ -64,9 +64,9 @@ pub use compatibility::{
 };
 pub use config::{LspConfig, LspRule};
 pub use context::{
-    dedup_context_items, default_budget, enforce_context_budget, rank_context_items, HunkRange,
-    LineRange, LspContextBudget, LspContextItem, LspContextItemKind, LspContextMode,
-    LspContextPacket, LspContextPacketMode, LspContextRequest, LspContextScore,
+    dedup_context_items, default_budget, enforce_context_budget, rank_context_items,
+    AgentContextSource, HunkRange, LineRange, LspContextBudget, LspContextItem, LspContextItemKind,
+    LspContextMode, LspContextPacket, LspContextPacketMode, LspContextRequest, LspContextScore,
     LspContextTruncation, LspEvidenceFreshness, LspEvidenceProvenance, LspPreviewArtifact,
     LspRiskMode,
 };
