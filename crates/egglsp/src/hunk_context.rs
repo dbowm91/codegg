@@ -194,8 +194,8 @@ pub fn hunk_response_to_context_items(
     response: &HunkSourceNavigationResponse,
 ) -> Vec<crate::context::LspContextItem> {
     use crate::context::{
-        AgentContextSource, LspContextItem, LspContextItemKind, LspEvidenceFreshness,
-        LspEvidenceProvenance, LspContextScore, LineRange,
+        AgentContextSource, LineRange, LspContextItem, LspContextItemKind, LspContextScore,
+        LspEvidenceFreshness, LspEvidenceProvenance,
     };
     use std::path::PathBuf;
 

@@ -641,10 +641,8 @@ impl LspTool {
 
         // Construct the production adapter.
         use egglsp::evidence_adapter::ServiceLspEvidenceProvider;
-        let adapter = ServiceLspEvidenceProvider::new(
-            Arc::clone(&self.service),
-            self.allowed_root.clone(),
-        );
+        let adapter =
+            ServiceLspEvidenceProvider::new(Arc::clone(&self.service), self.allowed_root.clone());
 
         // Collect the packet using the canonical collector path.
         let budget = egglsp::default_budget();
@@ -733,7 +731,11 @@ impl LspTool {
 
         // Snapshot the preview registry for summary.
         let preview_count = self.preview_registry().len();
-        let preview_stale = self.preview_registry().recent(preview_count).iter().any(|e| e.stale_base);
+        let preview_stale = self
+            .preview_registry()
+            .recent(preview_count)
+            .iter()
+            .any(|e| e.stale_base);
         let preview_ids: Vec<String> = self
             .preview_registry()
             .recent(8)
@@ -2121,8 +2123,8 @@ impl Tool for LspTool {
                     preview.new_name,
                     files.len()
                 );
-                let preview_id = self
-                    .register_preview_artifact(artifact, files, hashes, provenance);
+                let preview_id =
+                    self.register_preview_artifact(artifact, files, hashes, provenance);
 
                 let output = LspToolOutput {
                     operation: "renamePreview".to_string(),
@@ -2144,7 +2146,11 @@ impl Tool for LspTool {
                     .await
                     .map_err(|e| ToolError::Execution(format!("formatPreview: {e}")))?;
                 let artifact = egglsp::context::LspPreviewArtifact::Formatting {
-                    description: format!("format {} ({} edits)", file.display(), preview.edit_count),
+                    description: format!(
+                        "format {} ({} edits)",
+                        file.display(),
+                        preview.edit_count
+                    ),
                     content_hash: Some(preview.before_hash.clone()),
                 };
                 let mut hashes = std::collections::HashMap::new();
@@ -2184,9 +2190,7 @@ impl Tool for LspTool {
                 let artifact = egglsp::context::LspPreviewArtifact::CodeAction {
                     description: format!(
                         "{}: {} edits across {} files",
-                        action_str,
-                        preview.total_edits,
-                        preview.total_files
+                        action_str, preview.total_edits, preview.total_files
                     ),
                     kind: Some(action_str.to_string()),
                 };
@@ -3650,10 +3654,7 @@ impl SemanticContextPacket {
     /// and stay on `SemanticContextPacket`. Truncation flags are
     /// mapped; per-section truncation notes are appended to
     /// `packet.truncation.notes`.
-    fn into_lsp_context_packet(
-        self,
-        mode: egglsp::LspContextMode,
-    ) -> egglsp::LspContextPacket {
+    fn into_lsp_context_packet(self, mode: egglsp::LspContextMode) -> egglsp::LspContextPacket {
         use egglsp::context::{
             AgentContextSource, LspContextItem, LspContextItemKind, LspContextPacket,
             LspContextRequest, LspContextScore, LspContextTruncation, LspEvidenceFreshness,
@@ -3665,7 +3666,11 @@ impl SemanticContextPacket {
         let (server_id, server_generation, freshness, post_restart, age_ms) =
             match self.diagnostic_evidence.as_ref() {
                 Some(meta) => {
-                    let age_ms_u = if meta.age_ms < 0 { 0 } else { meta.age_ms as u64 };
+                    let age_ms_u = if meta.age_ms < 0 {
+                        0
+                    } else {
+                        meta.age_ms as u64
+                    };
                     (
                         Some(format!("server:{}", self.file)),
                         meta.server_generation,
@@ -3888,9 +3893,15 @@ impl SemanticContextPacket {
 }
 
 fn severity_priority(severity: &str) -> u32 {
-    if severity.eq_ignore_ascii_case("error") || severity == "1" || severity == "DiagnosticSeverity::Error" {
+    if severity.eq_ignore_ascii_case("error")
+        || severity == "1"
+        || severity == "DiagnosticSeverity::Error"
+    {
         10
-    } else if severity.eq_ignore_ascii_case("warning") || severity == "2" || severity == "DiagnosticSeverity::Warning" {
+    } else if severity.eq_ignore_ascii_case("warning")
+        || severity == "2"
+        || severity == "DiagnosticSeverity::Warning"
+    {
         7
     } else {
         4
@@ -3952,20 +3963,17 @@ fn build_lsp_context_request(
     // Active file path: when a single file is the focus, scope the
     // request to that file's diagnostics + symbols.
     if let Some(file) = input.active_file.clone() {
-        let cursor = input.cursor_position.unwrap_or(
-            crate::lsp::lsp_types::Position {
+        let cursor = input
+            .cursor_position
+            .unwrap_or(crate::lsp::lsp_types::Position {
                 line: 0,
                 character: 0,
-            },
-        );
+            });
         return LspContextRequest::Symbol {
             file,
             position: cursor,
             include_references: !matches!(input.model_tier, Some(egglsp::ModelTier::Small)),
-            include_implementations: matches!(
-                input.model_tier,
-                Some(egglsp::ModelTier::Frontier)
-            ),
+            include_implementations: matches!(input.model_tier, Some(egglsp::ModelTier::Frontier)),
             include_call_like_context: matches!(
                 input.model_tier,
                 Some(egglsp::ModelTier::Frontier)
@@ -6723,10 +6731,14 @@ diff --git a/src/lib.rs b/src/lib.rs
     fn semantic_context_to_lsp_packet_propagates_provenance() {
         use egglsp::context::LspContextItemKind;
         use egglsp::LspEvidenceFreshness;
-        let packet = make_bridge_packet().into_lsp_context_packet(egglsp::LspContextMode::Opportunistic);
+        let packet =
+            make_bridge_packet().into_lsp_context_packet(egglsp::LspContextMode::Opportunistic);
         assert_eq!(packet.server_generation, Some(3));
         assert_eq!(packet.items[0].provenance.server_generation, Some(3));
-        assert_eq!(packet.items[0].provenance.freshness, LspEvidenceFreshness::Fresh);
+        assert_eq!(
+            packet.items[0].provenance.freshness,
+            LspEvidenceFreshness::Fresh
+        );
         assert!(!packet.items[0].provenance.post_restart);
     }
 
@@ -6769,7 +6781,8 @@ diff --git a/src/lib.rs b/src/lib.rs
             .items
             .iter()
             .find(|i| {
-                i.kind == LspContextItemKind::Reference && i.file == std::path::PathBuf::from("src/main.rs")
+                i.kind == LspContextItemKind::Reference
+                    && i.file == std::path::PathBuf::from("src/main.rs")
             })
             .expect("cross-file reference");
         assert!(!cross.score.is_same_file);
@@ -6814,14 +6827,8 @@ diff --git a/src/lib.rs b/src/lib.rs
         packet.definitions_error = Some("goToDefinition failed".to_string());
         packet.references_error = Some("findReferences timed out".to_string());
         let lsp_packet = packet.into_lsp_context_packet(LspContextMode::Opportunistic);
-        assert!(lsp_packet
-            .notes
-            .iter()
-            .any(|n| n.contains("definitions")));
-        assert!(lsp_packet
-            .notes
-            .iter()
-            .any(|n| n.contains("references")));
+        assert!(lsp_packet.notes.iter().any(|n| n.contains("definitions")));
+        assert!(lsp_packet.notes.iter().any(|n| n.contains("references")));
     }
 
     // -----------------------------------------------------------------------
@@ -7001,9 +7008,9 @@ diff --git a/src/lib.rs b/src/lib.rs
     async fn lsp_context_with_input_returns_none_without_clients() {
         use crate::agent::turn_runtime::LspAgentContextInput;
         use std::path::PathBuf;
-        let service = crate::lsp::service::LspService::new_arc(
-            crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
-        );
+        let service = crate::lsp::service::LspService::new_arc(crate::lsp::config_lsp_to_egglsp(
+            crate::config::schema::LspConfig::default(),
+        ));
         let tool = LspTool::new(service).with_allowed_root(PathBuf::from("/tmp"));
         let input = LspAgentContextInput {
             changed_files: vec![PathBuf::from("src/lib.rs")],
@@ -7029,14 +7036,17 @@ diff --git a/src/lib.rs b/src/lib.rs
     async fn lsp_context_with_empty_input_falls_back_to_status() {
         use crate::agent::turn_runtime::LspAgentContextInput;
         use std::path::PathBuf;
-        let service = crate::lsp::service::LspService::new_arc(
-            crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
-        );
+        let service = crate::lsp::service::LspService::new_arc(crate::lsp::config_lsp_to_egglsp(
+            crate::config::schema::LspConfig::default(),
+        ));
         let tool = LspTool::new(service).with_allowed_root(PathBuf::from("/tmp"));
         let empty = LspAgentContextInput::default();
         // Empty input is treated as "no metadata" → status-only path.
         // With no clients, that path returns None.
-        assert!(tool.lsp_context_for_agent_with_input(Some(&empty)).await.is_none());
+        assert!(tool
+            .lsp_context_for_agent_with_input(Some(&empty))
+            .await
+            .is_none());
     }
 
     // -----------------------------------------------------------------------
@@ -7046,9 +7056,9 @@ diff --git a/src/lib.rs b/src/lib.rs
     #[test]
     fn new_tool_has_empty_preview_registry() {
         use std::path::PathBuf;
-        let service = crate::lsp::service::LspService::new_arc(
-            crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
-        );
+        let service = crate::lsp::service::LspService::new_arc(crate::lsp::config_lsp_to_egglsp(
+            crate::config::schema::LspConfig::default(),
+        ));
         let tool = LspTool::new(service).with_allowed_root(PathBuf::from("/tmp"));
         assert!(tool.preview_registry().is_empty());
         assert_eq!(tool.preview_registry().len(), 0);
@@ -7058,9 +7068,9 @@ diff --git a/src/lib.rs b/src/lib.rs
     fn register_preview_artifact_assigns_id_and_provenance() {
         use egglsp::context::LspPreviewArtifact;
         use std::path::PathBuf;
-        let service = crate::lsp::service::LspService::new_arc(
-            crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
-        );
+        let service = crate::lsp::service::LspService::new_arc(crate::lsp::config_lsp_to_egglsp(
+            crate::config::schema::LspConfig::default(),
+        ));
         let tool = LspTool::new(service).with_allowed_root(PathBuf::from("/tmp"));
         let artifact = LspPreviewArtifact::Formatting {
             description: "test format".to_string(),
@@ -7093,9 +7103,9 @@ diff --git a/src/lib.rs b/src/lib.rs
     fn multiple_registrations_get_distinct_ids() {
         use egglsp::context::LspPreviewArtifact;
         use std::path::PathBuf;
-        let service = crate::lsp::service::LspService::new_arc(
-            crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
-        );
+        let service = crate::lsp::service::LspService::new_arc(crate::lsp::config_lsp_to_egglsp(
+            crate::config::schema::LspConfig::default(),
+        ));
         let tool = LspTool::new(service).with_allowed_root(PathBuf::from("/tmp"));
         let mut ids = Vec::new();
         for i in 0..3 {
@@ -7120,12 +7130,12 @@ diff --git a/src/lib.rs b/src/lib.rs
     #[test]
     fn populate_preview_ids_attaches_ids_to_packet() {
         use egglsp::context::{
-            LspContextPacket, LspContextRequest, LspContextPacketMode, LspPreviewArtifact,
+            LspContextPacket, LspContextPacketMode, LspContextRequest, LspPreviewArtifact,
         };
         use std::path::PathBuf;
-        let service = crate::lsp::service::LspService::new_arc(
-            crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
-        );
+        let service = crate::lsp::service::LspService::new_arc(crate::lsp::config_lsp_to_egglsp(
+            crate::config::schema::LspConfig::default(),
+        ));
         let tool = LspTool::new(service).with_allowed_root(PathBuf::from("/tmp"));
         let artifact = LspPreviewArtifact::Formatting {
             description: "fmt".to_string(),
@@ -7213,9 +7223,9 @@ diff --git a/src/lib.rs b/src/lib.rs
     #[test]
     fn renderer_uses_tier_to_filter_sections() {
         use egglsp::context::{
-            LspContextItem, LspContextItemKind, LspContextPacket, LspContextPacketMode,
+            LineRange, LspContextItem, LspContextItemKind, LspContextPacket, LspContextPacketMode,
             LspContextRequest, LspContextScore, LspEvidenceFreshness, LspEvidenceProvenance,
-            LspRiskMode, LineRange,
+            LspRiskMode,
         };
         use std::path::PathBuf;
         let file = PathBuf::from("src/lib.rs");
@@ -7331,18 +7341,22 @@ diff --git a/src/lib.rs b/src/lib.rs
             model_tier: egglsp::ModelTier::Small,
             ..Default::default()
         };
-        let small_rendered =
-            egglsp::render_lsp_context_for_agent(&packet, &small_config);
-        assert!(small_rendered.contains("bar"), "small tier should include hunk-local def");
-        assert!(!small_rendered.contains("foo"), "small tier should not include cross-file def");
+        let small_rendered = egglsp::render_lsp_context_for_agent(&packet, &small_config);
+        assert!(
+            small_rendered.contains("bar"),
+            "small tier should include hunk-local def"
+        );
+        assert!(
+            !small_rendered.contains("foo"),
+            "small tier should not include cross-file def"
+        );
 
         // Frontier tier: includes both definitions.
         let frontier_config = egglsp::LspContextRenderConfig {
             model_tier: egglsp::ModelTier::Frontier,
             ..Default::default()
         };
-        let frontier_rendered =
-            egglsp::render_lsp_context_for_agent(&packet, &frontier_config);
+        let frontier_rendered = egglsp::render_lsp_context_for_agent(&packet, &frontier_config);
         assert!(frontier_rendered.contains("bar"));
         assert!(frontier_rendered.contains("foo"));
     }
@@ -7386,7 +7400,9 @@ diff --git a/src/lib.rs b/src/lib.rs
         }];
         let mut truncation = LspContextTruncation::default();
         truncation.references_truncated = true;
-        truncation.notes.push("references truncated at 5".to_string());
+        truncation
+            .notes
+            .push("references truncated at 5".to_string());
         let packet = LspContextPacket {
             request: LspContextRequest::Review {
                 changed_files: vec![file],
@@ -7430,9 +7446,9 @@ diff --git a/src/lib.rs b/src/lib.rs
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn lsp_summary_detail_returns_none_without_clients() {
         use std::path::PathBuf;
-        let service = crate::lsp::service::LspService::new_arc(
-            crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
-        );
+        let service = crate::lsp::service::LspService::new_arc(crate::lsp::config_lsp_to_egglsp(
+            crate::config::schema::LspConfig::default(),
+        ));
         let tool = LspTool::new(service).with_allowed_root(PathBuf::from("/tmp"));
         assert!(tool.lsp_summary_detail().await.is_none());
         assert!(tool.lsp_status_line().await.is_none());
@@ -7441,9 +7457,9 @@ diff --git a/src/lib.rs b/src/lib.rs
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn lsp_summary_detail_includes_preview_count() {
         use std::path::PathBuf;
-        let service = crate::lsp::service::LspService::new_arc(
-            crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
-        );
+        let service = crate::lsp::service::LspService::new_arc(crate::lsp::config_lsp_to_egglsp(
+            crate::config::schema::LspConfig::default(),
+        ));
         let tool = LspTool::new(service).with_allowed_root(PathBuf::from("/tmp"));
         // Register a preview.
         let _id = tool.register_preview_artifact(

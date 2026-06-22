@@ -70,9 +70,7 @@ impl LspAgentContextInput {
     /// presence of `changed_files`/`hunks`/`active_file` to decide
     /// whether to emit a richer LSP section.
     pub fn has_workflow_metadata(&self) -> bool {
-        !self.changed_files.is_empty()
-            || !self.hunks.is_empty()
-            || self.active_file.is_some()
+        !self.changed_files.is_empty() || !self.hunks.is_empty() || self.active_file.is_some()
     }
 }
 
@@ -272,8 +270,7 @@ impl TurnRuntime for DefaultTurnRuntime {
             let mut input = lsp_context_input.clone();
             if let Some(ref mut inp) = input {
                 if inp.model_tier.is_none() {
-                    inp.model_tier =
-                        Some(egglsp::model_tier_for_profile(&model_profile.family));
+                    inp.model_tier = Some(egglsp::model_tier_for_profile(&model_profile.family));
                 }
             }
 
@@ -281,8 +278,7 @@ impl TurnRuntime for DefaultTurnRuntime {
             // behavior). With metadata → task-aware collection through
             // the production evidence adapter.
             let lsp_ctx = if input.as_ref().is_some_and(|i| i.has_workflow_metadata()) {
-                tool.lsp_context_for_agent_with_input(input.as_ref())
-                    .await
+                tool.lsp_context_for_agent_with_input(input.as_ref()).await
             } else {
                 tool.lsp_context_for_agent().await
             };

@@ -662,11 +662,13 @@ mod security_context_packet_bridge_tests {
     use std::path::PathBuf;
 
     use egglsp::context::{
-        LspContextItem, LspContextItemKind, LspContextPacket, LspContextPacketMode,
+        LineRange, LspContextItem, LspContextItemKind, LspContextPacket, LspContextPacketMode,
         LspContextRequest, LspContextScore, LspEvidenceFreshness, LspEvidenceProvenance,
-        LspRiskMode, LineRange,
+        LspRiskMode,
     };
-    use egglsp::{build_security_evidence_summary, build_security_lsp_context_request, SecurityRiskTag};
+    use egglsp::{
+        build_security_evidence_summary, build_security_lsp_context_request, SecurityRiskTag,
+    };
 
     use super::validate_security_context_request;
 
@@ -746,7 +748,11 @@ mod security_context_packet_bridge_tests {
         }];
         let req = build_security_lsp_context_request(&files, &hunks);
         match req {
-            LspContextRequest::Review { changed_files, hunks: req_hunks, .. } => {
+            LspContextRequest::Review {
+                changed_files,
+                hunks: req_hunks,
+                ..
+            } => {
                 assert_eq!(changed_files, files);
                 assert_eq!(req_hunks.len(), 1);
             }
@@ -763,11 +769,36 @@ mod security_context_packet_bridge_tests {
                 risk_mode: LspRiskMode::Aggressive,
             },
             items: vec![
-                make_item(LspContextItemKind::Diagnostic, "src/auth.rs", Some(1), "unsafe"),
-                make_item(LspContextItemKind::Reference, "src/caller.rs", Some(2), "call"),
-                make_item(LspContextItemKind::Reference, "src/other.rs", Some(3), "call"),
-                make_item(LspContextItemKind::Definition, "src/auth.rs", Some(4), "def"),
-                make_item(LspContextItemKind::Implementation, "src/impl.rs", Some(5), "impl"),
+                make_item(
+                    LspContextItemKind::Diagnostic,
+                    "src/auth.rs",
+                    Some(1),
+                    "unsafe",
+                ),
+                make_item(
+                    LspContextItemKind::Reference,
+                    "src/caller.rs",
+                    Some(2),
+                    "call",
+                ),
+                make_item(
+                    LspContextItemKind::Reference,
+                    "src/other.rs",
+                    Some(3),
+                    "call",
+                ),
+                make_item(
+                    LspContextItemKind::Definition,
+                    "src/auth.rs",
+                    Some(4),
+                    "def",
+                ),
+                make_item(
+                    LspContextItemKind::Implementation,
+                    "src/impl.rs",
+                    Some(5),
+                    "impl",
+                ),
             ],
             previews: Vec::new(),
             preview_ids: Vec::new(),
@@ -868,12 +899,7 @@ mod security_context_packet_bridge_tests {
 
     #[test]
     fn security_evidence_summary_detects_stale_evidence() {
-        let mut item = make_item(
-            LspContextItemKind::Diagnostic,
-            "a.rs",
-            Some(0),
-            "err",
-        );
+        let mut item = make_item(LspContextItemKind::Diagnostic, "a.rs", Some(0), "err");
         item.provenance.freshness = LspEvidenceFreshness::Stale;
         let packet = LspContextPacket {
             request: LspContextRequest::Review {
@@ -919,7 +945,9 @@ mod security_context_packet_bridge_tests {
         assert!(validate_security_context_request(&req).is_ok());
         // With any of the explicit mutation fields, validation must
         // reject — this is the actual security boundary.
-        for field in ["apply", "write", "edit", "patch", "command", "execute", "shell"] {
+        for field in [
+            "apply", "write", "edit", "patch", "command", "execute", "shell",
+        ] {
             let mut r = json!({
                 "file_path": "/tmp/test.rs",
                 "security_preset": "rust_server"

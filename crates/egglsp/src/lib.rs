@@ -64,14 +64,6 @@ pub use compatibility::{
     LspServerVersion,
 };
 pub use config::{LspConfig, LspRule};
-pub use context_renderer::model_tier_for_profile;
-pub use context_renderer::{
-    render_lsp_context_for_agent, LspContextRenderConfig, ModelTier,
-};
-pub use security_context::{
-    build_security_evidence_summary, build_security_lsp_context_request, SecurityEvidenceSummary,
-    SecurityRiskTag,
-};
 pub use context::{
     dedup_context_items, default_budget, enforce_context_budget, rank_context_items,
     AgentContextSource, HunkRange, LineRange, LspContextBudget, LspContextItem, LspContextItemKind,
@@ -79,15 +71,15 @@ pub use context::{
     LspContextTruncation, LspEvidenceFreshness, LspEvidenceProvenance, LspPreviewArtifact,
     LspRiskMode,
 };
+pub use context_renderer::model_tier_for_profile;
+pub use context_renderer::{render_lsp_context_for_agent, LspContextRenderConfig, ModelTier};
 pub use diagnostics::{
     DiagnosticsCollector, DiagnosticsOutput, LspDiagnosticFreshness, LspDiagnosticSnapshot,
     LspDiagnosticSource,
 };
 pub use document_sync::{OpenDocumentRegistry, OpenDocumentSnapshot};
 pub use error::LspError;
-pub use evidence_adapter::{
-    EvidenceOperation, ServiceLspEvidenceProvider,
-};
+pub use evidence_adapter::{EvidenceOperation, ServiceLspEvidenceProvider};
 pub use evidence_collector::{
     collect_context, collect_hunk_context, item_kind_from_severity, make_provenance,
     LspContextError, LspEvidenceProvider,
@@ -109,6 +101,10 @@ pub use operations::{
     CodeActionPreview, CodeActionSummary, FormattingPreview, PrepareRenameResult, RenamePreview,
     VersionedFileEvidence, CODE_ACTION_SUMMARY_DEFAULT_MAX, FORMATTING_PREVIEW_MAX_DIFF_BYTES,
     RENAME_PREVIEW_MAX_EDITS, RENAME_PREVIEW_MAX_FILES,
+};
+pub use security_context::{
+    build_security_evidence_summary, build_security_lsp_context_request, SecurityEvidenceSummary,
+    SecurityRiskTag,
 };
 pub use semantic_context::{
     SemanticContextCaps, SemanticContextIntent, SemanticContextRequest, SemanticContextResponse,

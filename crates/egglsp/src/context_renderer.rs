@@ -56,8 +56,13 @@ pub fn render_model_tier(tier: ModelTier) -> String {
 pub fn model_tier_for_profile(family: &str) -> ModelTier {
     let f = family.to_ascii_lowercase();
     match f.as_str() {
-        "frontierreasoning" | "frontier_executor" | "frontiere executor" | "frontier"
-        | "longcontextplanner" | "long_context_planner" | "default" => ModelTier::Frontier,
+        "frontierreasoning"
+        | "frontier_executor"
+        | "frontiere executor"
+        | "frontier"
+        | "longcontextplanner"
+        | "long_context_planner"
+        | "default" => ModelTier::Frontier,
         "fastexecutor" | "fast_executor" | "localstrict" | "local_strict" | "toolfragile"
         | "tool_fragile" => ModelTier::Small,
         _ => ModelTier::Workhorse,

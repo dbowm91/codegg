@@ -144,11 +144,7 @@ pub fn build_tui_summary(
 
     let preview_stale = registry.recent(registry.len()).iter().any(|e| e.stale_base);
 
-    let preview_ids: Vec<String> = registry
-        .recent(8)
-        .iter()
-        .map(|e| e.id.clone())
-        .collect();
+    let preview_ids: Vec<String> = registry.recent(8).iter().map(|e| e.id.clone()).collect();
 
     let operational_notes: Vec<String> = packet
         .items

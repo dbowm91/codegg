@@ -266,7 +266,10 @@ impl LspEvidenceProvider for ServiceLspEvidenceProvider {
         &self,
         file: &Path,
     ) -> Result<Vec<(String, String, String)>, LspError> {
-        let result = self.diagnostics.get_diagnostic_snapshot_for_file(file).await;
+        let result = self
+            .diagnostics
+            .get_diagnostic_snapshot_for_file(file)
+            .await;
         match &result {
             Ok(snap) => {
                 let decision = match snap.freshness {
@@ -471,9 +474,7 @@ impl LspEvidenceProvider for ServiceLspEvidenceProvider {
     }
 
     async fn hover(&self, file: &Path, line: u32, column: u32) -> Result<Option<String>, LspError> {
-        let decision = self
-            .capability_for(file, LspSemanticOperation::Hover)
-            .await;
+        let decision = self.capability_for(file, LspSemanticOperation::Hover).await;
         self.record_provenance_async(EvidenceOperation::Hover, decision.clone())
             .await;
         if matches!(decision, CapabilityDecision::Unsupported(_)) {
@@ -506,7 +507,10 @@ impl LspEvidenceProvider for ServiceLspEvidenceProvider {
                 )
                 .await);
         }
-        let items = self.operations.document_highlights(file, line, column).await?;
+        let items = self
+            .operations
+            .document_highlights(file, line, column)
+            .await?;
         Ok(items
             .into_iter()
             .map(|h| {
@@ -540,7 +544,10 @@ impl LspEvidenceProvider for ServiceLspEvidenceProvider {
                 )
                 .await);
         }
-        let summary = self.operations.signature_help_typed(file, line, column).await?;
+        let summary = self
+            .operations
+            .signature_help_typed(file, line, column)
+            .await?;
         let Some(summary) = summary else {
             return Ok(Vec::new());
         };
@@ -596,7 +603,13 @@ impl LspEvidenceProvider for ServiceLspEvidenceProvider {
             .await?;
         Ok(candidates
             .into_iter()
-            .map(|c| (c.label, c.kind.unwrap_or_default(), c.detail.unwrap_or_default()))
+            .map(|c| {
+                (
+                    c.label,
+                    c.kind.unwrap_or_default(),
+                    c.detail.unwrap_or_default(),
+                )
+            })
             .collect())
     }
 
@@ -694,13 +707,22 @@ mod tests {
 
     #[test]
     fn evidence_operation_strings_match_lsp_methods() {
-        assert_eq!(EvidenceOperation::Diagnostics.as_str(), "textDocument/diagnostic");
+        assert_eq!(
+            EvidenceOperation::Diagnostics.as_str(),
+            "textDocument/diagnostic"
+        );
         assert_eq!(
             EvidenceOperation::DocumentSymbols.as_str(),
             "textDocument/documentSymbol"
         );
-        assert_eq!(EvidenceOperation::GoToDefinition.as_str(), "textDocument/definition");
-        assert_eq!(EvidenceOperation::FindReferences.as_str(), "textDocument/references");
+        assert_eq!(
+            EvidenceOperation::GoToDefinition.as_str(),
+            "textDocument/definition"
+        );
+        assert_eq!(
+            EvidenceOperation::FindReferences.as_str(),
+            "textDocument/references"
+        );
         assert_eq!(
             EvidenceOperation::Implementations.as_str(),
             "textDocument/implementation"
@@ -710,13 +732,22 @@ mod tests {
             EvidenceOperation::DocumentHighlights.as_str(),
             "textDocument/documentHighlight"
         );
-        assert_eq!(EvidenceOperation::SignatureHelp.as_str(), "textDocument/signatureHelp");
-        assert_eq!(EvidenceOperation::Completion.as_str(), "textDocument/completion");
+        assert_eq!(
+            EvidenceOperation::SignatureHelp.as_str(),
+            "textDocument/signatureHelp"
+        );
+        assert_eq!(
+            EvidenceOperation::Completion.as_str(),
+            "textDocument/completion"
+        );
         assert_eq!(
             EvidenceOperation::SemanticTokens.as_str(),
             "textDocument/semanticTokens/full"
         );
-        assert_eq!(EvidenceOperation::WorkspaceSymbols.as_str(), "workspace/symbol");
+        assert_eq!(
+            EvidenceOperation::WorkspaceSymbols.as_str(),
+            "workspace/symbol"
+        );
     }
 
     #[test]

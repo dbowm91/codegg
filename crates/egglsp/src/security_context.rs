@@ -525,7 +525,11 @@ mod tests {
         }];
         let req = build_security_lsp_context_request(&files, &hunks);
         match req {
-            LspContextRequest::Review { changed_files, hunks: req_hunks, risk_mode } => {
+            LspContextRequest::Review {
+                changed_files,
+                hunks: req_hunks,
+                risk_mode,
+            } => {
                 assert_eq!(changed_files, files);
                 assert_eq!(req_hunks.len(), 1);
                 assert_eq!(risk_mode, LspRiskMode::Aggressive);
@@ -539,7 +543,11 @@ mod tests {
         use crate::context::{LspContextRequest, LspRiskMode};
         let req = build_security_lsp_context_request(&[], &[]);
         match req {
-            LspContextRequest::Review { changed_files, hunks, risk_mode } => {
+            LspContextRequest::Review {
+                changed_files,
+                hunks,
+                risk_mode,
+            } => {
                 assert!(changed_files.is_empty());
                 assert!(hunks.is_empty());
                 assert_eq!(risk_mode, LspRiskMode::Aggressive);

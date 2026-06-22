@@ -1715,8 +1715,8 @@ mod production_seam_tests {
     #[test]
     fn hunk_bridge_produces_agent_context_source_tag() {
         use egglsp::hunk_context::{
-            HunkDescriptor, HunkEvidence, HunkSourceNavigationResponse,
-            hunk_response_to_context_items,
+            hunk_response_to_context_items, HunkDescriptor, HunkEvidence,
+            HunkSourceNavigationResponse,
         };
         let mut response = HunkSourceNavigationResponse::new("src/lib.rs");
         let evidence = HunkEvidence {
