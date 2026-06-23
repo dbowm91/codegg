@@ -2106,3 +2106,430 @@ mod production_seam_tests {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Pass 7: no-mutation / no-executeCommand sweep
+//
+// Each test creates real files in a TempDir, hashes them with
+// `egglsp::operations::sha256_hex`, runs the Phase 5 path under audit, and
+// asserts the file hash is unchanged. Reasserts the central Phase 5
+// safety property: context collection and preview registration never
+// invoke `workspace/executeCommand` or apply any edits to disk.
+// ---------------------------------------------------------------------------
+
+mod phase5_no_mutation_sweep {
+    use super::*;
+    use egglsp::edit::{preview_text_edits_for_file, preview_workspace_edit};
+    use egglsp::lsp_types::{
+        CodeAction, CodeActionKind, CodeActionOrCommand, Command as LspCommand, DocumentChanges,
+        OneOf, OptionalVersionedTextDocumentIdentifier, Position, Range, TextDocumentEdit,
+        TextEdit, Uri, WorkspaceEdit,
+    };
+    use egglsp::operations::sha256_hex;
+    use egglsp::operations::{select_source_action_edit, SourceActionPreviewKind};
+    use tempfile::TempDir;
+
+    /// Helper: write `content` to `path`, returning the file's sha256 hex.
+    fn write_and_hash(path: &Path, content: &str) -> String {
+        std::fs::write(path, content).expect("write should succeed");
+        sha256_hex(content.as_bytes())
+    }
+
+    fn hash_file(path: &Path) -> String {
+        let bytes = std::fs::read(path).expect("read should succeed");
+        sha256_hex(&bytes)
+    }
+
+    fn make_text_edit(line: u32, start_col: u32, end_col: u32, new_text: &str) -> TextEdit {
+        TextEdit {
+            range: Range {
+                start: Position {
+                    line,
+                    character: start_col,
+                },
+                end: Position {
+                    line,
+                    character: end_col,
+                },
+            },
+            new_text: new_text.to_string(),
+        }
+    }
+
+    /// Build a rename-style WorkspaceEdit (documentChanges shape) that
+    /// replaces `old_name` with `new_name` on line 0 of `file_uri`.
+    fn make_rename_workspace_edit(file_uri: &str, old_name: &str, new_name: &str) -> WorkspaceEdit {
+        let edit = TextEdit {
+            range: Range {
+                start: Position {
+                    line: 0,
+                    character: 0,
+                },
+                end: Position {
+                    line: 0,
+                    character: old_name.len() as u32,
+                },
+            },
+            new_text: new_name.to_string(),
+        };
+        WorkspaceEdit {
+            changes: None,
+            document_changes: Some(DocumentChanges::Edits(vec![TextDocumentEdit {
+                text_document: OptionalVersionedTextDocumentIdentifier {
+                    uri: file_uri.parse::<Uri>().expect("uri"),
+                    version: Some(1),
+                },
+                edits: vec![OneOf::Left(edit)],
+            }])),
+            change_annotations: None,
+        }
+    }
+
+    /// Build a code-action-style WorkspaceEdit (changes shape).
+    fn make_code_action_workspace_edit(
+        file_uri: &str,
+        line: u32,
+        start_col: u32,
+        end_col: u32,
+        new_text: &str,
+    ) -> WorkspaceEdit {
+        let edit = make_text_edit(line, start_col, end_col, new_text);
+        let mut changes: std::collections::HashMap<Uri, Vec<TextEdit>> =
+            std::collections::HashMap::new();
+        changes.insert(file_uri.parse::<Uri>().expect("uri"), vec![edit]);
+        WorkspaceEdit {
+            changes: Some(changes),
+            document_changes: None,
+            change_annotations: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn phase5_agent_context_collection_does_not_apply_rename() {
+        let dir = TempDir::new().expect("tempdir");
+        let root = dir.path().to_path_buf();
+        let file_path = root.join("src/lib.rs");
+        std::fs::create_dir_all(file_path.parent().unwrap()).unwrap();
+        let original = "fn old_name() { println!(\"hi\"); }\n";
+        let before_hash = write_and_hash(&file_path, original);
+
+        let file_uri = url::Url::from_file_path(&file_path)
+            .expect("file uri")
+            .to_string();
+        let ws_edit = make_rename_workspace_edit(&file_uri, "old_name", "new_name");
+
+        // preview_workspace_edit is the Phase 5 surface that consumes
+        // the raw WorkspaceEdit returned by textDocument/rename. It
+        // must compute a diff and produce a preview without touching
+        // disk.
+        let preview = preview_workspace_edit("rename symbol", ws_edit, Some(&root))
+            .expect("rename preview should succeed");
+        assert!(!preview.truncated);
+        assert_eq!(preview.total_files, 1);
+        assert_eq!(preview.files.len(), 1);
+        assert_eq!(preview.files[0].file, file_path);
+        assert_eq!(preview.files[0].original_hash, before_hash);
+
+        // Drive the context collector end-to-end with a MockProvider so
+        // the full Phase 5 packet pipeline runs. The collector must
+        // never execute rename or surface a rename-like operation in
+        // item provenance.
+        let provider = MockProvider::new();
+        *provider.server_id.lock().unwrap() = Some("rename-audit-server".to_string());
+        *provider.generation.lock().unwrap() = Some(1);
+        let request = LspContextRequest::File {
+            file: file_path.clone(),
+            line_ranges: vec![],
+            include_symbols: false,
+            include_diagnostics: true,
+        };
+        let budget = LspContextBudget::default();
+        let packet = collect_context(&provider, &request, &budget, &LspContextMode::Opportunistic)
+            .await
+            .expect("collect should succeed");
+        for item in &packet.items {
+            assert!(
+                !item.provenance.operation.contains("rename"),
+                "context item provenance should never reference rename; got {:?}",
+                item.provenance.operation
+            );
+            assert!(
+                !item.provenance.operation.contains("applyEdit"),
+                "context item provenance should never reference applyEdit; got {:?}",
+                item.provenance.operation
+            );
+        }
+
+        // Disk file is unchanged.
+        let after_hash = hash_file(&file_path);
+        assert_eq!(
+            after_hash, before_hash,
+            "rename preview must not mutate the file on disk"
+        );
+        let after_content = std::fs::read_to_string(&file_path).unwrap();
+        assert_eq!(
+            after_content, original,
+            "rename preview must not write to disk"
+        );
+    }
+
+    #[tokio::test]
+    async fn phase5_agent_context_collection_does_not_apply_formatting() {
+        let dir = TempDir::new().expect("tempdir");
+        let root = dir.path().to_path_buf();
+        let file_path = root.join("src/fmt.rs");
+        std::fs::create_dir_all(file_path.parent().unwrap()).unwrap();
+        let original = "fn main() {println!(\"hi\");}\n";
+        let before_hash = write_and_hash(&file_path, original);
+
+        // preview_text_edits_for_file is the Phase 5 surface for
+        // textDocument/formatting. It must produce a preview DTO without
+        // writing to disk.
+        let edit = make_text_edit(0, 9, 10, "{ ");
+        let preview = preview_text_edits_for_file("format", &file_path, vec![edit], Some(&root))
+            .expect("formatting preview should succeed");
+        assert!(!preview.truncated);
+        assert_eq!(preview.total_files, 1);
+        assert_eq!(preview.files.len(), 1);
+        assert_eq!(preview.files[0].file, file_path);
+        assert_eq!(preview.files[0].original_hash, before_hash);
+
+        // Drive the context collector end-to-end. Item provenance must
+        // never carry a formatting or apply operation.
+        let provider = MockProvider::new();
+        *provider.server_id.lock().unwrap() = Some("format-audit-server".to_string());
+        *provider.generation.lock().unwrap() = Some(1);
+        let request = LspContextRequest::File {
+            file: file_path.clone(),
+            line_ranges: vec![],
+            include_symbols: false,
+            include_diagnostics: true,
+        };
+        let budget = LspContextBudget::default();
+        let packet = collect_context(&provider, &request, &budget, &LspContextMode::Opportunistic)
+            .await
+            .expect("collect should succeed");
+        for item in &packet.items {
+            assert!(
+                !item.provenance.operation.contains("format"),
+                "context item provenance should never reference formatting; got {:?}",
+                item.provenance.operation
+            );
+            assert!(
+                !item.provenance.operation.contains("applyEdit"),
+                "context item provenance should never reference applyEdit; got {:?}",
+                item.provenance.operation
+            );
+        }
+
+        let after_hash = hash_file(&file_path);
+        assert_eq!(
+            after_hash, before_hash,
+            "formatting preview must not mutate the file on disk"
+        );
+        let after_content = std::fs::read_to_string(&file_path).unwrap();
+        assert_eq!(
+            after_content, original,
+            "formatting preview must not write to disk"
+        );
+    }
+
+    #[tokio::test]
+    async fn phase5_agent_context_collection_does_not_execute_code_action_command() {
+        let dir = TempDir::new().expect("tempdir");
+        let root = dir.path().to_path_buf();
+        let file_path = root.join("src/code_action.rs");
+        std::fs::create_dir_all(file_path.parent().unwrap()).unwrap();
+        let original = "fn main() {}\n";
+        let before_hash = write_and_hash(&file_path, original);
+
+        // 1) select_source_action_edit rejects command-only actions
+        //    with CommandOnlySourceAction — the Phase 5 surface never
+        //    invokes workspace/executeCommand.
+        let command_only_action = CodeActionOrCommand::CodeAction(CodeAction {
+            title: "Run cargo build".to_string(),
+            kind: Some(CodeActionKind::SOURCE_ORGANIZE_IMPORTS),
+            diagnostics: None,
+            is_preferred: None,
+            disabled: None,
+            edit: None,
+            command: Some(LspCommand {
+                title: "Run cargo build".to_string(),
+                command: "cargo build".to_string(),
+                arguments: None,
+            }),
+            data: None,
+        });
+        let cmd_err = select_source_action_edit(
+            SourceActionPreviewKind::OrganizeImports,
+            vec![command_only_action],
+        )
+        .expect_err("command-only code action must be rejected");
+        assert!(
+            matches!(cmd_err, LspError::CommandOnlySourceAction(_)),
+            "expected CommandOnlySourceAction, got: {cmd_err:?}"
+        );
+
+        // 2) Raw Command variants are also rejected.
+        let raw_command = CodeActionOrCommand::Command(LspCommand {
+            title: "Echo hello".to_string(),
+            command: "echo hello".to_string(),
+            arguments: None,
+        });
+        let raw_err =
+            select_source_action_edit(SourceActionPreviewKind::OrganizeImports, vec![raw_command])
+                .expect_err("raw Command must be rejected");
+        assert!(
+            matches!(raw_err, LspError::CommandOnlySourceAction(_)),
+            "expected CommandOnlySourceAction for raw Command, got: {raw_err:?}"
+        );
+
+        // 3) Edit-bearing code actions still produce a preview DTO and
+        //    never touch disk. Build a synthetic WorkspaceEdit that
+        //    pretends to come from textDocument/codeAction and run it
+        //    through the Phase 5 preview surface.
+        let file_uri = url::Url::from_file_path(&file_path)
+            .expect("file uri")
+            .to_string();
+        let ws_edit = make_code_action_workspace_edit(&file_uri, 0, 9, 9, "!");
+        let preview = preview_workspace_edit("code action", ws_edit, Some(&root))
+            .expect("code action preview should succeed");
+        assert_eq!(preview.total_files, 1);
+        assert_eq!(preview.files[0].file, file_path);
+        assert_eq!(preview.files[0].original_hash, before_hash);
+
+        // Disk file is unchanged: command execution never happened, no
+        // edit was applied.
+        let after_hash = hash_file(&file_path);
+        assert_eq!(
+            after_hash, before_hash,
+            "code action handling must not execute commands or apply edits"
+        );
+        let after_content = std::fs::read_to_string(&file_path).unwrap();
+        assert_eq!(
+            after_content, original,
+            "code action handling must not write to disk"
+        );
+    }
+
+    #[test]
+    fn phase5_preview_registration_does_not_apply_workspace_edit() {
+        let dir = TempDir::new().expect("tempdir");
+        let root = dir.path().to_path_buf();
+        let file_path = root.join("src/registry.rs");
+        std::fs::create_dir_all(file_path.parent().unwrap()).unwrap();
+        let original = "fn registry_audit() {}\n";
+        let before_hash = write_and_hash(&file_path, original);
+
+        // Phase 5 carries previews inside LspContextPacket. Each preview
+        // is associated with a PreviewArtifactRegistry entry that tracks
+        // the original hashes for staleness detection. Registering an
+        // entry must never touch the underlying files.
+        let mut registry = PreviewArtifactRegistry::new();
+
+        let mut original_hashes = HashMap::new();
+        original_hashes.insert(file_path.to_string_lossy().to_string(), before_hash.clone());
+
+        let rename_id = registry.register(
+            LspPreviewArtifact::Rename {
+                description: "registry_audit -> renamed".to_string(),
+                edit_count: 1,
+            },
+            vec![file_path.to_string_lossy().to_string()],
+            original_hashes.clone(),
+            "registry-audit-server".to_string(),
+        );
+        let formatting_id = registry.register(
+            LspPreviewArtifact::Formatting {
+                description: "format registry.rs".to_string(),
+                content_hash: Some(before_hash.clone()),
+            },
+            vec![file_path.to_string_lossy().to_string()],
+            original_hashes.clone(),
+            "registry-audit-server".to_string(),
+        );
+        let code_action_id = registry.register(
+            LspPreviewArtifact::CodeAction {
+                description: "organize imports".to_string(),
+                kind: Some("source.organizeImports".to_string()),
+            },
+            vec![file_path.to_string_lossy().to_string()],
+            original_hashes.clone(),
+            "registry-audit-server".to_string(),
+        );
+
+        // All entries are tracked but applied=false.
+        assert_eq!(registry.len(), 3);
+        for id in [&rename_id, &formatting_id, &code_action_id] {
+            let entry = registry.get(id).expect("entry should exist");
+            assert!(
+                !entry.applied,
+                "preview {id} must never be marked applied at registration"
+            );
+            assert!(
+                !entry.stale_base,
+                "preview {id} must not be marked stale at registration"
+            );
+            assert_eq!(
+                entry
+                    .original_hashes
+                    .get(&file_path.to_string_lossy().to_string()),
+                Some(&before_hash)
+            );
+        }
+
+        // populate_preview_ids is the Phase 5 hook that links a packet's
+        // previews to registry entries. It must not touch disk either.
+        let mut packet = LspContextPacket {
+            request: LspContextRequest::File {
+                file: file_path.clone(),
+                line_ranges: vec![],
+                include_symbols: false,
+                include_diagnostics: false,
+            },
+            items: Vec::new(),
+            previews: Vec::new(),
+            preview_ids: Vec::new(),
+            mode: LspContextPacketMode::Opportunistic,
+            workspace_root: Some(root.clone()),
+            generated_at: None,
+            server_id: None,
+            server_generation: None,
+            operational_state: None,
+            budget: None,
+            notes: Vec::new(),
+            truncation: Default::default(),
+        };
+        packet.previews.push(LspPreviewArtifact::Rename {
+            description: "registry_audit -> renamed".to_string(),
+            edit_count: 1,
+        });
+        packet.previews.push(LspPreviewArtifact::Formatting {
+            description: "format registry.rs".to_string(),
+            content_hash: Some(before_hash.clone()),
+        });
+        packet.previews.push(LspPreviewArtifact::CodeAction {
+            description: "organize imports".to_string(),
+            kind: Some("source.organizeImports".to_string()),
+        });
+        let populated = registry.populate_preview_ids(&mut packet);
+        assert_eq!(populated, 3);
+        assert_eq!(packet.preview_ids.len(), 3);
+        assert_eq!(packet.preview_ids[0], rename_id);
+        assert_eq!(packet.preview_ids[1], formatting_id);
+        assert_eq!(packet.preview_ids[2], code_action_id);
+
+        // Disk file is unchanged: registration and population are pure
+        // in-memory operations.
+        let after_hash = hash_file(&file_path);
+        assert_eq!(
+            after_hash, before_hash,
+            "preview registration must not mutate the file on disk"
+        );
+        let after_content = std::fs::read_to_string(&file_path).unwrap();
+        assert_eq!(
+            after_content, original,
+            "preview registration must not write to disk"
+        );
+    }
+}
