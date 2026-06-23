@@ -260,28 +260,11 @@ impl TurnRuntime for DefaultTurnRuntime {
 
         // ── LSP context ──────────────────────────────────────────────
         if let Some(ref svc) = lsp_service {
-            use crate::tool::lsp::LspTool;
             use std::path::PathBuf;
             let root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-            let tool = LspTool::new(Arc::clone(svc)).with_allowed_root(root);
-
-            // Determine model tier from the resolved profile when the
-            // caller did not supply an explicit override.
-            let mut input = lsp_context_input.clone();
-            if let Some(ref mut inp) = input {
-                if inp.model_tier.is_none() {
-                    inp.model_tier = Some(egglsp::model_tier_for_profile(&model_profile.family));
-                }
-            }
-
-            // No metadata → status-only section (preserves existing
-            // behavior). With metadata → task-aware collection through
-            // the production evidence adapter.
-            let lsp_ctx = if input.as_ref().is_some_and(|i| i.has_workflow_metadata()) {
-                tool.lsp_context_for_agent_with_input(input.as_ref()).await
-            } else {
-                tool.lsp_context_for_agent().await
-            };
+            let lsp_ctx =
+                assemble_lsp_context_for_turn(svc, lsp_context_input, &model_profile.family, root)
+                    .await;
             if let Some(lsp_ctx) = lsp_ctx {
                 system.push_str(&lsp_ctx);
             }
@@ -395,5 +378,421 @@ impl TurnRuntime for DefaultTurnRuntime {
             cancel_tx,
             steer_tx,
         })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// LSP context assembly helpers
+// ---------------------------------------------------------------------------
+
+/// Outcome of [`resolve_lsp_context_tier`].
+///
+/// Records what happened during tier resolution so callers and
+/// tests can distinguish explicit overrides from runtime-resolved
+/// tiers without inspecting the input twice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TierResolutionOutcome {
+    /// Caller did not supply an `LspAgentContextInput`; nothing to
+    /// resolve.
+    NoInput,
+    /// Caller supplied an input with `model_tier` already set;
+    /// that tier is preserved unchanged.
+    Preserved,
+    /// Caller supplied an input with `model_tier = None`; tier was
+    /// derived from the resolved model profile family via
+    /// [`egglsp::model_tier_for_profile`].
+    ResolvedFromFamily,
+}
+
+/// Resolve the renderer tier for a turn's LSP context input.
+///
+/// Mirrors the production wiring in [`DefaultTurnRuntime::run_turn`]:
+/// the explicit `input.model_tier` override always wins; otherwise the
+/// tier is derived from the resolved model profile family string
+/// (lowercased; see [`egglsp::model_tier_for_profile`] for the
+/// canonical mapping).
+///
+/// Exposed `pub(crate)` so turn-runtime tests can verify the wiring
+/// without spinning up an agent loop.
+pub(crate) fn resolve_lsp_context_tier(
+    input: Option<&mut LspAgentContextInput>,
+    model_family: &str,
+) -> TierResolutionOutcome {
+    match input {
+        None => TierResolutionOutcome::NoInput,
+        Some(inp) => {
+            if inp.model_tier.is_some() {
+                TierResolutionOutcome::Preserved
+            } else {
+                inp.model_tier = Some(egglsp::model_tier_for_profile(model_family));
+                TierResolutionOutcome::ResolvedFromFamily
+            }
+        }
+    }
+}
+
+/// Build the LSP context section that gets appended to the system
+/// prompt for a turn.
+///
+/// This is the production assembly path used by
+/// [`DefaultTurnRuntime::run_turn`]. It:
+///
+/// 1. Resolves the renderer tier from the model profile family
+///    (unless the caller set an explicit override).
+/// 2. Routes to the task-aware collection path when the input has
+///    workflow metadata, otherwise to the status-only path.
+/// 3. Returns the rendered section or `None` when the LSP service
+///    has no clients and the empty-packet fallback path produces
+///    nothing.
+///
+/// `pub(crate)` so turn-runtime tests can exercise the path
+/// directly. The `model_family` argument is the resolved
+/// [`crate::model_profile::ResolvedModelProfile::family`] string.
+pub(crate) async fn assemble_lsp_context_for_turn(
+    lsp_service: &Arc<crate::lsp::service::LspService>,
+    lsp_context_input: Option<LspAgentContextInput>,
+    model_family: &str,
+    allowed_root: std::path::PathBuf,
+) -> Option<String> {
+    use crate::tool::lsp::LspTool;
+
+    let tool = LspTool::new(Arc::clone(lsp_service)).with_allowed_root(allowed_root);
+
+    let mut input = lsp_context_input;
+    let _ = resolve_lsp_context_tier(input.as_mut(), model_family);
+
+    if input.as_ref().is_some_and(|i| i.has_workflow_metadata()) {
+        tool.lsp_context_for_agent_with_input(input.as_ref()).await
+    } else {
+        tool.lsp_context_for_agent().await
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests — Pass 5: tier-resolution wiring
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tier_resolution_tests {
+    use super::*;
+
+    fn make_input_with_metadata() -> LspAgentContextInput {
+        LspAgentContextInput {
+            changed_files: vec![std::path::PathBuf::from("src/lib.rs")],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn turn_runtime_small_model_uses_small_lsp_render_tier() {
+        // Tool-fragile / FastExecutor / LocalStrict family names all
+        // resolve to Small in the canonical `model_tier_for_profile`
+        // mapping. The runtime must mirror that for the model
+        // profile's family string.
+        for family in ["tool_fragile", "local_strict", "fast_executor"] {
+            let mut input = make_input_with_metadata();
+            let outcome = resolve_lsp_context_tier(Some(&mut input), family);
+            assert_eq!(
+                outcome,
+                TierResolutionOutcome::ResolvedFromFamily,
+                "family={family} should resolve from family"
+            );
+            assert_eq!(
+                input.model_tier,
+                Some(egglsp::ModelTier::Small),
+                "family={family} should produce Small tier"
+            );
+        }
+    }
+
+    #[test]
+    fn turn_runtime_frontier_model_uses_frontier_lsp_render_tier() {
+        // Frontier families resolve to Frontier.
+        for family in [
+            "frontierreasoning",
+            "frontier_executor",
+            "longcontextplanner",
+            "default",
+        ] {
+            let mut input = make_input_with_metadata();
+            let outcome = resolve_lsp_context_tier(Some(&mut input), family);
+            assert_eq!(
+                outcome,
+                TierResolutionOutcome::ResolvedFromFamily,
+                "family={family} should resolve from family"
+            );
+            assert_eq!(
+                input.model_tier,
+                Some(egglsp::ModelTier::Frontier),
+                "family={family} should produce Frontier tier"
+            );
+        }
+    }
+
+    #[test]
+    fn turn_runtime_unknown_family_defaults_workhorse() {
+        // Unknown family names (and the empty string) fall through
+        // to Workhorse in the canonical mapping. The runtime must
+        // mirror that for the renderer to behave as the default.
+        for family in ["some-new-vendor/some-model", "anthropic-unknown", ""] {
+            let mut input = make_input_with_metadata();
+            let outcome = resolve_lsp_context_tier(Some(&mut input), family);
+            assert_eq!(
+                outcome,
+                TierResolutionOutcome::ResolvedFromFamily,
+                "family={family:?} should resolve from family"
+            );
+            assert_eq!(
+                input.model_tier,
+                Some(egglsp::ModelTier::Workhorse),
+                "family={family:?} should produce Workhorse tier"
+            );
+        }
+
+        // No-input case: outcome is `NoInput` and no mutation happens.
+        let outcome = resolve_lsp_context_tier(None, "any");
+        assert_eq!(outcome, TierResolutionOutcome::NoInput);
+    }
+
+    #[test]
+    fn turn_runtime_explicit_tier_override_is_preserved() {
+        // If the caller already set a tier (e.g. via a future mode
+        // flag), the runtime must not overwrite it.
+        for tier in [
+            egglsp::ModelTier::Small,
+            egglsp::ModelTier::Workhorse,
+            egglsp::ModelTier::Frontier,
+        ] {
+            let mut input = LspAgentContextInput {
+                changed_files: vec![std::path::PathBuf::from("src/lib.rs")],
+                model_tier: Some(tier),
+                ..Default::default()
+            };
+            let outcome = resolve_lsp_context_tier(Some(&mut input), "frontierreasoning");
+            assert_eq!(outcome, TierResolutionOutcome::Preserved);
+            assert_eq!(input.model_tier, Some(tier));
+        }
+    }
+
+    #[test]
+    fn turn_runtime_truncation_notes_visible_for_small_model() {
+        // Small tier must keep truncation notes visible — Small is a
+        // content-breadth filter, not a verbosity filter. We assert
+        // this at the renderer level (the wiring that actually
+        // exercises Small in the production path) by constructing an
+        // `LspContextRenderConfig` with `model_tier: Small` (the same
+        // shape the runtime produces when `model_tier_for_profile`
+        // returns Small for a tool-fragile model) and rendering a
+        // packet that carries truncation notes.
+        use egglsp::context::{
+            LspContextItem, LspContextItemKind, LspContextPacket, LspContextPacketMode,
+            LspContextRequest, LspContextScore, LspContextTruncation, LspEvidenceFreshness,
+            LspEvidenceProvenance, LspRiskMode,
+        };
+        use std::path::PathBuf;
+
+        let file = PathBuf::from("src/lib.rs");
+        let hunk_def = LspContextItem {
+            kind: LspContextItemKind::Definition,
+            file: file.clone(),
+            range: None,
+            line: Some(10),
+            column: None,
+            message: "hunk-local def".to_string(),
+            symbol: None,
+            source: None,
+            provenance: LspEvidenceProvenance {
+                server_id: "test".to_string(),
+                server_generation: Some(1),
+                operation: "definition".to_string(),
+                freshness: LspEvidenceFreshness::Fresh,
+                capability_decision: None,
+                document_version: None,
+                age_ms: None,
+                post_restart: false,
+            },
+            score: LspContextScore {
+                priority: 10,
+                is_hunk_local: true,
+                is_error: false,
+                is_same_file: true,
+                freshness_rank: 0,
+            },
+            payload: None,
+        };
+        // A cross-file reference that Small tier must drop.
+        let cross_ref = LspContextItem {
+            kind: LspContextItemKind::Reference,
+            file: PathBuf::from("other.rs"),
+            range: None,
+            line: Some(2),
+            column: None,
+            message: "cross-file ref".to_string(),
+            symbol: None,
+            source: None,
+            provenance: LspEvidenceProvenance {
+                server_id: "test".to_string(),
+                server_generation: Some(1),
+                operation: "findReferences".to_string(),
+                freshness: LspEvidenceFreshness::Fresh,
+                capability_decision: None,
+                document_version: None,
+                age_ms: None,
+                post_restart: false,
+            },
+            score: LspContextScore {
+                priority: 10,
+                is_hunk_local: false,
+                is_error: false,
+                is_same_file: false,
+                freshness_rank: 0,
+            },
+            payload: None,
+        };
+        let mut truncation = LspContextTruncation::default();
+        truncation.references_truncated = true;
+        truncation
+            .notes
+            .push("references truncated at 5".to_string());
+        let packet = LspContextPacket {
+            request: LspContextRequest::Review {
+                changed_files: vec![file],
+                hunks: vec![],
+                risk_mode: LspRiskMode::Standard,
+            },
+            items: vec![hunk_def, cross_ref],
+            previews: vec![],
+            preview_ids: vec![],
+            mode: LspContextPacketMode::Opportunistic,
+            workspace_root: None,
+            generated_at: None,
+            server_id: Some("test".to_string()),
+            server_generation: Some(1),
+            operational_state: None,
+            budget: None,
+            notes: vec![],
+            truncation,
+        };
+
+        // Simulate the runtime-produced Small-tier config.
+        let small_config = egglsp::LspContextRenderConfig {
+            model_tier: egglsp::ModelTier::Small,
+            ..Default::default()
+        };
+        let rendered = egglsp::render_lsp_context_for_agent(&packet, &small_config);
+
+        // Truncation notes are visible.
+        assert!(
+            rendered.contains("references truncated"),
+            "Small tier must keep truncation notes visible: {rendered}"
+        );
+        // Hunk-local diagnostics/definitions are present.
+        assert!(
+            rendered.contains("## Definitions (hunk-local)"),
+            "Small tier must show hunk-local definitions section: {rendered}"
+        );
+        // Cross-file broad references are absent.
+        assert!(
+            !rendered.contains("## References"),
+            "Small tier must omit cross-file references: {rendered}"
+        );
+        assert!(
+            !rendered.contains("cross-file ref"),
+            "Small tier must not include cross-file reference content: {rendered}"
+        );
+    }
+
+    #[test]
+    fn turn_runtime_frontier_tier_keeps_references_visible() {
+        // Frontier tier keeps the references section when the
+        // packet contains reference items. Mirrors the runtime
+        // wiring for frontier_reasoning family.
+        use egglsp::context::{
+            LspContextItem, LspContextItemKind, LspContextPacket, LspContextPacketMode,
+            LspContextRequest, LspContextScore, LspEvidenceFreshness, LspEvidenceProvenance,
+            LspRiskMode,
+        };
+        use std::path::PathBuf;
+
+        let file = PathBuf::from("src/lib.rs");
+        let reference = LspContextItem {
+            kind: LspContextItemKind::Reference,
+            file: file.clone(),
+            range: None,
+            line: Some(5),
+            column: None,
+            message: "ref".to_string(),
+            symbol: None,
+            source: None,
+            provenance: LspEvidenceProvenance {
+                server_id: "test".to_string(),
+                server_generation: Some(1),
+                operation: "findReferences".to_string(),
+                freshness: LspEvidenceFreshness::Fresh,
+                capability_decision: None,
+                document_version: None,
+                age_ms: None,
+                post_restart: false,
+            },
+            score: LspContextScore {
+                priority: 10,
+                is_hunk_local: false,
+                is_error: false,
+                is_same_file: true,
+                freshness_rank: 0,
+            },
+            payload: None,
+        };
+        let packet = LspContextPacket {
+            request: LspContextRequest::Review {
+                changed_files: vec![file],
+                hunks: vec![],
+                risk_mode: LspRiskMode::Standard,
+            },
+            items: vec![reference],
+            previews: vec![],
+            preview_ids: vec![],
+            mode: LspContextPacketMode::Opportunistic,
+            workspace_root: None,
+            generated_at: None,
+            server_id: Some("test".to_string()),
+            server_generation: Some(1),
+            operational_state: None,
+            budget: None,
+            notes: vec![],
+            truncation: Default::default(),
+        };
+
+        let frontier_config = egglsp::LspContextRenderConfig {
+            model_tier: egglsp::ModelTier::Frontier,
+            ..Default::default()
+        };
+        let rendered = egglsp::render_lsp_context_for_agent(&packet, &frontier_config);
+        assert!(
+            rendered.contains("## References"),
+            "Frontier tier must keep references section: {rendered}"
+        );
+        assert!(rendered.contains("ref"));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn turn_runtime_assemble_helper_returns_none_without_clients() {
+        // End-to-end smoke for `assemble_lsp_context_for_turn` with
+        // an empty LspService: with no clients and no metadata the
+        // status-only path returns None, matching the pre-refactor
+        // behavior. The key invariant: the helper compiles and
+        // resolves the tier without panicking, and the no-metadata
+        // path still routes to status-only.
+        use std::path::PathBuf;
+        let service = crate::lsp::service::LspService::new_arc(crate::lsp::config_lsp_to_egglsp(
+            crate::config::schema::LspConfig::default(),
+        ));
+        let none =
+            assemble_lsp_context_for_turn(&service, None, "tool_fragile", PathBuf::from("/tmp"))
+                .await;
+        assert!(
+            none.is_none(),
+            "status-only path with no clients must return None, got {none:?}"
+        );
     }
 }
