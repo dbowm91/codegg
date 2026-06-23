@@ -5,7 +5,7 @@
 
 use std::path::PathBuf;
 
-use crate::context::{LineRange, LspContextItem, LspContextItemKind, LspContextPacket};
+use crate::context::{LspContextItem, LspContextItemKind, LspContextPacket};
 
 // ---------------------------------------------------------------------------
 // Security risk tags
@@ -278,7 +278,7 @@ pub fn tag_security_risks(
 mod tests {
     use super::*;
     use crate::context::{
-        LspContextPacket, LspContextPacketMode, LspContextRequest, LspContextScore,
+        LineRange, LspContextPacket, LspContextPacketMode, LspContextRequest, LspContextScore,
         LspEvidenceFreshness, LspEvidenceProvenance, LspRiskMode,
     };
 

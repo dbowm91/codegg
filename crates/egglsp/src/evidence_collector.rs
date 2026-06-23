@@ -178,7 +178,7 @@ pub fn make_provenance(
         capability_decision: None,
         document_version: None,
         age_ms: None,
-        post_restart: generation.map_or(false, |g| g > 1),
+        post_restart: generation.is_some_and(|g| g > 1),
     }
 }
 
@@ -484,6 +484,7 @@ fn build_packet(
 // File context
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::too_many_arguments)]
 async fn collect_file_context(
     provider: &dyn LspEvidenceProvider,
     file: &Path,
@@ -516,7 +517,7 @@ async fn collect_file_context(
                     if !line_ranges.is_empty() {
                         let in_range = line_ranges
                             .iter()
-                            .any(|r| line.map_or(false, |l| line_in_range(l, r.start, r.end)));
+                            .any(|r| line.is_some_and(|l| line_in_range(l, r.start, r.end)));
                         if !in_range {
                             continue;
                         }
@@ -561,12 +562,7 @@ async fn collect_file_context(
             Ok(symbols) => {
                 let prov =
                     make_provenance(sid, generation, "textDocument/documentSymbol", freshness);
-                let mut count = 0;
-                for (name, kind, range_text) in &symbols {
-                    if count >= budget.max_symbols {
-                        notes.push(format!("symbols truncated at {}", budget.max_symbols));
-                        break;
-                    }
+                for (name, kind, range_text) in symbols.iter().take(budget.max_symbols) {
                     let (line, column) = parse_range_start(range_text);
                     items.push(LspContextItem {
                         range: None,
@@ -587,7 +583,9 @@ async fn collect_file_context(
                         },
                         payload: None,
                     });
-                    count += 1;
+                }
+                if symbols.len() > budget.max_symbols {
+                    notes.push(format!("symbols truncated at {}", budget.max_symbols));
                 }
             }
             Err(e) => {
@@ -826,6 +824,7 @@ pub async fn collect_hunk_context(
 // Symbol context
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::too_many_arguments)]
 async fn collect_symbol_context(
     provider: &dyn LspEvidenceProvider,
     file: &Path,
@@ -1175,6 +1174,7 @@ async fn collect_symbol_context(
 // Review context
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::too_many_arguments)]
 async fn collect_review_context(
     provider: &dyn LspEvidenceProvider,
     changed_files: &[PathBuf],
@@ -1436,6 +1436,7 @@ async fn collect_review_context(
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(clippy::useless_format, clippy::unnecessary_cast, clippy::let_unit_value, clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
     use std::sync::Mutex;

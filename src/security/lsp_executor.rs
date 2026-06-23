@@ -394,7 +394,6 @@ mod tests {
 
     #[test]
     fn lsp_hunk_executor_preserves_hunks_field_on_request() {
-        use super::super::workflow::context::HunkSourceContextExecutor;
         use egglsp::hunk_context::{HunkDescriptor, HunkLineRange, HunkSourceNavigationRequest};
 
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -470,7 +469,6 @@ mod tests {
 
 #[cfg(test)]
 mod lsp_hunk_executor_integration_tests {
-    use super::*;
     use egglsp::hunk_context::{HunkDescriptor, HunkLineRange, HunkSourceNavigationRequest};
 
     #[test]

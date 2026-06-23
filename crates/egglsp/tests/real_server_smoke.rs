@@ -2271,7 +2271,7 @@ async fn run_smoke_suite(
         egglsp::compatibility::LspReadinessPolicy::WaitForDiagnosticsOrTimeout { .. }
     );
     let diag_snapshot = wait_for_diagnostics(
-        &client,
+        client,
         &fixture.diagnostics_file,
         std::cmp::min(READINESS_TIMEOUT, Duration::from_secs(5)),
     )
@@ -2632,7 +2632,7 @@ async fn run_smoke_suite(
     // (no name parsing on the read path).
     let mut operation_records: Vec<egglsp::compatibility::LspOperationCompatibility> = Vec::new();
     run_generalized_operation_checks(
-        &client,
+        client,
         fixture,
         &caps,
         &primary_uri,
@@ -2822,7 +2822,7 @@ fn populate_operation_matrix(
     records: &mut Vec<egglsp::compatibility::LspOperationCompatibility>,
 ) {
     use egglsp::capability::LspSemanticOperation;
-    use egglsp::compatibility::{CompatibilityRequirement, LspOperationCompatibility};
+    use egglsp::compatibility::LspOperationCompatibility;
     // Static list of every operation the harness knows about.
     // Adding a new `LspSemanticOperation` variant to the enum
     // and forgetting to extend this list will surface as a
@@ -5218,7 +5218,7 @@ async fn run_rename_preview_check(
                     let total_edits: usize = {
                         let mut total = 0usize;
                         if let Some(changes) = &edit.changes {
-                            for (_, edits) in changes {
+                            for edits in changes.values() {
                                 total += edits.len();
                             }
                         }
@@ -6387,7 +6387,7 @@ fn assert_required_checks(report: &LspCompatibilityReport) {
         // exact protocol/parse/semantic fields so reviewers
         // can read them from the JSON report.
         let known_limit_is_documented =
-            record.known_limit.as_ref().map_or(false, |s| !s.is_empty());
+            record.known_limit.as_ref().is_some_and(|s| !s.is_empty());
         let known_limitation_ok = record.requirement
             == egglsp::compatibility::CompatibilityRequirement::KnownLimitation
             && exercised

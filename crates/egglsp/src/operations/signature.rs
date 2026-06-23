@@ -175,9 +175,10 @@ pub(crate) fn format_hover_contents(contents: &HoverContents) -> String {
 }
 
 #[cfg(test)]
+#[allow(dead_code)]
 mod tests {
     use super::*;
-    use crate::capability::{LspCapabilitySnapshot, LspSemanticOperation};
+    use crate::capability::LspSemanticOperation;
     use lsp_types::{MarkupContent, MarkupKind, Uri};
     use std::str::FromStr;
 
@@ -204,7 +205,7 @@ mod tests {
     fn truncate_doc_respects_utf8_boundaries() {
         let mut s = String::new();
         for _ in 0..(SIGNATURE_DOC_MAX_CHARS / 2) {
-            s.push_str("a");
+            s.push('a');
         }
         s.push('🦀');
         s.push_str("rest");

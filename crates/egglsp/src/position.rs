@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 /// every mainstream LSP server (rust-analyzer, basedpyright,
 /// gopls, typescript-language-server, clangd) negotiates UTF-16
 /// unless the client requests otherwise.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum PositionEncoding {
     /// One character == one byte. ASCII-only files use this
     /// implicitly, but the encoding is rare in practice.
@@ -32,17 +32,12 @@ pub enum PositionEncoding {
     /// One character == one UTF-16 code unit. BMP code points
     /// are 1 unit; supplementary plane code points are 2 units
     /// (a surrogate pair). The protocol default.
+    #[default]
     Utf16,
     /// One character == one UTF-32 code unit (one Unicode
     /// scalar value). Effectively a 1:1 mapping with Rust
     /// `char` indexing.
     Utf32,
-}
-
-impl Default for PositionEncoding {
-    fn default() -> Self {
-        PositionEncoding::Utf16
-    }
 }
 
 impl PositionEncoding {

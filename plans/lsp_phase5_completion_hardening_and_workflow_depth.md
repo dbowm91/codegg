@@ -700,3 +700,19 @@ remaining limitations
 ```
 
 After this plan passes, Phase 5 can be considered complete as an LSP-informed agent workflow layer rather than just a library-level context abstraction.
+
+## Phase 5 Final Closeout Status
+
+Phase 5 is complete. The implementation was finalized through `plans/lsp_phase5_final_closeout_and_stabilization.md` (Passes 1–9). All closure gates from this plan have been satisfied:
+
+- Agent turns receive bounded LSP context packets via the canonical `LspContextPacket`.
+- The canonical packet boundary is documented in code and architecture docs.
+- Live preview operations return preview IDs and register non-applied artifacts.
+- Evidence adapter provenance is guarded by a sequential-call contract.
+- Model-tier rendering is active in the turn runtime.
+- Hunk/security bridges are proven against production-seam and fake-server paths.
+- No Phase 5 path calls `workspace/executeCommand` or applies edits.
+- TUI summaries and degradation policy are wired.
+- Full regression passes (1627+ tests, 1 pre-existing flake unrelated to Phase 5).
+
+See `plans/lsp_phase5_final_closeout_and_stabilization.md` for the full pass list and evidence.

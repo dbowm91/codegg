@@ -328,7 +328,7 @@ impl ServiceLspEvidenceProvider {
             capability_decision: capability_str,
             document_version: None,
             age_ms: None,
-            post_restart: generation.map_or(false, |g| g > 1),
+            post_restart: generation.is_some_and(|g| g > 1),
         };
         if let Ok(mut slot) = self.last_provenance.lock() {
             *slot = Some(prov);

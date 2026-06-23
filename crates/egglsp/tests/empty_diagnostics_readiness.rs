@@ -26,7 +26,7 @@
 use std::time::Duration;
 
 use common::ProductionClientHarness;
-use egglsp::{LspClient, LspClientOptions};
+use egglsp::LspClientOptions;
 use serde_json::json;
 
 mod common;
@@ -104,7 +104,7 @@ fn empty_diagnostics_scenario(root_uri: &str, source_uri: &str) -> serde_json::V
 /// empty vector.
 #[tokio::test]
 async fn empty_publish_diagnostics_satisfies_readiness() {
-    let mut harness = ProductionClientHarness::start(
+    let harness = ProductionClientHarness::start(
         empty_diagnostics_scenario("__ROOT_URI__", "__SOURCE_URI__"),
         LspClientOptions::default(),
         serde_json::Value::Null,
@@ -205,7 +205,7 @@ async fn missing_diagnostics_notification_times_out() {
         "strict": true
     });
 
-    let mut harness = ProductionClientHarness::start(
+    let harness = ProductionClientHarness::start(
         scenario,
         LspClientOptions::default(),
         serde_json::Value::Null,

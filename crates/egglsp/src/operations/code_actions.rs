@@ -291,6 +291,7 @@ impl LspOperations {
     /// preserving server order. Raw `Command` payloads are
     /// surfaced as summaries with `has_command = true` and
     /// `has_edit = false`; the surface never executes commands.
+    #[allow(clippy::too_many_arguments)]
     pub async fn code_action_summaries(
         &self,
         file_path: &Path,
@@ -340,6 +341,7 @@ impl LspOperations {
     /// executes commands) or when the resolved `CodeAction` has
     /// `command: Some(_)` but no `edit` payload. The on-disk
     /// file is never mutated.
+    #[allow(clippy::too_many_arguments)]
     pub async fn preview_code_action(
         &self,
         file_path: &Path,
@@ -474,9 +476,10 @@ impl LspOperations {
 }
 
 #[cfg(test)]
+#[allow(clippy::field_reassign_with_default, dead_code)]
 mod tests {
     use super::*;
-    use crate::capability::{LspCapabilitySnapshot, LspSemanticOperation, LspUnavailable};
+    use crate::capability::{LspCapabilitySnapshot, LspSemanticOperation};
     use lsp_types::{ServerCapabilities, Uri};
     use std::str::FromStr;
 
@@ -592,6 +595,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::useless_vec)]
     fn code_action_summary_max_actions_zero_yields_empty() {
         let actions = vec![code_action_with_edit(
             "a",

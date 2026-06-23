@@ -2209,7 +2209,7 @@ async fn semantic_context_collector_exercises_real_workflow() {
 /// `LspUnavailable` entry instead.
 #[tokio::test]
 async fn semantic_context_collector_capability_gating() {
-    let (collector, service, source_path, _root, _tempdir) =
+    let (collector, _service, source_path, _root, _tempdir) =
         setup_collector_for_scenario(scenario_no_definition());
 
     let request = egglsp::SemanticContextRequest::new(
@@ -2512,7 +2512,7 @@ async fn security_context_tool_enforces_call_depth_limit() {
     }
 
     // No level3 node should appear (depth 2→3 expansion must not happen)
-    let has_level3 = node_names.iter().any(|n| *n == "level3");
+    let has_level3 = node_names.contains(&"level3");
     assert!(
         !has_level3,
         "level3 must not appear when call_depth=2, got nodes: {node_names:?}"
@@ -2602,15 +2602,12 @@ async fn security_context_tool_filters_and_preserves_diagnostic_evidence() {
                 transcript_tail(&transcript_path),
             );
         }
-        match diag_collector.get_all_diagnostic_snapshots().await {
-            Ok(snapshots) => {
-                if let Some(snap) = snapshots.get(&source_uri_str) {
-                    if !snap.diagnostics.is_empty() {
-                        break;
-                    }
+        if let Ok(snapshots) = diag_collector.get_all_diagnostic_snapshots().await {
+            if let Some(snap) = snapshots.get(&source_uri_str) {
+                if !snap.diagnostics.is_empty() {
+                    break;
                 }
             }
-            Err(_) => {}
         }
         tokio::time::sleep(Duration::from_millis(15)).await;
     }
@@ -4367,7 +4364,7 @@ async fn security_context_tool_degrades_on_call_hierarchy_error() {
     // The error must be recorded in call_expansion.errors
     let errors = expansion.get("errors");
     assert!(
-        errors.is_some() && errors.unwrap().as_array().map_or(false, |e| !e.is_empty()),
+        errors.is_some() && errors.unwrap().as_array().is_some_and(|e| !e.is_empty()),
         "call_expansion.errors should be non-empty, recording the outgoingCalls failure"
     );
 

@@ -44,7 +44,6 @@ impl LspOperations {
 mod tests {
     use super::*;
     use crate::error::LspError;
-    use lsp_types::*;
 
     #[test]
     fn test_hierarchy_direction_parse() {

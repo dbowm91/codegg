@@ -11,7 +11,7 @@ use tracing::{debug, info, warn};
 use url::Url;
 
 use super::client::{DiagnosticCacheEntry, LspClient, LspClientOptions};
-use super::compatibility::{LspReadinessPolicy, LspRestartMode, LspRestartPolicy};
+use super::compatibility::{LspReadinessPolicy, LspRestartMode};
 use super::config::{LspConfig, LspRestartPolicyConfig, LspRule};
 use super::document_sync::OpenDocumentRegistry;
 use super::download;
@@ -36,7 +36,7 @@ type ClientMap = Arc<RwLock<HashMap<String, Arc<LspClient>>>>;
 /// all go through generation-aware helpers so a delayed old
 /// monitor cannot remove a newer generation's runtime.
 #[derive(Debug, Clone)]
-pub(crate) struct RuntimeEntry {
+pub struct RuntimeEntry {
     pub(crate) generation: u64,
     pub(crate) runtime: LspProcessRuntime,
 }
@@ -48,6 +48,7 @@ impl RuntimeEntry {
     /// real process. The runtime is safe to clone and inspect
     /// but will never publish an exit event.
     #[cfg(test)]
+    #[allow(dead_code)]
     pub(crate) fn stub_for_test() -> Self {
         Self {
             generation: 0,
@@ -80,7 +81,7 @@ type RuntimeMap = Arc<Mutex<HashMap<String, RuntimeEntry>>>;
 /// matching.
 #[derive(Debug)]
 #[allow(dead_code)] // Variant fields are read by callers / tests; the enum itself is `pub(crate)`-style.
-enum RuntimeInstallResult {
+pub(crate) enum RuntimeInstallResult {
     Installed,
     Replaced {
         prior: RuntimeEntry,
@@ -198,6 +199,7 @@ async fn install_runtime(
 /// process. Returns the same [`RuntimeInstallResult`] enum as
 /// the production helper.
 #[cfg(test)]
+#[allow(dead_code)]
 pub(crate) async fn install_runtime_for_test(
     runtime_map: &RuntimeMap,
     key: &str,
@@ -969,6 +971,7 @@ impl LspService {
     /// cannot accidentally create an un-supervised service.
     /// Tests that explicitly assert on the un-supervised
     /// path use this constructor from inside the crate.
+    #[cfg(test)]
     pub(crate) fn new(config: LspConfig) -> Self {
         let (lifecycle_tx, _rx) = watch::channel(INITIAL_LIFECYCLE_STATE);
         let (exit_tx, exit_rx) = tokio::sync::mpsc::channel(64);
@@ -2750,7 +2753,7 @@ impl LspService {
 
     /// Private restart entry point that applies a specific
     /// `RestartTrigger` to the coordinator.
-
+    ///
     /// Pass 5 — Single internal entry point for all restart
     /// paths (manual and automatic). Manual callers pass
     /// `OwnedRestartOptions::manual()`, automatic callers pass
@@ -2879,7 +2882,7 @@ impl LspService {
         //    generation appeared during the wait, the manual
         //    teardown would target a stale runtime and the
         //    caller must observe `ServerRestarted` instead.
-        let mut current_generation = self.generation_for_key(key).await;
+        let current_generation = self.generation_for_key(key).await;
         if options.manual_supersession
             && pre_wait_snapshot.pre_wait_generation != 0
             && current_generation > pre_wait_snapshot.pre_wait_generation
@@ -2938,7 +2941,7 @@ impl LspService {
         // — the live client is gone so the coordinator will
         // publish a fresh generation via its reinit closure.
         if options.manual_supersession {
-            current_generation = self.generation_for_key(key).await;
+            let _ = self.generation_for_key(key).await;
         }
 
         // 7. Hand off to the coordinator.
@@ -3455,7 +3458,7 @@ impl RestartShared for LspService {
 /// Process monitor task (formerly `LspServiceClone::restart_client`).
 /// See `LspService::restart_client` for the live restart path.
 // ── Process monitor ─────────────────────────────────────────────────
-
+///
 /// Monitor task that observes child process exit and forwards the
 /// event to the exit channel.
 ///
@@ -3607,9 +3610,9 @@ async fn open_null_stderr() -> std::io::Result<tokio::process::ChildStderr> {
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     let mut child = cmd.spawn()?;
-    Ok(child.stderr.take().ok_or_else(|| {
-        std::io::Error::new(std::io::ErrorKind::Other, "stderr not captured for dummy")
-    })?)
+    child.stderr.take().ok_or_else(|| {
+        std::io::Error::other("stderr not captured for dummy")
+    })
 }
 
 // ── Spawned initialization attempt wrapper ───────────────────────────
@@ -4076,7 +4079,6 @@ async fn run_init_task_wrapper(
 ///
 /// The initialization task is authoritative for publishing results to all
 /// callers. Leader and waiters both consume the same completion channel.
-#[allow(clippy::too_many_arguments)]
 #[allow(clippy::too_many_arguments)]
 async fn run_initialization_attempt(
     attempt_id: u64,
@@ -7521,7 +7523,7 @@ mod tests {
             svc.lifecycle.read().await.phase,
             super::ServiceLifecycle::Stopped
         );
-        let _ = result;
+        result;
     }
 
     /// `LspService::new` is the bare (un-supervised)

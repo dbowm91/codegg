@@ -165,6 +165,7 @@ impl Default for LspConfig {
 
 #[derive(Deserialize, Serialize, Debug, Clone, PartialEq)]
 #[serde(untagged)]
+#[allow(clippy::large_enum_variant)]
 pub enum LspRule {
     Disabled {
         disabled: bool,

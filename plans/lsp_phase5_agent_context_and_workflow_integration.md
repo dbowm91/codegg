@@ -943,3 +943,18 @@ remaining known limitations
 ```
 
 After this plan passes, Codegg will have moved from an LSP-compatible substrate to a usable LSP-informed agent workflow layer.
+
+## Phase 5 Final Closeout Status
+
+Phase 5 is complete. The implementation was finalized through `plans/lsp_phase5_final_closeout_and_stabilization.md` (Passes 1–9). All closure gates from this plan have been satisfied:
+
+- Agent prompts receive bounded LSP context packets through the canonical `LspContextPacket`.
+- Context packets are budgeted, deduplicated, source-ranked, and marked with freshness and capability provenance.
+- Live preview operations return preview IDs and register non-applied artifacts with original hashes.
+- The canonical packet boundary is documented; `SemanticContextPacket` remains a tool-facing DTO.
+- Model-tier rendering is active in the turn runtime.
+- Security review and hunk navigation consume the packet model via production-seam tests.
+- No Phase 5 path calls `workspace/executeCommand` or applies edits.
+- Full regression passes (1627+ tests, 1 pre-existing flake unrelated to Phase 5).
+
+See `plans/lsp_phase5_final_closeout_and_stabilization.md` for the full pass list and evidence.

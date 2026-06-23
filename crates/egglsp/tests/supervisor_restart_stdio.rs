@@ -31,8 +31,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use egglsp::{
-    LspClientDescriptor, LspConfig, LspError, LspOperationalState, LspProcessIntent,
-    LspProcessRuntime, LspRestartMode, LspRestartPolicy, LspRule, LspService,
+    LspClientDescriptor, LspConfig, LspError, LspOperationalState, LspProcessIntent, LspRestartMode, LspRestartPolicy, LspRule, LspService,
 };
 use serde_json::json;
 use tempfile::TempDir;
@@ -282,7 +281,7 @@ fn make_service_config(
     LspConfig::Rules(rules)
 }
 
-fn init_params_root_only(root_uri: &str) -> serde_json::Value {
+fn init_params_root_only(_root_uri: &str) -> serde_json::Value {
     json!({
         "type": "ObjectContains",
         "value": {
@@ -778,7 +777,7 @@ edition = "2021"
         &root.join("start_counter.log"),
     );
     let service = LspService::new_arc(config);
-    let key = canonical_root_key(&root, "rust-analyzer");
+    let _key = canonical_root_key(&root, "rust-analyzer");
 
     // Init gen 1.
     service
@@ -878,7 +877,7 @@ async fn restart_initialization_failure_then_recovery() {
     let source_path = root.join("src/lib.rs");
     let scenario_path = root.join("scenario.json");
     let transcript_path = root.join("transcript.jsonl");
-    let start_counter_path = root.join("start_counter.log");
+    let _start_counter_path = root.join("start_counter.log");
     let root_uri = path_to_uri(&root);
     let source_uri = path_to_uri(&source_path);
 
@@ -1190,7 +1189,7 @@ async fn stale_exit_event_does_not_affect_newer_generation() {
     let source_path = root.join("src/lib.rs");
     let scenario_path = root.join("scenario.json");
     let transcript_path = root.join("transcript.jsonl");
-    let start_counter_path = root.join("start_counter.log");
+    let _start_counter_path = root.join("start_counter.log");
     let root_uri = path_to_uri(&root);
     let source_uri = path_to_uri(&source_path);
 
@@ -1756,7 +1755,7 @@ async fn generation_is_identical_across_health_and_exit_event() {
     let source_path = root.join("src/lib.rs");
     let scenario_path = root.join("scenario.json");
     let transcript_path = root.join("transcript.jsonl");
-    let start_counter_path = root.join("start_counter.log");
+    let _start_counter_path = root.join("start_counter.log");
     let root_uri = path_to_uri(&root);
     let source_uri = path_to_uri(&source_path);
 
@@ -1999,7 +1998,7 @@ edition = "2021"
     let phase1 = crash_scenario("p9_phase1_crash", &root_uri, &source_uri, 1);
     // Phase 2 hangs on shutdown so the auto restart's coordinator
     // stays "in flight" until we release it.
-    let phase2 = successful_scenario(
+    let _phase2 = successful_scenario(
         "p9_phase2_hangs",
         &root_uri,
         &source_uri,
@@ -2013,7 +2012,7 @@ edition = "2021"
 
     let config = make_service_config(&scenario_path, &transcript_path, &start_counter_path);
     let service = LspService::new_arc(config);
-    let key = service
+    let _key = service
         .get_or_create_client_for_file(&source_path)
         .await
         .expect("init gen1");
@@ -2160,7 +2159,7 @@ edition = "2021"
 
     // First manual restart: succeeds (or returns ServerRestarted
     // if a generation advance raced — both are acceptable).
-    let first = tokio::time::timeout(Duration::from_secs(10), service.manual_restart_client(&key))
+    tokio::time::timeout(Duration::from_secs(10), service.manual_restart_client(&key))
         .await
         .expect("first manual restart timed out")
         .expect("first manual restart errored");

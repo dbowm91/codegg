@@ -114,8 +114,10 @@ use crate::document_sync::{OpenDocumentRegistry, OpenDocumentSnapshot};
 use crate::error::LspError;
 use crate::health::LspOperationalState;
 use crate::launch::LspLaunchSpec;
-use crate::runtime::LspProcessRuntime;
 use crate::service::ReadinessResult;
+
+#[cfg(test)]
+use crate::runtime::LspProcessRuntime;
 
 /// Service lifecycle phase. Mirrors the private enum in
 /// `service.rs` so the coordinator can reason about cancellation
@@ -1083,6 +1085,7 @@ impl std::fmt::Debug for UnpublishedReplacement {
 /// 2. Remove the unpublished client from the clients map
 ///    only when its bound generation matches (Pass 4
 ///    invariant: cancellation does not remove a newer client).
+///
 /// Pass 6 — Result of a restart attempt. The coordinator
 /// distinguishes a fully healthy replacement from a *live*
 /// degraded replacement so callers can log degraded outcomes
@@ -1221,9 +1224,7 @@ where
                 delay_ms = delay.as_millis() as u64,
                 "restart backoff"
             );
-            if let Err(e) = cancellable_sleep(delay, shared, lease_token.as_ref()).await {
-                return Err(e);
-            }
+            cancellable_sleep(delay, shared, lease_token.as_ref()).await?;
         }
 
         // ── Cancellation: re-check after backoff.
@@ -1733,8 +1734,7 @@ async fn terminate_unpublished_runtime(
     if event.is_none() {
         entry.runtime.request_force_kill();
         loop {
-            if let Some(e) = exit_rx.borrow_and_update().clone() {
-                event = Some(e);
+            if let Some(_e) = exit_rx.borrow_and_update().clone() {
                 break;
             }
             if std::time::Instant::now() >= absolute_deadline {
@@ -1888,6 +1888,7 @@ mod tests {
         /// observe and cancel the active lease token. In
         /// production this lives on `LspService` directly
         /// (`restart_tasks: RestartTaskMap`).
+        #[allow(dead_code)]
         restart_task_map: RestartTaskMap,
         /// Pass 6 — Optional override for `wait_for_readiness`.
         /// When `Some`, the mock returns this value instead of

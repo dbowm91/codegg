@@ -4,7 +4,7 @@
 //! suitable for agent prompts. No raw JSON is ever dumped.
 
 use crate::context::{
-    LineRange, LspContextItem, LspContextItemKind, LspContextPacket, LspPreviewArtifact,
+    LspContextItem, LspContextItemKind, LspContextPacket, LspPreviewArtifact,
 };
 
 // ---------------------------------------------------------------------------
@@ -12,20 +12,15 @@ use crate::context::{
 // ---------------------------------------------------------------------------
 
 /// Controls how much LSP context is rendered into agent prompts.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize)]
 pub enum ModelTier {
     /// Minimal: diagnostics + hunk-local definitions only.
     Small,
     /// Standard: diagnostics + references + hover.
+    #[default]
     Workhorse,
     /// Broader: all available evidence.
     Frontier,
-}
-
-impl Default for ModelTier {
-    fn default() -> Self {
-        Self::Workhorse
-    }
 }
 
 impl std::fmt::Display for ModelTier {
@@ -500,7 +495,7 @@ pub fn render_lsp_status_line(packet: &LspContextPacket) -> String {
 mod tests {
     use super::*;
     use crate::context::{
-        LspContextPacketMode, LspContextRequest, LspContextScore, LspEvidenceFreshness,
+        LineRange, LspContextPacketMode, LspContextRequest, LspContextScore, LspEvidenceFreshness,
         LspEvidenceProvenance, LspRiskMode,
     };
     use std::path::PathBuf;

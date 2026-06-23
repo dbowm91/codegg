@@ -596,6 +596,7 @@ fn url_to_file_path_from_url(file_path: &Path) -> Result<url::Url, LspError> {
 }
 
 #[cfg(test)]
+#[allow(dead_code, clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
     use crate::capability::{LspCapabilitySnapshot, LspSemanticOperation, LspUnavailable};

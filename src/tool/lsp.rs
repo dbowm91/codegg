@@ -703,8 +703,10 @@ impl LspTool {
         let tier = input.model_tier.unwrap_or(egglsp::ModelTier::Workhorse);
 
         // Render through the canonical renderer.
-        let mut config = egglsp::LspContextRenderConfig::default();
-        config.model_tier = tier;
+        let config = egglsp::LspContextRenderConfig {
+            model_tier: tier,
+            ..egglsp::LspContextRenderConfig::default()
+        };
         let rendered = egglsp::render_lsp_context_for_agent(&packet, &config);
         if rendered.trim().is_empty() {
             return self.lsp_context_for_agent().await;
@@ -6812,7 +6814,6 @@ diff --git a/src/lib.rs b/src/lib.rs
 
     #[test]
     fn semantic_context_to_lsp_packet_propagates_provenance() {
-        use egglsp::context::LspContextItemKind;
         use egglsp::LspEvidenceFreshness;
         let packet =
             make_bridge_packet().into_lsp_context_packet(egglsp::LspContextMode::Opportunistic);
@@ -7686,7 +7687,6 @@ diff --git a/src/lib.rs b/src/lib.rs
 
     #[test]
     fn lsp_tool_preview_metadata_includes_affected_files() {
-        use egglsp::context::LspPreviewArtifact;
         let files = vec![
             "src/a.rs".to_string(),
             "src/b.rs".to_string(),

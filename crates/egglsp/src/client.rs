@@ -936,6 +936,7 @@ impl LspClient {
     /// Background task that reads framed JSON-RPC messages from stdout
     /// and routes them to pending request senders, notification handlers,
     /// or the server-request dispatcher.
+    #[allow(clippy::too_many_arguments)]
     async fn background_reader(
         mut stdout: tokio::process::ChildStdout,
         diagnostics: Arc<Mutex<HashMap<String, DiagnosticCacheEntry>>>,
@@ -2261,8 +2262,8 @@ impl LspClient {
 /// Returns `(Option<DiagnosticCacheEntry>, LspDiagnosticFreshness)`:
 /// - `None` freshness entry + `Unavailable` means no cache entry or invalidated-without-stale-data.
 /// - `Some(entry)` + freshness means the entry should be used with the given freshness label.
-/// When `current_generation` is non-zero and the entry's `server_generation` does not match,
-/// the freshness is classified as `Stale`.
+///   When `current_generation` is non-zero and the entry's `server_generation` does not match,
+///   the freshness is classified as `Stale`.
 pub(crate) fn classify_diagnostic_freshness(
     entry: Option<DiagnosticCacheEntry>,
     last_content_change: Option<Instant>,

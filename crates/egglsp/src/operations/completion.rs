@@ -454,6 +454,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::useless_vec)]
     fn completion_bounded_max_candidates_zero_yields_empty() {
         let items = vec![
             completion_item("alpha", CompletionItemKind::FUNCTION),
@@ -468,6 +469,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::useless_vec)]
     fn completion_bounded_max_candidates_larger_than_items_returns_all() {
         let items = vec![completion_item("alpha", CompletionItemKind::FUNCTION)];
         let bounded: Vec<CompletionCandidate> = items

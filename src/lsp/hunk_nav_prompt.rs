@@ -196,7 +196,6 @@ pub fn format_hunk_source_context_summary(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use egglsp::capability::LspUnavailable;
     use egglsp::diagnostics::{FileDiagnostic, LspDiagnosticFreshness, LspDiagnosticSource};
     use egglsp::hunk_context::{
         HunkDescriptor, HunkEvidence, HunkLineRange, HunkSourceNavigationLimits,

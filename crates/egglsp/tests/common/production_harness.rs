@@ -3,7 +3,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tempfile::TempDir;
-use tokio::time::timeout;
 
 use egglsp::{LspClient, LspClientOptions, LspError, LspLaunchSpec};
 

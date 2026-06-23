@@ -107,20 +107,15 @@ pub struct HunkRange {
 }
 
 /// Risk classification mode for review-context requests.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 pub enum LspRiskMode {
     /// Minimal evidence gathering; only diagnostics and definitions.
     Conservative,
     /// Standard evidence with references and call hierarchy.
+    #[default]
     Standard,
     /// Aggressive evidence including type hierarchy and completions.
     Aggressive,
-}
-
-impl Default for LspRiskMode {
-    fn default() -> Self {
-        Self::Standard
-    }
 }
 
 /// Describes what evidence to collect.
@@ -374,20 +369,15 @@ pub struct LspContextTruncation {
 // ---------------------------------------------------------------------------
 
 /// Controls whether context gathering is active.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 pub enum LspContextPacketMode {
     /// Context gathering is disabled.
     Disabled,
     /// Context is gathered opportunistically when the server is available.
+    #[default]
     Opportunistic,
     /// Context is required; a missing server is an error.
     Required,
-}
-
-impl Default for LspContextPacketMode {
-    fn default() -> Self {
-        Self::Opportunistic
-    }
 }
 
 /// Alias for module-level re-export clarity.
@@ -687,7 +677,7 @@ pub fn enforce_context_budget(packet: &mut LspContextPacket) -> LspContextTrunca
             let mut lo = 0usize;
             let mut hi = packet.items.len();
             while lo < hi {
-                let mid = lo + (hi - lo + 1) / 2;
+                let mid = lo + (hi - lo).div_ceil(2);
                 let trimmed: Vec<&LspContextItem> = packet.items[..mid].iter().collect();
                 let size = serde_json::to_vec(&trimmed).unwrap_or_default().len();
                 if size <= budget.max_bytes {
@@ -783,6 +773,7 @@ pub fn rank_context_items(items: &mut [LspContextItem], request: &LspContextRequ
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(clippy::unnecessary_cast)]
 mod tests {
     use super::*;
 

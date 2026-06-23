@@ -364,6 +364,7 @@ pub(crate) fn build_bounded_unified_diff(
 }
 
 #[cfg(test)]
+#[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
     use lsp_types::ServerCapabilities;

@@ -978,7 +978,7 @@ async fn phase5_security_packet_caps_reference_clusters() {
         })
         .collect();
     *provider.refs.lock().unwrap() = (0..10)
-        .map(|i| (format!("caller_{i}.rs"), format!("(1:0)-(1:10)")))
+        .map(|i| (format!("caller_{i}.rs"), "(1:0)-(1:10)".to_string()))
         .collect();
 
     let request = LspContextRequest::Review {
@@ -1131,7 +1131,7 @@ async fn phase5_hunk_context_does_not_include_unrelated_file_flood() {
         diags.push((
             "error".to_string(),
             format!("err in file_{i}"),
-            format!("(1:0)-(1:5)"),
+            "(1:0)-(1:5)".to_string(),
         ));
     }
     // Add one diagnostic in the actual hunk file.
@@ -1221,7 +1221,7 @@ async fn phase5_hunk_context_marks_stale_evidence() {
 async fn phase5_hunk_context_caps_references_composite() {
     let provider = MockProvider::new();
     *provider.refs.lock().unwrap() = (0..100)
-        .map(|i| (format!("file_{i}.rs"), format!("(1:0)-(1:10)")))
+        .map(|i| (format!("file_{i}.rs"), "(1:0)-(1:10)".to_string()))
         .collect();
 
     let hunks = vec![HunkRange {
