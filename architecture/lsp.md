@@ -3146,6 +3146,88 @@ Total test count for `phase5_context_integration.rs`: 40 (33 pre-existing + 7 ne
 - **Production adapter ≠ execution**: The adapter is a thin wrapper that calls into the existing `LspTool` API. No new LSP code paths were added.
 - **Provider is the source of truth**: `ServiceLspEvidenceProvider` does not synthesize responses; it only forwards them.
 
+## Phase 5 Final Closeout and Stabilization (Passes 1–9)
+
+The Phase 5 hardening produced a complete, production-shaped pipeline but left a few small stabilization items open. The final closeout narrows the surface and reasserts invariants at the boundary. The plan is at [plans/lsp_phase5_final_closeout_and_stabilization.md](../plans/lsp_phase5_final_closeout_and_stabilization.md).
+
+### Pass 1 — Timing-flake stabilization
+
+`tests/agent_loop_harness.rs::test_no_follow_up_latency` was the lone known flake. Its 1-second wall-clock bound was a CI-coupled assumption: the agent loop completes in ~0.7s isolated but drifts to 5–10s under heavy parallel load from other tests in the binary. The fix replaces the timing-only assertion with a generous 15s wall-clock bound (still well under the 120s stream-idle timeout that a real blocking receive would hit) plus a deterministic behavioral check — the provider must be invoked exactly once when no follow-up is queued. Stable across 10/10 serial runs and 5/5 parallel runs after the fix.
+
+### Pass 2 — Live preview-ID propagation
+
+`LspToolOutput` gains a `preview_metadata: Option<PreviewMetadata>` field (skipped from serialization when absent) carrying `not_applied: bool`, `edit_count: usize`, `affected_files: Vec<String>`, and `stale_base: bool`. Every preview-producing operation — `renamePreview`, `formatPreview`, `sourceActionPreview`, `codeActionPreview` — registers the artifact in the per-tool `PreviewArtifactRegistry` and returns the new envelope alongside the existing result payload. The legacy `LspToolOutput.preview_id: Option<String>` field is also populated. 10 unit tests in `src/tool/lsp.rs` cover serialization, registry invariants, stale-base detection, affected-files propagation, and disk non-mutation; 4 live integration tests in `tests/lsp_composite_stdio.rs` drive the real `LspTool` stack against the fake server for all four operations.
+
+### Pass 3 — Evidence-adapter provenance contract
+
+The `ServiceLspEvidenceProvider` provenance side-channel is hardened with a documented sequential-call contract pinned on the `LspEvidenceProvider` trait and on the adapter itself. A new `consume_provenance_for(expected_operation: &str)` method atomically takes the recorded provenance and validates the operation matches the caller's expectation — `debug_assert!` on mismatch in debug builds, `tracing::warn!` in release builds, slot always cleared. The tuple-trait API is unchanged. 5 new tests in `crates/egglsp/src/evidence_adapter.rs` cover immediate consumption, mismatch detection, non-parallelization, slot clearing, and on-error recording.
+
+The typed-DTO V2 trait (Option A in the plan) was considered but deferred: ~30 mock/test implementations depend on the tuple-trait API, and the canonical collector path currently builds provenance from `server_info()` + `operational_state()` directly without consuming the side-channel. The contract is now enforced and documented; the typed path can be added later if/when downstream renderers want per-item provenance.
+
+### Pass 4 — Canonical model drift guardrails
+
+`LspContextPacket` is documented as the single canonical Phase 5 context model. A new `crates/egglsp/src/bridges.rs` module exposes three canonical bridge functions:
+
+- `semantic_context_to_lsp_items(SemanticContextResponse) -> Vec<LspContextItem>`
+- `lsp_packet_to_security_summary(&LspContextPacket) -> SecurityEvidenceSummary`
+- `lsp_packet_to_tui_summary(&LspContextPacket, &PreviewArtifactRegistry) -> LspTuiSummary`
+
+The security and TUI bridges delegate to the existing `build_security_evidence_summary` and `build_tui_summary` helpers so existing call sites and public APIs are unchanged. 9 new unit tests in `bridges.rs` cover diagnostic preservation, truncation-note propagation, counts, preview-ID preservation, and empty-registry handling. The documentation block in `crates/egglsp/src/context.rs` explicitly forbids introducing parallel packet shapes.
+
+### Pass 5 — Model-tier rendering in turn runtime
+
+`DefaultTurnRuntime::run_turn`'s LSP-context assembly block is extracted into two `pub(crate)` helpers so the tier resolution can be unit-tested in isolation: `resolve_lsp_context_tier(input, family) -> TierResolutionOutcome` and `assemble_lsp_context_for_turn(svc, input, family, allowed_root) -> Option<String>`. The production wiring is unchanged; `run_turn` calls the helper instead of inlining the block. 7 new tests in `src/agent/turn_runtime.rs` cover small-tier truncation visibility, frontier-tier reference visibility, workhorse default, explicit override preservation, and assemble-helper with no clients.
+
+### Pass 6 — Hunk and security bridge production seams
+
+6 production-seam tests in `tests/lsp_composite_stdio.rs` exercise the real `LspTool` stack (not just mock transformations) against the fake server:
+
+- `hunk_bridge_with_service_adapter_preserves_hunk_source_tag`
+- `hunk_bridge_with_service_adapter_records_truncation`
+- `hunk_bridge_with_service_adapter_degrades_without_lsp`
+- `security_bridge_with_lsp_packet_preserves_public_api_fanout`
+- `security_bridge_with_lsp_packet_omits_preview_mutations`
+- `security_bridge_with_service_adapter_marks_stale_evidence`
+
+Scenario builder `scenario_security_multi_file_refs()` provides full call-order coverage. A `SendNotification` for `textDocument/publishDiagnostics` backstops rust-analyzer's `WaitForDiagnosticsOrTimeout` readiness; a 5s readiness wait loop after `service.open_file` ensures the client is past `Initializing` before collection.
+
+### Pass 7 — No-mutation / no-executeCommand sweep
+
+Static audit of `executeCommand` / `workspace/executeCommand` / `applyEdit` / `workspace/applyEdit` / `apply_preview` / `apply_workspace_edit` / `apply_edit` / `applyEdits` across `src/` and `crates/egglsp/src/`: 19 matches, all classified OK (comments, capability advertisement, or rejection tests). No Phase 5 code path invokes mutation.
+
+4 hash-based tests in `tests/phase5_context_integration.rs::phase5_no_mutation_sweep` create real files in a `tempfile::TempDir`, hash them with `egglsp::operations::sha256_hex`, run the Phase 5 path under audit, and assert hash-equal:
+
+- `phase5_agent_context_collection_does_not_apply_rename`
+- `phase5_agent_context_collection_does_not_apply_formatting`
+- `phase5_agent_context_collection_does_not_execute_code_action_command`
+- `phase5_preview_registration_does_not_apply_workspace_edit`
+
+### Pass 8 — Regression evidence
+
+| Command | Result |
+|---------|--------|
+| `cargo fmt --check` | clean |
+| `cargo check --workspace --all-targets --all-features` | 0 new errors, no new warnings |
+| `cargo test -p egglsp --lib` | 660 passed |
+| `cargo test -p egglsp --features lsp-test-support --tests` | 660 lib + 21 stdio tests passing; 1 pre-existing flake in `scenario_engine::captured_id_lookup` unrelated to Phase 5 |
+| `cargo test --features lsp-test-support --test lsp_composite_stdio` | 36 passed (5/5 stable serial runs) |
+| `cargo test --test phase5_context_integration` | 53 passed (49 pre-existing + 4 new) |
+| `cargo test --workspace --all-features` | 1627 passed, 1 pre-existing flake (`remote_core_loader_tests::load_models_via_core_populates_state`) unrelated to Phase 5 |
+| `cargo test --test agent_loop_harness` | 40/40 (5/5 stable parallel runs; previously 1/5) |
+
+### Pass 9 — Status wording
+
+Phase 5 complete. Codegg assembles bounded, provenance-rich LSP context for agent, hunk, review, and security workflows. Live read-only LSP evidence is collected through the production adapter, preview-producing operations register non-applied artifacts with stable preview IDs in the live tool output, model-tier rendering is active in the turn runtime, stale/degraded/unsupported states are explicit, and deterministic tests cover budgets, fallback modes, preview safety, production adapter seams, hunk/security bridges, UI summaries, the evidence-adapter provenance contract, the canonical bridges, and the no-mutation / no-executeCommand sweep.
+
+### Final closeout invariants
+
+- **Canonical packet is one and only**: `LspContextPacket` is the canonical model; tool-facing shapes are adapters.
+- **Preview-only is non-negotiable**: all four preview operations return `not_applied: true` and never write to disk.
+- **Provenance cannot mismatch**: the side-channel `consume_provenance_for` rejects mis-pairings in debug and warns in release.
+- **Tier is wired in the turn path**: `DefaultTurnRuntime` resolves the tier from the model profile (or explicit override) before invoking the renderer.
+- **Bridges are named**: `crates/egglsp/src/bridges.rs` is the canonical entry point for the three downstream bridges.
+- **No-mutation is hash-verified**: temp-file hashes survive every Phase 5 path under audit.
+
 ## See Also
 
 - [.opencode/skills/lsp/SKILL.md](../.opencode/skills/lsp/SKILL.md) - LSP skill guide

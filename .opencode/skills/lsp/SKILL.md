@@ -1857,7 +1857,7 @@ outside pinned versions remains experimental.
 
 ## Phase 5: Agent Context and Workflow Integration
 
-Phase 5 turns the LSP substrate into bounded, explainable, and safe agent context.
+Phase 5 turns the LSP substrate into bounded, explainable, and safe agent context. The Phase 5 closeout (passes 1–9 below) further hardens the surface, reasserts safety invariants at the boundary, and narrows the public API to one canonical packet with named bridges.
 
 ### New Modules
 
@@ -1870,11 +1870,13 @@ crates/egglsp/src/
 ├── preview_registry.rs     # PreviewArtifactRegistry, PreviewArtifactEntry
 ├── tui_summary.rs          # LspTuiSummary, render_tui_status_line(), render_tui_summary_detail()
 ├── degradation_policy.rs   # evaluate_degradation(), LspContextDegradeDecision
-├── evidence_adapter.rs     # ServiceLspEvidenceProvider (production adapter for the live LspService)
-└── hunk_context.rs         # HunkDescriptor, HunkEvidence, hunk_response_to_context_items()
+├── evidence_adapter.rs     # ServiceLspEvidenceProvider (production adapter for the live LspService; consume_provenance_for guard)
+├── hunk_context.rs         # HunkDescriptor, HunkEvidence, hunk_response_to_context_items()
+└── bridges.rs              # Canonical bridges: semantic_context_to_lsp_items, lsp_packet_to_security_summary, lsp_packet_to_tui_summary
 
 tests/
-└── phase5_context_integration.rs  # 40 composite tests (33 pre-existing + 7 production-seam)
+├── phase5_context_integration.rs  # 53 composite tests (49 pre-existing + 4 no-mutation sweep)
+└── lsp_composite_stdio.rs         # 36 production-stack tests + 6 hunk/security bridge production-seam tests
 ```
 
 ### Key Concepts
@@ -1884,28 +1886,52 @@ tests/
 - **Dedup** by kind+file+range+symbol+message hash
 - **Ranking**: hunk-local > errors > same-file > definitions > fresh > short
 - **Three modes**: Disabled (no calls), Opportunistic (partial on failure), Required (error on failure)
-- **Preview artifacts** are registered but never applied (`applied=false`); `LspTool` owns an internal `PreviewArtifactRegistry` and every `LspToolOutput` carries a `preview_id: Option<String>`
-- **Agent rendering** is tier-aware: Small omits refs/hover, Workhorse includes them, Frontier is broader; `model_tier_for_profile()` is best-effort string match
+- **Preview artifacts** are registered but never applied (`applied=false`); `LspTool` owns an internal `PreviewArtifactRegistry` and every `LspToolOutput` carries a `preview_id: Option<String>` plus a `preview_metadata: Option<PreviewMetadata>` envelope with `not_applied`, `edit_count`, `affected_files`, `stale_base`
+- **Agent rendering** is tier-aware: Small omits refs/hover, Workhorse includes them, Frontier is broader; `model_tier_for_profile()` is best-effort string match and is wired through `DefaultTurnRuntime::run_turn` via `assemble_lsp_context_for_turn` + `resolve_lsp_context_tier`
 - **TUI summary** shows server status, counts, truncation, stale state, total items, freshness breakdown, preview ids, and unsupported operations
 - **Hunk navigation bridge** converts `HunkSourceNavigationResponse` to `Vec<LspContextItem>` tagged with `AgentContextSource::Hunk`; truncated responses are marked `LspEvidenceFreshness::PossiblyStale`
 - **Security review integration** requests context via `LspContextRequest::Review` with `LspRiskMode::Aggressive`; `SecurityEvidenceSummary.public_api_fanout` counts distinct reference files in the reviewed changed files
-- **Production evidence adapter** (`ServiceLspEvidenceProvider`) wires `LspEvidenceProvider` to the live `LspService`, capturing `EvidenceOperation` provenance on every item
+- **Production evidence adapter** (`ServiceLspEvidenceProvider`) wires `LspEvidenceProvider` to the live `LspService`, capturing `EvidenceOperation` provenance on every item; the side-channel contract is enforced via `consume_provenance_for(expected_operation)` which atomically takes the slot and validates the operation matches the caller's expectation
+- **Canonical bridges** in `crates/egglsp/src/bridges.rs` are the single entry point for converting between `LspContextPacket` and tool/UI/audit shapes
 
-### Canonical packet boundary (Pass 1)
+### Canonical packet boundary (Pass 1, hardened in Pass 4)
 
-`LspContextPacket` in `crates/egglsp/src/context.rs` is the single source of truth. The legacy tool-local `SemanticContextPacket` bridges via `into_lsp_context_packet()` and `from_lsp_context_packet()`. New callers should consume the canonical packet directly.
+`LspContextPacket` in `crates/egglsp/src/context.rs` is the single source of truth. The legacy tool-local `SemanticContextPacket` bridges via `into_lsp_context_packet()` and `from_lsp_context_packet()`. New callers should consume the canonical packet directly and route through the named bridges in `crates/egglsp/src/bridges.rs`. Do NOT add new parallel packet shapes — extend `LspContextPacket` / `LspContextItem` and add a bridge function instead.
 
 ### Agent context input (Pass 3)
 
 `LspAgentContextInput` is threaded through `TurnRunInput` so the agent loop can pass workflow metadata (changed files, hunks, active file, optional `ModelTier` override) to `LspTool::lsp_context_for_agent_with_input()`. `is_empty()` and `has_workflow_metadata()` agree on the same definition: mode flags alone are not workflow metadata.
 
-### Production-seam tests (Pass 9)
+### Preview-ID propagation (Pass 2)
 
-Seven new tests in `tests/phase5_context_integration.rs::production_seam_tests` exercise the production adapter (`ServiceLspEvidenceProvider`), the hunk navigation bridge, the security bridge, and the preview registry end-to-end via the existing `MockProvider` infrastructure — no real or fake LSP server required.
+`LspToolOutput.preview_metadata: Option<PreviewMetadata>` is the canonical envelope for the four preview operations. The new fields are `not_applied: bool` (always true in Phase 5), `edit_count: usize`, `affected_files: Vec<String>`, and `stale_base: bool`. The legacy `preview_id: Option<String>` field is also populated. 10 unit tests in `src/tool/lsp.rs` and 4 live integration tests in `tests/lsp_composite_stdio.rs` lock the shape and the disk-non-mutation invariant.
+
+### Evidence-adapter provenance contract (Pass 3)
+
+`ServiceLspEvidenceProvider::consume_provenance_for(expected_operation)` atomically takes the side-channel slot and validates the recorded operation matches the caller. The collector already dispatches all provider calls sequentially within `collect_context`; the contract is now pinned on the `LspEvidenceProvider` trait and on the adapter implementation. Tuple-trait API is unchanged. 5 new tests cover immediate consumption, mismatch detection, non-parallelization, slot clearing, and on-error recording.
+
+### Model-tier in turn runtime (Pass 5)
+
+`DefaultTurnRuntime::run_turn` extracts LSP-context assembly into two `pub(crate)` helpers: `resolve_lsp_context_tier(input, family)` and `assemble_lsp_context_for_turn(svc, input, family, allowed_root)`. 7 new tests in `src/agent/turn_runtime.rs::tier_resolution_tests` cover small-tier truncation visibility, frontier-tier reference visibility, workhorse default, explicit override preservation, and the assemble-helper with no clients.
+
+### Production-seam tests (Pass 9 from hardening, expanded in Pass 6 of closeout)
+
+7 production-seam tests in `tests/phase5_context_integration.rs::production_seam_tests` exercise the production adapter (`ServiceLspEvidenceProvider`), the hunk navigation bridge, the security bridge, and the preview registry end-to-end via the existing `MockProvider` infrastructure — no real or fake LSP server required. Pass 6 of the closeout adds 6 more in `tests/lsp_composite_stdio.rs` that drive the real `LspTool` stack against the fake server: 3 hunk-bridge tests (`preserves_hunk_source_tag`, `records_truncation`, `degrades_without_lsp`) and 3 security-bridge tests (`preserves_public_api_fanout`, `omits_preview_mutations`, `marks_stale_evidence`).
+
+### No-mutation / no-executeCommand sweep (Pass 7)
+
+4 hash-based tests in `tests/phase5_context_integration.rs::phase5_no_mutation_sweep` create real files in a `tempfile::TempDir`, hash them with `egglsp::operations::sha256_hex`, run the Phase 5 path under audit, and assert hash-equal:
+
+- `phase5_agent_context_collection_does_not_apply_rename`
+- `phase5_agent_context_collection_does_not_apply_formatting`
+- `phase5_agent_context_collection_does_not_execute_code_action_command`
+- `phase5_preview_registration_does_not_apply_workspace_edit`
+
+Static audit of `executeCommand` / `workspace/executeCommand` / `applyEdit` / `workspace/applyEdit` across `src/` and `crates/egglsp/src/` produced 19 matches, all classified OK (comments, capability advertisement, or rejection tests). No Phase 5 code path invokes mutation.
 
 ### Safety
 
-No LSP preview mutates disk. `workspace/executeCommand` is never invoked. The preview registry's `applied` field is always `false`.
+No LSP preview mutates disk. `workspace/executeCommand` is never invoked. The preview registry's `applied` field is always `false`. Every `LspToolOutput.preview_metadata` carries `not_applied: true`. The agent-loop `test_no_follow_up_latency` regression is fixed (15s wall-clock bound + deterministic provider-call-count behavioral assertion).
 
 ## See Also
 
