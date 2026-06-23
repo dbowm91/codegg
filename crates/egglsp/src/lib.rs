@@ -16,6 +16,7 @@
 //!   / [`semantic_context::SemanticContextResponse`] API for
 //!   domain-agnostic semantic queries.
 
+pub mod bridges;
 pub mod capability;
 pub mod client;
 pub mod compatibility;
@@ -50,6 +51,9 @@ pub mod supervisor;
 pub mod tui_summary;
 pub mod writer;
 
+pub use bridges::{
+    lsp_packet_to_security_summary, lsp_packet_to_tui_summary, semantic_context_to_lsp_items,
+};
 pub use capability::{
     CapabilityDecision, LspCapabilitySnapshot, LspSemanticOperation, LspUnavailable,
     SemanticTokenLegendSnapshot,

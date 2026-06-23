@@ -467,6 +467,29 @@ impl std::fmt::Display for AgentContextSource {
 /// `crates/egglsp/src/evidence_adapter.rs`. The two are bridged by
 /// `SemanticContextPacket::into_lsp_context_packet` when callers
 /// want to fold a tool response into the canonical packet.
+///
+/// # Drift guardrails (Pass 4)
+///
+/// `LspContextPacket` is the **single canonical Phase 5 context
+/// model** for agent and review workflows. Future contributors
+/// must NOT introduce additional packet shapes parallel to
+/// `LspContextPacket`; instead, add new fields to
+/// `LspContextPacket` (or `LspContextItem`) and extend the named
+/// bridges in `crates/egglsp/src/bridges.rs`. The canonical bridges
+/// are:
+///
+/// - `semantic_context_to_lsp_items` — converts a
+///   `SemanticContextResponse` into `Vec<LspContextItem>` for
+///   ingestion into a packet.
+/// - `lsp_packet_to_security_summary` — canonical entry point for
+///   folding a packet into `SecurityEvidenceSummary`.
+/// - `lsp_packet_to_tui_summary` — canonical entry point for
+///   building a `LspTuiSummary` from a packet and preview registry.
+///
+/// Any tool-local shape that survives alongside `LspContextPacket`
+/// (e.g. `SemanticContextPacket` for `semanticContext`,
+/// `SecurityContextPacket` for `securityContext`) is treated as a
+/// presentation adapter, not a parallel canonical model.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LspContextPacket {
     /// Request that produced this packet.
