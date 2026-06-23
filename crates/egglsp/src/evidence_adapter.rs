@@ -19,6 +19,45 @@
 //!   [`ServiceLspEvidenceProvider::last_provenance`] so callers can
 //!   enrich the items the collector produces.
 //!
+//! # Sequential side-channel contract (Pass 3 Phase 5)
+//!
+//! The per-call provenance slot (`last_provenance`) is a **single
+//! shared `Option<LspEvidenceProvenance>` behind a `Mutex`**. It is
+//! NOT thread-safe under concurrent calls on the same adapter
+//! instance — the second concurrent call would clobber the first
+//! caller's provenance before that caller could observe it.
+//!
+//! Therefore the adapter requires a **sequential call contract**:
+//!
+//! 1. Each `LspEvidenceProvider` trait method invocation must
+//!    complete (return to the caller) before the next method on the
+//!    same adapter instance is invoked.
+//! 2. Callers that need to observe the provenance for a given call
+//!    MUST consume it via
+//!    [`ServiceLspEvidenceProvider::consume_provenance_for`] **before
+//!    the next provider call**. This atomically takes the slot and
+//!    validates that the recorded operation matches the caller's
+//!    expectation (a `debug_assert!` in debug builds; a documented
+//!    no-op match in release builds — the slot is still cleared).
+//! 3. No `tokio::join!`, `futures::join!`, or `tokio::spawn` may
+//!    invoke two provider methods on the same adapter concurrently.
+//!    Each `collect_context` / `collect_hunk_context` invocation in
+//!    [`crate::evidence_collector`] already obeys this contract —
+//!    every provider call is `.await`ed sequentially.
+//!
+//! The contract is enforced by:
+//!
+//! - [`ServiceLspEvidenceProvider::consume_provenance_for`] — the
+//!   guarded accessor that takes the slot AND validates the
+//!   operation tag, panicking on mismatch in debug builds.
+//! - The doc-pinned [`crate::evidence_collector::LspEvidenceProvider`]
+//!   contract that mirrors the requirement.
+//!
+//! Future maintainers: if you need to parallelize provider calls,
+//! add a typed DTO trait (Pass 3 Option A) that carries provenance
+//! alongside the data — do NOT try to make the side-channel
+//! thread-safe.
+//!
 //! # Capability gating
 //!
 //! Every read-only adapter method consults
@@ -156,6 +195,11 @@ impl ServiceLspEvidenceProvider {
     /// decision, freshness). After the collector dispatches a call
     /// it can call `take_provenance()` to learn what the adapter
     /// saw and stamp it onto the produced items.
+    ///
+    /// **Sequential contract**: see the module-level doc comment.
+    /// This takes the slot without validating the operation tag;
+    /// prefer [`consume_provenance_for`](Self::consume_provenance_for)
+    /// in call-site code where the expected operation is known.
     pub fn take_provenance(&self) -> Option<LspEvidenceProvenance> {
         self.last_provenance.lock().ok().and_then(|mut g| g.take())
     }
@@ -163,6 +207,52 @@ impl ServiceLspEvidenceProvider {
     /// Borrow the per-call provenance without consuming it.
     pub fn last_provenance(&self) -> Option<LspEvidenceProvenance> {
         self.last_provenance.lock().ok().and_then(|g| g.clone())
+    }
+
+    /// Atomically consume the per-call provenance **and validate**
+    /// that the recorded operation matches `expected_operation`.
+    ///
+    /// This is the guarded accessor that implements Pass 3 Phase 5's
+    /// sequential side-channel contract:
+    ///
+    /// - On a match, the slot is cleared and the provenance is
+    ///   returned.
+    /// - On a mismatch, the slot is **still** cleared (so a stale
+    ///   entry cannot leak to a subsequent caller) but the mismatch
+    ///   is surfaced: in debug builds via `debug_assert!`, and
+    ///   always via a `tracing::warn!` so release builds surface
+    ///   the regression in logs.
+    /// - On an empty slot (no provenance recorded yet, or already
+    ///   consumed), `None` is returned and no assertion fires.
+    ///
+    /// Call-site code should prefer this over
+    /// [`take_provenance`](Self::take_provenance) whenever the
+    /// call site knows which LSP operation it just dispatched — i.e.
+    /// almost always.
+    pub fn consume_provenance_for(
+        &self,
+        expected_operation: &str,
+    ) -> Option<LspEvidenceProvenance> {
+        let taken = self.take_provenance();
+        if let Some(ref prov) = taken {
+            if prov.operation != expected_operation {
+                debug_assert_eq!(
+                    prov.operation,
+                    expected_operation,
+                    "ServiceLspEvidenceProvider provenance mismatch: slot recorded `{}` but call site expected `{}`. \
+                     This usually indicates a concurrent provider call clobbered the slot — see the module-level \
+                     sequential side-channel contract.",
+                    prov.operation,
+                    expected_operation
+                );
+                tracing::warn!(
+                    recorded = %prov.operation,
+                    expected = %expected_operation,
+                    "ServiceLspEvidenceProvider provenance operation mismatch; sequential contract violated"
+                );
+            }
+        }
+        taken
     }
 
     /// Asynchronously look up `(server_id, generation)` for the
@@ -831,6 +921,140 @@ mod tests {
             prov.capability_decision.as_deref(),
             Some("unknown"),
             "unknown capability decision should be recorded when no client is configured"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Pass 3 sequential side-channel contract tests
+    // -----------------------------------------------------------------------
+
+    /// Pass 3: After each trait method call, the caller MUST immediately
+    /// consume the provenance via `consume_provenance_for` before the
+    /// next call. This test verifies the normal happy path:
+    /// `diagnostics_for_file` records provenance, and `consume_provenance_for`
+    /// atomically takes it AND validates the operation matches.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn collector_consumes_provenance_immediately_after_call() {
+        let service = LspService::new_arc(crate::config::LspConfig::default());
+        let provider = ServiceLspEvidenceProvider::new(service, PathBuf::from("/tmp"));
+
+        assert!(provider.last_provenance().is_none());
+
+        let _ = provider
+            .diagnostics_for_file(std::path::Path::new("/tmp/x.rs"))
+            .await;
+        let prov = provider
+            .consume_provenance_for("textDocument/diagnostic")
+            .expect("provenance should be recorded after diagnostics call");
+        assert_eq!(prov.operation, "textDocument/diagnostic");
+
+        // Slot is now empty.
+        assert!(provider.last_provenance().is_none());
+        assert!(provider
+            .consume_provenance_for("textDocument/diagnostic")
+            .is_none());
+    }
+
+    /// Pass 3: When the call site passes the wrong `expected_operation`
+    /// to `consume_provenance_for`, the slot is still cleared (so stale
+    /// data doesn't leak) but a `debug_assert!` fires in debug builds and
+    /// a `tracing::warn!` is emitted in release builds. This test
+    /// verifies the detection mechanism: in debug builds the assert
+    /// fires and the test panics (which we explicitly assert via
+    /// `should_panic`); the slot is still cleared before the panic
+    /// propagates so no stale state survives.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[should_panic(expected = "provenance mismatch")]
+    async fn provenance_operation_mismatch_is_detected() {
+        let service = LspService::new_arc(crate::config::LspConfig::default());
+        let provider = ServiceLspEvidenceProvider::new(service, PathBuf::from("/tmp"));
+
+        let _ = provider
+            .diagnostics_for_file(std::path::Path::new("/tmp/x.rs"))
+            .await;
+
+        // Try to consume it under the wrong operation tag — the
+        // debug_assert! fires because the recorded operation
+        // (`textDocument/diagnostic`) does not match the call site's
+        // expectation (`textDocument/definition`).
+        let _ = provider.consume_provenance_for("textDocument/definition");
+    }
+
+    /// Pass 3: `collect_context` and `collect_hunk_context` dispatch
+    /// provider calls sequentially — there is no `join!`, `tokio::spawn`,
+    /// or `futures::join_all` over the provider in the canonical
+    /// collector code. This test exercises the same sequential pattern
+    /// against the adapter to verify the contract is observable: each
+    /// call overwrites the previous provenance slot exactly once.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn collector_does_not_parallelize_provider_calls() {
+        let service = LspService::new_arc(crate::config::LspConfig::default());
+        let provider = ServiceLspEvidenceProvider::new(service, PathBuf::from("/tmp"));
+
+        let _ = provider
+            .diagnostics_for_file(std::path::Path::new("/tmp/a.rs"))
+            .await;
+        let first = provider
+            .consume_provenance_for("textDocument/diagnostic")
+            .expect("first provenance present");
+        assert_eq!(first.operation, "textDocument/diagnostic");
+
+        let _ = provider
+            .diagnostics_for_file(std::path::Path::new("/tmp/b.rs"))
+            .await;
+        let second = provider
+            .consume_provenance_for("textDocument/diagnostic")
+            .expect("second provenance present");
+        assert_eq!(second.operation, "textDocument/diagnostic");
+
+        // After consuming the second, the slot is empty.
+        assert!(provider
+            .consume_provenance_for("textDocument/diagnostic")
+            .is_none());
+    }
+
+    /// Pass 3: `take_provenance` clears the slot — it does not leave
+    /// stale data that could be observed by the next caller. This is
+    /// the foundational invariant the sequential contract relies on.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn adapter_take_provenance_clears_slot() {
+        let service = LspService::new_arc(crate::config::LspConfig::default());
+        let provider = ServiceLspEvidenceProvider::new(service, PathBuf::from("/tmp"));
+
+        let _ = provider
+            .diagnostics_for_file(std::path::Path::new("/tmp/x.rs"))
+            .await;
+        let first = provider.take_provenance();
+        assert!(first.is_some(), "first take must return provenance");
+
+        let second = provider.take_provenance();
+        assert!(second.is_none(), "second take must return None");
+        assert!(provider.last_provenance().is_none());
+    }
+
+    /// Pass 3: Provenance is recorded even when the underlying LSP call
+    /// errors out. The `capability_decision` and `operation` fields must
+    /// still be stamped so downstream consumers can attribute the failure
+    /// to a specific LSP request, not just see "no provenance".
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn adapter_records_provenance_on_error() {
+        let service = LspService::new_arc(crate::config::LspConfig::default());
+        let provider = ServiceLspEvidenceProvider::new(service, PathBuf::from("/tmp"));
+
+        // Trigger an error path: document_symbols on an unsupported config
+        // returns Unavailable, but provenance must still be recorded.
+        let result = provider
+            .document_symbols(std::path::Path::new("/tmp/x.rs"))
+            .await;
+        assert!(result.is_err(), "expected Unavailable error");
+
+        let prov = provider
+            .consume_provenance_for("textDocument/documentSymbol")
+            .expect("provenance must be recorded even on error");
+        assert_eq!(prov.operation, "textDocument/documentSymbol");
+        assert!(
+            prov.capability_decision.is_some(),
+            "capability_decision must be stamped on error path"
         );
     }
 }

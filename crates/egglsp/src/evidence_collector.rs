@@ -53,6 +53,26 @@ pub enum LspContextError {
 ///
 /// Implementors return simplified tuple results so the collector
 /// logic can be exercised with lightweight mocks.
+///
+/// # Sequential call contract (Pass 3 Phase 5)
+///
+/// The collector's [`collect_context`] and [`collect_hunk_context`]
+/// functions are the only production callers of this trait. They
+/// invoke provider methods **sequentially** (every `.await` is on a
+/// single trait method, never combined with `join!` / `tokio::spawn`).
+///
+/// This contract matters for provenance-aware adapters like
+/// [`crate::evidence_adapter::ServiceLspEvidenceProvider`], which
+/// record per-call provenance in a shared side-channel slot. If two
+/// trait methods are invoked concurrently on the same adapter
+/// instance, the second call would clobber the first caller's
+/// provenance before that caller could read it.
+///
+/// Mock providers (used in tests) are free to ignore this contract
+/// — they have no side-channel — but production wiring must enforce
+/// it. See
+/// [`crate::evidence_adapter::ServiceLspEvidenceProvider`] for the
+/// guarded accessor that detects contract violations.
 #[async_trait]
 pub trait LspEvidenceProvider: Send + Sync {
     /// Diagnostics for a file. Returns `(severity, message, range_text)`.
