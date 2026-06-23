@@ -4651,3 +4651,1383 @@ async fn semantic_context_returns_err_when_state_is_failed() {
 
     service.shutdown_all().await;
 }
+
+// ══════════════════════════════════════════════════════════════════════
+// Phase 5 Pass 6: Hunk + Security bridge production-seam tests
+//
+// The hunk and security bridges in `egglsp::hunk_context` and
+// `egglsp::security_context` are exercised end-to-end through the
+// production `ServiceLspEvidenceProvider` adapter (the same path
+// `LspTool::lsp_context_for_agent_with_input` uses at runtime),
+// backed by the fake LSP server via `LspService::new_arc`. This
+// locks down:
+//   - hunk bridge item provenance carries `AgentContextSource::Hunk`
+//   - hunk bridge records truncation as `PossiblyStale` freshness
+//   - hunk bridge degrades without an LSP server
+//   - security bridge counts distinct reference files for
+//     `public_api_fanout`
+//   - security bridge omits preview-only mutations from item
+//     provenance
+//   - security bridge records `PossiblyStale` freshness when the
+//     server is degraded
+// ══════════════════════════════════════════════════════════════════════
+
+/// Fake-server scenario: multi-file references for security review fanout.
+/// Returns 3 references across 3 distinct files so the production adapter's
+/// reference collection exercises the cross-file public_api_fanout path.
+fn scenario_security_multi_file_refs() -> serde_json::Value {
+    serde_json::json!({
+        "name": "security_multi_file_refs",
+        "steps": [
+            {
+                "type": "ExpectRequest",
+                "method": "initialize",
+                "id": {"type": "Number"},
+                "then": [
+                    {"type": "RespondResult", "result": {
+                        "capabilities": {
+                            "definitionProvider": true,
+                            "referencesProvider": true,
+                            "documentSymbolProvider": true
+                        }
+                    }}
+                ]
+            },
+            {"type": "ExpectNotification", "method": "initialized", "then": []},
+            {
+                "type": "SendNotification",
+                "method": "textDocument/publishDiagnostics",
+                "params": {
+                    "uri": "__SOURCE_URI__",
+                    "diagnostics": [
+                        {
+                            "range": {
+                                "start": {"line": 0, "character": 0},
+                                "end": {"line": 0, "character": 1}
+                            },
+                            "severity": 2,
+                            "message": "warning: security review stub"
+                        }
+                    ]
+                }
+            },
+            {"type": "AllowNotification", "method": "textDocument/didOpen"},
+            {"type": "AllowNotification", "method": "textDocument/didChange"},
+            {"type": "AllowNotification", "method": "textDocument/didSave"},
+            {
+                "type": "ExpectRequest",
+                "method": "textDocument/documentSymbol",
+                "id": {"type": "Number"},
+                "then": [
+                    {"type": "RespondResult", "result": [
+                        {
+                            "name": "login",
+                            "kind": 12,
+                            "range": {
+                                "start": {"line": 0, "character": 0},
+                                "end": {"line": 4, "character": 1}
+                            },
+                            "selectionRange": {
+                                "start": {"line": 0, "character": 7},
+                                "end": {"line": 0, "character": 12}
+                            }
+                        }
+                    ]}
+                ]
+            },
+            {
+                "type": "ExpectRequest",
+                "method": "textDocument/references",
+                "id": {"type": "Number"},
+                "then": [
+                    {"type": "RespondResult", "result": [
+                        {
+                            "uri": "__SOURCE_URI__",
+                            "range": {
+                                "start": {"line": 1, "character": 4},
+                                "end": {"line": 1, "character": 9}
+                            }
+                        },
+                        {
+                            "uri": "__ROOT_URI__/src/api.rs",
+                            "range": {
+                                "start": {"line": 10, "character": 0},
+                                "end": {"line": 10, "character": 5}
+                            }
+                        },
+                        {
+                            "uri": "__ROOT_URI__/src/handler.rs",
+                            "range": {
+                                "start": {"line": 22, "character": 8},
+                                "end": {"line": 22, "character": 13}
+                            }
+                        }
+                    ]}
+                ]
+            },
+            {
+                "type": "ExpectRequest",
+                "method": "textDocument/documentSymbol",
+                "id": {"type": "Number"},
+                "then": [
+                    {"type": "RespondResult", "result": [
+                        {
+                            "name": "login",
+                            "kind": 12,
+                            "range": {
+                                "start": {"line": 0, "character": 0},
+                                "end": {"line": 4, "character": 1}
+                            },
+                            "selectionRange": {
+                                "start": {"line": 0, "character": 7},
+                                "end": {"line": 0, "character": 12}
+                            }
+                        }
+                    ]}
+                ]
+            },
+            {
+                "type": "ExpectRequest",
+                "method": "textDocument/definition",
+                "id": {"type": "Number"},
+                "then": [
+                    {"type": "RespondResult", "result": [
+                        {
+                            "uri": "__SOURCE_URI__",
+                            "range": {
+                                "start": {"line": 0, "character": 7},
+                                "end": {"line": 0, "character": 12}
+                            }
+                        }
+                    ]}
+                ]
+            },
+            {
+                "type": "ExpectRequest",
+                "method": "textDocument/documentSymbol",
+                "id": {"type": "Number"},
+                "then": [
+                    {"type": "RespondResult", "result": [
+                        {
+                            "name": "login",
+                            "kind": 12,
+                            "range": {
+                                "start": {"line": 0, "character": 0},
+                                "end": {"line": 4, "character": 1}
+                            },
+                            "selectionRange": {
+                                "start": {"line": 0, "character": 7},
+                                "end": {"line": 0, "character": 12}
+                            }
+                        }
+                    ]}
+                ]
+            },
+            {
+                "type": "ExpectRequest",
+                "method": "textDocument/implementation",
+                "id": {"type": "Number"},
+                "then": [
+                    {"type": "RespondResult", "result": []}
+                ]
+            },
+            {"type": "ExpectRequest", "method": "shutdown", "id": {"type": "Number"},
+                "then": [{"type": "RespondResult", "result": null}]},
+            {"type": "ExpectNotification", "method": "exit", "then": []}
+        ],
+        "exit": {"type": "ExitCode", "code": 0},
+        "strict": true
+    })
+}
+
+/// Source code with a function called from multiple sites across the
+/// workspace so the LSP server can return references in distinct files.
+const SECURITY_FANOUT_SOURCE: &str = r#"pub fn login(user: &str) -> bool {
+    user == "admin"
+}
+
+fn entry() {
+    if login("alice") {
+        println!("ok");
+    }
+}
+"#;
+
+/// Verify that items produced by `hunk_response_to_context_items` all
+/// carry `AgentContextSource::Hunk` when fed by the production
+/// `HunkSourceNavigationCollector` against a real fake-server LSP stack.
+#[tokio::test]
+async fn hunk_bridge_with_service_adapter_preserves_hunk_source_tag() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let root = tempdir.path().to_path_buf();
+    let source_path = root.join("src/lib.rs");
+    let scenario_path = root.join("scenario.json");
+    let transcript_path = root.join("transcript.jsonl");
+    let root_uri = path_to_uri(&root);
+    let source_uri = path_to_uri(&source_path);
+
+    std::fs::create_dir_all(root.join("src")).expect("mkdir src");
+    std::fs::write(&source_path, HUNK_SOURCE).expect("write source");
+    std::fs::write(
+        root.join("Cargo.toml"),
+        "[package]\nname = \"lsp-hunk-bridge-tag-test\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .expect("write Cargo.toml");
+
+    let scenario = substitute_placeholders(
+        scenario_hunk_source_context(),
+        &root,
+        &root_uri,
+        &source_path,
+        &source_uri,
+        &scenario_path,
+        &transcript_path,
+    );
+    std::fs::write(
+        &scenario_path,
+        serde_json::to_string_pretty(&scenario).expect("scenario json"),
+    )
+    .expect("write scenario");
+
+    let service = LspService::new_arc(make_service_config(&scenario_path, &transcript_path));
+    let tool = LspTool::new(service.clone()).with_allowed_root(root.clone());
+
+    let patch = "@@ -1,5 +1,5 @@\n pub fn entry() {\n-    helper();\n+    helper_v2();\n }\n \n fn helper() {}\n";
+    let request = egglsp::hunk_context::HunkSourceNavigationRequest {
+        file_path: source_path.to_string_lossy().to_string(),
+        hunks: Vec::new(),
+        patch: Some(patch.to_string()),
+        intent: "explain".to_string(),
+        include_definitions: true,
+        include_references: true,
+        include_call_hierarchy: false,
+        include_type_hierarchy: false,
+        excerpt_radius: 5,
+        max_hunks: 20,
+        max_symbols_per_hunk: 16,
+        max_diagnostics_per_hunk: 8,
+        max_references_per_hunk: 8,
+    };
+
+    let response = timeout(
+        Duration::from_secs(30),
+        tool.execute_hunk_source_context_typed(request),
+    )
+    .await
+    .expect("hunkSourceContext timed out")
+    .expect("hunkSourceContext must succeed");
+
+    let items = egglsp::hunk_context::hunk_response_to_context_items(&response);
+    assert!(!items.is_empty(), "hunk bridge must produce items");
+    for item in &items {
+        assert_eq!(
+            item.source,
+            Some(egglsp::context::AgentContextSource::Hunk),
+            "every hunk bridge item must carry AgentContextSource::Hunk"
+        );
+    }
+
+    service.shutdown_all().await;
+}
+
+/// Verify that the hunk bridge records truncation on the response
+/// when the patch contains more hunks than the configured limit, and
+/// the bridge forwards `PossiblyStale` freshness to all items when
+/// truncation occurs.
+#[tokio::test]
+async fn hunk_bridge_with_service_adapter_records_truncation() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let root = tempdir.path().to_path_buf();
+    let source_path = root.join("src/lib.rs");
+    let scenario_path = root.join("scenario.json");
+    let transcript_path = root.join("transcript.jsonl");
+    let root_uri = path_to_uri(&root);
+    let source_uri = path_to_uri(&source_path);
+
+    std::fs::create_dir_all(root.join("src")).expect("mkdir src");
+    std::fs::write(&source_path, HUNK_SOURCE).expect("write source");
+    std::fs::write(
+        root.join("Cargo.toml"),
+        "[package]\nname = \"lsp-hunk-bridge-truncation-test\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .expect("write Cargo.toml");
+
+    let scenario = substitute_placeholders(
+        scenario_hunk_source_context(),
+        &root,
+        &root_uri,
+        &source_path,
+        &source_uri,
+        &scenario_path,
+        &transcript_path,
+    );
+    std::fs::write(
+        &scenario_path,
+        serde_json::to_string_pretty(&scenario).expect("scenario json"),
+    )
+    .expect("write scenario");
+
+    let service = LspService::new_arc(make_service_config(&scenario_path, &transcript_path));
+    let tool = LspTool::new(service.clone()).with_allowed_root(root.clone());
+
+    // 3 hunks with max_hunks=1 to force truncation.
+    let patch = "@@ -1,5 +1,5 @@\n pub fn entry() {\n-    helper();\n+    helper_v2();\n }\n \n fn helper() {}\n@@ -10,5 +10,5 @@\n fn a() {\n-    b();\n+    b_v2();\n }\n \n fn b() {}\n@@ -20,5 +20,5 @@\n fn c() {\n-    d();\n+    d_v2();\n }\n \n fn d() {}\n";
+    let request = egglsp::hunk_context::HunkSourceNavigationRequest {
+        file_path: source_path.to_string_lossy().to_string(),
+        hunks: Vec::new(),
+        patch: Some(patch.to_string()),
+        intent: "explain".to_string(),
+        include_definitions: true,
+        include_references: true,
+        include_call_hierarchy: false,
+        include_type_hierarchy: false,
+        excerpt_radius: 5,
+        max_hunks: 1,
+        max_symbols_per_hunk: 16,
+        max_diagnostics_per_hunk: 8,
+        max_references_per_hunk: 8,
+    };
+
+    let response = timeout(
+        Duration::from_secs(30),
+        tool.execute_hunk_source_context_typed(request),
+    )
+    .await
+    .expect("hunkSourceContext timed out")
+    .expect("hunkSourceContext must succeed");
+
+    assert!(
+        response.truncated,
+        "response should be marked truncated when max_hunks < patch hunk count"
+    );
+    let items = egglsp::hunk_context::hunk_response_to_context_items(&response);
+    assert!(!items.is_empty(), "hunk bridge must still produce items");
+    for item in &items {
+        assert_eq!(
+            item.provenance.freshness,
+            egglsp::context::LspEvidenceFreshness::PossiblyStale,
+            "truncated hunk bridge items must carry PossiblyStale freshness"
+        );
+    }
+
+    service.shutdown_all().await;
+}
+
+/// Verify that the hunk bridge degrades cleanly when no LSP server
+/// is available for the requested file. The response is empty and the
+/// bridge converts it to an empty items list without panicking.
+#[tokio::test]
+async fn hunk_bridge_with_service_adapter_degrades_without_lsp() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let root = tempdir.path().to_path_buf();
+    let source_path = root.join("src/lib.rs");
+    let scenario_path = root.join("scenario.json");
+    let transcript_path = root.join("transcript.jsonl");
+
+    std::fs::create_dir_all(root.join("src")).expect("mkdir src");
+    // No Cargo.toml (no project root marker) so the service cannot
+    // even spawn a rust-analyzer client. The scenario is empty.
+    std::fs::write(&source_path, "pub fn dead() {}\n").expect("write source");
+
+    let scenario = serde_json::json!({
+        "name": "empty",
+        "steps": [
+            {"type": "ExpectRequest", "method": "shutdown", "id": {"type": "Number"},
+                "then": [{"type": "RespondResult", "result": null}]},
+            {"type": "ExpectNotification", "method": "exit", "then": []}
+        ],
+        "exit": {"type": "ExitCode", "code": 0},
+        "strict": true
+    });
+    std::fs::write(
+        &scenario_path,
+        serde_json::to_string_pretty(&scenario).expect("scenario json"),
+    )
+    .expect("write scenario");
+
+    let service = LspService::new_arc(make_service_config(&scenario_path, &transcript_path));
+    let tool = LspTool::new(service.clone()).with_allowed_root(root.clone());
+
+    let patch = "@@ -1,2 +1,2 @@\n-pub fn dead() {}\n+pub fn live() {}\n";
+    let request = egglsp::hunk_context::HunkSourceNavigationRequest {
+        file_path: source_path.to_string_lossy().to_string(),
+        hunks: Vec::new(),
+        patch: Some(patch.to_string()),
+        intent: "explain".to_string(),
+        include_definitions: true,
+        include_references: true,
+        include_call_hierarchy: false,
+        include_type_hierarchy: false,
+        excerpt_radius: 5,
+        max_hunks: 20,
+        max_symbols_per_hunk: 16,
+        max_diagnostics_per_hunk: 8,
+        max_references_per_hunk: 8,
+    };
+    let result = timeout(
+        Duration::from_secs(15),
+        tool.execute_hunk_source_context_typed(request),
+    )
+    .await
+    .expect("hunkSourceContext timed out");
+
+    // The hunk bridge degrades without an LSP server: it returns
+    // an empty response (no items, no truncation, file path
+    // preserved). The bridge then converts that response into an
+    // empty item list. Either Ok with empty response, or Err with
+    // a non-empty message is an acceptable degradation signal.
+    match result {
+        Ok(response) => {
+            // The hunk bridge degrades without an LSP server by
+            // producing an empty item list — the items vector is
+            // the post-bridge projection of the response. The raw
+            // response may still carry hunk descriptors from the
+            // patch parsing stage, but the bridge converts them
+            // into zero context items because no LSP evidence is
+            // available.
+            let items = egglsp::hunk_context::hunk_response_to_context_items(&response);
+            assert!(
+                items.is_empty(),
+                "hunk bridge items must be empty when no LSP server is available, got {} items; response={:?}",
+                items.len(),
+                response,
+            );
+        }
+        Err(err) => {
+            assert!(
+                !err.is_empty(),
+                "error message must be non-empty when the hunk bridge degrades"
+            );
+        }
+    }
+
+    // Bridge on an empty response is well-defined: zero items.
+    let empty = egglsp::hunk_context::HunkSourceNavigationResponse::new("/nonexistent.rs");
+    let items = egglsp::hunk_context::hunk_response_to_context_items(&empty);
+    assert!(items.is_empty(), "empty response yields no items");
+
+    service.shutdown_all().await;
+}
+
+/// Verify that `SecurityEvidenceSummary.public_api_fanout` counts
+/// distinct reference files when fed by the production evidence
+/// adapter (`ServiceLspEvidenceProvider` -> `collect_context`).
+#[tokio::test]
+async fn security_bridge_with_lsp_packet_preserves_public_api_fanout() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let root = tempdir.path().to_path_buf();
+    let source_path = root.join("src/lib.rs");
+    let scenario_path = root.join("scenario.json");
+    let transcript_path = root.join("transcript.jsonl");
+    let root_uri = path_to_uri(&root);
+    let source_uri = path_to_uri(&source_path);
+
+    std::fs::create_dir_all(root.join("src")).expect("mkdir src");
+    std::fs::write(&source_path, SECURITY_FANOUT_SOURCE).expect("write source");
+    std::fs::write(
+        root.join("Cargo.toml"),
+        "[package]\nname = \"lsp-security-fanout-test\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .expect("write Cargo.toml");
+
+    let scenario = substitute_placeholders(
+        scenario_security_multi_file_refs(),
+        &root,
+        &root_uri,
+        &source_path,
+        &source_uri,
+        &scenario_path,
+        &transcript_path,
+    );
+    std::fs::write(
+        &scenario_path,
+        serde_json::to_string_pretty(&scenario).expect("scenario json"),
+    )
+    .expect("write scenario");
+
+    let service = LspService::new_arc(make_service_config(&scenario_path, &transcript_path));
+    let adapter =
+        egglsp::evidence_adapter::ServiceLspEvidenceProvider::new(service.clone(), root.clone());
+
+    // The rust-analyzer profile uses WaitForDiagnosticsOrTimeout; we
+    // need the client to publish diagnostics so the operational
+    // state transitions to Ready.
+    service
+        .open_file(&source_path, SECURITY_FANOUT_SOURCE)
+        .await
+        .expect("open_file should succeed");
+
+    let (key, _project_root) = service
+        .get_or_create_client(&source_path)
+        .await
+        .expect("client key");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        if tokio::time::Instant::now() >= deadline {
+            panic!(
+                "client never reached Ready within 5s.\ntranscript:\n{}",
+                transcript_tail(&transcript_path),
+            );
+        }
+        let state = service.operational_state_for_key(&key).await;
+        if matches!(state, Some(egglsp::health::LspOperationalState::Ready)) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(15)).await;
+    }
+
+    let request = egglsp::LspContextRequest::Review {
+        changed_files: vec![source_path.clone()],
+        hunks: Vec::new(),
+        risk_mode: egglsp::LspRiskMode::Aggressive,
+    };
+    let mut budget = egglsp::LspContextBudget::default();
+    budget.max_references = 100;
+    budget.max_files = 50;
+    let mode = egglsp::LspContextMode::Opportunistic;
+
+    let packet = timeout(
+        Duration::from_secs(30),
+        egglsp::collect_context(&adapter, &request, &budget, &mode),
+    )
+    .await
+    .expect("collect timed out")
+    .expect("collect failed");
+
+    let summary = egglsp::build_security_evidence_summary(&packet);
+    assert_eq!(
+        summary.references_count, 3,
+        "summary should count 3 references from the fake server, got {}",
+        summary.references_count
+    );
+    assert_eq!(
+        summary.public_api_fanout, 3,
+        "public_api_fanout must equal distinct reference files (3), got {}",
+        summary.public_api_fanout
+    );
+
+    let distinct_ref_files: std::collections::HashSet<std::path::PathBuf> = packet
+        .items
+        .iter()
+        .filter(|i| matches!(i.kind, egglsp::context::LspContextItemKind::Reference))
+        .map(|i| i.file.clone())
+        .collect();
+    assert_eq!(
+        distinct_ref_files.len(),
+        3,
+        "packet should reference 3 distinct files"
+    );
+    assert_eq!(
+        distinct_ref_files.len(),
+        summary.public_api_fanout,
+        "summary.public_api_fanout must match distinct reference file count"
+    );
+
+    service.shutdown_all().await;
+}
+
+/// Verify that the security review bridge never surfaces preview-only
+/// mutations. Every item produced via the production evidence adapter
+/// must have a read-only operation provenance — no rename, code
+/// action, or formatting operations appear in the security packet.
+#[tokio::test]
+async fn security_bridge_with_lsp_packet_omits_preview_mutations() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let root = tempdir.path().to_path_buf();
+    let source_path = root.join("src/lib.rs");
+    let scenario_path = root.join("scenario.json");
+    let transcript_path = root.join("transcript.jsonl");
+    let root_uri = path_to_uri(&root);
+    let source_uri = path_to_uri(&source_path);
+
+    std::fs::create_dir_all(root.join("src")).expect("mkdir src");
+    std::fs::write(&source_path, SECURITY_FANOUT_SOURCE).expect("write source");
+    std::fs::write(
+        root.join("Cargo.toml"),
+        "[package]\nname = \"lsp-security-mutation-test\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .expect("write Cargo.toml");
+
+    let scenario = substitute_placeholders(
+        scenario_security_multi_file_refs(),
+        &root,
+        &root_uri,
+        &source_path,
+        &source_uri,
+        &scenario_path,
+        &transcript_path,
+    );
+    std::fs::write(
+        &scenario_path,
+        serde_json::to_string_pretty(&scenario).expect("scenario json"),
+    )
+    .expect("write scenario");
+
+    let service = LspService::new_arc(make_service_config(&scenario_path, &transcript_path));
+    let adapter =
+        egglsp::evidence_adapter::ServiceLspEvidenceProvider::new(service.clone(), root.clone());
+
+    service
+        .open_file(&source_path, SECURITY_FANOUT_SOURCE)
+        .await
+        .expect("open_file should succeed");
+    let (key, _project_root) = service
+        .get_or_create_client(&source_path)
+        .await
+        .expect("client key");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        if tokio::time::Instant::now() >= deadline {
+            panic!(
+                "client never reached Ready within 5s.\ntranscript:\n{}",
+                transcript_tail(&transcript_path),
+            );
+        }
+        let state = service.operational_state_for_key(&key).await;
+        if matches!(state, Some(egglsp::health::LspOperationalState::Ready)) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(15)).await;
+    }
+
+    let request = egglsp::LspContextRequest::Review {
+        changed_files: vec![source_path.clone()],
+        hunks: Vec::new(),
+        risk_mode: egglsp::LspRiskMode::Aggressive,
+    };
+    let budget = egglsp::LspContextBudget::default();
+    let mode = egglsp::LspContextMode::Opportunistic;
+
+    let packet = timeout(
+        Duration::from_secs(30),
+        egglsp::collect_context(&adapter, &request, &budget, &mode),
+    )
+    .await
+    .expect("collect timed out")
+    .expect("collect failed");
+
+    for item in &packet.items {
+        let op = &item.provenance.operation;
+        assert!(
+            !op.contains("rename") && !op.contains("Rename"),
+            "security packet item provenance must not reference rename; got {op:?}"
+        );
+        assert!(
+            !op.contains("codeAction") && !op.contains("CodeAction"),
+            "security packet item provenance must not reference codeAction; got {op:?}"
+        );
+        assert!(
+            !op.contains("formatting") && !op.contains("Formatting") && !op.contains("format"),
+            "security packet item provenance must not reference formatting; got {op:?}"
+        );
+        assert!(
+            !op.contains("executeCommand"),
+            "security packet must never reference executeCommand; got {op:?}"
+        );
+        assert!(
+            !op.contains("applyEdit"),
+            "security packet must never reference applyEdit; got {op:?}"
+        );
+    }
+
+    let summary = egglsp::build_security_evidence_summary(&packet);
+    for note in &summary.notes {
+        assert!(
+            !note.contains("rename") && !note.contains("Rename"),
+            "summary notes must not reference rename; got {note:?}"
+        );
+        assert!(
+            !note.contains("codeAction") && !note.contains("CodeAction"),
+            "summary notes must not reference codeAction; got {note:?}"
+        );
+    }
+
+    assert!(
+        packet.previews.is_empty(),
+        "security review packet must have no preview artifacts"
+    );
+    assert!(
+        packet.preview_ids.is_empty(),
+        "security review packet must have no preview IDs"
+    );
+
+    service.shutdown_all().await;
+}
+
+/// Verify that `SecurityEvidenceSummary.stale` is set when the
+/// underlying evidence adapter reports stale freshness. We force the
+/// service into `Degraded` so the adapter records `PossiblyStale`
+/// freshness on every collected item.
+#[tokio::test]
+async fn security_bridge_with_service_adapter_marks_stale_evidence() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let root = tempdir.path().to_path_buf();
+    let source_path = root.join("src/lib.rs");
+    let scenario_path = root.join("scenario.json");
+    let transcript_path = root.join("transcript.jsonl");
+    let root_uri = path_to_uri(&root);
+    let source_uri = path_to_uri(&source_path);
+
+    std::fs::create_dir_all(root.join("src")).expect("mkdir src");
+    std::fs::write(&source_path, SECURITY_FANOUT_SOURCE).expect("write source");
+    std::fs::write(
+        root.join("Cargo.toml"),
+        "[package]\nname = \"lsp-security-stale-test\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .expect("write Cargo.toml");
+
+    let scenario = substitute_placeholders(
+        scenario_security_multi_file_refs(),
+        &root,
+        &root_uri,
+        &source_path,
+        &source_uri,
+        &scenario_path,
+        &transcript_path,
+    );
+    std::fs::write(
+        &scenario_path,
+        serde_json::to_string_pretty(&scenario).expect("scenario json"),
+    )
+    .expect("write scenario");
+
+    let service = LspService::new_arc(make_service_config(&scenario_path, &transcript_path));
+    let adapter =
+        egglsp::evidence_adapter::ServiceLspEvidenceProvider::new(service.clone(), root.clone());
+
+    service
+        .open_file(&source_path, SECURITY_FANOUT_SOURCE)
+        .await
+        .expect("open_file should succeed");
+    let (key, _project_root) = service
+        .get_or_create_client(&source_path)
+        .await
+        .expect("client key");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        if tokio::time::Instant::now() >= deadline {
+            panic!(
+                "client never reached Ready within 5s.\ntranscript:\n{}",
+                transcript_tail(&transcript_path),
+            );
+        }
+        let state = service.operational_state_for_key(&key).await;
+        if matches!(state, Some(egglsp::health::LspOperationalState::Ready)) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(15)).await;
+    }
+
+    service
+        .transition_operational_state(
+            &key,
+            egglsp::health::LspOperationalState::Degraded {
+                reason: "forced-stale-for-test".to_string(),
+            },
+        )
+        .await
+        .expect("transition to Degraded");
+
+    let request = egglsp::LspContextRequest::Review {
+        changed_files: vec![source_path.clone()],
+        hunks: Vec::new(),
+        risk_mode: egglsp::LspRiskMode::Aggressive,
+    };
+    let budget = egglsp::LspContextBudget::default();
+    let mode = egglsp::LspContextMode::Opportunistic;
+
+    let packet = timeout(
+        Duration::from_secs(30),
+        egglsp::collect_context(&adapter, &request, &budget, &mode),
+    )
+    .await
+    .expect("collect timed out")
+    .expect("collect failed");
+
+    let non_fresh = packet
+        .items
+        .iter()
+        .filter(|i| {
+            !matches!(
+                i.provenance.freshness,
+                egglsp::context::LspEvidenceFreshness::Fresh
+            )
+        })
+        .count();
+    assert!(
+        non_fresh > 0,
+        "at least one item should have non-Fresh freshness under Degraded, got {} items",
+        packet.items.len()
+    );
+
+    let summary = egglsp::build_security_evidence_summary(&packet);
+    assert!(
+        summary.stale,
+        "security summary must report stale=true when items carry non-Fresh freshness"
+    );
+
+    service.shutdown_all().await;
+}
+
+// Phase 5 Pass 2: preview_id + preview_metadata propagation through LspTool::execute
+//
+// These tests verify that the four preview-only operations
+// (renamePreview, formatPreview, sourceActionPreview,
+// codeActionPreview) surface a `preview_id` and a structured
+// `preview_metadata` block on the JSON returned to the caller. The
+// metadata carries `not_applied`, `edit_count`, `affected_files`,
+// and `stale_base` so downstream consumers (TUI panel, security
+// review) can reason about a preview artifact without re-reading
+// the operation-specific `results` payload.
+
+fn assert_preview_metadata_shape(
+    parsed: &serde_json::Value,
+    expected_files: &[&str],
+    source_text: &str,
+    source_path: &Path,
+) {
+    let meta = parsed
+        .get("preview_metadata")
+        .expect("preview_metadata must be present for preview ops");
+    assert_eq!(
+        meta["not_applied"], true,
+        "not_applied must be true (Phase 5 preview-only invariant)"
+    );
+    assert!(
+        meta["edit_count"].is_number(),
+        "edit_count must be a number, got: {}",
+        meta["edit_count"]
+    );
+    let affected_files = meta["affected_files"]
+        .as_array()
+        .expect("affected_files must be an array");
+    assert_eq!(
+        affected_files.len(),
+        expected_files.len(),
+        "affected_files must list every file the preview touches"
+    );
+    for expected in expected_files {
+        assert!(
+            affected_files.iter().any(|f| f.as_str() == Some(*expected)),
+            "affected_files must contain {expected}, got: {affected_files:?}"
+        );
+    }
+    assert!(
+        meta["stale_base"].is_boolean(),
+        "stale_base must serialize as a bool"
+    );
+
+    let after = std::fs::read_to_string(source_path).expect("read source");
+    assert_eq!(
+        after, source_text,
+        "preview operation must not mutate disk; before={source_text:?} after={after:?}"
+    );
+}
+
+#[tokio::test]
+async fn phase5_pass2_lsp_tool_rename_preview_returns_preview_id_and_metadata() {
+    let source_text = "pub fn old_name() -> i32 { 42 }\n";
+
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let base = manifest_dir.join("target/lsp-tests");
+    std::fs::create_dir_all(&base).expect("mkdir lsp-tests base");
+    let temp = tempfile::Builder::new()
+        .prefix("phase5-pass2-rename-")
+        .tempdir_in(&base)
+        .expect("tempdir");
+    let root = temp.path().to_path_buf();
+    let source_path = root.join("src/lib.rs");
+    let scenario_path = root.join("scenario.json");
+    let transcript_path = root.join("transcript.jsonl");
+    let root_uri = path_to_uri(&root);
+    let source_uri = path_to_uri(&source_path);
+
+    std::fs::create_dir_all(root.join("src")).expect("mkdir src");
+    std::fs::write(&source_path, source_text).expect("write source");
+
+    let scenario = serde_json::json!({
+        "name": "phase5_pass2_rename_preview",
+        "steps": [
+            {
+                "type": "ExpectRequest",
+                "method": "initialize",
+                "then": [{"type": "RespondResult", "result": {
+                    "capabilities": { "renameProvider": true }
+                }}]
+            },
+            {"type": "ExpectNotification", "method": "initialized", "then": []},
+            {
+                "type": "ExpectNotification",
+                "method": "textDocument/didOpen",
+                "then": []
+            },
+            {
+                "type": "ExpectRequest",
+                "method": "textDocument/prepareRename",
+                "then": [{"type": "RespondResult", "result": {
+                    "range": {
+                        "start": {"line": 0, "character": 7},
+                        "end": {"line": 0, "character": 15}
+                    },
+                    "placeholder": "old_name"
+                }}]
+            },
+            {
+                "type": "ExpectRequest",
+                "method": "textDocument/rename",
+                "then": [{"type": "RespondResult", "result": {
+                    "documentChanges": [
+                        {
+                            "textDocument": { "uri": "__SOURCE_URI__", "version": 1 },
+                            "edits": [{
+                                "range": {
+                                    "start": {"line": 0, "character": 7},
+                                    "end": {"line": 0, "character": 15}
+                                },
+                                "newText": "new_name"
+                            }]
+                        }
+                    ]
+                }}]
+            },
+            {
+                "type": "ExpectRequest",
+                "method": "shutdown",
+                "then": [{"type": "RespondResult", "result": null}]
+            },
+            {"type": "ExpectNotification", "method": "exit", "then": []}
+        ],
+        "exit": {"type": "ExitCode", "code": 0},
+        "strict": true
+    });
+
+    let scenario = substitute_placeholders(
+        scenario,
+        &root,
+        &root_uri,
+        &source_path,
+        &source_uri,
+        &scenario_path,
+        &transcript_path,
+    );
+    std::fs::write(
+        &scenario_path,
+        serde_json::to_string_pretty(&scenario).expect("scenario json"),
+    )
+    .expect("write scenario");
+
+    let service = LspService::new_arc(make_service_config(&scenario_path, &transcript_path));
+    let tool = LspTool::new(service.clone()).with_allowed_root(root.clone());
+
+    let result = timeout(
+        Duration::from_secs(30),
+        tool.execute(serde_json::json!({
+            "operation": "renamePreview",
+            "file_path": source_path.to_str().unwrap(),
+            "line": 1,
+            "column": 8,
+            "new_name": "new_name"
+        })),
+    )
+    .await
+    .expect("renamePreview timed out")
+    .expect("renamePreview must succeed");
+
+    let parsed: serde_json::Value = serde_json::from_str(&result).expect("valid JSON");
+
+    let preview_id = parsed
+        .get("preview_id")
+        .and_then(|v| v.as_str())
+        .expect("preview_id must be present")
+        .to_string();
+    assert!(
+        preview_id.starts_with("preview-"),
+        "preview_id must use the preview-N-timestamp format, got: {preview_id}"
+    );
+
+    let expected_files = [source_path.to_str().unwrap()];
+    assert_preview_metadata_shape(&parsed, &expected_files, source_text, &source_path);
+
+    {
+        let guard = tool.preview_registry();
+        let entry = guard
+            .get(&preview_id)
+            .expect("preview registry must contain the live entry");
+        assert!(
+            !entry.applied,
+            "registry entry must never be marked applied"
+        );
+        assert!(
+            entry
+                .original_hashes
+                .contains_key(source_path.to_str().unwrap()),
+            "registry entry must preserve the original hash for the affected file"
+        );
+    }
+
+    service.shutdown_all().await;
+}
+
+#[tokio::test]
+async fn phase5_pass2_lsp_tool_format_preview_returns_preview_id_and_metadata() {
+    let source_text = "fn main() {\nlet x = 1;\n}\n";
+
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let base = manifest_dir.join("target/lsp-tests");
+    std::fs::create_dir_all(&base).expect("mkdir lsp-tests base");
+    let temp = tempfile::Builder::new()
+        .prefix("phase5-pass2-format-")
+        .tempdir_in(&base)
+        .expect("tempdir");
+    let root = temp.path().to_path_buf();
+    let source_path = root.join("src/lib.rs");
+    let scenario_path = root.join("scenario.json");
+    let transcript_path = root.join("transcript.jsonl");
+    let root_uri = path_to_uri(&root);
+    let source_uri = path_to_uri(&source_path);
+
+    std::fs::create_dir_all(root.join("src")).expect("mkdir src");
+    std::fs::write(&source_path, source_text).expect("write source");
+
+    let scenario = serde_json::json!({
+        "name": "phase5_pass2_format_preview",
+        "steps": [
+            {
+                "type": "ExpectRequest",
+                "method": "initialize",
+                "then": [{"type": "RespondResult", "result": {
+                    "capabilities": { "documentFormattingProvider": true }
+                }}]
+            },
+            {"type": "ExpectNotification", "method": "initialized", "then": []},
+            {
+                "type": "ExpectNotification",
+                "method": "textDocument/didOpen",
+                "then": []
+            },
+            {
+                "type": "ExpectRequest",
+                "method": "textDocument/formatting",
+                "then": [{"type": "RespondResult", "result": [
+                    {
+                        "range": {
+                            "start": {"line": 1, "character": 0},
+                            "end": {"line": 1, "character": 0}
+                        },
+                        "newText": "    "
+                    }
+                ]}]
+            },
+            {
+                "type": "ExpectRequest",
+                "method": "shutdown",
+                "then": [{"type": "RespondResult", "result": null}]
+            },
+            {"type": "ExpectNotification", "method": "exit", "then": []}
+        ],
+        "exit": {"type": "ExitCode", "code": 0},
+        "strict": true
+    });
+
+    let scenario = substitute_placeholders(
+        scenario,
+        &root,
+        &root_uri,
+        &source_path,
+        &source_uri,
+        &scenario_path,
+        &transcript_path,
+    );
+    std::fs::write(
+        &scenario_path,
+        serde_json::to_string_pretty(&scenario).expect("scenario json"),
+    )
+    .expect("write scenario");
+
+    let service = LspService::new_arc(make_service_config(&scenario_path, &transcript_path));
+    let tool = LspTool::new(service.clone()).with_allowed_root(root.clone());
+
+    let result = timeout(
+        Duration::from_secs(30),
+        tool.execute(serde_json::json!({
+            "operation": "formatPreview",
+            "file_path": source_path.to_str().unwrap()
+        })),
+    )
+    .await
+    .expect("formatPreview timed out")
+    .expect("formatPreview must succeed");
+
+    let parsed: serde_json::Value = serde_json::from_str(&result).expect("valid JSON");
+
+    let preview_id = parsed
+        .get("preview_id")
+        .and_then(|v| v.as_str())
+        .expect("preview_id must be present")
+        .to_string();
+    assert!(preview_id.starts_with("preview-"));
+
+    let expected_files = [source_path.to_str().unwrap()];
+    assert_preview_metadata_shape(&parsed, &expected_files, source_text, &source_path);
+
+    {
+        let guard = tool.preview_registry();
+        let entry = guard
+            .get(&preview_id)
+            .expect("preview registry must contain the live entry");
+        assert!(
+            entry
+                .original_hashes
+                .contains_key(source_path.to_str().unwrap()),
+            "registry entry must preserve original hash for the source file"
+        );
+        assert!(!entry.applied);
+    }
+
+    service.shutdown_all().await;
+}
+
+#[tokio::test]
+async fn phase5_pass2_lsp_tool_source_action_preview_returns_preview_id_and_metadata() {
+    let source_text = "use std::fmt;\nuse std::io;\n\nfn main() {}\n";
+
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let base = manifest_dir.join("target/lsp-tests");
+    std::fs::create_dir_all(&base).expect("mkdir lsp-tests base");
+    let temp = tempfile::Builder::new()
+        .prefix("phase5-pass2-source-action-")
+        .tempdir_in(&base)
+        .expect("tempdir");
+    let root = temp.path().to_path_buf();
+    let source_path = root.join("src/lib.rs");
+    let scenario_path = root.join("scenario.json");
+    let transcript_path = root.join("transcript.jsonl");
+    let root_uri = path_to_uri(&root);
+    let source_uri = path_to_uri(&source_path);
+
+    std::fs::create_dir_all(root.join("src")).expect("mkdir src");
+    std::fs::write(&source_path, source_text).expect("write source");
+
+    let scenario = serde_json::json!({
+        "name": "phase5_pass2_source_action_preview",
+        "steps": [
+            {
+                "type": "ExpectRequest",
+                "method": "initialize",
+                "then": [{"type": "RespondResult", "result": {
+                    "capabilities": { "codeActionProvider": true }
+                }}]
+            },
+            {"type": "ExpectNotification", "method": "initialized", "then": []},
+            {
+                "type": "ExpectNotification",
+                "method": "textDocument/didOpen",
+                "then": []
+            },
+            {
+                "type": "ExpectRequest",
+                "method": "textDocument/codeAction",
+                "then": [{"type": "RespondResult", "result": [
+                    {
+                        "title": "Organize Imports",
+                        "kind": "source.organizeImports",
+                        "edit": {
+                            "documentChanges": [{
+                                "textDocument": { "uri": "__SOURCE_URI__", "version": 1 },
+                                "edits": [{
+                                    "range": {
+                                        "start": {"line": 0, "character": 0},
+                                        "end": {"line": 2, "character": 0}
+                                    },
+                                    "newText": "use std::collections::HashMap;\nuse std::path::Path;\n\n"
+                                }]
+                            }]
+                        }
+                    }
+                ]}]
+            },
+            {
+                "type": "ExpectRequest",
+                "method": "shutdown",
+                "then": [{"type": "RespondResult", "result": null}]
+            },
+            {"type": "ExpectNotification", "method": "exit", "then": []}
+        ],
+        "exit": {"type": "ExitCode", "code": 0},
+        "strict": true
+    });
+
+    let scenario = substitute_placeholders(
+        scenario,
+        &root,
+        &root_uri,
+        &source_path,
+        &source_uri,
+        &scenario_path,
+        &transcript_path,
+    );
+    std::fs::write(
+        &scenario_path,
+        serde_json::to_string_pretty(&scenario).expect("scenario json"),
+    )
+    .expect("write scenario");
+
+    let service = LspService::new_arc(make_service_config(&scenario_path, &transcript_path));
+    let tool = LspTool::new(service.clone()).with_allowed_root(root.clone());
+
+    let result = timeout(
+        Duration::from_secs(30),
+        tool.execute(serde_json::json!({
+            "operation": "sourceActionPreview",
+            "file_path": source_path.to_str().unwrap(),
+            "action": "source.organizeImports"
+        })),
+    )
+    .await
+    .expect("sourceActionPreview timed out")
+    .expect("sourceActionPreview must succeed");
+
+    let parsed: serde_json::Value = serde_json::from_str(&result).expect("valid JSON");
+
+    let preview_id = parsed
+        .get("preview_id")
+        .and_then(|v| v.as_str())
+        .expect("preview_id must be present")
+        .to_string();
+    assert!(preview_id.starts_with("preview-"));
+
+    let expected_files = [source_path.to_str().unwrap()];
+    assert_preview_metadata_shape(&parsed, &expected_files, source_text, &source_path);
+
+    {
+        let guard = tool.preview_registry();
+        let entry = guard
+            .get(&preview_id)
+            .expect("preview registry must contain the live entry");
+        assert!(!entry.applied);
+    }
+
+    service.shutdown_all().await;
+}
+
+#[tokio::test]
+async fn phase5_pass2_lsp_tool_code_action_preview_returns_preview_id_and_metadata() {
+    let source_text = "use std::fmt;\nuse std::io;\n\nfn main() {}\n";
+
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let base = manifest_dir.join("target/lsp-tests");
+    std::fs::create_dir_all(&base).expect("mkdir lsp-tests base");
+    let temp = tempfile::Builder::new()
+        .prefix("phase5-pass2-code-action-")
+        .tempdir_in(&base)
+        .expect("tempdir");
+    let root = temp.path().to_path_buf();
+    let source_path = root.join("src/lib.rs");
+    let scenario_path = root.join("scenario.json");
+    let transcript_path = root.join("transcript.jsonl");
+    let root_uri = path_to_uri(&root);
+    let source_uri = path_to_uri(&source_path);
+
+    std::fs::create_dir_all(root.join("src")).expect("mkdir src");
+    std::fs::write(&source_path, source_text).expect("write source");
+
+    let scenario = serde_json::json!({
+        "name": "phase5_pass2_code_action_preview",
+        "steps": [
+            {
+                "type": "ExpectRequest",
+                "method": "initialize",
+                "then": [{"type": "RespondResult", "result": {
+                    "capabilities": { "codeActionProvider": true }
+                }}]
+            },
+            {"type": "ExpectNotification", "method": "initialized", "then": []},
+            {
+                "type": "ExpectRequest",
+                "method": "textDocument/codeAction",
+                "then": [{"type": "RespondResult", "result": [
+                    {
+                        "title": "Add import",
+                        "kind": "quickfix",
+                        "edit": {
+                            "documentChanges": [{
+                                "textDocument": { "uri": "__SOURCE_URI__", "version": 1 },
+                                "edits": [{
+                                    "range": {
+                                        "start": {"line": 2, "character": 0},
+                                        "end": {"line": 2, "character": 0}
+                                    },
+                                    "newText": "use std::collections::HashMap;\n"
+                                }]
+                            }]
+                        }
+                    }
+                ]}]
+            },
+            {
+                "type": "ExpectRequest",
+                "method": "shutdown",
+                "then": [{"type": "RespondResult", "result": null}]
+            },
+            {"type": "ExpectNotification", "method": "exit", "then": []}
+        ],
+        "exit": {"type": "ExitCode", "code": 0},
+        "strict": true
+    });
+
+    let scenario = substitute_placeholders(
+        scenario,
+        &root,
+        &root_uri,
+        &source_path,
+        &source_uri,
+        &scenario_path,
+        &transcript_path,
+    );
+    std::fs::write(
+        &scenario_path,
+        serde_json::to_string_pretty(&scenario).expect("scenario json"),
+    )
+    .expect("write scenario");
+
+    let service = LspService::new_arc(make_service_config(&scenario_path, &transcript_path));
+    let tool = LspTool::new(service.clone()).with_allowed_root(root.clone());
+
+    let result = timeout(
+        Duration::from_secs(30),
+        tool.execute(serde_json::json!({
+            "operation": "codeActionPreview",
+            "file_path": source_path.to_str().unwrap(),
+            "start_line": 1,
+            "start_column": 1,
+            "end_line": 4,
+            "end_column": 1,
+            "action_index": 0
+        })),
+    )
+    .await
+    .expect("codeActionPreview timed out")
+    .expect("codeActionPreview must succeed");
+
+    let parsed: serde_json::Value = serde_json::from_str(&result).expect("valid JSON");
+
+    let preview_id = parsed
+        .get("preview_id")
+        .and_then(|v| v.as_str())
+        .expect("preview_id must be present")
+        .to_string();
+    assert!(preview_id.starts_with("preview-"));
+
+    let expected_files = [source_path.to_str().unwrap()];
+    assert_preview_metadata_shape(&parsed, &expected_files, source_text, &source_path);
+
+    {
+        let guard = tool.preview_registry();
+        let entry = guard
+            .get(&preview_id)
+            .expect("preview registry must contain the live entry");
+        assert!(!entry.applied);
+    }
+
+    service.shutdown_all().await;
+}
