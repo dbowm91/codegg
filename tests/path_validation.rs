@@ -9,9 +9,14 @@ mod tests {
     use tempfile::Builder;
 
     fn temp_root() -> tempfile::TempDir {
+        let tmp = if std::path::Path::new("/private/tmp").is_dir() {
+            "/private/tmp".to_string()
+        } else {
+            std::env::temp_dir().to_string_lossy().into_owned()
+        };
         Builder::new()
             .prefix("codegg-path-validation-")
-            .tempdir_in("/private/tmp")
+            .tempdir_in(tmp)
             .unwrap()
     }
 
