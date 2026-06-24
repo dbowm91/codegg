@@ -33,6 +33,7 @@ src/plugin/
 ├── api.rs              # ApiVersion, Stability, API types
 ├── tui.rs              # TuiPluginRegistry, TuiRoute, TuiComponent
 ├── event_bus.rs        # PluginEventBus, PluginEventSubscription
+├── marketplace.rs      # Plugin marketplace integration
 └── builtin/            # Built-in native Rust plugins
     ├── mod.rs          # BuiltinPlugin, handler registry, dispatch
     ├── copilot.rs      # GitHub Copilot auth provider

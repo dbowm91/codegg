@@ -50,14 +50,10 @@ src/
 ├── plugin/             # WASM plugin system with fuel tracking
 │   ├── mod.rs           # PluginManager, WASM execution
 │   ├── loader.rs        # Module caching with DashMap, mtime-based invalidation
-│   └── wasm.rs         # Wasmtime integration, per-plugin fuel tracking (DashMap<AtomicU64>)
-├── provider/           # LLM provider implementations
-│   ├── mod.rs           # Shared constants (MAX_BUFFER_SIZE), create_http_client()
-│   ├── anthropic.rs    # Anthropic (Claude) provider, message_delta Finish events
-│   ├── openai.rs        # OpenAI provider
-│   ├── google.rs       # Google provider, uses Uuid::new_v4() for tool call IDs
-│   ├── ollama.rs       # Ollama provider, text-to-tool fallback
-│   └── sse_parser.rs   # SSE streaming parser, optimized with drain() and indices
+│   ├── marketplace.rs   # Plugin marketplace integration
+│   └── service.rs       # PluginService, hook dispatch
+├── provider/           # LLM providers — re-export from `crates/codegg-providers`
+│   └── (see crates/codegg-providers/src/)  # anthropic, openai, google, azure, bedrock, etc.
 ├── pty/                # PTY (pseudo-terminal) support
 ├── resilience/         # Circuit breaker and resilience patterns
 │   └── mod.rs          # CircuitBreaker, retry logic

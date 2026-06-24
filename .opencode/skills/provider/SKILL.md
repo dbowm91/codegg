@@ -43,7 +43,7 @@ pub trait Provider: Send + Sync {
 
 ## Registration Helper Functions
 
-The provider registration system in `src/provider/mod.rs` uses helper functions to reduce code duplication:
+The provider registration system uses helper functions to reduce code duplication:
 
 ### register_builtin
 
@@ -154,30 +154,7 @@ Used for `anthropic`, `openai` (native), `google`, `openrouter`.
 
 ## Provider Module Structure
 
-```
-src/provider/
-├── mod.rs              # Provider trait, registration helpers, constants
-├── additional.rs       # Additional providers (Mistral, Groq, DeepInfra, etc.)
-├── anthropic.rs       # Anthropic Claude provider
-├── azure.rs           # Azure OpenAI provider
-├── bedrock.rs         # AWS Bedrock provider
-├── catalog.rs         # Model catalog (seeds from embedded models)
-├── cache.rs           # Response caching
-├── cloudflare.rs      # Cloudflare Workers AI
-├── codegg_zen.rs      # Codegg Zen provider
-├── copilot.rs         # GitHub Copilot
-├── discovery.rs       # ModelDiscoveryService for provider discovery
-├── fallback.rs        # Multi-provider fallback chain with circuit breaker
-├── gitlab.rs          # GitLab AI
-├── google.rs          # Google AI / Vertex
-├── models.rs          # Embedded model definitions
-├── openai.rs          # OpenAI provider
-├── openai_compatible.rs  # OpenAI-compatible provider
-├── openrouter.rs     # OpenRouter aggregator
-├── sse_parser.rs     # SSE parsing utilities
-├── text_tool_parser.rs  # Text-to-tool-call parsing
-└── vertex.rs         # Google Vertex AI
-```
+Provider implementations live in `crates/codegg-providers/src/` and are re-exported as `codegg::provider` via `pub use codegg_providers as provider;`.
 
 ## Available Providers
 
@@ -188,7 +165,7 @@ src/provider/
 - **Azure**: Azure OpenAI via `AZURE_OPENAI_*` config
 - **AWS Bedrock**: Claude via Bedrock via `AWS_*` config
 
-### Additional Providers (from `src/provider/additional.rs`)
+### Additional Providers (from `crates/codegg-providers/src/additional.rs`)
 - **Mistral**: `MISTRAL_API_KEY` via `create_mistral()`
 - **Groq**: `GROQ_API_KEY` via `create_groq()`
 - **DeepInfra**: `DEEPINFRA_API_KEY` via `create_deepinfra()`
@@ -228,7 +205,7 @@ Some providers require custom base URLs configured in config:
 
 ### OpenAI-compatible factory functions
 
-`src/provider/additional.rs` factory functions take a `Credential` (not
+`crates/codegg-providers/src/additional.rs` factory functions take a `Credential` (not
 a raw `String`) so the registered provider can preserve the credential
 kind / `expires_at` metadata:
 
@@ -252,9 +229,9 @@ as a backwards-compatible shim that wraps the API key in
 
 ## Adding a New Provider
 
-1. Create provider module (e.g., `src/provider/newprovider.rs`)
+1. Create provider module (e.g., in `crates/codegg-providers/src/`)
 2. Implement `Provider` trait with `clone_box()`
-3. Add module declaration to `src/provider/mod.rs`
+3. Add module declaration to `crates/codegg-providers/src/lib.rs`
 4. Add registration using `register_credential_provider` (for
    OpenAI-compatible providers), `register_api_key_provider` (for
    providers that need a static API key string), or
@@ -333,11 +310,11 @@ let result = tokio::task::spawn_blocking(move || {
 
 ## SSE Parser Unification
 
-A unified SSE parser exists in `src/provider/sse_parser.rs` used by most providers. However, `src/mcp/remote.rs` uses inline SSE parsing. Future work could unify this.
+A unified SSE parser exists in `crates/codegg-providers/src/sse_parser.rs` used by most providers. However, `src/mcp/remote.rs` uses inline SSE parsing. Future work could unify this.
 
 ## Tool Definition Format Unification
 
-The `ToolDefinition` struct in `src/provider/mod.rs` provides adapter methods for different provider formats:
+The `ToolDefinition` struct provides adapter methods for different provider formats:
 
 ```rust
 impl ToolDefinition {
@@ -488,7 +465,7 @@ impl ProviderError {
 }
 ```
 
-The agent loop uses this method at `src/agent/loop.rs:808-813` for retry determination.
+The agent loop uses this method for retry determination.
 
 ### CircuitOpen Integration (2026-05-22)
 

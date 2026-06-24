@@ -38,7 +38,7 @@ pub struct Command {
 
 ### TUI CommandRegistry (`src/tui/command.rs`)
 
-Manages built-in commands and dynamic commands with 42 built-in slash commands.
+Manages built-in commands and dynamic commands with 56 built-in slash commands.
 
 ```rust
 pub struct Command {
@@ -65,7 +65,7 @@ TUI dialog for fuzzy-filtering and executing commands.
 
 ### Sources (in priority order)
 
-1. **Built-in commands**: 42 hardcoded commands (highest priority)
+1. **Built-in commands**: 56 hardcoded commands (highest priority)
 2. **Config commands**: From `opencode.jsonc` `commands` section
 3. **File commands**: From `command/` or `commands/` directories in CWD
 
@@ -172,7 +172,7 @@ fn execute_command(&mut self, cmd: &Command, raw_input: Option<&str>) {
 | Command loading | `src/command/mod.rs` | 70, 123 |
 | Template execution | `src/command/mod.rs` | 160 |
 | Frontmatter parsing | `src/command/mod.rs` | 172 |
-| CommandRegistry (41 built-ins) | `src/tui/command.rs` | 72 |
+| CommandRegistry (56 built-ins) | `src/tui/command.rs` | 83 |
 | Dynamic command loading | `src/tui/command.rs` | 169, 207 |
 | CommandPalette dialog | `src/tui/components/dialogs/command.rs` | 15 |
 | Command execution (TUI) | `src/tui/app/mod.rs` | 2808 |

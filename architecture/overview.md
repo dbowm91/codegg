@@ -108,7 +108,7 @@ hidden by default — see [MCP](mcp.md)).
 | [skills/](skills.md) | Runtime skill loader and activation | `mod.rs` |
 | [snapshot/](snapshot.md) | File state capture and restore | `mod.rs` |
 | [storage/](storage.md) | SQLite initialization and connection pooling | `mod.rs` |
-| [tool/](tool.md) | Built-in tools (27 tools in default registry) and backend abstractions | `mod.rs`, `backend.rs`, `bash.rs`, `read.rs`, etc. |
+| [tool/](tool.md) | Built-in tools (30 tools in default registry) and backend abstractions | `mod.rs`, `backend.rs`, `bash.rs`, `read.rs`, etc. |
 | [tts/](tts.md) | Text-to-speech (macOS `say` command) | `mod.rs` |
 | [tui/](tui.md) | Terminal user interface (Ratatui) | `app/mod.rs`, `components/` |
 | [upgrade/](upgrade.md) | Self-upgrade via GitHub releases | `mod.rs` |
@@ -125,7 +125,7 @@ hidden by default — see [MCP](mcp.md)).
 ### Tools
 - `Tool` trait - All tools implement `name()`, `description()`, `parameters()`, `execute()`
 - Optional `execute_structured()` (default impl wraps `execute()`) — see `src/tool/backend.rs`
-- 27 built-in tools in default registry (bash, read, edit, write, glob, grep, task, webfetch, etc.)
+- 30 built-in tools in default registry (bash, read, edit, write, glob, grep, task, webfetch, etc.)
 - `ToolCatalog::register()` takes `&dyn Tool` (not `Box<dyn Tool>`)
 - `ToolRegistry::with_options(ToolRegistryOptions)` is the authoritative registration sequence; `with_defaults()` and the two session constructors `with_session_config_defaults(&Config, ...)` / `with_session_defaults(...)` are thin wrappers (production session code uses the config-aware one to preserve `[tool_backends]`)
 - `Tool::expose_in_definitions()` (default `true`, overridden to `false` by `DisabledTool`) is the model-facing predicate; `ToolRegistry::definitions()` and `AgentLoop::build_tool_definitions()` both filter through it
@@ -141,7 +141,7 @@ hidden by default — see [MCP](mcp.md)).
 - Config: `[tool_backends.<domain>]` sections with `backend`, `expose_raw_mcp_tools`, `fallback_to_native`, `server_name`, `command`, `args`, `timeout_ms`, `env` (see `config::schema::ExternalToolBackendConfigSchema`)
 
 ### Events
-- `AppEvent` enum - 36 variants for session, tool, MCP, permission, subagent events
+- `AppEvent` enum - 41 variants for session, tool, MCP, permission, subagent, goal events
 - `GlobalEventBus` - tokio broadcast channel (2048 buffer)
 - PermissionRegistry and QuestionRegistry are **synchronous** (`fn`, not `async fn`)
 
@@ -159,12 +159,12 @@ hidden by default — see [MCP](mcp.md)).
 
 | Item | Count | Location |
 |------|-------|----------|
-| Tools (default registry) | 27 | `tool/mod.rs:90-122` |
-| LSP servers | 39 | `crates/egglsp/src/server.rs` (moved from `lsp/server.rs`) |
+| Tools (default registry) | 30 | `tool/mod.rs:231-406` |
+| LSP servers | 40 | `crates/egglsp/src/server.rs` |
 | Native tool crates | 4 | `crates/egglsp`, `crates/egggit`, `crates/eggsentry`, `crates/eggcontext` |
-| UiState fields | 26 | `tui/app/state/ui.rs:27-76` |
-| AppEvent variants | 36 | `bus/events.rs:5-147` |
-| Built-in commands | 46 | `tui/command.rs:79-182` |
+| UiState fields | 27 | `tui/app/state/ui.rs:40-92` |
+| AppEvent variants | 41 | `bus/events.rs:61-258` |
+| Built-in commands | 56 | `tui/command.rs` |
 | Built-in agents | 7 | `agent/mod.rs:147-262` |
 
 ## Feature Gates

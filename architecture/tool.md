@@ -8,7 +8,7 @@ The `tool` module provides the built-in tools that the agent can use to interact
 
 **Key Responsibilities**:
 - Tool registry management
-- Built-in tool implementations (27 tools in `with_defaults()`)
+- Built-in tool implementations (30 tools in `with_defaults()`)
 - Tool execution with permission checking
 - Parameter validation
 - On-demand tool discovery via ToolCatalog
@@ -91,7 +91,7 @@ pub struct ToolResult {
 }
 ```
 
-## Built-in Tools (29 total in default registry)
+## Built-in Tools (30 total in default registry)
 
 ### File Operations
 
@@ -221,7 +221,7 @@ pub struct ToolRegistry {
 |--------|-------------|
 | `new()` | Create empty registry |
 | `with_options(ToolRegistryOptions)` | Authoritative registration sequence; the other constructors are thin wrappers |
-| `with_defaults()` | Create registry with all 27 built-in tools, all-native backend defaults |
+| `with_defaults()` | Create registry with all 30 built-in tools, all-native backend defaults |
 | `with_session_config_defaults(&Config, todo_state, policy, pool, session_id)` | **Production session constructor.** Resolves `ToolBackendConfig::from_config(&Config)` and threads it through `with_options`, so resolved `[tool_backends]` config (LSP/security backends, MCP fallback) is preserved. |
 | `with_session_defaults(todo_state, policy, pool, session_id)` | Session registry with **all-native backend defaults** — drops any loaded `[tool_backends]`. Kept for tests and non-config-aware callers; the doc comment warns against using it in production paths. |
 | `register(&mut self, tool: impl Tool + 'static)` | Register a tool (takes `&dyn Tool` not `Box<dyn Tool>`) |

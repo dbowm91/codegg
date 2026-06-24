@@ -52,7 +52,7 @@ crates/egglsp/src/          # Authoritative LSP implementation
 ├── restart.rs              # LspClientDescriptor, RestartTrigger, restart_client_coordinator
 ├── root.rs                 # Project root detection
 ├── runtime.rs              # LspProcessRuntime, LspProcessIntent, spawn_process_runtime
-├── server.rs               # 39 server definitions
+├── server.rs               # 40 server definitions
 ├── service.rs              # LspService - client management, file-based routing, readiness, generation_map
 ├── supervisor.rs           # LspProcessExitEvent, StderrRingBuffer (100 lines / 64KB cap)
 └── tests/                  # Phase 2 stdio integration tests (fake-server + production harness)
@@ -138,7 +138,7 @@ These types are re-exported from `egglsp` at the crate root (e.g. `egglsp::Works
 
 ### LspServerDef (`server.rs`)
 
-Server definition with 39 server implementations:
+Server definition with 40 server implementations:
 
 ```rust
 pub struct LspServerDef {

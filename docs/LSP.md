@@ -10,7 +10,7 @@ The authoritative LSP implementation is in **`crates/egglsp/`**. The `src/lsp/` 
 
 The egglsp crate consists of:
 
-- **`src/server.rs`** - Server definitions (39 servers: clangd, rust-analyzer, gopls, pyright, typescript-language-server, etc.)
+- **`src/server.rs`** - Server definitions (40 servers: clangd, rust-analyzer, gopls, pyright, typescript-language-server, etc.)
 - **`src/service.rs`** - `LspService` managing LSP client lifecycle, explicit leader/waiter init election, lifecycle-validated publication, unpublished-client disposal, and quiescent shutdown driven by an absolute deadline
 - **`src/client.rs`** - Low-level LSP client implementation
 - **`src/operations.rs`** - `LspOperations` for code actions (goto definition, find references, etc.), `WorkspaceEditPreview`/`FileEditPreview`/`TextEditPreview`

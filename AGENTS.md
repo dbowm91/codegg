@@ -117,7 +117,7 @@ cargo test -p egglsp --features lsp-real-server-tests --test real_server_smoke -
 
 - **ToolCatalog::register() takes `&dyn Tool`**, not `Box<dyn Tool>`.
 - **multiedit tool exists but NOT in default registry**: `src/tool/multiedit.rs` exists, `pub mod multiedit` is registered, but it's NOT in `ToolRegistry::with_defaults()`.
-- **27 tools** in `ToolRegistry::with_defaults()` (`src/tool/mod.rs:90-122`).
+- **30 tools** in `ToolRegistry::with_defaults()` (`src/tool/mod.rs:231-406`).
 - **Tool session constructor**: `with_session_config_defaults(&Config, ...)` is the production constructor. `with_session_defaults(...)` is the legacy all-native fallback.
 - **patch_util.rs shared utilities**: `src/tool/patch_util.rs` is used by both `apply_patch` tool and LSP preview operations.
 
@@ -156,12 +156,51 @@ cargo test -p egglsp --features lsp-real-server-tests --test real_server_smoke -
 
 ## Architecture Docs
 
-- `architecture/core.md` — Core crate ownership boundaries
-- `architecture/lsp.md` — LSP client, diagnostics, code operations
-- `architecture/auth.md` — Auth types, credential store, CLI
-- `architecture/cache-aware-context.md` — Cache-aware packing, context policy
-- `architecture/native_crates.md` — Workspace crates, backend contract
-- `.opencode/skills/*/SKILL.md` — Module-specific skill guides
+| Document | Covers | Key Gotchas |
+|----------|--------|-------------|
+| `architecture/overview.md` | System-wide module map, verified counts, event flow | Counts drift — verify against source |
+| `architecture/agent.md` | AgentLoop, compaction, routing, team coordination | AgentLoop has 49 fields |
+| `architecture/auth.md` | Auth types, credential store, CLI | ExternalCommand disabled |
+| `architecture/bus.md` | Event bus, PermissionRegistry, QuestionRegistry | Sync registries, registration-before-publish |
+| `architecture/cache-aware-context.md` | Cache-aware packing, context policy | Disabled by default (observe mode) |
+| `architecture/client.md` | Remote TUI WebSocket client | |
+| `architecture/codegg_core.md` | Core crate boundary enforcement | Forbidden imports list |
+| `architecture/command.md` | Slash command registry from markdown files | Two command systems: `src/command/` + `src/tui/command.rs` |
+| `architecture/compaction.md` | Context window overflow management | |
+| `architecture/config.md` | Config loading, validation, file watching | In `crates/codegg-config` |
+| `architecture/context-ledger.md` | Context ledger | |
+| `architecture/core.md` | Core facade, transport adapters | |
+| `architecture/crypto.md` | AES-256-GCM encryption, Argon2id | |
+| `architecture/error.md` | Centralized AppError enum | Server errors behind `#[cfg(feature = "server")]` |
+| `architecture/exec.md` | Non-interactive exec mode | |
+| `architecture/git.md` | Git facts (read-only, in `crates/egggit`) | |
+| `architecture/goal.md` | Goal system | |
+| `architecture/hooks.md` | Lifecycle hooks for agent events | |
+| `architecture/ide.md` | VS Code/JetBrains detection, diff viewing | |
+| `architecture/lsp.md` | LSP client, diagnostics, code operations | egglsp is authoritative; 40 servers |
+| `architecture/mcp.md` | MCP client (local/remote) | |
+| `architecture/memory.md` | Persistent memory across sessions | In `crates/codegg-core` |
+| `architecture/native_crates.md` | Workspace crates, backend contract | |
+| `architecture/permission.md` | Access control, DoomLoop detection, mode system | |
+| `architecture/plugin.md` | WASM plugin system with hooks and fuel tracking | No `wasm.rs`; `marketplace.rs` exists |
+| `architecture/protocol.md` | Shared request/response envelopes | In `crates/codegg-protocol` |
+| `architecture/provider.md` | LLM provider implementations | In `crates/codegg-providers` |
+| `architecture/resilience.md` | Circuit breaker, retry mechanisms | In `crates/codegg-core` |
+| `architecture/search_backend.md` | Search backend dispatch | |
+| `architecture/security.md` | SSRF, sandboxing, security review workflow | Read-only; eggsentry does scanning |
+| `architecture/server.md` | HTTP/WebSocket server (feature-gated) | |
+| `architecture/session.md` | SQLite session storage | In `crates/codegg-core` |
+| `architecture/shell_session.md` | Shell session metadata (no PTY) | |
+| `architecture/skills.md` | Runtime skill loader and activation | |
+| `architecture/snapshot.md` | File state capture and restore | In `crates/codegg-core` |
+| `architecture/storage.md` | SQLite initialization and pooling | In `crates/codegg-core` |
+| `architecture/tool.md` | Tool system, registry, backends, execution | 30 tools in default registry |
+| `architecture/tts.md` | Text-to-speech (macOS `say`) | |
+| `architecture/tui.md` | Terminal user interface (Ratatui) | |
+| `architecture/upgrade.md` | Self-upgrade via GitHub releases | |
+| `architecture/util.md` | Clipboard, fuzzy search, pricing, metrics | |
+| `architecture/worktree.md` | Git worktree management | In `crates/codegg-core` |
+| `.opencode/skills/*/SKILL.md` | Module-specific skill guides | Loaded on-demand via `/skill:` |
 
 ## Key Lessons
 

@@ -11,11 +11,11 @@ The `bus` module provides inter-component communication via an event-driven arch
 - Permission request/response pattern via PermissionRegistry
 - Question/answer request/response pattern via QuestionRegistry
 
-**Event Count**: 36 event variants in `AppEvent` enum
+**Event Count**: 41 event variants in `AppEvent` enum
 
 **Files**:
 - `src/bus/global.rs` - GlobalEventBus singleton using tokio broadcast channel
-- `src/bus/events.rs` - AppEvent enum (36 variants) with `event_type()` method
+- `src/bus/events.rs` - AppEvent enum (41 variants) with `event_type()` method
 - `src/bus/mod.rs` - PermissionRegistry and QuestionRegistry
 
 ## Components
@@ -58,7 +58,7 @@ impl GlobalEventBus {
 
 ### AppEvent Enum (`src/bus/events.rs`)
 
-All 36 event variants with `event_type()` method for SSE filtering:
+All 41 event variants with `event_type()` method for SSE filtering:
 
 | Category | Count | Events |
 |----------|-------|--------|
@@ -71,7 +71,8 @@ All 36 event variants with `event_type()` method for SSE filtering:
 | **Streaming** | 3 | `TextDelta`, `ReasoningDelta`, `AgentFinished` |
 | **Subagent** | 4 | `SubagentStarted`, `SubagentProgress`, `SubagentCompleted`, `SubagentFailed` |
 | **Diff** | 2 | `DiffPending`, `DiffResponded` |
-| **Other** | 8 | `ConfigChanged`, `AgentChanged`, `ModelChanged`, `CompactionTriggered`, `Error`, `Info`, `TodoUpdated`, `FileChanged` |
+| **Goal** | 4 | `GoalUpdated`, `GoalUsageUpdated`, `GoalBudgetLimited`, `GoalCompleted` |
+| **Other** | 9 | `ConfigChanged`, `AgentChanged`, `ModelChanged`, `CompactionTriggered`, `Error`, `Info`, `TodoUpdated`, `FileChanged`, `ContextUpdated` |
 
 #### Event Type Strings
 
