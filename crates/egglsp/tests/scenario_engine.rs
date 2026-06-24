@@ -291,7 +291,8 @@ async fn captured_id_lookup() {
             }
         ],
         "exit": {"type": "ExitCode", "code": 0},
-        "strict": true
+        "strict": true,
+        "emit_progress": false
     });
 
     let (mut child, mut stdin, mut stdout, transcript_path) = spawn_server(&scenario).await;

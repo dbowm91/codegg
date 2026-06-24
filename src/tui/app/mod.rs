@@ -8716,13 +8716,18 @@ mod remote_core_loader_tests {
         assert_eq!(app.agent_state.models, models);
 
         if let CoreResponse::ModelsSnapshot {
-            models: expected, ..
+            models: mut expected, ..
         } = Arc::clone(&app.core_client.unwrap())
             .request(new_request("snap2".into(), CoreRequest::SnapshotModels))
             .await
             .unwrap()
         {
-            assert_eq!(models, expected);
+            // Provider registration order is non-deterministic (HashMap iteration),
+            // so sort both lists before comparing.
+            let mut actual = models;
+            actual.sort();
+            expected.sort();
+            assert_eq!(actual, expected);
         } else {
             panic!("expected ModelsSnapshot");
         }
