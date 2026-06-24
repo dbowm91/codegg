@@ -977,6 +977,7 @@ async fn build_type_hierarchy_summary(
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use super::*;
     use std::io::Write;
@@ -1179,7 +1180,7 @@ mod tests {
         assert_eq!(result.len(), 100);
 
         let unicode = "héllo world 🌍";
-        let (result, truncated) = truncate_to_byte_limit(&unicode, 12);
+        let (result, truncated) = truncate_to_byte_limit(unicode, 12);
         assert!(truncated);
         assert!(std::str::from_utf8(result.as_bytes()).is_ok() || result.is_empty());
     }

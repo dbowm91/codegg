@@ -7518,12 +7518,11 @@ mod tests {
         // upgradable (i.e. the service is registered).
         // Indirectly verify by calling `shutdown_all` —
         // the supervised path uses the cyclic back-ref.
-        let result = svc.shutdown_all().await;
+        let _result = svc.shutdown_all().await;
         assert_eq!(
             svc.lifecycle.read().await.phase,
             super::ServiceLifecycle::Stopped
         );
-        result;
     }
 
     /// `LspService::new` is the bare (un-supervised)

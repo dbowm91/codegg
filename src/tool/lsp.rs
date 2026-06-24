@@ -3739,6 +3739,7 @@ impl SemanticContextPacket {
     /// and stay on `SemanticContextPacket`. Truncation flags are
     /// mapped; per-section truncation notes are appended to
     /// `packet.truncation.notes`.
+    #[cfg(test)]
     fn into_lsp_context_packet(self, mode: egglsp::LspContextMode) -> egglsp::LspContextPacket {
         use egglsp::context::{
             AgentContextSource, LspContextItem, LspContextItemKind, LspContextPacket,
@@ -3977,6 +3978,7 @@ impl SemanticContextPacket {
     }
 }
 
+#[cfg(test)]
 fn severity_priority(severity: &str) -> u32 {
     if severity.eq_ignore_ascii_case("error")
         || severity == "1"
@@ -3993,6 +3995,7 @@ fn severity_priority(severity: &str) -> u32 {
     }
 }
 
+#[cfg(test)]
 fn freshness_rank(f: egglsp::LspEvidenceFreshness) -> u32 {
     use egglsp::LspEvidenceFreshness;
     match f {
@@ -4005,6 +4008,7 @@ fn freshness_rank(f: egglsp::LspEvidenceFreshness) -> u32 {
     }
 }
 
+#[cfg(test)]
 fn map_tool_freshness(
     f: crate::lsp::diagnostics::LspDiagnosticFreshness,
 ) -> egglsp::LspEvidenceFreshness {
@@ -6866,7 +6870,7 @@ diff --git a/src/lib.rs b/src/lib.rs
             .iter()
             .find(|i| {
                 i.kind == LspContextItemKind::Reference
-                    && i.file == std::path::PathBuf::from("src/main.rs")
+                    && i.file == std::path::Path::new("src/main.rs")
             })
             .expect("cross-file reference");
         assert!(!cross.score.is_same_file);
@@ -7482,11 +7486,11 @@ diff --git a/src/lib.rs b/src/lib.rs
             },
             payload: None,
         }];
-        let mut truncation = LspContextTruncation::default();
-        truncation.references_truncated = true;
-        truncation
-            .notes
-            .push("references truncated at 5".to_string());
+        let truncation = LspContextTruncation {
+            references_truncated: true,
+            notes: vec!["references truncated at 5".to_string()],
+            ..LspContextTruncation::default()
+        };
         let packet = LspContextPacket {
             request: LspContextRequest::Review {
                 changed_files: vec![file],

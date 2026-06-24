@@ -7,6 +7,7 @@ use tempfile::TempDir;
 use egglsp::{LspClient, LspClientOptions, LspError, LspLaunchSpec};
 
 /// Production LSP client harness for integration tests.
+#[allow(dead_code)]
 pub struct ProductionClientHarness {
     pub tempdir: TempDir,
     pub root: PathBuf,
@@ -17,6 +18,7 @@ pub struct ProductionClientHarness {
     scenario_name: String,
 }
 
+#[allow(dead_code)]
 impl ProductionClientHarness {
     pub async fn start(
         scenario: serde_json::Value,
@@ -182,6 +184,7 @@ edition = "2021"
     }
 }
 
+#[allow(dead_code)]
 fn fake_server_binary_path() -> PathBuf {
     if let Ok(path) = std::env::var("EGGLSP_TEST_SERVER") {
         return PathBuf::from(path);
@@ -198,6 +201,7 @@ fn fake_server_binary_path() -> PathBuf {
         })
 }
 
+#[allow(dead_code)]
 fn transcript_tail(path: &Path) -> String {
     let Ok(contents) = std::fs::read_to_string(path) else {
         return "(transcript unavailable)".to_string();
@@ -209,17 +213,20 @@ fn transcript_tail(path: &Path) -> String {
     lines.join("\n")
 }
 
+#[allow(dead_code)]
 fn push_line(out: &mut String, line: &str) {
     out.push_str(line);
     out.push('\n');
 }
 
+#[allow(dead_code)]
 fn path_to_uri(path: &Path) -> String {
     url::Url::from_file_path(path)
         .expect("invalid file path")
         .to_string()
 }
 
+#[allow(dead_code)]
 fn substitute_placeholders(
     value: serde_json::Value,
     root: &Path,

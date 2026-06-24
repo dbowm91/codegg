@@ -191,6 +191,7 @@ mod tests {
         SemanticContextResponse, SemanticLocation, SemanticSourceExcerpt, SemanticSymbolSummary,
     };
 
+    #[allow(dead_code)]
     fn range(s: u32, e: u32) -> HunkLineRange {
         HunkLineRange {
             start_line: s,

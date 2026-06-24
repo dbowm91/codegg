@@ -59,6 +59,7 @@ fn short_restart_policy() -> LspRestartPolicy {
 /// Helper harness that owns the tempdir, scenario + transcript
 /// paths, and the service. Tests build a scenario, write it to
 /// the harness, then run the test body.
+#[allow(dead_code)]
 struct RestartTestHarness {
     #[allow(dead_code)]
     tempdir: TempDir,
@@ -74,6 +75,7 @@ struct RestartTestHarness {
     server_id: String,
 }
 
+#[allow(dead_code)]
 impl RestartTestHarness {
     /// Build a harness with the fake server pointed at
     /// `scenario.json` in a fresh tempdir. The service is created
@@ -1926,19 +1928,20 @@ fn make_test_descriptor(
     transcript_path: &Path,
     start_counter_path: &Path,
 ) -> LspClientDescriptor {
-    let mut env = Vec::new();
-    env.push((
-        "CODEGG_FAKE_LSP_SCENARIO".to_string(),
-        scenario_path.display().to_string(),
-    ));
-    env.push((
-        "CODEGG_FAKE_LSP_TRANSCRIPT".to_string(),
-        transcript_path.display().to_string(),
-    ));
-    env.push((
-        "CODEGG_FAKE_LSP_START_COUNTER".to_string(),
-        start_counter_path.display().to_string(),
-    ));
+    let env = vec![
+        (
+            "CODEGG_FAKE_LSP_SCENARIO".to_string(),
+            scenario_path.display().to_string(),
+        ),
+        (
+            "CODEGG_FAKE_LSP_TRANSCRIPT".to_string(),
+            transcript_path.display().to_string(),
+        ),
+        (
+            "CODEGG_FAKE_LSP_START_COUNTER".to_string(),
+            start_counter_path.display().to_string(),
+        ),
+    ];
     let launch = egglsp::LspLaunchSpec::new(
         "rust-analyzer",
         FakeLspHarness::fake_server_path(),

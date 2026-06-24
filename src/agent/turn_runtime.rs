@@ -649,11 +649,11 @@ mod tier_resolution_tests {
             },
             payload: None,
         };
-        let mut truncation = LspContextTruncation::default();
-        truncation.references_truncated = true;
-        truncation
-            .notes
-            .push("references truncated at 5".to_string());
+        let truncation = LspContextTruncation {
+            references_truncated: true,
+            notes: vec!["references truncated at 5".to_string()],
+            ..LspContextTruncation::default()
+        };
         let packet = LspContextPacket {
             request: LspContextRequest::Review {
                 changed_files: vec![file],

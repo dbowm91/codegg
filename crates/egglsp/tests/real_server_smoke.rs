@@ -1518,11 +1518,13 @@ impl SmokeCheck {
 /// matrix that distinguishes protocol success from semantic
 /// success.
 #[derive(Default)]
+#[allow(dead_code)]
 struct CheckCollector {
     checks: Vec<SmokeCheck>,
     operation_records: Vec<egglsp::compatibility::LspOperationCompatibility>,
 }
 
+#[allow(dead_code)]
 impl CheckCollector {
     fn push(&mut self, check: SmokeCheck) {
         self.checks.push(check);
@@ -1567,6 +1569,7 @@ impl CheckCollector {
 /// - `semantic_assertion_passed`: true when the response
 ///   matched the fixture's expected outcome (e.g. expected
 ///   file, expected label substring, expected item count).
+///
 /// Pass 1 — typed outcome of an LSP request at the request
 /// site. Each `run_*_check` helper builds one of these once
 /// it knows whether the request succeeded, whether the
@@ -3046,6 +3049,7 @@ fn build_shutdown_trace(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_report(
     profile: &LspCompatibilityProfile,
     server_version: Option<String>,
@@ -3267,6 +3271,7 @@ fn evaluate_rename_workspace_edit(
 /// (Scalar / Array / Link variants for declaration, plain array
 /// for document highlight) to a uniform `Vec<LocationLink>` for
 /// suffix-based file assertions.
+#[allow(clippy::too_many_arguments)]
 async fn run_location_check(
     client: &LspClient,
     primary_uri: &url::Url,
@@ -3576,6 +3581,7 @@ async fn run_location_check(
 /// for prepare, supertypes, and subtypes. Each sub-check is
 /// independent. The check is `RequiredIfAdvertised` when the
 /// server's capability is enabled via profile override.
+#[allow(clippy::too_many_arguments)]
 async fn run_type_hierarchy_check(
     client: &LspClient,
     primary_uri: &url::Url,
@@ -3949,6 +3955,7 @@ async fn run_type_hierarchy_check(
 /// Run a single signature-help operation and append a `SmokeCheck`.
 /// The check is `RequiredIfAdvertised` when the server's capability
 /// is enabled; otherwise the check is recorded as `Unsupported`.
+#[allow(clippy::too_many_arguments)]
 async fn run_signature_help_check(
     client: &LspClient,
     primary_uri: &url::Url,
@@ -4393,6 +4400,7 @@ async fn run_workspace_symbol_check(
 }
 
 /// Run a single completion expectation and append a `SmokeCheck`.
+#[allow(clippy::too_many_arguments)]
 async fn run_completion_check(
     client: &LspClient,
     primary_uri: &url::Url,
@@ -4644,6 +4652,7 @@ async fn run_completion_check(
 /// Decoding errors are reported as `RequiredIfAdvertised` failures
 /// because they indicate a misbehaving server rather than a
 /// missing capability.
+#[allow(clippy::too_many_arguments)]
 async fn run_semantic_tokens_check(
     client: &LspClient,
     primary_uri: &url::Url,
@@ -5014,6 +5023,7 @@ async fn run_semantic_tokens_check(
 /// `RequiredIfAdvertised` because the request may legitimately
 /// return no edits when the position is not a renameable
 /// identifier.
+#[allow(clippy::too_many_arguments)]
 async fn run_rename_preview_check(
     client: &LspClient,
     fixture: &RealServerFixture,
@@ -5450,6 +5460,7 @@ async fn run_rename_preview_check(
 
 /// Run a preview-only formatting check. The smoke suite verifies
 /// that the on-disk file is unchanged.
+#[allow(clippy::too_many_arguments)]
 async fn run_format_preview_check(
     client: &LspClient,
     fixture: &RealServerFixture,
@@ -5696,6 +5707,7 @@ async fn run_format_preview_check(
 /// returns at least one action with an `edit` payload (raw
 /// command-only actions are skipped — command execution is
 /// disabled in Phase 4).
+#[allow(clippy::too_many_arguments)]
 async fn run_code_action_check(
     client: &LspClient,
     primary_uri: &url::Url,
@@ -5832,14 +5844,16 @@ async fn run_code_action_check(
                         .count();
                     let command_only = actions
                         .iter()
-                        .filter(|a| match a {
-                            ActionOrCommand::Command { .. } => true,
-                            ActionOrCommand::CodeAction {
-                                edit: None,
-                                command: Some(_),
-                                ..
-                            } => true,
-                            _ => false,
+                        .filter(|a| {
+                            matches!(
+                                a,
+                                ActionOrCommand::Command { .. }
+                                    | ActionOrCommand::CodeAction {
+                                        edit: None,
+                                        command: Some(_),
+                                        ..
+                                    }
+                            )
                         })
                         .count();
                     // Pass 8 — When the fixture opts into
@@ -6034,6 +6048,7 @@ async fn run_code_action_check(
 /// target / expectation fields. Each sub-check is independent
 /// and short-circuits independently so a single failure does
 /// not mask other findings.
+#[allow(clippy::too_many_arguments)]
 async fn run_generalized_operation_checks(
     client: &LspClient,
     fixture: &RealServerFixture,

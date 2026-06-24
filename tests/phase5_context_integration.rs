@@ -986,8 +986,10 @@ async fn phase5_security_packet_caps_reference_clusters() {
         hunks: vec![],
         risk_mode: LspRiskMode::Standard,
     };
-    let mut budget = LspContextBudget::default();
-    budget.max_references = 30;
+    let budget = LspContextBudget {
+        max_references: 30,
+        ..LspContextBudget::default()
+    };
     let mode = LspContextMode::Opportunistic;
 
     let packet = collect_context(&provider, &request, &budget, &mode)
@@ -1057,8 +1059,10 @@ async fn phase5_security_packet_budget_truncation_visible() {
         hunks: vec![],
         risk_mode: LspRiskMode::Conservative,
     };
-    let mut budget = LspContextBudget::default();
-    budget.max_diagnostics = 5;
+    let budget = LspContextBudget {
+        max_diagnostics: 5,
+        ..LspContextBudget::default()
+    };
     let mode = LspContextMode::Opportunistic;
 
     let packet = collect_context(&provider, &request, &budget, &mode)
@@ -1231,8 +1235,10 @@ async fn phase5_hunk_context_caps_references_composite() {
         original_end: None,
     }];
 
-    let mut budget = LspContextBudget::default();
-    budget.max_references = 10;
+    let budget = LspContextBudget {
+        max_references: 10,
+        ..LspContextBudget::default()
+    };
 
     let items = collect_hunk_context(
         &provider,
@@ -1292,9 +1298,11 @@ async fn phase5_security_packet_marks_public_api_reference_fanout() {
         hunks: vec![],
         risk_mode: LspRiskMode::Aggressive,
     };
-    let mut budget = LspContextBudget::default();
-    budget.max_references = 100;
-    budget.max_files = 50;
+    let budget = LspContextBudget {
+        max_references: 100,
+        max_files: 50,
+        ..LspContextBudget::default()
+    };
     let mode = LspContextMode::Opportunistic;
 
     let packet = collect_context(&provider, &request, &budget, &mode)
@@ -2186,6 +2194,7 @@ mod phase5_no_mutation_sweep {
     }
 
     /// Build a code-action-style WorkspaceEdit (changes shape).
+    #[allow(clippy::mutable_key_type)]
     fn make_code_action_workspace_edit(
         file_uri: &str,
         line: u32,

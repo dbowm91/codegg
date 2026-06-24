@@ -5178,9 +5178,11 @@ async fn security_bridge_with_lsp_packet_preserves_public_api_fanout() {
         hunks: Vec::new(),
         risk_mode: egglsp::LspRiskMode::Aggressive,
     };
-    let mut budget = egglsp::LspContextBudget::default();
-    budget.max_references = 100;
-    budget.max_files = 50;
+    let budget = egglsp::LspContextBudget {
+        max_references: 100,
+        max_files: 50,
+        ..egglsp::LspContextBudget::default()
+    };
     let mode = egglsp::LspContextMode::Opportunistic;
 
     let packet = timeout(

@@ -469,7 +469,7 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::useless_vec)]
+    #[allow(clippy::useless_vec, clippy::iter_out_of_bounds)]
     fn completion_bounded_max_candidates_larger_than_items_returns_all() {
         let items = vec![completion_item("alpha", CompletionItemKind::FUNCTION)];
         let bounded: Vec<CompletionCandidate> = items

@@ -11,8 +11,10 @@ use tokio::process::Child;
 pub struct FakeLspHarness {
     #[allow(dead_code)]
     pub tempdir: TempDir,
+    #[allow(dead_code)]
     pub scenario_path: PathBuf,
     pub transcript_path: PathBuf,
+    #[allow(dead_code)]
     pub root: PathBuf,
 }
 
@@ -21,6 +23,7 @@ impl FakeLspHarness {
     ///
     /// Sets up a temp directory with a `scenario.json`, a `transcript.jsonl`
     /// path (empty until the server writes to it), and a minimal `src/lib.rs`.
+    #[allow(dead_code)]
     pub fn new(scenario: &serde_json::Value) -> Self {
         let tempdir = tempfile::tempdir().expect("failed to create tempdir");
         let root = tempdir.path().to_path_buf();
@@ -50,11 +53,13 @@ impl FakeLspHarness {
     }
 
     /// Path to the scenario file, as a string.
+    #[allow(dead_code)]
     pub fn scenario_path_str(&self) -> &str {
         self.scenario_path.to_str().unwrap()
     }
 
     /// Path to the transcript file, as a string.
+    #[allow(dead_code)]
     pub fn transcript_path_str(&self) -> &str {
         self.transcript_path.to_str().unwrap()
     }
