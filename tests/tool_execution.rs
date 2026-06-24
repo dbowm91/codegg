@@ -586,9 +586,14 @@ async fn test_read_tool_symlink_inside_allowed() {
 #[tokio::test]
 async fn test_read_tool_symlink_outside_allowed() {
     let dir = setup_dir();
+    let tmp = if std::path::Path::new("/private/tmp").is_dir() {
+        "/private/tmp".to_string()
+    } else {
+        std::env::temp_dir().to_string_lossy().into_owned()
+    };
     let outside = tempfile::Builder::new()
         .prefix("codegg-tool-exec-outside-")
-        .tempdir_in("/private/tmp")
+        .tempdir_in(tmp)
         .unwrap();
     let target = outside.path().join("secret.txt");
     let link = dir.path().join("link.txt");
