@@ -549,15 +549,15 @@ async fn security_review_workflow_pipeline_produces_output() {
         .current_dir(dir.path())
         .status();
     let _ = std::process::Command::new("git")
-        .args(["commit", "--allow-empty", "-m", "init", "-q"])
-        .current_dir(dir.path())
-        .status();
-    let _ = std::process::Command::new("git")
         .args(["config", "user.email", "test@example.invalid"])
         .current_dir(dir.path())
         .status();
     let _ = std::process::Command::new("git")
         .args(["config", "user.name", "test"])
+        .current_dir(dir.path())
+        .status();
+    let _ = std::process::Command::new("git")
+        .args(["commit", "--allow-empty", "-m", "init", "-q"])
         .current_dir(dir.path())
         .status();
 
