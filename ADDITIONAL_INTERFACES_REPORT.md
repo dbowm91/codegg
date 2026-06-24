@@ -1,5 +1,12 @@
 # Additional Interfaces Report: Desktop App & Browser Access for codegg
 
+> **Historical research document, 2026-04-28.** This report surveys the
+> competitive landscape and proposes a desktop/browser roadmap. As of the
+> current `main` branch, no items from §7 *Implementation Roadmap* have
+> been implemented — the Rust implementation still ships only the TUI
+> (ratatui) and the feature-gated server mode. Treat the roadmap as a
+> reference for future planning rather than active work.
+
 ## Executive Summary
 
 codegg currently provides a terminal-based TUI (ratatui) and a basic server mode with WebSocket support. The original Codegg (TypeScript) has evolved to include a Desktop app (initially Tauri, recently migrated to Electron), while browser-based access remains largely untapped in the Rust implementation. This report analyzes the current state, competitor offerings, and provides architecture recommendations.

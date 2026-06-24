@@ -212,6 +212,6 @@ pub async fn load_command_from_file(path: &Path) -> Result<Command, String>
 ## See Also
 
 - [.opencode/skills/command/SKILL.md](../.opencode/skills/command/SKILL.md) - Agent guidance for command module
-- [.opencode/docs/command/AGENTS.override.md](../.opencode/docs/command/AGENTS.override.md) - Module-specific override
+
 - [tui.md](tui.md) - TUI command input handling
 - [agent-loop/SKILL.md](../.opencode/skills/agent-loop/SKILL.md) - Agent execution with command templates

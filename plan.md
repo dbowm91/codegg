@@ -1,11 +1,18 @@
 # Implementation Plan
 
-**Status**: IN PROGRESS
-**Last Updated**: 2026-05-27
+> **Historical planning document.** This file records implementation work
+> completed during the April–May 2026 sprints. It is kept for context but is
+> no longer the source of truth for in-flight work — see `AGENTS.md` and the
+> per-module `architecture/*.md` files for current state.
 
 ---
 
-## Completed Implementation (Historical Context - April 2026 Sprint)
+## Historical Sprint: April 2026
+
+> Items listed below shipped via the PRs noted at the time. PR numbers are
+> retained for traceability but are not browseable from this document.
+
+### Security Fixes
 
 ### Security Fixes
 - IPv6 ULA (fc00::/7) and multicast (ff00::/8) blocking in SSRF module.
@@ -80,69 +87,80 @@
 
 ## Implementation Completed 2026-05-06
 
+> All items below shipped during the 2026-05-06 cut. Items marked "Already
+> implemented" were verified rather than changed.
+
 ### Wave 0: Quick Wins
-| PR | Item | Status | Notes |
-|----|------|--------|-------|
-| #7 | QW-3: Duplicate handle_slash_command | ✅ | Removed duplicate implementations |
-| #9 | QW-5: Early return bug | ✅ | Fixed return statement in /goto command |
-| #8 | QW-6: DoomLoop threshold configurable | ✅ | Added `doomloop_threshold` to config |
-| #13 | QW-9: Config watcher debounce | ✅ | Added debounce and content hash |
-| #10 | QW-4: Remove execute_command | ✅ | Removed dead code |
-| #15 | QW-10: Upgrade duplicate logic | ✅ | Refactored to use upgrade module |
-| #11 | QW-11: Upgrade request timeout | ✅ | Added -m 300 to curl |
-| N/A | QW-7: Content hash | ✅ | Already implemented in QW-9 |
-| N/A | QW-6: DeniedTools audit log | ✅ | Already existed in tool/mod.rs |
-| N/A | QW-7: DB pool size | ✅ | Already standardized to 10 |
+
+| Item | Status | Notes |
+|------|--------|-------|
+| QW-3: Duplicate `handle_slash_command` | ✅ | Removed duplicate implementations |
+| QW-4: Remove `execute_command` | ✅ | Removed dead code |
+| QW-5: Early return bug in `/goto` | ✅ | Fixed return statement |
+| QW-6: DoomLoop threshold configurable | ✅ | Added `doomloop_threshold` to config |
+| QW-6: DeniedTools audit log | ✅ | Already existed in `tool/mod.rs` |
+| QW-7: Content hash | ✅ | Already implemented (merged with QW-9) |
+| QW-7: DB pool size | ✅ | Already standardized to 10 |
+| QW-9: Config watcher debounce | ✅ | Added debounce and content hash |
+| QW-10: Upgrade duplicate logic | ✅ | Refactored to use upgrade module |
+| QW-11: Upgrade request timeout | ✅ | Added `-m 300` to curl |
 
 ### Wave 1: Critical Security
-| PR | Item | Status | Notes |
-|----|------|--------|-------|
-| #21 | CRIT-1: mdns.rs unsafe | ✅ | Verified already using socket2 |
-| #20 | CRIT-2: API key encryption config | ✅ | Integrated crypto with config |
-| #18 | CRIT-3: SSRF duplication | ✅ | Centralized in ssrf.rs |
-| #16 | CRIT-4: Storage race conditions | ✅ | Removed std::fs::File::create, added WAL |
-| #19 | CRIT-5: Memory persistence | ✅ | Added atomic saves, file locking |
-| #17 | CRIT-6: Snapshot persistence | ✅ | SQLite persistence, restore, SHA-256 |
+
+| Item | Status | Notes |
+|------|--------|-------|
+| CRIT-1: `mdns.rs` unsafe | ✅ | Verified already using socket2 |
+| CRIT-2: API key encryption config | ✅ | Integrated crypto with config |
+| CRIT-3: SSRF duplication | ✅ | Centralized in `ssrf.rs` |
+| CRIT-4: Storage race conditions | ✅ | Removed `std::fs::File::create`, added WAL |
+| CRIT-5: Memory persistence | ✅ | Added atomic saves, file locking |
+| CRIT-6: Snapshot persistence | ✅ | SQLite persistence, restore, SHA-256 |
 
 ### Wave 2: High-Priority Infrastructure
-| PR | Item | Status | Notes |
-|----|------|--------|-------|
-| #23 | HIGH-1: MCP auto-reconnect | ✅ | Wired reconnect(), added heartbeat |
-| #22 | HIGH-2: WebSocket per-session rate | ✅ | Added session-based rate limiting |
-| N/A | HIGH-3: block_on in subagent | ✅ | Not found - already using tokio::spawn |
-| #13 | HIGH-4: Config watcher | ✅ | Combined with QW-9 |
-| #24 | HIGH-5: Hooks emit events | ✅ | SessionStart/End, error logging |
-| #25 | HIGH-6: Bus memory leak | ✅ | TTL cleanup, removed async |
+
+| Item | Status | Notes |
+|------|--------|-------|
+| HIGH-1: MCP auto-reconnect | ✅ | Wired `reconnect()`, added heartbeat |
+| HIGH-2: WebSocket per-session rate | ✅ | Added session-based rate limiting |
+| HIGH-3: `block_on` in subagent | ✅ | Not present — already using `tokio::spawn` |
+| HIGH-4: Config watcher | ✅ | Combined with QW-9 |
+| HIGH-5: Hooks emit events | ✅ | SessionStart/End, error logging |
+| HIGH-6: Bus memory leak | ✅ | TTL cleanup, removed async |
 
 ### Wave 3: Medium-Priority Groups
-| PR | Item | Status | Notes |
-|----|------|--------|-------|
-| #28 | GROUP-A: Security hardening | ✅ | A-1 to A-4 all completed |
-| #26 | GROUP-D: Agent loop | ✅ | D-1 summarization exists, D-2 doc fixed |
-| #29 | GROUP-E: Provider system | ✅ | E-1 to E-4 all completed |
-| #27 | GROUP-F: Tool system | ✅ | F-1 (TerminalTool), F-2 (allowlist fix) |
-| #31 | GROUP-C: TUI improvements | ✅ | C-1,C-2 documented, C-3,C-4 implemented |
-| #30 | GROUP-G: Testing | ✅ | G-1,G-4,G-5 done; G-2,G-3 need CI |
+
+| Item | Status | Notes |
+|------|--------|-------|
+| GROUP-A: Security hardening | ✅ | A-1 to A-4 all completed |
+| GROUP-C: TUI improvements | ✅ | C-1, C-2 documented; C-3, C-4 implemented |
+| GROUP-D: Agent loop | ✅ | D-1 summarization exists; D-2 doc fixed |
+| GROUP-E: Provider system | ✅ | E-1 to E-4 all completed |
+| GROUP-F: Tool system | ✅ | F-1 (TerminalTool), F-2 (allowlist fix) |
+| GROUP-G: Testing | ✅ | G-1, G-4, G-5 done; G-2, G-3 needed CI |
 
 ### Diversions from Plan
-1. **QW-12 (Content hash)** - Already implemented, merged with QW-9
-2. **QW-14 (PTY rename)** - Renamed `src/pty/` to `src/shell/` to clarify purpose
-3. **HIGH-3 (block_on)** - Not found in codebase, already using tokio::spawn
+
+1. **QW-12 (Content hash)** — Already implemented, merged with QW-9.
+2. **QW-14 (PTY rename)** — Renamed `src/pty/` to `src/shell/` to clarify purpose.
+3. **HIGH-3 (`block_on`)** — Not found in codebase; already using `tokio::spawn`.
 
 ---
 
-## Architecture Review Items (New - 2026-05-27)
+## Architecture Review Items (2026-05-27)
 
-This section consolidates ~72 items identified during architecture review sessions (batches 1-5). Items are grouped by module and organized into waves for parallelization.
+> Review findings consolidated from five batch reviews. Items are grouped
+> by module and originally organized into waves for parallelization. Most
+> items have been resolved — see `AGENTS.md` for the current authoritative
+> facts (tool count, command count, LSP server count, etc.).
 
-### Wave Structure
+### Wave Structure (Historical)
 
-| Wave | Focus | Items | Type | Parallel Potential |
-|------|-------|-------|------|-------------------|
-| R0 | Documentation-Only Fixes | ~25 items | Docs | All fully parallel |
-| R1 | Code Fixes (Low Risk) | ~15 items | Code/Docs | All fully parallel |
-| R2 | Code Fixes (Medium Risk) | ~20 items | Code/Docs | By module group |
-| R3 | Incomplete Implementation | ~12 items | Code | Some dependencies |
+| Wave | Focus | Items | Type |
+|------|-------|-------|------|
+| R0 | Documentation-Only Fixes | ~25 items | Docs |
+| R1 | Code Fixes (Low Risk) | ~15 items | Code/Docs |
+| R2 | Code Fixes (Medium Risk) | ~20 items | Code/Docs |
+| R3 | Incomplete Implementation | ~12 items | Code |
 
 ---
 
@@ -421,16 +439,14 @@ These items involve incomplete implementations that may require more design work
 
 ### Architecture Review Items Guidance
 
-1. **R0 items are pure documentation** - no code changes, safe to do in parallel
-2. **R1 items are isolated code fixes** - can be done in parallel, low risk
-3. **R2 items involve actual code changes** - review carefully before merging
-4. **R3 items are incomplete implementations** - may need design discussion before implementation
-5. **Batches 1-5 review files are source of truth** - see:
-   - `/var/folders/2j/dlwhrpps66scv9bw8f7vdfg40000gq/T/opencode/consolidated_batch1.md`
-   - `/var/folders/2j/dlwhrpps66scv9bw8f7vdfg40000gq/T/opencode/consolidated_batch2.md`
-   - `/var/folders/2j/dlwhrpps66scv9bw8f7vdfg40000gq/T/opencode/consolidated_batch3.md`
-   - `/var/folders/2j/dlwhrpps66scv9bw8f7vdfg40000gq/T/opencode/consolidated_batch4.md`
-   - `/var/folders/2j/dlwhrpps66scv9bw8f7vdfg40000gq/T/opencode/consolidated_batch5.md`
+1. **R0 items are pure documentation** — no code changes, safe to do in parallel.
+2. **R1 items are isolated code fixes** — can be done in parallel, low risk.
+3. **R2 items involve actual code changes** — review carefully before merging.
+4. **R3 items are incomplete implementations** — may need design discussion before implementation.
+5. **Original review batches** — the five consolidated review batches that
+   produced these items were local reviewer scratchpads and are not
+   committed to the repository. Use the in-repo `architecture/*.md`
+   files and `AGENTS.md` as the authoritative source for current state.
 
 ### Critical Implementation Notes (From AGENTS.md)
 
