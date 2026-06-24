@@ -8716,7 +8716,8 @@ mod remote_core_loader_tests {
         assert_eq!(app.agent_state.models, models);
 
         if let CoreResponse::ModelsSnapshot {
-            models: mut expected, ..
+            models: mut expected,
+            ..
         } = Arc::clone(&app.core_client.unwrap())
             .request(new_request("snap2".into(), CoreRequest::SnapshotModels))
             .await

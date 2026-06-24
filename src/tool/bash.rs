@@ -36,6 +36,7 @@ static BLOCKED_PATTERNS: &[(&str, &str)] = &[
     ("|| rm -rf", r"\|\|[\s\n\r]*rm[\s\n\r]+-rf"),
     ("printf injection %{...}|&", r"%\{[^}]*\|\s*&"),
     ("eval(", r"eval\s*\("),
+    ("eval command", r"(?:^|[\s;&|()<>])eval(?:\s+|\(|$)"),
     ("standalone exec command", r"(?:^|[\s;&|()<>])exec\s+"),
     ("source shell script", r"source\s+.*\.sh"),
     ("dot-source shell script", r"\.\s+.*\.sh"),

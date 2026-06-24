@@ -4,11 +4,18 @@
 //! when `expose_raw_mcp_tools` is enabled or disabled.
 
 use std::sync::Mutex;
+use tokio::sync::Mutex as AsyncMutex;
 
 // `search_backend::state` is a process-global slot, so tests that
 // install a search config or McpService must be serialized with each
 // other. Acquired at the start of every test in this file.
 static TEST_LOCK: Mutex<()> = Mutex::new(());
+
+// Async lock for tests that need to hold the test serialization lock
+// across `.await` boundaries (i.e. anything that calls into
+// `AgentLoop::test_build_tool_definitions` while still relying on
+// the global state we install).
+static ASYNC_TEST_LOCK: AsyncMutex<()> = AsyncMutex::const_new(());
 
 #[cfg(test)]
 mod agent_loop_filtering_tests {
@@ -210,7 +217,7 @@ mod agent_loop_filtering_tests {
 /// `expose_raw_mcp_tools` is false and exposed when it is true.
 #[cfg(test)]
 mod real_build_tool_definitions_tests {
-    use super::TEST_LOCK;
+    use super::ASYNC_TEST_LOCK;
     use std::sync::Arc;
 
     use async_trait::async_trait;
@@ -362,10 +369,10 @@ mod real_build_tool_definitions_tests {
     /// raw `mcp__eggsearch__*` tools.
     #[tokio::test]
     async fn real_build_hides_raw_eggsearch_tools() {
-        let mcp = {
-            let _g = TEST_LOCK.lock().unwrap();
-            state::reset_for_tests();
+        state::reset_for_tests();
+        let _g = ASYNC_TEST_LOCK.lock().await;
 
+        let mcp = {
             let mcp = Arc::new(RwLock::new(build_mock_eggsearch_mcp()));
             state::install_mcp_service(Arc::clone(&mcp));
             state::install_search_config(eggsearch_config(false));
@@ -412,10 +419,10 @@ mod real_build_tool_definitions_tests {
     /// tools in addition to the native wrappers.
     #[tokio::test]
     async fn real_build_shows_raw_eggsearch_tools_when_exposed() {
-        let mcp = {
-            let _g = TEST_LOCK.lock().unwrap();
-            state::reset_for_tests();
+        state::reset_for_tests();
+        let _g = ASYNC_TEST_LOCK.lock().await;
 
+        let mcp = {
             let mcp = Arc::new(RwLock::new(build_mock_eggsearch_mcp()));
             state::install_mcp_service(Arc::clone(&mcp));
             state::install_search_config(eggsearch_config(true));
@@ -460,10 +467,10 @@ mod real_build_tool_definitions_tests {
     /// `expose_raw_mcp_tools = false`.
     #[tokio::test]
     async fn real_build_hides_raw_eggsearch_tools_for_custom_server_name() {
-        let mcp = {
-            let _g = TEST_LOCK.lock().unwrap();
-            state::reset_for_tests();
+        state::reset_for_tests();
+        let _g = ASYNC_TEST_LOCK.lock().await;
 
+        let mcp = {
             // Build a service whose tools use a non-default prefix.
             let mut svc = McpService::new();
             svc.register_mock_server(

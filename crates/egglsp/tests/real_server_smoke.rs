@@ -6401,8 +6401,7 @@ fn assert_required_checks(report: &LspCompatibilityReport) {
         // is documented. The plan calls for preserving the
         // exact protocol/parse/semantic fields so reviewers
         // can read them from the JSON report.
-        let known_limit_is_documented =
-            record.known_limit.as_ref().is_some_and(|s| !s.is_empty());
+        let known_limit_is_documented = record.known_limit.as_ref().is_some_and(|s| !s.is_empty());
         let known_limitation_ok = record.requirement
             == egglsp::compatibility::CompatibilityRequirement::KnownLimitation
             && exercised

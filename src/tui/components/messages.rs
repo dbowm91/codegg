@@ -1346,7 +1346,6 @@ impl MessagesWidget {
             return;
         };
         self.sel_msg = Some(current_match.msg_idx);
-        self.auto_scroll = false;
 
         let visible_lines = self.message_viewport_height().max(1);
         let message_offset =

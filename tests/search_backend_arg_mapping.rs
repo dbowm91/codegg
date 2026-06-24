@@ -16,6 +16,15 @@
 //! - `webfetch.max_chars` is accepted as an alias.
 //! - `webfetch` always sends `extract_mode = "text"` and
 //!   `include_links = false` to keep output bounded.
+//!
+//! ## Test isolation
+//!
+//! `search_backend::state` is a process-global slot, so the tests in
+//! this file must be serialized against any other test that touches
+//! the same global. We hold the lock for the entire body of each
+//! `#[tokio::test]` (including the `.await` on `dispatch_*`) so a
+//! concurrent test from another binary cannot reset the state between
+//! our install and our assertions.
 
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -25,19 +34,9 @@ use codegg::error::McpError;
 use codegg::mcp::{McpService, McpTool};
 use codegg::search_backend::framing;
 use codegg::search_backend::state;
+use tokio::sync::{Mutex as AsyncMutex, MutexGuard};
 
-/// Test serialization lock.
-///
-/// A `std::sync::Mutex` (thread-level) is used instead of a
-/// `tokio::sync::Mutex` because each `#[tokio::test]` creates its own
-/// runtime, and a static tokio Mutex can race when the holder is parked
-/// across runtimes. We tolerate poisoning (a test that panics while
-/// holding the lock) by clearing it before re-acquiring.
-static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-fn lock_tests() -> std::sync::MutexGuard<'static, ()> {
-    TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner())
-}
+static TEST_LOCK: AsyncMutex<()> = AsyncMutex::const_new(());
 
 fn eggsearch_config() -> SearchConfig {
     SearchConfig {
@@ -119,13 +118,15 @@ fn install_mock_recorder() -> Arc<Mutex<Vec<(String, serde_json::Value)>>> {
     calls
 }
 
+async fn lock_tests() -> MutexGuard<'static, ()> {
+    TEST_LOCK.lock().await
+}
+
 #[tokio::test]
 async fn num_results_maps_to_max_results() {
-    let calls = {
-        let _g = lock_tests();
-        state::reset_for_tests();
-        install_mock_recorder()
-    };
+    state::reset_for_tests();
+    let _g = lock_tests().await;
+    let calls = install_mock_recorder();
     let _ = codegg::search_backend::dispatch_web_search(&serde_json::json!({
         "query": "x",
         "num_results": 12,
@@ -141,11 +142,9 @@ async fn num_results_maps_to_max_results() {
 
 #[tokio::test]
 async fn max_results_alias_is_accepted() {
-    let calls = {
-        let _g = lock_tests();
-        state::reset_for_tests();
-        install_mock_recorder()
-    };
+    state::reset_for_tests();
+    let _g = lock_tests().await;
+    let calls = install_mock_recorder();
     let _ = codegg::search_backend::dispatch_web_search(&serde_json::json!({
         "query": "x",
         "max_results": 7,
@@ -160,11 +159,9 @@ async fn max_results_alias_is_accepted() {
 
 #[tokio::test]
 async fn num_results_is_capped_at_30() {
-    let calls = {
-        let _g = lock_tests();
-        state::reset_for_tests();
-        install_mock_recorder()
-    };
+    state::reset_for_tests();
+    let _g = lock_tests().await;
+    let calls = install_mock_recorder();
     let _ = codegg::search_backend::dispatch_web_search(&serde_json::json!({
         "query": "x",
         "num_results": 5000,
@@ -178,11 +175,9 @@ async fn num_results_is_capped_at_30() {
 
 #[tokio::test]
 async fn provider_pinned_to_specific_backend() {
-    let calls = {
-        let _g = lock_tests();
-        state::reset_for_tests();
-        install_mock_recorder()
-    };
+    state::reset_for_tests();
+    let _g = lock_tests().await;
+    let calls = install_mock_recorder();
     let _ = codegg::search_backend::dispatch_web_search(&serde_json::json!({
         "query": "x",
         "provider": "arxiv",
@@ -198,11 +193,9 @@ async fn provider_pinned_to_specific_backend() {
 
 #[tokio::test]
 async fn provider_unknown_does_not_emit_providers_field() {
-    let calls = {
-        let _g = lock_tests();
-        state::reset_for_tests();
-        install_mock_recorder()
-    };
+    state::reset_for_tests();
+    let _g = lock_tests().await;
+    let calls = install_mock_recorder();
     let _ = codegg::search_backend::dispatch_web_search(&serde_json::json!({
         "query": "x",
         "provider": "unknown_backend",
@@ -224,11 +217,9 @@ async fn provider_unknown_does_not_emit_providers_field() {
 
 #[tokio::test]
 async fn webfetch_max_length_maps_to_max_chars() {
-    let calls = {
-        let _g = lock_tests();
-        state::reset_for_tests();
-        install_mock_recorder()
-    };
+    state::reset_for_tests();
+    let _g = lock_tests().await;
+    let calls = install_mock_recorder();
     let _ = codegg::search_backend::dispatch_web_fetch(&serde_json::json!({
         "url": "https://example.com",
         "max_length": 4000,
@@ -246,11 +237,9 @@ async fn webfetch_max_length_maps_to_max_chars() {
 
 #[tokio::test]
 async fn webfetch_default_extract_mode_is_text() {
-    let calls = {
-        let _g = lock_tests();
-        state::reset_for_tests();
-        install_mock_recorder()
-    };
+    state::reset_for_tests();
+    let _g = lock_tests().await;
+    let calls = install_mock_recorder();
     let _ = codegg::search_backend::dispatch_web_fetch(&serde_json::json!({
         "url": "https://example.com",
     }))

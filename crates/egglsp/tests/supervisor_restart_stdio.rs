@@ -31,7 +31,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use egglsp::{
-    LspClientDescriptor, LspConfig, LspError, LspOperationalState, LspProcessIntent, LspRestartMode, LspRestartPolicy, LspRule, LspService,
+    LspClientDescriptor, LspConfig, LspError, LspOperationalState, LspProcessIntent,
+    LspRestartMode, LspRestartPolicy, LspRule, LspService,
 };
 use serde_json::json;
 use tempfile::TempDir;

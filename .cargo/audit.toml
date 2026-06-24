@@ -1,0 +1,12 @@
+[advisories]
+ignore = [
+    # RUSTSEC-2023-0071: Marvin Attack on `rsa` crate
+    # Severity: medium (5.9)
+    # The RustSec advisory database notes "No fixed upgrade is
+    # available" — the only fix is to migrate away from the `rsa`
+    # crate. `rsa` is pulled in transitively via `sqlx-mysql` /
+    # `sqlx` features we don't use, and there's no path to swap it
+    # out until upstream removes the dependency. Tracking the
+    # upstream issue; revisit once a replacement is published.
+    "RUSTSEC-2023-0071",
+]

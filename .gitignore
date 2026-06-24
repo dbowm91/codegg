@@ -43,6 +43,7 @@ dist/
 
 # Cargo
 .cargo/
+!.cargo/audit.toml
 vendor/
 
 # Node (for any JS tooling)

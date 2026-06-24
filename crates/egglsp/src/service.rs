@@ -3610,9 +3610,10 @@ async fn open_null_stderr() -> std::io::Result<tokio::process::ChildStderr> {
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     let mut child = cmd.spawn()?;
-    child.stderr.take().ok_or_else(|| {
-        std::io::Error::other("stderr not captured for dummy")
-    })
+    child
+        .stderr
+        .take()
+        .ok_or_else(|| std::io::Error::other("stderr not captured for dummy"))
 }
 
 // ── Spawned initialization attempt wrapper ───────────────────────────

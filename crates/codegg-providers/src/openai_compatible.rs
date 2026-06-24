@@ -124,11 +124,7 @@ impl OpenAiCompatibleProvider {
                             })
                             .collect::<Vec<_>>()
                             .join("");
-                        if text.is_empty() {
-                            serde_json::Value::Null
-                        } else {
-                            serde_json::Value::String(text)
-                        }
+                        serde_json::Value::String(text)
                     };
                     let mut assistant_msg = json!({
                         "role": "assistant",

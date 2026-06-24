@@ -3,16 +3,16 @@
 //! Renders [`LspContextPacket`] into concise, readable text blocks
 //! suitable for agent prompts. No raw JSON is ever dumped.
 
-use crate::context::{
-    LspContextItem, LspContextItemKind, LspContextPacket, LspPreviewArtifact,
-};
+use crate::context::{LspContextItem, LspContextItemKind, LspContextPacket, LspPreviewArtifact};
 
 // ---------------------------------------------------------------------------
 // Model tier
 // ---------------------------------------------------------------------------
 
 /// Controls how much LSP context is rendered into agent prompts.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize,
+)]
 pub enum ModelTier {
     /// Minimal: diagnostics + hunk-local definitions only.
     Small,

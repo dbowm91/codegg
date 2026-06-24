@@ -152,7 +152,7 @@ impl SessionStore {
 
     pub async fn get(&self, id: &str) -> Result<Option<Session>, StorageError> {
         sqlx::query_as::<_, SessionRow>(&format!(
-            "SELECT {} FROM session WHERE id = ?",
+            "SELECT {} FROM session WHERE id = ? AND time_deleted IS NULL",
             SESSION_COLUMNS
         ))
         .bind(id)

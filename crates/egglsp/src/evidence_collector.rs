@@ -1436,7 +1436,12 @@ async fn collect_review_context(
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
-#[allow(clippy::useless_format, clippy::unnecessary_cast, clippy::let_unit_value, clippy::field_reassign_with_default)]
+#[allow(
+    clippy::useless_format,
+    clippy::unnecessary_cast,
+    clippy::let_unit_value,
+    clippy::field_reassign_with_default
+)]
 mod tests {
     use super::*;
     use std::sync::Mutex;

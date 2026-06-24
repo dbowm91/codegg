@@ -630,9 +630,7 @@ fn extract_details(caps: &ServerCapabilities) -> LspCapabilityDetails {
 #[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
-    use lsp_types::{
-        CodeActionOptions, CompletionOptions, RenameOptions, SemanticTokensLegend,
-    };
+    use lsp_types::{CodeActionOptions, CompletionOptions, RenameOptions, SemanticTokensLegend};
 
     fn sample_snapshot() -> LspCapabilitySnapshot {
         LspCapabilitySnapshot {

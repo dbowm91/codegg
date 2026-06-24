@@ -46,7 +46,7 @@ impl PermissionDialog {
 
     pub fn options(&self) -> Vec<&str> {
         if self.confirm_persistent {
-            vec!["Confirm & Persist", "Cancel"]
+            vec!["⚠ Confirm & Persist", "← Cancel"]
         } else {
             vec!["Allow Once", "Always Allow", "Deny Once", "Always Deny"]
         }
