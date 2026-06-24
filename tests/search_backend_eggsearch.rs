@@ -3,23 +3,19 @@
 //! These tests verify the agent-loop tool exposure filtering behavior
 //! when `expose_raw_mcp_tools` is enabled or disabled.
 
-use std::sync::Mutex;
 use tokio::sync::Mutex as AsyncMutex;
 
 // `search_backend::state` is a process-global slot, so tests that
 // install a search config or McpService must be serialized with each
-// other. Acquired at the start of every test in this file.
-static TEST_LOCK: Mutex<()> = Mutex::new(());
-
-// Async lock for tests that need to hold the test serialization lock
-// across `.await` boundaries (i.e. anything that calls into
-// `AgentLoop::test_build_tool_definitions` while still relying on
-// the global state we install).
+// other. All tests in this file acquire this single async lock; some
+// hold it across `.await` boundaries (anything that calls into
+// `AgentLoop::test_build_tool_definitions`), so it must be a
+// `tokio::sync::Mutex` rather than `std::sync::Mutex`.
 static ASYNC_TEST_LOCK: AsyncMutex<()> = AsyncMutex::const_new(());
 
 #[cfg(test)]
 mod agent_loop_filtering_tests {
-    use super::TEST_LOCK;
+    use super::ASYNC_TEST_LOCK;
     use codegg::config::schema::{EggsearchConfig, SearchBackendConfig, SearchConfig};
     use codegg::provider::ToolDefinition;
     use codegg::search_backend::state;
@@ -70,9 +66,9 @@ mod agent_loop_filtering_tests {
             .collect()
     }
 
-    #[test]
-    fn expose_raw_false_hides_eggsearch_tools() {
-        let _g = TEST_LOCK.lock().unwrap();
+    #[tokio::test]
+    async fn expose_raw_false_hides_eggsearch_tools() {
+        let _g = ASYNC_TEST_LOCK.lock().await;
         state::reset_for_tests();
         let cfg = SearchConfig {
             backend: Some(SearchBackendConfig::Eggsearch),
@@ -106,9 +102,9 @@ mod agent_loop_filtering_tests {
         assert_eq!(filtered[0].name, "other_tool");
     }
 
-    #[test]
-    fn expose_raw_true_shows_eggsearch_tools() {
-        let _g = TEST_LOCK.lock().unwrap();
+    #[tokio::test]
+    async fn expose_raw_true_shows_eggsearch_tools() {
+        let _g = ASYNC_TEST_LOCK.lock().await;
         state::reset_for_tests();
         let cfg = SearchConfig {
             backend: Some(SearchBackendConfig::Eggsearch),
@@ -156,9 +152,9 @@ mod agent_loop_filtering_tests {
         );
     }
 
-    #[test]
-    fn expose_raw_uses_default_server_name() {
-        let _g = TEST_LOCK.lock().unwrap();
+    #[tokio::test]
+    async fn expose_raw_uses_default_server_name() {
+        let _g = ASYNC_TEST_LOCK.lock().await;
         state::reset_for_tests();
         let cfg = SearchConfig {
             backend: Some(SearchBackendConfig::Eggsearch),
@@ -184,9 +180,9 @@ mod agent_loop_filtering_tests {
         );
     }
 
-    #[test]
-    fn expose_raw_with_custom_server_name() {
-        let _g = TEST_LOCK.lock().unwrap();
+    #[tokio::test]
+    async fn expose_raw_with_custom_server_name() {
+        let _g = ASYNC_TEST_LOCK.lock().await;
         state::reset_for_tests();
         let cfg = SearchConfig {
             backend: Some(SearchBackendConfig::Eggsearch),
