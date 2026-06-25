@@ -31,11 +31,13 @@
 use std::path::PathBuf;
 
 use crate::context::{
-    AgentContextSource, HunkRange, LineRange, LspContextBudget, LspContextMode,
-    LspContextPacket, LspContextPacketMode, LspContextRequest, LspContextTruncation, LspRiskMode,
+    AgentContextSource, HunkRange, LineRange, LspContextBudget, LspContextMode, LspContextPacket,
+    LspContextPacketMode, LspContextRequest, LspContextTruncation, LspRiskMode,
 };
 use crate::context_renderer::{render_lsp_context_for_agent, LspContextRenderConfig, ModelTier};
-use crate::evidence_collector::{collect_context, collect_hunk_context, LspContextError, LspEvidenceProvider};
+use crate::evidence_collector::{
+    collect_context, collect_hunk_context, LspContextError, LspEvidenceProvider,
+};
 use crate::hunk_context::HunkDescriptor;
 
 // ---------------------------------------------------------------------------
@@ -404,8 +406,7 @@ pub async fn execute_repair_hunk(
         truncation: LspContextTruncation::default(),
     };
 
-    crate::context::dedup_context_items(std::mem::take(&mut packet.items));
-    let mut items = crate::context::dedup_context_items(packet.items);
+    let mut items = crate::context::dedup_context_items(std::mem::take(&mut packet.items));
     crate::context::rank_context_items(&mut items, &packet.request);
     packet.items = items;
     crate::context::enforce_context_budget(&mut packet);
@@ -550,7 +551,10 @@ pub async fn execute_hunk_source_navigation(
         server_generation: None,
         operational_state: None,
         budget: Some(budget),
-        notes: vec![format!("recipe: hunk_source_navigation ({})", request.intent)],
+        notes: vec![format!(
+            "recipe: hunk_source_navigation ({})",
+            request.intent
+        )],
         truncation: LspContextTruncation::default(),
     };
 
@@ -594,9 +598,9 @@ pub async fn execute_preview_suggestion(
     let mode = &request.settings.mode;
     let mut packet = collect_context(provider, &ctx_request, &budget, mode).await?;
 
-    packet.notes.push(
-        "recipe: preview_suggestion — previews are not applied".to_string(),
-    );
+    packet
+        .notes
+        .push("recipe: preview_suggestion — previews are not applied".to_string());
 
     finish_recipe_outcome(
         LspWorkflowRecipe::PreviewSuggestion,
@@ -677,10 +681,8 @@ pub fn default_settings_for_recipe(recipe: LspWorkflowRecipe, tier: ModelTier) -
         }
         LspWorkflowRecipe::ReviewFile => {
             settings.max_files = 1;
-            settings.include_references = matches!(
-                tier,
-                ModelTier::Workhorse | ModelTier::Frontier
-            );
+            settings.include_references =
+                matches!(tier, ModelTier::Workhorse | ModelTier::Frontier);
         }
         LspWorkflowRecipe::ReviewDiff => {
             settings.risk_mode = match tier {
@@ -826,8 +828,7 @@ mod tests {
 
     #[test]
     fn review_diff_scales_risk_with_tier() {
-        let small =
-            default_settings_for_recipe(LspWorkflowRecipe::ReviewDiff, ModelTier::Small);
+        let small = default_settings_for_recipe(LspWorkflowRecipe::ReviewDiff, ModelTier::Small);
         assert_eq!(small.risk_mode, LspRiskMode::Conservative);
 
         let workhorse =
@@ -895,5 +896,592 @@ mod tests {
         let outcome =
             finish_recipe_outcome(LspWorkflowRecipe::ReviewFile, packet, &settings).unwrap();
         assert!(outcome.fallback_used);
+    }
+
+    // -----------------------------------------------------------------------
+    // Async integration tests — exercise execute_* paths with mock providers
+    // -----------------------------------------------------------------------
+
+    use crate::evidence_collector::{LspContextError, LspEvidenceProvider};
+    use crate::LspError;
+    use async_trait::async_trait;
+
+    /// Mock provider that returns diagnostics but fails on symbols/defs/refs
+    /// (degraded LSP: some operations succeed, others error).
+    struct DegradedProvider;
+
+    #[async_trait]
+    impl LspEvidenceProvider for DegradedProvider {
+        async fn diagnostics_for_file(
+            &self,
+            _: &std::path::Path,
+        ) -> Result<Vec<(String, String, String)>, LspError> {
+            Ok(vec![(
+                "warning".into(),
+                "unused import".into(),
+                "(2:0)-(2:10)".into(),
+            )])
+        }
+        async fn document_symbols(
+            &self,
+            _: &std::path::Path,
+        ) -> Result<Vec<(String, String, String)>, LspError> {
+            Err(LspError::NotInitialized("degraded".into()))
+        }
+        async fn go_to_definition(
+            &self,
+            _: &std::path::Path,
+            _: u32,
+            _: u32,
+        ) -> Result<Vec<(String, String)>, LspError> {
+            Err(LspError::NotInitialized("degraded".into()))
+        }
+        async fn find_references(
+            &self,
+            _: &std::path::Path,
+            _: u32,
+            _: u32,
+        ) -> Result<Vec<(String, String)>, LspError> {
+            Err(LspError::NotInitialized("degraded".into()))
+        }
+        async fn implementations(
+            &self,
+            _: &std::path::Path,
+            _: u32,
+            _: u32,
+        ) -> Result<Vec<(String, String)>, LspError> {
+            Err(LspError::NotInitialized("degraded".into()))
+        }
+        async fn hover(
+            &self,
+            _: &std::path::Path,
+            _: u32,
+            _: u32,
+        ) -> Result<Option<String>, LspError> {
+            Err(LspError::NotInitialized("degraded".into()))
+        }
+        async fn document_highlights(
+            &self,
+            _: &std::path::Path,
+            _: u32,
+            _: u32,
+        ) -> Result<Vec<String>, LspError> {
+            Err(LspError::NotInitialized("degraded".into()))
+        }
+        async fn signature_help(
+            &self,
+            _: &std::path::Path,
+            _: u32,
+            _: u32,
+        ) -> Result<Vec<(String, String)>, LspError> {
+            Err(LspError::NotInitialized("degraded".into()))
+        }
+        async fn completion(
+            &self,
+            _: &std::path::Path,
+            _: u32,
+            _: u32,
+        ) -> Result<Vec<(String, String, String)>, LspError> {
+            Err(LspError::NotInitialized("degraded".into()))
+        }
+        async fn semantic_tokens(
+            &self,
+            _: &std::path::Path,
+            _: u32,
+            _: u32,
+        ) -> Result<Vec<(u32, u32, u32, String)>, LspError> {
+            Err(LspError::NotInitialized("degraded".into()))
+        }
+        async fn workspace_symbols(
+            &self,
+            _: &str,
+        ) -> Result<Vec<(String, String, String, String)>, LspError> {
+            Err(LspError::NotInitialized("degraded".into()))
+        }
+        async fn operational_state(&self) -> String {
+            "degraded".to_string()
+        }
+        async fn server_info(&self) -> (Option<String>, Option<u64>) {
+            (Some("degraded-server".into()), Some(1))
+        }
+    }
+
+    #[tokio::test]
+    async fn test_repair_local_degraded_lsp() {
+        let request = RepairLocalRequest {
+            file: std::path::PathBuf::from("src/main.rs"),
+            line: 10,
+            column: 0,
+            diagnostic_message: None,
+            settings: RecipeSettings::default(),
+        };
+
+        let outcome = execute_repair_local(&DegradedProvider, &request)
+            .await
+            .unwrap();
+
+        // Degraded provider still returns diagnostics, so items should exist.
+        assert!(
+            !outcome.packet.items.is_empty(),
+            "degraded provider should still return diagnostic items"
+        );
+
+        // Fallback should be detected because operational notes are present
+        // from failed symbol/def/ref operations.
+        let op_notes: Vec<_> = outcome
+            .packet
+            .items
+            .iter()
+            .filter(|i| i.kind == crate::context::LspContextItemKind::OperationalNote)
+            .collect();
+        assert!(
+            !op_notes.is_empty(),
+            "expected operational notes for failed operations"
+        );
+        assert!(outcome.fallback_used);
+        assert!(outcome.notes.iter().any(|n| n.contains("fallback")));
+    }
+
+    /// Mock provider that returns nothing — simulates LSP completely unavailable.
+    struct UnavailProvider;
+
+    #[async_trait]
+    impl LspEvidenceProvider for UnavailProvider {
+        async fn diagnostics_for_file(
+            &self,
+            _: &std::path::Path,
+        ) -> Result<Vec<(String, String, String)>, LspError> {
+            Err(LspError::NotInitialized("no server".into()))
+        }
+        async fn document_symbols(
+            &self,
+            _: &std::path::Path,
+        ) -> Result<Vec<(String, String, String)>, LspError> {
+            Err(LspError::NotInitialized("no server".into()))
+        }
+        async fn go_to_definition(
+            &self,
+            _: &std::path::Path,
+            _: u32,
+            _: u32,
+        ) -> Result<Vec<(String, String)>, LspError> {
+            Err(LspError::NotInitialized("no server".into()))
+        }
+        async fn find_references(
+            &self,
+            _: &std::path::Path,
+            _: u32,
+            _: u32,
+        ) -> Result<Vec<(String, String)>, LspError> {
+            Err(LspError::NotInitialized("no server".into()))
+        }
+        async fn implementations(
+            &self,
+            _: &std::path::Path,
+            _: u32,
+            _: u32,
+        ) -> Result<Vec<(String, String)>, LspError> {
+            Err(LspError::NotInitialized("no server".into()))
+        }
+        async fn hover(
+            &self,
+            _: &std::path::Path,
+            _: u32,
+            _: u32,
+        ) -> Result<Option<String>, LspError> {
+            Err(LspError::NotInitialized("no server".into()))
+        }
+        async fn document_highlights(
+            &self,
+            _: &std::path::Path,
+            _: u32,
+            _: u32,
+        ) -> Result<Vec<String>, LspError> {
+            Err(LspError::NotInitialized("no server".into()))
+        }
+        async fn signature_help(
+            &self,
+            _: &std::path::Path,
+            _: u32,
+            _: u32,
+        ) -> Result<Vec<(String, String)>, LspError> {
+            Err(LspError::NotInitialized("no server".into()))
+        }
+        async fn completion(
+            &self,
+            _: &std::path::Path,
+            _: u32,
+            _: u32,
+        ) -> Result<Vec<(String, String, String)>, LspError> {
+            Err(LspError::NotInitialized("no server".into()))
+        }
+        async fn semantic_tokens(
+            &self,
+            _: &std::path::Path,
+            _: u32,
+            _: u32,
+        ) -> Result<Vec<(u32, u32, u32, String)>, LspError> {
+            Err(LspError::NotInitialized("no server".into()))
+        }
+        async fn workspace_symbols(
+            &self,
+            _: &str,
+        ) -> Result<Vec<(String, String, String, String)>, LspError> {
+            Err(LspError::NotInitialized("no server".into()))
+        }
+        async fn operational_state(&self) -> String {
+            "failed".to_string()
+        }
+        async fn server_info(&self) -> (Option<String>, Option<u64>) {
+            (None, None)
+        }
+    }
+
+    #[tokio::test]
+    async fn test_repair_local_disabled_mode_fallback() {
+        let request = RepairLocalRequest {
+            file: std::path::PathBuf::from("src/main.rs"),
+            line: 10,
+            column: 0,
+            diagnostic_message: None,
+            settings: RecipeSettings {
+                mode: LspContextMode::Disabled,
+                ..Default::default()
+            },
+        };
+
+        let outcome = execute_repair_local(&UnavailProvider, &request)
+            .await
+            .unwrap();
+
+        // Disabled mode always produces fallback.
+        assert!(outcome.fallback_used);
+        assert!(outcome.notes.iter().any(|n| n.contains("fallback")));
+    }
+
+    #[tokio::test]
+    async fn test_repair_local_required_mode_fails_when_unavailable() {
+        let request = RepairLocalRequest {
+            file: std::path::PathBuf::from("src/main.rs"),
+            line: 10,
+            column: 0,
+            diagnostic_message: None,
+            settings: RecipeSettings {
+                mode: LspContextMode::Required,
+                ..Default::default()
+            },
+        };
+
+        let result = execute_repair_local(&UnavailProvider, &request).await;
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            LspContextError::RequiredFailed(_) => {}
+            other => panic!("expected RequiredFailed, got {other:?}"),
+        }
+    }
+
+    /// Mock provider with state="indexing" that yields PossiblyStale freshness.
+    struct StaleProvider;
+
+    #[async_trait]
+    impl LspEvidenceProvider for StaleProvider {
+        async fn diagnostics_for_file(
+            &self,
+            _: &std::path::Path,
+        ) -> Result<Vec<(String, String, String)>, LspError> {
+            Ok(vec![(
+                "error".into(),
+                "type mismatch".into(),
+                "(5:0)-(5:20)".into(),
+            )])
+        }
+        async fn document_symbols(
+            &self,
+            _: &std::path::Path,
+        ) -> Result<Vec<(String, String, String)>, LspError> {
+            Ok(vec![])
+        }
+        async fn go_to_definition(
+            &self,
+            _: &std::path::Path,
+            _: u32,
+            _: u32,
+        ) -> Result<Vec<(String, String)>, LspError> {
+            Ok(vec![])
+        }
+        async fn find_references(
+            &self,
+            _: &std::path::Path,
+            _: u32,
+            _: u32,
+        ) -> Result<Vec<(String, String)>, LspError> {
+            Ok(vec![])
+        }
+        async fn implementations(
+            &self,
+            _: &std::path::Path,
+            _: u32,
+            _: u32,
+        ) -> Result<Vec<(String, String)>, LspError> {
+            Ok(vec![])
+        }
+        async fn hover(
+            &self,
+            _: &std::path::Path,
+            _: u32,
+            _: u32,
+        ) -> Result<Option<String>, LspError> {
+            Ok(None)
+        }
+        async fn document_highlights(
+            &self,
+            _: &std::path::Path,
+            _: u32,
+            _: u32,
+        ) -> Result<Vec<String>, LspError> {
+            Ok(vec![])
+        }
+        async fn signature_help(
+            &self,
+            _: &std::path::Path,
+            _: u32,
+            _: u32,
+        ) -> Result<Vec<(String, String)>, LspError> {
+            Ok(vec![])
+        }
+        async fn completion(
+            &self,
+            _: &std::path::Path,
+            _: u32,
+            _: u32,
+        ) -> Result<Vec<(String, String, String)>, LspError> {
+            Ok(vec![])
+        }
+        async fn semantic_tokens(
+            &self,
+            _: &std::path::Path,
+            _: u32,
+            _: u32,
+        ) -> Result<Vec<(u32, u32, u32, String)>, LspError> {
+            Ok(vec![])
+        }
+        async fn workspace_symbols(
+            &self,
+            _: &str,
+        ) -> Result<Vec<(String, String, String, String)>, LspError> {
+            Ok(vec![])
+        }
+        async fn operational_state(&self) -> String {
+            // "indexing" maps to PossiblyStale via freshness_for_state.
+            "indexing".to_string()
+        }
+        async fn server_info(&self) -> (Option<String>, Option<u64>) {
+            (Some("stale-server".into()), Some(2))
+        }
+    }
+
+    #[tokio::test]
+    async fn test_repair_hunk_stale_diagnostics() {
+        let request = RepairHunkRequest {
+            file: std::path::PathBuf::from("src/main.rs"),
+            hunks: vec![crate::context::HunkRange {
+                start: 0,
+                end: 20,
+                original_start: None,
+                original_end: None,
+            }],
+            settings: RecipeSettings {
+                include_references: false,
+                include_definitions: false,
+                ..Default::default()
+            },
+        };
+
+        let outcome = execute_repair_hunk(&StaleProvider, &request).await.unwrap();
+
+        // The diagnostic from the stale provider should have PossiblyStale freshness.
+        let diag = outcome
+            .packet
+            .items
+            .iter()
+            .find(|i| i.kind == crate::context::LspContextItemKind::Diagnostic)
+            .expect("should have diagnostic");
+        assert!(
+            matches!(
+                diag.provenance.freshness,
+                crate::context::LspEvidenceFreshness::PossiblyStale
+            ),
+            "expected PossiblyStale, got {:?}",
+            diag.provenance.freshness
+        );
+
+        // Freshness summary should reflect staleness.
+        assert_eq!(outcome.freshness_summary, "some evidence may be stale");
+    }
+
+    #[tokio::test]
+    async fn test_review_diff_tier_defaults() {
+        let small = default_settings_for_recipe(LspWorkflowRecipe::ReviewDiff, ModelTier::Small);
+        assert_eq!(small.risk_mode, LspRiskMode::Conservative);
+        assert!(!small.include_references);
+
+        let workhorse =
+            default_settings_for_recipe(LspWorkflowRecipe::ReviewDiff, ModelTier::Workhorse);
+        assert_eq!(workhorse.risk_mode, LspRiskMode::Standard);
+        assert!(workhorse.include_references);
+
+        let frontier =
+            default_settings_for_recipe(LspWorkflowRecipe::ReviewDiff, ModelTier::Frontier);
+        assert_eq!(frontier.risk_mode, LspRiskMode::Aggressive);
+        assert!(frontier.include_references);
+        assert!(frontier.include_preview_hints);
+    }
+
+    #[tokio::test]
+    async fn test_security_review_enriched_always_aggressive() {
+        let request = SecurityReviewEnrichedRequest {
+            changed_files: vec![std::path::PathBuf::from("src/auth.rs")],
+            hunks: vec![crate::hunk_context::HunkDescriptor {
+                id: "h1".into(),
+                file_path: "src/auth.rs".into(),
+                old_range: Some(crate::hunk_context::HunkLineRange {
+                    start_line: 10,
+                    end_line: 20,
+                }),
+                new_range: Some(crate::hunk_context::HunkLineRange {
+                    start_line: 10,
+                    end_line: 25,
+                }),
+                header: None,
+                added_lines: 5,
+                removed_lines: 0,
+                context_lines: 3,
+            }],
+            settings: RecipeSettings::small_tier(), // small tier, but recipe forces aggressive
+        };
+
+        let outcome = execute_security_review_enriched(&DegradedProvider, &request)
+            .await
+            .unwrap();
+
+        // Verify security-specific note is present.
+        assert!(outcome
+            .notes
+            .iter()
+            .any(|n| n.contains("security_review_enriched")));
+
+        // The recipe should have forced Aggressive risk mode internally
+        // (verified via the packet's request having Aggressive risk).
+        match &outcome.packet.request {
+            LspContextRequest::Review { risk_mode, .. } => {
+                assert_eq!(*risk_mode, LspRiskMode::Aggressive);
+            }
+            other => panic!("expected Review request, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_hunk_source_navigation_tags_items_with_hunk_source() {
+        let request = HunkSourceNavigationRecipeRequest {
+            file: std::path::PathBuf::from("src/main.rs"),
+            hunks: vec![crate::hunk_context::HunkDescriptor {
+                id: "h1".into(),
+                file_path: "src/main.rs".into(),
+                old_range: Some(crate::hunk_context::HunkLineRange {
+                    start_line: 1,
+                    end_line: 5,
+                }),
+                new_range: Some(crate::hunk_context::HunkLineRange {
+                    start_line: 1,
+                    end_line: 8,
+                }),
+                header: None,
+                added_lines: 3,
+                removed_lines: 0,
+                context_lines: 2,
+            }],
+            intent: "navigate hunk for review".to_string(),
+            settings: RecipeSettings::default(),
+        };
+
+        let outcome = execute_hunk_source_navigation(&StaleProvider, &request)
+            .await
+            .unwrap();
+
+        // All non-operational-note items should be tagged with Hunk source.
+        for item in &outcome.packet.items {
+            if item.kind != crate::context::LspContextItemKind::OperationalNote {
+                assert_eq!(
+                    item.source,
+                    Some(AgentContextSource::Hunk),
+                    "item {:?} should have Hunk source",
+                    item.kind
+                );
+            }
+        }
+
+        // Recipe note should mention the intent.
+        assert!(outcome
+            .notes
+            .iter()
+            .any(|n| n.contains("hunk_source_navigation")));
+    }
+
+    #[tokio::test]
+    async fn test_preview_suggestion_does_not_apply() {
+        let request = PreviewSuggestionRequest {
+            file: std::path::PathBuf::from("src/main.rs"),
+            line: 15,
+            column: 0,
+            settings: RecipeSettings::default(),
+        };
+
+        let outcome = execute_preview_suggestion(&StaleProvider, &request)
+            .await
+            .unwrap();
+
+        // Preview IDs should be empty — previews are never applied.
+        assert!(
+            outcome.preview_ids.is_empty(),
+            "preview_suggestion must not apply previews"
+        );
+
+        // Should have a note stating previews are not applied.
+        assert!(outcome.notes.iter().any(|n| n.contains("not applied")));
+    }
+
+    #[tokio::test]
+    async fn test_review_file_captures_diagnostics() {
+        let request = ReviewFileRequest {
+            file: std::path::PathBuf::from("src/main.rs"),
+            line_ranges: vec![],
+            settings: RecipeSettings::default(),
+        };
+
+        let outcome = execute_review_file(&StaleProvider, &request).await.unwrap();
+
+        // Should contain the diagnostic from StaleProvider.
+        let diag = outcome
+            .packet
+            .items
+            .iter()
+            .find(|i| i.kind == crate::context::LspContextItemKind::Diagnostic);
+        assert!(diag.is_some(), "review_file should capture diagnostics");
+    }
+
+    #[tokio::test]
+    async fn test_repair_local_frontier_includes_preview_hints() {
+        let settings =
+            default_settings_for_recipe(LspWorkflowRecipe::RepairLocal, ModelTier::Frontier);
+        assert!(settings.include_preview_hints);
+        assert!(settings.include_references);
+    }
+
+    #[tokio::test]
+    async fn test_repair_local_small_omits_references() {
+        let settings =
+            default_settings_for_recipe(LspWorkflowRecipe::RepairLocal, ModelTier::Small);
+        assert!(!settings.include_references);
+        assert!(!settings.include_preview_hints);
     }
 }
