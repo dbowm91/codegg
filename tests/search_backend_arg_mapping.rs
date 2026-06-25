@@ -122,21 +122,14 @@ fn install_mock_recorder() -> Arc<Mutex<Vec<(String, serde_json::Value)>>> {
 async fn lock_tests() -> (CrossProcessLockGuard, MutexGuard<'static, ()>) {
     let cp = acquire_cross_process_lock();
     let g = SHARED_TEST_LOCK.lock().await;
-    eprintln!(
-        "lock_tests: acquired flock and mutex, mcp_service={}",
-        state::mcp_service().is_some()
-    );
     (cp, g)
 }
 
 #[tokio::test]
 async fn num_results_maps_to_max_results() {
-    eprintln!("num_results_maps_to_max_results: reset");
     state::reset_for_tests();
     let (_cp, _g) = lock_tests().await;
-    eprintln!("num_results_maps_to_max_results: acquired locks, installing mock");
     let calls = install_mock_recorder();
-    eprintln!("num_results_maps_to_max_results: mock installed, mcp_service={}", state::mcp_service().is_some());
     let _ = codegg::search_backend::dispatch_web_search(&serde_json::json!({
         "query": "x",
         "num_results": 12,
