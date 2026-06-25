@@ -33,11 +33,16 @@ mod imp {
     use std::path::PathBuf;
 
     /// Acquire a process-wide advisory lock. Blocks until acquired.
-    /// Uses `flock(2)` on a temp file so every test binary started by
-    /// the same `cargo test` invocation serializes on the same file.
+    /// Uses `flock(2)` on a file under `target/` (per-build) so every
+    /// test binary started by the same `cargo test` invocation
+    /// serializes on the same file. `target/` is owned by the build
+    /// and is reliably writable on every platform/CI.
     pub fn acquire() -> CrossProcessLockGuard {
         use std::os::unix::fs::OpenOptionsExt;
-        let path: PathBuf = std::env::temp_dir().join("codegg-search-backend-test.lock");
+        let path: PathBuf = std::env::var("CARGO_TARGET_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|_| std::path::PathBuf::from("target"))
+            .join("codegg-search-backend-test.lock");
         let file = std::fs::OpenOptions::new()
             .create(true)
             .truncate(false)
@@ -47,8 +52,13 @@ mod imp {
             .expect("open cross-process test lock file");
         let ret = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
         if ret != 0 {
-            panic!("flock LOCK_EX failed: {}", std::io::Error::last_os_error());
+            panic!(
+                "flock LOCK_EX failed: {}",
+                std::io::Error::last_os_error()
+            );
         }
+        CrossProcessLockGuard { _file: file, _path: path }
+    }
         CrossProcessLockGuard {
             _file: file,
             _path: path,
