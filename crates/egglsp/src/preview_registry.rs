@@ -303,6 +303,7 @@ mod tests {
         LspPreviewArtifact::Rename {
             description: "rename foo -> bar".to_string(),
             edit_count: 1,
+            patches: Vec::new(),
         }
     }
 
@@ -333,6 +334,7 @@ mod tests {
                 LspPreviewArtifact::Formatting {
                     description: format!("fmt {i}"),
                     content_hash: None,
+                    patches: Vec::new(),
                 },
                 vec![],
                 HashMap::new(),
@@ -392,6 +394,7 @@ mod tests {
             LspPreviewArtifact::CodeAction {
                 description: "action".to_string(),
                 kind: None,
+                patches: Vec::new(),
             },
             vec![],
             HashMap::new(),
@@ -447,6 +450,7 @@ mod tests {
             LspPreviewArtifact::Rename {
                 description: "foo -> bar".to_string(),
                 edit_count: 2,
+                patches: Vec::new(),
             },
             vec!["a.rs".to_string()],
             HashMap::new(),
@@ -465,10 +469,12 @@ mod tests {
                 LspPreviewArtifact::Rename {
                     description: "other".to_string(),
                     edit_count: 1,
+                    patches: Vec::new(),
                 },
                 LspPreviewArtifact::Formatting {
                     description: "fmt".to_string(),
                     content_hash: None,
+                    patches: Vec::new(),
                 },
             ],
             preview_ids: vec![],
@@ -504,6 +510,7 @@ mod tests {
             LspPreviewArtifact::Formatting {
                 description: "format src/lib.rs".to_string(),
                 content_hash: Some("new_hash".to_string()),
+                patches: Vec::new(),
             },
             vec!["src/lib.rs".to_string()],
             hashes.clone(),
@@ -551,6 +558,7 @@ mod tests {
                 LspPreviewArtifact::Rename {
                     description: format!("r{i}"),
                     edit_count: 1,
+                    patches: Vec::new(),
                 },
                 vec![],
                 HashMap::new(),
@@ -591,15 +599,18 @@ mod tests {
             LspPreviewArtifact::Rename {
                 description: "first".to_string(),
                 edit_count: 1,
+                patches: Vec::new(),
             },
             vec![],
             HashMap::new(),
             "s".to_string(),
         );
+
         let _id2 = reg.register(
             LspPreviewArtifact::Rename {
                 description: "second".to_string(),
                 edit_count: 1,
+                patches: Vec::new(),
             },
             vec![],
             HashMap::new(),
@@ -609,6 +620,7 @@ mod tests {
             LspPreviewArtifact::Rename {
                 description: "third".to_string(),
                 edit_count: 1,
+                patches: Vec::new(),
             },
             vec![],
             HashMap::new(),
@@ -621,6 +633,7 @@ mod tests {
             LspPreviewArtifact::Rename {
                 description: "fourth".to_string(),
                 edit_count: 1,
+                patches: Vec::new(),
             },
             vec![],
             HashMap::new(),
@@ -638,6 +651,7 @@ mod tests {
                 LspPreviewArtifact::Rename {
                     description: format!("r{i}"),
                     edit_count: 1,
+                    patches: Vec::new(),
                 },
                 vec![],
                 HashMap::new(),
@@ -679,15 +693,18 @@ mod tests {
             LspPreviewArtifact::Rename {
                 description: "foo -> bar".to_string(),
                 edit_count: 3,
+                patches: Vec::new(),
             },
             vec![],
             HashMap::new(),
             "s".to_string(),
         );
+
         let fmt_id = reg.register(
             LspPreviewArtifact::Formatting {
                 description: "format a.rs".to_string(),
                 content_hash: None,
+                patches: Vec::new(),
             },
             vec![],
             HashMap::new(),
@@ -697,6 +714,7 @@ mod tests {
             LspPreviewArtifact::CodeAction {
                 description: "organize imports".to_string(),
                 kind: Some("source.organizeImports".to_string()),
+                patches: Vec::new(),
             },
             vec![],
             HashMap::new(),

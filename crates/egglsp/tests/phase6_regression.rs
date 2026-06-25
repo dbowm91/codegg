@@ -181,6 +181,7 @@ fn summary_ready_with_previews() {
         LspPreviewArtifact::Rename {
             description: "rename foo to bar".to_string(),
             edit_count: 2,
+            patches: Vec::new(),
         },
         vec![],
         std::collections::HashMap::new(),
@@ -190,6 +191,7 @@ fn summary_ready_with_previews() {
         LspPreviewArtifact::Formatting {
             description: "format file".to_string(),
             content_hash: None,
+            patches: Vec::new(),
         },
         vec![],
         std::collections::HashMap::new(),

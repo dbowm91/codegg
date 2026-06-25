@@ -74,7 +74,7 @@ pub use context::{
     AgentContextSource, HunkRange, LineRange, LspContextBudget, LspContextItem, LspContextItemKind,
     LspContextMode, LspContextPacket, LspContextPacketMode, LspContextRequest, LspContextScore,
     LspContextTruncation, LspEvidenceFreshness, LspEvidenceProvenance, LspPreviewArtifact,
-    LspRiskMode,
+    LspRiskMode, PreviewFilePatch,
 };
 pub use context_renderer::model_tier_for_profile;
 pub use context_renderer::{render_lsp_context_for_agent, LspContextRenderConfig, ModelTier};

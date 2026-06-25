@@ -434,6 +434,8 @@ pub struct PreviewApplyCandidate {
     pub provenance: String,
     /// Whether already applied.
     pub applied: bool,
+    /// Unified diff patches for each affected file.
+    pub patches: Vec<crate::context::PreviewFilePatch>,
 }
 
 /// Export a preview entry as an [`PreviewApplyCandidate`] for the mutating
@@ -443,6 +445,12 @@ pub fn export_preview_apply_candidate(
     preview_id: &str,
 ) -> Option<PreviewApplyCandidate> {
     let entry = registry.get(preview_id)?;
+
+    let patches = match &entry.artifact {
+        crate::context::LspPreviewArtifact::Rename { patches, .. }
+        | crate::context::LspPreviewArtifact::Formatting { patches, .. }
+        | crate::context::LspPreviewArtifact::CodeAction { patches, .. } => patches.clone(),
+    };
 
     Some(PreviewApplyCandidate {
         preview_id: entry.id.clone(),
@@ -454,6 +462,7 @@ pub fn export_preview_apply_candidate(
         stale_base: entry.stale_base,
         provenance: entry.capability_provenance.clone(),
         applied: entry.applied,
+        patches,
     })
 }
 
@@ -618,6 +627,7 @@ mod tests {
             LspPreviewArtifact::Rename {
                 description: "foo -> bar".to_string(),
                 edit_count: 1,
+                patches: Vec::new(),
             },
             vec!["a.rs".to_string()],
             std::collections::HashMap::new(),
@@ -708,6 +718,7 @@ mod tests {
             LspPreviewArtifact::Formatting {
                 description: "fmt 1".to_string(),
                 content_hash: None,
+                patches: Vec::new(),
             },
             vec!["a.rs".to_string()],
             std::collections::HashMap::new(),
@@ -717,6 +728,7 @@ mod tests {
             LspPreviewArtifact::Rename {
                 description: "rename".to_string(),
                 edit_count: 1,
+                patches: Vec::new(),
             },
             vec!["b.rs".to_string()],
             std::collections::HashMap::new(),
@@ -830,6 +842,7 @@ mod tests {
                 LspPreviewArtifact::Rename {
                     description: format!("rename {i}"),
                     edit_count: 1,
+                    patches: Vec::new(),
                 },
                 vec![format!("file{i}.rs")],
                 std::collections::HashMap::new(),
@@ -954,6 +967,7 @@ mod tests {
             LspPreviewArtifact::Rename {
                 description: "foo -> bar".to_string(),
                 edit_count: 3,
+                patches: Vec::new(),
             },
             vec!["a.rs".to_string(), "b.rs".to_string()],
             std::collections::HashMap::new(),
@@ -963,6 +977,7 @@ mod tests {
             LspPreviewArtifact::Formatting {
                 description: "format c.rs".to_string(),
                 content_hash: None,
+                patches: Vec::new(),
             },
             vec!["c.rs".to_string()],
             std::collections::HashMap::new(),
@@ -984,6 +999,7 @@ mod tests {
             LspPreviewArtifact::Rename {
                 description: "foo -> bar".to_string(),
                 edit_count: 5,
+                patches: Vec::new(),
             },
             vec!["src/main.rs".to_string()],
             std::collections::HashMap::from([("src/main.rs".to_string(), "abc123".to_string())]),
@@ -1010,6 +1026,7 @@ mod tests {
             LspPreviewArtifact::Rename {
                 description: "foo -> bar".to_string(),
                 edit_count: 2,
+                patches: Vec::new(),
             },
             vec!["a.rs".to_string()],
             std::collections::HashMap::new(),
@@ -1030,6 +1047,7 @@ mod tests {
             LspPreviewArtifact::CodeAction {
                 description: "organize imports".to_string(),
                 kind: Some("source.organizeImports".to_string()),
+                patches: Vec::new(),
             },
             vec!["a.rs".to_string()],
             std::collections::HashMap::new(),
@@ -1052,6 +1070,7 @@ mod tests {
             LspPreviewArtifact::Rename {
                 description: "foo -> bar".to_string(),
                 edit_count: 3,
+                patches: Vec::new(),
             },
             vec!["a.rs".to_string()],
             std::collections::HashMap::from([("a.rs".to_string(), "hash1".to_string())]),
@@ -1074,6 +1093,7 @@ mod tests {
             LspPreviewArtifact::Formatting {
                 description: "format a.rs".to_string(),
                 content_hash: None,
+                patches: Vec::new(),
             },
             vec!["a.rs".to_string()],
             std::collections::HashMap::new(),
@@ -1089,5 +1109,72 @@ mod tests {
     fn test_export_preview_apply_candidate_not_found() {
         let registry = PreviewArtifactRegistry::new();
         assert!(export_preview_apply_candidate(&registry, "nonexistent").is_none());
+    }
+
+    #[test]
+    fn test_render_preview_list_shows_stale() {
+        let mut registry = PreviewArtifactRegistry::new();
+        let id = registry.register(
+            LspPreviewArtifact::Rename {
+                description: "foo -> bar".to_string(),
+                edit_count: 1,
+                patches: Vec::new(),
+            },
+            vec!["a.rs".to_string()],
+            std::collections::HashMap::new(),
+            "rust-analyzer".to_string(),
+        );
+        registry.mark_stale(&id);
+
+        let output = render_preview_list(&registry);
+        assert!(output.contains("1 total"));
+        assert!(output.contains("1 stale"));
+        assert!(output.contains("STALE"));
+    }
+
+    #[test]
+    fn test_export_preview_apply_candidate_includes_patches() {
+        use crate::context::PreviewFilePatch;
+
+        let mut registry = PreviewArtifactRegistry::new();
+        let patches = vec![PreviewFilePatch {
+            path: "/tmp/a.rs".to_string(),
+            patch: "@@ -1,3 +1,3 @@\n-old\n+new\n".to_string(),
+            original_hash: "abc123".to_string(),
+        }];
+        let id = registry.register(
+            LspPreviewArtifact::Rename {
+                description: "foo -> bar".to_string(),
+                edit_count: 1,
+                patches,
+            },
+            vec!["/tmp/a.rs".to_string()],
+            std::collections::HashMap::new(),
+            "rust-analyzer".to_string(),
+        );
+
+        let candidate = export_preview_apply_candidate(&registry, &id).unwrap();
+        assert_eq!(candidate.patches.len(), 1);
+        assert_eq!(candidate.patches[0].path, "/tmp/a.rs");
+        assert!(candidate.patches[0].patch.contains("+new"));
+        assert_eq!(candidate.patches[0].original_hash, "abc123");
+    }
+
+    #[test]
+    fn test_export_preview_apply_candidate_empty_patches() {
+        let mut registry = PreviewArtifactRegistry::new();
+        let id = registry.register(
+            LspPreviewArtifact::Formatting {
+                description: "format a.rs".to_string(),
+                content_hash: None,
+                patches: Vec::new(),
+            },
+            vec!["a.rs".to_string()],
+            std::collections::HashMap::new(),
+            "rust-analyzer".to_string(),
+        );
+
+        let candidate = export_preview_apply_candidate(&registry, &id).unwrap();
+        assert!(candidate.patches.is_empty());
     }
 }

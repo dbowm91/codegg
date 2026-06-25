@@ -4126,6 +4126,153 @@ impl App {
                     self.messages_state.toasts.info("LSP not available");
                 }
             }
+            "/lsp-previews" | "/preview-list" => {
+                self.ui_state.command_mode = false;
+                if let Some(ref lsp_tool) = self.lsp_tool {
+                    let output = lsp_tool.preview_list_text();
+                    self.messages_state.toasts.info(&output);
+                } else {
+                    self.messages_state.toasts.info("LSP not available");
+                }
+            }
+            "/lsp-preview" | "/preview-show" => {
+                self.ui_state.command_mode = false;
+                let query = self.dialog_state.command_palette.query.clone();
+                let id = query
+                    .strip_prefix("/lsp-preview ")
+                    .or_else(|| query.strip_prefix("/preview-show "))
+                    .unwrap_or("")
+                    .trim();
+                if id.is_empty() {
+                    self.messages_state.toasts.info("Usage: /lsp-preview <id>");
+                } else if let Some(ref lsp_tool) = self.lsp_tool {
+                    match lsp_tool.preview_detail_text(id) {
+                        Some(detail) => self.messages_state.toasts.info(&detail),
+                        None => self
+                            .messages_state
+                            .toasts
+                            .info(&format!("Preview not found: {id}")),
+                    }
+                } else {
+                    self.messages_state.toasts.info("LSP not available");
+                }
+            }
+            "/lsp-preview-clear" | "/preview-clear" => {
+                self.ui_state.command_mode = false;
+                let query = self.dialog_state.command_palette.query.clone();
+                let arg = query
+                    .strip_prefix("/lsp-preview-clear ")
+                    .or_else(|| query.strip_prefix("/preview-clear "))
+                    .unwrap_or("")
+                    .trim();
+                if let Some(ref lsp_tool) = self.lsp_tool {
+                    if arg == "--all" || arg.is_empty() {
+                        let count = lsp_tool.clear_preview(None);
+                        self.messages_state
+                            .toasts
+                            .info(&format!("Cleared {count} preview(s)"));
+                    } else {
+                        let count = lsp_tool.clear_preview(Some(arg));
+                        if count > 0 {
+                            self.messages_state
+                                .toasts
+                                .info(&format!("Cleared preview: {arg}"));
+                        } else {
+                            self.messages_state
+                                .toasts
+                                .info(&format!("Preview not found: {arg}"));
+                        }
+                    }
+                } else {
+                    self.messages_state.toasts.info("LSP not available");
+                }
+            }
+            "/lsp-preview-refresh" | "/preview-refresh" => {
+                self.ui_state.command_mode = false;
+                let query = self.dialog_state.command_palette.query.clone();
+                let id = query
+                    .strip_prefix("/lsp-preview-refresh ")
+                    .or_else(|| query.strip_prefix("/preview-refresh "))
+                    .unwrap_or("")
+                    .trim();
+                if id.is_empty() {
+                    self.messages_state
+                        .toasts
+                        .info("Usage: /lsp-preview-refresh <id>");
+                } else if let Some(ref lsp_tool) = self.lsp_tool {
+                    match lsp_tool.refresh_preview_staleness(id) {
+                        Some((true, detail)) => {
+                            self.messages_state
+                                .toasts
+                                .info(&format!("Preview is STALE\n{detail}"));
+                        }
+                        Some((false, _)) => {
+                            self.messages_state.toasts.info("Preview is FRESH");
+                        }
+                        None => {
+                            self.messages_state
+                                .toasts
+                                .info(&format!("Preview not found: {id}"));
+                        }
+                    }
+                } else {
+                    self.messages_state.toasts.info("LSP not available");
+                }
+            }
+            "/lsp-preview-apply" | "/preview-apply" => {
+                self.ui_state.command_mode = false;
+                let query = self.dialog_state.command_palette.query.clone();
+                let id = query
+                    .strip_prefix("/lsp-preview-apply ")
+                    .or_else(|| query.strip_prefix("/preview-apply "))
+                    .unwrap_or("")
+                    .trim();
+                if id.is_empty() {
+                    self.messages_state
+                        .toasts
+                        .info("Usage: /lsp-preview-apply <id>");
+                } else if let Some(ref lsp_tool) = self.lsp_tool {
+                    let registry = lsp_tool.preview_registry();
+                    match egglsp::tui_summary::export_preview_apply_candidate(&registry, id) {
+                        Some(candidate) => {
+                            drop(registry);
+                            let mut msg = format!(
+                                "Apply candidate: {} ({})\nAffected files: {}\nStale: {}",
+                                candidate.preview_id,
+                                candidate.kind,
+                                candidate.affected_files.join(", "),
+                                candidate.stale_base
+                            );
+                            if candidate.patches.is_empty() {
+                                msg.push_str(
+                                    "\n\nNo patches available — re-run the original LSP preview command.",
+                                );
+                            } else {
+                                msg.push_str(&format!(
+                                    "\n\n{} patch(es) available. Use apply_patch to apply.",
+                                    candidate.patches.len()
+                                ));
+                                for p in &candidate.patches {
+                                    msg.push_str(&format!(
+                                        "\n  {} (hash: {})",
+                                        p.path,
+                                        &p.original_hash[..8.min(p.original_hash.len())]
+                                    ));
+                                }
+                            }
+                            self.messages_state.toasts.info(&msg);
+                        }
+                        None => {
+                            drop(registry);
+                            self.messages_state
+                                .toasts
+                                .info(&format!("Preview not found: {id}"));
+                        }
+                    }
+                } else {
+                    self.messages_state.toasts.info("LSP not available");
+                }
+            }
             "/tool-backends" | "/tools" | "/backends" => {
                 // Build the report synchronously from the resolved
                 // config. The App doesn't hold a direct reference to

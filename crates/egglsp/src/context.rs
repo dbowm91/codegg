@@ -323,6 +323,17 @@ impl LspContextItem {
 // Preview artifacts
 // ---------------------------------------------------------------------------
 
+/// A single file's patch within a preview artifact.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PreviewFilePatch {
+    /// Absolute file path.
+    pub path: String,
+    /// Unified diff patch text.
+    pub patch: String,
+    /// Original content hash before the preview.
+    pub original_hash: String,
+}
+
 /// Preview-only mutation artifacts (rename, formatting, code action).
 /// These are never written to disk.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -332,18 +343,24 @@ pub enum LspPreviewArtifact {
         description: String,
         /// Number of file edits in the preview.
         edit_count: usize,
+        /// Unified diff patches for each affected file.
+        patches: Vec<PreviewFilePatch>,
     },
     Formatting {
         /// Human-readable description of the formatting change.
         description: String,
         /// SHA-256 hash of the formatted content.
         content_hash: Option<String>,
+        /// Unified diff patches for each affected file.
+        patches: Vec<PreviewFilePatch>,
     },
     CodeAction {
         /// Human-readable description of the code action.
         description: String,
         /// Action kind (e.g. "quickfix", "refactor").
         kind: Option<String>,
+        /// Unified diff patches for each affected file.
+        patches: Vec<PreviewFilePatch>,
     },
 }
 

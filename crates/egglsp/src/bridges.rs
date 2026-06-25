@@ -819,6 +819,7 @@ mod tests {
             LspPreviewArtifact::Rename {
                 description: "foo -> bar".to_string(),
                 edit_count: 1,
+                patches: Vec::new(),
             },
             vec!["a.rs".to_string()],
             HashMap::new(),
@@ -828,6 +829,7 @@ mod tests {
             LspPreviewArtifact::Formatting {
                 description: "fmt a.rs".to_string(),
                 content_hash: None,
+                patches: Vec::new(),
             },
             vec!["a.rs".to_string()],
             HashMap::new(),
@@ -837,6 +839,7 @@ mod tests {
             LspPreviewArtifact::CodeAction {
                 description: "organize imports".to_string(),
                 kind: Some("source.organizeImports".to_string()),
+                patches: Vec::new(),
             },
             vec!["b.rs".to_string()],
             HashMap::new(),

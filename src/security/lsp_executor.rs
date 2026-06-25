@@ -845,6 +845,7 @@ mod security_context_packet_bridge_tests {
             previews: vec![egglsp::context::LspPreviewArtifact::Rename {
                 description: "should not be counted".to_string(),
                 edit_count: 5,
+                patches: Vec::new(),
             }],
             preview_ids: vec!["preview-1".to_string()],
             mode: LspContextPacketMode::Opportunistic,

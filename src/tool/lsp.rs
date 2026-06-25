@@ -619,6 +619,48 @@ impl LspTool {
             .register(artifact, file_edits, original_hashes, provenance)
     }
 
+    /// Render the full preview list for TUI display.
+    pub fn preview_list_text(&self) -> String {
+        egglsp::tui_summary::render_preview_list(&self.preview_registry())
+    }
+
+    /// Render preview detail by ID. Returns `None` if not found.
+    pub fn preview_detail_text(&self, id: &str) -> Option<String> {
+        let registry = self.preview_registry();
+        registry
+            .get(id)
+            .map(egglsp::tui_summary::render_preview_detail)
+    }
+
+    /// Clear a preview by ID, or all previews if `id` is `None`.
+    /// Returns the number of previews cleared.
+    pub fn clear_preview(&self, id: Option<&str>) -> usize {
+        let mut registry = self.preview_registry();
+        match id {
+            None => {
+                let count = registry.len();
+                registry.clear();
+                count
+            }
+            Some(id) => {
+                if registry.remove(id) {
+                    1
+                } else {
+                    0
+                }
+            }
+        }
+    }
+
+    /// Refresh staleness for a preview by re-hashing affected files.
+    /// Returns `(is_stale, detail_text)` or `None` if not found.
+    pub fn refresh_preview_staleness(&self, id: &str) -> Option<(bool, String)> {
+        let mut registry = self.preview_registry();
+        let stale = registry.refresh_staleness(id)?;
+        let entry = registry.get(id)?;
+        Some((stale, egglsp::tui_summary::render_preview_detail(entry)))
+    }
+
     /// Access the underlying LSP service for context assembly and status queries.
     pub fn service(&self) -> &Arc<crate::lsp::service::LspService> {
         &self.service
@@ -2150,6 +2192,16 @@ impl Tool for LspTool {
                 let truncated = preview.truncated;
                 let base_stale = preview.base_stale;
                 let affected_files = files.clone();
+                let patches: Vec<egglsp::PreviewFilePatch> = preview
+                    .affected_files
+                    .iter()
+                    .filter(|f| !f.patch_omitted && !f.patch.is_empty())
+                    .map(|f| egglsp::PreviewFilePatch {
+                        path: f.file.display().to_string(),
+                        patch: f.patch.clone(),
+                        original_hash: f.original_hash.clone(),
+                    })
+                    .collect();
                 let artifact = egglsp::context::LspPreviewArtifact::Rename {
                     description: format!(
                         "rename {} -> {} ({} edits)",
@@ -2158,6 +2210,7 @@ impl Tool for LspTool {
                         preview.edit_count
                     ),
                     edit_count: preview.edit_count,
+                    patches,
                 };
                 let provenance = format!(
                     "rename:{}:{}:{}",
@@ -2198,6 +2251,15 @@ impl Tool for LspTool {
                         preview.edit_count
                     ),
                     content_hash: Some(preview.before_hash.clone()),
+                    patches: if preview.diff.is_empty() {
+                        Vec::new()
+                    } else {
+                        vec![egglsp::PreviewFilePatch {
+                            path: file.display().to_string(),
+                            patch: preview.diff.clone(),
+                            original_hash: preview.before_hash.clone(),
+                        }]
+                    },
                 };
                 let mut hashes = std::collections::HashMap::new();
                 hashes.insert(file.display().to_string(), preview.before_hash.clone());
@@ -2246,12 +2308,23 @@ impl Tool for LspTool {
                 let edit_count = preview.total_edits;
                 let truncated = preview.truncated;
                 let affected_files = files.clone();
+                let patches: Vec<egglsp::PreviewFilePatch> = preview
+                    .files
+                    .iter()
+                    .filter(|f| !f.patch_omitted && !f.patch.is_empty())
+                    .map(|f| egglsp::PreviewFilePatch {
+                        path: f.file.display().to_string(),
+                        patch: f.patch.clone(),
+                        original_hash: f.original_hash.clone(),
+                    })
+                    .collect();
                 let artifact = egglsp::context::LspPreviewArtifact::CodeAction {
                     description: format!(
                         "{}: {} edits across {} files",
                         action_str, preview.total_edits, preview.total_files
                     ),
                     kind: Some(action_str.to_string()),
+                    patches,
                 };
                 let provenance = format!("source-action:{action_str}:{}", file.display());
                 let preview_id =
@@ -3350,6 +3423,16 @@ impl Tool for LspTool {
                 }
                 let affected_files = files.clone();
                 let truncated = preview.truncated;
+                let patches: Vec<egglsp::PreviewFilePatch> = preview
+                    .affected_files
+                    .iter()
+                    .filter(|f| !f.patch_omitted && !f.patch.is_empty())
+                    .map(|f| egglsp::PreviewFilePatch {
+                        path: f.file.display().to_string(),
+                        patch: f.patch.clone(),
+                        original_hash: f.original_hash.clone(),
+                    })
+                    .collect();
                 let artifact = egglsp::context::LspPreviewArtifact::CodeAction {
                     description: format!(
                         "{} ({} edits, {} files)",
@@ -3358,6 +3441,7 @@ impl Tool for LspTool {
                         preview.affected_files.len()
                     ),
                     kind: preview.kind.clone(),
+                    patches,
                 };
                 let provenance = format!(
                     "code-action:{}:{}:{}",
@@ -3941,6 +4025,7 @@ impl SemanticContextPacket {
                 previews.push(LspPreviewArtifact::CodeAction {
                     description: format!("{} ({})", hint.action, p.title),
                     kind: Some(hint.action.clone()),
+                    patches: Vec::new(),
                 });
             }
         }
@@ -7164,6 +7249,7 @@ diff --git a/src/lib.rs b/src/lib.rs
         let artifact = LspPreviewArtifact::Formatting {
             description: "test format".to_string(),
             content_hash: Some("abc123".to_string()),
+            patches: Vec::new(),
         };
         let mut hashes = std::collections::HashMap::new();
         hashes.insert("src/lib.rs".to_string(), "abc123".to_string());
@@ -7201,6 +7287,7 @@ diff --git a/src/lib.rs b/src/lib.rs
             let artifact = LspPreviewArtifact::Rename {
                 description: format!("rename {i}"),
                 edit_count: i,
+                patches: Vec::new(),
             };
             let id = tool.register_preview_artifact(
                 artifact,
@@ -7229,6 +7316,7 @@ diff --git a/src/lib.rs b/src/lib.rs
         let artifact = LspPreviewArtifact::Formatting {
             description: "fmt".to_string(),
             content_hash: None,
+            patches: Vec::new(),
         };
         let _id = tool.register_preview_artifact(
             artifact,
@@ -7259,6 +7347,7 @@ diff --git a/src/lib.rs b/src/lib.rs
         packet.previews.push(LspPreviewArtifact::Formatting {
             description: "fmt".to_string(),
             content_hash: None,
+            patches: Vec::new(),
         });
         let count = tool.preview_registry().populate_preview_ids(&mut packet);
         assert_eq!(count, 1);
@@ -7555,6 +7644,7 @@ diff --git a/src/lib.rs b/src/lib.rs
             egglsp::context::LspPreviewArtifact::Formatting {
                 description: "test".to_string(),
                 content_hash: None,
+                patches: Vec::new(),
             },
             vec!["src/lib.rs".to_string()],
             std::collections::HashMap::new(),
@@ -7635,6 +7725,7 @@ diff --git a/src/lib.rs b/src/lib.rs
             LspPreviewArtifact::Formatting {
                 description: "format src/lib.rs".to_string(),
                 content_hash: Some("after_hash".to_string()),
+                patches: Vec::new(),
             },
             vec!["src/lib.rs".to_string()],
             std::collections::HashMap::from([(
@@ -7667,6 +7758,7 @@ diff --git a/src/lib.rs b/src/lib.rs
             LspPreviewArtifact::Formatting {
                 description: "format src/lib.rs".to_string(),
                 content_hash: None,
+                patches: Vec::new(),
             },
             vec!["src/lib.rs".to_string()],
             std::collections::HashMap::new(),
@@ -7815,6 +7907,7 @@ diff --git a/src/lib.rs b/src/lib.rs
             egglsp::context::LspPreviewArtifact::Formatting {
                 description: "format src/lib.rs".to_string(),
                 content_hash: Some("after".to_string()),
+                patches: Vec::new(),
             },
             vec![path.display().to_string()],
             std::collections::HashMap::from([(path.display().to_string(), "before".to_string())]),

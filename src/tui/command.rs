@@ -209,6 +209,21 @@ impl CommandRegistry {
                 .with_description("Run diagnostics (search backend, MCP, providers)"),
             Command::new("/lsp-status", CommandCategory::System, None)
                 .with_description("Show LSP server status and diagnostics"),
+            Command::new("/lsp-previews", CommandCategory::System, None)
+                .with_aliases(&["/preview-list"])
+                .with_description("List LSP preview artifacts"),
+            Command::new("/lsp-preview", CommandCategory::System, None)
+                .with_aliases(&["/preview-show"])
+                .with_description("Show LSP preview detail (args: <id>)"),
+            Command::new("/lsp-preview-clear", CommandCategory::System, None)
+                .with_aliases(&["/preview-clear"])
+                .with_description("Clear LSP preview(s) (args: <id> or --all)"),
+            Command::new("/lsp-preview-refresh", CommandCategory::System, None)
+                .with_aliases(&["/preview-refresh"])
+                .with_description("Refresh LSP preview staleness (args: <id>)"),
+            Command::new("/lsp-preview-apply", CommandCategory::System, None)
+                .with_aliases(&["/preview-apply"])
+                .with_description("Export LSP preview for apply (args: <id>)"),
             Command::new("/tool-backends", CommandCategory::System, None)
                 .with_aliases(&["/tools", "/backends"])
                 .with_description("Show resolved backend for each model-facing tool (Native / MCP / Builtin / Disabled)"),

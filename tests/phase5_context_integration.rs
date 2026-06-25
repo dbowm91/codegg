@@ -502,6 +502,7 @@ async fn phase5_preview_artifact_non_mutating() {
         LspPreviewArtifact::Rename {
             description: "foo -> bar".to_string(),
             edit_count: 2,
+            patches: Vec::new(),
         },
         vec!["a.rs".to_string()],
         HashMap::new(),
@@ -512,6 +513,7 @@ async fn phase5_preview_artifact_non_mutating() {
         LspPreviewArtifact::Formatting {
             description: "fmt a.rs".to_string(),
             content_hash: None,
+            patches: Vec::new(),
         },
         vec!["a.rs".to_string()],
         HashMap::new(),
@@ -522,6 +524,7 @@ async fn phase5_preview_artifact_non_mutating() {
         LspPreviewArtifact::CodeAction {
             description: "organize imports".to_string(),
             kind: None,
+            patches: Vec::new(),
         },
         vec!["b.rs".to_string()],
         HashMap::new(),
@@ -813,6 +816,7 @@ async fn phase5_tui_summary_detail_full() {
         LspPreviewArtifact::Rename {
             description: "foo -> bar".to_string(),
             edit_count: 2,
+            patches: Vec::new(),
         },
         vec!["a.rs".to_string()],
         HashMap::new(),
@@ -822,6 +826,7 @@ async fn phase5_tui_summary_detail_full() {
         LspPreviewArtifact::Formatting {
             description: "fmt".to_string(),
             content_hash: None,
+            patches: Vec::new(),
         },
         vec![],
         HashMap::new(),
@@ -1522,6 +1527,7 @@ async fn phase5_lsp_summary_preview_stale() {
         egglsp::context::LspPreviewArtifact::Rename {
             description: "foo -> bar".to_string(),
             edit_count: 1,
+            patches: Vec::new(),
         },
         vec!["a.rs".to_string()],
         std::collections::HashMap::new(),
@@ -1708,6 +1714,7 @@ mod production_seam_tests {
         let artifact = LspPreviewArtifact::Rename {
             description: "rename foo -> bar".to_string(),
             edit_count: 1,
+            patches: Vec::new(),
         };
         let id = reg.register(
             artifact.clone(),
@@ -1797,6 +1804,7 @@ mod production_seam_tests {
         let artifact = LspPreviewArtifact::Formatting {
             description: "fmt".to_string(),
             content_hash: Some("abc123".to_string()),
+            patches: Vec::new(),
         };
         let id = reg.register(
             artifact,
@@ -2443,6 +2451,7 @@ mod phase5_no_mutation_sweep {
             LspPreviewArtifact::Rename {
                 description: "registry_audit -> renamed".to_string(),
                 edit_count: 1,
+                patches: Vec::new(),
             },
             vec![file_path.to_string_lossy().to_string()],
             original_hashes.clone(),
@@ -2452,6 +2461,7 @@ mod phase5_no_mutation_sweep {
             LspPreviewArtifact::Formatting {
                 description: "format registry.rs".to_string(),
                 content_hash: Some(before_hash.clone()),
+                patches: Vec::new(),
             },
             vec![file_path.to_string_lossy().to_string()],
             original_hashes.clone(),
@@ -2461,6 +2471,7 @@ mod phase5_no_mutation_sweep {
             LspPreviewArtifact::CodeAction {
                 description: "organize imports".to_string(),
                 kind: Some("source.organizeImports".to_string()),
+                patches: Vec::new(),
             },
             vec![file_path.to_string_lossy().to_string()],
             original_hashes.clone(),
@@ -2512,14 +2523,17 @@ mod phase5_no_mutation_sweep {
         packet.previews.push(LspPreviewArtifact::Rename {
             description: "registry_audit -> renamed".to_string(),
             edit_count: 1,
+            patches: Vec::new(),
         });
         packet.previews.push(LspPreviewArtifact::Formatting {
             description: "format registry.rs".to_string(),
             content_hash: Some(before_hash.clone()),
+            patches: Vec::new(),
         });
         packet.previews.push(LspPreviewArtifact::CodeAction {
             description: "organize imports".to_string(),
             kind: Some("source.organizeImports".to_string()),
+            patches: Vec::new(),
         });
         let populated = registry.populate_preview_ids(&mut packet);
         assert_eq!(populated, 3);
