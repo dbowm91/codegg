@@ -1013,6 +1013,90 @@ Recipes use `RecipeSettings::for_tier(tier)` to derive tier-specific defaults:
 - Required mode → error on unavailable server
 - Stale evidence → noted in `freshness_summary`, not rejected
 
+### Preview Artifact Lifecycle (Phase 8)
+
+Phase 8 makes preview artifacts inspectable, refreshable, invalidatable, and safely handoff-able to the mutating apply path without weakening the LSP read-only boundary.
+
+**Location:** `crates/egglsp/src/preview_registry.rs`
+
+#### Lifecycle model
+
+Every LSP preview artifact follows this lifecycle:
+
+```text
+created -> inspectable -> applicable candidate
+created -> stale -> recompute or discard
+created -> expired -> discard
+created -> applied by external mutating path -> historical/applied marker or removal
+created -> cleared by user -> removed
+```
+
+#### Registry metadata
+
+`PreviewArtifactEntry` carries:
+- `id` — unique identifier (format: `preview-{seq}-{timestamp}`)
+- `artifact` — the `LspPreviewArtifact` variant (Rename, Formatting, CodeAction)
+- `file_edits` — affected file paths
+- `original_hashes` — file content hashes at preview creation time
+- `stale_base` — whether base content has changed since creation
+- `stale_files` — per-file stale details (expected/actual hashes)
+- `capability_provenance` — server/capability provenance string
+- `created_at` — creation timestamp (millis since epoch)
+- `applied` — whether applied via the mutating apply path
+
+#### Registry API
+
+| Method | Description |
+|--------|-------------|
+| `register(artifact, edits, hashes, provenance)` | Register a new preview; auto-evicts oldest if at cap |
+| `get(id)` / `get_mut(id)` | Lookup by preview ID |
+| `recent(n)` | Last N entries (newest last) |
+| `remove(id)` | Remove a single entry; returns `true` if found |
+| `clear()` | Remove all entries |
+| `mark_applied(id)` | Mark an entry as applied |
+| `mark_stale(id)` | Mark an entry's base as stale |
+| `refresh_staleness(id)` | Re-hash affected files and update stale status |
+| `stale_count()` | Number of stale entries |
+| `applied_count()` | Number of applied entries |
+| `preview_kind(entry)` | Static helper: "rename", "formatting", or "code_action" |
+| `preview_title(entry)` | Static helper: human-readable description |
+| `preview_edit_count(entry)` | Static helper: edit count from artifact |
+
+#### Registry cap
+
+Default cap: `DEFAULT_MAX_ENTRIES = 32`. When the cap is exceeded, the oldest entries are evicted. Use `with_max_entries(n)` for custom caps. Users can also `clear()` manually.
+
+#### Stale-base refresh
+
+`refresh_staleness(id)` re-hashes each affected file on disk using `DefaultHasher` and compares against the original hash. Updates `stale_base` and `stale_files`. Returns the updated stale status.
+
+#### Preview list / detail formatting
+
+Pure formatting helpers in `tui_summary.rs`:
+- `render_preview_list(registry)` — one-line-per-entry list view
+- `render_preview_detail(entry)` — multi-line detail with full metadata
+- `render_preview_list_entry(entry)` — compact single-entry line
+
+#### Apply candidate export
+
+`export_preview_apply_candidate(registry, id)` returns an `Option<PreviewApplyCandidate>` carrying all metadata the mutating apply path needs (preview_id, kind, title, affected_files, original_hashes, edit_count, stale_base, provenance, applied).
+
+#### Agent-facing preview policy
+
+The context renderer (`context_renderer.rs`) renders preview IDs with explicit safety wording:
+- "Preview only; not applied."
+- "User approval is required before applying."
+- Preview ID included for inspection and apply handoff.
+
+Stale previews are flagged in the detail view with per-file stale evidence and instructions to re-run the original LSP preview command.
+
+#### Preview-only boundary preserved
+
+- `LspTool` remains `ToolCategory::ReadOnly` — no disk writes.
+- `workspace/executeCommand` is never invoked.
+- Applying a preview requires the separate mutating `apply_patch` tool.
+- Stale previews warn but do not block inspection.
+
 ## Supported Languages (39 servers)
 
 | Language | Server | Command |

@@ -346,7 +346,9 @@ fn build_previews_section(
     }
 
     let mut lines = Vec::new();
-    for preview in &packet.previews {
+    for (i, preview) in packet.previews.iter().enumerate() {
+        let preview_id = packet.preview_ids.get(i).filter(|id| !id.is_empty());
+
         let label = match preview {
             LspPreviewArtifact::Rename { description, .. } => format!("Rename: {description}"),
             LspPreviewArtifact::Formatting { description, .. } => {
@@ -356,7 +358,13 @@ fn build_previews_section(
                 format!("CodeAction: {description}")
             }
         };
-        lines.push(format!("{label} — Preview only; not applied."));
+
+        let mut line = format!("{label} — Preview only; not applied.");
+        if let Some(id) = preview_id {
+            line.push_str(&format!(" ID: {id}."));
+        }
+        line.push_str(" User approval is required before applying.");
+        lines.push(line);
     }
     Some(format!("## Previews\n{}", lines.join("\n")))
 }

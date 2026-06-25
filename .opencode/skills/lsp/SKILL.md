@@ -1981,6 +1981,59 @@ let outcome = execute_repair_local(&provider, &request).await?;
 - **Preview boundary**: Only `preview_suggestion` populates `preview_ids`; other recipes never include previews
 - **Security hardcoding**: `security_review_enriched` always uses `LspRiskMode::Aggressive`
 
+## Phase 8: Preview Artifact UX and Stale-Base Lifecycle
+
+Phase 8 makes preview artifacts inspectable, refreshable, invalidatable, and safely handoff-able to the mutating apply path.
+
+**Location:** `crates/egglsp/src/preview_registry.rs`, `crates/egglsp/src/tui_summary.rs`
+
+### Lifecycle
+
+```text
+created -> inspectable -> applicable candidate
+created -> stale -> recompute or discard
+created -> expired -> discard
+created -> applied by external mutating path -> applied marker or removal
+created -> cleared by user -> removed
+```
+
+### Registry API
+
+| Method | Description |
+|--------|-------------|
+| `register(artifact, edits, hashes, provenance)` | Register; auto-evicts oldest at cap |
+| `get(id)` / `get_mut(id)` | Lookup by ID |
+| `remove(id)` / `clear()` | Remove entry/all |
+| `mark_applied(id)` / `mark_stale(id)` | State transitions |
+| `refresh_staleness(id)` | Re-hash files, update stale status |
+| `stale_count()` / `applied_count()` | Aggregate counts |
+
+### Cap
+
+Default: `DEFAULT_MAX_ENTRIES = 32`. Custom via `with_max_entries(n)`.
+
+### Preview list / detail
+
+- `render_preview_list(registry)` — list view
+- `render_preview_detail(entry)` — full detail with hashes, stale evidence, apply instructions
+- `render_preview_list_entry(entry)` — compact single-line
+
+### Apply handoff
+
+`export_preview_apply_candidate(registry, id)` returns `Option<PreviewApplyCandidate>` with all metadata for the mutating apply path. Preserves read-only boundary: `LspTool` never writes files.
+
+### Stale-base refresh
+
+`refresh_staleness(id)` re-hashes affected files on disk, compares with original hashes, updates `stale_base` and `stale_files`. Returns stale status.
+
+### Agent-facing policy
+
+Context renderer includes:
+- "Preview only; not applied."
+- "User approval is required before applying."
+- Preview ID for inspection
+- Stale previews flagged with per-file evidence and recompute instructions
+
 ## See Also
 
 - [tool.md](tool.md) - LSP tool wrapper

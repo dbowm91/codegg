@@ -6,7 +6,7 @@ A lightweight, pure-Rust implementation of an AI coding agent.
 
 - **Pure Rust** - No runtime dependencies, fast compilation and execution
 - **Multiple Providers** - Use Anthropic, OpenAI, Google, Azure, Bedrock, and more
-- **LSP Support** - Built-in bidirectional Language Server Protocol with code intelligence (semantic context, preview-only semantic checks), capability-gated operations, and supervision/restart lifecycle. Tier 1 (rust-analyzer, basedpyright) and Tier 2 (gopls, typescript-language-server, clangd) server compatibility verified via CI; 39 servers configurable. See architecture/lsp.md and .opencode/skills/lsp/SKILL.md.
+- **LSP Support** - Built-in bidirectional Language Server Protocol with code intelligence (semantic context, preview-only semantic checks), capability-gated operations, and supervision/restart lifecycle. Preview artifact registry with stale-base detection, list/detail inspection, and safe apply handoff. Tier 1 (rust-analyzer, basedpyright) and Tier 2 (gopls, typescript-language-server, clangd) server compatibility verified via CI; 39 servers configurable. See architecture/lsp.md and .opencode/skills/lsp/SKILL.md.
 - **Plugin System** - WASM-based plugin extensibility
 - **TUI Interface** - Terminal user interface with syntax highlighting
 - **Server Mode** - Headless HTTP server for remote access

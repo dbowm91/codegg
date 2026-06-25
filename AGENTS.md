@@ -135,6 +135,7 @@ cargo test -p egglsp --features lsp-real-server-tests --test real_server_smoke -
 - **Capability-gated operations**: `semanticContext` and `securityContext` check `LspCapabilitySnapshot` before expensive LSP calls. Unsupported ops append notes, don't fail.
 - **LSP tests need `lsp-test-support` feature**: The fake server binary is `codegg-lsp-test-server`. Tests use polling loops (bounded waits), not fixed sleeps.
 - **Workflow recipes (Phase 7)**: `crates/egglsp/src/workflow_recipes.rs` provides named workflow recipes (repair_local, repair_hunk, review_file, review_diff, security_review_enriched, hunk_source_navigation, preview_suggestion) that compose existing LSP primitives into bounded workflows. Recipes use `RecipeSettings` for tier-aware defaults and `RecipeOutcome` for rendered results.
+- **Preview artifact lifecycle (Phase 8)**: `PreviewArtifactRegistry` tracks preview artifacts with lifecycle (created→inspectable→applicable, stale→recompute/discard, applied, cleared). Cap: 32 entries (oldest evicted). Registry methods: `register`, `get`, `remove`, `clear`, `mark_applied`, `mark_stale`, `refresh_staleness`. TUI helpers: `render_preview_list`, `render_preview_detail`, `export_preview_apply_candidate`. Agent context renderer includes "not applied" and "user approval required" safety wording. `LspTool` remains read-only.
 
 ### Auth
 

@@ -305,8 +305,178 @@ pub fn render_tui_summary_detail(summary: &LspTuiSummary) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// Tests
+// Preview list / detail helpers (Phase 8)
 // ---------------------------------------------------------------------------
+
+/// Compact one-line summary of a preview entry for list views.
+///
+/// Format: `preview-1-12345 rename | foo -> bar | 3 files, 5 edits | stale | 2m ago`
+pub fn render_preview_list_entry(entry: &crate::preview_registry::PreviewArtifactEntry) -> String {
+    let kind = crate::preview_registry::PreviewArtifactRegistry::preview_kind(entry);
+    let title = crate::preview_registry::PreviewArtifactRegistry::preview_title(entry);
+    let edit_count = crate::preview_registry::PreviewArtifactRegistry::preview_edit_count(entry);
+
+    let file_count = entry.file_edits.len();
+    let stale_tag = if entry.stale_base { " | STALE" } else { "" };
+    let applied_tag = if entry.applied { " | applied" } else { "" };
+
+    let age = format_age(entry.created_at);
+
+    format!(
+        "{} {} | {} | {} files, {} edits{}{} | {}",
+        entry.id, kind, title, file_count, edit_count, stale_tag, applied_tag, age
+    )
+}
+
+/// Multi-line detail view of a single preview entry.
+///
+/// Shows full metadata, affected files, hashes, and patch status.
+pub fn render_preview_detail(entry: &crate::preview_registry::PreviewArtifactEntry) -> String {
+    let mut lines = Vec::new();
+
+    let kind = crate::preview_registry::PreviewArtifactRegistry::preview_kind(entry);
+    let title = crate::preview_registry::PreviewArtifactRegistry::preview_title(entry);
+    let edit_count = crate::preview_registry::PreviewArtifactRegistry::preview_edit_count(entry);
+
+    lines.push(format!("Preview: {}", entry.id));
+    lines.push(format!("Kind: {kind}"));
+    lines.push(format!("Title: {title}"));
+    lines.push(format!("Provenance: {}", entry.capability_provenance));
+    lines.push(format!("Created: {}", format_age(entry.created_at)));
+    lines.push(format!("Edit count: {edit_count}"));
+    lines.push(format!("Affected files: {}", entry.file_edits.len()));
+
+    if !entry.file_edits.is_empty() {
+        for file in &entry.file_edits {
+            let hash = entry
+                .original_hashes
+                .get(file)
+                .map(|h| h.as_str())
+                .unwrap_or("unknown");
+            lines.push(format!("  {file} (hash: {hash})"));
+        }
+    }
+
+    if entry.stale_base {
+        lines.push("Status: STALE — base content has changed since creation.".to_string());
+        if !entry.stale_files.is_empty() {
+            for sf in &entry.stale_files {
+                lines.push(format!(
+                    "  {} expected={} actual={}",
+                    sf.file, sf.expected_hash, sf.actual_hash
+                ));
+            }
+        }
+        lines.push(
+            "To refresh: re-run the original LSP preview command to generate a new preview."
+                .to_string(),
+        );
+    } else {
+        lines.push("Status: FRESH".to_string());
+    }
+
+    if entry.applied {
+        lines.push("Applied: yes".to_string());
+    } else {
+        lines.push("Applied: no — this preview has not been applied.".to_string());
+    }
+
+    lines.push(
+        "To apply: use the separate mutating apply path (e.g. apply_patch) with user approval."
+            .to_string(),
+    );
+
+    lines.join("\n")
+}
+
+/// Render a list of all preview entries (newest first).
+pub fn render_preview_list(registry: &crate::preview_registry::PreviewArtifactRegistry) -> String {
+    if registry.is_empty() {
+        return "No preview artifacts registered.".to_string();
+    }
+
+    let entries = registry.recent(registry.len());
+    let mut lines = Vec::new();
+    lines.push(format!(
+        "Preview artifacts: {} total, {} stale, {} applied",
+        registry.len(),
+        registry.stale_count(),
+        registry.applied_count()
+    ));
+    lines.push(String::new());
+    for entry in entries.iter().rev() {
+        lines.push(render_preview_list_entry(entry));
+    }
+    lines.join("\n")
+}
+
+/// Apply candidate: read-only export of a preview for the mutating apply path.
+///
+/// This struct carries all the metadata a mutating apply tool needs to
+/// apply a preview while preserving the read-only boundary of `LspTool`.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct PreviewApplyCandidate {
+    /// Preview artifact ID.
+    pub preview_id: String,
+    /// Operation kind (rename, formatting, code_action).
+    pub kind: String,
+    /// Human-readable title.
+    pub title: String,
+    /// Affected file paths.
+    pub affected_files: Vec<String>,
+    /// Original file hashes by path.
+    pub original_hashes: std::collections::HashMap<String, String>,
+    /// Total edit count.
+    pub edit_count: usize,
+    /// Whether the base is stale (should warn/block apply).
+    pub stale_base: bool,
+    /// Provenance string.
+    pub provenance: String,
+    /// Whether already applied.
+    pub applied: bool,
+}
+
+/// Export a preview entry as an [`PreviewApplyCandidate`] for the mutating
+/// apply path. Returns `None` if the entry was not found.
+pub fn export_preview_apply_candidate(
+    registry: &crate::preview_registry::PreviewArtifactRegistry,
+    preview_id: &str,
+) -> Option<PreviewApplyCandidate> {
+    let entry = registry.get(preview_id)?;
+
+    Some(PreviewApplyCandidate {
+        preview_id: entry.id.clone(),
+        kind: crate::preview_registry::PreviewArtifactRegistry::preview_kind(entry).to_string(),
+        title: crate::preview_registry::PreviewArtifactRegistry::preview_title(entry).to_string(),
+        affected_files: entry.file_edits.clone(),
+        original_hashes: entry.original_hashes.clone(),
+        edit_count: crate::preview_registry::PreviewArtifactRegistry::preview_edit_count(entry),
+        stale_base: entry.stale_base,
+        provenance: entry.capability_provenance.clone(),
+        applied: entry.applied,
+    })
+}
+
+/// Format a human-readable age from a millisecond timestamp.
+fn format_age(created_at: u64) -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+
+    let age_ms = now.saturating_sub(created_at);
+    let age_secs = age_ms / 1000;
+
+    if age_secs < 60 {
+        format!("{age_secs}s ago")
+    } else if age_secs < 3600 {
+        format!("{}m ago", age_secs / 60)
+    } else if age_secs < 86400 {
+        format!("{}h ago", age_secs / 3600)
+    } else {
+        format!("{}d ago", age_secs / 86400)
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -764,5 +934,160 @@ mod tests {
         assert!(detail.contains("Context: not collected in status snapshot"));
         assert!(!detail.contains("Freshness:"));
         assert!(!detail.contains("0 items"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Phase 8: preview list / detail / apply-candidate tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_render_preview_list_empty_registry() {
+        let registry = PreviewArtifactRegistry::new();
+        let output = render_preview_list(&registry);
+        assert!(output.contains("No preview artifacts"));
+    }
+
+    #[test]
+    fn test_render_preview_list_with_entries() {
+        let mut registry = PreviewArtifactRegistry::new();
+        registry.register(
+            LspPreviewArtifact::Rename {
+                description: "foo -> bar".to_string(),
+                edit_count: 3,
+            },
+            vec!["a.rs".to_string(), "b.rs".to_string()],
+            std::collections::HashMap::new(),
+            "rust-analyzer".to_string(),
+        );
+        registry.register(
+            LspPreviewArtifact::Formatting {
+                description: "format c.rs".to_string(),
+                content_hash: None,
+            },
+            vec!["c.rs".to_string()],
+            std::collections::HashMap::new(),
+            "rust-analyzer".to_string(),
+        );
+
+        let output = render_preview_list(&registry);
+        assert!(output.contains("2 total"));
+        assert!(output.contains("rename"));
+        assert!(output.contains("formatting"));
+        assert!(output.contains("foo -> bar"));
+        assert!(output.contains("format c.rs"));
+    }
+
+    #[test]
+    fn test_render_preview_detail_fresh_entry() {
+        let mut registry = PreviewArtifactRegistry::new();
+        let id = registry.register(
+            LspPreviewArtifact::Rename {
+                description: "foo -> bar".to_string(),
+                edit_count: 5,
+            },
+            vec!["src/main.rs".to_string()],
+            std::collections::HashMap::from([("src/main.rs".to_string(), "abc123".to_string())]),
+            "rust-analyzer".to_string(),
+        );
+
+        let entry = registry.get(&id).unwrap();
+        let detail = render_preview_detail(entry);
+        assert!(detail.contains(&id));
+        assert!(detail.contains("Kind: rename"));
+        assert!(detail.contains("Title: foo -> bar"));
+        assert!(detail.contains("Edit count: 5"));
+        assert!(detail.contains("src/main.rs"));
+        assert!(detail.contains("abc123"));
+        assert!(detail.contains("Status: FRESH"));
+        assert!(detail.contains("not been applied"));
+        assert!(detail.contains("STALE") == false);
+    }
+
+    #[test]
+    fn test_render_preview_detail_stale_entry() {
+        let mut registry = PreviewArtifactRegistry::new();
+        let id = registry.register(
+            LspPreviewArtifact::Rename {
+                description: "foo -> bar".to_string(),
+                edit_count: 2,
+            },
+            vec!["a.rs".to_string()],
+            std::collections::HashMap::new(),
+            "rust-analyzer".to_string(),
+        );
+        registry.mark_stale(&id);
+
+        let entry = registry.get(&id).unwrap();
+        let detail = render_preview_detail(entry);
+        assert!(detail.contains("STALE"));
+        assert!(detail.contains("base content has changed"));
+    }
+
+    #[test]
+    fn test_render_preview_list_entry_line() {
+        let mut registry = PreviewArtifactRegistry::new();
+        let id = registry.register(
+            LspPreviewArtifact::CodeAction {
+                description: "organize imports".to_string(),
+                kind: Some("source.organizeImports".to_string()),
+            },
+            vec!["a.rs".to_string()],
+            std::collections::HashMap::new(),
+            "rust-analyzer".to_string(),
+        );
+
+        let entry = registry.get(&id).unwrap();
+        let line = render_preview_list_entry(entry);
+        assert!(line.contains(&id));
+        assert!(line.contains("code_action"));
+        assert!(line.contains("organize imports"));
+        assert!(line.contains("1 files"));
+        assert!(line.contains("ago"));
+    }
+
+    #[test]
+    fn test_export_preview_apply_candidate_fresh() {
+        let mut registry = PreviewArtifactRegistry::new();
+        let id = registry.register(
+            LspPreviewArtifact::Rename {
+                description: "foo -> bar".to_string(),
+                edit_count: 3,
+            },
+            vec!["a.rs".to_string()],
+            std::collections::HashMap::from([("a.rs".to_string(), "hash1".to_string())]),
+            "rust-analyzer".to_string(),
+        );
+
+        let candidate = export_preview_apply_candidate(&registry, &id).unwrap();
+        assert_eq!(candidate.preview_id, id);
+        assert_eq!(candidate.kind, "rename");
+        assert!(!candidate.stale_base);
+        assert!(!candidate.applied);
+        assert_eq!(candidate.affected_files, vec!["a.rs"]);
+        assert_eq!(candidate.edit_count, 3);
+    }
+
+    #[test]
+    fn test_export_preview_apply_candidate_stale() {
+        let mut registry = PreviewArtifactRegistry::new();
+        let id = registry.register(
+            LspPreviewArtifact::Formatting {
+                description: "format a.rs".to_string(),
+                content_hash: None,
+            },
+            vec!["a.rs".to_string()],
+            std::collections::HashMap::new(),
+            "rust-analyzer".to_string(),
+        );
+        registry.mark_stale(&id);
+
+        let candidate = export_preview_apply_candidate(&registry, &id).unwrap();
+        assert!(candidate.stale_base);
+    }
+
+    #[test]
+    fn test_export_preview_apply_candidate_not_found() {
+        let registry = PreviewArtifactRegistry::new();
+        assert!(export_preview_apply_candidate(&registry, "nonexistent").is_none());
     }
 }
