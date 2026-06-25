@@ -29,7 +29,6 @@ pub struct CrossProcessLockGuard {
 #[allow(unsafe_code)]
 mod imp {
     use super::CrossProcessLockGuard;
-    use std::os::unix::io::AsRawFd;
     use std::path::PathBuf;
 
     /// Acquire a process-wide advisory lock. Blocks until acquired.
@@ -38,22 +37,28 @@ mod imp {
     /// serializes on the same file. `target/` is owned by the build
     /// and is reliably writable on every platform/CI.
     pub fn acquire() -> CrossProcessLockGuard {
+        use std::os::fd::{FromRawFd, IntoRawFd};
         use std::os::unix::fs::OpenOptionsExt;
         let path: PathBuf = std::env::var("CARGO_TARGET_DIR")
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|_| std::path::PathBuf::from("target"))
             .join("codegg-search-backend-test.lock");
         let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
             .create(true)
             .truncate(false)
-            .write(true)
             .custom_flags(libc::O_CLOEXEC)
             .open(&path)
             .expect("open cross-process test lock file");
-        let ret = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
+        let fd = file.into_raw_fd();
+        let ret = unsafe { libc::flock(fd, libc::LOCK_EX) };
         if ret != 0 {
-            panic!("flock LOCK_EX failed: {}", std::io::Error::last_os_error());
+            let err = std::io::Error::last_os_error();
+            unsafe { libc::close(fd) };
+            panic!("flock LOCK_EX failed: {err}");
         }
+        let file = unsafe { std::fs::File::from_raw_fd(fd) };
         CrossProcessLockGuard {
             _file: file,
             _path: path,
