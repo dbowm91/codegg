@@ -829,6 +829,7 @@ mod tests {
             LspPreviewArtifact::Formatting {
                 description: "fmt a.rs".to_string(),
                 content_hash: None,
+                edit_count: 0,
                 patches: Vec::new(),
             },
             vec!["a.rs".to_string()],
@@ -839,6 +840,7 @@ mod tests {
             LspPreviewArtifact::CodeAction {
                 description: "organize imports".to_string(),
                 kind: Some("source.organizeImports".to_string()),
+                edit_count: 0,
                 patches: Vec::new(),
             },
             vec!["b.rs".to_string()],

@@ -2020,11 +2020,11 @@ Default: `DEFAULT_MAX_ENTRIES = 32`. Custom via `with_max_entries(n)`.
 
 ### Apply handoff
 
-`export_preview_apply_candidate(registry, id)` returns `Option<PreviewApplyCandidate>` with all metadata for the mutating apply path. Preserves read-only boundary: `LspTool` never writes files.
+`export_preview_apply_candidate(registry, id)` returns `Option<PreviewApplyCandidate>` with all metadata for the mutating apply path. Export is strictly read-only — it does not call `mark_applied` or modify registry state. Preserves read-only boundary: `LspTool` never writes files.
 
 ### Stale-base refresh
 
-`refresh_staleness(id)` re-hashes affected files on disk, compares with original hashes, updates `stale_base` and `stale_files`. Returns stale status.
+`refresh_staleness(id)` re-hashes affected files on disk using SHA-256 hex (via `crate::edit::sha256_hex`) and compares against the original hash from preview creation. Both paths use the same algorithm, so unchanged files are not incorrectly marked stale. Updates `stale_base` and `stale_files`. Returns stale status.
 
 ### Agent-facing policy
 

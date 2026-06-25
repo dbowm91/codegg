@@ -513,6 +513,7 @@ async fn phase5_preview_artifact_non_mutating() {
         LspPreviewArtifact::Formatting {
             description: "fmt a.rs".to_string(),
             content_hash: None,
+            edit_count: 0,
             patches: Vec::new(),
         },
         vec!["a.rs".to_string()],
@@ -524,6 +525,7 @@ async fn phase5_preview_artifact_non_mutating() {
         LspPreviewArtifact::CodeAction {
             description: "organize imports".to_string(),
             kind: None,
+            edit_count: 0,
             patches: Vec::new(),
         },
         vec!["b.rs".to_string()],
@@ -826,6 +828,7 @@ async fn phase5_tui_summary_detail_full() {
         LspPreviewArtifact::Formatting {
             description: "fmt".to_string(),
             content_hash: None,
+            edit_count: 0,
             patches: Vec::new(),
         },
         vec![],
@@ -1804,6 +1807,7 @@ mod production_seam_tests {
         let artifact = LspPreviewArtifact::Formatting {
             description: "fmt".to_string(),
             content_hash: Some("abc123".to_string()),
+            edit_count: 0,
             patches: Vec::new(),
         };
         let id = reg.register(
@@ -2461,6 +2465,7 @@ mod phase5_no_mutation_sweep {
             LspPreviewArtifact::Formatting {
                 description: "format registry.rs".to_string(),
                 content_hash: Some(before_hash.clone()),
+                edit_count: 0,
                 patches: Vec::new(),
             },
             vec![file_path.to_string_lossy().to_string()],
@@ -2471,6 +2476,7 @@ mod phase5_no_mutation_sweep {
             LspPreviewArtifact::CodeAction {
                 description: "organize imports".to_string(),
                 kind: Some("source.organizeImports".to_string()),
+                edit_count: 0,
                 patches: Vec::new(),
             },
             vec![file_path.to_string_lossy().to_string()],
@@ -2528,11 +2534,13 @@ mod phase5_no_mutation_sweep {
         packet.previews.push(LspPreviewArtifact::Formatting {
             description: "format registry.rs".to_string(),
             content_hash: Some(before_hash.clone()),
+            edit_count: 0,
             patches: Vec::new(),
         });
         packet.previews.push(LspPreviewArtifact::CodeAction {
             description: "organize imports".to_string(),
             kind: Some("source.organizeImports".to_string()),
+            edit_count: 0,
             patches: Vec::new(),
         });
         let populated = registry.populate_preview_ids(&mut packet);

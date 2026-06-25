@@ -1068,7 +1068,7 @@ Default cap: `DEFAULT_MAX_ENTRIES = 32`. When the cap is exceeded, the oldest en
 
 #### Stale-base refresh
 
-`refresh_staleness(id)` re-hashes each affected file on disk using `DefaultHasher` and compares against the original hash. Updates `stale_base` and `stale_files`. Returns the updated stale status.
+`refresh_staleness(id)` re-hashes each affected file on disk using SHA-256 hex (via `crate::edit::sha256_hex`) and compares against the original hash produced by `build_file_preview()` during preview creation. Both paths use the same algorithm, so unchanged files are not incorrectly marked stale. Updates `stale_base` and `stale_files`. Returns the updated stale status.
 
 #### Preview list / detail formatting
 
@@ -1079,7 +1079,7 @@ Pure formatting helpers in `tui_summary.rs`:
 
 #### Apply candidate export
 
-`export_preview_apply_candidate(registry, id)` returns an `Option<PreviewApplyCandidate>` carrying all metadata the mutating apply path needs (preview_id, kind, title, affected_files, original_hashes, edit_count, stale_base, provenance, applied).
+`export_preview_apply_candidate(registry, id)` returns an `Option<PreviewApplyCandidate>` carrying all metadata the mutating apply path needs (preview_id, kind, title, affected_files, original_hashes, edit_count, stale_base, provenance, applied). Export is strictly read-only — it does not call `mark_applied` or modify registry state.
 
 #### Agent-facing preview policy
 
@@ -3405,6 +3405,17 @@ Phase 5 context-packet infrastructure is complete. Phase 6 is last-mile polish, 
 - No changes to the preview-only safety boundary
 - No broadening of real-server support claims beyond pinned CI matrix
 - No semantic memory or persistent caches
+
+### Phase 6-8 Closeout (Corrective Pass)
+
+Closed Phases 6, 7, and 8 with targeted fixes:
+
+- **Hash consistency**: `refresh_staleness()` now uses SHA-256 hex (`crate::edit::sha256_hex`) matching `FileEditPreview.original_hash`. `DefaultHasher` is no longer used for preview stale-base comparison.
+- **Edit counts**: `LspPreviewArtifact::Formatting` and `LspPreviewArtifact::CodeAction` now carry `edit_count: usize`. `preview_edit_count()` returns real counts for all artifact variants.
+- **Apply-candidate export**: `export_preview_apply_candidate()` is documented and tested as strictly read-only — it does not call `mark_applied` or modify registry state.
+- **Phase 6 verification**: 39 server definitions, consistent doc counts, `counts_from_packet` flag tested, `/lsp-status` and preview commands documented.
+- **Phase 7 verification**: All 7 recipes re-exported, recipe outputs use canonical `LspContextPacket`, hunk source tags survive dedup/ranking/budget, `preview_suggestion` does not apply.
+- **Tests**: 714 egglsp tests pass, clippy clean, pre-existing `codegg-providers::fallback` failure confirmed unrelated.
 
 ### Context Packet Boundary
 

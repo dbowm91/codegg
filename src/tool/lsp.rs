@@ -2251,6 +2251,7 @@ impl Tool for LspTool {
                         preview.edit_count
                     ),
                     content_hash: Some(preview.before_hash.clone()),
+                    edit_count: preview.edit_count,
                     patches: if preview.diff.is_empty() {
                         Vec::new()
                     } else {
@@ -2324,6 +2325,7 @@ impl Tool for LspTool {
                         action_str, preview.total_edits, preview.total_files
                     ),
                     kind: Some(action_str.to_string()),
+                    edit_count: preview.total_edits,
                     patches,
                 };
                 let provenance = format!("source-action:{action_str}:{}", file.display());
@@ -3441,6 +3443,7 @@ impl Tool for LspTool {
                         preview.affected_files.len()
                     ),
                     kind: preview.kind.clone(),
+                    edit_count: total_edits,
                     patches,
                 };
                 let provenance = format!(
@@ -4025,6 +4028,7 @@ impl SemanticContextPacket {
                 previews.push(LspPreviewArtifact::CodeAction {
                     description: format!("{} ({})", hint.action, p.title),
                     kind: Some(hint.action.clone()),
+                    edit_count: p.total_edits,
                     patches: Vec::new(),
                 });
             }
@@ -7249,6 +7253,7 @@ diff --git a/src/lib.rs b/src/lib.rs
         let artifact = LspPreviewArtifact::Formatting {
             description: "test format".to_string(),
             content_hash: Some("abc123".to_string()),
+            edit_count: 0,
             patches: Vec::new(),
         };
         let mut hashes = std::collections::HashMap::new();
@@ -7316,6 +7321,7 @@ diff --git a/src/lib.rs b/src/lib.rs
         let artifact = LspPreviewArtifact::Formatting {
             description: "fmt".to_string(),
             content_hash: None,
+            edit_count: 0,
             patches: Vec::new(),
         };
         let _id = tool.register_preview_artifact(
@@ -7347,6 +7353,7 @@ diff --git a/src/lib.rs b/src/lib.rs
         packet.previews.push(LspPreviewArtifact::Formatting {
             description: "fmt".to_string(),
             content_hash: None,
+            edit_count: 0,
             patches: Vec::new(),
         });
         let count = tool.preview_registry().populate_preview_ids(&mut packet);
@@ -7644,6 +7651,7 @@ diff --git a/src/lib.rs b/src/lib.rs
             egglsp::context::LspPreviewArtifact::Formatting {
                 description: "test".to_string(),
                 content_hash: None,
+                edit_count: 0,
                 patches: Vec::new(),
             },
             vec!["src/lib.rs".to_string()],
@@ -7725,6 +7733,7 @@ diff --git a/src/lib.rs b/src/lib.rs
             LspPreviewArtifact::Formatting {
                 description: "format src/lib.rs".to_string(),
                 content_hash: Some("after_hash".to_string()),
+                edit_count: 0,
                 patches: Vec::new(),
             },
             vec!["src/lib.rs".to_string()],
@@ -7758,6 +7767,7 @@ diff --git a/src/lib.rs b/src/lib.rs
             LspPreviewArtifact::Formatting {
                 description: "format src/lib.rs".to_string(),
                 content_hash: None,
+                edit_count: 0,
                 patches: Vec::new(),
             },
             vec!["src/lib.rs".to_string()],
@@ -7907,6 +7917,7 @@ diff --git a/src/lib.rs b/src/lib.rs
             egglsp::context::LspPreviewArtifact::Formatting {
                 description: "format src/lib.rs".to_string(),
                 content_hash: Some("after".to_string()),
+                edit_count: 0,
                 patches: Vec::new(),
             },
             vec![path.display().to_string()],

@@ -351,6 +351,8 @@ pub enum LspPreviewArtifact {
         description: String,
         /// SHA-256 hash of the formatted content.
         content_hash: Option<String>,
+        /// Number of file edits in the preview.
+        edit_count: usize,
         /// Unified diff patches for each affected file.
         patches: Vec<PreviewFilePatch>,
     },
@@ -359,6 +361,8 @@ pub enum LspPreviewArtifact {
         description: String,
         /// Action kind (e.g. "quickfix", "refactor").
         kind: Option<String>,
+        /// Number of file edits in the preview.
+        edit_count: usize,
         /// Unified diff patches for each affected file.
         patches: Vec<PreviewFilePatch>,
     },

@@ -4237,7 +4237,7 @@ impl App {
                         Some(candidate) => {
                             drop(registry);
                             let mut msg = format!(
-                                "Apply candidate: {} ({})\nAffected files: {}\nStale: {}",
+                                "Apply candidate (read-only export): {} ({})\nAffected files: {}\nStale: {}",
                                 candidate.preview_id,
                                 candidate.kind,
                                 candidate.affected_files.join(", "),

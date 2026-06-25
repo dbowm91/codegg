@@ -223,7 +223,7 @@ impl CommandRegistry {
                 .with_description("Refresh LSP preview staleness (args: <id>)"),
             Command::new("/lsp-preview-apply", CommandCategory::System, None)
                 .with_aliases(&["/preview-apply"])
-                .with_description("Export LSP preview for apply (args: <id>)"),
+                .with_description("Export LSP preview apply candidate, read-only (args: <id>)"),
             Command::new("/tool-backends", CommandCategory::System, None)
                 .with_aliases(&["/tools", "/backends"])
                 .with_description("Show resolved backend for each model-facing tool (Native / MCP / Builtin / Disabled)"),

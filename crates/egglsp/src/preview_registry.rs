@@ -188,14 +188,11 @@ impl PreviewArtifactRegistry {
 
         let mut stale_files = Vec::new();
         for (file_path, expected_hash) in &entry.original_hashes {
+            // IMPORTANT: This hash must use the same algorithm (SHA-256 hex) as
+            // FileEditPreview.original_hash produced by build_file_preview().
             let actual_hash = std::fs::read(file_path)
                 .ok()
-                .map(|bytes| {
-                    use std::hash::{Hash, Hasher};
-                    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-                    bytes.hash(&mut hasher);
-                    format!("{:016x}", hasher.finish())
-                })
+                .map(|bytes| crate::edit::sha256_hex(&bytes))
                 .unwrap_or_else(|| "missing".to_string());
 
             if &actual_hash != expected_hash {
@@ -260,8 +257,8 @@ impl PreviewArtifactRegistry {
     pub fn preview_edit_count(entry: &PreviewArtifactEntry) -> usize {
         match &entry.artifact {
             LspPreviewArtifact::Rename { edit_count, .. } => *edit_count,
-            LspPreviewArtifact::Formatting { .. } => 0,
-            LspPreviewArtifact::CodeAction { .. } => 0,
+            LspPreviewArtifact::Formatting { edit_count, .. } => *edit_count,
+            LspPreviewArtifact::CodeAction { edit_count, .. } => *edit_count,
         }
     }
 
@@ -334,6 +331,7 @@ mod tests {
                 LspPreviewArtifact::Formatting {
                     description: format!("fmt {i}"),
                     content_hash: None,
+                    edit_count: 0,
                     patches: Vec::new(),
                 },
                 vec![],
@@ -394,6 +392,7 @@ mod tests {
             LspPreviewArtifact::CodeAction {
                 description: "action".to_string(),
                 kind: None,
+                edit_count: 0,
                 patches: Vec::new(),
             },
             vec![],
@@ -474,6 +473,7 @@ mod tests {
                 LspPreviewArtifact::Formatting {
                     description: "fmt".to_string(),
                     content_hash: None,
+                    edit_count: 0,
                     patches: Vec::new(),
                 },
             ],
@@ -510,6 +510,7 @@ mod tests {
             LspPreviewArtifact::Formatting {
                 description: "format src/lib.rs".to_string(),
                 content_hash: Some("new_hash".to_string()),
+                edit_count: 0,
                 patches: Vec::new(),
             },
             vec!["src/lib.rs".to_string()],
@@ -704,6 +705,7 @@ mod tests {
             LspPreviewArtifact::Formatting {
                 description: "format a.rs".to_string(),
                 content_hash: None,
+                edit_count: 0,
                 patches: Vec::new(),
             },
             vec![],
@@ -714,6 +716,7 @@ mod tests {
             LspPreviewArtifact::CodeAction {
                 description: "organize imports".to_string(),
                 kind: Some("source.organizeImports".to_string()),
+                edit_count: 0,
                 patches: Vec::new(),
             },
             vec![],
@@ -746,6 +749,42 @@ mod tests {
     }
 
     #[test]
+    fn test_preview_edit_count_nonzero_for_formatting() {
+        let mut reg = PreviewArtifactRegistry::new();
+        let id = reg.register(
+            LspPreviewArtifact::Formatting {
+                description: "format a.rs".to_string(),
+                content_hash: None,
+                edit_count: 5,
+                patches: Vec::new(),
+            },
+            vec![],
+            HashMap::new(),
+            "s".to_string(),
+        );
+        let entry = reg.get(&id).unwrap();
+        assert_eq!(PreviewArtifactRegistry::preview_edit_count(entry), 5);
+    }
+
+    #[test]
+    fn test_preview_edit_count_nonzero_for_code_action() {
+        let mut reg = PreviewArtifactRegistry::new();
+        let id = reg.register(
+            LspPreviewArtifact::CodeAction {
+                description: "organize imports".to_string(),
+                kind: Some("source.organizeImports".to_string()),
+                edit_count: 3,
+                patches: Vec::new(),
+            },
+            vec![],
+            HashMap::new(),
+            "s".to_string(),
+        );
+        let entry = reg.get(&id).unwrap();
+        assert_eq!(PreviewArtifactRegistry::preview_edit_count(entry), 3);
+    }
+
+    #[test]
     fn test_refresh_staleness_unchanged_file_remains_fresh() {
         let mut reg = PreviewArtifactRegistry::new();
         let hashes = HashMap::new(); // empty hashes — no files to check
@@ -769,7 +808,6 @@ mod tests {
 
     #[test]
     fn test_refresh_staleness_missing_file_becomes_stale() {
-        use std::hash::{Hash, Hasher};
         use std::io::Write;
 
         let dir = std::env::temp_dir().join("codegg_preview_staleness_test");
@@ -782,11 +820,7 @@ mod tests {
         }
 
         // Compute the hash the same way refresh_staleness does.
-        let actual_hash = {
-            let mut hasher = std::collections::hash_map::DefaultHasher::new();
-            content.hash(&mut hasher);
-            format!("{:016x}", hasher.finish())
-        };
+        let actual_hash = crate::edit::sha256_hex(content);
 
         let mut reg = PreviewArtifactRegistry::new();
         let mut hashes = HashMap::new();
@@ -814,6 +848,88 @@ mod tests {
         assert_eq!(entry.stale_files[0].expected_hash, actual_hash);
 
         // Cleanup.
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_refresh_staleness_unchanged_file_remains_fresh_with_sha256() {
+        let dir = std::env::temp_dir().join("codegg_preview_sha256_staleness_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let file_path = dir.join("target.rs");
+        let content = b"fn main() {}";
+        {
+            let mut f = std::fs::File::create(&file_path).unwrap();
+            std::io::Write::write_all(&mut f, content).unwrap();
+        }
+
+        // Compute SHA-256 hash the same way build_file_preview does.
+        let expected_hash = crate::edit::sha256_hex(content);
+
+        let mut reg = PreviewArtifactRegistry::new();
+        let mut hashes = HashMap::new();
+        hashes.insert(
+            file_path.to_str().unwrap().to_string(),
+            expected_hash.clone(),
+        );
+        let id = reg.register(
+            make_artifact(),
+            vec![file_path.to_str().unwrap().to_string()],
+            hashes,
+            "server".to_string(),
+        );
+
+        // Should be fresh before any change.
+        assert!(!reg.get(&id).unwrap().stale_base);
+
+        // refresh_staleness should mark it fresh (same content).
+        let result = reg.refresh_staleness(&id);
+        assert_eq!(result, Some(false));
+        assert!(!reg.get(&id).unwrap().stale_base);
+        assert!(reg.get(&id).unwrap().stale_files.is_empty());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_refresh_staleness_changed_file_becomes_stale_sha256() {
+        let dir = std::env::temp_dir().join("codegg_preview_sha256_changed_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let file_path = dir.join("target.rs");
+        let original_content = b"fn main() {}";
+        {
+            let mut f = std::fs::File::create(&file_path).unwrap();
+            std::io::Write::write_all(&mut f, original_content).unwrap();
+        }
+
+        let expected_hash = crate::edit::sha256_hex(original_content);
+
+        let mut reg = PreviewArtifactRegistry::new();
+        let mut hashes = HashMap::new();
+        hashes.insert(
+            file_path.to_str().unwrap().to_string(),
+            expected_hash.clone(),
+        );
+        let id = reg.register(
+            make_artifact(),
+            vec![file_path.to_str().unwrap().to_string()],
+            hashes,
+            "server".to_string(),
+        );
+
+        // Modify the file.
+        std::fs::write(&file_path, b"fn main() { changed(); }").unwrap();
+
+        // refresh_staleness should mark it stale.
+        let result = reg.refresh_staleness(&id);
+        assert_eq!(result, Some(true));
+        let entry = reg.get(&id).unwrap();
+        assert!(entry.stale_base);
+        assert_eq!(entry.stale_files.len(), 1);
+        assert_eq!(entry.stale_files[0].expected_hash, expected_hash);
+        // Actual hash should be SHA-256 of new content, not DefaultHasher.
+        let new_hash = crate::edit::sha256_hex(b"fn main() { changed(); }");
+        assert_eq!(entry.stale_files[0].actual_hash, new_hash);
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 

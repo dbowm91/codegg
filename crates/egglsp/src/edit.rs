@@ -15,6 +15,11 @@ const MAX_EDIT_PREVIEW_EDITS: usize = 1000;
 const MAX_REPLACEMENT_PREVIEW_CHARS: usize = 500;
 const MAX_PATCH_CHARS_PER_FILE: usize = 50_000;
 
+pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    format!("{:x}", digest)
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct WorkspaceEditPreview {
     pub title: String,
@@ -263,10 +268,7 @@ fn build_file_preview(
     allowed_root: Option<&Path>,
 ) -> Result<FileEditPreview, LspError> {
     let original = std::fs::read_to_string(file_path)?;
-    let original_hash = {
-        let digest = Sha256::digest(original.as_bytes());
-        format!("{:x}", digest)
-    };
+    let original_hash = sha256_hex(original.as_bytes());
 
     let new_content = apply_text_edits(&original, &edits)?;
 

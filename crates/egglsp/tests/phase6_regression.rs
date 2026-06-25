@@ -191,6 +191,7 @@ fn summary_ready_with_previews() {
         LspPreviewArtifact::Formatting {
             description: "format file".to_string(),
             content_hash: None,
+            edit_count: 0,
             patches: Vec::new(),
         },
         vec![],

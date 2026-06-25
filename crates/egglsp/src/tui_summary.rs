@@ -385,6 +385,7 @@ pub fn render_preview_detail(entry: &crate::preview_registry::PreviewArtifactEnt
         "To apply: use the separate mutating apply path (e.g. apply_patch) with user approval."
             .to_string(),
     );
+    lines.push("Export does not mark as applied — it is a read-only handoff.".to_string());
 
     lines.join("\n")
 }
@@ -440,6 +441,11 @@ pub struct PreviewApplyCandidate {
 
 /// Export a preview entry as an [`PreviewApplyCandidate`] for the mutating
 /// apply path. Returns `None` if the entry was not found.
+///
+/// This is a **read-only** operation: it reads from the registry without
+/// calling `mark_applied` or any other mutating method. The caller is
+/// responsible for the actual apply via a separate mutating path (e.g.
+/// `apply_patch` with user approval).
 pub fn export_preview_apply_candidate(
     registry: &crate::preview_registry::PreviewArtifactRegistry,
     preview_id: &str,
@@ -718,6 +724,7 @@ mod tests {
             LspPreviewArtifact::Formatting {
                 description: "fmt 1".to_string(),
                 content_hash: None,
+                edit_count: 0,
                 patches: Vec::new(),
             },
             vec!["a.rs".to_string()],
@@ -977,6 +984,7 @@ mod tests {
             LspPreviewArtifact::Formatting {
                 description: "format c.rs".to_string(),
                 content_hash: None,
+                edit_count: 0,
                 patches: Vec::new(),
             },
             vec!["c.rs".to_string()],
@@ -1016,7 +1024,7 @@ mod tests {
         assert!(detail.contains("abc123"));
         assert!(detail.contains("Status: FRESH"));
         assert!(detail.contains("not been applied"));
-        assert!(detail.contains("STALE") == false);
+        assert!(!detail.contains("STALE"));
     }
 
     #[test]
@@ -1047,6 +1055,7 @@ mod tests {
             LspPreviewArtifact::CodeAction {
                 description: "organize imports".to_string(),
                 kind: Some("source.organizeImports".to_string()),
+                edit_count: 0,
                 patches: Vec::new(),
             },
             vec!["a.rs".to_string()],
@@ -1093,6 +1102,7 @@ mod tests {
             LspPreviewArtifact::Formatting {
                 description: "format a.rs".to_string(),
                 content_hash: None,
+                edit_count: 0,
                 patches: Vec::new(),
             },
             vec!["a.rs".to_string()],
@@ -1167,6 +1177,7 @@ mod tests {
             LspPreviewArtifact::Formatting {
                 description: "format a.rs".to_string(),
                 content_hash: None,
+                edit_count: 0,
                 patches: Vec::new(),
             },
             vec!["a.rs".to_string()],
@@ -1176,5 +1187,24 @@ mod tests {
 
         let candidate = export_preview_apply_candidate(&registry, &id).unwrap();
         assert!(candidate.patches.is_empty());
+    }
+
+    #[test]
+    fn test_export_preview_apply_candidate_does_not_mark_applied() {
+        let mut registry = PreviewArtifactRegistry::new();
+        let id = registry.register(
+            LspPreviewArtifact::Rename {
+                description: "foo -> bar".to_string(),
+                edit_count: 1,
+                patches: Vec::new(),
+            },
+            vec!["a.rs".to_string()],
+            std::collections::HashMap::new(),
+            "rust-analyzer".to_string(),
+        );
+
+        let _candidate = export_preview_apply_candidate(&registry, &id).unwrap();
+        // Export must not mark the entry as applied.
+        assert!(!registry.get(&id).unwrap().applied);
     }
 }
