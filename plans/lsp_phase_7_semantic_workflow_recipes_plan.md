@@ -385,20 +385,20 @@ The repo already has model-tier rendering, but recipes need default policies.
 
 ## Completion checklist
 
-- [ ] Recipe taxonomy documented.
-- [ ] Recipe request/outcome types or helper functions added.
-- [ ] `repair_local` implemented/tested.
-- [ ] `repair_hunk` implemented/tested.
-- [ ] `review_file` documented and minimally implemented or deferred explicitly.
-- [ ] `review_diff` implemented/tested.
-- [ ] `security_review_enriched` documented as canonical enrichment recipe.
-- [ ] `hunk_source_navigation` renders grouped hunk evidence.
-- [ ] `preview_suggestion` can expose preview IDs without applying edits.
-- [ ] Tier-aware render defaults exist for small/workhorse/frontier.
-- [ ] Missing/degraded LSP fallback tests pass.
-- [ ] Stale/truncated evidence notes are visible in rendered output.
-- [ ] `cargo fmt --check` passes.
-- [ ] Relevant LSP/security/agent tests pass.
+- [x] Recipe taxonomy documented.
+- [x] Recipe request/outcome types or helper functions added.
+- [x] `repair_local` implemented/tested.
+- [x] `repair_hunk` implemented/tested.
+- [x] `review_file` documented and minimally implemented or deferred explicitly.
+- [x] `review_diff` implemented/tested.
+- [x] `security_review_enriched` documented as canonical enrichment recipe.
+- [x] `hunk_source_navigation` renders grouped hunk evidence.
+- [x] `preview_suggestion` can expose preview IDs without applying edits.
+- [x] Tier-aware render defaults exist for small/workhorse/frontier.
+- [x] Missing/degraded LSP fallback tests pass.
+- [x] Stale/truncated evidence notes are visible in rendered output.
+- [x] `cargo fmt --check` passes.
+- [x] Relevant LSP/security/agent tests pass.
 
 ## Handoff notes for smaller models
 
