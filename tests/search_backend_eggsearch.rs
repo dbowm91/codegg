@@ -3,11 +3,13 @@
 //! These tests verify the agent-loop tool exposure filtering behavior
 //! when `expose_raw_mcp_tools` is enabled or disabled.
 
-use codegg::search_backend::test_support::SHARED_TEST_LOCK as ASYNC_TEST_LOCK;
+use codegg::search_backend::test_support::{
+    acquire_cross_process_lock, SHARED_TEST_LOCK,
+};
 
 #[cfg(test)]
 mod agent_loop_filtering_tests {
-    use super::ASYNC_TEST_LOCK;
+    use super::{acquire_cross_process_lock, SHARED_TEST_LOCK};
     use codegg::config::schema::{EggsearchConfig, SearchBackendConfig, SearchConfig};
     use codegg::provider::ToolDefinition;
     use codegg::search_backend::state;
@@ -60,7 +62,8 @@ mod agent_loop_filtering_tests {
 
     #[tokio::test]
     async fn expose_raw_false_hides_eggsearch_tools() {
-        let _g = ASYNC_TEST_LOCK.lock().await;
+        let _cp = acquire_cross_process_lock();
+        let _g = SHARED_TEST_LOCK.lock().await;
         state::reset_for_tests();
         let cfg = SearchConfig {
             backend: Some(SearchBackendConfig::Eggsearch),
@@ -96,7 +99,8 @@ mod agent_loop_filtering_tests {
 
     #[tokio::test]
     async fn expose_raw_true_shows_eggsearch_tools() {
-        let _g = ASYNC_TEST_LOCK.lock().await;
+        let _cp = acquire_cross_process_lock();
+        let _g = SHARED_TEST_LOCK.lock().await;
         state::reset_for_tests();
         let cfg = SearchConfig {
             backend: Some(SearchBackendConfig::Eggsearch),
@@ -146,7 +150,8 @@ mod agent_loop_filtering_tests {
 
     #[tokio::test]
     async fn expose_raw_uses_default_server_name() {
-        let _g = ASYNC_TEST_LOCK.lock().await;
+        let _cp = acquire_cross_process_lock();
+        let _g = SHARED_TEST_LOCK.lock().await;
         state::reset_for_tests();
         let cfg = SearchConfig {
             backend: Some(SearchBackendConfig::Eggsearch),
@@ -174,7 +179,8 @@ mod agent_loop_filtering_tests {
 
     #[tokio::test]
     async fn expose_raw_with_custom_server_name() {
-        let _g = ASYNC_TEST_LOCK.lock().await;
+        let _cp = acquire_cross_process_lock();
+        let _g = SHARED_TEST_LOCK.lock().await;
         state::reset_for_tests();
         let cfg = SearchConfig {
             backend: Some(SearchBackendConfig::Eggsearch),
@@ -205,7 +211,7 @@ mod agent_loop_filtering_tests {
 /// `expose_raw_mcp_tools` is false and exposed when it is true.
 #[cfg(test)]
 mod real_build_tool_definitions_tests {
-    use super::ASYNC_TEST_LOCK;
+    use super::{acquire_cross_process_lock, SHARED_TEST_LOCK};
     use std::sync::Arc;
 
     use async_trait::async_trait;
@@ -358,7 +364,8 @@ mod real_build_tool_definitions_tests {
     #[tokio::test]
     async fn real_build_hides_raw_eggsearch_tools() {
         state::reset_for_tests();
-        let _g = ASYNC_TEST_LOCK.lock().await;
+        let _cp = acquire_cross_process_lock();
+        let _g = SHARED_TEST_LOCK.lock().await;
 
         let mcp = {
             let mcp = Arc::new(RwLock::new(build_mock_eggsearch_mcp()));
@@ -408,7 +415,8 @@ mod real_build_tool_definitions_tests {
     #[tokio::test]
     async fn real_build_shows_raw_eggsearch_tools_when_exposed() {
         state::reset_for_tests();
-        let _g = ASYNC_TEST_LOCK.lock().await;
+        let _cp = acquire_cross_process_lock();
+        let _g = SHARED_TEST_LOCK.lock().await;
 
         let mcp = {
             let mcp = Arc::new(RwLock::new(build_mock_eggsearch_mcp()));
@@ -456,7 +464,8 @@ mod real_build_tool_definitions_tests {
     #[tokio::test]
     async fn real_build_hides_raw_eggsearch_tools_for_custom_server_name() {
         state::reset_for_tests();
-        let _g = ASYNC_TEST_LOCK.lock().await;
+        let _cp = acquire_cross_process_lock();
+        let _g = SHARED_TEST_LOCK.lock().await;
 
         let mcp = {
             // Build a service whose tools use a non-default prefix.

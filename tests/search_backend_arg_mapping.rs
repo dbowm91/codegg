@@ -34,7 +34,9 @@ use codegg::error::McpError;
 use codegg::mcp::{McpService, McpTool};
 use codegg::search_backend::framing;
 use codegg::search_backend::state;
-use codegg::search_backend::test_support::SHARED_TEST_LOCK;
+use codegg::search_backend::test_support::{
+    acquire_cross_process_lock, CrossProcessLockGuard, SHARED_TEST_LOCK,
+};
 use tokio::sync::MutexGuard;
 
 fn eggsearch_config() -> SearchConfig {
@@ -117,14 +119,16 @@ fn install_mock_recorder() -> Arc<Mutex<Vec<(String, serde_json::Value)>>> {
     calls
 }
 
-async fn lock_tests() -> MutexGuard<'static, ()> {
-    SHARED_TEST_LOCK.lock().await
+async fn lock_tests() -> (CrossProcessLockGuard, MutexGuard<'static, ()>) {
+    let cp = acquire_cross_process_lock();
+    let g = SHARED_TEST_LOCK.lock().await;
+    (cp, g)
 }
 
 #[tokio::test]
 async fn num_results_maps_to_max_results() {
     state::reset_for_tests();
-    let _g = lock_tests().await;
+    let (_cp, _g) = lock_tests().await;
     let calls = install_mock_recorder();
     let _ = codegg::search_backend::dispatch_web_search(&serde_json::json!({
         "query": "x",
@@ -142,7 +146,7 @@ async fn num_results_maps_to_max_results() {
 #[tokio::test]
 async fn max_results_alias_is_accepted() {
     state::reset_for_tests();
-    let _g = lock_tests().await;
+    let (_cp, _g) = lock_tests().await;
     let calls = install_mock_recorder();
     let _ = codegg::search_backend::dispatch_web_search(&serde_json::json!({
         "query": "x",
@@ -159,7 +163,7 @@ async fn max_results_alias_is_accepted() {
 #[tokio::test]
 async fn num_results_is_capped_at_30() {
     state::reset_for_tests();
-    let _g = lock_tests().await;
+    let (_cp, _g) = lock_tests().await;
     let calls = install_mock_recorder();
     let _ = codegg::search_backend::dispatch_web_search(&serde_json::json!({
         "query": "x",
@@ -175,7 +179,7 @@ async fn num_results_is_capped_at_30() {
 #[tokio::test]
 async fn provider_pinned_to_specific_backend() {
     state::reset_for_tests();
-    let _g = lock_tests().await;
+    let (_cp, _g) = lock_tests().await;
     let calls = install_mock_recorder();
     let _ = codegg::search_backend::dispatch_web_search(&serde_json::json!({
         "query": "x",
@@ -193,7 +197,7 @@ async fn provider_pinned_to_specific_backend() {
 #[tokio::test]
 async fn provider_unknown_does_not_emit_providers_field() {
     state::reset_for_tests();
-    let _g = lock_tests().await;
+    let (_cp, _g) = lock_tests().await;
     let calls = install_mock_recorder();
     let _ = codegg::search_backend::dispatch_web_search(&serde_json::json!({
         "query": "x",
@@ -203,9 +207,6 @@ async fn provider_unknown_does_not_emit_providers_field() {
     .unwrap();
     let rec = calls.lock().expect("calls poisoned");
     let (_, args) = rec.last().unwrap();
-    // The dispatcher may emit a `providers` field with an empty
-    // array for unknown hints; what we want to assert is that the
-    // field is NOT the unknown backend name.
     if let Some(providers) = args.get("providers") {
         let arr = providers.as_array().expect("providers array");
         for p in arr {
@@ -217,7 +218,7 @@ async fn provider_unknown_does_not_emit_providers_field() {
 #[tokio::test]
 async fn webfetch_max_length_maps_to_max_chars() {
     state::reset_for_tests();
-    let _g = lock_tests().await;
+    let (_cp, _g) = lock_tests().await;
     let calls = install_mock_recorder();
     let _ = codegg::search_backend::dispatch_web_fetch(&serde_json::json!({
         "url": "https://example.com",
@@ -237,7 +238,7 @@ async fn webfetch_max_length_maps_to_max_chars() {
 #[tokio::test]
 async fn webfetch_default_extract_mode_is_text() {
     state::reset_for_tests();
-    let _g = lock_tests().await;
+    let (_cp, _g) = lock_tests().await;
     let calls = install_mock_recorder();
     let _ = codegg::search_backend::dispatch_web_fetch(&serde_json::json!({
         "url": "https://example.com",
