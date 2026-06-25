@@ -968,6 +968,11 @@ Unit tests use fake/static inputs and do not require live LSP servers. Hierarchy
 | R | r-languageserver | R --slave -e library(languageserver) |
 | ... and more | | |
 
+### Support Tiers
+
+- **Pinned/CI-verified**: Servers with dedicated compatibility profiles tested in the real-server CI matrix (rust-analyzer, basedpyright, gopls, typescript-language-server, clangd). These have pinned versions, root-marker expectations, and known limitations documented.
+- **Discovery/launch definitions**: Additional server definitions in `server.rs` provide language-to-server mapping and launch configuration. These are best-effort and have not been verified against the pinned CI matrix.
+
 ## Tool Integration
 
 LSP is exposed via `LspTool` in `src/tool/lsp.rs`. The tool returns compact agent-facing summaries, not raw LSP JSON.
@@ -3227,6 +3232,51 @@ Phase 5 complete. Codegg assembles bounded, provenance-rich LSP context for agen
 - **Tier is wired in the turn path**: `DefaultTurnRuntime` resolves the tier from the model profile (or explicit override) before invoking the renderer.
 - **Bridges are named**: `crates/egglsp/src/bridges.rs` is the canonical entry point for the three downstream bridges.
 - **No-mutation is hash-verified**: temp-file hashes survive every Phase 5 path under audit.
+
+## Phase 6: Polish, Documentation, and Status UX (Current)
+
+Phase 5 context-packet infrastructure is complete. Phase 6 is last-mile polish, documentation accuracy, and status visibility.
+
+**Phase 6 scope:**
+- Documentation reconciliation (server counts, operation tables, phase status)
+- LSP status summary accuracy (distinguishing real zeros from unavailable state)
+- TUI status line and `/lsp-status` command for user-facing status inspection
+- Platform and support boundary documentation
+- Regression guardrails for documentation drift
+
+**Phase 6 non-goals:**
+- No new LSP protocol operations
+- No new context packet types (use `LspContextPacket` and existing bridges)
+- No changes to the preview-only safety boundary
+- No broadening of real-server support claims beyond pinned CI matrix
+- No semantic memory or persistent caches
+
+### Context Packet Boundary
+
+Do not add parallel context packet types. All LSP evidence flows through `LspContextPacket` and its canonical bridges in `crates/egglsp/src/bridges.rs`. The `LspTuiSummary` is derived from the packet via `build_tui_summary()` or the live-service `LspTool::build_lsp_summary()` path.
+
+## Troubleshooting
+
+### Binary not found
+The LSP server binary is not on `PATH` or not installed. Install the server using its recommended method (e.g., `rustup component add rust-analyzer`, `npm install -g pyright`, `go install golang.org/x/tools/gopls@latest`). Check `server.rs` for the expected binary name.
+
+### Root not detected
+The LSP server cannot find a workspace root. Ensure you are opening a directory with the expected root markers (e.g., `Cargo.toml` for rust-analyzer, `package.json` for typescript-language-server). The server will fail to initialize if no root marker matches.
+
+### Server initializing/indexing
+The server is still starting up. Some servers (especially rust-analyzer and gopls) take 15-30 seconds to index the workspace. The status will show "indexing" or "initializing" during this period. Operations will return empty or degraded results until initialization completes.
+
+### No diagnostics yet
+Diagnostics appear after the server finishes indexing. If you see zero diagnostics immediately after opening a file, wait for initialization to complete. Some servers only produce diagnostics on save.
+
+### Capability unavailable
+An operation returned "unsupported" or "degraded". Not all servers support all LSP operations. Check the capability snapshot via the `capabilities` operation to see what the server advertises. Some operations (e.g., `typeHierarchy`) are not supported by all servers.
+
+### Stale evidence after restart
+After an LSP server restart, previously collected context items may be marked as stale or generation-mismatched. This is expected. The system tracks server generations and freshness to detect stale evidence. New operations after restart will have fresh provenance.
+
+### Preview operations not writing files
+`renamePreview`, `formatPreview`, `sourceActionPreview`, and `codeActionPreview` are intentionally read-only. They return edit descriptions without modifying files. This is the preview-only safety boundary — use the returned edits to apply changes through the normal tool system.
 
 ## See Also
 

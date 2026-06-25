@@ -51,6 +51,9 @@ pub struct LspTuiSummary {
     /// "implementation unsupported by basedpyright"). Derived from
     /// capability-decision notes on items.
     pub unsupported_operations: Vec<String>,
+    /// Whether item counts came from an actual context packet (true)
+    /// or are placeholder zeros from the live-service status path (false).
+    pub counts_from_packet: bool,
     /// General notes from packet assembly.
     pub notes: Vec<String>,
     /// Operational state notes (e.g. "LSP state: indexing").
@@ -170,6 +173,7 @@ pub fn build_tui_summary(
         preview_stale,
         preview_ids,
         unsupported_operations,
+        counts_from_packet: true,
         notes: packet.notes.clone(),
         operational_notes,
     }
@@ -190,10 +194,14 @@ pub fn render_tui_status_line(summary: &LspTuiSummary) -> String {
         (None, None) => "unknown".to_string(),
     };
 
-    let counts = format!(
-        "{}d {}r {}def",
-        summary.diagnostics_count, summary.references_count, summary.definitions_count
-    );
+    let counts = if summary.counts_from_packet {
+        format!(
+            "{}d {}r {}def",
+            summary.diagnostics_count, summary.references_count, summary.definitions_count
+        )
+    } else {
+        "—".to_string()
+    };
 
     let mut parts = vec![
         "LSP:".to_string(),
@@ -235,19 +243,23 @@ pub fn render_tui_summary_detail(summary: &LspTuiSummary) -> String {
     let status = render_tui_status_line(summary);
     lines.push(status);
 
-    lines.push(format!(
-        "Context: {} items, {} diagnostics, {} refs, {} definitions",
-        summary.total_items,
-        summary.diagnostics_count,
-        summary.references_count,
-        summary.definitions_count
-    ));
+    if summary.counts_from_packet {
+        lines.push(format!(
+            "Context: {} items, {} diagnostics, {} refs, {} definitions",
+            summary.total_items,
+            summary.diagnostics_count,
+            summary.references_count,
+            summary.definitions_count
+        ));
 
-    let freshness_line = format!(
-        "Freshness: {} fresh, {} stale, {} possibly-stale",
-        summary.fresh_count, summary.stale_freshness_count, summary.possibly_stale_count
-    );
-    lines.push(freshness_line);
+        let freshness_line = format!(
+            "Freshness: {} fresh, {} stale, {} possibly-stale",
+            summary.fresh_count, summary.stale_freshness_count, summary.possibly_stale_count
+        );
+        lines.push(freshness_line);
+    } else {
+        lines.push("Context: not collected in status snapshot".to_string());
+    }
 
     if summary.truncated {
         lines.push("Truncated: yes".to_string());
@@ -688,5 +700,69 @@ mod tests {
         assert!(detail.contains("Unsupported:"));
         assert!(detail.contains("findReferences"));
         assert!(detail.contains("goToImplementation"));
+    }
+
+    #[test]
+    fn test_render_status_line_no_packet() {
+        let summary = LspTuiSummary {
+            server_status: "ready".to_string(),
+            server_id: Some("rust-analyzer".to_string()),
+            server_generation: Some(3),
+            diagnostics_count: 0,
+            references_count: 0,
+            definitions_count: 0,
+            total_items: 0,
+            truncated: false,
+            stale: false,
+            stale_freshness_count: 0,
+            possibly_stale_count: 0,
+            fresh_count: 0,
+            preview_count: 2,
+            preview_stale: false,
+            preview_ids: vec!["preview-1".to_string()],
+            unsupported_operations: Vec::new(),
+            counts_from_packet: false,
+            notes: Vec::new(),
+            operational_notes: Vec::new(),
+        };
+
+        let line = render_tui_status_line(&summary);
+        assert!(line.contains("LSP: ready"));
+        assert!(line.contains("rust-analyzer gen=3"));
+        assert!(line.contains("| — |"));
+        assert!(line.contains("2p"));
+        assert!(!line.contains("0d"));
+        assert!(!line.contains("0r"));
+        assert!(!line.contains("0def"));
+    }
+
+    #[test]
+    fn test_render_detail_no_packet() {
+        let summary = LspTuiSummary {
+            server_status: "ready".to_string(),
+            server_id: Some("rust-analyzer".to_string()),
+            server_generation: Some(4),
+            diagnostics_count: 0,
+            references_count: 0,
+            definitions_count: 0,
+            total_items: 0,
+            truncated: false,
+            stale: false,
+            stale_freshness_count: 0,
+            possibly_stale_count: 0,
+            fresh_count: 0,
+            preview_count: 0,
+            preview_stale: false,
+            preview_ids: Vec::new(),
+            unsupported_operations: Vec::new(),
+            counts_from_packet: false,
+            notes: Vec::new(),
+            operational_notes: Vec::new(),
+        };
+
+        let detail = render_tui_summary_detail(&summary);
+        assert!(detail.contains("Context: not collected in status snapshot"));
+        assert!(!detail.contains("Freshness:"));
+        assert!(!detail.contains("0 items"));
     }
 }

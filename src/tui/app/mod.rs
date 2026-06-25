@@ -4112,6 +4112,20 @@ impl App {
                         .info("doctor: not connected to a core client");
                 }
             }
+            "/lsp-status" => {
+                self.ui_state.command_mode = false;
+                if let Some(ref lsp_tool) = self.lsp_tool {
+                    let handle = tokio::runtime::Handle::current();
+                    let detail = handle.block_on(lsp_tool.lsp_summary_detail());
+                    if let Some(text) = detail {
+                        self.messages_state.toasts.info(&text);
+                    } else {
+                        self.messages_state.toasts.info("No LSP server connected");
+                    }
+                } else {
+                    self.messages_state.toasts.info("LSP not available");
+                }
+            }
             "/tool-backends" | "/tools" | "/backends" => {
                 // Build the report synchronously from the resolved
                 // config. The App doesn't hold a direct reference to

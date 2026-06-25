@@ -791,6 +791,7 @@ impl LspTool {
             preview_stale,
             preview_ids,
             unsupported_operations: Vec::new(),
+            counts_from_packet: false,
             notes,
             operational_notes: Vec::new(),
         })

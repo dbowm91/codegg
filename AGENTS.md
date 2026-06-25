@@ -177,7 +177,7 @@ cargo test -p egglsp --features lsp-real-server-tests --test real_server_smoke -
 | `architecture/goal.md` | Goal system | |
 | `architecture/hooks.md` | Lifecycle hooks for agent events | |
 | `architecture/ide.md` | VS Code/JetBrains detection, diff viewing | |
-| `architecture/lsp.md` | LSP client, diagnostics, code operations | egglsp is authoritative; 40 servers |
+| `architecture/lsp.md` | LSP client, diagnostics, code operations | egglsp is authoritative; 39 servers |
 | `architecture/mcp.md` | MCP client (local/remote) | |
 | `architecture/memory.md` | Persistent memory across sessions | In `crates/codegg-core` |
 | `architecture/native_crates.md` | Workspace crates, backend contract | |
