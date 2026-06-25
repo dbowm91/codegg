@@ -7,6 +7,7 @@
 
 pub mod auth;
 pub mod cli;
+#[cfg(unix)]
 pub mod ide_server;
 pub mod local;
 pub mod remote;
