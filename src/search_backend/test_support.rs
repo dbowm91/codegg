@@ -21,7 +21,7 @@ pub static SHARED_TEST_LOCK: Mutex<()> = Mutex::const_new(());
 /// RAII guard returned by [`acquire_cross_process_lock`]. When
 /// dropped, the underlying flock is released.
 pub struct CrossProcessLockGuard {
-    _file: std::fs::File,
+    _file: std::sync::Arc<std::fs::File>,
     _path: PathBuf,
 }
 
@@ -60,7 +60,7 @@ mod imp {
         }
         let file = unsafe { std::fs::File::from_raw_fd(fd) };
         CrossProcessLockGuard {
-            _file: file,
+            _file: std::sync::Arc::new(file),
             _path: path,
         }
     }
@@ -73,7 +73,9 @@ mod imp {
     /// Linux, so the cross-process race only matters there.
     pub fn acquire() -> CrossProcessLockGuard {
         CrossProcessLockGuard {
-            _file: std::fs::File::open("/dev/null").expect("open /dev/null"),
+            _file: std::sync::Arc::new(
+                std::fs::File::open("/dev/null").expect("open /dev/null"),
+            ),
             _path: std::path::PathBuf::new(),
         }
     }
