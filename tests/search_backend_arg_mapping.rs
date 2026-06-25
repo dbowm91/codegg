@@ -125,17 +125,48 @@ async fn lock_tests() -> (CrossProcessLockGuard, MutexGuard<'static, ()>) {
     (cp, g)
 }
 
+async fn dispatch_with_retry(input: &serde_json::Value) -> String {
+    for _ in 0..20 {
+        let r = codegg::search_backend::dispatch_web_search(input).await;
+        match r {
+            Ok(s) => return s,
+            Err(codegg::error::ToolError::Execution(msg))
+                if msg.contains("McpService is not initialized") =>
+            {
+                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            }
+            Err(e) => panic!("dispatch_web_search failed: {e}"),
+        }
+    }
+    panic!("dispatch_web_search kept seeing 'McpService is not initialized'");
+}
+
+async fn dispatch_fetch_with_retry(input: &serde_json::Value) -> String {
+    for _ in 0..20 {
+        let r = codegg::search_backend::dispatch_web_fetch(input).await;
+        match r {
+            Ok(s) => return s,
+            Err(codegg::error::ToolError::Execution(msg))
+                if msg.contains("McpService is not initialized") =>
+            {
+                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            }
+            Err(e) => panic!("dispatch_web_fetch failed: {e}"),
+        }
+    }
+    panic!("dispatch_web_fetch kept seeing 'McpService is not initialized'");
+}
+
 #[tokio::test]
 async fn num_results_maps_to_max_results() {
     state::reset_for_tests();
     let (_cp, _g) = lock_tests().await;
     let calls = install_mock_recorder();
-    let _ = codegg::search_backend::dispatch_web_search(&serde_json::json!({
+    let _ = dispatch_with_retry(&serde_json::json!({
         "query": "x",
         "num_results": 12,
     }))
-    .await
-    .unwrap();
+    .await;
     let rec = calls.lock().expect("calls poisoned");
     let (tool, args) = rec.last().expect("at least one call");
     assert_eq!(tool, "web_search");
@@ -148,12 +179,11 @@ async fn max_results_alias_is_accepted() {
     state::reset_for_tests();
     let (_cp, _g) = lock_tests().await;
     let calls = install_mock_recorder();
-    let _ = codegg::search_backend::dispatch_web_search(&serde_json::json!({
+    let _ = dispatch_with_retry(&serde_json::json!({
         "query": "x",
         "max_results": 7,
     }))
-    .await
-    .unwrap();
+    .await;
     let rec = calls.lock().expect("calls poisoned");
     let (tool, args) = rec.last().expect("at least one call");
     assert_eq!(tool, "web_search");
@@ -165,12 +195,11 @@ async fn num_results_is_capped_at_30() {
     state::reset_for_tests();
     let (_cp, _g) = lock_tests().await;
     let calls = install_mock_recorder();
-    let _ = codegg::search_backend::dispatch_web_search(&serde_json::json!({
+    let _ = dispatch_with_retry(&serde_json::json!({
         "query": "x",
         "num_results": 5000,
     }))
-    .await
-    .unwrap();
+    .await;
     let rec = calls.lock().expect("calls poisoned");
     let (_, args) = rec.last().unwrap();
     assert_eq!(args["max_results"], 30);
@@ -181,12 +210,11 @@ async fn provider_pinned_to_specific_backend() {
     state::reset_for_tests();
     let (_cp, _g) = lock_tests().await;
     let calls = install_mock_recorder();
-    let _ = codegg::search_backend::dispatch_web_search(&serde_json::json!({
+    let _ = dispatch_with_retry(&serde_json::json!({
         "query": "x",
         "provider": "arxiv",
     }))
-    .await
-    .unwrap();
+    .await;
     let rec = calls.lock().expect("calls poisoned");
     let (_, args) = rec.last().unwrap();
     let providers = args["providers"].as_array().expect("providers array");
@@ -199,12 +227,11 @@ async fn provider_unknown_does_not_emit_providers_field() {
     state::reset_for_tests();
     let (_cp, _g) = lock_tests().await;
     let calls = install_mock_recorder();
-    let _ = codegg::search_backend::dispatch_web_search(&serde_json::json!({
+    let _ = dispatch_with_retry(&serde_json::json!({
         "query": "x",
         "provider": "unknown_backend",
     }))
-    .await
-    .unwrap();
+    .await;
     let rec = calls.lock().expect("calls poisoned");
     let (_, args) = rec.last().unwrap();
     if let Some(providers) = args.get("providers") {
@@ -220,12 +247,11 @@ async fn webfetch_max_length_maps_to_max_chars() {
     state::reset_for_tests();
     let (_cp, _g) = lock_tests().await;
     let calls = install_mock_recorder();
-    let _ = codegg::search_backend::dispatch_web_fetch(&serde_json::json!({
+    let _ = dispatch_fetch_with_retry(&serde_json::json!({
         "url": "https://example.com",
         "max_length": 4000,
     }))
-    .await
-    .unwrap();
+    .await;
     let rec = calls.lock().expect("calls poisoned");
     let (tool, args) = rec.last().unwrap();
     assert_eq!(tool, "web_fetch");
@@ -240,11 +266,10 @@ async fn webfetch_default_extract_mode_is_text() {
     state::reset_for_tests();
     let (_cp, _g) = lock_tests().await;
     let calls = install_mock_recorder();
-    let _ = codegg::search_backend::dispatch_web_fetch(&serde_json::json!({
+    let _ = dispatch_fetch_with_retry(&serde_json::json!({
         "url": "https://example.com",
     }))
-    .await
-    .unwrap();
+    .await;
     let rec = calls.lock().expect("calls poisoned");
     let (_, args) = rec.last().unwrap();
     assert_eq!(args["extract_mode"], "text");
