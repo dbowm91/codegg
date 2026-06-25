@@ -14,10 +14,17 @@ use codegg::config::schema::{EggsearchConfig, SearchBackendConfig, SearchConfig}
 use codegg::error::McpError;
 use codegg::mcp::{McpService, McpTool};
 use codegg::search_backend::state;
+use codegg::search_backend::test_support::{
+    acquire_cross_process_lock, CrossProcessLockGuard, SHARED_TEST_LOCK,
+};
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, MutexGuard};
 
-static TEST_LOCK: Mutex<()> = Mutex::const_new(());
+async fn lock() -> (CrossProcessLockGuard, MutexGuard<'static, ()>) {
+    let cp = acquire_cross_process_lock();
+    let g = SHARED_TEST_LOCK.lock().await;
+    (cp, g)
+}
 
 fn builtin_config() -> SearchConfig {
     SearchConfig {
@@ -42,7 +49,7 @@ fn eggsearch_config_with_fallback() -> SearchConfig {
 #[tokio::test]
 async fn builtin_backend_does_not_touch_mcp_service() {
     state::reset_for_tests();
-    let _g = TEST_LOCK.lock().await;
+    let (_cp, _g) = lock().await;
     let calls = Arc::new(Mutex::new(Vec::<(String, serde_json::Value)>::new()));
     let mut svc = McpService::new();
     let recorded = Arc::clone(&calls);
@@ -89,7 +96,7 @@ async fn builtin_backend_does_not_touch_mcp_service() {
 #[tokio::test]
 async fn fallback_to_builtin_avoids_eggsearch_unavailable_error() {
     state::reset_for_tests();
-    let _g = TEST_LOCK.lock().await;
+    let (_cp, _g) = lock().await;
     let calls = Arc::new(Mutex::new(Vec::<(String, serde_json::Value)>::new()));
     let mut svc = McpService::new();
     let recorded = Arc::clone(&calls);
@@ -131,7 +138,7 @@ async fn fallback_to_builtin_avoids_eggsearch_unavailable_error() {
 #[tokio::test]
 async fn no_fallback_surfaces_eggsearch_error() {
     state::reset_for_tests();
-    let _g = TEST_LOCK.lock().await;
+    let (_cp, _g) = lock().await;
     let svc = McpService::new();
     // No eggsearch server registered -> the service is installed
     // but call_tool for "eggsearch" will fail with "server not found".

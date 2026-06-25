@@ -31,11 +31,20 @@ use codegg::error::McpError;
 use codegg::mcp::{McpService, McpTool};
 use codegg::provider::ToolDefinition;
 use codegg::search_backend::state;
+use codegg::search_backend::test_support::{
+    acquire_cross_process_lock, CrossProcessLockGuard, SHARED_TEST_LOCK,
+};
 use tokio::sync::{Mutex, MutexGuard};
 
-// Serialize every test in this file. The state slot is global, so
-// parallel tests would clobber each other's mocks and recorded calls.
-static TEST_LOCK: Mutex<()> = Mutex::const_new(());
+// Serialize every test in this file (and across all test binaries
+// that touch `search_backend::state`) with the shared cross-process
+// flock. The in-process mutex is held across `.await` while the
+// cross-process flock is held for the entire test body.
+async fn lock() -> (CrossProcessLockGuard, MutexGuard<'static, ()>) {
+    let cp = acquire_cross_process_lock();
+    let g = SHARED_TEST_LOCK.lock().await;
+    (cp, g)
+}
 
 fn eggsearch_config(expose_raw: bool, fallback: bool) -> SearchConfig {
     SearchConfig {
@@ -113,19 +122,13 @@ fn build_mock_eggsearch(
     svc
 }
 
-/// Acquire the global test lock. Held for the duration of a single
-/// `#[tokio::test]` body; dropped at the end.
-async fn lock() -> MutexGuard<'static, ()> {
-    TEST_LOCK.lock().await
-}
-
 /// Verify that `websearch` dispatches to the `web_search` MCP tool
 /// when the eggsearch backend is configured and a service is
 /// installed.
 #[tokio::test]
 async fn websearch_dispatches_to_mcp_web_search() {
     state::reset_for_tests();
-    let _g = lock().await;
+    let (_cp, _g) = lock().await;
     let calls = Arc::new(Mutex::new(Vec::new()));
     let svc = Arc::new(tokio::sync::RwLock::new(build_mock_eggsearch(Arc::clone(
         &calls,
@@ -159,7 +162,7 @@ async fn websearch_dispatches_to_mcp_web_search() {
 #[tokio::test]
 async fn webfetch_dispatches_to_mcp_web_fetch() {
     state::reset_for_tests();
-    let _g = lock().await;
+    let (_cp, _g) = lock().await;
     let calls = Arc::new(Mutex::new(Vec::new()));
     let svc = Arc::new(tokio::sync::RwLock::new(build_mock_eggsearch(Arc::clone(
         &calls,
@@ -193,7 +196,7 @@ async fn webfetch_dispatches_to_mcp_web_fetch() {
 #[tokio::test]
 async fn provider_status_dispatches_via_doctor_helper() {
     state::reset_for_tests();
-    let _g = lock().await;
+    let (_cp, _g) = lock().await;
     let calls = Arc::new(Mutex::new(Vec::new()));
     let svc = Arc::new(tokio::sync::RwLock::new(build_mock_eggsearch(Arc::clone(
         &calls,
@@ -217,7 +220,7 @@ async fn provider_status_dispatches_via_doctor_helper() {
 #[tokio::test]
 async fn dispatch_eggsearch_server_missing_returns_actionable_error() {
     state::reset_for_tests();
-    let _g = lock().await;
+    let (_cp, _g) = lock().await;
     // Empty service: no "eggsearch" server registered.
     let svc = McpService::new();
     let svc = Arc::new(tokio::sync::RwLock::new(svc));
@@ -237,7 +240,7 @@ async fn dispatch_eggsearch_server_missing_returns_actionable_error() {
 #[tokio::test]
 async fn builtin_backend_does_not_invoke_mcp() {
     state::reset_for_tests();
-    let _g = lock().await;
+    let (_cp, _g) = lock().await;
     let calls = Arc::new(Mutex::new(Vec::new()));
     let svc = Arc::new(tokio::sync::RwLock::new(build_mock_eggsearch(Arc::clone(
         &calls,
@@ -262,7 +265,7 @@ async fn builtin_backend_does_not_invoke_mcp() {
 #[tokio::test]
 async fn disabled_backend_does_not_invoke_mcp() {
     state::reset_for_tests();
-    let _g = lock().await;
+    let (_cp, _g) = lock().await;
     let calls = Arc::new(Mutex::new(Vec::new()));
     let svc = Arc::new(tokio::sync::RwLock::new(build_mock_eggsearch(Arc::clone(
         &calls,
