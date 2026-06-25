@@ -233,7 +233,9 @@ mod tests {
     #[tokio::test]
     async fn web_search_unavailable_returns_actionable_error() {
         let _cp = crate::search_backend::test_support::acquire_cross_process_lock();
-        let _g = crate::search_backend::test_support::SHARED_TEST_LOCK.lock().await;
+        let _g = crate::search_backend::test_support::SHARED_TEST_LOCK
+            .lock()
+            .await;
         crate::search_backend::state::reset_for_tests();
         crate::search_backend::state::install_search_config(crate::config::schema::SearchConfig {
             backend: Some(crate::config::schema::SearchBackendConfig::Eggsearch),
