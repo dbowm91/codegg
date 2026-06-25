@@ -73,9 +73,7 @@ mod imp {
     /// Linux, so the cross-process race only matters there.
     pub fn acquire() -> CrossProcessLockGuard {
         CrossProcessLockGuard {
-            _file: std::sync::Arc::new(
-                std::fs::File::open("/dev/null").expect("open /dev/null"),
-            ),
+            _file: std::sync::Arc::new(std::fs::File::open("/dev/null").expect("open /dev/null")),
             _path: std::path::PathBuf::new(),
         }
     }
