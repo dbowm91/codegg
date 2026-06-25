@@ -653,6 +653,56 @@ The completion handler `handle_security_review_finished` in `src/tui/mod.rs:2205
 
 The full review is read-only by design — no file mutations, no exploit generation, no network scanning. The result panel adds navigation over the existing output but does not introduce new behaviors.
 
+### LSP-Enriched Security Review (Phase 7)
+
+Phase 7 adds `security_review_enriched`, a workflow recipe that augments the deterministic security review with LSP evidence. It composes existing primitives without creating a new review pathway.
+
+**Location:** `crates/egglsp/src/workflow_recipes.rs`
+
+#### What it does
+
+1. Runs the deterministic security scan (secrets, commands, dependencies)
+2. Collects LSP evidence for files involved in the security review
+3. Enriches the deterministic findings with semantic context (types, references, definitions)
+4. Always uses `LspRiskMode::Aggressive` regardless of model tier
+
+#### Usage
+
+```rust
+use codegg_egglsp::workflow_recipes::{
+    execute_security_review_enriched, SecurityReviewEnrichedRequest,
+    SecurityReviewEnrichedFiles, RecipeSettings,
+};
+use codegg_egglsp::context::LspContextMode;
+
+let request = SecurityReviewEnrichedRequest {
+    files: SecurityReviewEnrichedFiles {
+        added: vec!["src/new_module.rs".into()],
+        modified: vec!["src/config.rs".into()],
+        deleted: vec![],
+    },
+    settings: RecipeSettings {
+        model_tier: ModelTier::Workhorse,
+        mode: LspContextMode::Required,
+        risk_mode: LspRiskMode::Aggressive,
+        max_files: 8,
+        include_definitions: true,
+        include_references: true,
+        include_preview_hints: false,
+    },
+};
+
+let outcome = execute_security_review_enriched(&provider, &request).await?;
+// outcome.rendered contains the enriched security context for the agent
+```
+
+#### How it composes with existing security review
+
+- The deterministic scan (`eggsentry`) produces risk markers and findings
+- `security_review_enriched` adds LSP semantic context (type information, references, definitions)
+- This helps the agent understand *why* code is risky, not just *that* it is risky
+- The recipe does NOT replace the deterministic scan — it enriches it
+
 ## Security Checklist
 
 When implementing new tools or modifying existing ones:

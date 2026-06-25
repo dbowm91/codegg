@@ -1,7 +1,7 @@
 ---
 name: lsp
 description: LSP client-side integration for Language Server Protocol support
-version: 1.6.0
+version: 1.7.0
 tags:
   - lsp
   - language-server
@@ -52,7 +52,7 @@ crates/egglsp/src/          # Authoritative LSP implementation
 ├── restart.rs              # LspClientDescriptor, RestartTrigger, restart_client_coordinator
 ├── root.rs                 # Project root detection
 ├── runtime.rs              # LspProcessRuntime, LspProcessIntent, spawn_process_runtime
-├── server.rs               # 40 server definitions
+├── server.rs               # 39 server definitions
 ├── service.rs              # LspService - client management, file-based routing, readiness, generation_map
 ├── supervisor.rs           # LspProcessExitEvent, StderrRingBuffer (100 lines / 64KB cap)
 └── tests/                  # Phase 2 stdio integration tests (fake-server + production harness)
@@ -138,7 +138,7 @@ These types are re-exported from `egglsp` at the crate root (e.g. `egglsp::Works
 
 ### LspServerDef (`server.rs`)
 
-Server definition with 40 server implementations:
+Server definition with 39 server implementations:
 
 ```rust
 pub struct LspServerDef {
@@ -1932,6 +1932,54 @@ Static audit of `executeCommand` / `workspace/executeCommand` / `applyEdit` / `w
 ### Safety
 
 No LSP preview mutates disk. `workspace/executeCommand` is never invoked. The preview registry's `applied` field is always `false`. Every `LspToolOutput.preview_metadata` carries `not_applied: true`. The agent-loop `test_no_follow_up_latency` regression is fixed (15s wall-clock bound + deterministic provider-call-count behavioral assertion).
+
+## Phase 7: Workflow Recipes
+
+Phase 7 introduces named workflow recipes that turn existing LSP primitives into repeatable, bounded workflows. Recipes are thin helper functions that assemble `LspContextRequest` values, collect evidence, and produce rendered outcomes.
+
+**Location:** `crates/egglsp/src/workflow_recipes.rs`
+
+### Available Recipes
+
+| Recipe | Purpose |
+|--------|---------|
+| `repair_local` | Repair a localized issue around a target line/diagnostic |
+| `repair_hunk` | Repair code around changed diff hunks |
+| `review_file` | Semantic review of a single file without a diff |
+| `review_diff` | Semantic review of changed files/hunks |
+| `security_review_enriched` | Enrich deterministic security review with LSP evidence |
+| `hunk_source_navigation` | Collect semantic context around changed hunks |
+| `preview_suggestion` | Include safe preview-only edit suggestions |
+
+### Usage
+
+```rust
+use codegg_egglsp::workflow_recipes::{
+    LspWorkflowRecipe, RecipeSettings, execute_repair_local,
+    RepairLocalRequest, RepairLocalTarget,
+};
+
+let settings = RecipeSettings::for_tier(ModelTier::Workhorse);
+let request = RepairLocalRequest {
+    file: "src/main.rs".into(),
+    target: RepairLocalTarget::Diagnostic {
+        message: "unused variable".into(),
+        range: LspRange { start: LspPosition { line: 5, character: 4 }, end: LspPosition { line: 5, character: 15 } },
+    },
+    settings,
+};
+
+let outcome = execute_repair_local(&provider, &request).await?;
+// Use outcome.rendered for agent context, outcome.preview_ids for safe previews
+```
+
+### Key Patterns
+
+- **Settings carry all knobs**: `RecipeSettings` converts to `LspContextBudget` and `LspContextRenderConfig`
+- **Tier-aware defaults**: `RecipeSettings::for_tier(tier)` derives small/workhorse/frontier defaults
+- **Fallback detection**: Disabled mode → fallback; Opportunistic+empty items → fallback; Required+unavailable → error
+- **Preview boundary**: Only `preview_suggestion` populates `preview_ids`; other recipes never include previews
+- **Security hardcoding**: `security_review_enriched` always uses `LspRiskMode::Aggressive`
 
 ## See Also
 

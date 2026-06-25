@@ -49,6 +49,7 @@ pub mod server_request;
 pub mod service;
 pub mod supervisor;
 pub mod tui_summary;
+pub mod workflow_recipes;
 pub mod writer;
 
 pub use bridges::{
@@ -135,6 +136,13 @@ pub use restart::{
 };
 pub use runtime::{spawn_process_runtime, LspProcessIntent, LspProcessRuntime};
 pub use supervisor::{LspProcessExitEvent, StderrRingBuffer};
+pub use workflow_recipes::{
+    default_settings_for_recipe, execute_hunk_source_navigation, execute_preview_suggestion,
+    execute_repair_hunk, execute_repair_local, execute_review_diff, execute_review_file,
+    execute_security_review_enriched, HunkSourceNavigationRecipeRequest, LspWorkflowRecipe,
+    PreviewSuggestionRequest, RecipeOutcome, RecipeSettings, RepairHunkRequest, RepairLocalRequest,
+    ReviewDiffRequest, ReviewFileRequest, SecurityReviewEnrichedRequest,
+};
 
 #[cfg(feature = "lsp-test-support")]
 #[doc(hidden)]

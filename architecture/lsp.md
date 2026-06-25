@@ -942,6 +942,77 @@ Overlay resolution stays handler-local because patch/content expansion is tool-s
 
 Unit tests use fake/static inputs and do not require live LSP servers. Hierarchy flag wiring tests (`semantic_context_request_sets_call_hierarchy_flag`, etc.) are unit-level: they verify request construction and `SemanticContextPacket::from_semantic_response` adapter behavior with static `SemanticContextResponse` fixtures. Root composite tests in `tests/lsp_composite_stdio.rs` exercise the real `SemanticContextCollector` against a fake LSP server end-to-end, covering the full workflow, capability gating, and failure degradation paths. Production preview conversion (rename, format, source-action) is tested through the same composite harness, confirming that `WorkspaceEditPreview` and `FileEditPreview` round-trip correctly through the production `LspClient`/`LspOperations`/`LspService` stack.
 
+### workflow_recipes.rs - Named Workflow Recipes (Phase 7)
+
+Phase 7 introduces named workflow recipes that turn existing LSP primitives into repeatable, bounded workflows. Recipes are thin helper functions that assemble `LspContextRequest` values, collect evidence, and produce rendered outcomes. They are NOT a new framework.
+
+**Location:** `crates/egglsp/src/workflow_recipes.rs`
+
+#### Recipe taxonomy
+
+| Recipe | Purpose |
+|--------|---------|
+| `repair_local` | Repair a localized issue around a target line/diagnostic |
+| `repair_hunk` | Repair code around changed diff hunks |
+| `review_file` | Semantic review of a single file without a diff |
+| `review_diff` | Semantic review of changed files/hunks |
+| `security_review_enriched` | Enrich deterministic security review with LSP evidence |
+| `hunk_source_navigation` | Collect semantic context around changed hunks |
+| `preview_suggestion` | Include safe preview-only edit suggestions |
+
+#### Key types
+
+```rust
+pub enum LspWorkflowRecipe { ... }
+
+pub struct RecipeSettings {
+    pub model_tier: ModelTier,
+    pub mode: LspContextMode,
+    pub risk_mode: LspRiskMode,
+    pub max_files: usize,
+    pub include_definitions: bool,
+    pub include_references: bool,
+    pub include_preview_hints: bool,
+    // ...
+}
+
+pub struct RecipeOutcome {
+    pub recipe: LspWorkflowRecipe,
+    pub packet: LspContextPacket,
+    pub rendered: String,
+    pub notes: Vec<String>,
+    pub fallback_used: bool,
+    pub preview_ids: Vec<String>,
+    pub freshness_summary: String,
+}
+```
+
+#### Execution functions
+
+```rust
+pub async fn execute_repair_local(provider, request) -> Result<RecipeOutcome, LspContextError>
+pub async fn execute_repair_hunk(provider, request) -> Result<RecipeOutcome, LspContextError>
+pub async fn execute_review_file(provider, request) -> Result<RecipeOutcome, LspContextError>
+pub async fn execute_review_diff(provider, request) -> Result<RecipeOutcome, LspContextError>
+pub async fn execute_security_review_enriched(provider, request) -> Result<RecipeOutcome, LspContextError>
+pub async fn execute_hunk_source_navigation(provider, request) -> Result<RecipeOutcome, LspContextError>
+pub async fn execute_preview_suggestion(provider, request) -> Result<RecipeOutcome, LspContextError>
+```
+
+#### Tier-aware rendering defaults
+
+Recipes use `RecipeSettings::for_tier(tier)` to derive tier-specific defaults:
+- **Small**: diagnostics + hunk-local definitions only, no references, no preview hints
+- **Workhorse**: diagnostics + references + definitions, concise notes
+- **Frontier**: cross-file references, hierarchy summaries, richer diagnostics, preview hints
+
+#### Fallback behavior
+
+- Disabled mode → always fallback
+- Opportunistic mode with all OperationalNote items → fallback
+- Required mode → error on unavailable server
+- Stale evidence → noted in `freshness_summary`, not rejected
+
 ## Supported Languages (39 servers)
 
 | Language | Server | Command |

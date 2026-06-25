@@ -134,6 +134,7 @@ cargo test -p egglsp --features lsp-real-server-tests --test real_server_smoke -
 - **Preview-only boundary**: `renamePreview`, `formatPreview`, `sourceActionPreview` never write to disk. `workspace/executeCommand` is never invoked.
 - **Capability-gated operations**: `semanticContext` and `securityContext` check `LspCapabilitySnapshot` before expensive LSP calls. Unsupported ops append notes, don't fail.
 - **LSP tests need `lsp-test-support` feature**: The fake server binary is `codegg-lsp-test-server`. Tests use polling loops (bounded waits), not fixed sleeps.
+- **Workflow recipes (Phase 7)**: `crates/egglsp/src/workflow_recipes.rs` provides named workflow recipes (repair_local, repair_hunk, review_file, review_diff, security_review_enriched, hunk_source_navigation, preview_suggestion) that compose existing LSP primitives into bounded workflows. Recipes use `RecipeSettings` for tier-aware defaults and `RecipeOutcome` for rendered results.
 
 ### Auth
 
