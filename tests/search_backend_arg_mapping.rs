@@ -241,12 +241,13 @@ async fn webfetch_default_extract_mode_is_text() {
     let (_cp, _g) = lock_tests().await;
     let calls = install_mock_recorder();
     eprintln!(
-        "webfetch_default: mcp_service={}, search_config.backend={:?}",
+        "webfetch_default (pid={}): mcp_service={}, search_config.backend={:?}",
+        std::process::id(),
         state::mcp_service().is_some(),
         state::search_config().backend()
     );
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    eprintln!("webfetch_default: mcp_service after sleep 100ms = {}", state::mcp_service().is_some());
+    eprintln!("webfetch_default (pid={}): mcp_service after sleep 100ms = {}", std::process::id(), state::mcp_service().is_some());
     let _ = codegg::search_backend::dispatch_web_fetch(&serde_json::json!({
         "url": "https://example.com",
     }))

@@ -58,6 +58,11 @@ mod imp {
             unsafe { libc::close(fd) };
             panic!("flock LOCK_EX failed: {err}");
         }
+        eprintln!(
+            "flock acquired on {} (pid={})",
+            path.display(),
+            std::process::id()
+        );
         let file = unsafe { std::fs::File::from_raw_fd(fd) };
         CrossProcessLockGuard {
             _file: std::sync::Arc::new(file),
