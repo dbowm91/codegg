@@ -205,6 +205,7 @@ The TUI supports inline slash commands for quick actions.
 | `/compact` | Trigger manual context compaction |
 | `/connect` | Open API key connection dialog |
 | `/status` | Show session status and token usage |
+| `/lsp-status` | Show LSP server status and context packet details |
 | `/context` | Open context dialog |
 | `/cost` | Show cost/usage statistics |
 | `/usage` | Open usage details dialog |

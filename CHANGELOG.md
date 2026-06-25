@@ -13,7 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   preview-only semantic edits, semantic context packets, semantic check
   previews, and security/hunk context operations. Authoritative
   implementation in `crates/egglsp/`; 39 language server configurations
-  available.
+  available. Phase 6 added `/lsp-status` command, `counts_from_packet`
+  flag for accurate status rendering, support-tier documentation, and
+  troubleshooting guide.
 - Native crate extraction: `egglsp`, `egggit`, `eggsentry`, `eggcontext`,
   `codegg-config`, `codegg-protocol`, `codegg-providers`, `codegg-core`
   (see `architecture/native_crates.md`).
@@ -48,7 +50,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `/themes`, `/tui`, `/sessions`, `/goto`, `/share`, `/unshare`,
   `/timeline`, `/undo`, `/redo`, `/export`, `/import`, `/timestamps`,
   `/thinking`, `/models-refresh`, `/variants`, `/mcps`, `/fork`,
-  `/worktree`, `/editor`, `/loop`, `/tasks`, `/task-del`, `/memory`,
+  `/worktree`, `/editor`, `/loop`, `/lsp-status`, `/tasks`, `/task-del`, `/memory`,
   `/memory-search`, `/memory-list`, `/memory-remember`,
   `/memory-forget`, `/memory-consolidate`, `/checkpoint`, `/goal`,
   `/plan`, `/state`, `/pr`, `/issue`, `/review`, `/diff`, `/tests`,
