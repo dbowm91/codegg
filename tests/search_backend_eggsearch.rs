@@ -3,15 +3,7 @@
 //! These tests verify the agent-loop tool exposure filtering behavior
 //! when `expose_raw_mcp_tools` is enabled or disabled.
 
-use tokio::sync::Mutex as AsyncMutex;
-
-// `search_backend::state` is a process-global slot, so tests that
-// install a search config or McpService must be serialized with each
-// other. All tests in this file acquire this single async lock; some
-// hold it across `.await` boundaries (anything that calls into
-// `AgentLoop::test_build_tool_definitions`), so it must be a
-// `tokio::sync::Mutex` rather than `std::sync::Mutex`.
-static ASYNC_TEST_LOCK: AsyncMutex<()> = AsyncMutex::const_new(());
+use codegg::search_backend::test_support::SHARED_TEST_LOCK as ASYNC_TEST_LOCK;
 
 #[cfg(test)]
 mod agent_loop_filtering_tests {

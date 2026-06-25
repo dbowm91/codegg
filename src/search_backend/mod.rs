@@ -25,6 +25,7 @@ pub mod eggsearch;
 pub mod framing;
 pub mod legacy;
 pub mod state;
+pub mod test_support;
 
 use serde_json::Value;
 

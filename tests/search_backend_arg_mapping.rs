@@ -34,9 +34,8 @@ use codegg::error::McpError;
 use codegg::mcp::{McpService, McpTool};
 use codegg::search_backend::framing;
 use codegg::search_backend::state;
-use tokio::sync::{Mutex as AsyncMutex, MutexGuard};
-
-static TEST_LOCK: AsyncMutex<()> = AsyncMutex::const_new(());
+use codegg::search_backend::test_support::SHARED_TEST_LOCK;
+use tokio::sync::MutexGuard;
 
 fn eggsearch_config() -> SearchConfig {
     SearchConfig {
@@ -119,7 +118,7 @@ fn install_mock_recorder() -> Arc<Mutex<Vec<(String, serde_json::Value)>>> {
 }
 
 async fn lock_tests() -> MutexGuard<'static, ()> {
-    TEST_LOCK.lock().await
+    SHARED_TEST_LOCK.lock().await
 }
 
 #[tokio::test]
