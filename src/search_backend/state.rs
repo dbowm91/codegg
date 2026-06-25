@@ -30,6 +30,11 @@ static SEARCH_CONFIG: StdRwLock<Option<SearchConfig>> = StdRwLock::new(None);
 pub fn install_mcp_service(svc: Arc<RwLock<McpService>>) {
     let mut guard = MCP_SERVICE.write().expect("MCP_SERVICE lock poisoned");
     *guard = Some(svc);
+    eprintln!(
+        "DBG install_mcp_service pid={} tid={:?} result=Some",
+        std::process::id(),
+        std::thread::current().id()
+    );
 }
 
 /// Returns the installed `McpService`, if any.
@@ -73,4 +78,9 @@ pub fn reset_for_tests() {
     if let Ok(mut cfg) = SEARCH_CONFIG.write() {
         *cfg = None;
     }
+    eprintln!(
+        "DBG reset_for_tests pid={} tid={:?}",
+        std::process::id(),
+        std::thread::current().id()
+    );
 }
