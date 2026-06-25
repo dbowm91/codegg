@@ -175,6 +175,8 @@ mod tests {
 
     #[test]
     fn dispatch_disabled_backend_errors() {
+        let _cp = crate::search_backend::test_support::acquire_cross_process_lock();
+        let _g = crate::search_backend::test_support::SHARED_TEST_LOCK.blocking_lock();
         state::reset_for_tests();
         let cfg = SearchConfig {
             backend: Some(SearchBackendConfig::Disabled),
@@ -191,6 +193,8 @@ mod tests {
 
     #[test]
     fn dispatch_disabled_backend_errors_for_fetch() {
+        let _cp = crate::search_backend::test_support::acquire_cross_process_lock();
+        let _g = crate::search_backend::test_support::SHARED_TEST_LOCK.blocking_lock();
         state::reset_for_tests();
         let cfg = SearchConfig {
             backend: Some(SearchBackendConfig::Disabled),
@@ -225,6 +229,8 @@ mod tests {
 
     #[test]
     fn provenance_for_search_reflects_backend() {
+        let _cp = crate::search_backend::test_support::acquire_cross_process_lock();
+        let _g = crate::search_backend::test_support::SHARED_TEST_LOCK.blocking_lock();
         state::reset_for_tests();
         // Disabled backend.
         let cfg = SearchConfig {
