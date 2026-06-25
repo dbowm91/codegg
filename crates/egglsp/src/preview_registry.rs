@@ -768,6 +768,56 @@ mod tests {
     }
 
     #[test]
+    fn test_refresh_staleness_missing_file_becomes_stale() {
+        use std::hash::{Hash, Hasher};
+        use std::io::Write;
+
+        let dir = std::env::temp_dir().join("codegg_preview_staleness_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let file_path = dir.join("target.rs");
+        let content = b"fn main() {}";
+        {
+            let mut f = std::fs::File::create(&file_path).unwrap();
+            f.write_all(content).unwrap();
+        }
+
+        // Compute the hash the same way refresh_staleness does.
+        let actual_hash = {
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            content.hash(&mut hasher);
+            format!("{:016x}", hasher.finish())
+        };
+
+        let mut reg = PreviewArtifactRegistry::new();
+        let mut hashes = HashMap::new();
+        hashes.insert(file_path.to_str().unwrap().to_string(), actual_hash.clone());
+        let id = reg.register(
+            make_artifact(),
+            vec![file_path.to_str().unwrap().to_string()],
+            hashes,
+            "server".to_string(),
+        );
+
+        // Should be fresh before deletion.
+        assert!(!reg.get(&id).unwrap().stale_base);
+
+        // Delete the file.
+        std::fs::remove_file(&file_path).unwrap();
+
+        // refresh_staleness should mark it stale with actual_hash == "missing".
+        let result = reg.refresh_staleness(&id);
+        assert_eq!(result, Some(true));
+        let entry = reg.get(&id).unwrap();
+        assert!(entry.stale_base);
+        assert_eq!(entry.stale_files.len(), 1);
+        assert_eq!(entry.stale_files[0].actual_hash, "missing");
+        assert_eq!(entry.stale_files[0].expected_hash, actual_hash);
+
+        // Cleanup.
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn test_max_entries_accessor() {
         let reg = PreviewArtifactRegistry::with_max_entries(16);
         assert_eq!(reg.max_entries(), 16);
