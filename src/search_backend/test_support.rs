@@ -47,12 +47,12 @@ mod imp {
             .expect("open cross-process test lock file");
         let ret = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
         if ret != 0 {
-            panic!(
-                "flock LOCK_EX failed: {}",
-                std::io::Error::last_os_error()
-            );
+            panic!("flock LOCK_EX failed: {}", std::io::Error::last_os_error());
         }
-        CrossProcessLockGuard { _file: file, _path: path }
+        CrossProcessLockGuard {
+            _file: file,
+            _path: path,
+        }
     }
 }
 

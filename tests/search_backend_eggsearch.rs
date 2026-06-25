@@ -3,9 +3,7 @@
 //! These tests verify the agent-loop tool exposure filtering behavior
 //! when `expose_raw_mcp_tools` is enabled or disabled.
 
-use codegg::search_backend::test_support::{
-    acquire_cross_process_lock, SHARED_TEST_LOCK,
-};
+use codegg::search_backend::test_support::{acquire_cross_process_lock, SHARED_TEST_LOCK};
 
 #[cfg(test)]
 mod agent_loop_filtering_tests {
