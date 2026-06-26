@@ -305,6 +305,351 @@ pub fn render_tui_summary_detail(summary: &LspTuiSummary) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// Phase 9: Lifecycle status DTOs
+// ---------------------------------------------------------------------------
+
+/// Detailed per-server status for lifecycle debugging.
+/// Built from `LspOperationalHealthSnapshot` and capability snapshot.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct LspServerStatusDetail {
+    /// Client key (e.g. "/path/to/root:rust-analyzer").
+    pub key: String,
+    /// Server identifier (e.g. "rust-analyzer").
+    pub server_id: String,
+    /// Workspace root path.
+    pub root: String,
+    /// Operational state label.
+    pub state: String,
+    /// Operational state detail (e.g. reason for degraded/failed).
+    pub state_detail: Option<String>,
+    /// Server generation.
+    pub generation: u64,
+    /// Number of pending requests.
+    pub pending_requests: usize,
+    /// Number of open documents.
+    pub open_documents: usize,
+    /// Restart attempts.
+    pub restart_attempts: u32,
+    /// Last error message.
+    pub last_error: Option<String>,
+    /// Bounded stderr tail.
+    pub stderr_tail: Vec<String>,
+    /// Whether the server is usable.
+    pub usable: bool,
+    /// Effective capability snapshot (if initialized).
+    pub capabilities: Option<ServerCapabilitySummary>,
+}
+
+/// Compact summary of effective capabilities for display.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ServerCapabilitySummary {
+    pub supports_diagnostics: bool,
+    pub supports_rename: bool,
+    pub supports_code_actions: bool,
+    pub supports_document_formatting: bool,
+    pub supports_range_formatting: bool,
+    pub supports_declaration: bool,
+    pub supports_implementation: bool,
+    pub supports_document_highlight: bool,
+    pub supports_signature_help: bool,
+    pub supports_inlay_hints: bool,
+    pub supports_folding_ranges: bool,
+    pub supports_selection_ranges: bool,
+    pub supports_document_links: bool,
+    pub supports_completion: bool,
+    pub supports_semantic_tokens: bool,
+    pub supports_push_diagnostics: bool,
+    pub supports_pull_diagnostics: bool,
+}
+
+impl From<&crate::capability::LspCapabilitySnapshot> for ServerCapabilitySummary {
+    fn from(snap: &crate::capability::LspCapabilitySnapshot) -> Self {
+        Self {
+            supports_diagnostics: snap.supports_diagnostics,
+            supports_rename: snap.supports_rename,
+            supports_code_actions: snap.supports_code_actions,
+            supports_document_formatting: snap.supports_document_formatting,
+            supports_range_formatting: snap.supports_range_formatting,
+            supports_declaration: snap.supports_declaration,
+            supports_implementation: snap.supports_implementation,
+            supports_document_highlight: snap.supports_document_highlight,
+            supports_signature_help: snap.supports_signature_help,
+            supports_inlay_hints: snap.supports_inlay_hints,
+            supports_folding_ranges: snap.supports_folding_ranges,
+            supports_selection_ranges: snap.supports_selection_ranges,
+            supports_document_links: snap.supports_document_links,
+            supports_completion: snap.supports_completion,
+            supports_semantic_tokens: snap.supports_semantic_tokens,
+            supports_push_diagnostics: snap.supports_push_diagnostics,
+            supports_pull_diagnostics: snap.supports_pull_diagnostics,
+        }
+    }
+}
+
+/// Render a compact one-line status for a single server.
+///
+/// Format: `"rust-analyzer [ready] gen=4 | root=/path | 2 pending, 5 open"`
+pub fn render_server_status_line(detail: &LspServerStatusDetail) -> String {
+    let mut line = format!(
+        "{} [{}] gen={} | root={}",
+        detail.server_id, detail.state, detail.generation, detail.root
+    );
+    line.push_str(&format!(
+        " | {} pending, {} open",
+        detail.pending_requests, detail.open_documents
+    ));
+    if detail.restart_attempts > 0 {
+        line.push_str(&format!(", {} restarts", detail.restart_attempts));
+    }
+    if let Some(err) = &detail.last_error {
+        let preview: String = err.chars().take(80).collect();
+        line.push_str(&format!(", error: {preview}"));
+    }
+    line
+}
+
+/// Render detailed multi-line status for a single server.
+pub fn render_server_detail(detail: &LspServerStatusDetail) -> String {
+    let mut lines = Vec::new();
+    lines.push(render_server_status_line(detail));
+
+    if let Some(ref state_detail) = detail.state_detail {
+        lines.push(format!("  State detail: {state_detail}"));
+    }
+
+    if let Some(ref caps) = detail.capabilities {
+        let supported: Vec<&str> = [
+            ("diagnostics", caps.supports_diagnostics),
+            ("rename", caps.supports_rename),
+            ("code_actions", caps.supports_code_actions),
+            ("formatting", caps.supports_document_formatting),
+            ("range_formatting", caps.supports_range_formatting),
+            ("declaration", caps.supports_declaration),
+            ("implementation", caps.supports_implementation),
+            ("document_highlight", caps.supports_document_highlight),
+            ("signature_help", caps.supports_signature_help),
+            ("inlay_hints", caps.supports_inlay_hints),
+            ("completion", caps.supports_completion),
+            ("semantic_tokens", caps.supports_semantic_tokens),
+        ]
+        .iter()
+        .filter(|(_, v)| *v)
+        .map(|(name, _)| *name)
+        .collect();
+        if supported.is_empty() {
+            lines.push("  Capabilities: none advertised".to_string());
+        } else {
+            lines.push(format!("  Capabilities: {}", supported.join(", ")));
+        }
+        let diag = if caps.supports_pull_diagnostics {
+            "pull"
+        } else if caps.supports_push_diagnostics {
+            "push"
+        } else {
+            "none"
+        };
+        lines.push(format!("  Diagnostics mode: {diag}"));
+    } else {
+        lines.push("  Capabilities: not yet initialized".to_string());
+    }
+
+    if !detail.stderr_tail.is_empty() {
+        let tail_preview: Vec<&String> = detail.stderr_tail.iter().rev().take(5).rev().collect();
+        lines.push(format!("  Stderr (last {}):", tail_preview.len()));
+        for line in &tail_preview {
+            lines.push(format!("    {line}"));
+        }
+    }
+
+    lines.join("\n")
+}
+
+/// Render a list of server status details.
+pub fn render_servers_list(details: &[LspServerStatusDetail]) -> String {
+    if details.is_empty() {
+        return "No active LSP servers.".to_string();
+    }
+    let mut lines = Vec::new();
+    lines.push(format!("Active LSP servers: {}", details.len()));
+    lines.push(String::new());
+    for detail in details {
+        lines.push(render_server_status_line(detail));
+    }
+    lines.join("\n")
+}
+
+/// Render a capability snapshot for a single server.
+pub fn render_capabilities(detail: &LspServerStatusDetail) -> String {
+    let mut lines = Vec::new();
+    lines.push(format!(
+        "Capabilities for {} ({})",
+        detail.server_id, detail.key
+    ));
+    if let Some(ref caps) = detail.capabilities {
+        let all_caps = [
+            ("diagnostics (push)", caps.supports_push_diagnostics),
+            ("diagnostics (pull)", caps.supports_pull_diagnostics),
+            ("completion", caps.supports_completion),
+            ("hover", true), // always available
+            ("rename", caps.supports_rename),
+            ("code_actions", caps.supports_code_actions),
+            ("document_formatting", caps.supports_document_formatting),
+            ("range_formatting", caps.supports_range_formatting),
+            ("declaration", caps.supports_declaration),
+            ("implementation", caps.supports_implementation),
+            ("document_highlight", caps.supports_document_highlight),
+            ("signature_help", caps.supports_signature_help),
+            ("inlay_hints", caps.supports_inlay_hints),
+            ("folding_ranges", caps.supports_folding_ranges),
+            ("selection_ranges", caps.supports_selection_ranges),
+            ("document_links", caps.supports_document_links),
+            ("semantic_tokens", caps.supports_semantic_tokens),
+        ];
+        for (name, supported) in &all_caps {
+            let tag = if *supported { "yes" } else { "no" };
+            lines.push(format!("  {name}: {tag}"));
+        }
+    } else {
+        lines.push("  Server not yet initialized — capabilities unknown.".to_string());
+    }
+    lines.join("\n")
+}
+
+/// Render the error/health info for a single server.
+pub fn render_server_errors(detail: &LspServerStatusDetail) -> String {
+    let mut lines = Vec::new();
+    lines.push(format!("Health for {} ({})", detail.server_id, detail.key));
+    lines.push(format!("  State: {}", detail.state));
+    if let Some(ref state_detail) = detail.state_detail {
+        lines.push(format!("  Detail: {state_detail}"));
+    }
+    if let Some(ref err) = detail.last_error {
+        lines.push(format!("  Last error: {err}"));
+    } else {
+        lines.push("  Last error: (none)".to_string());
+    }
+    if detail.restart_attempts > 0 {
+        lines.push(format!("  Restart attempts: {}", detail.restart_attempts));
+    }
+    if detail.stderr_tail.is_empty() {
+        lines.push("  Stderr: (empty)".to_string());
+    } else {
+        let tail_preview: Vec<&String> = detail.stderr_tail.iter().rev().take(10).rev().collect();
+        lines.push(format!("  Stderr tail ({} lines):", tail_preview.len()));
+        for line in &tail_preview {
+            lines.push(format!("    {line}"));
+        }
+    }
+    lines.join("\n")
+}
+
+/// Build a `LspServerStatusDetail` from a health snapshot and optional capability snapshot.
+pub fn build_server_status_detail(
+    key: &str,
+    snapshot: &crate::health::LspOperationalHealthSnapshot,
+    caps: Option<&crate::capability::LspCapabilitySnapshot>,
+) -> LspServerStatusDetail {
+    let state_detail = match &snapshot.state {
+        crate::health::LspOperationalState::Degraded { reason } => Some(reason.clone()),
+        crate::health::LspOperationalState::Failed { reason } => Some(reason.clone()),
+        crate::health::LspOperationalState::RestartScheduled { attempt, delay_ms } => {
+            Some(format!("attempt {attempt}, delay {delay_ms}ms"))
+        }
+        crate::health::LspOperationalState::Restarting { attempt } => {
+            Some(format!("attempt {attempt}"))
+        }
+        _ => None,
+    };
+
+    LspServerStatusDetail {
+        key: key.to_string(),
+        server_id: snapshot.server_id.clone(),
+        root: snapshot.root.display().to_string(),
+        state: snapshot.state.label().to_string(),
+        state_detail,
+        generation: snapshot.generation,
+        pending_requests: snapshot.pending_requests,
+        open_documents: snapshot.open_documents,
+        restart_attempts: snapshot.restart_attempts,
+        last_error: snapshot.last_error.clone(),
+        stderr_tail: snapshot.stderr_tail.clone(),
+        usable: snapshot.state.is_usable(),
+        capabilities: caps.map(ServerCapabilitySummary::from),
+    }
+}
+
+/// Root diagnosis result for a given file path.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct RootDiagnosis {
+    /// The input path that was diagnosed.
+    pub input_path: String,
+    /// Detected language.
+    pub detected_language: Option<String>,
+    /// Candidate root markers found walking up from the file.
+    pub root_markers_found: Vec<String>,
+    /// Selected project root.
+    pub selected_root: Option<String>,
+    /// Server profile that would be used.
+    pub server_profile: Option<String>,
+    /// Whether the file is inside the allowed root.
+    pub inside_allowed_root: bool,
+    /// Reasons why no LSP context is available (if any).
+    pub issues: Vec<String>,
+}
+
+/// Render root diagnosis as human-readable text.
+pub fn render_root_diagnosis(diag: &RootDiagnosis) -> String {
+    let mut lines = Vec::new();
+    lines.push(format!("Root diagnosis for: {}", diag.input_path));
+
+    if let Some(ref lang) = diag.detected_language {
+        lines.push(format!("  Language: {lang}"));
+    } else {
+        lines.push("  Language: (unrecognized)".to_string());
+    }
+
+    if diag.root_markers_found.is_empty() {
+        lines.push("  Root markers found: (none)".to_string());
+    } else {
+        lines.push(format!(
+            "  Root markers found: {}",
+            diag.root_markers_found.join(", ")
+        ));
+    }
+
+    if let Some(ref root) = diag.selected_root {
+        lines.push(format!("  Selected root: {root}"));
+    } else {
+        lines.push("  Selected root: (none)".to_string());
+    }
+
+    if let Some(ref profile) = diag.server_profile {
+        lines.push(format!("  Server profile: {profile}"));
+    } else {
+        lines.push("  Server profile: (none available for this language)".to_string());
+    }
+
+    lines.push(format!(
+        "  Inside allowed root: {}",
+        if diag.inside_allowed_root {
+            "yes"
+        } else {
+            "no"
+        }
+    ));
+
+    if diag.issues.is_empty() {
+        lines.push("  Issues: (none)".to_string());
+    } else {
+        for issue in &diag.issues {
+            lines.push(format!("  Issue: {issue}"));
+        }
+    }
+
+    lines.join("\n")
+}
+
+// ---------------------------------------------------------------------------
 // Preview list / detail helpers (Phase 8)
 // ---------------------------------------------------------------------------
 
@@ -1206,5 +1551,142 @@ mod tests {
         let _candidate = export_preview_apply_candidate(&registry, &id).unwrap();
         // Export must not mark the entry as applied.
         assert!(!registry.get(&id).unwrap().applied);
+    }
+
+    // -----------------------------------------------------------------------
+    // Phase 9: Lifecycle status DTO tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_render_server_status_line_ready() {
+        use crate::health::{LspOperationalHealthSnapshot, LspOperationalState};
+        use std::path::PathBuf;
+
+        let snap = LspOperationalHealthSnapshot::from_operational_state(
+            "rust-analyzer".to_string(),
+            PathBuf::from("/tmp/project"),
+            4,
+            LspOperationalState::Ready,
+            None,
+            0,
+            5,
+            Some(10),
+            Some(5),
+            0,
+            None,
+            Vec::new(),
+        );
+        let detail = build_server_status_detail("/tmp/project:rust-analyzer", &snap, None);
+        let line = render_server_status_line(&detail);
+        assert!(line.contains("rust-analyzer"));
+        assert!(line.contains("[ready]"));
+        assert!(line.contains("gen=4"));
+        assert!(line.contains("root=/tmp/project"));
+    }
+
+    #[test]
+    fn test_render_server_detail_with_caps() {
+        use crate::capability::LspCapabilitySnapshot;
+        use crate::health::{LspOperationalHealthSnapshot, LspOperationalState};
+        use std::path::PathBuf;
+
+        let snap = LspOperationalHealthSnapshot::from_operational_state(
+            "rust-analyzer".to_string(),
+            PathBuf::from("/tmp"),
+            1,
+            LspOperationalState::Ready,
+            None,
+            0,
+            0,
+            None,
+            None,
+            0,
+            None,
+            Vec::new(),
+        );
+        let caps = LspCapabilitySnapshot::default();
+        let detail = build_server_status_detail("/tmp:rust-analyzer", &snap, Some(&caps));
+        let rendered = render_server_detail(&detail);
+        assert!(rendered.contains("rust-analyzer"));
+        assert!(rendered.contains("Capabilities:"));
+    }
+
+    #[test]
+    fn test_render_server_errors_degraded() {
+        use crate::health::{LspOperationalHealthSnapshot, LspOperationalState};
+        use std::path::PathBuf;
+
+        let snap = LspOperationalHealthSnapshot::from_operational_state(
+            "pyright".to_string(),
+            PathBuf::from("/tmp"),
+            2,
+            LspOperationalState::Degraded {
+                reason: "diagnostics wait timed out".to_string(),
+            },
+            None,
+            0,
+            0,
+            None,
+            None,
+            1,
+            Some("timeout".to_string()),
+            vec!["stderr line".to_string()],
+        );
+        let detail = build_server_status_detail("/tmp:pyright", &snap, None);
+        let rendered = render_server_errors(&detail);
+        assert!(rendered.contains("degraded"));
+        assert!(rendered.contains("diagnostics wait timed out"));
+        assert!(rendered.contains("timeout"));
+    }
+
+    #[test]
+    fn test_render_servers_list_empty() {
+        let rendered = render_servers_list(&[]);
+        assert!(rendered.contains("No active LSP servers"));
+    }
+
+    #[test]
+    fn test_render_root_diagnosis_no_root() {
+        let diag = RootDiagnosis {
+            input_path: "/tmp/src/main.py".to_string(),
+            detected_language: Some("python".to_string()),
+            root_markers_found: Vec::new(),
+            selected_root: None,
+            server_profile: None,
+            inside_allowed_root: true,
+            issues: vec!["No project root marker found".to_string()],
+        };
+        let rendered = render_root_diagnosis(&diag);
+        assert!(rendered.contains("python"));
+        assert!(rendered.contains("(none)"));
+        assert!(rendered.contains("No project root marker found"));
+    }
+
+    #[test]
+    fn test_render_root_diagnosis_with_root() {
+        let diag = RootDiagnosis {
+            input_path: "/tmp/project/src/main.rs".to_string(),
+            detected_language: Some("rust".to_string()),
+            root_markers_found: vec!["Cargo.toml".to_string(), ".git".to_string()],
+            selected_root: Some("/tmp/project".to_string()),
+            server_profile: Some("rust-analyzer".to_string()),
+            inside_allowed_root: true,
+            issues: Vec::new(),
+        };
+        let rendered = render_root_diagnosis(&diag);
+        assert!(rendered.contains("rust"));
+        assert!(rendered.contains("Cargo.toml"));
+        assert!(rendered.contains("/tmp/project"));
+        assert!(rendered.contains("rust-analyzer"));
+        assert!(rendered.contains("(none)"));
+    }
+
+    #[test]
+    fn test_server_capability_summary_from_snapshot() {
+        use crate::capability::LspCapabilitySnapshot;
+        let snap = LspCapabilitySnapshot::default();
+        let summary = ServerCapabilitySummary::from(&snap);
+        assert!(!summary.supports_rename);
+        assert!(!summary.supports_code_actions);
     }
 }

@@ -224,6 +224,19 @@ impl CommandRegistry {
             Command::new("/lsp-preview-apply", CommandCategory::System, None)
                 .with_aliases(&["/preview-apply"])
                 .with_description("Export LSP preview apply candidate, read-only (args: <id>)"),
+            Command::new("/lsp-servers", CommandCategory::System, None)
+                .with_aliases(&["/lsp-detail"])
+                .with_description("List active LSP servers with status, root, generation"),
+            Command::new("/lsp-capabilities", CommandCategory::System, None)
+                .with_description("Show effective LSP capabilities (args: server-key)"),
+            Command::new("/lsp-errors", CommandCategory::System, None)
+                .with_description("Show LSP server errors and health (args: server-key)"),
+            Command::new("/lsp-root", CommandCategory::System, None)
+                .with_description("Diagnose LSP root for a file path (args: <path>)"),
+            Command::new("/lsp-restart", CommandCategory::System, None)
+                .with_description("Restart an LSP server (args: server-key)"),
+            Command::new("/lsp-stop", CommandCategory::System, None)
+                .with_description("Stop LSP servers (args: server-key or --all)"),
             Command::new("/tool-backends", CommandCategory::System, None)
                 .with_aliases(&["/tools", "/backends"])
                 .with_description("Show resolved backend for each model-facing tool (Native / MCP / Builtin / Disabled)"),

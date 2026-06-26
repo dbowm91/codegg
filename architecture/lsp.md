@@ -1097,6 +1097,52 @@ Stale previews are flagged in the detail view with per-file stale evidence and i
 - Applying a preview requires the separate mutating `apply_patch` tool.
 - Stale previews warn but do not block inspection.
 
+## Phase 9: Lifecycle, Workspace, and Preview Apply Ergonomics
+
+Phase 9 exposes the existing LSP lifecycle and workspace machinery through operator-facing commands and makes the preview apply handoff safer.
+
+### New TUI commands
+
+| Command | Description |
+|---------|-------------|
+| `/lsp-status` | Compact status (existing, unchanged) |
+| `/lsp-servers` | List all active servers with root, state, generation, pending requests, open docs |
+| `/lsp-capabilities <key>` | Show effective capability snapshot for a server |
+| `/lsp-errors <key>` | Show error/health info including stderr tail |
+| `/lsp-root <path>` | Diagnose root detection for a file path without starting a server |
+| `/lsp-restart <key>` | Manually restart a specific LSP server |
+| `/lsp-stop [key]` | Stop LSP servers (all or specific) |
+
+All lifecycle commands are read-only (restart/stop are safe mutations that do not write files). Root diagnosis is deterministic and does not spawn servers.
+
+### Root diagnosis
+
+`/lsp-root <path>` walks up from the given path looking for root markers (Cargo.toml, package.json, go.mod, etc.), detects the language, maps it to an LSP server profile, and reports issues (no root found, no server profile, outside allowed root). This is a pure diagnostic — no server is started.
+
+### Preview apply handoff
+
+`/lsp-preview-apply <id>` now refreshes stale-base status before exporting. When the preview is stale (base content changed since creation), the command blocks by default and instructs the user to re-run the original LSP preview command. When fresh, it exports the apply candidate with clear instructions for the mutating apply path.
+
+**Invariant**: `LspTool` remains read-only. Actual file changes require the separate mutating `apply_patch` tool with user approval. Stale previews are blocked or warn prominently. Applied previews are not silently re-applied.
+
+### Health-aware agent context
+
+The context renderer now includes lifecycle-state warnings in the `## Notes` section of agent-facing context packets. Non-Ready states (starting, initializing, indexing, degraded, restarting, failed, stopped) produce explicit notes warning agents not to over-trust the evidence. Ready state produces no note.
+
+### Server status DTOs
+
+New types in `egglsp::tui_summary`:
+- `LspServerStatusDetail` — per-server lifecycle status (key, state, generation, caps, errors)
+- `ServerCapabilitySummary` — compact 17-field bool capability snapshot
+- `RootDiagnosis` — root detection result with issues
+- `build_server_status_detail()` — builds detail from health snapshot + optional capability snapshot
+
+### What remains deferred
+
+- Per-key server stop (current API only supports `shutdown_all`)
+- Automatic apply flow wiring (requires mutating apply tool integration)
+- Semantic context cache (Phase 12)
+
 ## Supported Languages (39 servers)
 
 | Language | Server | Command |

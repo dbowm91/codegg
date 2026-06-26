@@ -1710,6 +1710,104 @@ impl LspTool {
         nodes.push(node);
         false
     }
+
+    /// Render detailed status for all active LSP servers.
+    pub async fn lsp_servers_detail(&self) -> Option<String> {
+        use egglsp::tui_summary::{build_server_status_detail, render_servers_list};
+
+        let keys = self.service.client_keys().await;
+        if keys.is_empty() {
+            return None;
+        }
+
+        let mut details = Vec::new();
+        for key in &keys {
+            if let Some(snapshot) = self.service.operational_health_snapshot(key).await {
+                let caps = self.service.effective_capabilities_for_key(key).await;
+                details.push(build_server_status_detail(key, &snapshot, caps.as_ref()));
+            }
+        }
+
+        Some(render_servers_list(&details))
+    }
+
+    /// Render detailed status for a specific server key.
+    pub async fn lsp_server_detail_for_key(&self, key: &str) -> Option<String> {
+        use egglsp::tui_summary::{build_server_status_detail, render_server_detail};
+
+        let snapshot = self.service.operational_health_snapshot(key).await?;
+        let caps = self.service.effective_capabilities_for_key(key).await;
+        let detail = build_server_status_detail(key, &snapshot, caps.as_ref());
+        Some(render_server_detail(&detail))
+    }
+
+    /// Render effective capabilities for a specific server key.
+    pub async fn lsp_capabilities_for_key(&self, key: &str) -> Option<String> {
+        use egglsp::tui_summary::{build_server_status_detail, render_capabilities};
+
+        let snapshot = self.service.operational_health_snapshot(key).await?;
+        let caps = self.service.effective_capabilities_for_key(key).await;
+        let detail = build_server_status_detail(key, &snapshot, caps.as_ref());
+        Some(render_capabilities(&detail))
+    }
+
+    /// Render error and health info for a specific server key.
+    pub async fn lsp_errors_for_key(&self, key: &str) -> Option<String> {
+        use egglsp::tui_summary::{build_server_status_detail, render_server_errors};
+
+        let snapshot = self.service.operational_health_snapshot(key).await?;
+        let caps = self.service.effective_capabilities_for_key(key).await;
+        let detail = build_server_status_detail(key, &snapshot, caps.as_ref());
+        Some(render_server_errors(&detail))
+    }
+
+    /// Diagnose the LSP root for a file path without starting a server.
+    pub fn lsp_root_diagnose(&self, path: &str) -> String {
+        use egglsp::tui_summary::{render_root_diagnosis, RootDiagnosis};
+
+        let input = std::path::Path::new(path);
+        let result = egglsp::root::diagnose_root(input, Some(&self.allowed_root));
+
+        let diag = RootDiagnosis {
+            input_path: result.input_path,
+            detected_language: result.detected_language,
+            root_markers_found: result.root_markers_found,
+            selected_root: result.selected_root,
+            server_profile: result.server_profile,
+            inside_allowed_root: result.inside_allowed_root,
+            issues: result.issues,
+        };
+
+        render_root_diagnosis(&diag)
+    }
+
+    /// Manually restart a specific LSP server by key.
+    /// Returns a status message about the restart outcome.
+    pub async fn lsp_restart_server(&self, key: &str) -> String {
+        match self.service.manual_restart_client(key).await {
+            Ok(()) => {
+                let gen = self.service.generation_for_key(key).await;
+                format!("Restart scheduled for {key} (new generation: {gen})")
+            }
+            Err(e) => format!("Restart failed for {key}: {e}"),
+        }
+    }
+
+    /// Stop LSP servers. If `key` is provided, stops that specific server.
+    /// Otherwise stops all servers.
+    /// Note: the current service API only supports shutdown_all.
+    /// A per-key stop would require additional service methods.
+    pub async fn lsp_stop_server(&self, key: Option<&str>) -> String {
+        if let Some(_key) = key {
+            self.service.shutdown_all().await;
+            format!(
+                "All LSP servers stopped (per-key stop not yet supported; requested key: {_key})"
+            )
+        } else {
+            self.service.shutdown_all().await;
+            "All LSP servers stopped".to_string()
+        }
+    }
 }
 
 #[async_trait]

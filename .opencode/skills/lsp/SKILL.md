@@ -756,6 +756,19 @@ The workflow is invoked via the `/security-review` slash command or by spawning 
 
 The vertical slice entry point is `plan_security_review_from_diff(diff, repo_root)`. It parses unified diff hunks, applies path exclusions (`vendor/`, `third_party/`, `target/`, `dist/`, `build/`, `node_modules/`, `*.min.js`; notably does NOT exclude `Cargo.toml`, `Cargo.lock`, `build.rs`), selects `securityContext` presets, builds request payloads, converts risk markers to review prompts, and assembles reports with an explicit "not confirmed findings" note. In this pass, `call_depth` is always 0 and findings are always empty — risk markers become review prompts only.
 
+### Lifecycle commands (Phase 9)
+
+| Command | Description |
+|---------|-------------|
+| `/lsp-servers` | List active LSP servers with root, state, generation, pending requests, open docs |
+| `/lsp-capabilities <key>` | Show effective capability snapshot for a server key |
+| `/lsp-errors <key>` | Show error/health info including stderr tail for a server key |
+| `/lsp-root <path>` | Diagnose root detection for a file path (read-only, no server start) |
+| `/lsp-restart <key>` | Manually restart a specific LSP server |
+| `/lsp-stop [key]` | Stop LSP servers (all or specific key) |
+
+Use `/lsp-servers` to discover available server keys. Keys have the format `<root>:<server-id>` (e.g. `/path/to/project:rust-analyzer`).
+
 ### Hierarchy Output Shapes
 
 Hierarchy operations (`callHierarchy`, `typeHierarchy`) follow a consistent shape. Both require `file_path`, `line`, and `column` (1-indexed). An optional `direction` parameter controls which callsites/type sites to retrieve. `semanticContext` can request them via `include_call_hierarchy` / `include_type_hierarchy`, and `securityContext` requests shared call hierarchy from `SemanticContextCollector` when a target position is provided.

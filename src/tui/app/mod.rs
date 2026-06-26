@@ -4232,35 +4232,58 @@ impl App {
                         .toasts
                         .info("Usage: /lsp-preview-apply <id>");
                 } else if let Some(ref lsp_tool) = self.lsp_tool {
+                    // Phase 9: Refresh stale-base status before exporting.
+                    let (is_stale, refresh_detail) = lsp_tool
+                        .refresh_preview_staleness(id)
+                        .unwrap_or((true, "preview not found".to_string()));
+
                     let registry = lsp_tool.preview_registry();
                     match egglsp::tui_summary::export_preview_apply_candidate(&registry, id) {
                         Some(candidate) => {
                             drop(registry);
-                            let mut msg = format!(
-                                "Apply candidate (read-only export): {} ({})\nAffected files: {}\nStale: {}",
-                                candidate.preview_id,
-                                candidate.kind,
-                                candidate.affected_files.join(", "),
-                                candidate.stale_base
-                            );
-                            if candidate.patches.is_empty() {
-                                msg.push_str(
-                                    "\n\nNo patches available — re-run the original LSP preview command.",
+                            // Phase 9: Block by default when stale.
+                            if candidate.stale_base || is_stale {
+                                let mut msg = format!(
+                                    "Preview is STALE — base content has changed since creation.\n\
+                                     Refresh/recompute the preview before applying.\n\n\
+                                     Detail: {refresh_detail}"
                                 );
-                            } else {
-                                msg.push_str(&format!(
-                                    "\n\n{} patch(es) available. Use apply_patch to apply.",
-                                    candidate.patches.len()
-                                ));
-                                for p in &candidate.patches {
+                                if !candidate.patches.is_empty() {
                                     msg.push_str(&format!(
-                                        "\n  {} (hash: {})",
-                                        p.path,
-                                        &p.original_hash[..8.min(p.original_hash.len())]
+                                        "\n\n{} patch(es) available but stale. \
+                                         Re-run the original LSP preview command to generate a fresh preview.",
+                                        candidate.patches.len()
                                     ));
                                 }
+                                self.messages_state.toasts.info(&msg);
+                            } else {
+                                let mut msg = format!(
+                                    "Apply candidate (read-only export): {} ({})\n\
+                                     Affected files: {}\nStatus: FRESH",
+                                    candidate.preview_id,
+                                    candidate.kind,
+                                    candidate.affected_files.join(", "),
+                                );
+                                if candidate.patches.is_empty() {
+                                    msg.push_str(
+                                        "\n\nNo patches available — re-run the original LSP preview command.",
+                                    );
+                                } else {
+                                    msg.push_str(&format!(
+                                        "\n\n{} patch(es) available. Use apply_patch to apply with user approval.\n\
+                                         LspTool remains read-only — actual file changes require the separate mutating apply path.",
+                                        candidate.patches.len()
+                                    ));
+                                    for p in &candidate.patches {
+                                        msg.push_str(&format!(
+                                            "\n  {} (hash: {})",
+                                            p.path,
+                                            &p.original_hash[..8.min(p.original_hash.len())]
+                                        ));
+                                    }
+                                }
+                                self.messages_state.toasts.info(&msg);
                             }
-                            self.messages_state.toasts.info(&msg);
                         }
                         None => {
                             drop(registry);
@@ -4269,6 +4292,113 @@ impl App {
                                 .info(&format!("Preview not found: {id}"));
                         }
                     }
+                } else {
+                    self.messages_state.toasts.info("LSP not available");
+                }
+            }
+            "/lsp-servers" | "/lsp-detail" => {
+                self.ui_state.command_mode = false;
+                if let Some(ref lsp_tool) = self.lsp_tool {
+                    let handle = tokio::runtime::Handle::current();
+                    let detail = handle.block_on(lsp_tool.lsp_servers_detail());
+                    if let Some(text) = detail {
+                        self.messages_state.toasts.info(&text);
+                    } else {
+                        self.messages_state.toasts.info("No active LSP servers");
+                    }
+                } else {
+                    self.messages_state.toasts.info("LSP not available");
+                }
+            }
+            "/lsp-capabilities" => {
+                self.ui_state.command_mode = false;
+                let query = self.dialog_state.command_palette.query.clone();
+                let key = query
+                    .strip_prefix("/lsp-capabilities ")
+                    .unwrap_or("")
+                    .trim();
+                if key.is_empty() {
+                    self.messages_state
+                        .toasts
+                        .info("Usage: /lsp-capabilities <server-key>\nUse /lsp-servers to see available keys.");
+                } else if let Some(ref lsp_tool) = self.lsp_tool {
+                    let handle = tokio::runtime::Handle::current();
+                    match handle.block_on(lsp_tool.lsp_capabilities_for_key(key)) {
+                        Some(text) => self.messages_state.toasts.info(&text),
+                        None => self
+                            .messages_state
+                            .toasts
+                            .info(&format!("Server not found: {key}")),
+                    }
+                } else {
+                    self.messages_state.toasts.info("LSP not available");
+                }
+            }
+            "/lsp-errors" => {
+                self.ui_state.command_mode = false;
+                let query = self.dialog_state.command_palette.query.clone();
+                let key = query.strip_prefix("/lsp-errors ").unwrap_or("").trim();
+                if key.is_empty() {
+                    self.messages_state.toasts.info(
+                        "Usage: /lsp-errors <server-key>\nUse /lsp-servers to see available keys.",
+                    );
+                } else if let Some(ref lsp_tool) = self.lsp_tool {
+                    let handle = tokio::runtime::Handle::current();
+                    match handle.block_on(lsp_tool.lsp_errors_for_key(key)) {
+                        Some(text) => self.messages_state.toasts.info(&text),
+                        None => self
+                            .messages_state
+                            .toasts
+                            .info(&format!("Server not found: {key}")),
+                    }
+                } else {
+                    self.messages_state.toasts.info("LSP not available");
+                }
+            }
+            "/lsp-root" => {
+                self.ui_state.command_mode = false;
+                let query = self.dialog_state.command_palette.query.clone();
+                let path_arg = query.strip_prefix("/lsp-root ").unwrap_or("").trim();
+                if path_arg.is_empty() {
+                    self.messages_state
+                        .toasts
+                        .info("Usage: /lsp-root <file-path>");
+                } else if let Some(ref lsp_tool) = self.lsp_tool {
+                    let text = lsp_tool.lsp_root_diagnose(path_arg);
+                    self.messages_state.toasts.info(&text);
+                } else {
+                    self.messages_state.toasts.info("LSP not available");
+                }
+            }
+            "/lsp-restart" => {
+                self.ui_state.command_mode = false;
+                let query = self.dialog_state.command_palette.query.clone();
+                let key = query.strip_prefix("/lsp-restart ").unwrap_or("").trim();
+                if key.is_empty() {
+                    self.messages_state.toasts.info(
+                        "Usage: /lsp-restart <server-key>\nUse /lsp-servers to see available keys.",
+                    );
+                } else if let Some(ref lsp_tool) = self.lsp_tool {
+                    let handle = tokio::runtime::Handle::current();
+                    let result = handle.block_on(lsp_tool.lsp_restart_server(key));
+                    self.messages_state.toasts.info(&result);
+                } else {
+                    self.messages_state.toasts.info("LSP not available");
+                }
+            }
+            "/lsp-stop" => {
+                self.ui_state.command_mode = false;
+                let query = self.dialog_state.command_palette.query.clone();
+                let arg = query.strip_prefix("/lsp-stop ").unwrap_or("").trim();
+                if let Some(ref lsp_tool) = self.lsp_tool {
+                    let handle = tokio::runtime::Handle::current();
+                    let key_opt = if arg.is_empty() || arg == "--all" {
+                        None
+                    } else {
+                        Some(arg)
+                    };
+                    let result = handle.block_on(lsp_tool.lsp_stop_server(key_opt));
+                    self.messages_state.toasts.info(&result);
                 } else {
                     self.messages_state.toasts.info("LSP not available");
                 }

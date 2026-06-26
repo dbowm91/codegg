@@ -206,6 +206,12 @@ The TUI supports inline slash commands for quick actions.
 | `/connect` | Open API key connection dialog |
 | `/status` | Show session status and token usage |
 | `/lsp-status` | Show LSP server status and context packet details |
+| `/lsp-servers` | List active LSP servers with root, state, generation, pending requests, open docs |
+| `/lsp-capabilities <key>` | Show effective capability snapshot for a server |
+| `/lsp-errors <key>` | Show error/health info including stderr tail |
+| `/lsp-root <path>` | Diagnose root detection for a file path (read-only, no server start) |
+| `/lsp-restart <key>` | Manually restart a specific LSP server |
+| `/lsp-stop [key]` | Stop LSP servers (all or specific) |
 | `/context` | Open context dialog |
 | `/cost` | Show cost/usage statistics |
 | `/usage` | Open usage details dialog |

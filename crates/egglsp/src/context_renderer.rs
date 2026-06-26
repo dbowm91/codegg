@@ -369,11 +369,80 @@ fn build_previews_section(
     Some(format!("## Previews\n{}", lines.join("\n")))
 }
 
+/// Render lifecycle-state warnings for agent context.
+///
+/// When the LSP server is not in Ready state, agents should not
+/// over-trust the evidence. This function adds explicit notes.
+fn render_lifecycle_notes(packet: &LspContextPacket) -> Vec<String> {
+    let mut notes = Vec::new();
+
+    if let Some(ref state) = packet.operational_state {
+        match state.as_str() {
+            "starting" => {
+                notes.push(
+                    "LSP server is starting — no semantic evidence available yet.".to_string(),
+                );
+            }
+            "initializing" => {
+                notes.push(
+                    "LSP server is initializing — no semantic evidence available yet.".to_string(),
+                );
+            }
+            "indexing" => {
+                notes.push(
+                    "LSP server is indexing — diagnostics and symbols may be incomplete."
+                        .to_string(),
+                );
+            }
+            "degraded" => {
+                notes.push("LSP server is degraded — evidence may be partial.".to_string());
+            }
+            "restart_scheduled" => {
+                notes.push(
+                    "LSP server restart is scheduled — current evidence may become stale."
+                        .to_string(),
+                );
+            }
+            "restarting" => {
+                notes.push(
+                    "LSP server is restarting — current evidence should be treated as stale."
+                        .to_string(),
+                );
+            }
+            "failed" => {
+                notes.push(
+                    "LSP server has failed — no fresh semantic evidence available.".to_string(),
+                );
+            }
+            "stopping" => {
+                notes.push(
+                    "LSP server is stopping — no fresh semantic evidence available.".to_string(),
+                );
+            }
+            "stopped" => {
+                notes.push("LSP server is stopped — no semantic evidence available.".to_string());
+            }
+            "ready" => {
+                // No note needed for ready state.
+            }
+            _ => {
+                notes.push(format!(
+                    "LSP server is in unknown state ({state}) — evidence may be unreliable."
+                ));
+            }
+        }
+    }
+
+    notes
+}
+
 fn build_notes_section(
     packet: &LspContextPacket,
     config: &LspContextRenderConfig,
 ) -> Option<String> {
     let mut notes = packet.notes.clone();
+
+    notes.extend(render_lifecycle_notes(packet));
 
     if config.include_truncation_notes {
         for note in &packet.truncation.notes {
@@ -683,6 +752,111 @@ mod tests {
         assert!(!rendered.contains("## Diagnostics"));
         assert!(!rendered.contains("## Definitions"));
         assert!(!rendered.contains("## References"));
+    }
+
+    #[test]
+    fn test_lifecycle_notes_starting() {
+        let mut packet = make_packet(Vec::new(), Vec::new());
+        packet.operational_state = Some("starting".to_string());
+        let config = LspContextRenderConfig::default();
+        let rendered = render_lsp_context_for_agent(&packet, &config);
+        assert!(rendered.contains("LSP server is starting"));
+    }
+
+    #[test]
+    fn test_lifecycle_notes_initializing() {
+        let mut packet = make_packet(Vec::new(), Vec::new());
+        packet.operational_state = Some("initializing".to_string());
+        let config = LspContextRenderConfig::default();
+        let rendered = render_lsp_context_for_agent(&packet, &config);
+        assert!(rendered.contains("LSP server is initializing"));
+    }
+
+    #[test]
+    fn test_lifecycle_notes_indexing() {
+        let mut packet = make_packet(Vec::new(), Vec::new());
+        packet.operational_state = Some("indexing".to_string());
+        let config = LspContextRenderConfig::default();
+        let rendered = render_lsp_context_for_agent(&packet, &config);
+        assert!(rendered.contains("LSP server is indexing"));
+        assert!(rendered.contains("may be incomplete"));
+    }
+
+    #[test]
+    fn test_lifecycle_notes_degraded() {
+        let mut packet = make_packet(Vec::new(), Vec::new());
+        packet.operational_state = Some("degraded".to_string());
+        let config = LspContextRenderConfig::default();
+        let rendered = render_lsp_context_for_agent(&packet, &config);
+        assert!(rendered.contains("LSP server is degraded"));
+        assert!(rendered.contains("evidence may be partial"));
+    }
+
+    #[test]
+    fn test_lifecycle_notes_restart_scheduled() {
+        let mut packet = make_packet(Vec::new(), Vec::new());
+        packet.operational_state = Some("restart_scheduled".to_string());
+        let config = LspContextRenderConfig::default();
+        let rendered = render_lsp_context_for_agent(&packet, &config);
+        assert!(rendered.contains("restart is scheduled"));
+    }
+
+    #[test]
+    fn test_lifecycle_notes_restarting() {
+        let mut packet = make_packet(Vec::new(), Vec::new());
+        packet.operational_state = Some("restarting".to_string());
+        let config = LspContextRenderConfig::default();
+        let rendered = render_lsp_context_for_agent(&packet, &config);
+        assert!(rendered.contains("LSP server is restarting"));
+        assert!(rendered.contains("treated as stale"));
+    }
+
+    #[test]
+    fn test_lifecycle_notes_failed() {
+        let mut packet = make_packet(Vec::new(), Vec::new());
+        packet.operational_state = Some("failed".to_string());
+        let config = LspContextRenderConfig::default();
+        let rendered = render_lsp_context_for_agent(&packet, &config);
+        assert!(rendered.contains("LSP server has failed"));
+        assert!(rendered.contains("no fresh semantic evidence"));
+    }
+
+    #[test]
+    fn test_lifecycle_notes_stopping() {
+        let mut packet = make_packet(Vec::new(), Vec::new());
+        packet.operational_state = Some("stopping".to_string());
+        let config = LspContextRenderConfig::default();
+        let rendered = render_lsp_context_for_agent(&packet, &config);
+        assert!(rendered.contains("LSP server is stopping"));
+    }
+
+    #[test]
+    fn test_lifecycle_notes_stopped() {
+        let mut packet = make_packet(Vec::new(), Vec::new());
+        packet.operational_state = Some("stopped".to_string());
+        let config = LspContextRenderConfig::default();
+        let rendered = render_lsp_context_for_agent(&packet, &config);
+        assert!(rendered.contains("LSP server is stopped"));
+    }
+
+    #[test]
+    fn test_lifecycle_notes_ready_absent() {
+        let mut packet = make_packet(Vec::new(), Vec::new());
+        packet.operational_state = Some("ready".to_string());
+        let config = LspContextRenderConfig::default();
+        let rendered = render_lsp_context_for_agent(&packet, &config);
+        // Ready state should not produce lifecycle notes.
+        let notes_section = rendered.split("## Notes").nth(1).unwrap_or("");
+        assert!(!notes_section.contains("LSP server is"));
+    }
+
+    #[test]
+    fn test_lifecycle_notes_none_absent() {
+        let packet = make_packet(Vec::new(), Vec::new());
+        let config = LspContextRenderConfig::default();
+        let rendered = render_lsp_context_for_agent(&packet, &config);
+        // No operational_state means no Notes section.
+        assert!(!rendered.contains("## Notes"));
     }
 
     #[test]
