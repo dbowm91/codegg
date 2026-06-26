@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## Phase 15: Renderer-Policy Unification and Context Diagnostics
+
+- Fixed impact-analysis cap-note bug (inverted comparison emitted note when references were NOT capped)
+- Extended `LspContextRenderConfig` and `RecipeSettings` with `include_cross_file` and `include_hierarchy` fields
+- Added `LspContextDiagnostics` struct for structured context-shaping diagnostics
+- Added `/lsp-context-diagnostics` TUI command
+- Added behavior tests for all `StaleEvidencePolicy` and `LspUnavailablePolicy` variants
+- Documented renderer/policy feature-flag ownership model
+
 ### Added
 
 - Built-in Language Server Protocol (LSP) support with capability gating,

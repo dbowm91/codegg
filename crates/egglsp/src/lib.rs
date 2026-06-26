@@ -80,8 +80,9 @@ pub use context::{
     LspRiskMode, PreviewFilePatch,
 };
 pub use context_policy::{
-    resolve_model_tier, LspContextPolicy, LspOperationalState as PolicyLspOperationalState,
-    LspTaskRisk, LspUnavailablePolicy, StaleEvidencePolicy, TierResolution, TierSource,
+    resolve_model_tier, LspContextDiagnostics, LspContextPolicy,
+    LspOperationalState as PolicyLspOperationalState, LspTaskRisk, LspUnavailablePolicy,
+    StaleEvidencePolicy, TierResolution, TierSource,
 };
 pub use context_renderer::model_tier_for_profile;
 pub use context_renderer::{render_lsp_context_for_agent, LspContextRenderConfig, ModelTier};

@@ -2069,6 +2069,77 @@ impl LspTool {
         egglsp::doctor::render_doctor_report(&report)
     }
 
+    /// Build and render context diagnostics for the last context packet.
+    ///
+    /// Requires a file path to determine which LSP server to query.
+    pub async fn lsp_context_diagnostics(&self, path: &str) -> String {
+        use std::path::PathBuf;
+
+        let file_path = PathBuf::from(path);
+        let (cache_mode, cache_stats, preview_total, preview_stale, preview_applied) = {
+            let cache = self.semantic_cache();
+            let stats = cache.stats();
+            let cache_mode = if cache.is_enabled() {
+                "enabled"
+            } else {
+                "disabled"
+            };
+            let preview_registry = self.preview_registry();
+            let preview_total = preview_registry.len();
+            let preview_stale = preview_registry.stale_count();
+            let preview_applied = preview_registry.applied_count();
+            (
+                cache_mode,
+                stats,
+                preview_total,
+                preview_stale,
+                preview_applied,
+            )
+        };
+
+        let request = egglsp::LspContextRequest::File {
+            file: file_path.clone(),
+            line_ranges: Vec::new(),
+            include_symbols: false,
+            include_diagnostics: true,
+        };
+        let budget = egglsp::default_budget();
+        let mode = egglsp::LspContextMode::Opportunistic;
+
+        let provider = egglsp::evidence_adapter::ServiceLspEvidenceProvider::new(
+            Arc::clone(&self.service),
+            self.allowed_root.clone(),
+        );
+
+        match egglsp::collect_context(&provider, &request, &budget, &mode).await {
+            Ok(packet) => {
+                let policy = egglsp::LspContextPolicy::resolve(
+                    egglsp::ModelTier::Workhorse,
+                    egglsp::LspWorkflowRecipe::RepairLocal,
+                    egglsp::LspTaskRisk::Normal,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                );
+                let diag = egglsp::LspContextDiagnostics::from_packet_and_policy(&packet, &policy);
+                let mut output = diag.render_compact();
+                output.push_str(&format!(
+                    "\nCache: {cache_mode} (entries={}, bytes={}, hits={}, misses={}, stale_misses={}, evictions={})",
+                    cache_stats.entries, cache_stats.bytes,
+                    cache_stats.hits, cache_stats.misses,
+                    cache_stats.stale_misses, cache_stats.evictions,
+                ));
+                output.push_str(&format!(
+                    "\nPreviews: {preview_total} total, {preview_stale} stale, {preview_applied} applied"
+                ));
+                output
+            }
+            Err(e) => format!("Failed to collect context: {e}"),
+        }
+    }
+
     /// Manually restart a specific LSP server by key.
     /// Returns a status message about the restart outcome.
     pub async fn lsp_restart_server(&self, key: &str) -> String {

@@ -132,6 +132,19 @@ impl std::fmt::Display for TierSource {
     }
 }
 
+impl TierSource {
+    /// Human-readable label for the tier source.
+    pub fn render(&self) -> &'static str {
+        match self {
+            TierSource::Default => "default",
+            TierSource::ExplicitOverride => "explicit override",
+            TierSource::ConfigOverride => "config override",
+            TierSource::ModelFamily => "model family heuristic",
+            TierSource::WorkflowDefault => "workflow default",
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Tier resolution result
 // ---------------------------------------------------------------------------
@@ -325,6 +338,8 @@ impl LspContextPolicy {
             max_bytes_per_section,
             include_previews: self.include_previews,
             include_truncation_notes: true,
+            include_cross_file: self.include_cross_file,
+            include_hierarchy: self.include_hierarchy,
             model_tier: self.model_tier,
         }
     }
@@ -348,6 +363,8 @@ impl LspContextPolicy {
             self.stale_evidence_policy,
             StaleEvidencePolicy::IncludeWithWarning
         );
+        settings.include_cross_file = self.include_cross_file;
+        settings.include_hierarchy = self.include_hierarchy;
         settings
     }
 
@@ -438,6 +455,159 @@ pub fn resolve_model_tier(
         tier,
         source: TierSource::ModelFamily,
         notes,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Context diagnostics
+// ---------------------------------------------------------------------------
+
+/// Structured diagnostics explaining why LSP context was shaped as it was.
+///
+/// Generated from an `LspContextPacket` + `LspContextPolicy` without
+/// mutating either. Intended for on-demand inspection, not normal prompts.
+#[derive(Debug, Clone)]
+pub struct LspContextDiagnostics {
+    /// Resolved model tier.
+    pub model_tier: ModelTier,
+    /// How the tier was determined.
+    pub tier_source: TierSource,
+    /// Workflow recipe that produced the context.
+    pub workflow: LspWorkflowRecipe,
+    /// Task risk classification.
+    pub task_risk: LspTaskRisk,
+    /// Stale evidence policy applied.
+    pub stale_policy: StaleEvidencePolicy,
+    /// Unavailable LSP policy applied.
+    pub unavailable_policy: LspUnavailablePolicy,
+    /// Maximum context bytes budget.
+    pub max_context_bytes: usize,
+    /// Number of evidence items included in the rendered output.
+    pub included_items: usize,
+    /// Number of evidence items omitted (budget/dedup/filter).
+    pub omitted_items: usize,
+    /// Number of stale evidence items.
+    pub stale_items: usize,
+    /// Sections that were truncated with reason notes.
+    pub truncated_sections: Vec<String>,
+    /// Whether the packet came from the semantic cache.
+    pub cache_hit: bool,
+    /// Operational notes from collection.
+    pub notes: Vec<String>,
+}
+
+impl LspContextDiagnostics {
+    /// Build diagnostics from a context packet and the policy that produced it.
+    ///
+    /// Does not mutate either input. Cache-hit detection uses a heuristic
+    /// (check notes for `[cache-hit]` prefix).
+    pub fn from_packet_and_policy(
+        packet: &crate::context::LspContextPacket,
+        policy: &LspContextPolicy,
+    ) -> Self {
+        let included_items = packet.items.len();
+
+        let total_possible = packet
+            .budget
+            .as_ref()
+            .map(|b| b.max_diagnostics + b.max_references + b.max_symbols + b.max_files)
+            .unwrap_or(included_items);
+        let omitted_items = total_possible.saturating_sub(included_items);
+
+        let stale_items = packet
+            .items
+            .iter()
+            .filter(|i| {
+                matches!(
+                    i.provenance.freshness,
+                    crate::context::LspEvidenceFreshness::Stale
+                        | crate::context::LspEvidenceFreshness::PossiblyStale
+                )
+            })
+            .count();
+
+        let mut truncated_sections = Vec::new();
+        if packet.truncation.bytes_truncated {
+            truncated_sections.push(format!(
+                "total bytes truncated ({}/{} bytes)",
+                packet.truncation.total_bytes, packet.truncation.max_bytes,
+            ));
+        }
+        if packet.truncation.files_truncated {
+            truncated_sections.push("files truncated by per-file range limit".to_string());
+        }
+        if packet.truncation.references_truncated {
+            truncated_sections.push("references truncated by category limit".to_string());
+        }
+        if packet.truncation.diagnostics_truncated {
+            truncated_sections.push("diagnostics truncated by category limit".to_string());
+        }
+        for note in &packet.notes {
+            if note.contains("capped") || note.contains("truncated") || note.contains("omitted") {
+                truncated_sections.push(note.clone());
+            }
+        }
+
+        let cache_hit = packet.notes.iter().any(|n| n.starts_with("[cache-hit]"));
+
+        Self {
+            model_tier: policy.model_tier,
+            tier_source: policy.tier_source,
+            workflow: policy.workflow,
+            task_risk: policy.task_risk,
+            stale_policy: policy.stale_evidence_policy,
+            unavailable_policy: policy.unavailable_policy,
+            max_context_bytes: policy.max_context_bytes,
+            included_items,
+            omitted_items,
+            stale_items,
+            truncated_sections,
+            cache_hit,
+            notes: packet.notes.clone(),
+        }
+    }
+
+    /// Render a compact human-readable summary for TUI display.
+    pub fn render_compact(&self) -> String {
+        let stale = if self.stale_items > 0 {
+            format!(", {} stale", self.stale_items)
+        } else {
+            String::new()
+        };
+        let cache = if self.cache_hit { " [cache-hit]" } else { "" };
+        let trunc = if self.truncated_sections.is_empty() {
+            String::new()
+        } else {
+            format!(", {} truncated sections", self.truncated_sections.len())
+        };
+        format!(
+            "Tier: {:?} ({}) | Workflow: {:?} | Risk: {:?} | Policy: stale={:?} unavailable={:?} | Items: {} included, {} omitted{}{}{}\nMax bytes: {}{}\nNotes: {}",
+            self.model_tier,
+            self.tier_source.render(),
+            self.workflow,
+            self.task_risk,
+            self.stale_policy,
+            self.unavailable_policy,
+            self.included_items,
+            self.omitted_items,
+            stale,
+            trunc,
+            cache,
+            self.max_context_bytes,
+            if self.truncated_sections.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    "\nTruncation: {}",
+                    self.truncated_sections.join("; ")
+                )
+            },
+            if self.notes.is_empty() {
+                "(none)".to_string()
+            } else {
+                self.notes.join("; ")
+            },
+        )
     }
 }
 
@@ -911,26 +1081,32 @@ mod tests {
     }
 
     #[test]
-    fn render_config_from_policy_respects_include_previews() {
-        // include_cross_file and include_hierarchy are not currently
-        // propagated to LspContextRenderConfig (the struct has no such
-        // fields). include_previews IS propagated. Verify the existing
-        // behavior, and document the limitation.
+    fn render_config_from_policy_propagates_flags() {
+        // Verify that include_previews, include_cross_file, and
+        // include_hierarchy all propagate from policy to render config.
         let policy_on = LspContextPolicy {
             model_tier: ModelTier::Frontier,
             include_previews: true,
+            include_cross_file: true,
+            include_hierarchy: true,
             ..Default::default()
         };
         let config_on: LspContextRenderConfig = (&policy_on).into();
         assert!(config_on.include_previews);
+        assert!(config_on.include_cross_file);
+        assert!(config_on.include_hierarchy);
 
         let policy_off = LspContextPolicy {
             model_tier: ModelTier::Small,
             include_previews: false,
+            include_cross_file: false,
+            include_hierarchy: false,
             ..Default::default()
         };
         let config_off: LspContextRenderConfig = (&policy_off).into();
         assert!(!config_off.include_previews);
+        assert!(!config_off.include_cross_file);
+        assert!(!config_off.include_hierarchy);
     }
 
     #[test]
@@ -1090,5 +1266,54 @@ mod tests {
             StaleEvidencePolicy::RequireFresh.to_string(),
             "require_fresh"
         );
+    }
+
+    #[test]
+    fn diagnostics_from_packet_and_policy_basic() {
+        use crate::context::{
+            LineRange, LspContextPacket, LspContextPacketMode, LspContextRequest,
+            LspContextTruncation,
+        };
+        use std::path::PathBuf;
+
+        let policy = LspContextPolicy {
+            model_tier: ModelTier::Small,
+            workflow: LspWorkflowRecipe::RepairLocal,
+            task_risk: LspTaskRisk::Normal,
+            stale_evidence_policy: StaleEvidencePolicy::OmitStale,
+            unavailable_policy: LspUnavailablePolicy::NoteOnly,
+            ..Default::default()
+        };
+
+        let packet = LspContextPacket {
+            request: LspContextRequest::File {
+                file: PathBuf::from("test.rs"),
+                line_ranges: vec![LineRange { start: 10, end: 20 }],
+                include_symbols: true,
+                include_diagnostics: false,
+            },
+            items: vec![],
+            previews: vec![],
+            preview_ids: vec![],
+            mode: LspContextPacketMode::Opportunistic,
+            workspace_root: None,
+            generated_at: None,
+            server_id: Some("rust-analyzer".to_string()),
+            server_generation: Some(1),
+            operational_state: Some("Ready".to_string()),
+            budget: None,
+            notes: vec!["test note".to_string()],
+            truncation: LspContextTruncation::default(),
+        };
+
+        let diag = LspContextDiagnostics::from_packet_and_policy(&packet, &policy);
+        assert_eq!(diag.model_tier, ModelTier::Small);
+        assert_eq!(diag.workflow, LspWorkflowRecipe::RepairLocal);
+        assert_eq!(diag.included_items, 0);
+        assert!(!diag.cache_hit);
+
+        let rendered = diag.render_compact();
+        assert!(rendered.contains("Small"));
+        assert!(rendered.contains("test note"));
     }
 }

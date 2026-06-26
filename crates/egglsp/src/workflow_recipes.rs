@@ -135,6 +135,10 @@ pub struct RecipeSettings {
     pub include_preview_hints: bool,
     /// Freshness tolerance: whether to include stale evidence.
     pub allow_stale_evidence: bool,
+    /// Whether to include cross-file evidence.
+    pub include_cross_file: bool,
+    /// Whether to include hierarchy (callers/callees) evidence.
+    pub include_hierarchy: bool,
 }
 
 impl Default for RecipeSettings {
@@ -152,6 +156,8 @@ impl Default for RecipeSettings {
             include_references: true,
             include_preview_hints: false,
             allow_stale_evidence: true,
+            include_cross_file: false,
+            include_hierarchy: false,
         }
     }
 }
@@ -165,6 +171,8 @@ impl RecipeSettings {
             include_references: false,
             include_preview_hints: false,
             max_references: 0,
+            include_cross_file: false,
+            include_hierarchy: false,
             ..Default::default()
         }
     }
@@ -176,6 +184,8 @@ impl RecipeSettings {
             include_definitions: true,
             include_references: true,
             include_preview_hints: false,
+            include_cross_file: true,
+            include_hierarchy: false,
             ..Default::default()
         }
     }
@@ -189,6 +199,8 @@ impl RecipeSettings {
             include_preview_hints: true,
             max_references: 50,
             max_symbols: 50,
+            include_cross_file: true,
+            include_hierarchy: true,
             ..Default::default()
         }
     }
@@ -229,6 +241,8 @@ impl RecipeSettings {
             },
             include_previews: self.include_preview_hints,
             include_truncation_notes: true,
+            include_cross_file: self.include_cross_file,
+            include_hierarchy: self.include_hierarchy,
             model_tier: self.model_tier,
         }
     }

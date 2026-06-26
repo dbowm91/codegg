@@ -1635,6 +1635,55 @@ Phase 14 exposes existing LSP workflow recipes as user- and agent-facing workflo
 - Stale evidence is visible in output
 - Suggested next actions reference preview IDs or /lsp-doctor
 
+## Phase 15: Renderer-Policy Unification and Context Diagnostics
+
+### Impact-analysis cap-note fix
+
+The impact-analysis cap-note bug has been fixed. Previously the note was emitted
+when references were NOT capped (inverted comparison). Now the note correctly
+fires only when the original reference count exceeds the per-tier cap, and
+includes both the included and total counts.
+
+### Renderer feature-flag ownership
+
+`LspContextRenderConfig` now includes `include_cross_file` and `include_hierarchy`
+fields, propagated from `LspContextPolicy`. `RecipeSettings` also carries these
+flags. The ownership model is: policy computes flags → recipe settings and render
+config both receive them → renderer uses them to control section breadth.
+
+Previously these flags were computed by policy but stranded (not propagated to
+renderer or recipe settings). This is now fixed.
+
+### Context diagnostics
+
+`LspContextDiagnostics` (in `context_policy.rs`) provides structured diagnostics
+explaining why LSP context was shaped as it was. Fields include:
+
+- `model_tier`, `tier_source`, `workflow`, `task_risk`
+- `stale_policy`, `unavailable_policy`
+- `max_context_bytes`, `included_items`, `omitted_items`, `stale_items`
+- `truncated_sections`, `cache_hit`, `notes`
+
+Generated from `LspContextPacket` + `LspContextPolicy` without mutating either.
+Rendered via `render_compact()` for TUI display.
+
+### TUI surface
+
+`/lsp-context-diagnostics <file-path>` shows context diagnostics for a file.
+Normal agent prompts are not bloated — diagnostics are available on demand only.
+
+### Stale/unavailable policy audit
+
+All `StaleEvidencePolicy` and `LspUnavailablePolicy` variants have behavior
+tests proving real application:
+
+- `IncludeWithWarning`: includes stale items, caller sets `allow_stale_evidence=true`
+- `OmitStale`: sets `allow_stale_evidence=false`, stale items filtered by caller
+- `RequireFresh`: sets `allow_stale_evidence=false`, caller may fail if stale
+- `NoteOnly`: operational note about unavailability
+- `Omit`: omits LSP context when server unavailable
+- `FailWhenRequired`: returns error in Required mode when server unavailable
+
 ## Supported Languages (39 servers)
 
 | Language | Server | Command |

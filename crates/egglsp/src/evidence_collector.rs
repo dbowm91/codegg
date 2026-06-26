@@ -1629,11 +1629,13 @@ async fn collect_impact_analysis(
             .then(a.0.cmp(&b.0))
     });
 
+    let original_ref_count = all_refs.len();
     let capped_refs: Vec<_> = all_refs.into_iter().take(max_refs).collect();
-    if capped_refs.len() < budget.max_references {
+    if capped_refs.len() < original_ref_count {
         notes.push(format!(
-            "impact analysis: references capped at {}",
-            max_refs
+            "impact analysis: references capped at {} (of {} total)",
+            capped_refs.len(),
+            original_ref_count
         ));
     }
 
@@ -3807,5 +3809,626 @@ mod tests {
         .await
         .unwrap();
         assert!(!hit2, "changed file hash should produce a miss");
+    }
+
+    // -------------------------------------------------------------------
+    // Stale/unavailable policy application audit tests
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn freshness_for_state_ready_is_fresh() {
+        assert_eq!(freshness_for_state("ready"), LspEvidenceFreshness::Fresh);
+    }
+
+    #[test]
+    fn freshness_for_state_degraded_is_possibly_stale() {
+        assert_eq!(
+            freshness_for_state("degraded"),
+            LspEvidenceFreshness::PossiblyStale
+        );
+    }
+
+    #[test]
+    fn freshness_for_state_indexing_is_possibly_stale() {
+        assert_eq!(
+            freshness_for_state("indexing"),
+            LspEvidenceFreshness::PossiblyStale
+        );
+    }
+
+    #[test]
+    fn freshness_for_state_initializing_is_unknown() {
+        assert_eq!(
+            freshness_for_state("initializing"),
+            LspEvidenceFreshness::Unknown
+        );
+    }
+
+    #[test]
+    fn freshness_for_state_failed_is_stale() {
+        assert_eq!(freshness_for_state("failed"), LspEvidenceFreshness::Stale);
+    }
+
+    #[test]
+    fn freshness_for_state_stopped_is_stale() {
+        assert_eq!(freshness_for_state("stopped"), LspEvidenceFreshness::Stale);
+    }
+
+    #[test]
+    fn freshness_rank_ordering() {
+        // Fresh < PossiblyStale < Stale < StaleAfterEdit < ServerGenerationMismatch < Unknown
+        assert!(
+            freshness_rank(LspEvidenceFreshness::Fresh)
+                < freshness_rank(LspEvidenceFreshness::PossiblyStale)
+        );
+        assert!(
+            freshness_rank(LspEvidenceFreshness::PossiblyStale)
+                < freshness_rank(LspEvidenceFreshness::Stale)
+        );
+        assert!(
+            freshness_rank(LspEvidenceFreshness::Stale)
+                < freshness_rank(LspEvidenceFreshness::StaleAfterEdit)
+        );
+        assert!(
+            freshness_rank(LspEvidenceFreshness::StaleAfterEdit)
+                < freshness_rank(LspEvidenceFreshness::ServerGenerationMismatch)
+        );
+        assert!(
+            freshness_rank(LspEvidenceFreshness::ServerGenerationMismatch)
+                < freshness_rank(LspEvidenceFreshness::Unknown)
+        );
+    }
+
+    #[test]
+    fn stale_policy_include_with_warning_translates_to_allow_stale() {
+        use crate::context_policy::{LspContextPolicy, StaleEvidencePolicy};
+        use crate::workflow_recipes::RecipeSettings;
+
+        let policy = LspContextPolicy {
+            stale_evidence_policy: StaleEvidencePolicy::IncludeWithWarning,
+            ..Default::default()
+        };
+        let settings: RecipeSettings = (&policy).into();
+        assert!(
+            settings.allow_stale_evidence,
+            "IncludeWithWarning must set allow_stale_evidence=true"
+        );
+    }
+
+    #[test]
+    fn stale_policy_omit_stale_translates_to_deny_stale() {
+        use crate::context_policy::{LspContextPolicy, StaleEvidencePolicy};
+        use crate::workflow_recipes::RecipeSettings;
+
+        let policy = LspContextPolicy {
+            stale_evidence_policy: StaleEvidencePolicy::OmitStale,
+            ..Default::default()
+        };
+        let settings: RecipeSettings = (&policy).into();
+        assert!(
+            !settings.allow_stale_evidence,
+            "OmitStale must set allow_stale_evidence=false"
+        );
+    }
+
+    #[test]
+    fn stale_policy_require_fresh_translates_to_deny_stale() {
+        use crate::context_policy::{LspContextPolicy, StaleEvidencePolicy};
+        use crate::workflow_recipes::RecipeSettings;
+
+        let policy = LspContextPolicy {
+            stale_evidence_policy: StaleEvidencePolicy::RequireFresh,
+            ..Default::default()
+        };
+        let settings: RecipeSettings = (&policy).into();
+        assert!(
+            !settings.allow_stale_evidence,
+            "RequireFresh must set allow_stale_evidence=false"
+        );
+    }
+
+    #[test]
+    fn unavailable_policy_note_only_allows_opportunistic_collection() {
+        use crate::context_policy::{LspContextPolicy, LspUnavailablePolicy};
+
+        let policy = LspContextPolicy {
+            unavailable_policy: LspUnavailablePolicy::NoteOnly,
+            ..Default::default()
+        };
+        // NoteOnly does not force Required mode — callers can use Opportunistic.
+        assert_eq!(policy.unavailable_policy, LspUnavailablePolicy::NoteOnly);
+    }
+
+    #[test]
+    fn unavailable_policy_fail_when_required_forces_error_in_required_mode() {
+        use crate::context_policy::{LspContextPolicy, LspUnavailablePolicy};
+
+        let policy = LspContextPolicy {
+            unavailable_policy: LspUnavailablePolicy::FailWhenRequired,
+            ..Default::default()
+        };
+        assert_eq!(
+            policy.unavailable_policy,
+            LspUnavailablePolicy::FailWhenRequired
+        );
+    }
+
+    #[test]
+    fn unavailable_policy_omit_allows_opportunistic_collection() {
+        use crate::context_policy::{LspContextPolicy, LspUnavailablePolicy};
+
+        let policy = LspContextPolicy {
+            unavailable_policy: LspUnavailablePolicy::Omit,
+            ..Default::default()
+        };
+        assert_eq!(policy.unavailable_policy, LspUnavailablePolicy::Omit);
+    }
+
+    #[tokio::test]
+    async fn collector_ready_server_produces_fresh_items() {
+        let provider = MockProvider::new();
+        // Default state is "ready", generation 1.
+        *provider.diagnostics.lock().unwrap() = vec![(
+            "error".to_string(),
+            "err".to_string(),
+            "(1:0)-(1:5)".to_string(),
+        )];
+
+        let request = LspContextRequest::File {
+            file: PathBuf::from("test.rs"),
+            line_ranges: vec![],
+            include_symbols: false,
+            include_diagnostics: true,
+        };
+        let budget = LspContextBudget::default();
+        let mode = LspContextMode::Opportunistic;
+
+        let packet = collect_context(&provider, &request, &budget, &mode)
+            .await
+            .unwrap();
+
+        assert_eq!(packet.items.len(), 1);
+        assert_eq!(
+            packet.items[0].provenance.freshness,
+            LspEvidenceFreshness::Fresh,
+            "ready server must tag items as Fresh"
+        );
+    }
+
+    #[tokio::test]
+    async fn collector_degraded_server_produces_possibly_stale_items() {
+        let provider = MockProvider::new();
+        *provider.state.lock().unwrap() = "degraded".to_string();
+        *provider.diagnostics.lock().unwrap() = vec![(
+            "warning".to_string(),
+            "warn".to_string(),
+            "(2:0)-(2:5)".to_string(),
+        )];
+
+        let request = LspContextRequest::File {
+            file: PathBuf::from("test.rs"),
+            line_ranges: vec![],
+            include_symbols: false,
+            include_diagnostics: true,
+        };
+        let budget = LspContextBudget::default();
+        let mode = LspContextMode::Opportunistic;
+
+        let packet = collect_context(&provider, &request, &budget, &mode)
+            .await
+            .unwrap();
+
+        assert_eq!(packet.items.len(), 1);
+        assert_eq!(
+            packet.items[0].provenance.freshness,
+            LspEvidenceFreshness::PossiblyStale,
+            "degraded server must tag items as PossiblyStale"
+        );
+    }
+
+    #[tokio::test]
+    async fn collector_unavailable_server_opportunistic_returns_note() {
+        struct UnavailProvider;
+        #[async_trait]
+        impl LspEvidenceProvider for UnavailProvider {
+            async fn diagnostics_for_file(
+                &self,
+                _: &Path,
+            ) -> Result<Vec<(String, String, String)>, LspError> {
+                Ok(vec![])
+            }
+            async fn document_symbols(
+                &self,
+                _: &Path,
+            ) -> Result<Vec<(String, String, String)>, LspError> {
+                Ok(vec![])
+            }
+            async fn go_to_definition(
+                &self,
+                _: &Path,
+                _: u32,
+                _: u32,
+            ) -> Result<Vec<(String, String)>, LspError> {
+                Ok(vec![])
+            }
+            async fn find_references(
+                &self,
+                _: &Path,
+                _: u32,
+                _: u32,
+            ) -> Result<Vec<(String, String)>, LspError> {
+                Ok(vec![])
+            }
+            async fn implementations(
+                &self,
+                _: &Path,
+                _: u32,
+                _: u32,
+            ) -> Result<Vec<(String, String)>, LspError> {
+                Ok(vec![])
+            }
+            async fn hover(&self, _: &Path, _: u32, _: u32) -> Result<Option<String>, LspError> {
+                Ok(None)
+            }
+            async fn document_highlights(
+                &self,
+                _: &Path,
+                _: u32,
+                _: u32,
+            ) -> Result<Vec<String>, LspError> {
+                Ok(vec![])
+            }
+            async fn signature_help(
+                &self,
+                _: &Path,
+                _: u32,
+                _: u32,
+            ) -> Result<Vec<(String, String)>, LspError> {
+                Ok(vec![])
+            }
+            async fn completion(
+                &self,
+                _: &Path,
+                _: u32,
+                _: u32,
+            ) -> Result<Vec<(String, String, String)>, LspError> {
+                Ok(vec![])
+            }
+            async fn semantic_tokens(
+                &self,
+                _: &Path,
+                _: u32,
+                _: u32,
+            ) -> Result<Vec<(u32, u32, u32, String)>, LspError> {
+                Ok(vec![])
+            }
+            async fn workspace_symbols(
+                &self,
+                _: &str,
+            ) -> Result<Vec<(String, String, String, String)>, LspError> {
+                Ok(vec![])
+            }
+            async fn operational_state(&self) -> String {
+                "failed".to_string()
+            }
+            async fn server_info(&self) -> (Option<String>, Option<u64>) {
+                (None, None)
+            }
+        }
+
+        let request = LspContextRequest::File {
+            file: PathBuf::from("test.rs"),
+            line_ranges: vec![],
+            include_symbols: false,
+            include_diagnostics: true,
+        };
+        let budget = LspContextBudget::default();
+        let mode = LspContextMode::Opportunistic;
+
+        let packet = collect_context(&UnavailProvider, &request, &budget, &mode)
+            .await
+            .unwrap();
+
+        // Op
+        //portunistic mode: should return an operational note, not error.
+        let notes: Vec<_> = packet
+            .items
+            .iter()
+            .filter(|i| i.kind == LspContextItemKind::OperationalNote)
+            .collect();
+        assert!(
+            !notes.is_empty(),
+            "unavailable server + Opportunistic must produce operational note"
+        );
+        assert!(
+            packet
+                .items
+                .iter()
+                .all(|i| i.kind != LspContextItemKind::Diagnostic),
+            "unavailable server must not produce diagnostics"
+        );
+    }
+
+    #[tokio::test]
+    async fn collector_unavailable_server_required_returns_error() {
+        struct UnavailProvider;
+        #[async_trait]
+        impl LspEvidenceProvider for UnavailProvider {
+            async fn diagnostics_for_file(
+                &self,
+                _: &Path,
+            ) -> Result<Vec<(String, String, String)>, LspError> {
+                Ok(vec![])
+            }
+            async fn document_symbols(
+                &self,
+                _: &Path,
+            ) -> Result<Vec<(String, String, String)>, LspError> {
+                Ok(vec![])
+            }
+            async fn go_to_definition(
+                &self,
+                _: &Path,
+                _: u32,
+                _: u32,
+            ) -> Result<Vec<(String, String)>, LspError> {
+                Ok(vec![])
+            }
+            async fn find_references(
+                &self,
+                _: &Path,
+                _: u32,
+                _: u32,
+            ) -> Result<Vec<(String, String)>, LspError> {
+                Ok(vec![])
+            }
+            async fn implementations(
+                &self,
+                _: &Path,
+                _: u32,
+                _: u32,
+            ) -> Result<Vec<(String, String)>, LspError> {
+                Ok(vec![])
+            }
+            async fn hover(&self, _: &Path, _: u32, _: u32) -> Result<Option<String>, LspError> {
+                Ok(None)
+            }
+            async fn document_highlights(
+                &self,
+                _: &Path,
+                _: u32,
+                _: u32,
+            ) -> Result<Vec<String>, LspError> {
+                Ok(vec![])
+            }
+            async fn signature_help(
+                &self,
+                _: &Path,
+                _: u32,
+                _: u32,
+            ) -> Result<Vec<(String, String)>, LspError> {
+                Ok(vec![])
+            }
+            async fn completion(
+                &self,
+                _: &Path,
+                _: u32,
+                _: u32,
+            ) -> Result<Vec<(String, String, String)>, LspError> {
+                Ok(vec![])
+            }
+            async fn semantic_tokens(
+                &self,
+                _: &Path,
+                _: u32,
+                _: u32,
+            ) -> Result<Vec<(u32, u32, u32, String)>, LspError> {
+                Ok(vec![])
+            }
+            async fn workspace_symbols(
+                &self,
+                _: &str,
+            ) -> Result<Vec<(String, String, String, String)>, LspError> {
+                Ok(vec![])
+            }
+            async fn operational_state(&self) -> String {
+                "failed".to_string()
+            }
+            async fn server_info(&self) -> (Option<String>, Option<u64>) {
+                (None, None)
+            }
+        }
+
+        let request = LspContextRequest::File {
+            file: PathBuf::from("test.rs"),
+            line_ranges: vec![],
+            include_symbols: false,
+            include_diagnostics: true,
+        };
+        let budget = LspContextBudget::default();
+        let mode = LspContextMode::Required;
+
+        let result = collect_context(&UnavailProvider, &request, &budget, &mode).await;
+
+        assert!(
+            result.is_err(),
+            "Required mode + unavailable server must error"
+        );
+        match result.unwrap_err() {
+            LspContextError::RequiredFailed(_) => {}
+            other => panic!("expected RequiredFailed, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn collector_disabled_mode_returns_empty_with_note() {
+        let provider = MockProvider::new();
+        *provider.diagnostics.lock().unwrap() = vec![(
+            "error".to_string(),
+            "should be ignored".to_string(),
+            "(1:0)-(1:5)".to_string(),
+        )];
+
+        let request = LspContextRequest::File {
+            file: PathBuf::from("test.rs"),
+            line_ranges: vec![],
+            include_symbols: false,
+            include_diagnostics: true,
+        };
+        let budget = LspContextBudget::default();
+        let mode = LspContextMode::Disabled;
+
+        let packet = collect_context(&provider, &request, &budget, &mode)
+            .await
+            .unwrap();
+
+        // Disabled mode: no real diagnostics, only an operational note.
+        assert!(
+            packet
+                .items
+                .iter()
+                .all(|i| i.kind == LspContextItemKind::OperationalNote),
+            "Disabled mode must only produce OperationalNote items"
+        );
+        assert!(packet.notes.contains(&"disabled".to_string()));
+    }
+
+    #[tokio::test]
+    async fn collector_server_generation_in_provenance() {
+        let provider = MockProvider::new();
+        *provider.generation.lock().unwrap() = Some(3);
+        *provider.diagnostics.lock().unwrap() = vec![(
+            "info".to_string(),
+            "msg".to_string(),
+            "(1:0)-(1:5)".to_string(),
+        )];
+
+        let request = LspContextRequest::File {
+            file: PathBuf::from("test.rs"),
+            line_ranges: vec![],
+            include_symbols: false,
+            include_diagnostics: true,
+        };
+        let budget = LspContextBudget::default();
+        let mode = LspContextMode::Opportunistic;
+
+        let packet = collect_context(&provider, &request, &budget, &mode)
+            .await
+            .unwrap();
+
+        assert_eq!(packet.items.len(), 1);
+        assert_eq!(
+            packet.items[0].provenance.server_generation,
+            Some(3),
+            "provenance must carry the server generation"
+        );
+        // generation > 1 → post_restart = true
+        assert!(
+            packet.items[0].provenance.post_restart,
+            "generation > 1 must set post_restart=true"
+        );
+    }
+
+    #[tokio::test]
+    async fn collector_generation_one_is_not_post_restart() {
+        let provider = MockProvider::new();
+        *provider.generation.lock().unwrap() = Some(1);
+        *provider.diagnostics.lock().unwrap() = vec![(
+            "info".to_string(),
+            "msg".to_string(),
+            "(1:0)-(1:5)".to_string(),
+        )];
+
+        let request = LspContextRequest::File {
+            file: PathBuf::from("test.rs"),
+            line_ranges: vec![],
+            include_symbols: false,
+            include_diagnostics: true,
+        };
+        let budget = LspContextBudget::default();
+        let mode = LspContextMode::Opportunistic;
+
+        let packet = collect_context(&provider, &request, &budget, &mode)
+            .await
+            .unwrap();
+
+        assert_eq!(packet.items.len(), 1);
+        assert!(
+            !packet.items[0].provenance.post_restart,
+            "generation=1 must not set post_restart"
+        );
+    }
+
+    #[test]
+    fn stale_policy_display_roundtrip() {
+        use crate::context_policy::StaleEvidencePolicy;
+
+        assert_eq!(
+            StaleEvidencePolicy::IncludeWithWarning.to_string(),
+            "include_with_warning"
+        );
+        assert_eq!(StaleEvidencePolicy::OmitStale.to_string(), "omit_stale");
+        assert_eq!(
+            StaleEvidencePolicy::RequireFresh.to_string(),
+            "require_fresh"
+        );
+    }
+
+    #[test]
+    fn unavailable_policy_variants_are_distinct() {
+        use crate::context_policy::LspUnavailablePolicy;
+
+        assert_ne!(LspUnavailablePolicy::NoteOnly, LspUnavailablePolicy::Omit);
+        assert_ne!(
+            LspUnavailablePolicy::NoteOnly,
+            LspUnavailablePolicy::FailWhenRequired
+        );
+        assert_ne!(
+            LspUnavailablePolicy::Omit,
+            LspUnavailablePolicy::FailWhenRequired
+        );
+    }
+
+    #[test]
+    fn stale_policy_tier_defaults_consistent() {
+        use crate::context_policy::{LspContextPolicy, StaleEvidencePolicy};
+        use crate::context_renderer::ModelTier;
+        use crate::workflow_recipes::{LspWorkflowRecipe, RecipeSettings};
+
+        // Small tier defaults: OmitStale → allow_stale_evidence = false.
+        let small_policy = LspContextPolicy::workflow_tier_defaults(
+            LspWorkflowRecipe::RepairLocal,
+            ModelTier::Small,
+        );
+        assert_eq!(
+            small_policy.stale_evidence_policy,
+            StaleEvidencePolicy::OmitStale
+        );
+        let small_settings: RecipeSettings = (&small_policy).into();
+        assert!(!small_settings.allow_stale_evidence);
+
+        // Workhorse tier defaults: IncludeWithWarning → allow_stale_evidence = true.
+        let wh_policy = LspContextPolicy::workflow_tier_defaults(
+            LspWorkflowRecipe::RepairLocal,
+            ModelTier::Workhorse,
+        );
+        assert_eq!(
+            wh_policy.stale_evidence_policy,
+            StaleEvidencePolicy::IncludeWithWarning
+        );
+        let wh_settings: RecipeSettings = (&wh_policy).into();
+        assert!(wh_settings.allow_stale_evidence);
+
+        // Frontier tier defaults: IncludeWithWarning → allow_stale_evidence = true.
+        let f_policy = LspContextPolicy::workflow_tier_defaults(
+            LspWorkflowRecipe::RepairLocal,
+            ModelTier::Frontier,
+        );
+        assert_eq!(
+            f_policy.stale_evidence_policy,
+            StaleEvidencePolicy::IncludeWithWarning
+        );
+        let f_settings: RecipeSettings = (&f_policy).into();
+        assert!(f_settings.allow_stale_evidence);
     }
 }

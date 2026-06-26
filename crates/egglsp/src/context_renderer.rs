@@ -85,6 +85,10 @@ pub struct LspContextRenderConfig {
     pub include_previews: bool,
     /// Whether to include truncation notes.
     pub include_truncation_notes: bool,
+    /// Whether to include cross-file evidence sections.
+    pub include_cross_file: bool,
+    /// Whether to include hierarchy (callers/callees) sections.
+    pub include_hierarchy: bool,
     /// Model tier controlling content breadth.
     pub model_tier: ModelTier,
 }
@@ -98,6 +102,8 @@ impl Default for LspContextRenderConfig {
             max_bytes_per_section: 2000,
             include_previews: true,
             include_truncation_notes: true,
+            include_cross_file: false,
+            include_hierarchy: false,
             model_tier: ModelTier::Workhorse,
         }
     }

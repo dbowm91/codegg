@@ -243,6 +243,8 @@ impl CommandRegistry {
                 .with_description("Clear LSP semantic cache (args: --all or <root-path>)"),
             Command::new("/lsp-doctor", CommandCategory::System, None)
                 .with_description("Diagnose LSP status for a file path (args: <path>)"),
+            Command::new("/lsp-context-diagnostics", CommandCategory::System, None)
+                .with_description("Show LSP context diagnostics for a file path"),
             Command::new("/lsp-repair-local", CommandCategory::System, None)
                 .with_description("Repair localized issue (args: <path[:line]>)"),
             Command::new("/lsp-repair-hunk", CommandCategory::System, None)
