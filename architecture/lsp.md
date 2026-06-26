@@ -1163,7 +1163,6 @@ New types in `egglsp::tui_summary`:
 
 - Per-key server stop (current API only supports `shutdown_all`)
 - `/lsp-start` and `/lsp-replay-docs` commands (no clean scoped API; service auto-starts on demand and handles document replay internally)
-- Semantic context cache (Phase 12)
 
 ## Phase 10: Broader Bounded Semantic Operations
 

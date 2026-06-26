@@ -9620,4 +9620,149 @@ mod lsp_command_dispatch_tests {
         dispatch(&mut app, "/lsp-preview-apply some-id");
         assert!(!app.messages_state.toasts.is_empty());
     }
+
+    // ── /lsp-preview ──
+
+    #[test]
+    fn lsp_preview_missing_arg_shows_usage() {
+        let mut app = App::new_for_testing("/tmp".into());
+        app.lsp_tool = Some(sample_lsp_tool());
+        dispatch(&mut app, "/lsp-preview");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    #[test]
+    fn lsp_preview_with_id_produces_toast() {
+        let mut app = App::new_for_testing("/tmp".into());
+        app.lsp_tool = Some(sample_lsp_tool());
+        dispatch(&mut app, "/lsp-preview some-id");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    #[test]
+    fn lsp_preview_without_tool_shows_unavailable() {
+        let mut app = App::new_for_testing("/tmp".into());
+        dispatch(&mut app, "/lsp-preview some-id");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    // ── /lsp-preview-refresh ──
+
+    #[test]
+    fn lsp_preview_refresh_missing_arg_shows_usage() {
+        let mut app = App::new_for_testing("/tmp".into());
+        app.lsp_tool = Some(sample_lsp_tool());
+        dispatch(&mut app, "/lsp-preview-refresh");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    #[test]
+    fn lsp_preview_refresh_with_id_produces_toast() {
+        let mut app = App::new_for_testing("/tmp".into());
+        app.lsp_tool = Some(sample_lsp_tool());
+        dispatch(&mut app, "/lsp-preview-refresh some-id");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    #[test]
+    fn lsp_preview_refresh_without_tool_shows_unavailable() {
+        let mut app = App::new_for_testing("/tmp".into());
+        dispatch(&mut app, "/lsp-preview-refresh some-id");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    // ── /lsp-preview-clear ──
+
+    #[test]
+    fn lsp_preview_clear_no_args_produces_toast() {
+        let mut app = App::new_for_testing("/tmp".into());
+        app.lsp_tool = Some(sample_lsp_tool());
+        dispatch(&mut app, "/lsp-preview-clear");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    #[test]
+    fn lsp_preview_clear_with_id_produces_toast() {
+        let mut app = App::new_for_testing("/tmp".into());
+        app.lsp_tool = Some(sample_lsp_tool());
+        dispatch(&mut app, "/lsp-preview-clear some-id");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    #[test]
+    fn lsp_preview_clear_all_produces_toast() {
+        let mut app = App::new_for_testing("/tmp".into());
+        app.lsp_tool = Some(sample_lsp_tool());
+        dispatch(&mut app, "/lsp-preview-clear --all");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    #[test]
+    fn lsp_preview_clear_without_tool_shows_unavailable() {
+        let mut app = App::new_for_testing("/tmp".into());
+        dispatch(&mut app, "/lsp-preview-clear some-id");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    // ── /lsp-capabilities invalid key ──
+
+    #[test]
+    fn lsp_capabilities_with_invalid_key_shows_not_found() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+        let mut app = App::new_for_testing("/tmp".into());
+        app.lsp_tool = Some(sample_lsp_tool());
+        dispatch(&mut app, "/lsp-capabilities nonexistent-server");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    // ── /lsp-errors without tool ──
+
+    #[test]
+    fn lsp_errors_without_tool_shows_unavailable() {
+        let mut app = App::new_for_testing("/tmp".into());
+        dispatch(&mut app, "/lsp-errors rust-analyzer");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    #[test]
+    fn lsp_errors_with_invalid_key_shows_not_found() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+        let mut app = App::new_for_testing("/tmp".into());
+        app.lsp_tool = Some(sample_lsp_tool());
+        dispatch(&mut app, "/lsp-errors nonexistent-server");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    // ── /lsp-restart invalid key ──
+
+    #[test]
+    fn lsp_restart_with_invalid_key_shows_not_found() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+        let mut app = App::new_for_testing("/tmp".into());
+        app.lsp_tool = Some(sample_lsp_tool());
+        dispatch(&mut app, "/lsp-restart nonexistent-server");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    // ── /lsp-status ──
+
+    #[test]
+    fn lsp_status_with_tool_produces_toast() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+        let mut app = App::new_for_testing("/tmp".into());
+        app.lsp_tool = Some(sample_lsp_tool());
+        dispatch(&mut app, "/lsp-status");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    #[test]
+    fn lsp_status_without_tool_shows_unavailable() {
+        let mut app = App::new_for_testing("/tmp".into());
+        dispatch(&mut app, "/lsp-status");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
 }
