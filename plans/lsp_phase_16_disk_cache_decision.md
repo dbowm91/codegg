@@ -12,16 +12,48 @@ Phase 16 Workstreams 1 and 2 evaluated whether to add a disk-backed semantic cac
 
 | Metric | Value | Notes |
 |--------|-------|-------|
-| Cache key hashing | ~100ns | Negligible |
-| Packet serialization roundtrip | ~325µs | Per entry |
+| Cache key hashing | ~100-200ns | Negligible |
+| Packet serialization roundtrip | ~325µs | Per entry (10 items) |
 | Packet size | ~700 bytes/item | ~256KB for 64 entries (5 items avg) |
-| File hash collection | ~1.6ms | Bottleneck; happens on cache miss regardless |
-| Disk write | ~280µs | Per entry |
-| Disk read + deserialize | ~179µs | Per entry |
-| Total disk path overhead | ~460µs | Write + read roundtrip |
+| File hash collection | ~1.7ms | Bottleneck; happens on cache miss regardless |
+| Disk write | ~220µs | Per entry |
+| Disk read + deserialize | ~670µs | Per entry |
+| Total disk path overhead | ~890µs | Write + read roundtrip |
 | Memory overhead | Near-zero | Beyond serialized data |
 
-**Key finding:** Disk I/O is technically viable. A disk-backed cache adds ~500µs overhead versus memory-only. Performance is NOT the blocker for this decision.
+**Key finding:** Disk I/O is technically viable. A disk-backed cache adds ~900µs overhead versus memory-only. Performance is NOT the blocker for this decision.
+
+### Workflow scenario benchmarks
+
+| Workflow | Items | Serialized size | Serialize/entry | Deserialize/entry |
+|----------|-------|-----------------|-----------------|-------------------|
+| review-diff (5 files × 6) | 30 | 19,490 bytes | ~1.9ms | ~1.2ms |
+| repair-local | 8 | 5,859 bytes | ~534µs | ~518µs |
+| impact-analysis | 26 | 17,174 bytes | ~1.6ms | ~1.1ms |
+| test-failure repair | 7 | 5,342 bytes | ~480µs | ~383µs |
+| call-neighborhood | 11 | 7,625 bytes | ~788µs | ~520µs |
+
+**Key finding:** Workflow packet sizes range from ~5KB to ~19KB. Serialize/deserialize costs scale linearly with item count (~60-70µs per item). These are comparable to the disk I/O overhead, reinforcing that disk persistence adds marginal benefit.
+
+### Cache hit/miss/stale rate behavior
+
+Under a 5-workflow repeated-access pattern (insert → hit → file-hash-change → stale-miss → generation-change → stale-miss → re-insert → hit):
+
+- **Hit rate:** 50% (10 hits / 20 lookups)
+- **Miss rate:** 50% (10 misses / 20 lookups)
+- **Stale miss rate:** 100% of misses are stale (file hash or generation mismatch)
+
+**Key finding:** Stale misses dominate. In realistic workflows, file hashes change frequently during active development and LSP server restarts invalidate all entries via generation mismatch. This limits the cold-start benefit of disk persistence.
+
+### Startup-after-restart simulation
+
+| Phase | Per-workflow cost | Notes |
+|-------|-------------------|-------|
+| Cold insert (first session) | ~2.3ms | Serialize + memory insert |
+| Cold lookup (restart, all miss) | ~3.5ms | All 5 lookups miss; would require disk load + deserialize |
+| Warm lookup (same session) | ~39µs | Memory hit; ~90× faster than cold miss |
+
+**Key finding:** Warm memory hits are ~90× faster than cold misses. However, cold misses after a restart are inevitable (new cache instance) and would only be mitigated by disk persistence. The ~3.5ms cold lookup cost for 5 workflows is small in absolute terms.
 
 ## Privacy/Threat Model Summary
 

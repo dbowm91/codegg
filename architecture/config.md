@@ -397,4 +397,5 @@ for the full schema and dispatch details.
 
 - [crypto.md](crypto.md) - AES-256-GCM encryption details
 - [search_backend.md](search_backend.md) - search/fetch backend dispatch
+- [lsp.md](lsp.md#phase-12-semantic-memory-cache) - LSP semantic cache config (`[lsp_semantic_cache]`); disk cache deferred (Phase 16)
 - [agent.md](agent.md) - Uses config
