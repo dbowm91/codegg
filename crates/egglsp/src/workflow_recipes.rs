@@ -258,6 +258,8 @@ pub struct RecipeOutcome {
     pub preview_ids: Vec<String>,
     /// Stale/freshness summary.
     pub freshness_summary: String,
+    /// Sub-recipe provenance for composed workflows.
+    pub sub_recipes: Vec<SubRecipeProvenance>,
 }
 
 // ---------------------------------------------------------------------------
@@ -301,6 +303,7 @@ pub struct LspWorkflowDisplay {
     pub notes: Vec<String>,
     pub suggested_next: Option<String>,
     pub sub_recipes: Vec<SubRecipeProvenance>,
+    pub policy_summary: Option<String>,
 }
 
 /// Provenance for a sub-recipe in a composed workflow.
@@ -674,6 +677,55 @@ impl LspWorkflowInvocation {
                     RecipeSettings::for_tier(self.model_tier.unwrap_or(ModelTier::Workhorse));
                 execute_composed_repair_failing_test(
                     provider, test_file, failure, related, settings,
+                )
+                .await
+            }
+            LspWorkflowRecipe::InterfaceBoundary => {
+                let file = self
+                    .primary_path
+                    .as_ref()
+                    .map(PathBuf::from)
+                    .ok_or_else(|| {
+                        LspContextError::RequiredFailed(
+                            "primary_path required for composed interface_boundary".to_string(),
+                        )
+                    })?;
+                let line = self.line.unwrap_or(0);
+                let column = self.column.unwrap_or(0);
+                let changed_files: Vec<PathBuf> =
+                    self.related_files.iter().map(PathBuf::from).collect();
+                let settings =
+                    RecipeSettings::for_tier(self.model_tier.unwrap_or(ModelTier::Workhorse));
+                execute_composed_review_api_change(
+                    provider,
+                    file,
+                    self.symbol.clone(),
+                    line,
+                    column,
+                    changed_files,
+                    settings,
+                )
+                .await
+            }
+            LspWorkflowRecipe::RepairHunk => {
+                let file = self
+                    .primary_path
+                    .as_ref()
+                    .map(PathBuf::from)
+                    .ok_or_else(|| {
+                        LspContextError::RequiredFailed(
+                            "primary_path required for composed repair_hunk".to_string(),
+                        )
+                    })?;
+                let settings =
+                    RecipeSettings::for_tier(self.model_tier.unwrap_or(ModelTier::Workhorse));
+                execute_composed_repair_hunk_with_preview(
+                    provider,
+                    file,
+                    self.hunk_ranges.clone(),
+                    self.line,
+                    self.column,
+                    settings,
                 )
                 .await
             }
@@ -1305,6 +1357,7 @@ fn finish_recipe_outcome(
         fallback_used,
         preview_ids,
         freshness_summary,
+        sub_recipes: vec![],
     })
 }
 
@@ -1501,6 +1554,7 @@ pub async fn execute_composed_security_review(
         fallback_used: false,
         preview_ids: all_preview_ids,
         freshness_summary: "composed security review".to_string(),
+        sub_recipes,
     })
 }
 
@@ -1603,6 +1657,242 @@ pub async fn execute_composed_repair_failing_test(
         fallback_used: false,
         preview_ids: all_preview_ids,
         freshness_summary: "composed test failure repair".to_string(),
+        sub_recipes,
+    })
+}
+
+/// Compose interface_boundary + impact_analysis for API change review.
+pub async fn execute_composed_review_api_change(
+    provider: &dyn LspEvidenceProvider,
+    file: PathBuf,
+    symbol: Option<String>,
+    line: u32,
+    column: u32,
+    changed_files: Vec<PathBuf>,
+    settings: RecipeSettings,
+) -> Result<RecipeOutcome, LspContextError> {
+    let mut sub_recipes = Vec::new();
+    let mut all_notes = Vec::new();
+    let mut all_preview_ids = Vec::new();
+    let mut final_rendered = String::new();
+    let mut final_packet = None;
+
+    let include_implementations = true;
+    let request = InterfaceBoundaryRequest {
+        file: file.clone(),
+        symbol: symbol.clone(),
+        include_implementations,
+        settings: settings.clone(),
+    };
+    match execute_interface_boundary(provider, &request).await {
+        Ok(outcome) => {
+            all_notes.extend(outcome.notes.clone());
+            all_preview_ids.extend(outcome.preview_ids.clone());
+            final_rendered.push_str(&outcome.rendered);
+            final_packet = Some(outcome.packet);
+            sub_recipes.push(SubRecipeProvenance {
+                recipe: LspWorkflowRecipe::InterfaceBoundary,
+                ran: true,
+                skipped_reason: None,
+            });
+        }
+        Err(e) => {
+            sub_recipes.push(SubRecipeProvenance {
+                recipe: LspWorkflowRecipe::InterfaceBoundary,
+                ran: false,
+                skipped_reason: Some(format!("{}", e)),
+            });
+        }
+    }
+
+    let impact_request = ImpactAnalysisRequest {
+        symbol: crate::context::SymbolTarget {
+            file,
+            position: lsp_types::Position {
+                line,
+                character: column,
+            },
+        },
+        changed_files,
+        settings: settings.clone(),
+    };
+    match execute_impact_analysis(provider, &impact_request).await {
+        Ok(outcome) => {
+            all_notes.extend(outcome.notes);
+            all_preview_ids.extend(outcome.preview_ids);
+            final_rendered.push_str("\n\n");
+            final_rendered.push_str(&outcome.rendered);
+            sub_recipes.push(SubRecipeProvenance {
+                recipe: LspWorkflowRecipe::ImpactAnalysis,
+                ran: true,
+                skipped_reason: None,
+            });
+        }
+        Err(e) => {
+            sub_recipes.push(SubRecipeProvenance {
+                recipe: LspWorkflowRecipe::ImpactAnalysis,
+                ran: false,
+                skipped_reason: Some(format!("{}", e)),
+            });
+        }
+    }
+
+    let packet = final_packet.unwrap_or_else(|| LspContextPacket {
+        request: LspContextRequest::InterfaceBoundary {
+            file: std::path::PathBuf::new(),
+            symbol: None,
+            include_implementations: true,
+        },
+        items: vec![],
+        previews: vec![],
+        preview_ids: vec![],
+        mode: settings.mode,
+        workspace_root: None,
+        generated_at: None,
+        server_id: None,
+        server_generation: None,
+        operational_state: None,
+        budget: None,
+        truncation: LspContextTruncation::default(),
+        notes: vec![],
+    });
+
+    Ok(RecipeOutcome {
+        recipe: LspWorkflowRecipe::InterfaceBoundary,
+        packet,
+        rendered: final_rendered,
+        notes: all_notes,
+        fallback_used: false,
+        preview_ids: all_preview_ids,
+        freshness_summary: "composed api change review".to_string(),
+        sub_recipes,
+    })
+}
+
+/// Compose repair_hunk + preview_suggestion (only if changed lines are fresh).
+pub async fn execute_composed_repair_hunk_with_preview(
+    provider: &dyn LspEvidenceProvider,
+    file: PathBuf,
+    hunks: Vec<HunkRange>,
+    line: Option<u32>,
+    column: Option<u32>,
+    settings: RecipeSettings,
+) -> Result<RecipeOutcome, LspContextError> {
+    let mut sub_recipes = Vec::new();
+    let mut all_notes = Vec::new();
+    let mut all_preview_ids = Vec::new();
+    let mut final_rendered = String::new();
+    let mut final_packet = None;
+    let mut all_fresh = true;
+
+    let request = RepairHunkRequest {
+        file: file.clone(),
+        hunks,
+        settings: settings.clone(),
+    };
+    match execute_repair_hunk(provider, &request).await {
+        Ok(outcome) => {
+            let has_stale = outcome.packet.items.iter().any(|i| {
+                matches!(
+                    i.provenance.freshness,
+                    crate::context::LspEvidenceFreshness::Stale
+                        | crate::context::LspEvidenceFreshness::PossiblyStale
+                        | crate::context::LspEvidenceFreshness::StaleAfterEdit
+                )
+            });
+            if has_stale {
+                all_fresh = false;
+            }
+            all_notes.extend(outcome.notes.clone());
+            all_preview_ids.extend(outcome.preview_ids.clone());
+            final_rendered.push_str(&outcome.rendered);
+            final_packet = Some(outcome.packet);
+            sub_recipes.push(SubRecipeProvenance {
+                recipe: LspWorkflowRecipe::RepairHunk,
+                ran: true,
+                skipped_reason: None,
+            });
+        }
+        Err(e) => {
+            all_fresh = false;
+            sub_recipes.push(SubRecipeProvenance {
+                recipe: LspWorkflowRecipe::RepairHunk,
+                ran: false,
+                skipped_reason: Some(format!("{}", e)),
+            });
+        }
+    }
+
+    if all_fresh {
+        let preview_line = line.unwrap_or(1);
+        let preview_col = column.unwrap_or(0);
+        let preview_request = PreviewSuggestionRequest {
+            file,
+            line: preview_line,
+            column: preview_col,
+            settings: settings.clone(),
+        };
+        match execute_preview_suggestion(provider, &preview_request).await {
+            Ok(outcome) => {
+                all_notes.extend(outcome.notes);
+                all_preview_ids.extend(outcome.preview_ids);
+                final_rendered.push_str("\n\n");
+                final_rendered.push_str(&outcome.rendered);
+                sub_recipes.push(SubRecipeProvenance {
+                    recipe: LspWorkflowRecipe::PreviewSuggestion,
+                    ran: true,
+                    skipped_reason: None,
+                });
+            }
+            Err(e) => {
+                sub_recipes.push(SubRecipeProvenance {
+                    recipe: LspWorkflowRecipe::PreviewSuggestion,
+                    ran: false,
+                    skipped_reason: Some(format!("{}", e)),
+                });
+            }
+        }
+    } else {
+        sub_recipes.push(SubRecipeProvenance {
+            recipe: LspWorkflowRecipe::PreviewSuggestion,
+            ran: false,
+            skipped_reason: Some("skipped: changed lines are stale".to_string()),
+        });
+    }
+
+    let packet = final_packet.unwrap_or_else(|| LspContextPacket {
+        request: LspContextRequest::Hunk {
+            file: std::path::PathBuf::new(),
+            hunks: Vec::new(),
+            include_references: true,
+            include_definitions: true,
+            include_implementations: false,
+            include_semantic_tokens: false,
+            include_security_evidence: false,
+        },
+        items: vec![],
+        previews: vec![],
+        preview_ids: vec![],
+        mode: settings.mode,
+        workspace_root: None,
+        generated_at: None,
+        server_id: None,
+        server_generation: None,
+        operational_state: None,
+        budget: None,
+        truncation: LspContextTruncation::default(),
+        notes: vec![],
+    });
+
+    Ok(RecipeOutcome {
+        recipe: LspWorkflowRecipe::RepairHunk,
+        packet,
+        rendered: final_rendered,
+        notes: all_notes,
+        fallback_used: false,
+        preview_ids: all_preview_ids,
+        freshness_summary: "composed repair hunk with preview".to_string(),
+        sub_recipes,
     })
 }
 
@@ -3596,5 +3886,371 @@ mod tests {
             .unwrap();
         assert!(outcome.fallback_used);
         assert!(outcome.notes.iter().any(|n| n.contains("fallback")));
+    }
+
+    // -----------------------------------------------------------------------
+    // Composed workflow tests — sub-recipe provenance, caps, skip reasons
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_composed_security_review_records_sub_recipes() {
+        let settings = RecipeSettings::for_tier(ModelTier::Workhorse);
+        let outcome = execute_composed_security_review(
+            &DegradedProvider,
+            vec![std::path::PathBuf::from("src/auth.rs")],
+            vec![],
+            Some(std::path::PathBuf::from("src/auth.rs")),
+            Some((10, 5)),
+            settings,
+        )
+        .await
+        .unwrap();
+
+        // Should have at least security_review_enriched sub-recipe.
+        assert!(
+            !outcome.sub_recipes.is_empty(),
+            "composed security review must record sub_recipes"
+        );
+        let enriched = outcome
+            .sub_recipes
+            .iter()
+            .find(|sr| sr.recipe == LspWorkflowRecipe::SecurityReviewEnriched);
+        assert!(enriched.is_some(), "must include SecurityReviewEnriched");
+        assert!(
+            enriched.unwrap().ran,
+            "SecurityReviewEnriched must have ran"
+        );
+
+        // When call_neighborhood params are provided, should also have CallNeighborhood.
+        let call = outcome
+            .sub_recipes
+            .iter()
+            .find(|sr| sr.recipe == LspWorkflowRecipe::CallNeighborhood);
+        assert!(
+            call.is_some(),
+            "must include CallNeighborhood when params provided"
+        );
+        assert!(call.unwrap().ran, "CallNeighborhood must have ran");
+
+        // Freshness summary should reflect composed workflow.
+        assert_eq!(outcome.freshness_summary, "composed security review");
+    }
+
+    #[tokio::test]
+    async fn test_composed_security_review_skips_call_neighborhood_when_no_params() {
+        let settings = RecipeSettings::for_tier(ModelTier::Workhorse);
+        let outcome = execute_composed_security_review(
+            &DegradedProvider,
+            vec![std::path::PathBuf::from("src/auth.rs")],
+            vec![],
+            None, // no call_neighborhood file
+            None, // no call_neighborhood position
+            settings,
+        )
+        .await
+        .unwrap();
+
+        // Should only have security_review_enriched sub-recipe.
+        assert_eq!(outcome.sub_recipes.len(), 1);
+        assert_eq!(
+            outcome.sub_recipes[0].recipe,
+            LspWorkflowRecipe::SecurityReviewEnriched
+        );
+        assert!(outcome.sub_recipes[0].ran);
+
+        // No CallNeighborhood sub-recipe.
+        let call = outcome
+            .sub_recipes
+            .iter()
+            .find(|sr| sr.recipe == LspWorkflowRecipe::CallNeighborhood);
+        assert!(
+            call.is_none(),
+            "CallNeighborhood must not appear without params"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_composed_security_review_records_skip_reason_on_failure() {
+        let settings = RecipeSettings::for_tier(ModelTier::Workhorse);
+        // UnavailProvider: security_review_enriched may still succeed (it uses diagnostics),
+        // but call_neighborhood will fail because find_references errors.
+        let outcome = execute_composed_security_review(
+            &UnavailProvider,
+            vec![std::path::PathBuf::from("src/auth.rs")],
+            vec![],
+            Some(std::path::PathBuf::from("src/auth.rs")),
+            Some((10, 5)),
+            settings,
+        )
+        .await
+        .unwrap();
+
+        // SecurityReviewEnriched runs even with UnavailProvider (degraded mode produces notes).
+        let enriched = outcome
+            .sub_recipes
+            .iter()
+            .find(|sr| sr.recipe == LspWorkflowRecipe::SecurityReviewEnriched);
+        assert!(enriched.is_some());
+        assert!(enriched.unwrap().ran);
+
+        // CallNeighborhood should have a skipped_reason if it failed.
+        let call = outcome
+            .sub_recipes
+            .iter()
+            .find(|sr| sr.recipe == LspWorkflowRecipe::CallNeighborhood);
+        if let Some(call) = call {
+            // It may succeed in degraded mode or fail; either way it's recorded.
+            if !call.ran {
+                assert!(
+                    call.skipped_reason.is_some(),
+                    "skipped sub-recipe must have a reason"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_composed_repair_failing_test_records_sub_recipes_and_caps() {
+        let settings = RecipeSettings::for_tier(ModelTier::Workhorse);
+        let outcome = execute_composed_repair_failing_test(
+            &DegradedProvider,
+            std::path::PathBuf::from("tests/foo.rs"),
+            "thread 'test_foo' panicked".to_string(),
+            vec![
+                std::path::PathBuf::from("src/foo.rs"),
+                std::path::PathBuf::from("src/bar.rs"),
+            ],
+            settings,
+        )
+        .await
+        .unwrap();
+
+        // Should have test_failure_repair + up to 2 repair_local sub-recipes (capped at 3 total).
+        assert!(
+            outcome.sub_recipes.len() >= 2,
+            "must have at least test_failure_repair + 1 repair_local, got {}",
+            outcome.sub_recipes.len()
+        );
+
+        let tf = outcome
+            .sub_recipes
+            .iter()
+            .find(|sr| sr.recipe == LspWorkflowRecipe::TestFailureRepair);
+        assert!(tf.is_some(), "must include TestFailureRepair");
+        assert!(tf.unwrap().ran);
+
+        let repair_count = outcome
+            .sub_recipes
+            .iter()
+            .filter(|sr| sr.recipe == LspWorkflowRecipe::RepairLocal)
+            .count();
+        assert!(repair_count >= 1, "must have at least 1 RepairLocal");
+        assert!(
+            repair_count <= 3,
+            "RepairLocal must be capped at 3, got {}",
+            repair_count
+        );
+
+        assert_eq!(outcome.freshness_summary, "composed test failure repair");
+    }
+
+    #[tokio::test]
+    async fn test_composed_repair_failing_test_caps_related_files() {
+        let settings = RecipeSettings::for_tier(ModelTier::Small);
+        let outcome = execute_composed_repair_failing_test(
+            &DegradedProvider,
+            std::path::PathBuf::from("tests/bar.rs"),
+            "assertion failed".to_string(),
+            vec![
+                std::path::PathBuf::from("src/a.rs"),
+                std::path::PathBuf::from("src/b.rs"),
+                std::path::PathBuf::from("src/c.rs"),
+                std::path::PathBuf::from("src/d.rs"), // exceeds cap of 3
+            ],
+            settings,
+        )
+        .await
+        .unwrap();
+
+        // Should have at most 3 RepairLocal sub-recipes (cap is 3).
+        let repair_count = outcome
+            .sub_recipes
+            .iter()
+            .filter(|sr| sr.recipe == LspWorkflowRecipe::RepairLocal)
+            .count();
+        assert!(
+            repair_count <= 3,
+            "RepairLocal cap must be enforced, got {}",
+            repair_count
+        );
+    }
+
+    #[tokio::test]
+    async fn test_composed_review_api_change_records_sub_recipes() {
+        let settings = RecipeSettings::for_tier(ModelTier::Workhorse);
+        let outcome = execute_composed_review_api_change(
+            &DegradedProvider,
+            std::path::PathBuf::from("src/api.rs"),
+            Some("UserApi".to_string()),
+            10,
+            5,
+            vec![],
+            settings,
+        )
+        .await
+        .unwrap();
+
+        // Should have interface_boundary + impact_analysis sub-recipes.
+        assert_eq!(outcome.sub_recipes.len(), 2);
+        let ib = outcome
+            .sub_recipes
+            .iter()
+            .find(|sr| sr.recipe == LspWorkflowRecipe::InterfaceBoundary);
+        assert!(ib.is_some(), "must include InterfaceBoundary");
+        assert!(ib.unwrap().ran);
+
+        let ia = outcome
+            .sub_recipes
+            .iter()
+            .find(|sr| sr.recipe == LspWorkflowRecipe::ImpactAnalysis);
+        assert!(ia.is_some(), "must include ImpactAnalysis");
+        assert!(ia.unwrap().ran);
+    }
+
+    #[tokio::test]
+    async fn test_composed_repair_hunk_with_preview_records_sub_recipes() {
+        let settings = RecipeSettings::for_tier(ModelTier::Workhorse);
+        let outcome = execute_composed_repair_hunk_with_preview(
+            &DegradedProvider,
+            std::path::PathBuf::from("src/main.rs"),
+            vec![crate::context::HunkRange {
+                start: 0,
+                end: 20,
+                original_start: None,
+                original_end: None,
+            }],
+            Some(10),
+            Some(5),
+            settings,
+        )
+        .await
+        .unwrap();
+
+        // Should have repair_hunk sub-recipe (always runs).
+        let rh = outcome
+            .sub_recipes
+            .iter()
+            .find(|sr| sr.recipe == LspWorkflowRecipe::RepairHunk);
+        assert!(rh.is_some(), "must include RepairHunk");
+        assert!(rh.unwrap().ran);
+    }
+
+    // -----------------------------------------------------------------------
+    // LspWorkflowInvocation::execute_composed dispatch tests
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_invocation_composed_security_review_dispatches() {
+        let invocation = LspWorkflowInvocation {
+            recipe: LspWorkflowRecipe::SecurityReviewEnriched,
+            related_files: vec!["src/auth.rs".to_string()],
+            line: Some(10),
+            column: Some(5),
+            ..Default::default()
+        };
+        let outcome = invocation
+            .execute_composed(&DegradedProvider)
+            .await
+            .unwrap();
+        assert_eq!(outcome.recipe, LspWorkflowRecipe::SecurityReviewEnriched);
+        assert!(
+            !outcome.sub_recipes.is_empty(),
+            "composed dispatch must populate sub_recipes"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_invocation_composed_test_failure_repair_dispatches() {
+        let invocation = LspWorkflowInvocation {
+            recipe: LspWorkflowRecipe::TestFailureRepair,
+            primary_path: Some("tests/foo.rs".to_string()),
+            failure_text: Some("panicked".to_string()),
+            related_files: vec!["src/foo.rs".to_string()],
+            ..Default::default()
+        };
+        let outcome = invocation
+            .execute_composed(&DegradedProvider)
+            .await
+            .unwrap();
+        assert_eq!(outcome.recipe, LspWorkflowRecipe::TestFailureRepair);
+        assert!(
+            outcome.sub_recipes.len() >= 2,
+            "composed test_failure_repair must have at least 2 sub_recipes"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_invocation_composed_interface_boundary_dispatches() {
+        let invocation = LspWorkflowInvocation {
+            recipe: LspWorkflowRecipe::InterfaceBoundary,
+            primary_path: Some("src/api.rs".to_string()),
+            symbol: Some("UserApi".to_string()),
+            line: Some(10),
+            column: Some(5),
+            ..Default::default()
+        };
+        let outcome = invocation
+            .execute_composed(&DegradedProvider)
+            .await
+            .unwrap();
+        assert_eq!(outcome.recipe, LspWorkflowRecipe::InterfaceBoundary);
+        assert_eq!(outcome.sub_recipes.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_invocation_composed_repair_hunk_dispatches() {
+        let invocation = LspWorkflowInvocation {
+            recipe: LspWorkflowRecipe::RepairHunk,
+            primary_path: Some("src/main.rs".to_string()),
+            hunk_ranges: vec![crate::context::HunkRange {
+                start: 0,
+                end: 20,
+                original_start: None,
+                original_end: None,
+            }],
+            line: Some(10),
+            column: Some(5),
+            ..Default::default()
+        };
+        let outcome = invocation
+            .execute_composed(&DegradedProvider)
+            .await
+            .unwrap();
+        assert_eq!(outcome.recipe, LspWorkflowRecipe::RepairHunk);
+        assert!(
+            !outcome.sub_recipes.is_empty(),
+            "composed repair_hunk must have sub_recipes"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_invocation_composed_non_composed_recipe_falls_through() {
+        // RepairLocal is not in the composed match, so it falls through to execute().
+        let invocation = LspWorkflowInvocation {
+            recipe: LspWorkflowRecipe::RepairLocal,
+            primary_path: Some("src/main.rs".to_string()),
+            line: Some(10),
+            ..Default::default()
+        };
+        let outcome = invocation
+            .execute_composed(&DegradedProvider)
+            .await
+            .unwrap();
+        assert_eq!(outcome.recipe, LspWorkflowRecipe::RepairLocal);
+        // Base recipes have empty sub_recipes.
+        assert!(
+            outcome.sub_recipes.is_empty(),
+            "non-composed recipe must have empty sub_recipes"
+        );
     }
 }

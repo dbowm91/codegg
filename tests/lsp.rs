@@ -101,6 +101,16 @@ fn lsp_tool_schema_operation_enum() {
         "securityContext",
         "capabilities",
         "hunkSourceContext",
+        "workflow_repair_local",
+        "workflow_repair_hunk",
+        "workflow_review_file",
+        "workflow_review_diff",
+        "workflow_security_review",
+        "workflow_impact",
+        "workflow_test_repair",
+        "workflow_interface",
+        "workflow_cross_repair",
+        "workflow_call_neighbors",
     ];
     assert_eq!(ops.len(), expected.len());
     for name in &expected {

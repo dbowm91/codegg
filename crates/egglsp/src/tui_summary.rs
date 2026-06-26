@@ -337,6 +337,21 @@ pub fn render_workflow_display(display: &crate::workflow_recipes::LspWorkflowDis
     if !display.notes.is_empty() {
         out.push_str(&format!("Notes: {}\n", display.notes.join("; ")));
     }
+    if !display.sub_recipes.is_empty() {
+        out.push_str("Sub-recipes:\n");
+        for sr in &display.sub_recipes {
+            let status = if sr.ran { "ran" } else { "skipped" };
+            let detail = sr
+                .skipped_reason
+                .as_ref()
+                .map(|r| format!(" ({})", r))
+                .unwrap_or_default();
+            out.push_str(&format!("  - {} [{}]{}\n", sr.recipe, status, detail));
+        }
+    }
+    if let Some(ref policy) = display.policy_summary {
+        out.push_str(&format!("Policy: {}\n", policy));
+    }
     if let Some(ref next) = display.suggested_next {
         out.push_str(&format!("Suggested: {}\n", next));
     }
@@ -3756,5 +3771,166 @@ mod tests {
             !registry.get(&id).unwrap().applied,
             "must not mark applied after stale detection"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // render_workflow_display tests — sub_recipes, stale, truncation, previews
+    // -----------------------------------------------------------------------
+
+    use crate::workflow_recipes::{LspWorkflowDisplay, LspWorkflowRecipe, SubRecipeProvenance};
+
+    fn make_display(overrides: impl FnOnce(&mut LspWorkflowDisplay)) -> LspWorkflowDisplay {
+        let mut display = LspWorkflowDisplay {
+            recipe: LspWorkflowRecipe::RepairLocal,
+            title: "Repair Local".to_string(),
+            target: "src/main.rs:10".to_string(),
+            rendered: "evidence text".to_string(),
+            evidence_count: 5,
+            stale_count: 1,
+            fresh_count: 4,
+            truncation_notes: vec![],
+            preview_ids: vec![],
+            unsupported_notes: vec![],
+            notes: vec![],
+            suggested_next: None,
+            sub_recipes: vec![],
+            policy_summary: None,
+        };
+        overrides(&mut display);
+        display
+    }
+
+    #[test]
+    fn render_workflow_display_sub_recipes_ran() {
+        let display = make_display(|d| {
+            d.sub_recipes = vec![
+                SubRecipeProvenance {
+                    recipe: LspWorkflowRecipe::SecurityReviewEnriched,
+                    ran: true,
+                    skipped_reason: None,
+                },
+                SubRecipeProvenance {
+                    recipe: LspWorkflowRecipe::CallNeighborhood,
+                    ran: true,
+                    skipped_reason: None,
+                },
+            ];
+        });
+        let text = render_workflow_display(&display);
+        assert!(
+            text.contains("Sub-recipes:"),
+            "must render sub-recipes header"
+        );
+        assert!(text.contains("security_review_enriched [ran]"));
+        assert!(text.contains("call_neighborhood [ran]"));
+    }
+
+    #[test]
+    fn render_workflow_display_sub_recipes_skipped_with_reason() {
+        let display = make_display(|d| {
+            d.sub_recipes = vec![SubRecipeProvenance {
+                recipe: LspWorkflowRecipe::CallNeighborhood,
+                ran: false,
+                skipped_reason: Some("server unavailable".to_string()),
+            }];
+        });
+        let text = render_workflow_display(&display);
+        assert!(text.contains("call_neighborhood [skipped] (server unavailable)"));
+    }
+
+    #[test]
+    fn render_workflow_display_stale_count() {
+        let display = make_display(|d| {
+            d.stale_count = 3;
+            d.fresh_count = 2;
+            d.evidence_count = 5;
+        });
+        let text = render_workflow_display(&display);
+        assert!(text.contains("Evidence: 5 items (2 fresh, 3 stale)"));
+    }
+
+    #[test]
+    fn render_workflow_display_truncation_notes() {
+        let display = make_display(|d| {
+            d.truncation_notes = vec![
+                "references truncated at 20".to_string(),
+                "symbols limited to 5".to_string(),
+            ];
+        });
+        let text = render_workflow_display(&display);
+        assert!(text.contains("Truncated:"));
+        assert!(text.contains("references truncated at 20"));
+        assert!(text.contains("symbols limited to 5"));
+    }
+
+    #[test]
+    fn render_workflow_display_preview_ids() {
+        let display = make_display(|d| {
+            d.preview_ids = vec!["preview-1".to_string(), "preview-2".to_string()];
+        });
+        let text = render_workflow_display(&display);
+        assert!(text.contains("Previews: preview-1, preview-2"));
+    }
+
+    #[test]
+    fn render_workflow_display_unsupported_notes() {
+        let display = make_display(|d| {
+            d.unsupported_notes = vec!["semanticTokens not supported".to_string()];
+        });
+        let text = render_workflow_display(&display);
+        assert!(text.contains("Unsupported: semanticTokens not supported"));
+    }
+
+    #[test]
+    fn render_workflow_display_policy_summary() {
+        let display = make_display(|d| {
+            d.policy_summary = Some("tier=Workhorse risk=Standard".to_string());
+        });
+        let text = render_workflow_display(&display);
+        assert!(text.contains("Policy: tier=Workhorse risk=Standard"));
+    }
+
+    #[test]
+    fn render_workflow_display_suggested_next() {
+        let display = make_display(|d| {
+            d.suggested_next = Some("/lsp-preview preview-1".to_string());
+        });
+        let text = render_workflow_display(&display);
+        assert!(text.contains("Suggested: /lsp-preview preview-1"));
+    }
+
+    #[test]
+    fn render_workflow_display_long_rendered_truncated() {
+        let long_text = "x".repeat(3000);
+        let display = make_display(|d| {
+            d.rendered = long_text;
+        });
+        let text = render_workflow_display(&display);
+        assert!(text.len() < 3000, "rendered must be truncated");
+        assert!(text.ends_with("..."), "must end with ellipsis");
+    }
+
+    #[test]
+    fn render_workflow_display_all_sections() {
+        let display = make_display(|d| {
+            d.sub_recipes = vec![SubRecipeProvenance {
+                recipe: LspWorkflowRecipe::RepairLocal,
+                ran: true,
+                skipped_reason: None,
+            }];
+            d.truncation_notes = vec!["truncated".to_string()];
+            d.preview_ids = vec!["p1".to_string()];
+            d.policy_summary = Some("policy".to_string());
+            d.suggested_next = Some("/lsp-doctor".to_string());
+        });
+        let text = render_workflow_display(&display);
+        assert!(text.contains("## Repair Local"));
+        assert!(text.contains("Target: src/main.rs:10"));
+        assert!(text.contains("Evidence:"));
+        assert!(text.contains("Truncated:"));
+        assert!(text.contains("Previews:"));
+        assert!(text.contains("Sub-recipes:"));
+        assert!(text.contains("Policy:"));
+        assert!(text.contains("Suggested:"));
     }
 }

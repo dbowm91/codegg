@@ -147,6 +147,7 @@ pub use supervisor::{LspProcessExitEvent, StderrRingBuffer};
 pub use tui_summary::render_workflow_display;
 pub use workflow_recipes::{
     default_settings_for_recipe, execute_composed_repair_failing_test,
+    execute_composed_repair_hunk_with_preview, execute_composed_review_api_change,
     execute_composed_security_review, execute_hunk_source_navigation, execute_preview_suggestion,
     execute_repair_hunk, execute_repair_local, execute_review_diff, execute_review_file,
     execute_security_review_enriched, CallNeighborhoodRequest, CrossFileRepairRequest,

@@ -1946,7 +1946,7 @@ impl LspTool {
             ServiceLspEvidenceProvider::new(Arc::clone(&self.service), self.allowed_root.clone());
 
         let outcome = invocation
-            .execute(&adapter)
+            .execute_composed(&adapter)
             .await
             .map_err(|e| format!("Workflow failed: {e}"))?;
 
@@ -1980,7 +1980,8 @@ impl LspTool {
             unsupported_notes,
             notes: outcome.notes,
             suggested_next,
-            sub_recipes: vec![],
+            sub_recipes: outcome.sub_recipes,
+            policy_summary: None,
         })
     }
 
@@ -2104,7 +2105,7 @@ impl Tool for LspTool {
     }
 
     fn description(&self) -> &str {
-        "Query LSP server for code intelligence and preview-only edits. Operations: goToDefinition, findReferences, hover, documentSymbol, workspaceSymbol, diagnostics, declaration, implementation, documentHighlights, signatureHelp, completion, semanticTokens, renamePreview, formatPreview, sourceActionPreview, codeActionSummaries, codeActionPreview, semanticCheckPreview, semanticContext, securityContext, callHierarchy, typeHierarchy, capabilities, hunkSourceContext. semanticCheckPreview accepts either full proposed content or a single-file unified diff patch. semanticContext returns a compact LSP-backed context packet with source excerpt, diagnostics, symbols, and optional definition/reference/overlay information. securityContext returns a security-review context packet with risk markers. capabilities returns a normalized snapshot of what the server supports. hunkSourceContext returns per-hunk navigation evidence with enclosing symbols, diagnostics, definitions, references, and hierarchy. When include_source_actions=true, semanticContext also includes safe source-action preview hints (initially only source.organizeImports). callHierarchy/typeHierarchy return call/type hierarchy information for the symbol at line+column. declaration/implementation/documentHighlights/signatureHelp/completion/semanticTokens are read-only navigation and code intelligence operations. codeActionSummaries returns code action summaries for a range; codeActionPreview returns a preview of a specific code action. Edit operations are previews only; use apply_patch (or other mutating tools) for actual changes."
+        "Query LSP server for code intelligence and preview-only edits. Low-level operations: goToDefinition, findReferences, hover, documentSymbol, workspaceSymbol, diagnostics, declaration, implementation, documentHighlights, signatureHelp, completion, semanticTokens, renamePreview, formatPreview, sourceActionPreview, codeActionSummaries, codeActionPreview, semanticCheckPreview, semanticContext, securityContext, callHierarchy, typeHierarchy, capabilities, hunkSourceContext. Workflows: workflow_repair_local repairs a localized issue around a target; workflow_repair_hunk repairs code around diff hunks; workflow_review_file reviews a single file; workflow_review_diff reviews changed files; workflow_security_review runs an enriched security review with optional call hierarchy; workflow_impact performs impact analysis at a symbol; workflow_test_repair repairs a failing test; workflow_interface reviews API boundaries; workflow_cross_repair gathers cross-file repair evidence; workflow_call_neighbors explores call neighborhoods. Edit operations are previews only; use apply_patch (or other mutating tools) for actual changes."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -2123,9 +2124,14 @@ impl Tool for LspTool {
                         "semanticCheckPreview", "semanticContext",
                         "callHierarchy", "typeHierarchy",
                         "securityContext", "capabilities",
-                        "hunkSourceContext"
+                        "hunkSourceContext",
+                        "workflow_repair_local", "workflow_repair_hunk",
+                        "workflow_review_file", "workflow_review_diff",
+                        "workflow_security_review", "workflow_impact",
+                        "workflow_test_repair", "workflow_interface",
+                        "workflow_cross_repair", "workflow_call_neighbors"
                     ],
-                    "description": "LSP operation to perform. declaration/implementation/documentHighlights/signatureHelp/completion/semanticTokens are read-only navigation and code intelligence. codeActionSummaries returns code action summaries for a range; codeActionPreview returns a preview of a specific code action. semanticCheckPreview accepts either full proposed content or a single-file unified diff patch. semanticContext returns a compact LSP-backed context packet. securityContext returns a security-review context packet with risk markers. capabilities returns a normalized snapshot of what the server supports. hunkSourceContext returns per-hunk navigation evidence with enclosing symbols, diagnostics, definitions, references, and hierarchy. callHierarchy/typeHierarchy return call/type hierarchy information for the symbol at line+column. Edit operations are previews only; use apply_patch (or other mutating tools) for actual changes."
+                    "description": "LSP operation to perform. Low-level: goToDefinition, findReferences, hover, documentSymbol, workspaceSymbol, diagnostics, declaration, implementation, documentHighlights, signatureHelp, completion, semanticTokens, renamePreview, formatPreview, sourceActionPreview, codeActionSummaries, codeActionPreview, semanticCheckPreview, semanticContext, securityContext, callHierarchy, typeHierarchy, capabilities, hunkSourceContext. Workflows: workflow_repair_local repairs a localized issue around a target; workflow_repair_hunk repairs code around diff hunks; workflow_review_file reviews a single file; workflow_review_diff reviews changed files; workflow_security_review runs an enriched security review with optional call hierarchy; workflow_impact performs impact analysis at a symbol; workflow_test_repair repairs a failing test; workflow_interface reviews API boundaries; workflow_cross_repair gathers cross-file repair evidence; workflow_call_neighbors explores call neighborhoods. Edit operations are previews only; use apply_patch (or other mutating tools) for actual changes."
                 },
                 "file_path": {
                     "type": "string",
@@ -3856,6 +3862,64 @@ impl Tool for LspTool {
                 serde_json::to_string_pretty(&output)
                     .map_err(|e| ToolError::Execution(format!("serialize: {e}")))?
             }
+            "workflow_repair_local"
+            | "workflow_repair_hunk"
+            | "workflow_review_file"
+            | "workflow_review_diff"
+            | "workflow_security_review"
+            | "workflow_impact"
+            | "workflow_test_repair"
+            | "workflow_interface"
+            | "workflow_cross_repair"
+            | "workflow_call_neighbors" => {
+                let recipe = match parsed.operation.as_str() {
+                    "workflow_repair_local" => egglsp::LspWorkflowRecipe::RepairLocal,
+                    "workflow_repair_hunk" => egglsp::LspWorkflowRecipe::RepairHunk,
+                    "workflow_review_file" => egglsp::LspWorkflowRecipe::ReviewFile,
+                    "workflow_review_diff" => egglsp::LspWorkflowRecipe::ReviewDiff,
+                    "workflow_security_review" => egglsp::LspWorkflowRecipe::SecurityReviewEnriched,
+                    "workflow_impact" => egglsp::LspWorkflowRecipe::ImpactAnalysis,
+                    "workflow_test_repair" => egglsp::LspWorkflowRecipe::TestFailureRepair,
+                    "workflow_interface" => egglsp::LspWorkflowRecipe::InterfaceBoundary,
+                    "workflow_cross_repair" => egglsp::LspWorkflowRecipe::CrossFileRepair,
+                    "workflow_call_neighbors" => egglsp::LspWorkflowRecipe::CallNeighborhood,
+                    _ => unreachable!(),
+                };
+                let direction = parsed.direction.as_deref().and_then(|d| match d {
+                    "incoming" => Some(egglsp::context::HierarchyDirection::Incoming),
+                    "outgoing" => Some(egglsp::context::HierarchyDirection::Outgoing),
+                    "both" => Some(egglsp::context::HierarchyDirection::Both),
+                    _ => None,
+                });
+                let invocation = egglsp::LspWorkflowInvocation {
+                    recipe,
+                    primary_path: parsed.file_path.clone(),
+                    line: parsed.line,
+                    column: parsed.column,
+                    symbol: parsed.symbol.clone(),
+                    direction,
+                    related_files: Vec::new(),
+                    failure_text: None,
+                    diagnostic_message: None,
+                    hunk_ranges: Vec::new(),
+                    line_ranges: Vec::new(),
+                    model_tier: None,
+                    review_mode: None,
+                    max_depth: None,
+                    include_implementations: None,
+                };
+                let display = self
+                    .run_lsp_workflow(&invocation)
+                    .await
+                    .map_err(ToolError::Execution)?;
+                let text = egglsp::tui_summary::render_workflow_display(&display);
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "operation": parsed.operation,
+                    "workflow": format!("{}", recipe),
+                    "output": text,
+                }))
+                .map_err(|e| ToolError::Execution(format!("serialize: {e}")))?
+            }
             op => return Err(ToolError::Execution(format!("unknown LSP operation: {op}"))),
         };
 
@@ -4780,9 +4844,14 @@ mod tests {
                         "semanticCheckPreview", "semanticContext",
                         "callHierarchy", "typeHierarchy",
                         "securityContext", "capabilities",
-                        "hunkSourceContext"
+                        "hunkSourceContext",
+                        "workflow_repair_local", "workflow_repair_hunk",
+                        "workflow_review_file", "workflow_review_diff",
+                        "workflow_security_review", "workflow_impact",
+                        "workflow_test_repair", "workflow_interface",
+                        "workflow_cross_repair", "workflow_call_neighbors"
                     ],
-                    "description": "LSP operation to perform. declaration/implementation/documentHighlights/signatureHelp/completion/semanticTokens are read-only navigation and code intelligence. codeActionSummaries returns code action summaries for a range; codeActionPreview returns a preview of a specific code action. semanticCheckPreview accepts either full proposed content or a single-file unified diff patch. semanticContext returns a compact LSP-backed context packet. securityContext returns a security-review context packet with risk markers. capabilities returns a normalized snapshot of what the server supports. hunkSourceContext returns per-hunk navigation evidence with enclosing symbols, diagnostics, definitions, references, and hierarchy. callHierarchy/typeHierarchy return call/type hierarchy information for the symbol at line+column. Edit operations are previews only; use apply_patch (or other mutating tools) for actual changes."
+                    "description": "LSP operation to perform. Low-level: goToDefinition, findReferences, hover, documentSymbol, workspaceSymbol, diagnostics, declaration, implementation, documentHighlights, signatureHelp, completion, semanticTokens, renamePreview, formatPreview, sourceActionPreview, codeActionSummaries, codeActionPreview, semanticCheckPreview, semanticContext, securityContext, callHierarchy, typeHierarchy, capabilities, hunkSourceContext. Workflows: workflow_repair_local repairs a localized issue around a target; workflow_repair_hunk repairs code around diff hunks; workflow_review_file reviews a single file; workflow_review_diff reviews changed files; workflow_security_review runs an enriched security review with optional call hierarchy; workflow_impact performs impact analysis at a symbol; workflow_test_repair repairs a failing test; workflow_interface reviews API boundaries; workflow_cross_repair gathers cross-file repair evidence; workflow_call_neighbors explores call neighborhoods. Edit operations are previews only; use apply_patch (or other mutating tools) for actual changes."
                 },
                 "file_path": {
                     "type": "string",

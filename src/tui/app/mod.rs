@@ -10097,4 +10097,258 @@ mod lsp_command_dispatch_tests {
         dispatch(&mut app, "/lsp-status");
         assert!(!app.messages_state.toasts.is_empty());
     }
+
+    // ── /lsp-repair-local ──
+
+    #[test]
+    fn lsp_repair_local_missing_arg_shows_usage() {
+        let mut app = App::new_for_testing("/tmp".into());
+        app.lsp_tool = Some(sample_lsp_tool());
+        dispatch(&mut app, "/lsp-repair-local");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    #[test]
+    fn lsp_repair_local_with_path_produces_toast() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+        let mut app = App::new_for_testing("/tmp".into());
+        app.lsp_tool = Some(sample_lsp_tool());
+        dispatch(&mut app, "/lsp-repair-local /tmp/test.rs:10:5");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    #[test]
+    fn lsp_repair_local_without_tool_shows_unavailable() {
+        let mut app = App::new_for_testing("/tmp".into());
+        dispatch(&mut app, "/lsp-repair-local /tmp/test.rs");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    // ── /lsp-repair-hunk ──
+
+    #[test]
+    fn lsp_repair_hunk_missing_arg_shows_usage() {
+        let mut app = App::new_for_testing("/tmp".into());
+        app.lsp_tool = Some(sample_lsp_tool());
+        dispatch(&mut app, "/lsp-repair-hunk");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    #[test]
+    fn lsp_repair_hunk_with_path_produces_toast() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+        let mut app = App::new_for_testing("/tmp".into());
+        app.lsp_tool = Some(sample_lsp_tool());
+        dispatch(&mut app, "/lsp-repair-hunk /tmp/test.rs");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    #[test]
+    fn lsp_repair_hunk_without_tool_shows_unavailable() {
+        let mut app = App::new_for_testing("/tmp".into());
+        dispatch(&mut app, "/lsp-repair-hunk /tmp/test.rs");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    // ── /lsp-review-file ──
+
+    #[test]
+    fn lsp_review_file_missing_arg_shows_usage() {
+        let mut app = App::new_for_testing("/tmp".into());
+        app.lsp_tool = Some(sample_lsp_tool());
+        dispatch(&mut app, "/lsp-review-file");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    #[test]
+    fn lsp_review_file_with_path_produces_toast() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+        let mut app = App::new_for_testing("/tmp".into());
+        app.lsp_tool = Some(sample_lsp_tool());
+        dispatch(&mut app, "/lsp-review-file /tmp/test.rs");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    #[test]
+    fn lsp_review_file_without_tool_shows_unavailable() {
+        let mut app = App::new_for_testing("/tmp".into());
+        dispatch(&mut app, "/lsp-review-file /tmp/test.rs");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    // ── /lsp-review-diff ──
+
+    #[test]
+    fn lsp_review_diff_no_args_produces_toast() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+        let mut app = App::new_for_testing("/tmp".into());
+        app.lsp_tool = Some(sample_lsp_tool());
+        dispatch(&mut app, "/lsp-review-diff");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    #[test]
+    fn lsp_review_diff_without_tool_shows_unavailable() {
+        let mut app = App::new_for_testing("/tmp".into());
+        dispatch(&mut app, "/lsp-review-diff");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    // ── /lsp-security-review ──
+
+    #[test]
+    fn lsp_security_review_no_args_produces_toast() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+        let mut app = App::new_for_testing("/tmp".into());
+        app.lsp_tool = Some(sample_lsp_tool());
+        dispatch(&mut app, "/lsp-security-review");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    #[test]
+    fn lsp_security_review_without_tool_shows_unavailable() {
+        let mut app = App::new_for_testing("/tmp".into());
+        dispatch(&mut app, "/lsp-security-review");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    // ── /lsp-impact ──
+
+    #[test]
+    fn lsp_impact_missing_arg_shows_usage() {
+        let mut app = App::new_for_testing("/tmp".into());
+        app.lsp_tool = Some(sample_lsp_tool());
+        dispatch(&mut app, "/lsp-impact");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    #[test]
+    fn lsp_impact_with_target_produces_toast() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+        let mut app = App::new_for_testing("/tmp".into());
+        app.lsp_tool = Some(sample_lsp_tool());
+        dispatch(&mut app, "/lsp-impact /tmp/test.rs:10:5");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    #[test]
+    fn lsp_impact_without_tool_shows_unavailable() {
+        let mut app = App::new_for_testing("/tmp".into());
+        dispatch(&mut app, "/lsp-impact /tmp/test.rs:10:5");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    // ── /lsp-test-repair ──
+
+    #[test]
+    fn lsp_test_repair_missing_arg_shows_usage() {
+        let mut app = App::new_for_testing("/tmp".into());
+        app.lsp_tool = Some(sample_lsp_tool());
+        dispatch(&mut app, "/lsp-test-repair");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    #[test]
+    fn lsp_test_repair_with_file_produces_toast() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+        let mut app = App::new_for_testing("/tmp".into());
+        app.lsp_tool = Some(sample_lsp_tool());
+        dispatch(&mut app, "/lsp-test-repair /tmp/test_test.rs");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    #[test]
+    fn lsp_test_repair_without_tool_shows_unavailable() {
+        let mut app = App::new_for_testing("/tmp".into());
+        dispatch(&mut app, "/lsp-test-repair /tmp/test_test.rs");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    // ── /lsp-interface ──
+
+    #[test]
+    fn lsp_interface_missing_arg_shows_usage() {
+        let mut app = App::new_for_testing("/tmp".into());
+        app.lsp_tool = Some(sample_lsp_tool());
+        dispatch(&mut app, "/lsp-interface");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    #[test]
+    fn lsp_interface_with_path_produces_toast() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+        let mut app = App::new_for_testing("/tmp".into());
+        app.lsp_tool = Some(sample_lsp_tool());
+        dispatch(&mut app, "/lsp-interface /tmp/test.rs");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    #[test]
+    fn lsp_interface_without_tool_shows_unavailable() {
+        let mut app = App::new_for_testing("/tmp".into());
+        dispatch(&mut app, "/lsp-interface /tmp/test.rs");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    // ── /lsp-cross-repair ──
+
+    #[test]
+    fn lsp_cross_repair_missing_arg_shows_usage() {
+        let mut app = App::new_for_testing("/tmp".into());
+        app.lsp_tool = Some(sample_lsp_tool());
+        dispatch(&mut app, "/lsp-cross-repair");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    #[test]
+    fn lsp_cross_repair_with_path_produces_toast() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+        let mut app = App::new_for_testing("/tmp".into());
+        app.lsp_tool = Some(sample_lsp_tool());
+        dispatch(&mut app, "/lsp-cross-repair /tmp/test.rs");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    #[test]
+    fn lsp_cross_repair_without_tool_shows_unavailable() {
+        let mut app = App::new_for_testing("/tmp".into());
+        dispatch(&mut app, "/lsp-cross-repair /tmp/test.rs");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    // ── /lsp-call-neighbors ──
+
+    #[test]
+    fn lsp_call_neighbors_missing_arg_shows_usage() {
+        let mut app = App::new_for_testing("/tmp".into());
+        app.lsp_tool = Some(sample_lsp_tool());
+        dispatch(&mut app, "/lsp-call-neighbors");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    #[test]
+    fn lsp_call_neighbors_with_target_produces_toast() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+        let mut app = App::new_for_testing("/tmp".into());
+        app.lsp_tool = Some(sample_lsp_tool());
+        dispatch(&mut app, "/lsp-call-neighbors /tmp/test.rs:10:5");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    #[test]
+    fn lsp_call_neighbors_without_tool_shows_unavailable() {
+        let mut app = App::new_for_testing("/tmp".into());
+        dispatch(&mut app, "/lsp-call-neighbors /tmp/test.rs:10:5");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
 }

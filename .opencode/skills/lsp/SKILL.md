@@ -2449,11 +2449,15 @@ User-facing workflow commands invoke named recipes via `LspTool::run_lsp_workflo
 
 All commands are read-only. Output includes evidence count, freshness, truncation, preview IDs, and suggested next actions.
 
-Composed workflows combine recipes with explicit caps:
+Composed workflows combine recipes with explicit caps and sub-recipe provenance:
 - Security review = enriched + optional call-neighborhood (cap: 1)
 - Test repair = test_failure_repair + repair_local (cap: 3 related files)
+- API change review = interface_boundary + impact_analysis
+- Repair hunk = repair_hunk + preview_suggestion (only if hunk evidence is fresh)
 
-Agent-facing invocation uses `LspWorkflowInvocation` with minimal fields.
+Each composed workflow records which sub-recipes ran or were skipped (with reasons) via `SubRecipeProvenance`.
+
+Agent-facing invocation uses `LspWorkflowInvocation` with minimal fields. Schema operations: `workflow_repair_local`, `workflow_repair_hunk`, `workflow_review_file`, `workflow_review_diff`, `workflow_security_review`, `workflow_impact`, `workflow_test_repair`, `workflow_interface`, `workflow_cross_repair`, `workflow_call_neighbors`.
 
 ## See Also
 
