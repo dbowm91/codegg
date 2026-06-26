@@ -603,6 +603,13 @@ impl PartialEq for LspTool {
 
 impl LspTool {
     pub fn new(service: Arc<crate::lsp::service::LspService>) -> Self {
+        Self::with_cache_config(service, None)
+    }
+
+    pub fn with_cache_config(
+        service: Arc<crate::lsp::service::LspService>,
+        cache_config: Option<egglsp::cache::LspCacheConfig>,
+    ) -> Self {
         Self {
             service,
             allowed_root: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
@@ -610,7 +617,7 @@ impl LspTool {
                 egglsp::preview_registry::PreviewArtifactRegistry::new(),
             ),
             semantic_cache: parking_lot::Mutex::new(egglsp::cache::LspSemanticCache::new(
-                egglsp::cache::LspCacheConfig::default(),
+                cache_config.unwrap_or_default(),
             )),
         }
     }

@@ -55,6 +55,7 @@ pub fn build_session_tool_registry(
             None
         },
         context_read_enabled,
+        lsp_cache_config: crate::tool::convert_lsp_cache_config(&config.lsp_semantic_cache),
     });
 
     // Register the task/subagent tool when a runtime is available.

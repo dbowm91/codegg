@@ -213,6 +213,9 @@ pub struct ToolRegistryOptions {
     /// Requires `context_artifact_store` and `context_session_id` to
     /// also be `Some`.
     pub context_read_enabled: bool,
+    /// Optional cache config for the LSP semantic cache. When `None`,
+    /// `LspCacheConfig::default()` (disabled) is used.
+    pub lsp_cache_config: Option<egglsp::cache::LspCacheConfig>,
 }
 
 impl ToolRegistry {
@@ -301,7 +304,10 @@ impl ToolRegistry {
                         crate::config::schema::LspConfig::default(),
                     ))
                 });
-                registry.register(crate::tool::lsp::LspTool::new(lsp_service));
+                registry.register(crate::tool::lsp::LspTool::with_cache_config(
+                    lsp_service,
+                    options.lsp_cache_config,
+                ));
             }
             ToolImplementationBackend::Disabled => {
                 registry.register(crate::tool::disabled::DisabledTool::new(
@@ -323,7 +329,10 @@ impl ToolRegistry {
                             crate::config::schema::LspConfig::default(),
                         ))
                     });
-                    registry.register(crate::tool::lsp::LspTool::new(lsp_service));
+                    registry.register(crate::tool::lsp::LspTool::with_cache_config(
+                        lsp_service,
+                        options.lsp_cache_config,
+                    ));
                 } else {
                     // MCP configured, no fallback. Don't register a
                     // model-visible tool. The diagnostic
@@ -418,6 +427,7 @@ impl ToolRegistry {
         let tool_backends = ToolBackendConfig::from_config(config);
         Self::with_options(ToolRegistryOptions {
             tool_backends,
+            lsp_cache_config: convert_lsp_cache_config(&config.lsp_semantic_cache),
             ..ToolRegistryOptions::default()
         })
     }
@@ -515,6 +525,7 @@ impl ToolRegistry {
             context_artifact_store: None,
             context_session_id: None,
             context_read_enabled: false,
+            lsp_cache_config: convert_lsp_cache_config(&config.lsp_semantic_cache),
         })
     }
 
@@ -543,6 +554,7 @@ impl ToolRegistry {
             context_artifact_store: None,
             context_session_id: None,
             context_read_enabled: false,
+            lsp_cache_config: None,
         })
     }
 
@@ -753,6 +765,24 @@ impl std::fmt::Display for RegistryBackendStatusKind {
             RegistryBackendStatusKind::FallbackToNative => write!(f, "fallback-native"),
         }
     }
+}
+
+/// Convert the optional config-layer `LspSemanticCacheConfig` into
+/// the egglsp `LspCacheConfig` used by `LspSemanticCache::new()`.
+pub fn convert_lsp_cache_config(
+    cfg: &Option<crate::config::schema::LspSemanticCacheConfig>,
+) -> Option<egglsp::cache::LspCacheConfig> {
+    let cfg = cfg.as_ref()?;
+    let mode = match cfg.mode.as_deref() {
+        Some("memory") => egglsp::cache::LspCacheMode::Memory,
+        _ => egglsp::cache::LspCacheMode::Disabled,
+    };
+    Some(egglsp::cache::LspCacheConfig {
+        mode,
+        max_entries: cfg.max_entries.unwrap_or(64),
+        max_bytes: cfg.max_bytes.unwrap_or(4 * 1024 * 1024),
+        ttl_seconds: cfg.ttl_seconds.unwrap_or(300),
+    })
 }
 
 #[cfg(test)]

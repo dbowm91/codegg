@@ -213,6 +213,15 @@ impl LspCacheKeyBuilder {
         self
     }
 
+    /// Add multiple file hashes at once.
+    pub fn with_file_hashes(
+        mut self,
+        hashes: impl IntoIterator<Item = (PathBuf, String)>,
+    ) -> Self {
+        self.input_hashes.extend(hashes);
+        self
+    }
+
     /// Set the capability fingerprint.
     pub fn with_capability_fingerprint(mut self, fp: impl Into<String>) -> Self {
         self.capability_fingerprint = Some(fp.into());
@@ -297,47 +306,6 @@ struct CacheStatsInternal {
 
 // ---------------------------------------------------------------------------
 // Freshness determination
-// ---------------------------------------------------------------------------
-
-/// Determine the freshness of a cache entry given the current state.
-///
-/// Returns [`LspEvidenceFreshness::Unknown`] when the entry should be
-/// treated as a miss (file hash mismatch or TTL expired).
-pub fn cache_hit_freshness(
-    entry: &LspCacheEntry,
-    current_server_generation: Option<u64>,
-    file_hashes: &BTreeMap<PathBuf, String>,
-) -> LspEvidenceFreshness {
-    // Check file hash freshness: if any file hash differs, the entry is stale.
-    for (path, expected_hash) in &entry.key.input_hashes {
-        match file_hashes.get(path) {
-            Some(actual_hash) if actual_hash == expected_hash => {}
-            _ => {
-                return LspEvidenceFreshness::Unknown;
-            }
-        }
-    }
-
-    // Check TTL.
-    let ttl = std::time::Duration::from_secs(300); // default; actual TTL checked in get()
-    if entry.created_at.elapsed() > ttl {
-        return LspEvidenceFreshness::Unknown;
-    }
-
-    // Check server generation.
-    if let (Some(current_gen), Some(entry_gen)) = (
-        current_server_generation,
-        entry.server_generation_at_collect,
-    ) {
-        if current_gen != entry_gen {
-            return LspEvidenceFreshness::RetainedAfterRestart;
-        }
-    }
-
-    // Preserve original freshness.
-    entry.original_freshness
-}
-
 // ---------------------------------------------------------------------------
 // Semantic cache
 // ---------------------------------------------------------------------------
@@ -1327,5 +1295,42 @@ mod tests {
         let file_hashes = BTreeMap::new();
         let result = cache.get(&key, Some(1), &file_hashes);
         assert!(result.is_none(), "expired entry must not be returned");
+    }
+
+    #[test]
+    fn test_cache_key_different_server_ids() {
+        let root = PathBuf::from("/tmp/test");
+        let file_hashes = BTreeMap::new();
+
+        let key_a = LspCacheKeyBuilder::new(&root, "server-a", "review")
+            .with_file_hashes(file_hashes.clone())
+            .build();
+        let key_b = LspCacheKeyBuilder::new(&root, "server-b", "review")
+            .with_file_hashes(file_hashes)
+            .build();
+
+        assert_ne!(
+            key_a, key_b,
+            "different server IDs must produce different keys"
+        );
+
+        let config = make_config_enabled(64, 4 * 1024 * 1024, 300);
+        let mut cache = LspSemanticCache::new(config);
+
+        let file_hashes_empty = BTreeMap::new();
+        cache.insert(
+            key_a.clone(),
+            make_packet("review"),
+            LspEvidenceFreshness::Fresh,
+            Some(1),
+        );
+
+        // Lookup with key_b must miss — server IDs differ.
+        let result = cache.get(&key_b, Some(1), &file_hashes_empty);
+        assert!(
+            result.is_none(),
+            "different server ID must not return cached entry"
+        );
+        assert_eq!(cache.stats().entries, 1, "key_a entry still present");
     }
 }

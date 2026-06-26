@@ -1510,8 +1510,11 @@ async fn launch_tui(cli: &Cli) -> Result<(), AppError> {
     if !is_socket_mode {
         if let Some(svc) = lsp_service {
             app.lsp_tool = Some(std::sync::Arc::new(
-                codegg::tool::lsp::LspTool::new(svc)
-                    .with_allowed_root(std::path::PathBuf::from(&project_dir)),
+                codegg::tool::lsp::LspTool::with_cache_config(
+                    svc,
+                    codegg::tool::convert_lsp_cache_config(&config.lsp_semantic_cache),
+                )
+                .with_allowed_root(std::path::PathBuf::from(&project_dir)),
             ));
         }
     }

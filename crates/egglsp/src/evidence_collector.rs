@@ -3604,4 +3604,207 @@ mod tests {
             .collect();
         assert_eq!(diags.len(), 1, "diagnostic should survive");
     }
+
+    #[tokio::test]
+    async fn test_collect_context_cached_miss_then_hit() {
+        let provider = MockProvider::new();
+        *provider.diagnostics.lock().unwrap() = vec![(
+            "error".to_string(),
+            "test diagnostic".to_string(),
+            "(1:0)-(1:10)".to_string(),
+        )];
+
+        let request = LspContextRequest::File {
+            file: PathBuf::from("test.rs"),
+            line_ranges: vec![],
+            include_symbols: false,
+            include_diagnostics: true,
+        };
+        let budget = LspContextBudget::default();
+        let mode = LspContextMode::Opportunistic;
+        let root = PathBuf::from("/tmp/test");
+        let file_hashes = BTreeMap::new();
+
+        let mut cache = crate::cache::LspSemanticCache::new(crate::cache::LspCacheConfig {
+            mode: crate::cache::LspCacheMode::Memory,
+            ..Default::default()
+        });
+
+        // First call: cache miss.
+        let (packet1, hit1) = collect_context_cached(
+            &provider,
+            &request,
+            &budget,
+            &mode,
+            &root,
+            &file_hashes,
+            Some(&mut cache),
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(!hit1, "first call should be a miss");
+        assert_eq!(packet1.items.len(), 1);
+        assert!(!packet1.notes.iter().any(|n| n.contains("cache-hit")));
+
+        // Second call: cache hit.
+        let (packet2, hit2) = collect_context_cached(
+            &provider,
+            &request,
+            &budget,
+            &mode,
+            &root,
+            &file_hashes,
+            Some(&mut cache),
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(hit2, "second call should be a hit");
+        assert_eq!(packet2.items.len(), 1);
+        assert!(packet2.notes.iter().any(|n| n.contains("cache-hit")));
+    }
+
+    #[tokio::test]
+    async fn test_collect_context_cached_disabled_passthrough() {
+        let provider = MockProvider::new();
+        *provider.diagnostics.lock().unwrap() = vec![(
+            "warning".to_string(),
+            "unused import".to_string(),
+            "(2:0)-(2:15)".to_string(),
+        )];
+
+        let request = LspContextRequest::File {
+            file: PathBuf::from("lib.rs"),
+            line_ranges: vec![],
+            include_symbols: false,
+            include_diagnostics: true,
+        };
+        let budget = LspContextBudget::default();
+        let mode = LspContextMode::Opportunistic;
+        let root = PathBuf::from("/tmp/test");
+        let file_hashes = BTreeMap::new();
+
+        let mut cache = crate::cache::LspSemanticCache::new(crate::cache::LspCacheConfig::default());
+
+        // Disabled cache: always a miss, no caching.
+        let (_, hit1) = collect_context_cached(
+            &provider,
+            &request,
+            &budget,
+            &mode,
+            &root,
+            &file_hashes,
+            Some(&mut cache),
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(!hit1);
+
+        let (_, hit2) = collect_context_cached(
+            &provider,
+            &request,
+            &budget,
+            &mode,
+            &root,
+            &file_hashes,
+            Some(&mut cache),
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(!hit2, "disabled cache should never hit");
+    }
+
+    #[tokio::test]
+    async fn test_collect_context_cached_no_cache_passthrough() {
+        let provider = MockProvider::new();
+        let request = LspContextRequest::File {
+            file: PathBuf::from("test.rs"),
+            line_ranges: vec![],
+            include_symbols: false,
+            include_diagnostics: false,
+        };
+        let budget = LspContextBudget::default();
+        let mode = LspContextMode::Opportunistic;
+        let root = PathBuf::from("/tmp/test");
+        let file_hashes = BTreeMap::new();
+
+        // None cache: always a miss.
+        let (_, hit) = collect_context_cached(
+            &provider,
+            &request,
+            &budget,
+            &mode,
+            &root,
+            &file_hashes,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(!hit);
+    }
+
+    #[tokio::test]
+    async fn test_collect_context_cached_file_hash_change_invalidates() {
+        let provider = MockProvider::new();
+        *provider.diagnostics.lock().unwrap() = vec![(
+            "error".to_string(),
+            "test".to_string(),
+            "(1:0)-(1:5)".to_string(),
+        )];
+
+        let request = LspContextRequest::File {
+            file: PathBuf::from("test.rs"),
+            line_ranges: vec![],
+            include_symbols: false,
+            include_diagnostics: true,
+        };
+        let budget = LspContextBudget::default();
+        let mode = LspContextMode::Opportunistic;
+        let root = PathBuf::from("/tmp/test");
+
+        let mut file_hashes = BTreeMap::new();
+        file_hashes.insert(PathBuf::from("test.rs"), "hash_v1".to_string());
+
+        let mut cache = crate::cache::LspSemanticCache::new(crate::cache::LspCacheConfig {
+            mode: crate::cache::LspCacheMode::Memory,
+            ..Default::default()
+        });
+
+        // First call with hash_v1.
+        let (_, hit1) = collect_context_cached(
+            &provider,
+            &request,
+            &budget,
+            &mode,
+            &root,
+            &file_hashes,
+            Some(&mut cache),
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(!hit1);
+
+        // Change file hash.
+        file_hashes.insert(PathBuf::from("test.rs"), "hash_v2".to_string());
+
+        // Second call with hash_v2: should miss (different key).
+        let (_, hit2) = collect_context_cached(
+            &provider,
+            &request,
+            &budget,
+            &mode,
+            &root,
+            &file_hashes,
+            Some(&mut cache),
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(!hit2, "changed file hash should produce a miss");
+    }
 }
