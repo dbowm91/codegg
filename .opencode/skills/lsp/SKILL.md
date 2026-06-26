@@ -775,8 +775,46 @@ The vertical slice entry point is `plan_security_review_from_diff(diff, repo_roo
 | `/lsp-restart <key>` | Manually restart a specific LSP server |
 | `/lsp-stop [key]` | Stop LSP servers (all or specific key) |
 | `/lsp-preview-apply <id>` | Apply a previewed patch to disk with SHA-256 hash revalidation; blocks stale previews; write-side hardening via `write_preview_apply_plan_atomically_enough()` (per-file SHA-256 recheck before each write); `mark_preview_applied` only called on full success; partial failures reported without marking applied; `LspTool` remains read-only — file writes go through standard `std::fs` operations guarded by `validate_preview_apply` |
+| `/lsp-context-diagnostics <path>` | Show structured context-shaping diagnostics for a file (Phase 15) |
 
 Use `/lsp-servers` to discover available server keys. Keys have the format `<root>:<server-id>` (e.g. `/path/to/project:rust-analyzer`).
+
+### Phase 15: Renderer-Policy Unification and Context Diagnostics
+
+- **Cap-note bug fixed**: The impact-analysis "references capped" note previously fired when references were NOT capped (inverted comparison). Now it correctly fires only when the original reference count exceeds the per-tier cap.
+- **Renderer feature-flag ownership**: `LspContextRenderConfig` now includes `include_cross_file` and `include_hierarchy` fields, propagated from `LspContextPolicy`. Previously these flags were computed by policy but stranded (not propagated to renderer or recipe settings).
+- **`LspContextDiagnostics`**: Structured diagnostics explaining why LSP context was shaped as it was. Fields: `model_tier`, `tier_source`, `workflow`, `task_risk`, `stale_policy`, `unavailable_policy`, `max_context_bytes`, `included_items`, `omitted_items`, `stale_items`, `truncated_sections`, `cache_hit`, `notes`. Available on demand via `/lsp-context-diagnostics <file-path>` — not injected into normal agent prompts.
+- **Stale/unavailable policy behavior tests**: All `StaleEvidencePolicy` and `LspUnavailablePolicy` variants have behavior tests proving real application.
+
+### LSP Semantic Cache (Phase 12)
+
+`LspSemanticCache` (`crates/egglsp/src/cache.rs`) is an optional bounded memory cache for LSP-derived evidence packets. It is **disabled by default** and must be opted into via configuration.
+
+**Configuration** (`[lsp_semantic_cache]`):
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `mode` | `"disabled"` | `"disabled"` or `"memory"` |
+| `max_entries` | 64 | Maximum cached entries |
+| `max_bytes` | 4MB | Maximum total cache size |
+| `ttl_seconds` | 300 | Time-to-live per entry |
+
+**Cache keys** encode: `workspace_root`, `server_id`, `operation`, `request_fingerprint`, `input_hashes` (request-scoped file content hashes via `collect_cache_file_hashes_for_request()` in `src/tool/lsp.rs`, capped at 16 files), `capability_fingerprint`, and `budget_fingerprint`.
+
+**Conservative eviction** — entries are evicted on: file hash change, generation mismatch, TTL expiry, or capability fingerprint change. The cache never silently retains stale entries.
+
+**Production path**: `LspTool::lsp_context_for_agent_with_input` in `src/tool/lsp.rs` routes through the cache when enabled. The cache guard is `!Send` (`parking_lot::Mutex`), so the lock is dropped at every `.await` boundary — the pattern is: lock → lookup → drop lock → await `collect_context` on miss → lock again → insert.
+
+**TUI commands**:
+
+| Command | Description |
+|---------|-------------|
+| `/lsp-cache-status` | Show cache hit/miss/size metrics |
+| `/lsp-cache-clear [--all\|<root>]` | Clear cache entries (all or by workspace root) |
+
+**Phase 16 disk cache evaluation**: Benchmarks showed disk I/O was viable (~460µs overhead) but the approach was **deferred due to privacy risks** (plaintext source snippets, secrets leakage). Memory-only cache remains the only mode. Decision record: `plans/lsp_phase_16_disk_cache_decision.md`. Threat model: `architecture/lsp_disk_cache_threat_model.md`. Benchmark harness: `crates/egglsp/tests/lsp_cache_benchmark.rs`.
+
+**Wiring**: Config flows from `codegg-config` through `ToolRegistryOptions` to `LspTool::with_cache_config()`. Cache metrics are included in `LspContextDiagnostics` (Phase 15) via the `cache_hit` field.
 
 ### Hierarchy Output Shapes
 

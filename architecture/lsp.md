@@ -1684,6 +1684,48 @@ tests proving real application:
 - `Omit`: omits LSP context when server unavailable
 - `FailWhenRequired`: returns error in Required mode when server unavailable
 
+## Phase 16: Disk Cache Evaluation (Deferred)
+
+Phase 16 evaluated whether a disk-backed semantic cache would materially improve performance. The conclusion is to **defer** disk cache.
+
+### Benchmark Results
+
+| Metric | Value |
+|--------|-------|
+| Cache key hashing | ~100 ns (negligible) |
+| Packet serialization roundtrip | ~325 µs |
+| Packet size (5 items avg) | ~4 KB |
+| File hash collection (16 files) | ~1.6 ms |
+| Disk I/O total (write + read + deserialize) | ~460 µs |
+| Memory overhead per entry | ~4 KB |
+
+Disk I/O is technically viable (~460 µs overhead) but the benefit is marginal because:
+- Cache entries expire after 5 minutes (TTL)
+- File hashes change frequently in active development
+- LSP server restarts invalidate all entries (generation mismatch)
+- The actual bottleneck is file hash collection (~1.6 ms), not cache lookup
+
+### Privacy Assessment
+
+Two high-risk scenarios prevent disk persistence without significant additional work:
+- **Plaintext source snippets on disk**: `LspEvidenceItem.text` contains code, diagnostics, and symbol documentation that would persist in plaintext
+- **Secrets leakage**: Cached evidence can contain code referencing API keys, passwords, and connection strings
+
+Required mitigations before any disk persistence: encryption at rest, content filtering, and explicit user opt-in. See `architecture/lsp_disk_cache_threat_model.md` for the full threat model.
+
+### Decision
+
+**Option C: No disk cache** (deferred). The memory-only cache remains the only active mode. Disk cache may be reconsidered if:
+- User feedback indicates cold-start latency is a pain point
+- Platform crypto APIs simplify encrypted storage
+- Content-filtered caching (symbols/diagnostics only, no source text) is designed
+
+### References
+
+- Decision record: `plans/lsp_phase_16_disk_cache_decision.md`
+- Threat model: `architecture/lsp_disk_cache_threat_model.md`
+- Benchmark harness: `crates/egglsp/tests/lsp_cache_benchmark.rs`
+
 ## Supported Languages (39 servers)
 
 | Language | Server | Command |
