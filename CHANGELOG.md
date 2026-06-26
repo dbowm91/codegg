@@ -75,6 +75,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a future phase. Per-key server stop uses `shutdown_all` fallback (stop
   per-key requires service API changes).
 
+- LSP semantic memory cache (Phase 12): optional bounded in-memory cache
+  for LSP-derived evidence packets. Disabled by default; opt-in via
+  `[lsp_semantic_cache]` config (`mode = "memory"`, `max_entries = 64`,
+  `max_bytes = 4194304`, `ttl_seconds = 300`). Cache keys encode workspace
+  root, server ID, operation, request fingerprint, file content hashes,
+  capability fingerprint, and budget fingerprint. Cache hits preserve or
+  downgrade freshness correctly (e.g., `RetainedAfterRestart` after server
+  generation change). `collect_context_cached()` wraps `collect_context()`
+  with cache lookup/insert. TUI commands: `/lsp-cache-status`,
+  `/lsp-cache-clear [--all|<root>]`. Never caches across workspace roots.
+  Disk persistence explicitly deferred.
+
 ### Security
 
 - SSRF protection with IPv6 ULA/multicast blocking (`fc00::/7`,

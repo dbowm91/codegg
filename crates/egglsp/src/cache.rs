@@ -1130,4 +1130,202 @@ mod tests {
         );
         assert_eq!(key.precomputed_hash, manual_hash);
     }
+
+    // ── Privacy / security checklist tests ──────────────────────────────
+
+    #[test]
+    fn test_cross_root_isolation() {
+        let config = make_config_enabled(64, 4 * 1024 * 1024, 300);
+        let mut cache = LspSemanticCache::new(config);
+
+        let key_a = LspCacheKeyBuilder::new("/workspace_alpha", "s", "review")
+            .with_file_hash("main.rs", "hash_a")
+            .build();
+        let key_b = LspCacheKeyBuilder::new("/workspace_beta", "s", "review")
+            .with_file_hash("main.rs", "hash_a")
+            .build();
+
+        cache.insert(
+            key_a.clone(),
+            make_packet("alpha-packet"),
+            LspEvidenceFreshness::Fresh,
+            Some(1),
+        );
+
+        let mut file_hashes = BTreeMap::new();
+        file_hashes.insert(PathBuf::from("main.rs"), "hash_a".to_string());
+
+        // key_b must NOT hit key_a's entry despite same operation and file hash.
+        let result = cache.get(&key_b, Some(1), &file_hashes);
+        assert!(
+            result.is_none(),
+            "cross-root lookup must not return another root's entry"
+        );
+        // key_a is still retrievable.
+        assert!(cache.get(&key_a, Some(1), &file_hashes).is_some());
+    }
+
+    #[test]
+    fn test_clear_for_root_does_not_affect_other_roots() {
+        let config = make_config_enabled(64, 4 * 1024 * 1024, 300);
+        let mut cache = LspSemanticCache::new(config);
+
+        let key_a = LspCacheKeyBuilder::new("/ws_alpha", "s", "op").build();
+        let key_b = LspCacheKeyBuilder::new("/ws_beta", "s", "op").build();
+
+        cache.insert(
+            key_a.clone(),
+            make_packet("a"),
+            LspEvidenceFreshness::Fresh,
+            Some(1),
+        );
+        cache.insert(
+            key_b.clone(),
+            make_packet("b"),
+            LspEvidenceFreshness::Fresh,
+            Some(1),
+        );
+        assert_eq!(cache.stats().entries, 2);
+
+        cache.clear_for_root(Path::new("/ws_alpha"));
+        assert_eq!(cache.stats().entries, 1, "only alpha cleared");
+
+        let file_hashes = BTreeMap::new();
+        // key_a was removed by clear_for_root, so get returns None.
+        assert!(
+            cache.get(&key_a, Some(1), &file_hashes).is_none(),
+            "alpha entry removed"
+        );
+        // key_b was not affected; empty file_hashes match empty input_hashes.
+        assert!(
+            cache.get(&key_b, Some(1), &file_hashes).is_some(),
+            "beta entry intact"
+        );
+    }
+
+    #[test]
+    fn test_clear_removes_all_entries() {
+        let config = make_config_enabled(64, 4 * 1024 * 1024, 300);
+        let mut cache = LspSemanticCache::new(config);
+
+        for i in 0..5 {
+            let key = LspCacheKeyBuilder::new("/ws", "s", &format!("op_{i}")).build();
+            cache.insert(
+                key,
+                make_packet(&format!("p{i}")),
+                LspEvidenceFreshness::Fresh,
+                Some(1),
+            );
+        }
+        assert_eq!(cache.stats().entries, 5);
+
+        cache.clear();
+        assert_eq!(cache.stats().entries, 0);
+        assert_eq!(cache.stats().bytes, 0);
+    }
+
+    #[test]
+    fn test_disabled_mode_never_stores_anything() {
+        let config = LspCacheConfig::default(); // Disabled
+        let mut cache = LspSemanticCache::new(config);
+
+        for i in 0..10 {
+            let key = LspCacheKeyBuilder::new("/ws", "s", &format!("op_{i}")).build();
+            cache.insert(
+                key,
+                make_packet(&format!("p{i}")),
+                LspEvidenceFreshness::Fresh,
+                Some(1),
+            );
+        }
+        let stats = cache.stats();
+        assert_eq!(stats.entries, 0);
+        assert_eq!(stats.bytes, 0);
+    }
+
+    #[test]
+    fn test_file_hash_change_invalidates_entry() {
+        let config = make_config_enabled(64, 4 * 1024 * 1024, 300);
+        let mut cache = LspSemanticCache::new(config);
+
+        let key = LspCacheKeyBuilder::new("/ws", "s", "review")
+            .with_file_hash("main.rs", "v1_hash")
+            .build();
+        cache.insert(
+            key.clone(),
+            make_packet("v1"),
+            LspEvidenceFreshness::Fresh,
+            Some(1),
+        );
+
+        // Same key, same generation — should hit.
+        let mut file_hashes = BTreeMap::new();
+        file_hashes.insert(PathBuf::from("main.rs"), "v1_hash".to_string());
+        assert!(cache.get(&key, Some(1), &file_hashes).is_some());
+
+        // Different file hash — cache miss (key already encodes the hash, so
+        // the caller would construct a different key; but even if the same key
+        // is looked up with mismatched file hashes, the entry is valid since
+        // the key itself embeds the hash). This test verifies the key
+        // discriminates correctly.
+        let key_v2 = LspCacheKeyBuilder::new("/ws", "s", "review")
+            .with_file_hash("main.rs", "v2_hash")
+            .build();
+        assert_ne!(key, key_v2, "changed file hash must produce different key");
+        let mut file_hashes_v2 = BTreeMap::new();
+        file_hashes_v2.insert(PathBuf::from("main.rs"), "v2_hash".to_string());
+        assert!(
+            cache.get(&key_v2, Some(1), &file_hashes_v2).is_none(),
+            "different key must not hit original entry"
+        );
+    }
+
+    #[test]
+    fn test_generation_mismatch_removes_entry() {
+        let config = make_config_enabled(64, 4 * 1024 * 1024, 300);
+        let mut cache = LspSemanticCache::new(config);
+
+        let key = make_key("review");
+        cache.insert(
+            key.clone(),
+            make_packet("review"),
+            LspEvidenceFreshness::Fresh,
+            Some(1), // generation 1
+        );
+
+        // Same generation → cache hit.
+        let file_hashes = BTreeMap::new();
+        assert!(
+            cache.get(&key, Some(1), &file_hashes).is_some(),
+            "same generation should hit"
+        );
+
+        // Different generation → cache miss and entry removed.
+        let result = cache.get(&key, Some(2), &file_hashes);
+        assert!(
+            result.is_none(),
+            "different generation must not return stale entry"
+        );
+        // Entry is removed from cache.
+        assert_eq!(cache.stats().entries, 0);
+    }
+
+    #[test]
+    fn test_ttl_expiry_returns_none() {
+        let config = make_config_enabled(64, 4 * 1024 * 1024, 0); // 0 second TTL
+        let mut cache = LspSemanticCache::new(config);
+
+        let key = make_key("review");
+        cache.insert(
+            key.clone(),
+            make_packet("review"),
+            LspEvidenceFreshness::Fresh,
+            Some(1),
+        );
+
+        // Even with same generation, TTL is expired immediately.
+        let file_hashes = BTreeMap::new();
+        let result = cache.get(&key, Some(1), &file_hashes);
+        assert!(result.is_none(), "expired entry must not be returned");
+    }
 }
