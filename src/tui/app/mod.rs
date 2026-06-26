@@ -4274,50 +4274,59 @@ impl App {
 
                         match validation {
                             Ok(plan) => {
-                                // Write each file. Track successes/failures
-                                // precisely so we can mark applied only on
-                                // full success.
-                                let mut successes: Vec<String> = Vec::new();
-                                let mut failures: Vec<(String, String)> = Vec::new();
-                                for file in &plan.files {
-                                    match std::fs::write(&file.path, &file.new_content) {
-                                        Ok(()) => successes.push(file.path.clone()),
-                                        Err(e) => {
-                                            failures.push((
-                                                file.path.clone(),
-                                                format!("write error: {e}"),
+                                // Phase 12 hardening: use the tested
+                                // write-side helper that rechecks each
+                                // file's SHA-256 before writing. The
+                                // caller MUST NOT call mark_applied
+                                // unless all_succeeded is true.
+                                match egglsp::tui_summary::write_preview_apply_plan_atomically_enough(&plan) {
+                                    Ok(report) => {
+                                        if report.all_succeeded {
+                                            lsp_tool.mark_preview_applied(&plan.preview_id);
+                                            self.messages_state.toasts.info(&format!(
+                                                "Applied {} patch(es) for preview {} successfully.\nFiles: {}",
+                                                report.written.len(),
+                                                plan.preview_id,
+                                                report.written.join(", ")
+                                            ));
+                                        } else if report.written.is_empty() {
+                                            self.messages_state.toasts.info(&format!(
+                                                "Failed to apply all {} patch(es) for preview {}.",
+                                                plan.files.len(),
+                                                plan.preview_id,
+                                            ));
+                                        } else {
+                                            self.messages_state.toasts.info(&format!(
+                                                "Partial apply for preview {}: {} succeeded, {} failed.\nSucceeded: {}",
+                                                plan.preview_id,
+                                                report.written.len(),
+                                                plan.files.len() - report.written.len(),
+                                                report.written.join(", "),
                                             ));
                                         }
                                     }
-                                }
-                                if failures.is_empty() {
-                                    lsp_tool.mark_preview_applied(&plan.preview_id);
-                                    self.messages_state.toasts.info(&format!(
-                                    "Applied {} patch(es) for preview {} successfully.\nFiles: {}",
-                                    successes.len(),
-                                    plan.preview_id,
-                                    successes.join(", ")
-                                ));
-                                } else if successes.is_empty() {
-                                    self.messages_state.toasts.info(&format!(
-                                        "Failed to apply all {} patch(es) for preview {}:\n{}",
-                                        failures.len(),
-                                        plan.preview_id,
-                                        failures
-                                            .iter()
-                                            .map(|(f, e)| format!("  {f}: {e}"))
-                                            .collect::<Vec<_>>()
-                                            .join("\n")
-                                    ));
-                                } else {
-                                    self.messages_state.toasts.info(&format!(
-                                    "Partial apply for preview {}: {} succeeded, {} failed.\nSucceeded: {}\nFailed:\n{}",
-                                    plan.preview_id,
-                                    successes.len(),
-                                    failures.len(),
-                                    successes.join(", "),
-                                    failures.iter().map(|(f, e)| format!("  {f}: {e}")).collect::<Vec<_>>().join("\n")
-                                ));
+                                    Err(egglsp::tui_summary::PreviewApplyWriteError::StaleDuringWrite {
+                                        path,
+                                        expected_hash,
+                                        actual_hash,
+                                    }) => {
+                                        self.messages_state.toasts.info(&format!(
+                                            "Write blocked: {path} changed since validation.\n\
+                                             Expected: {expected_hash}\nActual: {actual_hash}\n\n\
+                                             Re-run the LSP preview command to generate a fresh preview."
+                                        ));
+                                    }
+                                    Err(egglsp::tui_summary::PreviewApplyWriteError::WriteFailed {
+                                        path,
+                                        error,
+                                        completed,
+                                    }) => {
+                                        self.messages_state.toasts.info(&format!(
+                                            "Write failed for {path}: {error}\n\
+                                             {} file(s) completed before failure.",
+                                            completed.len(),
+                                        ));
+                                    }
                                 }
                             }
                             Err(err) => {

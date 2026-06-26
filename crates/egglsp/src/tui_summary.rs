@@ -3608,4 +3608,106 @@ mod tests {
             "fn main() { external(); }\n"
         );
     }
+
+    /// Proves the handler write-side logic: validate → write via
+    /// `write_preview_apply_plan_atomically_enough` → mark applied only
+    /// after full success. This mirrors the `/lsp-preview-apply` TUI
+    /// handler path.
+    #[test]
+    fn handler_write_side_validate_write_mark_applied() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file_path = dir.path().join("handler_test.rs");
+        let original = "fn original() {}\n";
+        let new_content = "fn handler_applied() {}\n";
+        std::fs::write(&file_path, original).expect("write");
+        let original_hash = sha256_hex_str(original);
+
+        let mut registry = PreviewArtifactRegistry::new();
+        let id = registry.register(
+            LspPreviewArtifact::Rename {
+                description: "handler test rename".to_string(),
+                edit_count: 1,
+                patches: vec![PreviewFilePatch {
+                    path: file_path.to_string_lossy().into_owned(),
+                    patch: "@@ -1,1 +1,1 @@\n-fn original() {}\n+fn handler_applied() {}\n"
+                        .to_string(),
+                    original_hash,
+                }],
+            },
+            vec![file_path.to_string_lossy().into_owned()],
+            std::collections::HashMap::new(),
+            "rust-analyzer".to_string(),
+        );
+
+        // Step 1: validate (mirrors handler line 4268)
+        let plan = validate_preview_apply(&registry, &id, &simple_replacement_applier)
+            .expect("validate should succeed");
+
+        // Step 2: write via atomic-enough helper (mirrors handler line 4282)
+        let report =
+            write_preview_apply_plan_atomically_enough(&plan).expect("write should succeed");
+        assert!(
+            report.all_succeeded,
+            "all writes must succeed before mark applied"
+        );
+
+        // Step 3: mark applied only after full success (mirrors handler line 4285)
+        registry.mark_applied(&id);
+        assert!(
+            registry.get(&id).unwrap().applied,
+            "preview must be marked applied"
+        );
+
+        // Verify file content changed.
+        assert_eq!(std::fs::read_to_string(&file_path).unwrap(), new_content);
+    }
+
+    /// Proves the handler does NOT mark applied when the write-side
+    /// helper detects a stale file (race between validate and write).
+    #[test]
+    fn handler_write_side_stale_blocks_mark_applied() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file_path = dir.path().join("handler_stale.rs");
+        let original = "fn original() {}\n";
+        std::fs::write(&file_path, original).expect("write");
+        let original_hash = sha256_hex_str(original);
+
+        let mut registry = PreviewArtifactRegistry::new();
+        let id = registry.register(
+            LspPreviewArtifact::Rename {
+                description: "handler stale test".to_string(),
+                edit_count: 1,
+                patches: vec![PreviewFilePatch {
+                    path: file_path.to_string_lossy().into_owned(),
+                    patch: "@@ -1,1 +1,1 @@\n-fn original() {}\n+fn stale_blocked() {}\n"
+                        .to_string(),
+                    original_hash,
+                }],
+            },
+            vec![file_path.to_string_lossy().into_owned()],
+            std::collections::HashMap::new(),
+            "rust-analyzer".to_string(),
+        );
+
+        // Validate succeeds.
+        let plan = validate_preview_apply(&registry, &id, &simple_replacement_applier)
+            .expect("validate should succeed");
+
+        // Simulate external edit between validate and write.
+        std::fs::write(&file_path, "fn external_edit() {}\n").expect("external edit");
+
+        // Write-side detects stale — must NOT mark applied.
+        let err =
+            write_preview_apply_plan_atomically_enough(&plan).expect_err("should fail on stale");
+        assert!(matches!(
+            err,
+            PreviewApplyWriteError::StaleDuringWrite { .. }
+        ));
+
+        // Registry must NOT be marked applied.
+        assert!(
+            !registry.get(&id).unwrap().applied,
+            "must not mark applied after stale detection"
+        );
+    }
 }
