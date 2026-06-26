@@ -8,6 +8,8 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+use crate::health::LspObservabilitySnapshot;
+
 /// Comprehensive diagnostic report for a file path.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LspDoctorReport {
@@ -47,6 +49,8 @@ pub struct LspDoctorReport {
     pub issues: Vec<String>,
     /// Remediation suggestions.
     pub remediation: Vec<String>,
+    /// Observability snapshot (clients, cache stats, previews).
+    pub observability: Option<LspObservabilitySnapshot>,
 }
 
 /// Build an [`LspDoctorReport`] for the given file path.
@@ -63,6 +67,7 @@ pub struct LspDoctorReport {
 /// * `cache_entries` — Number of cache entries.
 /// * `preview_total_count` — Total registered preview artifacts.
 /// * `preview_stale_count` — Number of stale preview artifacts.
+/// * `observability` — Optional observability snapshot for rich metrics.
 pub async fn build_doctor_report(
     input_path: &Path,
     allowed_root: Option<&Path>,
@@ -71,6 +76,7 @@ pub async fn build_doctor_report(
     cache_entries: usize,
     preview_total_count: usize,
     preview_stale_count: usize,
+    observability: Option<LspObservabilitySnapshot>,
 ) -> LspDoctorReport {
     let canonical_path = input_path
         .canonicalize()
@@ -189,6 +195,7 @@ pub async fn build_doctor_report(
         preview_stale_count,
         issues,
         remediation,
+        observability,
     }
 }
 
@@ -278,6 +285,14 @@ pub fn render_doctor_report(report: &LspDoctorReport) -> String {
         report.preview_count, report.preview_stale_count
     ));
 
+    // Observability detail.
+    if let Some(ref obs) = report.observability {
+        lines.push("  Observability:".to_string());
+        for line in obs.render_detail().lines() {
+            lines.push(format!("    {line}"));
+        }
+    }
+
     // Issues.
     if report.issues.is_empty() {
         lines.push("  Issues: (none)".to_string());
@@ -339,7 +354,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let file = tmp.path().join("missing.py");
         let report = futures::executor::block_on(build_doctor_report(
-            &file, None, None, "disabled", 0, 0, 0,
+            &file, None, None, "disabled", 0, 0, 0, None,
         ));
         assert_eq!(report.detected_language.as_deref(), Some("python"));
         // No allowed root set, so inside_allowed_root is always true.
@@ -364,6 +379,7 @@ mod tests {
             0,
             0,
             0,
+            None,
         ));
         assert!(!report.inside_allowed_root);
         assert!(report
@@ -380,7 +396,7 @@ mod tests {
         fs::write(&file, "").unwrap();
 
         let report = futures::executor::block_on(build_doctor_report(
-            &file, None, None, "disabled", 0, 0, 0,
+            &file, None, None, "disabled", 0, 0, 0, None,
         ));
         assert!(report.detected_language.is_none());
         assert!(report.server_profile.is_none());
@@ -397,7 +413,7 @@ mod tests {
         fs::write(&file, "print('hello')").unwrap();
 
         let report = futures::executor::block_on(build_doctor_report(
-            &file, None, None, "disabled", 0, 0, 0,
+            &file, None, None, "disabled", 0, 0, 0, None,
         ));
         assert!(report.selected_root.is_none());
         assert!(report.issues.iter().any(|i| i.contains("No project root")));
@@ -414,7 +430,7 @@ mod tests {
         fs::write(&file, "fn main() {}").unwrap();
 
         let report = futures::executor::block_on(build_doctor_report(
-            &file, None, None, "disabled", 0, 0, 0,
+            &file, None, None, "disabled", 0, 0, 0, None,
         ));
         assert_eq!(report.detected_language.as_deref(), Some("rust"));
         assert_eq!(report.server_profile.as_deref(), Some("rust-analyzer"));
@@ -429,8 +445,9 @@ mod tests {
         let file = tmp.path().join("main.rs");
         fs::write(&file, "").unwrap();
 
-        let report =
-            futures::executor::block_on(build_doctor_report(&file, None, None, "memory", 5, 2, 1));
+        let report = futures::executor::block_on(build_doctor_report(
+            &file, None, None, "memory", 5, 2, 1, None,
+        ));
         assert_eq!(report.cache_mode, "memory");
         assert_eq!(report.cache_entries, 5);
         assert_eq!(report.preview_count, 2);
@@ -445,7 +462,7 @@ mod tests {
         fs::write(&file, "").unwrap();
 
         let report = futures::executor::block_on(build_doctor_report(
-            &file, None, None, "disabled", 0, 0, 0,
+            &file, None, None, "disabled", 0, 0, 0, None,
         ));
         let rendered = render_doctor_report(&report);
         assert!(rendered.contains("LSP Doctor:"));
@@ -458,5 +475,47 @@ mod tests {
         assert!(rendered.contains("Previews:"));
         assert!(rendered.contains("Issues:"));
         assert!(rendered.contains("Remediation:"));
+        // No observability section when snapshot is None.
+        assert!(!rendered.contains("Observability:"));
+    }
+
+    #[test]
+    fn render_doctor_report_with_observability() {
+        let tmp = TempDir::new().unwrap();
+        fs::write(tmp.path().join("Cargo.toml"), "").unwrap();
+        let file = tmp.path().join("main.rs");
+        fs::write(&file, "").unwrap();
+
+        let obs = LspObservabilitySnapshot {
+            active_clients: 2,
+            cache_mode: "memory".to_string(),
+            cache_entries: 10,
+            cache_bytes: 4096,
+            cache_hits: 5,
+            cache_misses: 2,
+            cache_stale_misses: 1,
+            cache_evictions: 0,
+            preview_count: 3,
+            preview_stale_count: 1,
+            preview_applied_count: 1,
+            ..Default::default()
+        };
+        let report = futures::executor::block_on(build_doctor_report(
+            &file,
+            None,
+            None,
+            "memory",
+            10,
+            3,
+            1,
+            Some(obs),
+        ));
+        let rendered = render_doctor_report(&report);
+        assert!(rendered.contains("Observability:"));
+        assert!(rendered.contains("Active clients: 2"));
+        assert!(rendered.contains("Cache:"));
+        assert!(rendered.contains("hits=5"));
+        assert!(rendered.contains("Previews:"));
+        assert!(rendered.contains("applied=1"));
     }
 }

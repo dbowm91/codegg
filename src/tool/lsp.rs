@@ -1947,7 +1947,7 @@ impl LspTool {
     /// and preview status into a single read-only surface.
     pub async fn lsp_doctor(&self, path: &str) -> String {
         let input = std::path::Path::new(path);
-        let (cache_mode, cache_entries, preview_total, preview_stale) = {
+        let (cache_mode, cache_stats, preview_total, preview_stale, preview_applied) = {
             let cache = self.semantic_cache();
             let stats = cache.stats();
             let cache_mode = if cache.is_enabled() {
@@ -1958,7 +1958,37 @@ impl LspTool {
             let preview_registry = self.preview_registry();
             let preview_total = preview_registry.len();
             let preview_stale = preview_registry.stale_count();
-            (cache_mode, stats.entries, preview_total, preview_stale)
+            let preview_applied = preview_registry.applied_count();
+            (
+                cache_mode,
+                stats,
+                preview_total,
+                preview_stale,
+                preview_applied,
+            )
+        };
+
+        // Build observability snapshot from live service.
+        let keys = self.service.client_keys().await;
+        let mut clients = Vec::new();
+        for key in &keys {
+            if let Some(health) = self.service.operational_health_snapshot(key).await {
+                clients.push(health);
+            }
+        }
+        let observability = egglsp::health::LspObservabilitySnapshot {
+            active_clients: keys.len(),
+            clients,
+            cache_mode: cache_mode.to_string(),
+            cache_entries: cache_stats.entries,
+            cache_bytes: cache_stats.bytes,
+            cache_hits: cache_stats.hits as u64,
+            cache_misses: cache_stats.misses as u64,
+            cache_stale_misses: cache_stats.stale_misses as u64,
+            cache_evictions: cache_stats.evictions as u64,
+            preview_count: preview_total,
+            preview_stale_count: preview_stale,
+            preview_applied_count: preview_applied,
         };
 
         let report = egglsp::doctor::build_doctor_report(
@@ -1966,9 +1996,10 @@ impl LspTool {
             Some(&self.allowed_root),
             Some(self.service.as_ref()),
             cache_mode,
-            cache_entries,
+            cache_stats.entries,
             preview_total,
             preview_stale,
+            Some(observability),
         )
         .await;
 
