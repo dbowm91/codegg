@@ -1250,6 +1250,99 @@ Phase 10 operations compose existing LSP primitives into named workflow recipes 
 
 Each recipe uses `RecipeSettings` for tier-aware defaults and `RecipeOutcome` for rendered results.
 
+## Phase 11: LSP Context Policy
+
+Phase 11 centralizes tier, workflow, risk, budget, and stale-evidence decisions into a single `LspContextPolicy` object in `crates/egglsp/src/context_policy.rs`. This eliminates scattered tier/workflow branching and provides a single resolution path for all context-gathering operations.
+
+### Key Types
+
+| Type | Purpose |
+|------|---------|
+| `LspContextPolicy` | Central policy struct holding tier, workflow, risk, budget, stale/unavailable policies, feature flags, and lifecycle state |
+| `StaleEvidencePolicy` | Controls handling of stale diagnostics/context: `IncludeWithWarning` (default), `OmitStale`, `RequireFresh` |
+| `LspUnavailablePolicy` | Controls behavior when LSP server is unavailable: `NoteOnly` (default), `Omit`, `FailWhenRequired` |
+| `LspTaskRisk` | Risk classification: `Normal` (default), `Low`, `High`, `SecuritySensitive` |
+| `LspOperationalState` | Mirrors `health::LspOperationalState` as a policy-level enum (Ready, Starting, Initializing, Indexing, Degraded, RestartScheduled, Restarting, Failed, Stopping, Stopped) |
+| `TierSource` | Tracks where the tier came from: `Default`, `ExplicitOverride`, `ConfigOverride`, `ModelFamily`, `WorkflowDefault` |
+| `TierResolution` | Resolution result containing `tier: ModelTier`, `source: TierSource`, and `notes: Vec<String>` |
+
+### Tier Resolution Precedence
+
+`resolve_model_tier(override_tier, config_overrides, model_family)` follows a strict precedence chain:
+
+1. **Explicit override** — caller-supplied `ModelTier` wins unconditionally
+2. **Config override** — `[lsp.tier_overrides]` map keyed on model family name (case-insensitive)
+3. **Model family heuristic** — `model_tier_for_profile(model_family)` classifies known providers (e.g., "frontierreasoning" → Frontier, "claude" → Workhorse)
+4. **Workhorse default** — unknown models default to Workhorse
+
+The `TierSource` enum records which step produced the result for debug observability.
+
+### Workflow/Tier Default Matrix
+
+`LspContextPolicy::workflow_tier_defaults(workflow, tier)` returns a complete policy for any of the 12 recipes × 3 tiers. Feature flags (`include_cross_file`, `include_hierarchy`, `include_previews`) vary by workflow and tier:
+
+| Recipe | Small | Workhorse | Frontier |
+|--------|-------|-----------|----------|
+| RepairLocal | — | cross_file | cross_file + hierarchy + previews |
+| RepairHunk | — | — | cross_file + hierarchy |
+| ReviewDiff | — | cross_file | cross_file + hierarchy |
+| SecurityReviewEnriched | — | cross_file | cross_file + hierarchy |
+| PreviewSuggestion | — | previews | previews |
+| ImpactAnalysis | — | cross_file | cross_file + hierarchy |
+| TestFailureRepair | — | cross_file | cross_file + hierarchy |
+| ReviewFile | — | — | hierarchy |
+| HunkSourceNavigation | — | — | cross_file + hierarchy |
+| InterfaceBoundary | — | hierarchy | hierarchy |
+| CrossFileRepair | — | cross_file | cross_file + hierarchy |
+| CallNeighborhood | — | hierarchy | hierarchy |
+
+### Stale Evidence Policies
+
+| Policy | Small | Workhorse | Frontier | Behavior |
+|--------|-------|-----------|----------|----------|
+| `OmitStale` | default | — | — | Stale diagnostics/context are dropped from output |
+| `IncludeWithWarning` | — | default | default | Stale items are included with a freshness warning note |
+| `RequireFresh` | — | — | — | Stale items cause a policy error (opt-in) |
+
+### Unavailable Server Policies
+
+| Policy | Behavior |
+|--------|----------|
+| `NoteOnly` (default) | Appends a note that the server is unavailable; returns partial context |
+| `Omit` | Silently drops LSP-sourced evidence when server is unavailable |
+| `FailWhenRequired` | Returns error when the workflow requires LSP evidence and server is unavailable |
+
+### Token Budget Integration
+
+`LspContextPolicy` derives `LspContextBudget` via `to_budget()`:
+
+| Tier | max_context_bytes | max_references | max_symbols |
+|------|-------------------|----------------|-------------|
+| Small | 16,384 | 0 | 15 |
+| Workhorse | 32,768 | 15 | 20 |
+| Frontier | 65,536 | 50 | 50 |
+
+`max_context_bytes` can be overridden via `LspContextPolicy::resolve(...)`.
+
+### Conversions
+
+`LspContextPolicy` implements `Into<LspContextRenderConfig>` and `Into<RecipeSettings>` (via `From` on `&LspContextPolicy`). These are also available as methods `to_render_config()` and `to_recipe_settings()`.
+
+### Debug Observability
+
+`policy_summary()` returns a single-line debug string:
+
+```text
+LSP policy: tier=workhorse workflow=repair_local risk=normal stale=include_with_warning tier_source=model_family lifecycle=ready
+```
+
+### Integration
+
+- `LspContextPolicy` is constructed by `turn_runtime.rs` and `lsp.rs` before evidence gathering
+- `resolve_model_tier()` is called once per turn with the current model's family name
+- The resolved policy is passed to `collect_context()` and recipe functions
+- `TierSource` is logged at trace level for observability of tier resolution decisions
+
 ## Supported Languages (39 servers)
 
 | Language | Server | Command |

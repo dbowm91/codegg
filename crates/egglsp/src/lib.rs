@@ -22,6 +22,7 @@ pub mod client;
 pub mod compatibility;
 pub mod config;
 pub mod context;
+pub mod context_policy;
 pub mod context_renderer;
 pub mod degradation_policy;
 pub mod diagnostics;
@@ -75,6 +76,10 @@ pub use context::{
     LspContextMode, LspContextPacket, LspContextPacketMode, LspContextRequest, LspContextScore,
     LspContextTruncation, LspEvidenceFreshness, LspEvidenceProvenance, LspPreviewArtifact,
     LspRiskMode, PreviewFilePatch,
+};
+pub use context_policy::{
+    resolve_model_tier, LspContextPolicy, LspOperationalState as PolicyLspOperationalState,
+    LspTaskRisk, LspUnavailablePolicy, StaleEvidencePolicy, TierResolution, TierSource,
 };
 pub use context_renderer::model_tier_for_profile;
 pub use context_renderer::{render_lsp_context_for_agent, LspContextRenderConfig, ModelTier};

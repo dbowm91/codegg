@@ -906,6 +906,13 @@ pub fn render_lsp_status_line(packet: &LspContextPacket) -> String {
     )
 }
 
+/// Convert a context policy into a render config.
+impl From<&crate::context_policy::LspContextPolicy> for LspContextRenderConfig {
+    fn from(policy: &crate::context_policy::LspContextPolicy) -> Self {
+        policy.to_render_config()
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------

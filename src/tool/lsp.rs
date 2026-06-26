@@ -551,6 +551,22 @@ fn document_highlight_kind_to_string(
     .to_string()
 }
 
+fn infer_workflow_from_input(
+    input: &crate::agent::turn_runtime::LspAgentContextInput,
+) -> egglsp::workflow_recipes::LspWorkflowRecipe {
+    if input.security_review_mode {
+        egglsp::workflow_recipes::LspWorkflowRecipe::SecurityReviewEnriched
+    } else if input.review_mode {
+        egglsp::workflow_recipes::LspWorkflowRecipe::ReviewDiff
+    } else if !input.hunks.is_empty() {
+        egglsp::workflow_recipes::LspWorkflowRecipe::RepairHunk
+    } else if input.active_file.is_some() {
+        egglsp::workflow_recipes::LspWorkflowRecipe::RepairLocal
+    } else {
+        egglsp::workflow_recipes::LspWorkflowRecipe::ReviewDiff
+    }
+}
+
 pub struct LspTool {
     service: Arc<crate::lsp::service::LspService>,
     allowed_root: PathBuf,
@@ -749,15 +765,31 @@ impl LspTool {
         // Determine the renderer tier.
         let tier = input.model_tier.unwrap_or(egglsp::ModelTier::Workhorse);
 
-        // Render through the canonical renderer.
-        let config = egglsp::LspContextRenderConfig {
-            model_tier: tier,
-            ..egglsp::LspContextRenderConfig::default()
+        // Build a context policy from the inferred workflow and tier.
+        let workflow = infer_workflow_from_input(input);
+        let task_risk = if input.security_review_mode {
+            egglsp::context_policy::LspTaskRisk::SecuritySensitive
+        } else {
+            egglsp::context_policy::LspTaskRisk::Normal
         };
-        let rendered = egglsp::render_lsp_context_for_agent(&packet, &config);
+        let policy = egglsp::context_policy::LspContextPolicy::resolve(
+            tier,
+            workflow,
+            task_risk,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        // Render through the canonical renderer using the policy-derived config.
+        let config = policy.to_render_config();
+        let mut rendered = egglsp::render_lsp_context_for_agent(&packet, &config);
         if rendered.trim().is_empty() {
             return self.lsp_context_for_agent().await;
         }
+        rendered.push_str(&format!("\n> policy: {}", policy.policy_summary()));
         Some(format!("\n\n## LSP Context\n{rendered}\n"))
     }
 

@@ -2213,6 +2213,84 @@ cargo test -p egglsp --features lsp-test-support --test scenario_engine
 cargo test --features lsp-test-support --test lsp_composite_stdio
 ```
 
+## Phase 11: LSP Context Policy
+
+Phase 11 centralizes tier, workflow, risk, budget, and stale-evidence decisions into a single `LspContextPolicy` object in `crates/egglsp/src/context_policy.rs`.
+
+### Key Types
+
+All types live in `crates/egglsp/src/context_policy.rs` and are re-exported from `egglsp::*`:
+
+```rust
+pub struct LspContextPolicy {
+    pub model_tier: ModelTier,
+    pub workflow: LspWorkflowRecipe,
+    pub task_risk: LspTaskRisk,
+    pub lifecycle_state: Option<LspOperationalState>,
+    pub token_budget_hint: Option<usize>,
+    pub max_context_bytes: usize,
+    pub include_cross_file: bool,
+    pub include_hierarchy: bool,
+    pub include_previews: bool,
+    pub stale_evidence_policy: StaleEvidencePolicy,
+    pub unavailable_policy: LspUnavailablePolicy,
+    pub tier_source: TierSource,
+}
+
+pub enum StaleEvidencePolicy { IncludeWithWarning, OmitStale, RequireFresh }
+pub enum LspUnavailablePolicy { NoteOnly, Omit, FailWhenRequired }
+pub enum LspTaskRisk { Normal, Low, High, SecuritySensitive }
+pub enum LspOperationalState { Ready, Starting, Initializing, Indexing, Degraded, RestartScheduled, Restarting, Failed, Stopping, Stopped }
+pub enum TierSource { Default, ExplicitOverride, ConfigOverride, ModelFamily, WorkflowDefault }
+pub struct TierResolution { pub tier: ModelTier, pub source: TierSource, pub notes: Vec<String> }
+```
+
+### resolve_model_tier()
+
+Central tier resolution with strict precedence:
+
+```rust
+pub fn resolve_model_tier(
+    override_tier: Option<ModelTier>,
+    config_overrides: Option<&HashMap<String, ModelTier>>,
+    model_family: &str,
+) -> TierResolution
+```
+
+Precedence: explicit override > config override (`[lsp.tier_overrides]`) > model family heuristic (`model_tier_for_profile`) > Workhorse default.
+
+### Policy Summary
+
+`policy_summary()` returns a single-line debug string:
+
+```
+LSP policy: tier=workhorse workflow=repair_local risk=normal stale=include_with_warning tier_source=model_family lifecycle=ready
+```
+
+### Usage Pattern
+
+```rust
+use egglsp::{resolve_model_tier, LspContextPolicy, LspTaskRisk, LspWorkflowRecipe};
+
+// 1. Resolve tier for current model
+let resolution = resolve_model_tier(None, Some(&config_overrides), "claude-3-sonnet");
+
+// 2. Build policy for the workflow
+let policy = LspContextPolicy::resolve(
+    resolution.tier,
+    LspWorkflowRecipe::ImpactAnalysis,
+    LspTaskRisk::Normal,
+    None, None, None, None, None,
+);
+
+// 3. Convert to recipe settings or render config
+let settings = policy.to_recipe_settings();
+let render_config = policy.to_render_config();
+
+// 4. Debug output
+eprintln!("{}", policy.policy_summary());
+```
+
 ## See Also
 
 - [tool.md](tool.md) - LSP tool wrapper

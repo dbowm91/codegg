@@ -385,49 +385,64 @@ impl TurnRuntime for DefaultTurnRuntime {
 // LSP context assembly helpers
 // ---------------------------------------------------------------------------
 
-/// Outcome of [`resolve_lsp_context_tier`].
-///
-/// Records what happened during tier resolution so callers and
-/// tests can distinguish explicit overrides from runtime-resolved
-/// tiers without inspecting the input twice.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum TierResolutionOutcome {
-    /// Caller did not supply an `LspAgentContextInput`; nothing to
-    /// resolve.
-    NoInput,
-    /// Caller supplied an input with `model_tier` already set;
-    /// that tier is preserved unchanged.
-    Preserved,
-    /// Caller supplied an input with `model_tier = None`; tier was
-    /// derived from the resolved model profile family via
-    /// [`egglsp::model_tier_for_profile`].
-    ResolvedFromFamily,
-}
-
 /// Resolve the renderer tier for a turn's LSP context input.
 ///
-/// Mirrors the production wiring in [`DefaultTurnRuntime::run_turn`]:
-/// the explicit `input.model_tier` override always wins; otherwise the
-/// tier is derived from the resolved model profile family string
-/// (lowercased; see [`egglsp::model_tier_for_profile`] for the
-/// canonical mapping).
+/// Precedence chain:
+/// 1. Explicit per-request tier override (`input.model_tier` already set)
+/// 2. Model family heuristic (via [`egglsp::model_tier_for_profile`])
+/// 3. Default to Workhorse
 ///
 /// Exposed `pub(crate)` so turn-runtime tests can verify the wiring
 /// without spinning up an agent loop.
 pub(crate) fn resolve_lsp_context_tier(
     input: Option<&mut LspAgentContextInput>,
     model_family: &str,
-) -> TierResolutionOutcome {
-    match input {
-        None => TierResolutionOutcome::NoInput,
-        Some(inp) => {
-            if inp.model_tier.is_some() {
-                TierResolutionOutcome::Preserved
-            } else {
-                inp.model_tier = Some(egglsp::model_tier_for_profile(model_family));
-                TierResolutionOutcome::ResolvedFromFamily
-            }
+) -> egglsp::context_policy::TierResolution {
+    use egglsp::context_policy::{TierResolution, TierSource};
+
+    let mut notes = Vec::new();
+
+    if let Some(inp) = input {
+        if let Some(tier) = inp.model_tier {
+            notes.push(format!("using explicit tier override: {tier}"));
+            return TierResolution {
+                tier,
+                source: TierSource::ExplicitOverride,
+                notes,
+            };
         }
+        let tier = egglsp::model_tier_for_profile(model_family);
+        notes.push(format!(
+            "resolved from model family '{model_family}': {tier}"
+        ));
+        TierResolution {
+            tier,
+            source: TierSource::ModelFamily,
+            notes,
+        }
+    } else {
+        notes.push("no LSP context input; defaulting to Workhorse".to_string());
+        TierResolution {
+            tier: egglsp::ModelTier::Workhorse,
+            source: TierSource::Default,
+            notes,
+        }
+    }
+}
+
+fn infer_workflow_from_input(
+    input: &LspAgentContextInput,
+) -> egglsp::workflow_recipes::LspWorkflowRecipe {
+    if input.security_review_mode {
+        egglsp::workflow_recipes::LspWorkflowRecipe::SecurityReviewEnriched
+    } else if input.review_mode {
+        egglsp::workflow_recipes::LspWorkflowRecipe::ReviewDiff
+    } else if !input.hunks.is_empty() {
+        egglsp::workflow_recipes::LspWorkflowRecipe::RepairHunk
+    } else if input.active_file.is_some() {
+        egglsp::workflow_recipes::LspWorkflowRecipe::RepairLocal
+    } else {
+        egglsp::workflow_recipes::LspWorkflowRecipe::ReviewDiff
     }
 }
 
@@ -439,9 +454,11 @@ pub(crate) fn resolve_lsp_context_tier(
 ///
 /// 1. Resolves the renderer tier from the model profile family
 ///    (unless the caller set an explicit override).
-/// 2. Routes to the task-aware collection path when the input has
+/// 2. Builds an [`egglsp::LspContextPolicy`] from the resolved
+///    tier, inferred workflow, and task risk.
+/// 3. Routes to the task-aware collection path when the input has
 ///    workflow metadata, otherwise to the status-only path.
-/// 3. Returns the rendered section or `None` when the LSP service
+/// 4. Returns the rendered section or `None` when the LSP service
 ///    has no clients and the empty-packet fallback path produces
 ///    nothing.
 ///
@@ -459,7 +476,33 @@ pub(crate) async fn assemble_lsp_context_for_turn(
     let tool = LspTool::new(Arc::clone(lsp_service)).with_allowed_root(allowed_root);
 
     let mut input = lsp_context_input;
-    let _ = resolve_lsp_context_tier(input.as_mut(), model_family);
+    let resolution = resolve_lsp_context_tier(input.as_mut(), model_family);
+
+    let tier = resolution.tier;
+    let workflow = input
+        .as_ref()
+        .map(infer_workflow_from_input)
+        .unwrap_or(egglsp::workflow_recipes::LspWorkflowRecipe::ReviewDiff);
+
+    let task_risk = if input.as_ref().is_some_and(|i| i.security_review_mode) {
+        egglsp::context_policy::LspTaskRisk::SecuritySensitive
+    } else {
+        egglsp::context_policy::LspTaskRisk::Normal
+    };
+
+    let mut policy = egglsp::context_policy::LspContextPolicy::resolve(
+        tier,
+        workflow,
+        task_risk,
+        None,
+        None,
+        None,
+        None,
+        None,
+    );
+    policy.tier_source = resolution.source;
+
+    tracing::debug!("{}", policy.policy_summary());
 
     if input.as_ref().is_some_and(|i| i.has_workflow_metadata()) {
         tool.lsp_context_for_agent_with_input(input.as_ref()).await
@@ -475,6 +518,7 @@ pub(crate) async fn assemble_lsp_context_for_turn(
 #[cfg(test)]
 mod tier_resolution_tests {
     use super::*;
+    use egglsp::context_policy::TierSource;
 
     fn make_input_with_metadata() -> LspAgentContextInput {
         LspAgentContextInput {
@@ -485,21 +529,17 @@ mod tier_resolution_tests {
 
     #[test]
     fn turn_runtime_small_model_uses_small_lsp_render_tier() {
-        // Tool-fragile / FastExecutor / LocalStrict family names all
-        // resolve to Small in the canonical `model_tier_for_profile`
-        // mapping. The runtime must mirror that for the model
-        // profile's family string.
         for family in ["tool_fragile", "local_strict", "fast_executor"] {
             let mut input = make_input_with_metadata();
-            let outcome = resolve_lsp_context_tier(Some(&mut input), family);
+            let resolution = resolve_lsp_context_tier(Some(&mut input), family);
             assert_eq!(
-                outcome,
-                TierResolutionOutcome::ResolvedFromFamily,
+                resolution.source,
+                TierSource::ModelFamily,
                 "family={family} should resolve from family"
             );
             assert_eq!(
-                input.model_tier,
-                Some(egglsp::ModelTier::Small),
+                resolution.tier,
+                egglsp::ModelTier::Small,
                 "family={family} should produce Small tier"
             );
         }
@@ -507,7 +547,6 @@ mod tier_resolution_tests {
 
     #[test]
     fn turn_runtime_frontier_model_uses_frontier_lsp_render_tier() {
-        // Frontier families resolve to Frontier.
         for family in [
             "frontierreasoning",
             "frontier_executor",
@@ -515,15 +554,15 @@ mod tier_resolution_tests {
             "default",
         ] {
             let mut input = make_input_with_metadata();
-            let outcome = resolve_lsp_context_tier(Some(&mut input), family);
+            let resolution = resolve_lsp_context_tier(Some(&mut input), family);
             assert_eq!(
-                outcome,
-                TierResolutionOutcome::ResolvedFromFamily,
+                resolution.source,
+                TierSource::ModelFamily,
                 "family={family} should resolve from family"
             );
             assert_eq!(
-                input.model_tier,
-                Some(egglsp::ModelTier::Frontier),
+                resolution.tier,
+                egglsp::ModelTier::Frontier,
                 "family={family} should produce Frontier tier"
             );
         }
@@ -531,33 +570,28 @@ mod tier_resolution_tests {
 
     #[test]
     fn turn_runtime_unknown_family_defaults_workhorse() {
-        // Unknown family names (and the empty string) fall through
-        // to Workhorse in the canonical mapping. The runtime must
-        // mirror that for the renderer to behave as the default.
         for family in ["some-new-vendor/some-model", "anthropic-unknown", ""] {
             let mut input = make_input_with_metadata();
-            let outcome = resolve_lsp_context_tier(Some(&mut input), family);
+            let resolution = resolve_lsp_context_tier(Some(&mut input), family);
             assert_eq!(
-                outcome,
-                TierResolutionOutcome::ResolvedFromFamily,
+                resolution.source,
+                TierSource::ModelFamily,
                 "family={family:?} should resolve from family"
             );
             assert_eq!(
-                input.model_tier,
-                Some(egglsp::ModelTier::Workhorse),
+                resolution.tier,
+                egglsp::ModelTier::Workhorse,
                 "family={family:?} should produce Workhorse tier"
             );
         }
 
-        // No-input case: outcome is `NoInput` and no mutation happens.
-        let outcome = resolve_lsp_context_tier(None, "any");
-        assert_eq!(outcome, TierResolutionOutcome::NoInput);
+        let resolution = resolve_lsp_context_tier(None, "any");
+        assert_eq!(resolution.tier, egglsp::ModelTier::Workhorse);
+        assert_eq!(resolution.source, TierSource::Default);
     }
 
     #[test]
     fn turn_runtime_explicit_tier_override_is_preserved() {
-        // If the caller already set a tier (e.g. via a future mode
-        // flag), the runtime must not overwrite it.
         for tier in [
             egglsp::ModelTier::Small,
             egglsp::ModelTier::Workhorse,
@@ -568,10 +602,85 @@ mod tier_resolution_tests {
                 model_tier: Some(tier),
                 ..Default::default()
             };
-            let outcome = resolve_lsp_context_tier(Some(&mut input), "frontierreasoning");
-            assert_eq!(outcome, TierResolutionOutcome::Preserved);
-            assert_eq!(input.model_tier, Some(tier));
+            let resolution = resolve_lsp_context_tier(Some(&mut input), "frontierreasoning");
+            assert_eq!(resolution.source, TierSource::ExplicitOverride);
+            assert_eq!(resolution.tier, tier);
         }
+    }
+
+    #[test]
+    fn turn_runtime_infer_workflow_from_input_security_review() {
+        let input = LspAgentContextInput {
+            security_review_mode: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            infer_workflow_from_input(&input),
+            egglsp::workflow_recipes::LspWorkflowRecipe::SecurityReviewEnriched
+        );
+    }
+
+    #[test]
+    fn turn_runtime_infer_workflow_from_input_review_mode() {
+        let input = LspAgentContextInput {
+            review_mode: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            infer_workflow_from_input(&input),
+            egglsp::workflow_recipes::LspWorkflowRecipe::ReviewDiff
+        );
+    }
+
+    #[test]
+    fn turn_runtime_infer_workflow_from_input_with_hunks() {
+        let input = LspAgentContextInput {
+            hunks: vec![egglsp::HunkDescriptor {
+                id: "h1".to_string(),
+                file_path: "src/lib.rs".to_string(),
+                old_range: Some(egglsp::hunk_context::HunkLineRange {
+                    start_line: 1,
+                    end_line: 5,
+                }),
+                new_range: Some(egglsp::hunk_context::HunkLineRange {
+                    start_line: 1,
+                    end_line: 10,
+                }),
+                header: None,
+                added_lines: 5,
+                removed_lines: 0,
+                context_lines: 3,
+            }],
+            ..Default::default()
+        };
+        assert_eq!(
+            infer_workflow_from_input(&input),
+            egglsp::workflow_recipes::LspWorkflowRecipe::RepairHunk
+        );
+    }
+
+    #[test]
+    fn turn_runtime_infer_workflow_from_input_active_file() {
+        let input = LspAgentContextInput {
+            active_file: Some(std::path::PathBuf::from("src/main.rs")),
+            ..Default::default()
+        };
+        assert_eq!(
+            infer_workflow_from_input(&input),
+            egglsp::workflow_recipes::LspWorkflowRecipe::RepairLocal
+        );
+    }
+
+    #[test]
+    fn turn_runtime_infer_workflow_from_input_default() {
+        let input = LspAgentContextInput {
+            changed_files: vec![std::path::PathBuf::from("src/lib.rs")],
+            ..Default::default()
+        };
+        assert_eq!(
+            infer_workflow_from_input(&input),
+            egglsp::workflow_recipes::LspWorkflowRecipe::ReviewDiff
+        );
     }
 
     #[test]

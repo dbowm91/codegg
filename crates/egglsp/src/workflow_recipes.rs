@@ -968,6 +968,13 @@ pub fn default_settings_for_recipe(recipe: LspWorkflowRecipe, tier: ModelTier) -
     settings
 }
 
+/// Convert a context policy into recipe settings.
+impl From<&crate::context_policy::LspContextPolicy> for RecipeSettings {
+    fn from(policy: &crate::context_policy::LspContextPolicy) -> Self {
+        policy.to_recipe_settings()
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
