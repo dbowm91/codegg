@@ -68,6 +68,16 @@ pub enum LspWorkflowRecipe {
     /// Include safe preview-only semantic edit suggestions in
     /// repair/review context.
     PreviewSuggestion,
+    /// Impact analysis for a symbol change across files.
+    ImpactAnalysis,
+    /// Test failure repair with heuristic symbol extraction.
+    TestFailureRepair,
+    /// API/interface boundary review with implementations.
+    InterfaceBoundary,
+    /// Cross-file repair evidence gathering.
+    CrossFileRepair,
+    /// Shallow call neighborhood around a symbol.
+    CallNeighborhood,
 }
 
 impl std::fmt::Display for LspWorkflowRecipe {
@@ -80,6 +90,11 @@ impl std::fmt::Display for LspWorkflowRecipe {
             Self::SecurityReviewEnriched => write!(f, "security_review_enriched"),
             Self::HunkSourceNavigation => write!(f, "hunk_source_navigation"),
             Self::PreviewSuggestion => write!(f, "preview_suggestion"),
+            Self::ImpactAnalysis => write!(f, "impact_analysis"),
+            Self::TestFailureRepair => write!(f, "test_failure_repair"),
+            Self::InterfaceBoundary => write!(f, "interface_boundary"),
+            Self::CrossFileRepair => write!(f, "cross_file_repair"),
+            Self::CallNeighborhood => write!(f, "call_neighborhood"),
         }
     }
 }
@@ -325,6 +340,73 @@ pub struct PreviewSuggestionRequest {
     pub line: u32,
     /// Target column (0-indexed).
     pub column: u32,
+    /// Recipe settings.
+    pub settings: RecipeSettings,
+}
+
+/// Request for the `impact_analysis` recipe.
+#[derive(Debug, Clone)]
+pub struct ImpactAnalysisRequest {
+    /// Target symbol to analyze.
+    pub symbol: crate::context::SymbolTarget,
+    /// Files that have been changed.
+    pub changed_files: Vec<PathBuf>,
+    /// Recipe settings.
+    pub settings: RecipeSettings,
+}
+
+/// Request for the `test_failure_repair` recipe.
+#[derive(Debug, Clone)]
+pub struct TestFailureRepairRequest {
+    /// Path to the test file.
+    pub test_file: PathBuf,
+    /// Test failure output/message.
+    pub failure_message: String,
+    /// Related source files from the test runner or user.
+    pub related_files: Vec<PathBuf>,
+    /// Recipe settings.
+    pub settings: RecipeSettings,
+}
+
+/// Request for the `interface_boundary` recipe.
+#[derive(Debug, Clone)]
+pub struct InterfaceBoundaryRequest {
+    /// File containing the boundary symbols.
+    pub file: PathBuf,
+    /// Optional specific symbol to focus on.
+    pub symbol: Option<String>,
+    /// Whether to include trait/interface implementations.
+    pub include_implementations: bool,
+    /// Recipe settings.
+    pub settings: RecipeSettings,
+}
+
+/// Request for the `cross_file_repair` recipe.
+#[derive(Debug, Clone)]
+pub struct CrossFileRepairRequest {
+    /// Primary file being repaired.
+    pub primary_file: PathBuf,
+    /// Related files to gather evidence from.
+    pub related_files: Vec<PathBuf>,
+    /// Line ranges of interest in the primary file.
+    pub ranges: Vec<LineRange>,
+    /// Recipe settings.
+    pub settings: RecipeSettings,
+}
+
+/// Request for the `call_neighborhood` recipe.
+#[derive(Debug, Clone)]
+pub struct CallNeighborhoodRequest {
+    /// File containing the target symbol.
+    pub file: PathBuf,
+    /// Line of the target symbol (0-indexed).
+    pub line: u32,
+    /// Column of the target symbol (0-indexed).
+    pub column: u32,
+    /// Direction of call traversal.
+    pub direction: crate::context::HierarchyDirection,
+    /// Maximum traversal depth (default 1).
+    pub max_depth: u8,
     /// Recipe settings.
     pub settings: RecipeSettings,
 }
@@ -609,6 +691,138 @@ pub async fn execute_preview_suggestion(
     )
 }
 
+/// Execute the `impact_analysis` recipe.
+///
+/// Gathers definition, capped cross-file references, diagnostics in
+/// affected files, and document highlights near changed hunks.
+pub async fn execute_impact_analysis(
+    provider: &dyn LspEvidenceProvider,
+    request: &ImpactAnalysisRequest,
+) -> Result<RecipeOutcome, LspContextError> {
+    let budget = request.settings.to_budget();
+    let (max_refs, max_files, max_depth) = match request.settings.model_tier {
+        ModelTier::Small => (5, 1, 0),
+        ModelTier::Workhorse => (20, 5, 1),
+        ModelTier::Frontier => (50, 10, 1),
+    };
+
+    let ctx_request = LspContextRequest::ImpactAnalysis {
+        symbol: request.symbol.clone(),
+        changed_files: request.changed_files.clone(),
+        max_refs,
+        max_files,
+        max_depth,
+    };
+
+    let mode = &request.settings.mode;
+    let packet = collect_context(provider, &ctx_request, &budget, mode).await?;
+    finish_recipe_outcome(LspWorkflowRecipe::ImpactAnalysis, packet, &request.settings)
+}
+
+/// Execute the `test_failure_repair` recipe.
+///
+/// Extracts symbols from failure messages, gathers test-file
+/// diagnostics and definitions for extracted symbols.
+pub async fn execute_test_failure_repair(
+    provider: &dyn LspEvidenceProvider,
+    request: &TestFailureRepairRequest,
+) -> Result<RecipeOutcome, LspContextError> {
+    let budget = request.settings.to_budget();
+
+    let ctx_request = LspContextRequest::TestFailureRepair {
+        test_file: request.test_file.clone(),
+        failure_message: request.failure_message.clone(),
+        related_files: request.related_files.clone(),
+    };
+
+    let mode = &request.settings.mode;
+    let packet = collect_context(provider, &ctx_request, &budget, mode).await?;
+    finish_recipe_outcome(
+        LspWorkflowRecipe::TestFailureRepair,
+        packet,
+        &request.settings,
+    )
+}
+
+/// Execute the `interface_boundary` recipe.
+///
+/// Gathers document symbols, definitions, implementations, and
+/// hover for public/exported API boundary symbols.
+pub async fn execute_interface_boundary(
+    provider: &dyn LspEvidenceProvider,
+    request: &InterfaceBoundaryRequest,
+) -> Result<RecipeOutcome, LspContextError> {
+    let budget = request.settings.to_budget();
+
+    let ctx_request = LspContextRequest::InterfaceBoundary {
+        file: request.file.clone(),
+        symbol: request.symbol.clone(),
+        include_implementations: request.include_implementations,
+    };
+
+    let mode = &request.settings.mode;
+    let packet = collect_context(provider, &ctx_request, &budget, mode).await?;
+    finish_recipe_outcome(
+        LspWorkflowRecipe::InterfaceBoundary,
+        packet,
+        &request.settings,
+    )
+}
+
+/// Execute the `cross_file_repair` recipe.
+///
+/// Gathers diagnostics, symbols, and definitions/references across
+/// a primary file and related files with explicit file caps.
+pub async fn execute_cross_file_repair(
+    provider: &dyn LspEvidenceProvider,
+    request: &CrossFileRepairRequest,
+) -> Result<RecipeOutcome, LspContextError> {
+    let budget = request.settings.to_budget();
+
+    let ctx_request = LspContextRequest::CrossFileRepair {
+        primary_file: request.primary_file.clone(),
+        related_files: request.related_files.clone(),
+        ranges: request.ranges.clone(),
+    };
+
+    let mode = &request.settings.mode;
+    let packet = collect_context(provider, &ctx_request, &budget, mode).await?;
+    finish_recipe_outcome(
+        LspWorkflowRecipe::CrossFileRepair,
+        packet,
+        &request.settings,
+    )
+}
+
+/// Execute the `call_neighborhood` recipe.
+///
+/// Gathers shallow call hierarchy around a symbol with cycle-safe
+/// dedup and incoming/outgoing caps.
+pub async fn execute_call_neighborhood(
+    provider: &dyn LspEvidenceProvider,
+    request: &CallNeighborhoodRequest,
+) -> Result<RecipeOutcome, LspContextError> {
+    let budget = request.settings.to_budget();
+
+    let ctx_request = LspContextRequest::CallNeighborhood {
+        file: request.file.clone(),
+        line: request.line,
+        column: request.column,
+        direction: request.direction,
+        max_depth: request.max_depth,
+        max_callers: 10,
+        max_callees: 10,
+    };
+
+    let mode = &request.settings.mode;
+    let packet = collect_context(provider, &ctx_request, &budget, mode).await?;
+    finish_recipe_outcome(
+        LspWorkflowRecipe::CallNeighborhood,
+        packet,
+        &request.settings,
+    )
+}
+
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
@@ -706,6 +920,45 @@ pub fn default_settings_for_recipe(recipe: LspWorkflowRecipe, tier: ModelTier) -
             settings.include_definitions = false;
             settings.include_preview_hints = true;
         }
+        LspWorkflowRecipe::ImpactAnalysis => {
+            settings.max_references = match tier {
+                ModelTier::Small => 5,
+                ModelTier::Workhorse => 20,
+                ModelTier::Frontier => 50,
+            };
+            settings.max_files = match tier {
+                ModelTier::Small => 1,
+                ModelTier::Workhorse => 5,
+                ModelTier::Frontier => 10,
+            };
+            settings.include_references = true;
+        }
+        LspWorkflowRecipe::TestFailureRepair => {
+            settings.max_files = match tier {
+                ModelTier::Small => 1,
+                ModelTier::Workhorse => 3,
+                ModelTier::Frontier => 5,
+            };
+            settings.include_references = false;
+            settings.include_definitions = true;
+        }
+        LspWorkflowRecipe::InterfaceBoundary => {
+            settings.max_files = 1;
+            settings.include_references =
+                matches!(tier, ModelTier::Workhorse | ModelTier::Frontier);
+        }
+        LspWorkflowRecipe::CrossFileRepair => {
+            settings.max_files = match tier {
+                ModelTier::Small => 1,
+                ModelTier::Workhorse => 3,
+                ModelTier::Frontier => 5,
+            };
+            settings.include_references = !matches!(tier, ModelTier::Small);
+        }
+        LspWorkflowRecipe::CallNeighborhood => {
+            settings.max_files = 1;
+            settings.include_references = !matches!(tier, ModelTier::Small);
+        }
     }
     settings
 }
@@ -736,6 +989,26 @@ mod tests {
             LspWorkflowRecipe::PreviewSuggestion.to_string(),
             "preview_suggestion"
         );
+        assert_eq!(
+            LspWorkflowRecipe::ImpactAnalysis.to_string(),
+            "impact_analysis"
+        );
+        assert_eq!(
+            LspWorkflowRecipe::TestFailureRepair.to_string(),
+            "test_failure_repair"
+        );
+        assert_eq!(
+            LspWorkflowRecipe::InterfaceBoundary.to_string(),
+            "interface_boundary"
+        );
+        assert_eq!(
+            LspWorkflowRecipe::CrossFileRepair.to_string(),
+            "cross_file_repair"
+        );
+        assert_eq!(
+            LspWorkflowRecipe::CallNeighborhood.to_string(),
+            "call_neighborhood"
+        );
     }
 
     #[test]
@@ -763,6 +1036,75 @@ mod tests {
         assert!(s.include_preview_hints);
         assert!(s.include_references);
         assert_eq!(s.max_references, 50);
+    }
+
+    #[test]
+    fn impact_analysis_tier_defaults() {
+        let small =
+            default_settings_for_recipe(LspWorkflowRecipe::ImpactAnalysis, ModelTier::Small);
+        assert_eq!(small.max_references, 5);
+        assert_eq!(small.max_files, 1);
+        assert!(small.include_references);
+
+        let workhorse =
+            default_settings_for_recipe(LspWorkflowRecipe::ImpactAnalysis, ModelTier::Workhorse);
+        assert_eq!(workhorse.max_references, 20);
+        assert_eq!(workhorse.max_files, 5);
+
+        let frontier =
+            default_settings_for_recipe(LspWorkflowRecipe::ImpactAnalysis, ModelTier::Frontier);
+        assert_eq!(frontier.max_references, 50);
+        assert_eq!(frontier.max_files, 10);
+    }
+
+    #[test]
+    fn test_failure_repair_tier_defaults() {
+        let small =
+            default_settings_for_recipe(LspWorkflowRecipe::TestFailureRepair, ModelTier::Small);
+        assert_eq!(small.max_files, 1);
+        assert!(small.include_definitions);
+        assert!(!small.include_references);
+
+        let frontier =
+            default_settings_for_recipe(LspWorkflowRecipe::TestFailureRepair, ModelTier::Frontier);
+        assert_eq!(frontier.max_files, 5);
+    }
+
+    #[test]
+    fn interface_boundary_tier_defaults() {
+        let small =
+            default_settings_for_recipe(LspWorkflowRecipe::InterfaceBoundary, ModelTier::Small);
+        assert_eq!(small.max_files, 1);
+        assert!(!small.include_references);
+
+        let workhorse =
+            default_settings_for_recipe(LspWorkflowRecipe::InterfaceBoundary, ModelTier::Workhorse);
+        assert!(workhorse.include_references);
+    }
+
+    #[test]
+    fn cross_file_repair_tier_defaults() {
+        let small =
+            default_settings_for_recipe(LspWorkflowRecipe::CrossFileRepair, ModelTier::Small);
+        assert_eq!(small.max_files, 1);
+        assert!(!small.include_references);
+
+        let frontier =
+            default_settings_for_recipe(LspWorkflowRecipe::CrossFileRepair, ModelTier::Frontier);
+        assert_eq!(frontier.max_files, 5);
+        assert!(frontier.include_references);
+    }
+
+    #[test]
+    fn call_neighborhood_tier_defaults() {
+        let small =
+            default_settings_for_recipe(LspWorkflowRecipe::CallNeighborhood, ModelTier::Small);
+        assert_eq!(small.max_files, 1);
+        assert!(!small.include_references);
+
+        let workhorse =
+            default_settings_for_recipe(LspWorkflowRecipe::CallNeighborhood, ModelTier::Workhorse);
+        assert!(workhorse.include_references);
     }
 
     #[test]
@@ -1483,5 +1825,147 @@ mod tests {
             default_settings_for_recipe(LspWorkflowRecipe::RepairLocal, ModelTier::Small);
         assert!(!settings.include_references);
         assert!(!settings.include_preview_hints);
+    }
+
+    #[tokio::test]
+    async fn test_impact_analysis_with_degraded_provider() {
+        let request = ImpactAnalysisRequest {
+            symbol: crate::context::SymbolTarget {
+                file: std::path::PathBuf::from("src/lib.rs"),
+                position: lsp_types::Position {
+                    line: 10,
+                    character: 5,
+                },
+            },
+            changed_files: vec![std::path::PathBuf::from("src/a.rs")],
+            settings: RecipeSettings::default(),
+        };
+
+        let outcome = execute_impact_analysis(&DegradedProvider, &request)
+            .await
+            .unwrap();
+
+        // Degraded provider still returns diagnostics.
+        assert!(!outcome.packet.items.is_empty());
+        assert!(outcome.fallback_used);
+    }
+
+    #[tokio::test]
+    async fn test_impact_analysis_with_unavail_provider() {
+        let request = ImpactAnalysisRequest {
+            symbol: crate::context::SymbolTarget {
+                file: std::path::PathBuf::from("src/lib.rs"),
+                position: lsp_types::Position {
+                    line: 10,
+                    character: 5,
+                },
+            },
+            changed_files: vec![],
+            settings: RecipeSettings::default(),
+        };
+
+        let outcome = execute_impact_analysis(&UnavailProvider, &request)
+            .await
+            .unwrap();
+
+        // Unavail provider returns operational notes.
+        assert!(outcome.fallback_used);
+    }
+
+    #[tokio::test]
+    async fn test_test_failure_repair_with_degraded_provider() {
+        let request = TestFailureRepairRequest {
+            test_file: std::path::PathBuf::from("tests/foo.rs"),
+            failure_message: "thread 'test_foo' panicked at 'assertion failed'".to_string(),
+            related_files: vec![std::path::PathBuf::from("src/foo.rs")],
+            settings: RecipeSettings::default(),
+        };
+
+        let outcome = execute_test_failure_repair(&DegradedProvider, &request)
+            .await
+            .unwrap();
+
+        // Should have diagnostics from the test file.
+        assert!(!outcome.packet.items.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_interface_boundary_with_degraded_provider() {
+        let request = InterfaceBoundaryRequest {
+            file: std::path::PathBuf::from("src/api.rs"),
+            symbol: None,
+            include_implementations: false,
+            settings: RecipeSettings::default(),
+        };
+
+        let outcome = execute_interface_boundary(&DegradedProvider, &request)
+            .await
+            .unwrap();
+
+        // Should have operational notes for failed operations.
+        assert!(outcome.fallback_used);
+    }
+
+    #[tokio::test]
+    async fn test_cross_file_repair_with_degraded_provider() {
+        let request = CrossFileRepairRequest {
+            primary_file: std::path::PathBuf::from("src/main.rs"),
+            related_files: vec![std::path::PathBuf::from("src/lib.rs")],
+            ranges: vec![],
+            settings: RecipeSettings::default(),
+        };
+
+        let outcome = execute_cross_file_repair(&DegradedProvider, &request)
+            .await
+            .unwrap();
+
+        // Degraded provider returns diagnostics.
+        assert!(!outcome.packet.items.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_call_neighborhood_with_unavail_provider() {
+        let request = CallNeighborhoodRequest {
+            file: std::path::PathBuf::from("src/main.rs"),
+            line: 42,
+            column: 10,
+            direction: crate::context::HierarchyDirection::Both,
+            max_depth: 1,
+            settings: RecipeSettings::default(),
+        };
+
+        let outcome = execute_call_neighborhood(&UnavailProvider, &request)
+            .await
+            .unwrap();
+
+        // Unavail provider returns operational notes.
+        assert!(outcome.fallback_used);
+    }
+
+    #[tokio::test]
+    async fn test_impact_analysis_small_tier_caps() {
+        let settings =
+            default_settings_for_recipe(LspWorkflowRecipe::ImpactAnalysis, ModelTier::Small);
+        assert_eq!(settings.max_references, 5);
+        assert_eq!(settings.max_files, 1);
+    }
+
+    #[tokio::test]
+    async fn test_call_neighborhood_direction_incoming() {
+        let request = CallNeighborhoodRequest {
+            file: std::path::PathBuf::from("src/main.rs"),
+            line: 42,
+            column: 10,
+            direction: crate::context::HierarchyDirection::Incoming,
+            max_depth: 1,
+            settings: RecipeSettings::default(),
+        };
+
+        let outcome = execute_call_neighborhood(&DegradedProvider, &request)
+            .await
+            .unwrap();
+
+        // Should have operational notes for failed incoming calls.
+        assert!(outcome.fallback_used);
     }
 }

@@ -1150,6 +1150,106 @@ New types in `egglsp::tui_summary`:
 - `/lsp-start` and `/lsp-replay-docs` commands (no clean scoped API; service auto-starts on demand and handles document replay internally)
 - Semantic context cache (Phase 12)
 
+## Phase 10: Broader Bounded Semantic Operations
+
+Phase 10 extends semantic context without reintroducing raw LSP JSON or unbounded prompt expansion. All new operations are packet-first, budgeted, provenance-carrying, and renderable by tier-aware context policy. Each operation lowers into the canonical `LspContextPacket` — no parallel packet shapes are introduced.
+
+### Operations
+
+| Operation | Purpose | Tier Caps (refs / files) |
+|-----------|---------|--------------------------|
+| **Impact Analysis** | Collects definition, capped cross-file references, diagnostics in affected files | Small=5 / 1, Workhorse=20 / 5, Frontier=50 / 10 |
+| **Test Failure Repair** | Heuristic symbol extraction from failure messages, test-file diagnostics + symbols, definitions for extracted symbols | Per-tier budget |
+| **Interface Boundary** | Document symbols, definitions, implementations, hover for public API boundary symbols | Per-tier budget |
+| **Cross File Repair** | Diagnostics + symbols across primary + related files with explicit file caps | Per-tier budget |
+| **Call Neighborhood** | Shallow call hierarchy (incoming/outgoing), max depth 1 default, cycle-safe | Per-tier budget |
+
+### Request Types
+
+All operations are requested via `LspContextRequest` enum variants:
+
+```rust
+LspContextRequest::ImpactAnalysis {
+    target: SymbolTarget,
+    changed_files: Vec<PathBuf>,
+    max_refs: usize,
+    max_files: usize,
+    max_depth: usize,
+}
+
+LspContextRequest::TestFailureRepair {
+    test_file: PathBuf,
+    failure_message: String,
+    related_files: Vec<PathBuf>,
+}
+
+LspContextRequest::InterfaceBoundary {
+    file: PathBuf,
+    symbol: Option<String>,
+    include_implementations: bool,
+}
+
+LspContextRequest::CrossFileRepair {
+    primary_file: PathBuf,
+    related_files: Vec<PathBuf>,
+    ranges: Vec<Range>,
+}
+
+LspContextRequest::CallNeighborhood {
+    file: PathBuf,
+    line: u32,
+    column: u32,
+    direction: HierarchyDirection,
+    max_depth: usize,
+    max_callers: usize,
+    max_callees: usize,
+}
+```
+
+### Supporting Types
+
+```rust
+pub struct SymbolTarget {
+    pub file: PathBuf,
+    pub position: Position,
+}
+
+pub enum HierarchyDirection {
+    Incoming,
+    Outgoing,
+    Both,
+}
+```
+
+### Renderer Sections
+
+Each operation produces a distinct rendered section in the agent-facing context:
+
+- **Impact Analysis section** — Source excerpt, definition site, capped cross-file references with file/line anchors, diagnostics in affected files. Tier-aware caps control reference count and file depth.
+- **Failure-linked Evidence section** — Heuristically extracted symbol names from the failure message, diagnostics from the test file and related files, definitions for extracted symbols. Designed for test-failure repair workflows.
+- **Interface Boundary section** — Document symbols for the file, definitions and implementations for public API symbols, hover information. Useful for trait/interface/API boundary review.
+- **Cross-File Repair section** — Diagnostics and symbols from the primary file and explicitly listed related files. File caps prevent unbounded expansion.
+- **Call Neighborhood section** — Shallow incoming/outgoing call edges for the symbol at the target position. Default depth=1, cycle-safe. Max callers/callees per tier.
+
+### Key Invariants
+
+- **All operations lower into `LspContextPacket`** — no parallel packet shapes are introduced. New evidence flows through the canonical packet boundary and its bridges in `crates/egglsp/src/bridges.rs`.
+- **No mutation-producing LSP operations** — all Phase 10 operations are read-only. No `workspace/applyEdit`, `workspace/executeCommand`, or disk writes.
+- **No unbounded workspace scans** — every operation enforces explicit file and reference caps. Impact analysis is bounded by `max_files` and `max_refs`. Cross-file repair is bounded by the explicit `related_files` list. Call neighborhood is bounded by depth=1 default and caller/callee caps.
+- **Stale/lifecycle notes preserved** — diagnostics and context gathered before restarts, base-file changes, workspace-root changes, or server-generation changes are surfaced as stale/possibly-stale/retained evidence rather than treated as clean current facts.
+
+### Recipe Integration
+
+Phase 10 operations compose existing LSP primitives into named workflow recipes via `crates/egglsp/src/workflow_recipes.rs`:
+
+- `execute_impact_analysis` — Impact analysis for rename/refactor review
+- `execute_test_failure_repair` — Test failure repair with heuristic symbol extraction
+- `execute_interface_boundary` — Interface/API boundary review
+- `execute_cross_file_repair` — Cross-file diagnostic repair
+- `execute_call_neighborhood` — Shallow call neighborhood for navigation
+
+Each recipe uses `RecipeSettings` for tier-aware defaults and `RecipeOutcome` for rendered results.
+
 ## Supported Languages (39 servers)
 
 | Language | Server | Command |

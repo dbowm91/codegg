@@ -118,6 +118,26 @@ pub enum LspRiskMode {
     Aggressive,
 }
 
+/// A target symbol identified by file and position.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SymbolTarget {
+    /// File containing the symbol.
+    pub file: PathBuf,
+    /// Position of the symbol (line, column).
+    pub position: Position,
+}
+
+/// Direction for call hierarchy traversal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum HierarchyDirection {
+    /// Only incoming callers.
+    Incoming,
+    /// Only outgoing callees.
+    Outgoing,
+    /// Both incoming and outgoing.
+    Both,
+}
+
 /// Describes what evidence to collect.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind")]
@@ -154,6 +174,76 @@ pub enum LspContextRequest {
         changed_files: Vec<PathBuf>,
         hunks: Vec<HunkDescriptor>,
         risk_mode: LspRiskMode,
+    },
+    /// Collect impact analysis evidence for a symbol change.
+    ///
+    /// Gathers definition, capped cross-file references, diagnostics
+    /// in affected files, and document highlights near changed hunks.
+    ImpactAnalysis {
+        /// Target symbol to analyze.
+        symbol: SymbolTarget,
+        /// Files that have been changed (for hunk-local boosting).
+        changed_files: Vec<PathBuf>,
+        /// Maximum references to include (default 20).
+        max_refs: usize,
+        /// Maximum affected files (default 5).
+        max_files: usize,
+        /// Maximum call hierarchy depth (0 = none, 1 = shallow).
+        max_depth: u8,
+    },
+    /// Collect evidence for repairing a failing test.
+    ///
+    /// Extracts identifiers from the failure message, gathers
+    /// test-file diagnostics and definitions for extracted symbols.
+    TestFailureRepair {
+        /// Path to the test file.
+        test_file: PathBuf,
+        /// Test failure output/message.
+        failure_message: String,
+        /// Related source files from the test runner or user.
+        related_files: Vec<PathBuf>,
+    },
+    /// Collect evidence for reviewing API/interface boundaries.
+    ///
+    /// Gathers document symbols (public/exported), definitions for
+    /// boundary symbols, implementations, and capped external references.
+    InterfaceBoundary {
+        /// File containing the boundary symbols.
+        file: PathBuf,
+        /// Optional specific symbol to focus on.
+        symbol: Option<String>,
+        /// Whether to include trait/interface implementations.
+        include_implementations: bool,
+    },
+    /// Collect evidence across a primary file and related files.
+    ///
+    /// Bounded multi-file repair context with explicit file caps.
+    CrossFileRepair {
+        /// Primary file being repaired.
+        primary_file: PathBuf,
+        /// Related files to gather evidence from.
+        related_files: Vec<PathBuf>,
+        /// Line ranges of interest in the primary file.
+        ranges: Vec<LineRange>,
+    },
+    /// Collect shallow call hierarchy around a symbol.
+    ///
+    /// Defaults to depth 1, cycle-safe, with incoming/outgoing caps.
+    CallNeighborhood {
+        /// File containing the target symbol.
+        file: PathBuf,
+        /// Line of the target symbol (0-indexed).
+        line: u32,
+        /// Column of the target symbol (0-indexed).
+        column: u32,
+        /// Direction of call traversal.
+        direction: HierarchyDirection,
+        /// Maximum traversal depth (default 1).
+        max_depth: u8,
+        /// Maximum incoming callers to include.
+        max_callers: usize,
+        /// Maximum outgoing callees to include.
+        max_callees: usize,
     },
 }
 
@@ -756,8 +846,18 @@ pub fn rank_context_items(items: &mut [LspContextItem], request: &LspContextRequ
     let primary_file = match request {
         LspContextRequest::File { file, .. }
         | LspContextRequest::Hunk { file, .. }
-        | LspContextRequest::Symbol { file, .. } => Some(file.clone()),
+        | LspContextRequest::Symbol { file, .. }
+        | LspContextRequest::InterfaceBoundary { file, .. }
+        | LspContextRequest::CrossFileRepair {
+            primary_file: file, ..
+        }
+        | LspContextRequest::CallNeighborhood { file, .. }
+        | LspContextRequest::ImpactAnalysis {
+            symbol: SymbolTarget { file, .. },
+            ..
+        } => Some(file.clone()),
         LspContextRequest::Review { changed_files, .. } => changed_files.first().cloned(),
+        LspContextRequest::TestFailureRepair { test_file, .. } => Some(test_file.clone()),
     };
 
     // Determine the set of hunk lines for hunk-local boosting.
@@ -1111,5 +1211,250 @@ mod tests {
     #[test]
     fn test_review_request_risk_mode_default() {
         assert_eq!(LspRiskMode::default(), LspRiskMode::Standard);
+    }
+
+    #[test]
+    fn test_impact_analysis_request_serialization() {
+        let req = LspContextRequest::ImpactAnalysis {
+            symbol: SymbolTarget {
+                file: PathBuf::from("src/lib.rs"),
+                position: Position {
+                    line: 10,
+                    character: 5,
+                },
+            },
+            changed_files: vec![PathBuf::from("src/a.rs")],
+            max_refs: 20,
+            max_files: 5,
+            max_depth: 1,
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains("ImpactAnalysis"));
+        let _deser: LspContextRequest = serde_json::from_str(&json).unwrap();
+    }
+
+    #[test]
+    fn test_test_failure_repair_request_serialization() {
+        let req = LspContextRequest::TestFailureRepair {
+            test_file: PathBuf::from("tests/foo.rs"),
+            failure_message: "thread 'test_foo' panicked at 'assertion failed'".to_string(),
+            related_files: vec![PathBuf::from("src/foo.rs")],
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains("TestFailureRepair"));
+        let _deser: LspContextRequest = serde_json::from_str(&json).unwrap();
+    }
+
+    #[test]
+    fn test_interface_boundary_request_serialization() {
+        let req = LspContextRequest::InterfaceBoundary {
+            file: PathBuf::from("src/api.rs"),
+            symbol: Some("MyTrait".to_string()),
+            include_implementations: true,
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains("InterfaceBoundary"));
+        let _deser: LspContextRequest = serde_json::from_str(&json).unwrap();
+    }
+
+    #[test]
+    fn test_cross_file_repair_request_serialization() {
+        let req = LspContextRequest::CrossFileRepair {
+            primary_file: PathBuf::from("src/main.rs"),
+            related_files: vec![PathBuf::from("src/lib.rs")],
+            ranges: vec![LineRange { start: 0, end: 10 }],
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains("CrossFileRepair"));
+        let _deser: LspContextRequest = serde_json::from_str(&json).unwrap();
+    }
+
+    #[test]
+    fn test_call_neighborhood_request_serialization() {
+        let req = LspContextRequest::CallNeighborhood {
+            file: PathBuf::from("src/main.rs"),
+            line: 42,
+            column: 10,
+            direction: HierarchyDirection::Both,
+            max_depth: 1,
+            max_callers: 10,
+            max_callees: 10,
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains("CallNeighborhood"));
+        let _deser: LspContextRequest = serde_json::from_str(&json).unwrap();
+    }
+
+    #[test]
+    fn test_ranking_for_impact_analysis() {
+        let request = LspContextRequest::ImpactAnalysis {
+            symbol: SymbolTarget {
+                file: PathBuf::from("src/lib.rs"),
+                position: Position {
+                    line: 10,
+                    character: 5,
+                },
+            },
+            changed_files: vec![PathBuf::from("src/a.rs")],
+            max_refs: 20,
+            max_files: 5,
+            max_depth: 1,
+        };
+
+        let mut items = vec![
+            make_item(
+                LspContextItemKind::Reference,
+                "src/other.rs",
+                Some(0),
+                "far ref",
+                10,
+            ),
+            make_item(
+                LspContextItemKind::Reference,
+                "src/lib.rs",
+                Some(10),
+                "same file ref",
+                10,
+            ),
+            make_item(
+                LspContextItemKind::Reference,
+                "src/a.rs",
+                Some(12),
+                "changed file ref",
+                10,
+            ),
+        ];
+
+        rank_context_items(&mut items, &request);
+
+        // same_file should rank highest
+        let same_idx = items
+            .iter()
+            .position(|i| i.message == "same file ref")
+            .unwrap();
+        assert_eq!(same_idx, 0);
+    }
+
+    #[test]
+    fn test_ranking_for_test_failure_repair() {
+        let request = LspContextRequest::TestFailureRepair {
+            test_file: PathBuf::from("tests/foo.rs"),
+            failure_message: "test failed".to_string(),
+            related_files: vec![PathBuf::from("src/foo.rs")],
+        };
+
+        let mut items = vec![
+            make_item(
+                LspContextItemKind::Diagnostic,
+                "src/foo.rs",
+                Some(5),
+                "error",
+                10,
+            ),
+            make_item(
+                LspContextItemKind::Diagnostic,
+                "tests/foo.rs",
+                Some(20),
+                "test diag",
+                10,
+            ),
+        ];
+
+        rank_context_items(&mut items, &request);
+
+        // test_file items should rank higher (is_same_file)
+        let test_idx = items.iter().position(|i| i.message == "test diag").unwrap();
+        assert_eq!(test_idx, 0);
+    }
+
+    #[test]
+    fn test_ranking_for_cross_file_repair() {
+        let request = LspContextRequest::CrossFileRepair {
+            primary_file: PathBuf::from("src/main.rs"),
+            related_files: vec![PathBuf::from("src/lib.rs")],
+            ranges: vec![LineRange { start: 0, end: 10 }],
+        };
+
+        let mut items = vec![
+            make_item(
+                LspContextItemKind::Diagnostic,
+                "src/lib.rs",
+                Some(5),
+                "related diag",
+                10,
+            ),
+            make_item(
+                LspContextItemKind::Diagnostic,
+                "src/main.rs",
+                Some(5),
+                "primary diag",
+                10,
+            ),
+        ];
+
+        rank_context_items(&mut items, &request);
+
+        let primary_idx = items
+            .iter()
+            .position(|i| i.message == "primary diag")
+            .unwrap();
+        assert_eq!(primary_idx, 0);
+    }
+
+    #[test]
+    fn test_budget_enforcement_for_impact_analysis() {
+        // Many references across files should be truncated.
+        let mut packet = LspContextPacket {
+            request: LspContextRequest::ImpactAnalysis {
+                symbol: SymbolTarget {
+                    file: PathBuf::from("src/lib.rs"),
+                    position: Position {
+                        line: 10,
+                        character: 0,
+                    },
+                },
+                changed_files: vec![PathBuf::from("src/a.rs")],
+                max_refs: 50,
+                max_files: 10,
+                max_depth: 1,
+            },
+            items: (0..40)
+                .map(|i| {
+                    make_item(
+                        LspContextItemKind::Reference,
+                        &format!("src/file_{}.rs", i % 15),
+                        Some(i),
+                        &format!("ref {i}"),
+                        10,
+                    )
+                })
+                .collect(),
+            previews: Vec::new(),
+            preview_ids: Vec::new(),
+            mode: LspContextPacketMode::default(),
+            workspace_root: None,
+            generated_at: None,
+            server_id: None,
+            server_generation: None,
+            operational_state: None,
+            budget: None,
+            notes: Vec::new(),
+            truncation: LspContextTruncation::default(),
+        };
+        let truncation = enforce_context_budget(&mut packet);
+        let ref_count = packet
+            .items
+            .iter()
+            .filter(|i| i.kind == LspContextItemKind::Reference)
+            .count();
+        assert!(
+            ref_count <= 30,
+            "references should be truncated to budget limit, got {ref_count}"
+        );
+        assert!(
+            truncation.references_truncated
+                || truncation.files_truncated
+                || truncation.bytes_truncated
+        );
     }
 }

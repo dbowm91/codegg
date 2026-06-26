@@ -4270,7 +4270,8 @@ impl App {
                                     let file_content = match std::fs::read_to_string(&p.path) {
                                         Ok(c) => c,
                                         Err(e) => {
-                                            failures.push((p.path.clone(), format!("read error: {e}")));
+                                            failures
+                                                .push((p.path.clone(), format!("read error: {e}")));
                                             continue;
                                         }
                                     };
@@ -4287,16 +4288,25 @@ impl App {
                                         continue;
                                     }
 
-                                    match crate::tool::patch_util::apply_unified_diff(&file_content, &p.patch) {
+                                    match crate::tool::patch_util::apply_unified_diff(
+                                        &file_content,
+                                        &p.patch,
+                                    ) {
                                         Ok(patched) => {
                                             if let Err(e) = std::fs::write(&p.path, patched) {
-                                                failures.push((p.path.clone(), format!("write error: {e}")));
+                                                failures.push((
+                                                    p.path.clone(),
+                                                    format!("write error: {e}"),
+                                                ));
                                             } else {
                                                 successes.push(p.path.clone());
                                             }
                                         }
                                         Err(e) => {
-                                            failures.push((p.path.clone(), format!("patch error: {e}")));
+                                            failures.push((
+                                                p.path.clone(),
+                                                format!("patch error: {e}"),
+                                            ));
                                         }
                                     }
                                 }
@@ -4314,7 +4324,11 @@ impl App {
                                         "Failed to apply all {} patch(es) for preview {}:\n{}",
                                         failures.len(),
                                         candidate.preview_id,
-                                        failures.iter().map(|(f, e)| format!("  {f}: {e}")).collect::<Vec<_>>().join("\n")
+                                        failures
+                                            .iter()
+                                            .map(|(f, e)| format!("  {f}: {e}"))
+                                            .collect::<Vec<_>>()
+                                            .join("\n")
                                     ));
                                 } else {
                                     self.messages_state.toasts.info(&format!(

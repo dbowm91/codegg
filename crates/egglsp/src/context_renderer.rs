@@ -3,7 +3,9 @@
 //! Renders [`LspContextPacket`] into concise, readable text blocks
 //! suitable for agent prompts. No raw JSON is ever dumped.
 
-use crate::context::{LspContextItem, LspContextItemKind, LspContextPacket, LspPreviewArtifact};
+use crate::context::{
+    AgentContextSource, LspContextItem, LspContextItemKind, LspContextPacket, LspPreviewArtifact,
+};
 
 // ---------------------------------------------------------------------------
 // Model tier
@@ -459,6 +461,303 @@ fn build_notes_section(
 }
 
 // ---------------------------------------------------------------------------
+// Phase 10 section builders
+// ---------------------------------------------------------------------------
+
+fn build_impact_analysis_section(
+    items: &[LspContextItem],
+    config: &LspContextRenderConfig,
+    tier: ModelTier,
+) -> Option<String> {
+    let defs: Vec<_> = items
+        .iter()
+        .filter(|i| i.kind == LspContextItemKind::Definition)
+        .collect();
+    let refs: Vec<_> = items
+        .iter()
+        .filter(|i| i.kind == LspContextItemKind::Reference)
+        .collect();
+    let impls: Vec<_> = items
+        .iter()
+        .filter(|i| i.kind == LspContextItemKind::Implementation)
+        .collect();
+    let diag_in_changed: Vec<_> = items
+        .iter()
+        .filter(|i| {
+            i.kind == LspContextItemKind::Diagnostic
+                && i.source == Some(AgentContextSource::Diagnostics)
+        })
+        .collect();
+
+    if defs.is_empty() && refs.is_empty() && impls.is_empty() && diag_in_changed.is_empty() {
+        return None;
+    }
+
+    let mut lines = Vec::new();
+    if !defs.is_empty() {
+        lines.push("### Target Definition".to_string());
+        for item in defs.iter().take(3) {
+            lines.push(render_item_line(item));
+        }
+    }
+    if !refs.is_empty() {
+        let max = match tier {
+            ModelTier::Small => 5,
+            ModelTier::Workhorse => config.max_references.min(15),
+            ModelTier::Frontier => config.max_references,
+        };
+        lines.push(format!(
+            "### Affected References ({}/{})",
+            refs.len().min(max),
+            refs.len()
+        ));
+        for item in refs.iter().take(max) {
+            lines.push(render_item_line(item));
+        }
+        if refs.len() > max {
+            lines.push(format!("({} more references truncated)", refs.len() - max));
+        }
+    }
+    if !impls.is_empty() && matches!(tier, ModelTier::Frontier) {
+        lines.push(format!("### Implementations ({})", impls.len()));
+        for item in impls.iter().take(5) {
+            lines.push(render_item_line(item));
+        }
+    }
+    if !diag_in_changed.is_empty() {
+        lines.push(format!(
+            "### Diagnostics in Changed Files ({})",
+            diag_in_changed.len()
+        ));
+        for item in diag_in_changed.iter().take(config.max_diagnostics) {
+            lines.push(render_item_line(item));
+        }
+    }
+
+    if lines.is_empty() {
+        return None;
+    }
+    Some(truncate_section(
+        &format!("## Impact Analysis\n{}", lines.join("\n")),
+        config.max_bytes_per_section,
+        0,
+    ))
+}
+
+fn build_test_failure_section(
+    items: &[LspContextItem],
+    config: &LspContextRenderConfig,
+    _tier: ModelTier,
+) -> Option<String> {
+    let test_diags: Vec<_> = items
+        .iter()
+        .filter(|i| {
+            i.kind == LspContextItemKind::Diagnostic
+                && i.source == Some(AgentContextSource::Diagnostics)
+        })
+        .collect();
+    let ws_symbols: Vec<_> = items
+        .iter()
+        .filter(|i| i.kind == LspContextItemKind::WorkspaceSymbol)
+        .collect();
+    let failure_defs: Vec<_> = items
+        .iter()
+        .filter(|i| {
+            matches!(
+                i.kind,
+                LspContextItemKind::Definition | LspContextItemKind::Reference
+            )
+        })
+        .collect();
+
+    if test_diags.is_empty() && ws_symbols.is_empty() && failure_defs.is_empty() {
+        return None;
+    }
+
+    let mut lines = Vec::new();
+    if !test_diags.is_empty() {
+        lines.push(format!("### Test Diagnostics ({})", test_diags.len()));
+        for item in test_diags.iter().take(config.max_diagnostics) {
+            lines.push(render_item_line(item));
+        }
+    }
+    if !ws_symbols.is_empty() {
+        lines.push(format!("### Test Symbols ({})", ws_symbols.len()));
+        for item in ws_symbols.iter().take(config.max_symbols) {
+            lines.push(render_item_line(item));
+        }
+    }
+    if !failure_defs.is_empty() {
+        lines.push(format!(
+            "### Failure-linked Definitions/Refs ({})",
+            failure_defs.len()
+        ));
+        for item in failure_defs.iter().take(config.max_references) {
+            lines.push(render_item_line(item));
+        }
+    }
+
+    if lines.is_empty() {
+        return None;
+    }
+    Some(truncate_section(
+        &format!("## Failure-linked Evidence\n{}", lines.join("\n")),
+        config.max_bytes_per_section,
+        0,
+    ))
+}
+
+fn build_boundary_section(
+    items: &[LspContextItem],
+    config: &LspContextRenderConfig,
+    tier: ModelTier,
+) -> Option<String> {
+    let boundary_syms: Vec<_> = items
+        .iter()
+        .filter(|i| i.kind == LspContextItemKind::WorkspaceSymbol)
+        .collect();
+    let impls: Vec<_> = items
+        .iter()
+        .filter(|i| i.kind == LspContextItemKind::Implementation)
+        .collect();
+    let ext_refs: Vec<_> = items
+        .iter()
+        .filter(|i| i.kind == LspContextItemKind::Reference && !i.score.is_same_file)
+        .collect();
+
+    if boundary_syms.is_empty() {
+        return None;
+    }
+
+    let mut lines = Vec::new();
+    lines.push(format!("### Boundary Symbols ({})", boundary_syms.len()));
+    for item in boundary_syms.iter().take(config.max_symbols) {
+        lines.push(render_item_line(item));
+    }
+    if !ext_refs.is_empty() {
+        let max = match tier {
+            ModelTier::Small => 0,
+            _ => config.max_references,
+        };
+        if max > 0 {
+            lines.push(format!("### External References ({})", ext_refs.len()));
+            for item in ext_refs.iter().take(max) {
+                lines.push(render_item_line(item));
+            }
+        }
+    }
+    if !impls.is_empty() && matches!(tier, ModelTier::Frontier) {
+        lines.push(format!("### Implementations ({})", impls.len()));
+        for item in impls.iter().take(5) {
+            lines.push(render_item_line(item));
+        }
+    }
+
+    if lines.is_empty() {
+        return None;
+    }
+    Some(truncate_section(
+        &format!("## Interface Boundary\n{}", lines.join("\n")),
+        config.max_bytes_per_section,
+        0,
+    ))
+}
+
+fn build_cross_file_section(
+    items: &[LspContextItem],
+    config: &LspContextRenderConfig,
+    _tier: ModelTier,
+) -> Option<String> {
+    let primary_items: Vec<_> = items.iter().filter(|i| i.score.is_same_file).collect();
+    let related_items: Vec<_> = items.iter().filter(|i| !i.score.is_same_file).collect();
+
+    if primary_items.is_empty() && related_items.is_empty() {
+        return None;
+    }
+
+    let mut lines = Vec::new();
+    if !primary_items.is_empty() {
+        lines.push(format!(
+            "### Primary File Evidence ({})",
+            primary_items.len()
+        ));
+        for item in primary_items
+            .iter()
+            .take(config.max_symbols + config.max_diagnostics)
+        {
+            lines.push(render_item_line(item));
+        }
+    }
+    if !related_items.is_empty() {
+        lines.push(format!(
+            "### Related File Evidence ({})",
+            related_items.len()
+        ));
+        for item in related_items
+            .iter()
+            .take(config.max_symbols + config.max_diagnostics)
+        {
+            lines.push(render_item_line(item));
+        }
+    }
+
+    if lines.is_empty() {
+        return None;
+    }
+    Some(truncate_section(
+        &format!("## Cross-File Repair\n{}", lines.join("\n")),
+        config.max_bytes_per_section,
+        0,
+    ))
+}
+
+fn build_call_neighborhood_section(
+    items: &[LspContextItem],
+    config: &LspContextRenderConfig,
+    _tier: ModelTier,
+) -> Option<String> {
+    let incoming: Vec<_> = items
+        .iter()
+        .filter(|i| {
+            i.kind == LspContextItemKind::DocumentHighlight
+                || (i.kind == LspContextItemKind::Reference
+                    && i.message.contains("caller highlight"))
+        })
+        .collect();
+    let outgoing: Vec<_> = items
+        .iter()
+        .filter(|i| i.message.contains("callees (outgoing)"))
+        .collect();
+
+    if incoming.is_empty() && outgoing.is_empty() {
+        return None;
+    }
+
+    let mut lines = Vec::new();
+    if !outgoing.is_empty() {
+        lines.push(format!("### Outgoing Calls ({})", outgoing.len()));
+        for item in outgoing.iter().take(config.max_references) {
+            lines.push(render_item_line(item));
+        }
+    }
+    if !incoming.is_empty() {
+        lines.push(format!("### Incoming Calls ({})", incoming.len()));
+        for item in incoming.iter().take(config.max_references) {
+            lines.push(render_item_line(item));
+        }
+    }
+
+    if lines.is_empty() {
+        return None;
+    }
+    Some(truncate_section(
+        &format!("## Call Neighborhood\n{}", lines.join("\n")),
+        config.max_bytes_per_section,
+        0,
+    ))
+}
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
@@ -480,6 +779,49 @@ pub fn render_lsp_context_for_agent(
     // Status line always present.
     sections.push(render_lsp_status_line(packet));
 
+    // Phase 10 request-specific sections.
+    let has_phase10 = matches!(
+        packet.request,
+        crate::context::LspContextRequest::ImpactAnalysis { .. }
+            | crate::context::LspContextRequest::TestFailureRepair { .. }
+            | crate::context::LspContextRequest::InterfaceBoundary { .. }
+            | crate::context::LspContextRequest::CrossFileRepair { .. }
+            | crate::context::LspContextRequest::CallNeighborhood { .. }
+    );
+
+    if has_phase10 {
+        // Render request-specific section first, then generic sections.
+        match &packet.request {
+            crate::context::LspContextRequest::ImpactAnalysis { .. } => {
+                if let Some(s) = build_impact_analysis_section(&packet.items, config, tier) {
+                    sections.push(s);
+                }
+            }
+            crate::context::LspContextRequest::TestFailureRepair { .. } => {
+                if let Some(s) = build_test_failure_section(&packet.items, config, tier) {
+                    sections.push(s);
+                }
+            }
+            crate::context::LspContextRequest::InterfaceBoundary { .. } => {
+                if let Some(s) = build_boundary_section(&packet.items, config, tier) {
+                    sections.push(s);
+                }
+            }
+            crate::context::LspContextRequest::CrossFileRepair { .. } => {
+                if let Some(s) = build_cross_file_section(&packet.items, config, tier) {
+                    sections.push(s);
+                }
+            }
+            crate::context::LspContextRequest::CallNeighborhood { .. } => {
+                if let Some(s) = build_call_neighborhood_section(&packet.items, config, tier) {
+                    sections.push(s);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // Generic sections.
     if let Some(s) = build_diagnostics_section(&packet.items, config) {
         sections.push(s);
     }
@@ -887,5 +1229,336 @@ mod tests {
         };
         let rendered_no_notes = render_lsp_context_for_agent(&packet, &config_no_notes);
         assert!(!rendered_no_notes.contains("truncated diagnostics"));
+    }
+
+    #[test]
+    fn test_render_impact_analysis_section() {
+        let items = vec![
+            make_item(
+                LspContextItemKind::Definition,
+                "src/lib.rs",
+                Some(10),
+                "definition: fn foo",
+                false,
+            ),
+            make_item(
+                LspContextItemKind::Reference,
+                "src/a.rs",
+                Some(5),
+                "reference: foo()",
+                false,
+            ),
+            make_item(
+                LspContextItemKind::Reference,
+                "src/lib.rs",
+                Some(15),
+                "reference: foo()",
+                false,
+            ),
+        ];
+        let packet = LspContextPacket {
+            request: LspContextRequest::ImpactAnalysis {
+                symbol: crate::context::SymbolTarget {
+                    file: PathBuf::from("src/lib.rs"),
+                    position: lsp_types::Position {
+                        line: 10,
+                        character: 0,
+                    },
+                },
+                changed_files: vec![PathBuf::from("src/a.rs")],
+                max_refs: 20,
+                max_files: 5,
+                max_depth: 1,
+            },
+            items,
+            previews: Vec::new(),
+            preview_ids: Vec::new(),
+            mode: LspContextPacketMode::Opportunistic,
+            workspace_root: None,
+            generated_at: None,
+            server_id: None,
+            server_generation: None,
+            operational_state: None,
+            budget: None,
+            notes: Vec::new(),
+            truncation: Default::default(),
+        };
+
+        let config = LspContextRenderConfig::default();
+        let rendered = render_lsp_context_for_agent(&packet, &config);
+        assert!(rendered.contains("## Impact Analysis"));
+        assert!(rendered.contains("Target Definition"));
+        assert!(rendered.contains("Affected References"));
+    }
+
+    #[test]
+    fn test_render_test_failure_section() {
+        let items = vec![
+            LspContextItem {
+                kind: LspContextItemKind::Diagnostic,
+                file: PathBuf::from("tests/foo.rs"),
+                range: None,
+                line: Some(20),
+                column: None,
+                message: "test_foo failed".to_string(),
+                symbol: None,
+                source: Some(AgentContextSource::Diagnostics),
+                provenance: crate::context::LspEvidenceProvenance {
+                    server_id: "test".to_string(),
+                    server_generation: Some(1),
+                    operation: "test".to_string(),
+                    freshness: LspEvidenceFreshness::Fresh,
+                    capability_decision: None,
+                    document_version: None,
+                    age_ms: None,
+                    post_restart: false,
+                },
+                score: LspContextScore {
+                    priority: 10,
+                    is_hunk_local: false,
+                    is_error: true,
+                    is_same_file: true,
+                    freshness_rank: 0,
+                },
+                payload: None,
+            },
+            LspContextItem {
+                kind: LspContextItemKind::WorkspaceSymbol,
+                file: PathBuf::from("tests/foo.rs"),
+                range: None,
+                line: Some(20),
+                column: None,
+                message: "test_foo (function)".to_string(),
+                symbol: Some("test_foo".to_string()),
+                source: Some(AgentContextSource::LspContext),
+                provenance: crate::context::LspEvidenceProvenance {
+                    server_id: "test".to_string(),
+                    server_generation: Some(1),
+                    operation: "test".to_string(),
+                    freshness: LspEvidenceFreshness::Fresh,
+                    capability_decision: None,
+                    document_version: None,
+                    age_ms: None,
+                    post_restart: false,
+                },
+                score: LspContextScore {
+                    priority: 10,
+                    is_hunk_local: false,
+                    is_error: false,
+                    is_same_file: true,
+                    freshness_rank: 0,
+                },
+                payload: None,
+            },
+        ];
+        let packet = LspContextPacket {
+            request: LspContextRequest::TestFailureRepair {
+                test_file: PathBuf::from("tests/foo.rs"),
+                failure_message: "test_foo failed".to_string(),
+                related_files: vec![PathBuf::from("src/foo.rs")],
+            },
+            items,
+            previews: Vec::new(),
+            preview_ids: Vec::new(),
+            mode: LspContextPacketMode::Opportunistic,
+            workspace_root: None,
+            generated_at: None,
+            server_id: None,
+            server_generation: None,
+            operational_state: None,
+            budget: None,
+            notes: Vec::new(),
+            truncation: Default::default(),
+        };
+
+        let config = LspContextRenderConfig::default();
+        let rendered = render_lsp_context_for_agent(&packet, &config);
+        assert!(rendered.contains("## Failure-linked Evidence"));
+        assert!(rendered.contains("Test Diagnostics"));
+        assert!(rendered.contains("Test Symbols"));
+    }
+
+    #[test]
+    fn test_render_interface_boundary_section() {
+        let items = vec![
+            make_item(
+                LspContextItemKind::WorkspaceSymbol,
+                "src/api.rs",
+                Some(5),
+                "MyTrait (trait)",
+                false,
+            ),
+            make_item(
+                LspContextItemKind::Implementation,
+                "src/impl.rs",
+                Some(10),
+                "implementation: (5:0)-(5:20)",
+                false,
+            ),
+        ];
+        let packet = LspContextPacket {
+            request: LspContextRequest::InterfaceBoundary {
+                file: PathBuf::from("src/api.rs"),
+                symbol: None,
+                include_implementations: true,
+            },
+            items,
+            previews: Vec::new(),
+            preview_ids: Vec::new(),
+            mode: LspContextPacketMode::Opportunistic,
+            workspace_root: None,
+            generated_at: None,
+            server_id: None,
+            server_generation: None,
+            operational_state: None,
+            budget: None,
+            notes: Vec::new(),
+            truncation: Default::default(),
+        };
+
+        let config = LspContextRenderConfig {
+            model_tier: ModelTier::Frontier,
+            ..Default::default()
+        };
+        let rendered = render_lsp_context_for_agent(&packet, &config);
+        assert!(rendered.contains("## Interface Boundary"));
+        assert!(rendered.contains("Boundary Symbols"));
+        assert!(rendered.contains("Implementations"));
+    }
+
+    #[test]
+    fn test_render_cross_file_repair_section() {
+        let items = vec![
+            LspContextItem {
+                kind: LspContextItemKind::Diagnostic,
+                file: PathBuf::from("src/main.rs"),
+                range: None,
+                line: Some(5),
+                column: None,
+                message: "error in primary".to_string(),
+                symbol: None,
+                source: Some(AgentContextSource::Diagnostics),
+                provenance: crate::context::LspEvidenceProvenance {
+                    server_id: "test".to_string(),
+                    server_generation: Some(1),
+                    operation: "test".to_string(),
+                    freshness: LspEvidenceFreshness::Fresh,
+                    capability_decision: None,
+                    document_version: None,
+                    age_ms: None,
+                    post_restart: false,
+                },
+                score: LspContextScore {
+                    priority: 10,
+                    is_hunk_local: false,
+                    is_error: true,
+                    is_same_file: true,
+                    freshness_rank: 0,
+                },
+                payload: None,
+            },
+            LspContextItem {
+                kind: LspContextItemKind::Diagnostic,
+                file: PathBuf::from("src/lib.rs"),
+                range: None,
+                line: Some(10),
+                column: None,
+                message: "warning in related".to_string(),
+                symbol: None,
+                source: Some(AgentContextSource::Diagnostics),
+                provenance: crate::context::LspEvidenceProvenance {
+                    server_id: "test".to_string(),
+                    server_generation: Some(1),
+                    operation: "test".to_string(),
+                    freshness: LspEvidenceFreshness::Fresh,
+                    capability_decision: None,
+                    document_version: None,
+                    age_ms: None,
+                    post_restart: false,
+                },
+                score: LspContextScore {
+                    priority: 5,
+                    is_hunk_local: false,
+                    is_error: false,
+                    is_same_file: false,
+                    freshness_rank: 0,
+                },
+                payload: None,
+            },
+        ];
+        let packet = LspContextPacket {
+            request: LspContextRequest::CrossFileRepair {
+                primary_file: PathBuf::from("src/main.rs"),
+                related_files: vec![PathBuf::from("src/lib.rs")],
+                ranges: vec![],
+            },
+            items,
+            previews: Vec::new(),
+            preview_ids: Vec::new(),
+            mode: LspContextPacketMode::Opportunistic,
+            workspace_root: None,
+            generated_at: None,
+            server_id: None,
+            server_generation: None,
+            operational_state: None,
+            budget: None,
+            notes: Vec::new(),
+            truncation: Default::default(),
+        };
+
+        let config = LspContextRenderConfig::default();
+        let rendered = render_lsp_context_for_agent(&packet, &config);
+        assert!(rendered.contains("## Cross-File Repair"));
+        assert!(rendered.contains("Primary File Evidence"));
+        assert!(rendered.contains("Related File Evidence"));
+    }
+
+    #[test]
+    fn test_render_call_neighborhood_section() {
+        let items = vec![
+            make_item(
+                LspContextItemKind::Reference,
+                "src/caller.rs",
+                Some(20),
+                "callees (outgoing): (20:0)-(20:10)",
+                false,
+            ),
+            make_item(
+                LspContextItemKind::DocumentHighlight,
+                "src/main.rs",
+                Some(42),
+                "caller highlight: (42:0)-(42:5)",
+                false,
+            ),
+        ];
+        let packet = LspContextPacket {
+            request: LspContextRequest::CallNeighborhood {
+                file: PathBuf::from("src/main.rs"),
+                line: 42,
+                column: 10,
+                direction: crate::context::HierarchyDirection::Both,
+                max_depth: 1,
+                max_callers: 10,
+                max_callees: 10,
+            },
+            items,
+            previews: Vec::new(),
+            preview_ids: Vec::new(),
+            mode: LspContextPacketMode::Opportunistic,
+            workspace_root: None,
+            generated_at: None,
+            server_id: None,
+            server_generation: None,
+            operational_state: None,
+            budget: None,
+            notes: Vec::new(),
+            truncation: Default::default(),
+        };
+
+        let config = LspContextRenderConfig::default();
+        let rendered = render_lsp_context_for_agent(&packet, &config);
+        assert!(rendered.contains("## Call Neighborhood"));
+        assert!(rendered.contains("Outgoing Calls"));
+        assert!(rendered.contains("Incoming Calls"));
     }
 }

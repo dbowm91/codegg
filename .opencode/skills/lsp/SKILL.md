@@ -1,13 +1,14 @@
 ---
 name: lsp
 description: LSP client-side integration for Language Server Protocol support
-version: 1.7.0
+version: 1.8.0
 tags:
   - lsp
   - language-server
   - diagnostics
   - code-intelligence
   - client-side
+  - workflow-recipes
 ---
 
 # LSP (Language Server Protocol) Guide
@@ -39,22 +40,29 @@ crates/egglsp/src/          # Authoritative LSP implementation
 ├── client.rs               # LspClient - JSON-RPC, diagnostics cache, notification parser
 ├── compatibility.rs        # LspCompatibilityProfile, readiness/restart policies, version detection, CompatibilityRequirement
 ├── config.rs               # LspConfig, LspRule types
+├── context.rs              # LspContextPacket, LspContextRequest, LspContextBudget, LspContextItem, SymbolTarget, HierarchyDirection
+├── context_renderer.rs     # render_lsp_context_for_agent(), ModelTier, tier-aware rendering
 ├── diagnostics.rs          # DiagnosticsCollector
 ├── document_sync.rs        # OpenDocumentRegistry, document replay after restart
 ├── edit.rs                 # Workspace edit preview, text edit application, unified diff generation
 ├── download.rs             # Binary download/cache
 ├── error.rs                # LspError
+├── evidence_adapter.rs     # ServiceLspEvidenceProvider (production adapter for live LspService)
+├── evidence_collector.rs   # LspEvidenceProvider trait, collect_context(), collect_hunk_context(), Phase 10 collect_* functions
 ├── health.rs               # LspOperationalState, health state machine, snapshots, context_note()
 ├── language.rs             # Language detection from file extensions
 ├── launch.rs               # Process spawning, Content-Length framing, background stderr drain
 ├── operations/         # Per-concern modules: navigation.rs, signature.rs, completion.rs, code_actions.rs, rename.rs, formatting.rs, semantic_tokens.rs, overlay_ops.rs, mod.rs
 ├── overlay.rs              # OverlaySession, OverlayRestoreToken, semantic check preview (content or patch)
+├── preview_registry.rs     # PreviewArtifactRegistry, lifecycle management (Phase 8)
 ├── restart.rs              # LspClientDescriptor, RestartTrigger, restart_client_coordinator
 ├── root.rs                 # Project root detection
 ├── runtime.rs              # LspProcessRuntime, LspProcessIntent, spawn_process_runtime
 ├── server.rs               # 39 server definitions
 ├── service.rs              # LspService - client management, file-based routing, readiness, generation_map
 ├── supervisor.rs           # LspProcessExitEvent, StderrRingBuffer (100 lines / 64KB cap)
+├── tui_summary.rs          # LspTuiSummary, render_tui_status_line(), render_tui_summary_detail()
+├── workflow_recipes.rs     # Named workflow recipes (Phase 7 + Phase 10): repair_local, impact_analysis, call_neighborhood, etc.
 └── tests/                  # Phase 2 stdio integration tests (fake-server + production harness)
 
 src/lsp/mod.rs              # Thin re-export shim (compatibility only)
@@ -1954,15 +1962,20 @@ Phase 7 introduces named workflow recipes that turn existing LSP primitives into
 
 ### Available Recipes
 
-| Recipe | Purpose |
-|--------|---------|
-| `repair_local` | Repair a localized issue around a target line/diagnostic |
-| `repair_hunk` | Repair code around changed diff hunks |
-| `review_file` | Semantic review of a single file without a diff |
-| `review_diff` | Semantic review of changed files/hunks |
-| `security_review_enriched` | Enrich deterministic security review with LSP evidence |
-| `hunk_source_navigation` | Collect semantic context around changed hunks |
-| `preview_suggestion` | Include safe preview-only edit suggestions |
+| Recipe | Purpose | Phase |
+|--------|---------|-------|
+| `repair_local` | Repair a localized issue around a target line/diagnostic | 7 |
+| `repair_hunk` | Repair code around changed diff hunks | 7 |
+| `review_file` | Semantic review of a single file without a diff | 7 |
+| `review_diff` | Semantic review of changed files/hunks | 7 |
+| `security_review_enriched` | Enrich deterministic security review with LSP evidence | 7 |
+| `hunk_source_navigation` | Collect semantic context around changed hunks | 7 |
+| `preview_suggestion` | Include safe preview-only edit suggestions | 7 |
+| `impact_analysis` | Impact analysis for a symbol change across files | 10 |
+| `test_failure_repair` | Test failure repair with heuristic symbol extraction | 10 |
+| `interface_boundary` | API/interface boundary review with implementations | 10 |
+| `cross_file_repair` | Cross-file repair evidence gathering | 10 |
+| `call_neighborhood` | Shallow call neighborhood around a symbol | 10 |
 
 ### Usage
 
@@ -1993,6 +2006,7 @@ let outcome = execute_repair_local(&provider, &request).await?;
 - **Fallback detection**: Disabled mode → fallback; Opportunistic+empty items → fallback; Required+unavailable → error
 - **Preview boundary**: Only `preview_suggestion` populates `preview_ids`; other recipes never include previews
 - **Security hardcoding**: `security_review_enriched` always uses `LspRiskMode::Aggressive`
+- **Phase 10 request variants** map to the same `collect_context` infrastructure; each has a dedicated `collect_*` function in `evidence_collector.rs`
 
 ## Phase 8: Preview Artifact UX and Stale-Base Lifecycle
 
@@ -2046,6 +2060,158 @@ Context renderer includes:
 - "User approval is required before applying."
 - Preview ID for inspection
 - Stale previews flagged with per-file evidence and recompute instructions
+
+## Phase 10: Bounded Semantic Operations
+
+Phase 10 adds five new recipe functions that lower into `LspContextRequest` variants and produce rendered `RecipeOutcome` results. They extend the Phase 7 recipe pattern with new request types for impact analysis, test failure repair, interface boundary review, cross-file repair, and call neighborhood exploration.
+
+**Location:** `crates/egglsp/src/workflow_recipes.rs`, `crates/egglsp/src/context.rs`, `crates/egglsp/src/evidence_collector.rs`
+
+### New Request Types (`context.rs`)
+
+| Request Variant | Purpose |
+|----------------|---------|
+| `LspContextRequest::ImpactAnalysis` | Gather definition, capped cross-file references, diagnostics in affected files, and document highlights near changed hunks |
+| `LspContextRequest::TestFailureRepair` | Extract identifiers from failure messages, gather test-file diagnostics and definitions for extracted symbols |
+| `LspContextRequest::InterfaceBoundary` | Gather document symbols (public/exported), definitions for boundary symbols, implementations, and capped external references |
+| `LspContextRequest::CrossFileRepair` | Bounded multi-file repair context with explicit file caps across a primary file and related files |
+| `LspContextRequest::CallNeighborhood` | Shallow call hierarchy around a symbol with cycle-safe BFS, incoming/outgoing caps, and configurable depth |
+
+### Supporting Types (`context.rs`)
+
+```rust
+/// A target symbol identified by file and position.
+pub struct SymbolTarget {
+    pub file: PathBuf,
+    pub position: Position,
+}
+
+/// Direction for call hierarchy traversal.
+pub enum HierarchyDirection {
+    Incoming,   // callers / supertypes only
+    Outgoing,   // callees / subtypes only
+    Both,       // both directions
+}
+```
+
+### Recipe Request Types (`workflow_recipes.rs`)
+
+```rust
+pub struct ImpactAnalysisRequest {
+    pub symbol: SymbolTarget,
+    pub changed_files: Vec<PathBuf>,
+    pub settings: RecipeSettings,
+}
+
+pub struct TestFailureRepairRequest {
+    pub test_file: PathBuf,
+    pub failure_message: String,
+    pub related_files: Vec<PathBuf>,
+    pub settings: RecipeSettings,
+}
+
+pub struct InterfaceBoundaryRequest {
+    pub file: PathBuf,
+    pub symbol: Option<String>,
+    pub include_implementations: bool,
+    pub settings: RecipeSettings,
+}
+
+pub struct CrossFileRepairRequest {
+    pub primary_file: PathBuf,
+    pub related_files: Vec<PathBuf>,
+    pub ranges: Vec<LineRange>,
+    pub settings: RecipeSettings,
+}
+
+pub struct CallNeighborhoodRequest {
+    pub file: PathBuf,
+    pub line: u32,       // 0-indexed
+    pub column: u32,     // 0-indexed
+    pub direction: HierarchyDirection,
+    pub max_depth: u8,   // default 1
+    pub settings: RecipeSettings,
+}
+```
+
+### Execution Functions
+
+```rust
+pub async fn execute_impact_analysis(
+    provider: &dyn LspEvidenceProvider,
+    request: &ImpactAnalysisRequest,
+) -> Result<RecipeOutcome, LspContextError>
+
+pub async fn execute_test_failure_repair(
+    provider: &dyn LspEvidenceProvider,
+    request: &TestFailureRepairRequest,
+) -> Result<RecipeOutcome, LspContextError>
+
+pub async fn execute_interface_boundary(
+    provider: &dyn LspEvidenceProvider,
+    request: &InterfaceBoundaryRequest,
+) -> Result<RecipeOutcome, LspContextError>
+
+pub async fn execute_cross_file_repair(
+    provider: &dyn LspEvidenceProvider,
+    request: &CrossFileRepairRequest,
+) -> Result<RecipeOutcome, LspContextError>
+
+pub async fn execute_call_neighborhood(
+    provider: &dyn LspEvidenceProvider,
+    request: &CallNeighborhoodRequest,
+) -> Result<RecipeOutcome, LspContextError>
+```
+
+### Tier Behavior
+
+Recipes use `RecipeSettings::for_tier(tier)` to derive tier-specific defaults:
+
+| Tier | Behavior |
+|------|----------|
+| **Small** | Diagnostics + hunk-local definitions only; no references, no preview hints; conservative caps |
+| **Workhorse** | Diagnostics + references + definitions; concise notes; moderate caps |
+| **Frontier** | Cross-file references, hierarchy summaries, richer diagnostics, preview hints; generous caps |
+
+### Evidence Collection (`evidence_collector.rs`)
+
+Each Phase 10 request variant has a corresponding `collect_*` function:
+
+| Function | Request | Key behavior |
+|----------|---------|--------------|
+| `collect_impact_analysis` | `ImpactAnalysis` | Gathers definition, capped cross-file refs, diagnostics in affected files, document highlights near changed hunks |
+| `collect_test_failure_repair` | `TestFailureRepair` | Heuristic symbol extraction from failure messages, diagnostics + definitions for extracted symbols |
+| `collect_interface_boundary` | `InterfaceBoundary` | Document symbols filtered for public/exported, definitions for boundary symbols, implementations, capped external refs |
+| `collect_cross_file_repair` | `CrossFileRepair` | Multi-file evidence with explicit file caps, line-range-scoped diagnostics and symbols |
+| `collect_call_neighborhood` | `CallNeighborhood` | Cycle-safe BFS call hierarchy with configurable depth, incoming/outgoing caps |
+
+### Key Gotchas
+
+- **`SymbolTarget` is file+position, not name-based.** You must provide the file path and 0-indexed position of the symbol, not its name.
+- **`HierarchyDirection` is `Incoming|Outgoing|Both`**, not `Callers|Callees`. The naming matches the LSP spec.
+- **Capped references vary by tier.** Impact analysis defaults: 5/20/50 refs for Small/Workhorse/Frontier.
+- **Test failure repair uses heuristic symbol extraction.** It extracts identifiers from the failure message via pattern matching, not from LSP diagnostics. Extraction may be imprecise for complex failure outputs.
+- **All Phase 10 recipes follow the same safety boundary** as Phase 7: read-only, never write files, bounded output, graceful degradation on LSP errors.
+
+### Test Commands
+
+```bash
+# Unit tests for Phase 10 request types and budget enforcement
+cargo test -p egglsp --lib -- context::tests
+
+# Recipe execution tests (degraded/unavailable provider scenarios)
+cargo test -p egglsp --lib -- workflow_recipes::tests
+
+# Context renderer tests for Phase 10 sections
+cargo test -p egglsp --lib -- context_renderer::tests
+
+# Evidence collector tests
+cargo test -p egglsp --lib -- evidence_collector::tests
+
+# Full integration (requires lsp-test-support)
+cargo test -p egglsp --features lsp-test-support --test scenario_engine
+cargo test --features lsp-test-support --test lsp_composite_stdio
+```
 
 ## See Also
 

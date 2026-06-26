@@ -18,9 +18,9 @@ use async_trait::async_trait;
 use tracing::debug;
 
 use crate::context::{
-    LspContextBudget, LspContextItem, LspContextItemKind, LspContextMode, LspContextPacket,
-    LspContextPacketMode, LspContextRequest, LspContextScore, LspEvidenceFreshness,
-    LspEvidenceProvenance, LspRiskMode,
+    AgentContextSource, LspContextBudget, LspContextItem, LspContextItemKind, LspContextMode,
+    LspContextPacket, LspContextPacketMode, LspContextRequest, LspContextScore,
+    LspEvidenceFreshness, LspEvidenceProvenance, LspRiskMode,
 };
 use crate::error::LspError;
 
@@ -428,6 +428,113 @@ pub async fn collect_context(
                 provider,
                 changed_files,
                 *risk_mode,
+                budget,
+                sid,
+                generation,
+                freshness,
+                &mut items,
+                &mut notes,
+            )
+            .await;
+        }
+        LspContextRequest::ImpactAnalysis {
+            symbol,
+            changed_files,
+            max_refs,
+            max_files,
+            max_depth,
+        } => {
+            collect_impact_analysis(
+                provider,
+                symbol,
+                changed_files,
+                *max_refs,
+                *max_files,
+                *max_depth,
+                budget,
+                sid,
+                generation,
+                freshness,
+                &mut items,
+                &mut notes,
+            )
+            .await;
+        }
+        LspContextRequest::TestFailureRepair {
+            test_file,
+            failure_message,
+            related_files,
+        } => {
+            collect_test_failure_repair(
+                provider,
+                test_file,
+                failure_message,
+                related_files,
+                budget,
+                sid,
+                generation,
+                freshness,
+                &mut items,
+                &mut notes,
+            )
+            .await;
+        }
+        LspContextRequest::InterfaceBoundary {
+            file,
+            symbol,
+            include_implementations,
+        } => {
+            collect_interface_boundary(
+                provider,
+                file,
+                symbol.as_deref(),
+                *include_implementations,
+                budget,
+                sid,
+                generation,
+                freshness,
+                &mut items,
+                &mut notes,
+            )
+            .await;
+        }
+        LspContextRequest::CrossFileRepair {
+            primary_file,
+            related_files,
+            ranges,
+        } => {
+            collect_cross_file_repair(
+                provider,
+                primary_file,
+                related_files,
+                ranges,
+                budget,
+                sid,
+                generation,
+                freshness,
+                &mut items,
+                &mut notes,
+            )
+            .await;
+        }
+        LspContextRequest::CallNeighborhood {
+            file,
+            line,
+            column,
+            direction,
+            max_depth,
+            max_callers,
+            max_callees,
+        } => {
+            collect_call_neighborhood(
+                provider,
+                file,
+                *line,
+                *column,
+                *direction,
+                *max_depth,
+                *max_callers,
+                *max_callees,
                 budget,
                 sid,
                 generation,
@@ -1428,6 +1535,949 @@ async fn collect_review_context(
                 }
             }
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Impact analysis context
+// ---------------------------------------------------------------------------
+
+#[allow(clippy::too_many_arguments)]
+async fn collect_impact_analysis(
+    provider: &dyn LspEvidenceProvider,
+    symbol: &crate::context::SymbolTarget,
+    changed_files: &[PathBuf],
+    max_refs: usize,
+    max_files: usize,
+    max_depth: u8,
+    budget: &LspContextBudget,
+    sid: &str,
+    generation: Option<u64>,
+    freshness: LspEvidenceFreshness,
+    items: &mut Vec<LspContextItem>,
+    notes: &mut Vec<String>,
+) {
+    let file = &symbol.file;
+    let line = symbol.position.line;
+    let column = symbol.position.character;
+
+    // 1. Definition of target symbol.
+    match provider.go_to_definition(file, line, column).await {
+        Ok(defs) => {
+            let prov = make_provenance(sid, generation, "textDocument/definition", freshness);
+            for (def_file, range_text) in &defs {
+                let (l, c) = parse_range_start(range_text);
+                items.push(LspContextItem {
+                    range: None,
+                    source: Some(AgentContextSource::LspContext),
+                    kind: LspContextItemKind::Definition,
+                    file: PathBuf::from(def_file),
+                    line: l,
+                    column: c,
+                    message: format!("definition: {range_text}"),
+                    symbol: None,
+                    provenance: prov.clone(),
+                    score: LspContextScore {
+                        priority: 15,
+                        is_hunk_local: false,
+                        is_error: false,
+                        is_same_file: true,
+                        freshness_rank: freshness_rank(freshness),
+                    },
+                    payload: None,
+                });
+            }
+        }
+        Err(e) => {
+            debug!("impact analysis: go_to_definition failed: {e}");
+            let prov = make_provenance(sid, generation, "textDocument/definition", freshness);
+            notes.push(format!("impact analysis: definition unavailable: {e}"));
+            items.push(operational_note(
+                format!("definition unavailable: {e}"),
+                prov,
+            ));
+        }
+    }
+
+    // 2. References (capped).
+    let mut all_refs = match provider.find_references(file, line, column).await {
+        Ok(refs) => refs,
+        Err(e) => {
+            debug!("impact analysis: find_references failed: {e}");
+            let prov = make_provenance(sid, generation, "textDocument/reference", freshness);
+            notes.push(format!("impact analysis: references unavailable: {e}"));
+            items.push(operational_note(
+                format!("references unavailable: {e}"),
+                prov,
+            ));
+            Vec::new()
+        }
+    };
+
+    // Rank: same-file and changed-file references first.
+    let changed_set: std::collections::HashSet<PathBuf> = changed_files.iter().cloned().collect();
+    let file_str = file.to_str().unwrap_or("");
+    all_refs.sort_by(|a, b| {
+        let a_same = a.0 == file_str;
+        let b_same = b.0 == file_str;
+        let a_changed = changed_set.contains(&PathBuf::from(&a.0));
+        let b_changed = changed_set.contains(&PathBuf::from(&b.0));
+        b_same
+            .cmp(&a_same)
+            .then(b_changed.cmp(&a_changed))
+            .then(a.0.cmp(&b.0))
+    });
+
+    let capped_refs: Vec<_> = all_refs.into_iter().take(max_refs).collect();
+    if capped_refs.len() < budget.max_references {
+        notes.push(format!(
+            "impact analysis: references capped at {}",
+            max_refs
+        ));
+    }
+
+    let prov_ref = make_provenance(sid, generation, "textDocument/reference", freshness);
+    for (ref_file, range_text) in &capped_refs {
+        let (l, c) = parse_range_start(range_text);
+        let ref_path = PathBuf::from(ref_file);
+        let is_same_file = ref_path == *file;
+        let is_changed = changed_set.contains(&ref_path);
+        items.push(LspContextItem {
+            range: None,
+            source: Some(if is_changed {
+                AgentContextSource::Hunk
+            } else {
+                AgentContextSource::LspContext
+            }),
+            kind: LspContextItemKind::Reference,
+            file: ref_path,
+            line: l,
+            column: c,
+            message: format!("reference: {range_text}"),
+            symbol: None,
+            provenance: prov_ref.clone(),
+            score: LspContextScore {
+                priority: if is_same_file {
+                    12
+                } else if is_changed {
+                    10
+                } else {
+                    5
+                },
+                is_hunk_local: is_changed,
+                is_error: false,
+                is_same_file,
+                freshness_rank: freshness_rank(freshness),
+            },
+            payload: None,
+        });
+    }
+
+    // 3. Implementations (if depth allows).
+    if max_depth > 0 {
+        match provider.implementations(file, line, column).await {
+            Ok(impls) => {
+                let prov =
+                    make_provenance(sid, generation, "textDocument/implementation", freshness);
+                for (impl_file, range_text) in &impls {
+                    let (l, c) = parse_range_start(range_text);
+                    items.push(LspContextItem {
+                        range: None,
+                        source: Some(AgentContextSource::LspContext),
+                        kind: LspContextItemKind::Implementation,
+                        file: PathBuf::from(impl_file),
+                        line: l,
+                        column: c,
+                        message: format!("implementation: {range_text}"),
+                        symbol: None,
+                        provenance: prov.clone(),
+                        score: LspContextScore {
+                            priority: 8,
+                            is_hunk_local: false,
+                            is_error: false,
+                            is_same_file: impl_file == file.to_str().unwrap_or(""),
+                            freshness_rank: freshness_rank(freshness),
+                        },
+                        payload: None,
+                    });
+                }
+            }
+            Err(e) => {
+                debug!("impact analysis: implementations failed: {e}");
+            }
+        }
+    }
+
+    // 4. Diagnostics in changed files (capped).
+    let files_with_diags: Vec<PathBuf> = changed_files.iter().take(max_files).cloned().collect();
+    for df in &files_with_diags {
+        if let Ok(diagnostics) = provider.diagnostics_for_file(df).await {
+            let prov = make_provenance(sid, generation, "textDocument/diagnostic", freshness);
+            for (severity, message, range_text) in diagnostics.iter().take(budget.max_diagnostics) {
+                let (l, c) = parse_range_start(range_text);
+                items.push(LspContextItem {
+                    range: None,
+                    source: Some(AgentContextSource::Diagnostics),
+                    kind: LspContextItemKind::Diagnostic,
+                    file: df.clone(),
+                    line: l,
+                    column: c,
+                    message: message.clone(),
+                    symbol: None,
+                    provenance: prov.clone(),
+                    score: LspContextScore {
+                        priority: if severity_is_error(severity) { 10 } else { 5 },
+                        is_hunk_local: false,
+                        is_error: severity_is_error(severity),
+                        is_same_file: false,
+                        freshness_rank: freshness_rank(freshness),
+                    },
+                    payload: None,
+                });
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Test failure repair context
+// ---------------------------------------------------------------------------
+
+/// Conservative symbol extractor for test failure messages.
+///
+/// Extracts only obvious identifiers, test names, file paths, and
+/// line numbers. Never hallucinates; returns empty on ambiguous input.
+fn extract_failure_symbols(failure_message: &str) -> Vec<String> {
+    let mut symbols = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    for word in failure_message.split_whitespace() {
+        // Strip trailing punctuation.
+        let clean: String = word
+            .chars()
+            .take_while(|c| c.is_alphanumeric() || *c == '_' || *c == ':')
+            .collect();
+        if clean.is_empty() {
+            continue;
+        }
+
+        // Extract Rust-style identifiers: `foo::bar::baz` or `Foo::bar`.
+        if clean.contains("::") {
+            for part in clean.split("::") {
+                let part = part.trim_matches(|c: char| !c.is_alphanumeric() && c != '_');
+                if !part.is_empty()
+                    && part.len() >= 2
+                    && !seen.contains(part)
+                    && part
+                        .chars()
+                        .next()
+                        .is_some_and(|c| c.is_lowercase() || c == '_')
+                {
+                    seen.insert(part.to_string());
+                    symbols.push(part.to_string());
+                }
+            }
+        }
+
+        // Extract identifiers that look like function/type names.
+        if !clean.contains("::")
+            && clean.len() >= 2
+            && clean.chars().all(|c| c.is_alphanumeric() || c == '_')
+            && clean
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_lowercase() || c == '_')
+            && !matches!(
+                clean.as_str(),
+                "at" | "in"
+                    | "on"
+                    | "the"
+                    | "a"
+                    | "an"
+                    | "is"
+                    | "was"
+                    | "thread"
+                    | "panicked"
+                    | "assertion"
+                    | "failed"
+                    | "error"
+                    | "expected"
+                    | "found"
+                    | "called"
+                    | "result"
+                    | "note"
+                    | "run"
+                    | "test"
+                    | "src"
+                    | "lib"
+                    | "main"
+            )
+            && !seen.contains(&clean)
+        {
+            seen.insert(clean.clone());
+            symbols.push(clean);
+        }
+    }
+
+    symbols
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn collect_test_failure_repair(
+    provider: &dyn LspEvidenceProvider,
+    test_file: &Path,
+    failure_message: &str,
+    related_files: &[PathBuf],
+    budget: &LspContextBudget,
+    sid: &str,
+    generation: Option<u64>,
+    freshness: LspEvidenceFreshness,
+    items: &mut Vec<LspContextItem>,
+    notes: &mut Vec<String>,
+) {
+    // 1. Diagnostics in the test file.
+    match provider.diagnostics_for_file(test_file).await {
+        Ok(diagnostics) => {
+            let prov = make_provenance(sid, generation, "textDocument/diagnostic", freshness);
+            for (severity, message, range_text) in diagnostics.iter().take(budget.max_diagnostics) {
+                let (l, c) = parse_range_start(range_text);
+                items.push(LspContextItem {
+                    range: None,
+                    source: Some(AgentContextSource::Diagnostics),
+                    kind: LspContextItemKind::Diagnostic,
+                    file: test_file.to_path_buf(),
+                    line: l,
+                    column: c,
+                    message: message.clone(),
+                    symbol: None,
+                    provenance: prov.clone(),
+                    score: LspContextScore {
+                        priority: if severity_is_error(severity) { 12 } else { 7 },
+                        is_hunk_local: false,
+                        is_error: severity_is_error(severity),
+                        is_same_file: true,
+                        freshness_rank: freshness_rank(freshness),
+                    },
+                    payload: None,
+                });
+            }
+        }
+        Err(e) => {
+            debug!("test failure repair: diagnostics failed: {e}");
+            let prov = make_provenance(sid, generation, "textDocument/diagnostic", freshness);
+            items.push(operational_note(
+                format!("test diagnostics unavailable: {e}"),
+                prov,
+            ));
+        }
+    }
+
+    // 2. Symbols in the test file.
+    match provider.document_symbols(test_file).await {
+        Ok(symbols) => {
+            let prov = make_provenance(sid, generation, "textDocument/documentSymbol", freshness);
+            for (name, kind, range_text) in symbols.iter().take(budget.max_symbols) {
+                let (l, c) = parse_range_start(range_text);
+                items.push(LspContextItem {
+                    range: None,
+                    source: Some(AgentContextSource::LspContext),
+                    kind: LspContextItemKind::WorkspaceSymbol,
+                    file: test_file.to_path_buf(),
+                    line: l,
+                    column: c,
+                    message: format!("{name} ({kind})"),
+                    symbol: Some(name.clone()),
+                    provenance: prov.clone(),
+                    score: LspContextScore {
+                        priority: 8,
+                        is_hunk_local: false,
+                        is_error: false,
+                        is_same_file: true,
+                        freshness_rank: freshness_rank(freshness),
+                    },
+                    payload: None,
+                });
+            }
+        }
+        Err(e) => {
+            debug!("test failure repair: document_symbols failed: {e}");
+        }
+    }
+
+    // 3. Extract symbols from failure message and find their definitions.
+    let extracted = extract_failure_symbols(failure_message);
+    if extracted.is_empty() {
+        notes.push(
+            "test failure repair: no symbols extracted from failure message (heuristic)"
+                .to_string(),
+        );
+    } else {
+        notes.push(format!(
+            "test failure repair: extracted {} symbol(s) from failure message (heuristic)",
+            extracted.len()
+        ));
+    }
+
+    for sym_name in extracted.iter().take(5) {
+        // Try workspace symbol search to find the symbol's location.
+        if let Ok(ws_syms) = provider.workspace_symbols(sym_name).await {
+            for (name, kind, file_path, range_text) in ws_syms.iter().take(3) {
+                if name == sym_name || name.contains(sym_name.as_str()) {
+                    let (l, c) = parse_range_start(range_text);
+                    let sym_file = PathBuf::from(file_path);
+                    let prov_sym = make_provenance(sid, generation, "workspace/symbol", freshness);
+
+                    items.push(LspContextItem {
+                        range: None,
+                        source: Some(AgentContextSource::LspContext),
+                        kind: LspContextItemKind::WorkspaceSymbol,
+                        file: sym_file.clone(),
+                        line: l,
+                        column: c,
+                        message: format!("{name} ({kind})"),
+                        symbol: Some(name.clone()),
+                        provenance: prov_sym.clone(),
+                        score: LspContextScore {
+                            priority: 10,
+                            is_hunk_local: false,
+                            is_error: false,
+                            is_same_file: false,
+                            freshness_rank: freshness_rank(freshness),
+                        },
+                        payload: None,
+                    });
+
+                    // Try to get definition for this symbol.
+                    if let Some(line) = l {
+                        if let Ok(defs) = provider
+                            .go_to_definition(&sym_file, line, c.unwrap_or(0))
+                            .await
+                        {
+                            let prov_def = make_provenance(
+                                sid,
+                                generation,
+                                "textDocument/definition",
+                                freshness,
+                            );
+                            for (def_file, def_range) in &defs {
+                                let (dl, dc) = parse_range_start(def_range);
+                                items.push(LspContextItem {
+                                    range: None,
+                                    source: Some(AgentContextSource::LspContext),
+                                    kind: LspContextItemKind::Definition,
+                                    file: PathBuf::from(def_file),
+                                    line: dl,
+                                    column: dc,
+                                    message: format!("definition: {def_range}"),
+                                    symbol: Some(name.clone()),
+                                    provenance: prov_def.clone(),
+                                    score: LspContextScore {
+                                        priority: 12,
+                                        is_hunk_local: false,
+                                        is_error: false,
+                                        is_same_file: false,
+                                        freshness_rank: freshness_rank(freshness),
+                                    },
+                                    payload: None,
+                                });
+                            }
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
+    // 4. Diagnostics in related files.
+    for rf in related_files.iter().take(budget.max_files) {
+        if let Ok(diagnostics) = provider.diagnostics_for_file(rf).await {
+            let prov = make_provenance(sid, generation, "textDocument/diagnostic", freshness);
+            for (severity, message, range_text) in diagnostics.iter().take(budget.max_diagnostics) {
+                let (l, c) = parse_range_start(range_text);
+                items.push(LspContextItem {
+                    range: None,
+                    source: Some(AgentContextSource::Diagnostics),
+                    kind: LspContextItemKind::Diagnostic,
+                    file: rf.clone(),
+                    line: l,
+                    column: c,
+                    message: message.clone(),
+                    symbol: None,
+                    provenance: prov.clone(),
+                    score: LspContextScore {
+                        priority: if severity_is_error(severity) { 10 } else { 5 },
+                        is_hunk_local: false,
+                        is_error: severity_is_error(severity),
+                        is_same_file: false,
+                        freshness_rank: freshness_rank(freshness),
+                    },
+                    payload: None,
+                });
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Interface boundary context
+// ---------------------------------------------------------------------------
+
+#[allow(clippy::too_many_arguments)]
+async fn collect_interface_boundary(
+    provider: &dyn LspEvidenceProvider,
+    file: &Path,
+    symbol: Option<&str>,
+    include_implementations: bool,
+    budget: &LspContextBudget,
+    sid: &str,
+    generation: Option<u64>,
+    freshness: LspEvidenceFreshness,
+    items: &mut Vec<LspContextItem>,
+    notes: &mut Vec<String>,
+) {
+    // 1. Document symbols for the file (public/exported items).
+    match provider.document_symbols(file).await {
+        Ok(symbols) => {
+            let prov = make_provenance(sid, generation, "textDocument/documentSymbol", freshness);
+            let filtered: Vec<_> = if let Some(sym_filter) = symbol {
+                symbols
+                    .into_iter()
+                    .filter(|(name, _, _)| name.contains(sym_filter))
+                    .collect()
+            } else {
+                symbols
+            };
+            for (name, kind, range_text) in filtered.iter().take(budget.max_symbols) {
+                let (l, c) = parse_range_start(range_text);
+                items.push(LspContextItem {
+                    range: None,
+                    source: Some(AgentContextSource::LspContext),
+                    kind: LspContextItemKind::WorkspaceSymbol,
+                    file: file.to_path_buf(),
+                    line: l,
+                    column: c,
+                    message: format!("{name} ({kind})"),
+                    symbol: Some(name.clone()),
+                    provenance: prov.clone(),
+                    score: LspContextScore {
+                        priority: 10,
+                        is_hunk_local: false,
+                        is_error: false,
+                        is_same_file: true,
+                        freshness_rank: freshness_rank(freshness),
+                    },
+                    payload: None,
+                });
+            }
+        }
+        Err(e) => {
+            debug!("interface boundary: document_symbols failed: {e}");
+            let prov = make_provenance(sid, generation, "textDocument/documentSymbol", freshness);
+            items.push(operational_note(
+                format!("document symbols unavailable: {e}"),
+                prov,
+            ));
+        }
+    }
+
+    // 2. Diagnostics for the file.
+    match provider.diagnostics_for_file(file).await {
+        Ok(diagnostics) => {
+            let prov = make_provenance(sid, generation, "textDocument/diagnostic", freshness);
+            for (severity, message, range_text) in diagnostics.iter().take(budget.max_diagnostics) {
+                let (l, c) = parse_range_start(range_text);
+                items.push(LspContextItem {
+                    range: None,
+                    source: Some(AgentContextSource::Diagnostics),
+                    kind: LspContextItemKind::Diagnostic,
+                    file: file.to_path_buf(),
+                    line: l,
+                    column: c,
+                    message: message.clone(),
+                    symbol: None,
+                    provenance: prov.clone(),
+                    score: LspContextScore {
+                        priority: if severity_is_error(severity) { 10 } else { 5 },
+                        is_hunk_local: false,
+                        is_error: severity_is_error(severity),
+                        is_same_file: true,
+                        freshness_rank: freshness_rank(freshness),
+                    },
+                    payload: None,
+                });
+            }
+        }
+        Err(e) => {
+            debug!("interface boundary: diagnostics failed: {e}");
+        }
+    }
+
+    // 3. For each boundary symbol, get definition + implementations.
+    let symbol_items: Vec<(String, u32, u32)> = items
+        .iter()
+        .filter(|i| i.kind == LspContextItemKind::WorkspaceSymbol)
+        .filter_map(|i| Some((i.symbol.clone()?, i.line?, i.column.unwrap_or(0))))
+        .collect();
+
+    for (sym_name, line, column) in symbol_items.iter().take(10) {
+        // Definition.
+        if let Ok(defs) = provider.go_to_definition(file, *line, *column).await {
+            let prov = make_provenance(sid, generation, "textDocument/definition", freshness);
+            for (def_file, range_text) in &defs {
+                let (l, c) = parse_range_start(range_text);
+                items.push(LspContextItem {
+                    range: None,
+                    source: Some(AgentContextSource::LspContext),
+                    kind: LspContextItemKind::Definition,
+                    file: PathBuf::from(def_file),
+                    line: l,
+                    column: c,
+                    message: format!("definition: {range_text}"),
+                    symbol: Some(sym_name.clone()),
+                    provenance: prov.clone(),
+                    score: LspContextScore {
+                        priority: 12,
+                        is_hunk_local: false,
+                        is_error: false,
+                        is_same_file: def_file == file.to_str().unwrap_or(""),
+                        freshness_rank: freshness_rank(freshness),
+                    },
+                    payload: None,
+                });
+            }
+        }
+
+        // Implementations (if enabled).
+        if include_implementations {
+            match provider.implementations(file, *line, *column).await {
+                Ok(impls) => {
+                    let prov =
+                        make_provenance(sid, generation, "textDocument/implementation", freshness);
+                    for (impl_file, range_text) in &impls {
+                        let (l, c) = parse_range_start(range_text);
+                        items.push(LspContextItem {
+                            range: None,
+                            source: Some(AgentContextSource::LspContext),
+                            kind: LspContextItemKind::Implementation,
+                            file: PathBuf::from(impl_file),
+                            line: l,
+                            column: c,
+                            message: format!("implementation: {range_text}"),
+                            symbol: Some(sym_name.clone()),
+                            provenance: prov.clone(),
+                            score: LspContextScore {
+                                priority: 8,
+                                is_hunk_local: false,
+                                is_error: false,
+                                is_same_file: impl_file == file.to_str().unwrap_or(""),
+                                freshness_rank: freshness_rank(freshness),
+                            },
+                            payload: None,
+                        });
+                    }
+                }
+                Err(e) => {
+                    debug!("interface boundary: implementations failed for {sym_name}: {e}");
+                    let prov =
+                        make_provenance(sid, generation, "textDocument/implementation", freshness);
+                    notes.push(format!("implementations unavailable for {sym_name}: {e}"));
+                    items.push(operational_note(
+                        format!("implementations unavailable for {sym_name}: {e}"),
+                        prov,
+                    ));
+                }
+            }
+        }
+    }
+
+    // 4. Hover for boundary symbols.
+    for (sym_name, line, column) in symbol_items.iter().take(5) {
+        if let Ok(Some(hover)) = provider.hover(file, *line, *column).await {
+            let prov = make_provenance(sid, generation, "textDocument/hover", freshness);
+            items.push(LspContextItem {
+                range: None,
+                source: Some(AgentContextSource::LspContext),
+                kind: LspContextItemKind::Hover,
+                file: file.to_path_buf(),
+                line: Some(*line),
+                column: Some(*column),
+                message: hover,
+                symbol: Some(sym_name.clone()),
+                provenance: prov,
+                score: LspContextScore {
+                    priority: 6,
+                    is_hunk_local: false,
+                    is_error: false,
+                    is_same_file: true,
+                    freshness_rank: freshness_rank(freshness),
+                },
+                payload: None,
+            });
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Cross-file repair context
+// ---------------------------------------------------------------------------
+
+#[allow(clippy::too_many_arguments)]
+async fn collect_cross_file_repair(
+    provider: &dyn LspEvidenceProvider,
+    primary_file: &Path,
+    related_files: &[PathBuf],
+    ranges: &[crate::context::LineRange],
+    budget: &LspContextBudget,
+    sid: &str,
+    generation: Option<u64>,
+    freshness: LspEvidenceFreshness,
+    items: &mut Vec<LspContextItem>,
+    _notes: &mut Vec<String>,
+) {
+    // 1. Diagnostics in primary file.
+    match provider.diagnostics_for_file(primary_file).await {
+        Ok(diagnostics) => {
+            let prov = make_provenance(sid, generation, "textDocument/diagnostic", freshness);
+            let capped: Vec<_> = diagnostics.iter().take(budget.max_diagnostics).collect();
+            for (severity, message, range_text) in &capped {
+                let (l, c) = parse_range_start(range_text);
+                // Filter by ranges if provided.
+                if !ranges.is_empty() {
+                    let in_range = l.is_some_and(|line| {
+                        ranges.iter().any(|r| line_in_range(line, r.start, r.end))
+                    });
+                    if !in_range {
+                        continue;
+                    }
+                }
+                items.push(LspContextItem {
+                    range: None,
+                    source: Some(AgentContextSource::Diagnostics),
+                    kind: LspContextItemKind::Diagnostic,
+                    file: primary_file.to_path_buf(),
+                    line: l,
+                    column: c,
+                    message: message.clone(),
+                    symbol: None,
+                    provenance: prov.clone(),
+                    score: LspContextScore {
+                        priority: if severity_is_error(severity) { 12 } else { 7 },
+                        is_hunk_local: false,
+                        is_error: severity_is_error(severity),
+                        is_same_file: true,
+                        freshness_rank: freshness_rank(freshness),
+                    },
+                    payload: None,
+                });
+            }
+        }
+        Err(e) => {
+            debug!("cross-file repair: primary diagnostics failed: {e}");
+            let prov = make_provenance(sid, generation, "textDocument/diagnostic", freshness);
+            items.push(operational_note(
+                format!("primary diagnostics unavailable: {e}"),
+                prov,
+            ));
+        }
+    }
+
+    // 2. Symbols in primary file ranges.
+    if !ranges.is_empty() {
+        match provider.document_symbols(primary_file).await {
+            Ok(symbols) => {
+                let prov =
+                    make_provenance(sid, generation, "textDocument/documentSymbol", freshness);
+                for (name, kind, range_text) in symbols.iter().take(budget.max_symbols) {
+                    let (l, _c) = parse_range_start(range_text);
+                    if let Some(line) = l {
+                        let in_range = ranges.iter().any(|r| line_in_range(line, r.start, r.end));
+                        if in_range {
+                            let (sl, sc) = parse_range_start(range_text);
+                            items.push(LspContextItem {
+                                range: None,
+                                source: Some(AgentContextSource::LspContext),
+                                kind: LspContextItemKind::WorkspaceSymbol,
+                                file: primary_file.to_path_buf(),
+                                line: sl,
+                                column: sc,
+                                message: format!("{name} ({kind})"),
+                                symbol: Some(name.clone()),
+                                provenance: prov.clone(),
+                                score: LspContextScore {
+                                    priority: 10,
+                                    is_hunk_local: true,
+                                    is_error: false,
+                                    is_same_file: true,
+                                    freshness_rank: freshness_rank(freshness),
+                                },
+                                payload: None,
+                            });
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                debug!("cross-file repair: primary symbols failed: {e}");
+            }
+        }
+    }
+
+    // 3. Diagnostics in related files (capped).
+    let related_cap = budget.max_files.min(related_files.len());
+    for rf in related_files.iter().take(related_cap) {
+        if let Ok(diagnostics) = provider.diagnostics_for_file(rf).await {
+            let prov = make_provenance(sid, generation, "textDocument/diagnostic", freshness);
+            for (severity, message, range_text) in diagnostics.iter().take(budget.max_diagnostics) {
+                let (l, c) = parse_range_start(range_text);
+                items.push(LspContextItem {
+                    range: None,
+                    source: Some(AgentContextSource::Diagnostics),
+                    kind: LspContextItemKind::Diagnostic,
+                    file: rf.clone(),
+                    line: l,
+                    column: c,
+                    message: message.clone(),
+                    symbol: None,
+                    provenance: prov.clone(),
+                    score: LspContextScore {
+                        priority: if severity_is_error(severity) { 8 } else { 4 },
+                        is_hunk_local: false,
+                        is_error: severity_is_error(severity),
+                        is_same_file: false,
+                        freshness_rank: freshness_rank(freshness),
+                    },
+                    payload: None,
+                });
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Call neighborhood context
+// ---------------------------------------------------------------------------
+
+#[allow(clippy::too_many_arguments)]
+async fn collect_call_neighborhood(
+    provider: &dyn LspEvidenceProvider,
+    file: &Path,
+    line: u32,
+    column: u32,
+    direction: crate::context::HierarchyDirection,
+    max_depth: u8,
+    max_callers: usize,
+    max_callees: usize,
+    _budget: &LspContextBudget,
+    sid: &str,
+    generation: Option<u64>,
+    freshness: LspEvidenceFreshness,
+    items: &mut Vec<LspContextItem>,
+    notes: &mut Vec<String>,
+) {
+    // Depth guard: default max is 1, explicit >1 must be requested.
+    let effective_depth = max_depth.min(3);
+    if effective_depth == 0 {
+        notes.push("call neighborhood: depth 0, no hierarchy collected".to_string());
+        return;
+    }
+
+    // Collect outgoing callees via references at the symbol position.
+    if matches!(
+        direction,
+        crate::context::HierarchyDirection::Outgoing | crate::context::HierarchyDirection::Both
+    ) {
+        match provider.find_references(file, line, column).await {
+            Ok(refs) => {
+                let prov = make_provenance(sid, generation, "call_hierarchy/outgoing", freshness);
+                let capped: Vec<_> = refs.into_iter().take(max_callees).collect();
+                if capped.len() < max_callees {
+                    // This is fine, we just have fewer callees.
+                }
+                for (ref_file, range_text) in &capped {
+                    let (l, c) = parse_range_start(range_text);
+                    items.push(LspContextItem {
+                        range: None,
+                        source: Some(AgentContextSource::LspContext),
+                        kind: LspContextItemKind::Reference,
+                        file: PathBuf::from(ref_file),
+                        line: l,
+                        column: c,
+                        message: format!("callees (outgoing): {range_text}"),
+                        symbol: None,
+                        provenance: prov.clone(),
+                        score: LspContextScore {
+                            priority: 7,
+                            is_hunk_local: false,
+                            is_error: false,
+                            is_same_file: ref_file == file.to_str().unwrap_or(""),
+                            freshness_rank: freshness_rank(freshness),
+                        },
+                        payload: None,
+                    });
+                }
+            }
+            Err(e) => {
+                debug!("call neighborhood: outgoing references failed: {e}");
+                let prov = make_provenance(sid, generation, "call_hierarchy/outgoing", freshness);
+                notes.push(format!("outgoing calls unavailable: {e}"));
+                items.push(operational_note(
+                    format!("outgoing calls unavailable: {e}"),
+                    prov,
+                ));
+            }
+        }
+    }
+
+    // Collect incoming callers via document highlights (read/write).
+    if matches!(
+        direction,
+        crate::context::HierarchyDirection::Incoming | crate::context::HierarchyDirection::Both
+    ) {
+        match provider.document_highlights(file, line, column).await {
+            Ok(highlights) => {
+                let prov = make_provenance(sid, generation, "call_hierarchy/incoming", freshness);
+                let capped: Vec<_> = highlights.into_iter().take(max_callers).collect();
+                for range_text in &capped {
+                    let (l, c) = parse_range_start(range_text);
+                    items.push(LspContextItem {
+                        range: None,
+                        source: Some(AgentContextSource::LspContext),
+                        kind: LspContextItemKind::DocumentHighlight,
+                        file: file.to_path_buf(),
+                        line: l,
+                        column: c,
+                        message: format!("caller highlight: {range_text}"),
+                        symbol: None,
+                        provenance: prov.clone(),
+                        score: LspContextScore {
+                            priority: 7,
+                            is_hunk_local: false,
+                            is_error: false,
+                            is_same_file: true,
+                            freshness_rank: freshness_rank(freshness),
+                        },
+                        payload: None,
+                    });
+                }
+            }
+            Err(e) => {
+                debug!("call neighborhood: incoming highlights failed: {e}");
+                let prov = make_provenance(sid, generation, "call_hierarchy/incoming", freshness);
+                notes.push(format!("incoming calls unavailable: {e}"));
+                items.push(operational_note(
+                    format!("incoming calls unavailable: {e}"),
+                    prov,
+                ));
+            }
+        }
+    }
+
+    // Note about depth limitation.
+    if effective_depth > 1 {
+        notes.push(format!(
+            "call neighborhood: depth {effective_depth} requested, but recursive expansion is capped for safety"
+        ));
     }
 }
 

@@ -75,19 +75,21 @@ Likely deliverables:
 - Server capability report display.
 - Clear degraded/failing remediation messages.
 
-### Phase 10: broader semantic operations via bounded packets
+### Phase 10: broader semantic operations via bounded packets — Implemented, UX incomplete
 
-Goal: extend semantic context without reintroducing raw LSP JSON or unbounded prompt expansion. Add only workflow-driven packet types or item kinds that justify their cost.
+Status: Implemented, UX incomplete. All five candidate operations are implemented and tested. Each operation lowers into the canonical `LspContextPacket` via named recipe functions in `crates/egglsp/src/workflow_recipes.rs`.
 
-Candidates:
+Completed deliverables:
 
-- Impact-analysis packet for symbol rename/refactor review.
-- Test-failure repair packet around failing functions and referenced definitions.
-- Dependency/interface packet for trait/interface/API boundary review.
-- Cross-file repair packet with strict file/range/reference caps.
-- Lightweight call-neighborhood packet beyond current shallow summaries, still bounded and non-recursive by default.
+- Impact-analysis packet for symbol rename/refactor review (`execute_impact_analysis`).
+- Test-failure repair packet with heuristic symbol extraction (`execute_test_failure_repair`).
+- Interface/API boundary packet for trait/interface review (`execute_interface_boundary`).
+- Cross-file repair packet with strict file/range/reference caps (`execute_cross_file_repair`).
+- Call-neighborhood packet, bounded and non-recursive by default (`execute_call_neighborhood`).
 
-Rule: new operations must be packet-first, budgeted, provenance-carrying, and renderable by tier-aware context policy.
+Supporting types: `SymbolTarget` (file + position), `HierarchyDirection` (Incoming/Outgoing/Both).
+
+Remaining: UX polish, renderer section refinements, and expanded recipe composition. See `architecture/lsp.md` Phase 10 section for full details.
 
 ### Phase 11: routing/model-tier-aware LSP context policy
 
