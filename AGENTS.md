@@ -88,6 +88,9 @@ cargo test --features lsp-test-support --test lsp_composite_stdio
 
 # Real-server smoke tests (opt-in, requires installed servers)
 cargo test -p egglsp --features lsp-real-server-tests --test real_server_smoke -- rust_analyzer --nocapture
+
+# Real-server smoke (opt-in, requires installed servers)
+cargo test -p egglsp --features lsp-real-server-tests --test real_server_smoke
 ```
 
 ## Critical Gotchas
@@ -141,6 +144,7 @@ cargo test -p egglsp --features lsp-real-server-tests --test real_server_smoke -
 - **Phase 10 bounded semantic operations**: Five new recipe functions (`execute_impact_analysis`, `execute_test_failure_repair`, `execute_interface_boundary`, `execute_cross_file_repair`, `execute_call_neighborhood`) lower into `LspContextPacket` via `collect_context`. New types `SymbolTarget` and `HierarchyDirection` in `crates/egglsp/src/context.rs`. Test failure repair uses heuristic symbol extraction from failure messages. Each operation enforces budget/truncation limits per `RecipeSettings` tier. Key gotchas: `SymbolTarget` is file+position (not name-based), `HierarchyDirection` is `Incoming|Outgoing|Both` (not `Callers|Callees`), and capped references vary by model tier (e.g., impact analysis: 5/20/50 refs for Small/Workhorse/Frontier).
 - **Phase 11 context policy**: `LspContextPolicy` in `crates/egglsp/src/context_policy.rs` centralizes tier/workflow/risk/budget/stale decisions. `resolve_model_tier()` uses precedence: explicit override > config override > model family heuristic > Workhorse default. `TierSource` tracks which step produced the result. Workflow/tier defaults (12 recipes × 3 tiers) for feature flags (`include_cross_file`, `include_hierarchy`, `include_previews`) and budgets are centralized in `LspContextPolicy::workflow_tier_defaults()`. Convert to `RecipeSettings` or `LspContextRenderConfig` via `to_recipe_settings()` / `to_render_config()`. **Known limitation:** `LspContextRenderConfig` does not currently expose `include_cross_file` / `include_hierarchy` fields, so `to_render_config()` does not propagate those policy flags. The `RecipeSettings` path (`to_recipe_settings()`) is unaffected and propagates both flags correctly.
 - **Phase 12 semantic memory cache**: `LspSemanticCache` in `crates/egglsp/src/cache.rs` provides an optional bounded memory cache for LSP-derived evidence packets. Cache keys encode workspace root, server ID, operation, request fingerprint, file content hashes, capability fingerprint, and budget fingerprint. Production cache keys now include request-scoped file hashes via `collect_cache_file_hashes_for_request()` in `src/tool/lsp.rs` (cap of 16 files with debug logging). When the primary file is unreadable, cache is bypassed for that request. Cache uses **conservative eviction** (always removes on generation mismatch, file hash change, TTL expiry, or capability fingerprint change — never silently retained). Config via `[lsp_semantic_cache]` with `mode` ("disabled" default / "memory"), `max_entries` (64), `max_bytes` (4MB), `ttl_seconds` (300). Config is wired from `codegg-config` through `ToolRegistryOptions` to `LspTool::with_cache_config()`. **Production wiring**: `LspTool::lsp_context_for_agent_with_input` routes through the cache when enabled, via the sync `LspSemanticCache::get` / `insert` API (not `collect_context_cached`) because the cache guard is `!Send` and cannot cross `.await`. Pattern: lock, lookup, drop lock, await `collect_context` on miss, lock again, insert. TUI commands: `/lsp-cache-status`, `/lsp-cache-clear [--all|<root>]`. Cache is opt-in and disabled by default.
+- **Phase 13 real-world validation and doctor**: `crates/egglsp/src/doctor.rs` provides `LspDoctorReport` and `build_doctor_report()` for the `/lsp-doctor [path]` TUI command. Doctor is read-only, never starts servers. `LspObservabilitySnapshot` in `health.rs` combines operational, cache, and preview metrics. Validation tiers: unit, fake-server, real-server-smoke (feature-gated), manual-doctor. Real-server smoke tests skip cleanly when binaries are missing.
 
 ### Auth
 
@@ -184,7 +188,7 @@ cargo test -p egglsp --features lsp-real-server-tests --test real_server_smoke -
 | `architecture/goal.md` | Goal system | |
 | `architecture/hooks.md` | Lifecycle hooks for agent events | |
 | `architecture/ide.md` | VS Code/JetBrains detection, diff viewing | |
-| `architecture/lsp.md` | LSP client, diagnostics, code operations | egglsp is authoritative; 39 servers |
+| `architecture/lsp.md` | LSP client, diagnostics, code operations, Phase 13 doctor/validation | egglsp is authoritative; 39 servers |
 | `architecture/mcp.md` | MCP client (local/remote) | |
 | `architecture/memory.md` | Persistent memory across sessions | In `crates/codegg-core` |
 | `architecture/native_crates.md` | Workspace crates, backend contract | |

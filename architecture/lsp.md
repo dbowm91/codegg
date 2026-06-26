@@ -1507,6 +1507,96 @@ cross `.await`; lock is dropped at every await point. Unit tests in
 `lsp_cache_status` reporting, and `clear_semantic_cache` zero-clear
 behavior in disabled mode.
 
+## Phase 13: Real-World Validation and `/lsp-doctor`
+
+### Validation Tiers
+
+The LSP subsystem uses four validation tiers:
+
+| Tier | Description | Requires | Command |
+|------|-------------|----------|---------|
+| `unit` | Pure DTO/render/cache/policy tests | Nothing | `cargo test -p egglsp --lib` |
+| `fake-server` | Controlled fake LSP server with deterministic responses | `lsp-test-support` feature | `cargo test -p egglsp --features lsp-test-support` |
+| `real-server-smoke` | Optional tests against real LSP binaries | `lsp-real-server-tests` feature + installed servers | `cargo test -p egglsp --features lsp-real-server-tests --test real_server_smoke` |
+| `manual-doctor` | User-facing diagnosis via `/lsp-doctor` | Running TUI | `/lsp-doctor <file-path>` |
+
+**Unit and fake-server tiers** always run in CI and locally. **Real-server-smoke** is opt-in and skips cleanly when binaries are missing. **Manual-doctor** is interactive.
+
+### Real-Server Smoke Matrix
+
+Target profiles for real-server smoke tests:
+
+| Language | Server | Status | Notes |
+|----------|--------|--------|-------|
+| Rust | `rust-analyzer` | Tier 1 (pinned) | Primary CI target |
+| Python | `pyright` | Tier 1 (pinned) | |
+| TypeScript/JavaScript | `typescript-language-server` | Tier 1 (pinned) | |
+| Go | `gopls` | Tier 2 (best-effort) | |
+| C/C++ | `clangd` | Tier 2 (best-effort) | |
+
+Smoke tests skip with explicit messages when binaries are not found:
+```
+test result: ignored. 0 passed; 0 failed; 0 ignored; 5 measured; finished in 0.00s
+```
+
+### `/lsp-doctor [path]` Command
+
+A read-only diagnostic command that explains why LSP is or is not working for a given file path.
+
+**Output includes:**
+- Input path and canonical path
+- Allowed root status
+- Workspace root and root markers found
+- Detected language and server profile
+- Active server key, operational state, and generation
+- Capability summary
+- Stderr tail (last 5 lines)
+- Cache mode and entry count
+- Preview count and stale count
+- Issues found
+- Remediation suggestions
+
+**Failure modes diagnosed:**
+- File outside allowed root
+- Missing file
+- Unsupported extension/language
+- No root marker
+- Server binary missing
+- Server running but degraded/failed
+- Capabilities unavailable
+- Cache disabled
+- Stale previews
+
+**Usage:**
+```
+/lsp-doctor src/main.rs
+/lsp-doctor /absolute/path/to/file.py
+```
+
+### Observability Metrics
+
+The `LspObservabilitySnapshot` DTO combines operational state, cache, and preview metrics:
+
+- Active client count and per-client health snapshots
+- Cache mode, entries, bytes, hits, misses, stale misses, evictions
+- Preview count, stale count, applied count
+
+Available via `LspObservabilitySnapshot::status_line()` and `render_detail()`.
+
+### Test Commands
+
+```bash
+# Mandatory (always run)
+cargo test -p egglsp --lib           # unit tests
+cargo test -p egglsp --features lsp-test-support  # fake-server tests
+
+# Optional (opt-in)
+cargo test -p egglsp --features lsp-real-server-tests --test real_server_smoke
+
+# Doctor (interactive)
+# /lsp-doctor <file-path>
+```
+
 ## Supported Languages (39 servers)
 
 | Language | Server | Command |

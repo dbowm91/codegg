@@ -27,6 +27,7 @@ pub mod context_policy;
 pub mod context_renderer;
 pub mod degradation_policy;
 pub mod diagnostics;
+pub mod doctor;
 pub mod document_sync;
 pub mod download;
 pub mod edit;
@@ -88,6 +89,7 @@ pub use diagnostics::{
     DiagnosticsCollector, DiagnosticsOutput, LspDiagnosticFreshness, LspDiagnosticSnapshot,
     LspDiagnosticSource,
 };
+pub use doctor::{build_doctor_report, render_doctor_report, LspDoctorReport};
 pub use document_sync::{OpenDocumentRegistry, OpenDocumentSnapshot};
 pub use error::LspError;
 pub use evidence_adapter::{EvidenceOperation, ServiceLspEvidenceProvider};
@@ -95,7 +97,7 @@ pub use evidence_collector::{
     collect_context, collect_hunk_context, item_kind_from_severity, make_provenance,
     LspContextError, LspEvidenceProvider,
 };
-pub use health::{LspOperationalHealthSnapshot, LspOperationalState};
+pub use health::{LspObservabilitySnapshot, LspOperationalHealthSnapshot, LspOperationalState};
 pub use hunk_context::{
     HunkDescriptor, HunkEvidence, HunkLineRange, HunkSourceNavigationLimits,
     HunkSourceNavigationRequest, HunkSourceNavigationResponse,

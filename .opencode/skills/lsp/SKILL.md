@@ -2369,6 +2369,69 @@ disallowed matches: `workspace/applyEdit` is rejected by the
 dispatcher, `workspace/executeCommand` is never invoked, and
 `mark_applied` is only called after all writes succeed.
 
+## Phase 13: Real-World Validation and Doctor
+
+Phase 13 adds a `/lsp-doctor` TUI command and consolidates validation across four tiers.
+
+### Validation Tiers
+
+| Tier | What it exercises | How to run |
+|------|-------------------|------------|
+| **Unit** | Crate-level unit tests (no server, no transport) | `cargo test -p egglsp --lib` |
+| **Fake-server** | Fake LSP server via stdio transport (integration tests) | `cargo test -p egglsp --features lsp-test-support --test scenario_engine` and `cargo test --features lsp-test-support --test lsp_composite_stdio` |
+| **Real-server-smoke** | Real installed server binaries against production harness (opt-in, feature-gated) | `cargo test -p egglsp --features lsp-real-server-tests --test real_server_smoke` |
+| **Manual-doctor** | TUI doctor command — read-only diagnostic report against any project | `/lsp-doctor [path]` |
+
+Real-server smoke tests skip cleanly when server binaries are not installed on PATH. The doctor command is always safe — it never starts servers and never mutates files.
+
+### `/lsp-doctor` Command
+
+Usage:
+
+```
+/lsp-doctor [path]
+```
+
+Reports a read-only `LspDoctorReport` covering:
+
+- Per-server compatibility status (binary found, initialized, operational state)
+- Capability snapshot completeness
+- Restart/health state summary
+- Cache status (when semantic cache is enabled)
+- Preview artifact lifecycle summary (when previews exist)
+
+The doctor is read-only and never starts LSP servers. It is safe to run at any time.
+
+### Observability Snapshot
+
+`LspObservabilitySnapshot` (in `crates/egglsp/src/health.rs`) combines operational, cache, and preview metrics into a single DTO for the doctor and TUI status surfaces:
+
+- Operational health per server (state, generation, restart count, last error, stderr tail)
+- Cache hit/miss/eviction counts (when semantic cache is enabled)
+- Preview artifact counts (registered, stale, applied)
+
+### Test Commands
+
+```bash
+# Tier 1: unit tests (no server, no transport)
+cargo test -p egglsp --lib
+
+# Tier 2: fake-server integration tests
+cargo test -p egglsp --features lsp-test-support --test scenario_engine
+cargo test --features lsp-test-support --test lsp_composite_stdio
+
+# Tier 3: real-server smoke tests (opt-in, requires installed servers)
+cargo test -p egglsp --features lsp-real-server-tests --test real_server_smoke
+
+# Tier 3 with specific server
+cargo test -p egglsp --features lsp-real-server-tests --test real_server_smoke -- rust_analyzer
+cargo test -p egglsp --features lsp-real-server-tests --test real_server_smoke -- basedpyright
+
+# Tier 4: manual doctor (TUI command)
+/lsp-doctor
+/lsp-doctor /path/to/project
+```
+
 ## See Also
 
 - [tool.md](tool.md) - LSP tool wrapper

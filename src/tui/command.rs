@@ -241,6 +241,8 @@ impl CommandRegistry {
                 .with_description("Show LSP semantic cache status and stats"),
             Command::new("/lsp-cache-clear", CommandCategory::System, None)
                 .with_description("Clear LSP semantic cache (args: --all or <root-path>)"),
+            Command::new("/lsp-doctor", CommandCategory::System, None)
+                .with_description("Diagnose LSP status for a file path (args: <path>)"),
             Command::new("/tool-backends", CommandCategory::System, None)
                 .with_aliases(&["/tools", "/backends"])
                 .with_description("Show resolved backend for each model-facing tool (Native / MCP / Builtin / Disabled)"),

@@ -1942,6 +1942,39 @@ impl LspTool {
         render_root_diagnosis(&diag)
     }
 
+    /// Build a comprehensive diagnostic report for a file path.
+    /// Composes root diagnosis, server status, capabilities, cache,
+    /// and preview status into a single read-only surface.
+    pub async fn lsp_doctor(&self, path: &str) -> String {
+        let input = std::path::Path::new(path);
+        let (cache_mode, cache_entries, preview_total, preview_stale) = {
+            let cache = self.semantic_cache();
+            let stats = cache.stats();
+            let cache_mode = if cache.is_enabled() {
+                "enabled"
+            } else {
+                "disabled"
+            };
+            let preview_registry = self.preview_registry();
+            let preview_total = preview_registry.len();
+            let preview_stale = preview_registry.stale_count();
+            (cache_mode, stats.entries, preview_total, preview_stale)
+        };
+
+        let report = egglsp::doctor::build_doctor_report(
+            input,
+            Some(&self.allowed_root),
+            Some(self.service.as_ref()),
+            cache_mode,
+            cache_entries,
+            preview_total,
+            preview_stale,
+        )
+        .await;
+
+        egglsp::doctor::render_doctor_report(&report)
+    }
+
     /// Manually restart a specific LSP server by key.
     /// Returns a status message about the restart outcome.
     pub async fn lsp_restart_server(&self, key: &str) -> String {

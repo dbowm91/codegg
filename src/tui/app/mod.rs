@@ -4463,6 +4463,22 @@ impl App {
                     self.messages_state.toasts.info("LSP not available");
                 }
             }
+            "/lsp-doctor" => {
+                self.ui_state.command_mode = false;
+                let query = self.dialog_state.command_palette.query.clone();
+                let path_arg = query.strip_prefix("/lsp-doctor ").unwrap_or("").trim();
+                if path_arg.is_empty() {
+                    self.messages_state
+                        .toasts
+                        .info("Usage: /lsp-doctor <file-path>");
+                } else if let Some(ref lsp_tool) = self.lsp_tool {
+                    let handle = tokio::runtime::Handle::current();
+                    let text = handle.block_on(lsp_tool.lsp_doctor(path_arg));
+                    self.messages_state.toasts.info(&text);
+                } else {
+                    self.messages_state.toasts.info("LSP not available");
+                }
+            }
             "/lsp-restart" => {
                 self.ui_state.command_mode = false;
                 let query = self.dialog_state.command_palette.query.clone();

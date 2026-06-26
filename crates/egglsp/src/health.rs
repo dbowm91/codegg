@@ -279,6 +279,108 @@ impl LspOperationalHealthSnapshot {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Phase 13: Observability metrics snapshot
+// ---------------------------------------------------------------------------
+
+/// High-level observability snapshot for LSP subsystem health.
+///
+/// Combines operational state, transport, cache, and preview metrics
+/// into a single read-only DTO suitable for rendering in `/lsp-doctor`
+/// or `/lsp-status --detail`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LspObservabilitySnapshot {
+    /// Number of active client keys.
+    pub active_clients: usize,
+    /// Per-client health snapshots.
+    pub clients: Vec<LspOperationalHealthSnapshot>,
+    /// Semantic cache mode ("disabled" or "memory").
+    pub cache_mode: String,
+    /// Semantic cache entries.
+    pub cache_entries: usize,
+    /// Semantic cache bytes.
+    pub cache_bytes: usize,
+    /// Semantic cache hit count.
+    pub cache_hits: u64,
+    /// Semantic cache miss count.
+    pub cache_misses: u64,
+    /// Semantic cache stale-miss count.
+    pub cache_stale_misses: u64,
+    /// Semantic cache eviction count.
+    pub cache_evictions: u64,
+    /// Total preview artifacts registered.
+    pub preview_count: usize,
+    /// Number of stale preview artifacts.
+    pub preview_stale_count: usize,
+    /// Number of applied preview artifacts.
+    pub preview_applied_count: usize,
+}
+
+impl Default for LspObservabilitySnapshot {
+    fn default() -> Self {
+        Self {
+            active_clients: 0,
+            clients: Vec::new(),
+            cache_mode: "disabled".to_string(),
+            cache_entries: 0,
+            cache_bytes: 0,
+            cache_hits: 0,
+            cache_misses: 0,
+            cache_stale_misses: 0,
+            cache_evictions: 0,
+            preview_count: 0,
+            preview_stale_count: 0,
+            preview_applied_count: 0,
+        }
+    }
+}
+
+impl LspObservabilitySnapshot {
+    /// Render a compact one-line summary.
+    pub fn status_line(&self) -> String {
+        format!(
+            "LSP: {} clients, cache={}/{} entries, {} previews ({} stale, {} applied)",
+            self.active_clients,
+            self.cache_mode,
+            self.cache_entries,
+            self.preview_count,
+            self.preview_stale_count,
+            self.preview_applied_count,
+        )
+    }
+
+    /// Render a multi-line detail summary.
+    pub fn render_detail(&self) -> String {
+        let mut lines = Vec::new();
+        lines.push(format!("Active clients: {}", self.active_clients));
+        for client in &self.clients {
+            lines.push(format!(
+                "  {} [{}] gen={} | {} pending, {} open",
+                client.server_id,
+                client.state.label(),
+                client.generation,
+                client.pending_requests,
+                client.open_documents,
+            ));
+        }
+        lines.push(format!(
+            "Cache: mode={}, entries={}, bytes={}, hits={}, misses={}, stale_misses={}, evictions={}",
+            self.cache_mode,
+            self.cache_entries,
+            self.cache_bytes,
+            self.cache_hits,
+            self.cache_misses,
+            self.cache_stale_misses,
+            self.cache_evictions,
+        ));
+        lines.push(format!(
+            "Previews: total={}, stale={}, applied={}",
+            self.preview_count, self.preview_stale_count, self.preview_applied_count,
+        ));
+        lines.join("\n")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -460,5 +562,66 @@ mod tests {
         assert!(snap.transport.is_none());
         assert!(snap.stderr_tail.is_empty());
         assert!(snap.last_error.is_none());
+    }
+
+    #[test]
+    fn observability_snapshot_default() {
+        let snap = LspObservabilitySnapshot::default();
+        assert_eq!(snap.active_clients, 0);
+        assert!(snap.clients.is_empty());
+        assert_eq!(snap.cache_mode, "disabled");
+        assert_eq!(snap.preview_count, 0);
+    }
+
+    #[test]
+    fn observability_snapshot_status_line() {
+        let snap = LspObservabilitySnapshot {
+            active_clients: 2,
+            cache_mode: "memory".to_string(),
+            cache_entries: 5,
+            preview_count: 3,
+            preview_stale_count: 1,
+            preview_applied_count: 1,
+            ..Default::default()
+        };
+        let line = snap.status_line();
+        assert!(line.contains("2 clients"));
+        assert!(line.contains("cache=memory/5"));
+        assert!(line.contains("3 previews"));
+        assert!(line.contains("1 stale"));
+        assert!(line.contains("1 applied"));
+    }
+
+    #[test]
+    fn observability_snapshot_render_detail() {
+        let snap = LspObservabilitySnapshot {
+            active_clients: 1,
+            clients: vec![LspOperationalHealthSnapshot::from_operational_state(
+                "rust-analyzer".to_string(),
+                std::path::PathBuf::from("/tmp"),
+                3,
+                LspOperationalState::Ready,
+                None,
+                2,
+                5,
+                Some(100),
+                Some(50),
+                0,
+                None,
+                vec![],
+            )],
+            cache_mode: "disabled".to_string(),
+            cache_entries: 0,
+            preview_count: 0,
+            preview_stale_count: 0,
+            preview_applied_count: 0,
+            ..Default::default()
+        };
+        let detail = snap.render_detail();
+        assert!(detail.contains("Active clients: 1"));
+        assert!(detail.contains("rust-analyzer"));
+        assert!(detail.contains("ready"));
+        assert!(detail.contains("Cache:"));
+        assert!(detail.contains("Previews:"));
     }
 }
