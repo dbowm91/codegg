@@ -27,6 +27,11 @@
 //! | `security_review_enriched` | Enrich deterministic security review with LSP evidence |
 //! | `hunk_source_navigation` | Collect semantic context around changed hunks |
 //! | `preview_suggestion` | Include safe preview-only edit suggestions |
+//! | `impact_analysis` | Bounded cross-file reference analysis for refactoring review |
+//! | `test_failure_repair` | Heuristic failure-message symbol extraction with diagnostics |
+//! | `interface_boundary` | Public API boundary review with symbols and implementations |
+//! | `cross_file_repair` | Bounded multi-file repair evidence gathering |
+//! | `call_neighborhood` | Shallow cycle-safe call hierarchy (incoming/outgoing/both) |
 
 use std::path::PathBuf;
 
@@ -1150,6 +1155,11 @@ mod tests {
             LspWorkflowRecipe::SecurityReviewEnriched,
             LspWorkflowRecipe::HunkSourceNavigation,
             LspWorkflowRecipe::PreviewSuggestion,
+            LspWorkflowRecipe::ImpactAnalysis,
+            LspWorkflowRecipe::TestFailureRepair,
+            LspWorkflowRecipe::InterfaceBoundary,
+            LspWorkflowRecipe::CrossFileRepair,
+            LspWorkflowRecipe::CallNeighborhood,
         ] {
             for tier in [ModelTier::Small, ModelTier::Workhorse, ModelTier::Frontier] {
                 let settings = default_settings_for_recipe(recipe, tier);
