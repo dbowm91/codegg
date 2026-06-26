@@ -796,4 +796,299 @@ mod tests {
         assert_eq!(policy.lifecycle_state, Some(LspOperationalState::Degraded));
         assert_eq!(policy.task_risk, LspTaskRisk::High);
     }
+
+    // -----------------------------------------------------------------------
+    // Workstream 5 hardening tests (Phase 11 policy)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn lsp_unavailable_policy_variants_distinguishable_on_policy() {
+        // All three LspUnavailablePolicy variants must be set on
+        // LspContextPolicy without panicking and remain distinguishable.
+        for variant in [
+            LspUnavailablePolicy::NoteOnly,
+            LspUnavailablePolicy::Omit,
+            LspUnavailablePolicy::FailWhenRequired,
+        ] {
+            let policy = LspContextPolicy {
+                unavailable_policy: variant,
+                ..Default::default()
+            };
+            assert_eq!(policy.unavailable_policy, variant);
+        }
+
+        // Ensure variants are pairwise distinct.
+        assert_ne!(
+            LspUnavailablePolicy::Omit,
+            LspUnavailablePolicy::FailWhenRequired
+        );
+        assert_ne!(
+            LspUnavailablePolicy::NoteOnly,
+            LspUnavailablePolicy::FailWhenRequired
+        );
+        assert_ne!(LspUnavailablePolicy::NoteOnly, LspUnavailablePolicy::Omit);
+    }
+
+    #[test]
+    fn policy_with_security_sensitive_risk_constructs_and_summarizes() {
+        let policy = LspContextPolicy {
+            task_risk: LspTaskRisk::SecuritySensitive,
+            workflow: LspWorkflowRecipe::SecurityReviewEnriched,
+            model_tier: ModelTier::Frontier,
+            ..Default::default()
+        };
+        let summary = policy.policy_summary();
+        assert!(
+            summary.contains("risk=security_sensitive"),
+            "policy_summary must include security-sensitive risk; got {summary}"
+        );
+        assert!(
+            summary.contains("workflow=security_review_enriched"),
+            "policy_summary must include workflow name; got {summary}"
+        );
+        assert!(
+            summary.contains("tier=frontier"),
+            "policy_summary must include tier; got {summary}"
+        );
+    }
+
+    #[test]
+    fn task_risk_all_variants_display() {
+        // Every variant must round-trip through Display without panic.
+        assert_eq!(LspTaskRisk::Normal.to_string(), "normal");
+        assert_eq!(LspTaskRisk::Low.to_string(), "low");
+        assert_eq!(LspTaskRisk::High.to_string(), "high");
+        assert_eq!(
+            LspTaskRisk::SecuritySensitive.to_string(),
+            "security_sensitive"
+        );
+    }
+
+    #[test]
+    fn token_budget_hint_with_max_context_bytes_affects_budget() {
+        // Setting token_budget_hint and max_context_bytes together:
+        // token_budget_hint is recorded on the policy, and max_context_bytes
+        // is propagated to the budget verbatim.
+        let policy = LspContextPolicy::resolve(
+            ModelTier::Workhorse,
+            LspWorkflowRecipe::ImpactAnalysis,
+            LspTaskRisk::Normal,
+            None,
+            None,
+            None,
+            Some(1024),  // token_budget_hint = "low" budget hint
+            Some(8_192), // max_context_bytes override
+        );
+        assert_eq!(
+            policy.token_budget_hint,
+            Some(1024),
+            "token_budget_hint must be stored verbatim"
+        );
+        let budget = policy.to_budget();
+        assert_eq!(
+            budget.max_bytes, 8_192,
+            "max_context_bytes override must reach to_budget().max_bytes"
+        );
+    }
+
+    #[test]
+    fn token_budget_hint_does_not_override_max_context_bytes_when_none() {
+        // When max_context_bytes is None, the workflow/tier baseline
+        // (Workhorse = 32_768) must remain.
+        let policy = LspContextPolicy::resolve(
+            ModelTier::Workhorse,
+            LspWorkflowRecipe::RepairLocal,
+            LspTaskRisk::Normal,
+            None,
+            None,
+            None,
+            Some(512),
+            None,
+        );
+        assert_eq!(policy.token_budget_hint, Some(512));
+        let budget = policy.to_budget();
+        assert_eq!(budget.max_bytes, 32_768);
+    }
+
+    #[test]
+    fn render_config_from_policy_respects_include_previews() {
+        // include_cross_file and include_hierarchy are not currently
+        // propagated to LspContextRenderConfig (the struct has no such
+        // fields). include_previews IS propagated. Verify the existing
+        // behavior, and document the limitation.
+        let policy_on = LspContextPolicy {
+            model_tier: ModelTier::Frontier,
+            include_previews: true,
+            ..Default::default()
+        };
+        let config_on: LspContextRenderConfig = (&policy_on).into();
+        assert!(config_on.include_previews);
+
+        let policy_off = LspContextPolicy {
+            model_tier: ModelTier::Small,
+            include_previews: false,
+            ..Default::default()
+        };
+        let config_off: LspContextRenderConfig = (&policy_off).into();
+        assert!(!config_off.include_previews);
+    }
+
+    #[test]
+    fn recipe_settings_from_policy_allow_stale_matches_policy() {
+        // IncludeWithWarning → allow_stale_evidence = true.
+        let policy_warn = LspContextPolicy {
+            stale_evidence_policy: StaleEvidencePolicy::IncludeWithWarning,
+            ..Default::default()
+        };
+        let settings_warn: RecipeSettings = (&policy_warn).into();
+        assert!(
+            settings_warn.allow_stale_evidence,
+            "IncludeWithWarning must translate to allow_stale_evidence=true"
+        );
+
+        // OmitStale → allow_stale_evidence = false.
+        let policy_omit = LspContextPolicy {
+            stale_evidence_policy: StaleEvidencePolicy::OmitStale,
+            ..Default::default()
+        };
+        let settings_omit: RecipeSettings = (&policy_omit).into();
+        assert!(
+            !settings_omit.allow_stale_evidence,
+            "OmitStale must translate to allow_stale_evidence=false"
+        );
+
+        // RequireFresh → allow_stale_evidence = false (only
+        // IncludeWithWarning enables it).
+        let policy_fresh = LspContextPolicy {
+            stale_evidence_policy: StaleEvidencePolicy::RequireFresh,
+            ..Default::default()
+        };
+        let settings_fresh: RecipeSettings = (&policy_fresh).into();
+        assert!(
+            !settings_fresh.allow_stale_evidence,
+            "RequireFresh must translate to allow_stale_evidence=false"
+        );
+    }
+
+    #[test]
+    fn recipe_settings_from_policy_includes_references_depends_on_tier() {
+        // Small tier → include_references = false (regardless of policy).
+        let policy_small = LspContextPolicy {
+            model_tier: ModelTier::Small,
+            ..Default::default()
+        };
+        let settings_small: RecipeSettings = (&policy_small).into();
+        assert!(!settings_small.include_references);
+
+        // Workhorse tier → include_references = true.
+        let policy_wh = LspContextPolicy {
+            model_tier: ModelTier::Workhorse,
+            ..Default::default()
+        };
+        let settings_wh: RecipeSettings = (&policy_wh).into();
+        assert!(settings_wh.include_references);
+    }
+
+    #[test]
+    fn policy_summary_includes_workflow_tier_and_risk() {
+        let policy = LspContextPolicy {
+            model_tier: ModelTier::Small,
+            workflow: LspWorkflowRecipe::CrossFileRepair,
+            task_risk: LspTaskRisk::High,
+            lifecycle_state: None,
+            ..Default::default()
+        };
+        let summary = policy.policy_summary();
+        assert!(
+            summary.contains("workflow=cross_file_repair"),
+            "summary missing workflow name: {summary}"
+        );
+        assert!(
+            summary.contains("tier=small"),
+            "summary missing tier: {summary}"
+        );
+        assert!(
+            summary.contains("risk=high"),
+            "summary missing risk: {summary}"
+        );
+    }
+
+    #[test]
+    fn policy_summary_no_lifecycle_when_unset() {
+        // Lifecycle token should not appear when lifecycle_state is None.
+        let policy = LspContextPolicy {
+            lifecycle_state: None,
+            ..Default::default()
+        };
+        let summary = policy.policy_summary();
+        assert!(
+            !summary.contains("lifecycle="),
+            "summary must omit lifecycle= when lifecycle_state is None; got {summary}"
+        );
+    }
+
+    #[test]
+    fn resolve_all_args_set_tier_source_to_workflow_default() {
+        // LspContextPolicy::resolve currently takes 8 arguments and
+        // always returns tier_source = WorkflowDefault because it
+        // derives from workflow_tier_defaults. Verify all 8 are accepted
+        // and the tier_source is WorkflowDefault.
+        let policy = LspContextPolicy::resolve(
+            ModelTier::Frontier,                          // tier (override)
+            LspWorkflowRecipe::ImpactAnalysis,            // workflow
+            LspTaskRisk::SecuritySensitive,               // task_risk
+            Some(LspOperationalState::Indexing),          // lifecycle_state
+            Some(StaleEvidencePolicy::OmitStale),         // stale_policy
+            Some(LspUnavailablePolicy::FailWhenRequired), // unavailable_policy
+            Some(2048),                                   // token_budget_hint
+            Some(16_384),                                 // max_context_bytes
+        );
+        assert_eq!(policy.model_tier, ModelTier::Frontier);
+        assert_eq!(policy.workflow, LspWorkflowRecipe::ImpactAnalysis);
+        assert_eq!(policy.task_risk, LspTaskRisk::SecuritySensitive);
+        assert_eq!(policy.lifecycle_state, Some(LspOperationalState::Indexing));
+        assert_eq!(policy.stale_evidence_policy, StaleEvidencePolicy::OmitStale);
+        assert_eq!(
+            policy.unavailable_policy,
+            LspUnavailablePolicy::FailWhenRequired
+        );
+        assert_eq!(policy.token_budget_hint, Some(2048));
+        assert_eq!(policy.max_context_bytes, 16_384);
+        // tier_source is WorkflowDefault because resolve builds from
+        // workflow_tier_defaults.
+        assert_eq!(policy.tier_source, TierSource::WorkflowDefault);
+    }
+
+    #[test]
+    fn resolve_without_overrides_uses_baseline_for_tier() {
+        // Without explicit overrides, stale/unavailable policies should
+        // come from the tier baseline (Small = OmitStale).
+        let policy = LspContextPolicy::resolve(
+            ModelTier::Small,
+            LspWorkflowRecipe::RepairLocal,
+            LspTaskRisk::Normal,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        assert_eq!(policy.stale_evidence_policy, StaleEvidencePolicy::OmitStale);
+        assert_eq!(policy.unavailable_policy, LspUnavailablePolicy::NoteOnly);
+        // Small tier defaults to 16_384.
+        assert_eq!(policy.max_context_bytes, 16_384);
+    }
+
+    #[test]
+    fn stale_evidence_policy_all_variants_display() {
+        assert_eq!(
+            StaleEvidencePolicy::IncludeWithWarning.to_string(),
+            "include_with_warning"
+        );
+        assert_eq!(StaleEvidencePolicy::OmitStale.to_string(), "omit_stale");
+        assert_eq!(
+            StaleEvidencePolicy::RequireFresh.to_string(),
+            "require_fresh"
+        );
+    }
 }

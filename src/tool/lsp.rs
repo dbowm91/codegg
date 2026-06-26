@@ -783,19 +783,86 @@ impl LspTool {
 
         // Construct the production adapter.
         use egglsp::evidence_adapter::ServiceLspEvidenceProvider;
+        use egglsp::LspEvidenceProvider;
         let adapter =
             ServiceLspEvidenceProvider::new(Arc::clone(&self.service), self.allowed_root.clone());
 
-        // Collect the packet using the canonical collector path.
+        // Collect the packet using the canonical collector path,
+        // optionally routed through the Phase 12 semantic cache. When
+        // the cache is disabled (default), we call `collect_context`
+        // directly. When it is enabled (memory mode), we perform a
+        // synchronous cache lookup first; on hit, return the cached
+        // packet with a `[cache-hit]` note; on miss, call
+        // `collect_context` and then synchronously insert the result.
+        //
+        // The cache is held in a `parking_lot::Mutex`, whose guard is
+        // not `Send`, so the lock is dropped before any `.await`
+        // point. The file-hashes map is empty here because the
+        // agent-context collection path does not track on-disk file
+        // hashes; that is the correct behavior for this entry point
+        // (cache key omits the file-hash dimension).
         let budget = egglsp::default_budget();
         let mode = egglsp::LspContextMode::Opportunistic;
-        let packet = match egglsp::collect_context(&adapter, &request, &budget, &mode).await {
-            Ok(p) => p,
-            Err(e) => {
-                tracing::debug!(
-                    "lsp_context_for_agent_with_input: collect failed: {e}; falling back to status"
+        let packet = if self.semantic_cache.lock().is_enabled() {
+            // Cache enabled: sync lookup, then conditional collect +
+            // sync insert. The two `.await` points each release the
+            // parking_lot lock.
+            let (server_id, server_generation) = adapter.server_info().await;
+            let server_id_str = server_id.unwrap_or_else(|| "unknown".to_string());
+            let operation = lsp_cache_operation_name(&request).to_string();
+            let key = egglsp::cache::LspCacheKeyBuilder::new(
+                self.allowed_root.clone(),
+                server_id_str,
+                operation,
+            )
+            .with_request(&request)
+            .with_budget(&budget)
+            .build();
+            let empty_hashes: std::collections::BTreeMap<std::path::PathBuf, String> =
+                std::collections::BTreeMap::new();
+
+            let cache_hit: Option<egglsp::context::LspContextPacket> = self
+                .semantic_cache
+                .lock()
+                .get(&key, server_generation, &empty_hashes)
+                .cloned();
+
+            if let Some(mut cached) = cache_hit {
+                if !cached.notes.iter().any(|n| n.contains("[cache-hit]")) {
+                    cached
+                        .notes
+                        .push("[cache-hit] Evidence served from semantic cache".to_string());
+                }
+                cached
+            } else {
+                let fresh = match egglsp::collect_context(&adapter, &request, &budget, &mode).await
+                {
+                    Ok(p) => p,
+                    Err(e) => {
+                        tracing::debug!(
+                            "lsp_context_for_agent_with_input: collect failed: {e}; falling back to status"
+                        );
+                        return self.lsp_context_for_agent().await;
+                    }
+                };
+                let original_freshness = derive_cache_freshness(&fresh);
+                self.semantic_cache.lock().insert(
+                    key,
+                    fresh.clone(),
+                    original_freshness,
+                    server_generation,
                 );
-                return self.lsp_context_for_agent().await;
+                fresh
+            }
+        } else {
+            match egglsp::collect_context(&adapter, &request, &budget, &mode).await {
+                Ok(p) => p,
+                Err(e) => {
+                    tracing::debug!(
+                        "lsp_context_for_agent_with_input: collect failed: {e}; falling back to status"
+                    );
+                    return self.lsp_context_for_agent().await;
+                }
             }
         };
 
@@ -4287,6 +4354,52 @@ fn map_tool_freshness(
         LspDiagnosticFreshness::PossiblyStale => LspEvidenceFreshness::PossiblyStale,
         LspDiagnosticFreshness::Stale => LspEvidenceFreshness::Stale,
         LspDiagnosticFreshness::Unavailable => LspEvidenceFreshness::StaleAfterEdit,
+    }
+}
+
+/// Map an [`egglsp::LspContextRequest`] to a stable string label used
+/// in the Phase 12 semantic cache key. Mirrors the dispatch table in
+/// `egglsp::evidence_collector::collect_context_cached`.
+fn lsp_cache_operation_name(request: &egglsp::LspContextRequest) -> &'static str {
+    use egglsp::LspContextRequest;
+    match request {
+        LspContextRequest::File { .. } => "file",
+        LspContextRequest::Hunk { .. } => "hunk",
+        LspContextRequest::Symbol { .. } => "symbol",
+        LspContextRequest::Review { .. } => "review",
+        LspContextRequest::ImpactAnalysis { .. } => "impact_analysis",
+        LspContextRequest::TestFailureRepair { .. } => "test_failure_repair",
+        LspContextRequest::InterfaceBoundary { .. } => "interface_boundary",
+        LspContextRequest::CrossFileRepair { .. } => "cross_file_repair",
+        LspContextRequest::CallNeighborhood { .. } => "call_neighborhood",
+    }
+}
+
+/// Pick a single freshness label for a freshly-collected packet so the
+/// cache entry records the strongest freshness available. Mirrors the
+/// heuristic in `egglsp::evidence_collector::collect_context_cached`.
+fn derive_cache_freshness(
+    packet: &egglsp::context::LspContextPacket,
+) -> egglsp::LspEvidenceFreshness {
+    use egglsp::LspEvidenceFreshness;
+    if packet.items.is_empty() {
+        return LspEvidenceFreshness::Unknown;
+    }
+    let fresh_count = packet
+        .items
+        .iter()
+        .filter(|i| i.provenance.freshness == LspEvidenceFreshness::Fresh)
+        .count();
+    if fresh_count == packet.items.len() {
+        LspEvidenceFreshness::Fresh
+    } else if fresh_count > 0 {
+        LspEvidenceFreshness::PossiblyStale
+    } else {
+        packet
+            .items
+            .first()
+            .map(|i| i.provenance.freshness)
+            .unwrap_or(LspEvidenceFreshness::Unknown)
     }
 }
 
@@ -8118,5 +8231,92 @@ diff --git a/src/lib.rs b/src/lib.rs
             result.starts_with("Restart failed for nonexistent_key:"),
             "expected failure message, got: {result}"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Pass N: Phase 12 semantic cache wiring
+    //
+    // Verify that `LspTool::with_cache_config` correctly propagates the
+    // cache configuration into the underlying `LspSemanticCache` and
+    // that `lsp_cache_status` reflects the configured mode.
+    // -----------------------------------------------------------------------
+
+    fn sample_service() -> Arc<crate::lsp::service::LspService> {
+        crate::lsp::service::LspService::new_arc(crate::lsp::config_lsp_to_egglsp(
+            crate::config::schema::LspConfig::default(),
+        ))
+    }
+
+    #[test]
+    fn lsp_tool_with_cache_config_none_yields_disabled_cache() {
+        let tool = LspTool::with_cache_config(sample_service(), None);
+        assert!(
+            !tool.semantic_cache().is_enabled(),
+            "None config must default to a disabled cache"
+        );
+        let status = tool.lsp_cache_status();
+        assert!(
+            status.contains("mode: disabled"),
+            "lsp_cache_status must report disabled mode for None config; got: {status}"
+        );
+    }
+
+    #[test]
+    fn lsp_tool_with_cache_config_default_config_yields_disabled_cache() {
+        let cfg = egglsp::cache::LspCacheConfig::default();
+        assert_eq!(
+            cfg.mode,
+            egglsp::cache::LspCacheMode::Disabled,
+            "default LspCacheConfig must be Disabled"
+        );
+        let tool = LspTool::with_cache_config(sample_service(), Some(cfg));
+        assert!(
+            !tool.semantic_cache().is_enabled(),
+            "default (Disabled) LspCacheConfig must produce a disabled cache"
+        );
+        let status = tool.lsp_cache_status();
+        assert!(
+            status.contains("mode: disabled"),
+            "lsp_cache_status must report disabled mode for default config; got: {status}"
+        );
+    }
+
+    #[test]
+    fn lsp_tool_with_cache_config_memory_mode_enables_cache() {
+        let cfg = egglsp::cache::LspCacheConfig {
+            mode: egglsp::cache::LspCacheMode::Memory,
+            max_entries: 16,
+            max_bytes: 1024 * 1024,
+            ttl_seconds: 60,
+        };
+        let tool = LspTool::with_cache_config(sample_service(), Some(cfg));
+        assert!(
+            tool.semantic_cache().is_enabled(),
+            "Memory-mode LspCacheConfig must enable the cache"
+        );
+        let status = tool.lsp_cache_status();
+        assert!(
+            status.contains("mode: memory"),
+            "lsp_cache_status must report memory mode; got: {status}"
+        );
+    }
+
+    #[test]
+    fn lsp_tool_new_uses_disabled_cache_by_default() {
+        let tool = LspTool::new(sample_service());
+        assert!(
+            !tool.semantic_cache().is_enabled(),
+            "LspTool::new must default to a disabled cache (no opt-in)"
+        );
+    }
+
+    #[test]
+    fn lsp_tool_clear_semantic_cache_zero_when_disabled() {
+        let tool = LspTool::with_cache_config(sample_service(), None);
+        // Clearing a disabled cache must report zero entries cleared
+        // and must never panic.
+        assert_eq!(tool.clear_semantic_cache(), 0);
+        let root = std::path::Path::new("/tmp");
+        assert_eq!(tool.clear_semantic_cache_for_root(root), 0);
     }
 }

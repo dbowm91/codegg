@@ -4232,98 +4232,77 @@ impl App {
                         .toasts
                         .info("Usage: /lsp-preview-apply <id>");
                 } else if let Some(ref lsp_tool) = self.lsp_tool {
-                    // Phase 9: Refresh stale-base status before exporting.
+                    // Phase 9: Refresh stale-base status before validation.
                     let (is_stale, refresh_detail) = lsp_tool
                         .refresh_preview_staleness(id)
                         .unwrap_or((true, "preview not found".to_string()));
 
-                    let registry = lsp_tool.preview_registry();
-                    match egglsp::tui_summary::export_preview_apply_candidate(&registry, id) {
-                        Some(candidate) => {
-                            drop(registry);
-                            // Phase 9: Block by default when stale.
-                            if candidate.stale_base || is_stale {
-                                let mut msg = format!(
-                                    "Preview is STALE — base content has changed since creation.\n\
-                                     Refresh/recompute the preview before applying.\n\n\
-                                     Detail: {refresh_detail}"
-                                );
-                                if !candidate.patches.is_empty() {
-                                    msg.push_str(&format!(
-                                        "\n\n{} patch(es) available but stale. \
-                                         Re-run the original LSP preview command to generate a fresh preview.",
-                                        candidate.patches.len()
-                                    ));
-                                }
-                                self.messages_state.toasts.info(&msg);
-                            } else if candidate.patches.is_empty() {
-                                self.messages_state.toasts.info(&format!(
-                                    "Preview {} has no patches — re-run the original LSP preview command.",
-                                    candidate.preview_id
-                                ));
-                            } else {
-                                use sha2::{Digest, Sha256};
+                    if is_stale {
+                        let mut msg = format!(
+                            "Preview is STALE — base content has changed since creation.\n\
+                             Refresh/recompute the preview before applying.\n\n\
+                             Detail: {refresh_detail}"
+                        );
+                        // Pull a candidate to surface how many patches are blocked.
+                        let patch_count = {
+                            let registry = lsp_tool.preview_registry();
+                            egglsp::tui_summary::export_preview_apply_candidate(&registry, id)
+                                .map(|c| c.patches.len())
+                                .unwrap_or(0)
+                        };
+                        if patch_count > 0 {
+                            msg.push_str(&format!(
+                                "\n\n{patch_count} patch(es) available but stale. \
+                                 Re-run the original LSP preview command to generate a fresh preview."
+                            ));
+                        }
+                        self.messages_state.toasts.info(&msg);
+                    } else {
+                        // Phase 9 / 12 hardening: route through the testable
+                        // validation boundary. validate_preview_apply performs
+                        // all gating checks (not-found, stale, no-patches,
+                        // already-applied, hash mismatch, patch failure) and
+                        // computes the new file content in memory.
+                        let validation = {
+                            let registry = lsp_tool.preview_registry();
+                            egglsp::tui_summary::validate_preview_apply(
+                                &registry,
+                                id,
+                                &crate::tool::patch_util::apply_unified_diff,
+                            )
+                        };
+
+                        match validation {
+                            Ok(plan) => {
+                                // Write each file. Track successes/failures
+                                // precisely so we can mark applied only on
+                                // full success.
                                 let mut successes: Vec<String> = Vec::new();
                                 let mut failures: Vec<(String, String)> = Vec::new();
-
-                                for p in &candidate.patches {
-                                    let file_content = match std::fs::read_to_string(&p.path) {
-                                        Ok(c) => c,
-                                        Err(e) => {
-                                            failures
-                                                .push((p.path.clone(), format!("read error: {e}")));
-                                            continue;
-                                        }
-                                    };
-
-                                    let actual_hash = {
-                                        let digest = Sha256::digest(file_content.as_bytes());
-                                        format!("{digest:x}")
-                                    };
-                                    if actual_hash != p.original_hash {
-                                        failures.push((
-                                            p.path.clone(),
-                                            "file changed since preview was created".to_string(),
-                                        ));
-                                        continue;
-                                    }
-
-                                    match crate::tool::patch_util::apply_unified_diff(
-                                        &file_content,
-                                        &p.patch,
-                                    ) {
-                                        Ok(patched) => {
-                                            if let Err(e) = std::fs::write(&p.path, patched) {
-                                                failures.push((
-                                                    p.path.clone(),
-                                                    format!("write error: {e}"),
-                                                ));
-                                            } else {
-                                                successes.push(p.path.clone());
-                                            }
-                                        }
+                                for file in &plan.files {
+                                    match std::fs::write(&file.path, &file.new_content) {
+                                        Ok(()) => successes.push(file.path.clone()),
                                         Err(e) => {
                                             failures.push((
-                                                p.path.clone(),
-                                                format!("patch error: {e}"),
+                                                file.path.clone(),
+                                                format!("write error: {e}"),
                                             ));
                                         }
                                     }
                                 }
-
                                 if failures.is_empty() {
-                                    lsp_tool.mark_preview_applied(&candidate.preview_id);
+                                    lsp_tool.mark_preview_applied(&plan.preview_id);
                                     self.messages_state.toasts.info(&format!(
-                                        "Applied {} patch(es) for preview {} successfully.\nFiles: {}",
-                                        successes.len(),
-                                        candidate.preview_id,
-                                        successes.join(", ")
-                                    ));
+                                    "Applied {} patch(es) for preview {} successfully.\nFiles: {}",
+                                    successes.len(),
+                                    plan.preview_id,
+                                    successes.join(", ")
+                                ));
                                 } else if successes.is_empty() {
                                     self.messages_state.toasts.info(&format!(
                                         "Failed to apply all {} patch(es) for preview {}:\n{}",
                                         failures.len(),
-                                        candidate.preview_id,
+                                        plan.preview_id,
                                         failures
                                             .iter()
                                             .map(|(f, e)| format!("  {f}: {e}"))
@@ -4332,21 +4311,69 @@ impl App {
                                     ));
                                 } else {
                                     self.messages_state.toasts.info(&format!(
-                                        "Partial apply for preview {}: {} succeeded, {} failed.\nSucceeded: {}\nFailed:\n{}",
-                                        candidate.preview_id,
-                                        successes.len(),
-                                        failures.len(),
-                                        successes.join(", "),
-                                        failures.iter().map(|(f, e)| format!("  {f}: {e}")).collect::<Vec<_>>().join("\n")
-                                    ));
+                                    "Partial apply for preview {}: {} succeeded, {} failed.\nSucceeded: {}\nFailed:\n{}",
+                                    plan.preview_id,
+                                    successes.len(),
+                                    failures.len(),
+                                    successes.join(", "),
+                                    failures.iter().map(|(f, e)| format!("  {f}: {e}")).collect::<Vec<_>>().join("\n")
+                                ));
                                 }
                             }
-                        }
-                        None => {
-                            drop(registry);
-                            self.messages_state
-                                .toasts
-                                .info(&format!("Preview not found: {id}"));
+                            Err(err) => {
+                                // Map error variants to user-facing toast text.
+                                let msg = match &err {
+                                    egglsp::tui_summary::PreviewApplyError::NotFound {
+                                        preview_id,
+                                    } => {
+                                        format!("Preview not found: {preview_id}")
+                                    }
+                                    egglsp::tui_summary::PreviewApplyError::Stale {
+                                        preview_id,
+                                        detail,
+                                        ..
+                                    } => {
+                                        format!(
+                                        "Preview {preview_id} is STALE — base content changed.\n\n{detail}"
+                                    )
+                                    }
+                                    egglsp::tui_summary::PreviewApplyError::NoPatches {
+                                        preview_id,
+                                    } => {
+                                        format!(
+                                        "Preview {preview_id} has no patches — re-run the original LSP preview command."
+                                    )
+                                    }
+                                    egglsp::tui_summary::PreviewApplyError::AlreadyApplied {
+                                        preview_id,
+                                    } => {
+                                        format!(
+                                        "Preview {preview_id} has already been applied. Re-apply requires an explicit confirmation flow."
+                                    )
+                                    }
+                                    egglsp::tui_summary::PreviewApplyError::FileReadError {
+                                        path,
+                                        error,
+                                    } => {
+                                        format!("Failed to read {path}: {error}")
+                                    }
+                                    egglsp::tui_summary::PreviewApplyError::HashMismatch {
+                                        path,
+                                        ..
+                                    } => {
+                                        format!(
+                                        "{path} changed since preview was created — refresh/recompute before applying."
+                                    )
+                                    }
+                                    egglsp::tui_summary::PreviewApplyError::PatchError {
+                                        path,
+                                        error,
+                                    } => {
+                                        format!("Patch failed for {path}: {error}")
+                                    }
+                                };
+                                self.messages_state.toasts.info(&msg);
+                            }
                         }
                     }
                 } else {

@@ -6,7 +6,7 @@ A lightweight, pure-Rust implementation of an AI coding agent.
 
 - **Pure Rust** - No runtime dependencies, fast compilation and execution
 - **Multiple Providers** - Use Anthropic, OpenAI, Google, Azure, Bedrock, and more
-- **LSP Support** - Built-in bidirectional Language Server Protocol with code intelligence (semantic context, preview-only semantic checks), capability-gated operations, and supervision/restart lifecycle. Preview artifact registry with stale-base detection, list/detail inspection, and safe apply handoff. Model-tier-aware context policy with centralized policy resolver (`resolve_model_tier`) and workflow-specific defaults for all 12 recipe types. Stale evidence and unavailable server policies. Tier 1 (rust-analyzer, basedpyright) and Tier 2 (gopls, typescript-language-server, clangd) server compatibility verified via CI; 39 servers configurable. See architecture/lsp.md and .opencode/skills/lsp/SKILL.md.
+- **LSP Support** - Built-in bidirectional Language Server Protocol with code intelligence (semantic context, preview-only semantic checks), capability-gated operations, and supervision/restart lifecycle. Preview artifact registry with stale-base detection, list/detail inspection, and safe apply handoff (gated by `validate_preview_apply`). Model-tier-aware context policy with centralized policy resolver (`resolve_model_tier`) and workflow-specific defaults for all 12 recipe types. Stale evidence and unavailable server policies. Optional semantic memory cache (Phase 12) opt-in via `[lsp_semantic_cache]` mode = "memory", with conservative eviction on generation/hash/capability changes; `/lsp-cache-status` and `/lsp-cache-clear` for inspection. Tier 1 (rust-analyzer, basedpyright) and Tier 2 (gopls, typescript-language-server, clangd) server compatibility verified via CI; 39 servers configurable. See architecture/lsp.md and .opencode/skills/lsp/SKILL.md.
 - **Plugin System** - WASM-based plugin extensibility
 - **TUI Interface** - Terminal user interface with syntax highlighting
 - **Server Mode** - Headless HTTP server for remote access
@@ -212,6 +212,9 @@ The TUI supports inline slash commands for quick actions.
 | `/lsp-root <path>` | Diagnose root detection for a file path (read-only, no server start) |
 | `/lsp-restart <key>` | Manually restart a specific LSP server |
 | `/lsp-stop [key]` | Stop LSP servers (all or specific) |
+| `/lsp-preview-apply <id>` | Apply a previewed patch to disk with SHA-256 hash revalidation; blocks stale previews |
+| `/lsp-cache-status` | Show LSP semantic memory cache status (mode, entries, bytes, hits, evictions) |
+| `/lsp-cache-clear [--all\|<root>]` | Clear LSP semantic cache (all entries or for a specific workspace root) |
 | `/context` | Open context dialog |
 | `/cost` | Show cost/usage statistics |
 | `/usage` | Open usage details dialog |

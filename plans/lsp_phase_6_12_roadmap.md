@@ -61,23 +61,24 @@ Exit condition: users and agents can list previews, inspect affected files and p
 
 Detailed execution plan: `plans/lsp_phase_8_preview_artifact_ux_plan.md`.
 
-### Phase 9: lifecycle/workspace/server-health ergonomics
+### Phase 9: lifecycle/workspace/server-health ergonomics — Implemented + hardened
 
-Goal: expose and control the existing lifecycle machinery: active roots, server IDs, generations, readiness state, degraded/restarting/failed states, stderr tails, restart attempts, document replay state, and manual restart/stop commands.
+Status: Implemented + hardened. All Phase 9 lifecycle commands shipped and documented; preview-apply path is now gated by the testable boundary `egglsp::tui_summary::validate_preview_apply`.
 
-Why this waits until Phase 9: the underlying lifecycle machinery is already substantial. The immediate problem is that users need better status visibility first, then workflow behavior, then preview lifecycle. After that, deeper lifecycle ergonomics become the next obvious pain point.
-
-Likely deliverables:
+Completed deliverables:
 
 - `/lsp status` detail view with server/root/generation/state/stderr-tail summary.
-- `/lsp restart` and possibly `/lsp stop` commands with root/server scoping.
-- Workspace-root explanation and mismatch diagnostics.
-- Server capability report display.
+- `/lsp restart` and `/lsp stop` commands with root/server scoping.
+- Workspace-root explanation and mismatch diagnostics (`/lsp-root`).
+- Server capability report display (`/lsp-capabilities`).
 - Clear degraded/failing remediation messages.
+- `/lsp-preview-apply` applies preview patches to disk with SHA-256 hash revalidation; stale previews are blocked. All gating logic lives in `egglsp::tui_summary::validate_preview_apply` as a testable boundary that returns a typed `PreviewApplyPlan` without mutating disk; the TUI handler performs the actual `std::fs::write` calls and only calls `mark_preview_applied` after every write succeeds. Failed writes leave the preview pending.
 
-### Phase 10: broader semantic operations via bounded packets — Implemented, UX incomplete
+**Deferred:** `/lsp-start` and `/lsp-replay-docs` commands deferred to a future phase (no clean scoped API; service auto-starts on demand and handles document replay internally). Per-key server stop uses `shutdown_all` fallback.
 
-Status: Implemented, UX incomplete. All five candidate operations are implemented and tested. Each operation lowers into the canonical `LspContextPacket` via named recipe functions in `crates/egglsp/src/workflow_recipes.rs`.
+### Phase 10: broader semantic operations via bounded packets — Implemented + hardened
+
+Status: Implemented + hardened. All five candidate operations are implemented, tested, and packet-first. Each operation lowers into the canonical `LspContextPacket` via named recipe functions in `crates/egglsp/src/workflow_recipes.rs`.
 
 Completed deliverables:
 
@@ -89,32 +90,51 @@ Completed deliverables:
 
 Supporting types: `SymbolTarget` (file + position), `HierarchyDirection` (Incoming/Outgoing/Both).
 
+**Known issue:** `crates/egglsp/src/evidence_collector.rs:1633` emits a
+`"references capped"` note for impact analysis when `capped_refs.len() < budget.max_references`
+(inverted comparison). Tracked as a follow-up; the underlying
+reference-count and budget enforcement are correct.
+
 Remaining: UX polish, renderer section refinements, and expanded recipe composition. See `architecture/lsp.md` Phase 10 section for full details.
 
-### Phase 11: routing/model-tier-aware LSP context policy
+### Phase 11: routing/model-tier-aware LSP context policy — Implemented + hardened
 
-Goal: mature the existing model-tier renderer into a full policy layer. The repo already has `ModelTier`, `LspContextRenderConfig`, `render_lsp_context_for_agent`, and production-path tests around tier resolution. This phase should turn that foundation into a deliberate routing policy tied to model class, token budget, workflow, and risk.
+Status: Implemented + hardened. The repo now has a central `LspContextPolicy` in `crates/egglsp/src/context_policy.rs` that resolves tier, workflow, risk, budget, and stale-evidence decisions.
 
-Likely deliverables:
+Completed deliverables:
 
-- Per-workflow default render configs for small/workhorse/frontier tiers.
+- Per-workflow default render configs for small/workhorse/frontier tiers (12 recipes × 3 tiers).
 - More aggressive compression for small models and routine hunk-local tasks.
 - Richer cross-file evidence for frontier review/security tasks.
-- Explicit fallback behavior when LSP is unavailable or stale.
-- Metrics or debug logs showing why evidence was included or dropped.
+- Explicit fallback behavior when LSP is unavailable or stale (`StaleEvidencePolicy`, `LspUnavailablePolicy`).
+- Metrics or debug logs showing why evidence was included or dropped (`policy_summary`, `TierSource`).
+- Per-workflow feature flags: `include_cross_file`, `include_hierarchy`, `include_previews`.
 
-### Phase 12: optional semantic memory/cache layer
+**Known limitation:** `LspContextRenderConfig` does not currently expose
+`include_cross_file` / `include_hierarchy` fields, so `to_render_config()`
+does not propagate those policy flags. The `RecipeSettings` path
+(`to_recipe_settings()`) is unaffected. Consumers needing those flags at
+the renderer should use `RecipeSettings` until `LspContextRenderConfig`
+is extended.
 
-Goal: add persistent or semi-persistent semantic memory only after freshness/lifecycle/stale-base semantics are trustworthy.
+### Phase 12: optional semantic memory/cache layer — Implemented + hardened
 
-This should remain last. The repo already has generation-aware diagnostics and freshness metadata. A cache layer must not obscure staleness, server generation mismatch, workspace-root changes, or file changes. Any persistent semantic cache should store enough provenance to decide whether a cached item is reusable, retained-after-restart, stale-after-edit, or invalid.
+Status: Implemented + hardened. Optional bounded in-memory cache for
+LSP-derived evidence packets is wired into the production `LspTool` path.
 
-Likely deliverables:
+Completed deliverables:
 
-- Optional per-workspace semantic cache keyed by root, server ID, server generation, file hash/version, operation, and range/symbol.
-- Explicit invalidation on file edit, restart, root change, server change, capability change, and config change.
-- Cache transparency in TUI/status and rendered context notes.
+- Optional per-workspace semantic cache keyed by root, server ID, server generation, file hash, operation, request fingerprint, capability fingerprint, and budget fingerprint.
+- Explicit invalidation on file edit, restart, root change, server change, capability change, and config change (conservative eviction; never silently retained).
+- Cache transparency in TUI status (`/lsp-cache-status`) and rendered context notes (`[cache-hit]`).
 - Hard caps and TTLs; no unbounded semantic memory growth.
+
+**Production wiring:** `LspTool::lsp_context_for_agent_with_input` routes
+through the cache when enabled, via the sync `LspSemanticCache::get` /
+`insert` API (rather than `collect_context_cached`) because the cache
+guard is `!Send` and cannot cross `.await`. Pattern: lock, lookup, drop
+lock, await `collect_context` on miss, lock again, insert. Disk
+persistence explicitly deferred.
 
 ## Recommended execution order
 

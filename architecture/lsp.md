@@ -1132,6 +1132,21 @@ All lifecycle commands are read-only (restart/stop are safe mutations that do no
 
 Hash revalidation ensures patches are only applied when the file content matches what the preview was based on. File writes go through standard `std::fs` operations — `LspTool` remains read-only (no LSP `workspace/applyEdit`). The `export_preview_apply_candidate` function remains strictly read-only; the TUI handler orchestrates the apply flow externally.
 
+All gating logic for the apply path lives in
+`egglsp::tui_summary::validate_preview_apply` as a **testable boundary**.
+The function performs every check (not-found, stale-base, no-patches,
+already-applied, hash mismatch, patch failure) in memory and returns a
+typed `PreviewApplyPlan` containing per-file paths, validated hashes,
+and the new content computed via the injected `patch_applier`
+(production uses `patch_util::apply_unified_diff`). It does **not**
+write to disk and does **not** call `mark_applied`. The TUI handler
+performs the actual `std::fs::write` calls and only then calls
+`mark_preview_applied` after every write succeeds; failed writes leave
+the preview pending and surface the error. Unit tests in
+`egglsp::tui_summary::tests` cover each gating branch (not-found,
+stale, no-patches, already-applied, hash-mismatch, file-read-error,
+patch-error, no-registry-mutation).
+
 ### Health-aware agent context
 
 The context renderer now includes lifecycle-state warnings in the `## Notes` section of agent-facing context packets. Non-Ready states (starting, initializing, indexing, degraded, restarting, failed, stopped) produce explicit notes warning agents not to over-trust the evidence. Ready state produces no note.
@@ -1250,6 +1265,24 @@ Phase 10 operations compose existing LSP primitives into named workflow recipes 
 
 Each recipe uses `RecipeSettings` for tier-aware defaults and `RecipeOutcome` for rendered results.
 
+### Known Issue: Impact-Analysis "References Capped" Note Inverted
+
+`crates/egglsp/src/evidence_collector.rs:1633` emits a `"references capped"`
+note for impact analysis when `capped_refs.len() < budget.max_references`.
+The note is **inverted**: it fires when the cap is **not** hit (the
+collected count is below the budget) and is silent when it **is** hit
+(the collected count meets or exceeds the budget). The user-visible
+effect is that impact-analysis packets carry a misleading
+`references capped` note on fully-uncovered responses and lack the note
+on responses that did hit the cap. This is purely a notes-text bug; the
+actual reference count and budget enforcement are correct.
+
+**Tracking:** logged as a known issue in
+`plans/lsp_phase_9_12_hardening_plan.md` (Workstream 7). The fix is a
+one-line comparison flip; left for a follow-up so that the
+hardening pass stays focused on integration and documentation
+reconciliation.
+
 ## Phase 11: LSP Context Policy
 
 Phase 11 centralizes tier, workflow, risk, budget, and stale-evidence decisions into a single `LspContextPolicy` object in `crates/egglsp/src/context_policy.rs`. This eliminates scattered tier/workflow branching and provides a single resolution path for all context-gathering operations.
@@ -1328,6 +1361,14 @@ The `TierSource` enum records which step produced the result for debug observabi
 
 `LspContextPolicy` implements `Into<LspContextRenderConfig>` and `Into<RecipeSettings>` (via `From` on `&LspContextPolicy`). These are also available as methods `to_render_config()` and `to_recipe_settings()`.
 
+**Known limitation:** `LspContextRenderConfig` does **not** currently
+expose `include_cross_file` / `include_hierarchy` fields, so
+`to_render_config()` does not propagate those policy flags. The
+`RecipeSettings` path (`to_recipe_settings()`) is unaffected and
+propagates both flags correctly. Consumers that need cross-file or
+hierarchy gating at the renderer should use `RecipeSettings` until
+`LspContextRenderConfig` is extended.
+
 ### Debug Observability
 
 `policy_summary()` returns a single-line debug string:
@@ -1343,7 +1384,7 @@ LSP policy: tier=workhorse workflow=repair_local risk=normal stale=include_with_
 - The resolved policy is passed to `collect_context()` and recipe functions
 - `TierSource` is logged at trace level for observability of tier resolution decisions
 
-## Semantic Memory Cache (Phase 12)
+## Phase 12: Semantic Memory Cache
 
 An optional bounded memory cache for LSP-derived evidence packets lives in
 `crates/egglsp/src/cache.rs`. The cache improves latency for repeated
@@ -1372,11 +1413,19 @@ semantic queries without making stale evidence appear fresh.
 
 ### Freshness Rules
 
-- Same file hashes + same server generation → `Fresh` (if TTL valid)
-- Same file hashes + different server generation → `RetainedAfterRestart`
-- Changed file hash → invalidate (miss)
-- TTL expired → invalidate (miss)
-- Capability fingerprint changed → invalidate (miss)
+The cache uses **conservative eviction**: file-hash mismatches, server-generation
+mismatches, TTL expiry, and capability-fingerprint changes all **remove the
+entry** and return a miss (they are never silently retained).
+
+- Same file hashes + same server generation → cache hit, returned as `Fresh` (if TTL valid)
+- Same file hashes + different server generation → entry removed, miss
+- Changed file hash → entry removed, miss
+- TTL expired → entry removed, miss
+- Capability fingerprint changed → entry removed, miss
+
+The renderer-side freshness classifier still downgrades retained hits to
+`RetainedAfterRestart` when applicable; the cache only retains entries whose
+generation matches the current server generation.
 
 ### Configuration
 
@@ -1396,9 +1445,20 @@ ttl_seconds = 300      # 5 minutes
 ### Integration
 
 `collect_context_cached()` in `evidence_collector.rs` wraps `collect_context()`
-with cache lookup/insert. On hit, returns cached packet with a `[cache-hit]` note.
-On miss, collects fresh evidence and inserts if eligible. The cache is opt-in;
-existing uncached behavior is unchanged.
+with cache lookup/insert. On hit, it returns the cached packet with a
+`[cache-hit]` note. On miss, it calls `collect_context` and inserts if
+eligible. The cache is opt-in; existing uncached behavior is unchanged.
+
+The `LspTool::lsp_context_for_agent_with_input` path (the production
+agent-context collection entry point) **routes through the cache when
+enabled**, via the sync `LspSemanticCache::get` / `insert` API. Because
+the cache is held in a `parking_lot::Mutex` (whose guard is not `Send`),
+the path cannot pass `&mut LspSemanticCache` across an `.await` point;
+it therefore performs the sync cache lookup, drops the lock, calls
+`collect_context` if the lookup missed, then takes the lock again to
+insert. The cache is wired by `LspTool::with_cache_config(...)` from
+`codegg-config`'s `[lsp_semantic_cache]` table; the default mode
+(`Disabled`) means no behavior change.
 
 ### Privacy and Security
 
@@ -1406,6 +1466,22 @@ existing uncached behavior is unchanged.
 - No cross-workspace root leakage (workspace root is part of cache key)
 - Cache entries store serialized `LspContextPacket` (source-derived evidence)
 - Clear commands available for manual invalidation
+
+### Production Wiring (Hardening Pass)
+
+The Phase 12 semantic cache is wired into the production `LspTool`
+through `LspTool::with_cache_config(Arc<LspService>, Option<LspCacheConfig>)`.
+When the cache is `Disabled` (default), the path is a no-op passthrough
+identical to the pre-cache behavior. When `Memory` is enabled, the path
+performs a sync lookup (`LspSemanticCache::get`) keyed on
+`(workspace_root, server_id, operation, request_fingerprint, capability_fingerprint, budget_fingerprint)`,
+attaches a `[cache-hit]` note on hit, and inserts a fresh packet on miss.
+The path uses the sync API directly (rather than
+`collect_context_cached`) because the cache guard is `!Send` and cannot
+cross `.await`; lock is dropped at every await point. Unit tests in
+`src/tool/lsp.rs::tests` cover the `with_cache_config` propagation,
+`lsp_cache_status` reporting, and `clear_semantic_cache` zero-clear
+behavior in disabled mode.
 
 ## Supported Languages (39 servers)
 

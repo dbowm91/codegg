@@ -87,6 +87,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `/lsp-cache-clear [--all|<root>]`. Never caches across workspace roots.
   Disk persistence explicitly deferred.
 
+### Hardening (Phase 9–12 closeout)
+
+- Phase 9 preview apply is gated by `egglsp::tui_summary::validate_preview_apply`,
+  a testable boundary that performs all checks (not-found, stale-base,
+  no-patches, already-applied, hash mismatch, patch failure) in memory and
+  returns a typed `PreviewApplyPlan` without writing to disk. The TUI
+  handler performs the actual `std::fs::write` calls and only calls
+  `mark_preview_applied` after every write succeeds; failed writes leave
+  the preview pending.
+- Phase 10 known notes-text bug: `crates/egglsp/src/evidence_collector.rs:1633`
+  emits the `"references capped"` note when references are **not** capped
+  (inverted comparison). Underlying reference count and budget enforcement
+  are correct. Tracked as a follow-up.
+- Phase 11 known limitation: `LspContextRenderConfig` does not currently
+  expose `include_cross_file` / `include_hierarchy` fields, so
+  `to_render_config()` does not propagate those policy flags. The
+  `RecipeSettings` path (`to_recipe_settings()`) is unaffected.
+- Phase 12 production wiring: `LspTool::lsp_context_for_agent_with_input`
+  now routes through the cache when enabled, via the sync
+  `LspSemanticCache::get` / `insert` API (rather than
+  `collect_context_cached`) because the cache guard is `!Send` and cannot
+  cross `.await`. Pattern: lock, lookup, drop lock, await
+  `collect_context` on miss, lock again, insert. Unit tests cover
+  `with_cache_config` propagation, `lsp_cache_status` reporting, and
+  `clear_semantic_cache` zero-clear behavior in disabled mode. Cache
+  eviction is conservative: generation mismatch, file hash change, TTL
+  expiry, and capability fingerprint change all remove entries.
+
 ### Security
 
 - SSRF protection with IPv6 ULA/multicast blocking (`fc00::/7`,

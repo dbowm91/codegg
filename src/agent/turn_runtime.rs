@@ -491,14 +491,7 @@ pub(crate) async fn assemble_lsp_context_for_turn(
     };
 
     let mut policy = egglsp::context_policy::LspContextPolicy::resolve(
-        tier,
-        workflow,
-        task_risk,
-        None,
-        None,
-        None,
-        None,
-        None,
+        tier, workflow, task_risk, None, None, None, None, None,
     );
     policy.tier_source = resolution.source;
 

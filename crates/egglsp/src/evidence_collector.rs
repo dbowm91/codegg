@@ -3685,7 +3685,8 @@ mod tests {
         let root = PathBuf::from("/tmp/test");
         let file_hashes = BTreeMap::new();
 
-        let mut cache = crate::cache::LspSemanticCache::new(crate::cache::LspCacheConfig::default());
+        let mut cache =
+            crate::cache::LspSemanticCache::new(crate::cache::LspCacheConfig::default());
 
         // Disabled cache: always a miss, no caching.
         let (_, hit1) = collect_context_cached(

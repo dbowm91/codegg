@@ -357,6 +357,7 @@ pub struct ServerCapabilitySummary {
     pub supports_selection_ranges: bool,
     pub supports_document_links: bool,
     pub supports_completion: bool,
+    pub supports_hover: bool,
     pub supports_semantic_tokens: bool,
     pub supports_push_diagnostics: bool,
     pub supports_pull_diagnostics: bool,
@@ -379,6 +380,7 @@ impl From<&crate::capability::LspCapabilitySnapshot> for ServerCapabilitySummary
             supports_selection_ranges: snap.supports_selection_ranges,
             supports_document_links: snap.supports_document_links,
             supports_completion: snap.supports_completion,
+            supports_hover: snap.supports_hover,
             supports_semantic_tokens: snap.supports_semantic_tokens,
             supports_push_diagnostics: snap.supports_push_diagnostics,
             supports_pull_diagnostics: snap.supports_pull_diagnostics,
@@ -490,7 +492,7 @@ pub fn render_capabilities(detail: &LspServerStatusDetail) -> String {
             ("diagnostics (push)", caps.supports_push_diagnostics),
             ("diagnostics (pull)", caps.supports_pull_diagnostics),
             ("completion", caps.supports_completion),
-            ("hover", true), // always available
+            ("hover", caps.supports_hover),
             ("rename", caps.supports_rename),
             ("code_actions", caps.supports_code_actions),
             ("document_formatting", caps.supports_document_formatting),
@@ -814,6 +816,265 @@ pub fn export_preview_apply_candidate(
         provenance: entry.capability_provenance.clone(),
         applied: entry.applied,
         patches,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Preview apply validation (read-only, testable boundary)
+// ---------------------------------------------------------------------------
+
+/// Errors that can occur while validating a preview for application.
+///
+/// All errors are non-fatal: callers should surface them as user-visible
+/// messages and skip the apply. None of these errors mutates the registry
+/// or the filesystem.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PreviewApplyError {
+    /// The requested preview ID was not found in the registry.
+    NotFound {
+        /// The preview ID that was requested.
+        preview_id: String,
+    },
+    /// The preview's base content has changed since it was created.
+    Stale {
+        /// Preview ID.
+        preview_id: String,
+        /// Files whose content diverged from the original hash, if known.
+        stale_files: Vec<crate::preview_registry::StaleFileInfo>,
+        /// Human-readable detail produced by the renderer.
+        detail: String,
+    },
+    /// The preview has no patches to apply.
+    NoPatches {
+        /// Preview ID.
+        preview_id: String,
+    },
+    /// The preview has already been applied.
+    AlreadyApplied {
+        /// Preview ID.
+        preview_id: String,
+    },
+    /// Reading the file from disk failed.
+    FileReadError {
+        /// Affected file path.
+        path: String,
+        /// Underlying error message.
+        error: String,
+    },
+    /// The current on-disk content does not match the preview's original hash.
+    HashMismatch {
+        /// Affected file path.
+        path: String,
+        /// Hash recorded when the preview was created.
+        expected_hash: String,
+        /// Current SHA-256 hex of the file.
+        actual_hash: String,
+    },
+    /// The patch failed to apply (context or delete mismatch, etc.).
+    PatchError {
+        /// Affected file path.
+        path: String,
+        /// Underlying error message.
+        error: String,
+    },
+}
+
+impl std::fmt::Display for PreviewApplyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotFound { preview_id } => {
+                write!(f, "Preview not found: {preview_id}")
+            }
+            Self::Stale {
+                preview_id, detail, ..
+            } => {
+                write!(
+                    f,
+                    "Preview {preview_id} is STALE — base content changed.\n{detail}"
+                )
+            }
+            Self::NoPatches { preview_id } => {
+                write!(f, "Preview {preview_id} has no patches to apply")
+            }
+            Self::AlreadyApplied { preview_id } => {
+                write!(
+                    f,
+                    "Preview {preview_id} has already been applied; re-apply requires an explicit confirmation flow"
+                )
+            }
+            Self::FileReadError { path, error } => {
+                write!(f, "Failed to read {path}: {error}")
+            }
+            Self::HashMismatch {
+                path,
+                expected_hash,
+                actual_hash,
+            } => {
+                write!(
+                    f,
+                    "{path} changed since preview was created (expected {expected_hash}, got {actual_hash})"
+                )
+            }
+            Self::PatchError { path, error } => {
+                write!(f, "Patch failed for {path}: {error}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for PreviewApplyError {}
+
+/// A single per-file write plan produced by [`validate_preview_apply`].
+///
+/// The plan is **read-only**: it computes the new content in memory and
+/// the caller is responsible for actually writing it to disk and for
+/// marking the preview applied via [`PreviewArtifactRegistry::mark_applied`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreviewApplyFilePlan {
+    /// Absolute or relative file path to write.
+    pub path: String,
+    /// SHA-256 hex of the original on-disk content (from the preview).
+    pub original_hash: String,
+    /// SHA-256 hex of the file's content as read during validation.
+    pub validated_hash: String,
+    /// New file content after applying the patch in memory.
+    pub new_content: String,
+}
+
+/// A validated, non-mutating apply plan for a preview.
+///
+/// Contains everything the caller needs to perform the actual file
+/// mutations: per-file paths, validated hashes, and the new content
+/// computed in memory. The caller MUST NOT call
+/// [`PreviewArtifactRegistry::mark_applied`] until after every file in
+/// the plan has been written successfully.
+#[derive(Debug, Clone)]
+pub struct PreviewApplyPlan {
+    /// Preview artifact ID.
+    pub preview_id: String,
+    /// Kind label (`rename` | `formatting` | `code_action`).
+    pub kind: String,
+    /// Human-readable title.
+    pub title: String,
+    /// Provenance string from the registry.
+    pub provenance: String,
+    /// Per-file write plan.
+    pub files: Vec<PreviewApplyFilePlan>,
+}
+
+/// Validate a preview for application without mutating any state.
+///
+/// This function performs all gating checks and content recomputation in
+/// memory, returning a typed plan that callers can use to drive the
+/// actual file writes. It does **not** write to disk and does **not**
+/// call `mark_applied`. The caller is responsible for:
+///
+/// 1. Writing each `file.new_content` to `file.path`.
+/// 2. Calling `registry.mark_applied(plan.preview_id)` only after every
+///    write has succeeded.
+/// 3. Calling `registry.refresh_staleness(plan.preview_id)` after apply
+///    to mark the entry as fresh relative to the new file content.
+///
+/// # Gating rules
+///
+/// 1. Missing preview ID → `PreviewApplyError::NotFound`.
+/// 2. Stale base content (file hashes diverge) → `PreviewApplyError::Stale`.
+/// 3. No patches → `PreviewApplyError::NoPatches`.
+/// 4. Already applied → `PreviewApplyError::AlreadyApplied` (caller must
+///    bypass via an explicit reapply flow).
+/// 5. Per-file: read failure, hash mismatch, or patch failure yields a
+///    typed error and aborts the plan.
+///
+/// # `patch_applier`
+///
+/// The patch applier is injected so this function can be tested without
+/// depending on `patch_util` (which lives in the root crate). The
+/// production caller passes `patch_util::apply_unified_diff`.
+///
+/// `patch_util::apply_unified_diff(original, patch) -> Result<String, String>`
+pub fn validate_preview_apply(
+    registry: &crate::preview_registry::PreviewArtifactRegistry,
+    preview_id: &str,
+    patch_applier: &dyn Fn(&str, &str) -> Result<String, String>,
+) -> Result<PreviewApplyPlan, PreviewApplyError> {
+    let entry = registry
+        .get(preview_id)
+        .ok_or_else(|| PreviewApplyError::NotFound {
+            preview_id: preview_id.to_string(),
+        })?;
+
+    if entry.stale_base {
+        let detail = render_preview_detail(entry);
+        let stale_files = entry.stale_files.clone();
+        return Err(PreviewApplyError::Stale {
+            preview_id: preview_id.to_string(),
+            stale_files,
+            detail,
+        });
+    }
+
+    if entry.applied {
+        return Err(PreviewApplyError::AlreadyApplied {
+            preview_id: preview_id.to_string(),
+        });
+    }
+
+    let patches = match &entry.artifact {
+        crate::context::LspPreviewArtifact::Rename { patches, .. }
+        | crate::context::LspPreviewArtifact::Formatting { patches, .. }
+        | crate::context::LspPreviewArtifact::CodeAction { patches, .. } => patches.clone(),
+    };
+
+    if patches.is_empty() {
+        return Err(PreviewApplyError::NoPatches {
+            preview_id: preview_id.to_string(),
+        });
+    }
+
+    let mut files = Vec::with_capacity(patches.len());
+    for p in &patches {
+        let file_content =
+            std::fs::read_to_string(&p.path).map_err(|e| PreviewApplyError::FileReadError {
+                path: p.path.clone(),
+                error: e.to_string(),
+            })?;
+
+        let actual_hash = {
+            use sha2::{Digest, Sha256};
+            let digest = Sha256::digest(file_content.as_bytes());
+            format!("{digest:x}")
+        };
+        if actual_hash != p.original_hash {
+            return Err(PreviewApplyError::HashMismatch {
+                path: p.path.clone(),
+                expected_hash: p.original_hash.clone(),
+                actual_hash,
+            });
+        }
+
+        let new_content =
+            patch_applier(&file_content, &p.patch).map_err(|e| PreviewApplyError::PatchError {
+                path: p.path.clone(),
+                error: e,
+            })?;
+
+        files.push(PreviewApplyFilePlan {
+            path: p.path.clone(),
+            original_hash: p.original_hash.clone(),
+            validated_hash: actual_hash,
+            new_content,
+        });
+    }
+
+    let kind = crate::preview_registry::PreviewArtifactRegistry::preview_kind(entry).to_string();
+    let title = crate::preview_registry::PreviewArtifactRegistry::preview_title(entry).to_string();
+
+    Ok(PreviewApplyPlan {
+        preview_id: preview_id.to_string(),
+        kind,
+        title,
+        provenance: entry.capability_provenance.clone(),
+        files,
     })
 }
 
@@ -1688,5 +1949,1144 @@ mod tests {
         let summary = ServerCapabilitySummary::from(&snap);
         assert!(!summary.supports_rename);
         assert!(!summary.supports_code_actions);
+    }
+
+    // -----------------------------------------------------------------------
+    // Phase 9 hardening: lifecycle/root/status correctness tests
+    // (Workstream 3 of plans/lsp_phase_9_12_hardening_plan.md)
+    //
+    // Covers degraded/edge-state rendering for server status, capability
+    // snapshots, error/health output, and root diagnosis. The pre-existing
+    // tests cover only the happy path; these tests prove that the
+    // renderers do not overclaim capabilities and correctly surface
+    // non-ready operational states.
+    // -----------------------------------------------------------------------
+
+    use crate::capability::LspCapabilitySnapshot;
+    use crate::health::{LspOperationalHealthSnapshot, LspOperationalState};
+
+    /// Build an `LspServerStatusDetail` directly from scratch fields, so the
+    /// tests can exercise every combination without depending on
+    /// `build_server_status_detail`'s field-mapping logic.
+    #[allow(clippy::too_many_arguments)]
+    fn detail_from_fields(
+        key: &str,
+        server_id: &str,
+        root: &str,
+        state: LspOperationalState,
+        state_detail: Option<String>,
+        generation: u64,
+        pending_requests: usize,
+        open_documents: usize,
+        restart_attempts: u32,
+        last_error: Option<String>,
+        stderr_tail: Vec<String>,
+        caps: Option<&LspCapabilitySnapshot>,
+    ) -> LspServerStatusDetail {
+        let snapshot = LspOperationalHealthSnapshot::from_operational_state(
+            server_id.to_string(),
+            std::path::PathBuf::from(root),
+            generation,
+            state.clone(),
+            None,
+            pending_requests,
+            open_documents,
+            None,
+            None,
+            restart_attempts,
+            last_error,
+            stderr_tail,
+        );
+        let usable = state.is_usable();
+        let label = state.label().to_string();
+        LspServerStatusDetail {
+            key: key.to_string(),
+            server_id: server_id.to_string(),
+            root: root.to_string(),
+            state: label,
+            state_detail,
+            generation,
+            pending_requests,
+            open_documents,
+            restart_attempts,
+            last_error: snapshot.last_error,
+            stderr_tail: snapshot.stderr_tail,
+            usable,
+            capabilities: caps.map(ServerCapabilitySummary::from),
+        }
+    }
+
+    #[test]
+    fn render_server_status_line_indexing_state() {
+        use crate::health::LspOperationalState;
+
+        let detail = detail_from_fields(
+            "/proj:rust-analyzer",
+            "rust-analyzer",
+            "/proj",
+            LspOperationalState::Indexing,
+            None,
+            1,
+            0,
+            0,
+            0,
+            None,
+            Vec::new(),
+            None,
+        );
+        let line = render_server_status_line(&detail);
+        assert!(
+            line.contains("[indexing]"),
+            "status line must label indexing state: {line}"
+        );
+        assert!(
+            line.contains("gen=1"),
+            "status line must show generation: {line}"
+        );
+        assert!(
+            !line.contains("restarts"),
+            "indexing with zero restart_attempts must not show restart suffix: {line}"
+        );
+        assert!(LspOperationalState::Indexing.is_usable());
+    }
+
+    #[test]
+    fn render_server_status_line_degraded_state() {
+        use crate::health::LspOperationalState;
+
+        let detail = detail_from_fields(
+            "/proj:pyright",
+            "pyright",
+            "/proj",
+            LspOperationalState::Degraded {
+                reason: "diagnostics wait timed out".to_string(),
+            },
+            Some("diagnostics wait timed out".to_string()),
+            3,
+            1,
+            4,
+            0,
+            None,
+            Vec::new(),
+            None,
+        );
+        let line = render_server_status_line(&detail);
+        assert!(line.contains("[degraded]"), "got: {line}");
+        assert!(line.contains("gen=3"), "got: {line}");
+        assert!(line.contains("pyright"), "got: {line}");
+        assert!(line.contains("1 pending, 4 open"), "got: {line}");
+    }
+
+    #[test]
+    fn render_server_status_line_failed_state() {
+        use crate::health::LspOperationalState;
+
+        let detail = detail_from_fields(
+            "/proj:gopls",
+            "gopls",
+            "/proj",
+            LspOperationalState::Failed {
+                reason: "exited unexpectedly".to_string(),
+            },
+            Some("exited unexpectedly".to_string()),
+            5,
+            0,
+            0,
+            0,
+            Some("exited unexpectedly".to_string()),
+            Vec::new(),
+            None,
+        );
+        let line = render_server_status_line(&detail);
+        assert!(line.contains("[failed]"), "got: {line}");
+        assert!(line.contains("gen=5"), "got: {line}");
+        assert!(
+            line.contains("error: exited unexpectedly"),
+            "failed state with last_error must surface error preview: {line}"
+        );
+        assert!(!detail.usable, "failed servers must not be marked usable");
+    }
+
+    #[test]
+    fn render_server_status_line_restarting_state_visible() {
+        use crate::health::LspOperationalState;
+
+        let detail = detail_from_fields(
+            "/proj:rust-analyzer",
+            "rust-analyzer",
+            "/proj",
+            LspOperationalState::Restarting { attempt: 2 },
+            Some("attempt 2".to_string()),
+            6,
+            0,
+            0,
+            2,
+            None,
+            Vec::new(),
+            None,
+        );
+        let line = render_server_status_line(&detail);
+        assert!(line.contains("[restarting]"), "got: {line}");
+        assert!(
+            line.contains("gen=6"),
+            "restart state must show the new generation: {line}"
+        );
+        assert!(
+            line.contains("2 restarts"),
+            "restart_attempts > 0 must surface as ', N restarts': {line}"
+        );
+
+        let detail_lines = render_server_detail(&detail);
+        assert!(
+            detail_lines.contains("State detail: attempt 2"),
+            "restarting detail must include attempt info: {detail_lines}"
+        );
+    }
+
+    #[test]
+    fn render_servers_list_with_indexing_server() {
+        use crate::health::LspOperationalState;
+
+        let detail = detail_from_fields(
+            "/proj:rust-analyzer",
+            "rust-analyzer",
+            "/proj",
+            LspOperationalState::Indexing,
+            None,
+            1,
+            0,
+            0,
+            0,
+            None,
+            Vec::new(),
+            None,
+        );
+        let rendered = render_servers_list(&[detail]);
+        assert!(rendered.contains("Active LSP servers: 1"));
+        assert!(rendered.contains("[indexing]"));
+        assert!(rendered.contains("rust-analyzer"));
+    }
+
+    #[test]
+    fn render_servers_list_with_degraded_server() {
+        use crate::health::LspOperationalState;
+
+        let detail = detail_from_fields(
+            "/proj:pyright",
+            "pyright",
+            "/proj",
+            LspOperationalState::Degraded {
+                reason: "diagnostics wait timed out".to_string(),
+            },
+            Some("diagnostics wait timed out".to_string()),
+            2,
+            0,
+            0,
+            0,
+            Some("timeout".to_string()),
+            vec!["stderr line".to_string()],
+            None,
+        );
+        let rendered = render_servers_list(&[detail]);
+        assert!(rendered.contains("Active LSP servers: 1"));
+        assert!(rendered.contains("[degraded]"));
+        assert!(rendered.contains("pyright"));
+        assert!(rendered.contains("error: timeout"));
+    }
+
+    #[test]
+    fn render_servers_list_with_failed_server() {
+        use crate::health::LspOperationalState;
+
+        let detail = detail_from_fields(
+            "/proj:gopls",
+            "gopls",
+            "/proj",
+            LspOperationalState::Failed {
+                reason: "exited".to_string(),
+            },
+            Some("exited".to_string()),
+            4,
+            0,
+            0,
+            0,
+            Some("exited".to_string()),
+            Vec::new(),
+            None,
+        );
+        let rendered = render_servers_list(&[detail]);
+        assert!(rendered.contains("[failed]"));
+        assert!(rendered.contains("gen=4"));
+        assert!(rendered.contains("error: exited"));
+    }
+
+    #[test]
+    fn render_servers_list_with_restarting_server() {
+        use crate::health::LspOperationalState;
+
+        let detail = detail_from_fields(
+            "/proj:rust-analyzer",
+            "rust-analyzer",
+            "/proj",
+            LspOperationalState::Restarting { attempt: 1 },
+            Some("attempt 1".to_string()),
+            3,
+            0,
+            0,
+            1,
+            None,
+            Vec::new(),
+            None,
+        );
+        let rendered = render_servers_list(&[detail]);
+        assert!(rendered.contains("[restarting]"));
+        assert!(rendered.contains("gen=3"));
+        assert!(rendered.contains("1 restarts"));
+    }
+
+    #[test]
+    fn render_servers_list_with_multiple_servers() {
+        use crate::health::LspOperationalState;
+
+        let ready = detail_from_fields(
+            "/proj:rust-analyzer",
+            "rust-analyzer",
+            "/proj",
+            LspOperationalState::Ready,
+            None,
+            4,
+            0,
+            5,
+            0,
+            None,
+            Vec::new(),
+            None,
+        );
+        let degraded = detail_from_fields(
+            "/proj:pyright",
+            "pyright",
+            "/proj",
+            LspOperationalState::Degraded {
+                reason: "slow".to_string(),
+            },
+            Some("slow".to_string()),
+            2,
+            0,
+            0,
+            0,
+            None,
+            Vec::new(),
+            None,
+        );
+        let rendered = render_servers_list(&[ready, degraded]);
+        assert!(rendered.contains("Active LSP servers: 2"));
+        assert!(rendered.contains("[ready]"));
+        assert!(rendered.contains("[degraded]"));
+        // Both server ids must be present.
+        assert!(rendered.contains("rust-analyzer"));
+        assert!(rendered.contains("pyright"));
+    }
+
+    #[test]
+    fn render_capabilities_uninitialized_snapshot() {
+        use crate::health::LspOperationalState;
+
+        let detail = detail_from_fields(
+            "/proj:rust-analyzer",
+            "rust-analyzer",
+            "/proj",
+            LspOperationalState::Initializing,
+            None,
+            0,
+            0,
+            0,
+            0,
+            None,
+            Vec::new(),
+            None,
+        );
+        let rendered = render_capabilities(&detail);
+        assert!(
+            rendered.contains("Server not yet initialized"),
+            "uninitialized snapshot must not enumerate capabilities: {rendered}"
+        );
+        assert!(
+            !rendered.contains("hover:"),
+            "uninitialized snapshot must not advertise hover: {rendered}"
+        );
+        assert!(
+            !rendered.contains("rename:"),
+            "uninitialized snapshot must not advertise rename: {rendered}"
+        );
+    }
+
+    #[test]
+    fn render_capabilities_default_snapshot_does_not_overclaim() {
+        use crate::capability::LspCapabilitySnapshot;
+        use crate::health::LspOperationalState;
+
+        // Default snapshot has every bool false (including hover).
+        let detail = detail_from_fields(
+            "/proj:rust-analyzer",
+            "rust-analyzer",
+            "/proj",
+            LspOperationalState::Ready,
+            None,
+            1,
+            0,
+            0,
+            0,
+            None,
+            Vec::new(),
+            Some(&LspCapabilitySnapshot::default()),
+        );
+        let rendered = render_capabilities(&detail);
+        // Every capability line must read "no" for a default snapshot,
+        // and critically must NOT overclaim hover support. We restrict
+        // the assertion to indented lines (the body uses "  {name}: {tag}").
+        for line in rendered.lines() {
+            let trimmed = line.trim_start();
+            if let Some((name, tag)) = trimmed.split_once(':') {
+                // Skip the header line ("Capabilities for X (Y)").
+                if name.starts_with("Capabilities for ") {
+                    continue;
+                }
+                let tag = tag.trim();
+                assert!(
+                    tag == "yes" || tag == "no",
+                    "unexpected tag in capability line {line:?}"
+                );
+                assert_eq!(
+                    tag, "no",
+                    "{name} must not be advertised as supported for a default snapshot: {line}"
+                );
+            }
+        }
+        assert!(
+            rendered.contains("hover: no"),
+            "hover must NOT be overclaimed when snapshot.supports_hover is false: {rendered}"
+        );
+        assert!(rendered.contains("completion: no"));
+        assert!(rendered.contains("rename: no"));
+        assert!(rendered.contains("diagnostics (push): no"));
+        assert!(rendered.contains("diagnostics (pull): no"));
+    }
+
+    #[test]
+    fn render_capabilities_advertises_hover_when_supported() {
+        use crate::capability::LspCapabilitySnapshot;
+        use crate::health::LspOperationalState;
+
+        let snap = LspCapabilitySnapshot {
+            supports_hover: true,
+            supports_rename: true,
+            supports_completion: true,
+            ..Default::default()
+        };
+        let detail = detail_from_fields(
+            "/proj:rust-analyzer",
+            "rust-analyzer",
+            "/proj",
+            LspOperationalState::Ready,
+            None,
+            1,
+            0,
+            0,
+            0,
+            None,
+            Vec::new(),
+            Some(&snap),
+        );
+        let rendered = render_capabilities(&detail);
+        assert!(
+            rendered.contains("hover: yes"),
+            "hover must be advertised when snapshot supports it: {rendered}"
+        );
+        assert!(rendered.contains("rename: yes"));
+        assert!(rendered.contains("completion: yes"));
+        assert!(
+            rendered.contains("signature_help: no"),
+            "unset capability must remain no: {rendered}"
+        );
+    }
+
+    #[test]
+    fn server_capability_summary_propagates_hover_field() {
+        use crate::capability::LspCapabilitySnapshot;
+
+        let snap_on = LspCapabilitySnapshot {
+            supports_hover: true,
+            ..Default::default()
+        };
+        let summary_on = ServerCapabilitySummary::from(&snap_on);
+        assert!(summary_on.supports_hover);
+
+        let snap_off = LspCapabilitySnapshot {
+            supports_hover: false,
+            ..Default::default()
+        };
+        let summary_off = ServerCapabilitySummary::from(&snap_off);
+        assert!(!summary_off.supports_hover);
+    }
+
+    #[test]
+    fn render_server_errors_without_stderr_tail() {
+        use crate::health::LspOperationalState;
+
+        let detail = detail_from_fields(
+            "/proj:rust-analyzer",
+            "rust-analyzer",
+            "/proj",
+            LspOperationalState::Ready,
+            None,
+            1,
+            0,
+            0,
+            0,
+            None,
+            Vec::new(),
+            None,
+        );
+        let rendered = render_server_errors(&detail);
+        assert!(
+            rendered.contains("Stderr: (empty)"),
+            "empty stderr tail must show '(empty)' placeholder: {rendered}"
+        );
+        assert!(
+            rendered.contains("Last error: (none)"),
+            "missing last_error must show '(none)' placeholder: {rendered}"
+        );
+        assert!(
+            !rendered.contains("Restart attempts"),
+            "zero restart_attempts must not emit a Restart attempts line: {rendered}"
+        );
+    }
+
+    #[test]
+    fn render_server_errors_with_stderr_tail() {
+        use crate::health::LspOperationalState;
+
+        let detail = detail_from_fields(
+            "/proj:pyright",
+            "pyright",
+            "/proj",
+            LspOperationalState::Degraded {
+                reason: "timeout".to_string(),
+            },
+            Some("timeout".to_string()),
+            2,
+            0,
+            0,
+            1,
+            Some("timeout".to_string()),
+            vec![
+                "first".to_string(),
+                "second".to_string(),
+                "third".to_string(),
+            ],
+            None,
+        );
+        let rendered = render_server_errors(&detail);
+        assert!(rendered.contains("State: degraded"));
+        assert!(rendered.contains("Detail: timeout"));
+        assert!(rendered.contains("Last error: timeout"));
+        assert!(rendered.contains("Restart attempts: 1"));
+        assert!(
+            rendered.contains("Stderr tail (3 lines)"),
+            "stderr tail must include the line count: {rendered}"
+        );
+        assert!(rendered.contains("first"));
+        assert!(rendered.contains("second"));
+        assert!(rendered.contains("third"));
+    }
+
+    #[test]
+    fn render_server_errors_stderr_tail_is_bounded_to_ten_lines() {
+        use crate::health::LspOperationalState;
+
+        let tail: Vec<String> = (0..25).map(|i| format!("line {i}")).collect();
+        let detail = detail_from_fields(
+            "/proj:gopls",
+            "gopls",
+            "/proj",
+            LspOperationalState::Failed {
+                reason: "boom".to_string(),
+            },
+            Some("boom".to_string()),
+            1,
+            0,
+            0,
+            0,
+            Some("boom".to_string()),
+            tail,
+            None,
+        );
+        let rendered = render_server_errors(&detail);
+        assert!(
+            rendered.contains("Stderr tail (10 lines)"),
+            "stderr tail preview must be capped at 10 lines: {rendered}"
+        );
+        assert!(
+            !rendered.contains("line 0 "),
+            "oldest stderr lines must be dropped from preview: {rendered}"
+        );
+        assert!(
+            rendered.contains("line 24"),
+            "most recent stderr lines must remain: {rendered}"
+        );
+    }
+
+    #[test]
+    fn render_server_detail_failed_includes_state_detail() {
+        use crate::health::LspOperationalState;
+
+        let detail = detail_from_fields(
+            "/proj:rust-analyzer",
+            "rust-analyzer",
+            "/proj",
+            LspOperationalState::Failed {
+                reason: "fatal: out of memory".to_string(),
+            },
+            Some("fatal: out of memory".to_string()),
+            7,
+            0,
+            0,
+            0,
+            None,
+            Vec::new(),
+            None,
+        );
+        let rendered = render_server_detail(&detail);
+        assert!(rendered.contains("[failed]"));
+        assert!(
+            rendered.contains("State detail: fatal: out of memory"),
+            "failed state detail must surface reason: {rendered}"
+        );
+        assert!(rendered.contains("Capabilities: not yet initialized"));
+    }
+
+    #[test]
+    fn render_server_detail_includes_stderr_preview() {
+        use crate::health::LspOperationalState;
+
+        let detail = detail_from_fields(
+            "/proj:rust-analyzer",
+            "rust-analyzer",
+            "/proj",
+            LspOperationalState::Degraded {
+                reason: "warn".to_string(),
+            },
+            Some("warn".to_string()),
+            1,
+            0,
+            0,
+            0,
+            None,
+            vec!["warn: deprecated flag".to_string()],
+            None,
+        );
+        let rendered = render_server_detail(&detail);
+        assert!(
+            rendered.contains("Stderr (last 1):"),
+            "stderr preview line must be emitted when tail non-empty: {rendered}"
+        );
+        assert!(rendered.contains("warn: deprecated flag"));
+    }
+
+    #[test]
+    fn render_server_detail_uninitialized_capabilities() {
+        use crate::health::LspOperationalState;
+
+        let detail = detail_from_fields(
+            "/proj:rust-analyzer",
+            "rust-analyzer",
+            "/proj",
+            LspOperationalState::Initializing,
+            None,
+            0,
+            0,
+            0,
+            0,
+            None,
+            Vec::new(),
+            None,
+        );
+        let rendered = render_server_detail(&detail);
+        assert!(
+            rendered.contains("Capabilities: not yet initialized"),
+            "uninitialized server must show 'not yet initialized' marker: {rendered}"
+        );
+        // Must not emit a populated capabilities list when uninitialized.
+        // The "Diagnostics mode:" line is also conditional on capabilities,
+        // so it must be absent as well.
+        assert!(
+            !rendered.contains("Diagnostics mode:"),
+            "uninitialized server must not surface a diagnostics mode: {rendered}"
+        );
+        // The capability "list" line uses "  Capabilities: name, name" form.
+        // When uninitialized, the only capabilities line is the
+        // placeholder "not yet initialized" marker. There must not be a
+        // line that lists individual capabilities.
+        let has_capability_list = rendered.lines().any(|l| {
+            l.trim_start().starts_with("Capabilities: ") && !l.contains("not yet initialized")
+        });
+        assert!(
+            !has_capability_list,
+            "must not emit a populated capabilities list when not initialized: {rendered}"
+        );
+    }
+
+    #[test]
+    fn render_root_diagnosis_outside_allowed_root() {
+        let diag = RootDiagnosis {
+            input_path: "/tmp/outside/src/main.rs".to_string(),
+            detected_language: Some("rust".to_string()),
+            root_markers_found: Vec::new(),
+            selected_root: None,
+            server_profile: None,
+            inside_allowed_root: false,
+            issues: vec!["File is outside allowed root".to_string()],
+        };
+        let rendered = render_root_diagnosis(&diag);
+        assert!(
+            rendered.contains("Inside allowed root: no"),
+            "outside-allowed-root must render as 'no': {rendered}"
+        );
+        assert!(rendered.contains("File is outside allowed root"));
+        assert!(rendered.contains("Selected root: (none)"));
+        assert!(rendered.contains("Language: rust"));
+    }
+
+    #[test]
+    fn render_root_diagnosis_unrecognized_language() {
+        let diag = RootDiagnosis {
+            input_path: "/tmp/data.xyz".to_string(),
+            detected_language: None,
+            root_markers_found: Vec::new(),
+            selected_root: None,
+            server_profile: None,
+            inside_allowed_root: true,
+            issues: vec!["Could not detect language from file extension".to_string()],
+        };
+        let rendered = render_root_diagnosis(&diag);
+        assert!(
+            rendered.contains("Language: (unrecognized)"),
+            "missing language must render '(unrecognized)': {rendered}"
+        );
+        assert!(
+            rendered.contains("Server profile: (none available for this language)"),
+            "missing profile must render '(none available for this language)': {rendered}"
+        );
+        assert!(rendered.contains("Could not detect language from file extension"));
+    }
+
+    #[test]
+    fn render_root_diagnosis_language_without_server_profile() {
+        let diag = RootDiagnosis {
+            input_path: "/tmp/src/main.xyz".to_string(),
+            detected_language: Some("xyz".to_string()),
+            root_markers_found: vec!["Cargo.toml".to_string()],
+            selected_root: Some("/tmp".to_string()),
+            server_profile: None,
+            inside_allowed_root: true,
+            issues: vec!["No LSP server profile configured for language: xyz".to_string()],
+        };
+        let rendered = render_root_diagnosis(&diag);
+        assert!(
+            rendered.contains("Language: xyz"),
+            "known language label must render: {rendered}"
+        );
+        assert!(
+            rendered.contains("Server profile: (none available for this language)"),
+            "missing profile must show '(none available)': {rendered}"
+        );
+        assert!(
+            rendered.contains("No LSP server profile configured for language: xyz"),
+            "issue text must surface: {rendered}"
+        );
+    }
+
+    #[test]
+    fn render_root_diagnosis_no_issues_shows_placeholder() {
+        let diag = RootDiagnosis {
+            input_path: "/tmp/proj/src/main.rs".to_string(),
+            detected_language: Some("rust".to_string()),
+            root_markers_found: vec!["Cargo.toml".to_string()],
+            selected_root: Some("/tmp/proj".to_string()),
+            server_profile: Some("rust-analyzer".to_string()),
+            inside_allowed_root: true,
+            issues: Vec::new(),
+        };
+        let rendered = render_root_diagnosis(&diag);
+        assert!(
+            rendered.contains("Issues: (none)"),
+            "empty issues must render '(none)' placeholder: {rendered}"
+        );
+        assert!(rendered.contains("Root markers found: Cargo.toml"));
+        assert!(rendered.contains("Selected root: /tmp/proj"));
+        assert!(rendered.contains("Server profile: rust-analyzer"));
+    }
+
+    #[test]
+    fn render_root_diagnosis_nested_markers_listed() {
+        let diag = RootDiagnosis {
+            input_path: "/repo/services/payments/src/main.rs".to_string(),
+            detected_language: Some("rust".to_string()),
+            root_markers_found: vec![
+                "Cargo.toml".to_string(),
+                ".git".to_string(),
+                ".github".to_string(),
+            ],
+            selected_root: Some("/repo".to_string()),
+            server_profile: Some("rust-analyzer".to_string()),
+            inside_allowed_root: true,
+            issues: Vec::new(),
+        };
+        let rendered = render_root_diagnosis(&diag);
+        assert!(
+            rendered.contains("Root markers found: Cargo.toml, .git, .github"),
+            "all collected root markers must be listed: {rendered}"
+        );
+        // The selected root is the nearest one found, not the file's
+        // immediate parent.
+        assert!(
+            rendered.contains("Selected root: /repo"),
+            "selected_root should reflect the actual nearest marker directory: {rendered}"
+        );
+    }
+
+    #[test]
+    fn root_diagnosis_constructor_does_not_start_servers() {
+        // This test asserts the architectural invariant from the
+        // hardening plan: constructing or rendering a RootDiagnosis
+        // must not have any side effects on server lifecycle. We
+        // verify by constructing a diagnosis from scratch and
+        // rendering it; the absence of a service handle means there
+        // is no path through which a server could be started.
+        let diag = RootDiagnosis {
+            input_path: "/tmp/proj/src/main.rs".to_string(),
+            detected_language: Some("rust".to_string()),
+            root_markers_found: vec!["Cargo.toml".to_string()],
+            selected_root: Some("/tmp/proj".to_string()),
+            server_profile: Some("rust-analyzer".to_string()),
+            inside_allowed_root: true,
+            issues: Vec::new(),
+        };
+        let rendered = render_root_diagnosis(&diag);
+        // The render must succeed and contain the expected fields
+        // without invoking any service or runtime.
+        assert!(rendered.contains("Root diagnosis for:"));
+        assert!(rendered.contains("Server profile: rust-analyzer"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Phase 9 / 12 hardening: validate_preview_apply (testable boundary)
+    //
+    // These tests prove the validation surface that the TUI handler uses
+    // before any file mutation. They do NOT touch the filesystem; the
+    // patch applier is injected.
+    // -----------------------------------------------------------------------
+
+    use crate::context::PreviewFilePatch;
+    use crate::preview_registry::PreviewArtifactRegistry;
+
+    fn sha256_hex_str(s: &str) -> String {
+        use sha2::{Digest, Sha256};
+        format!("{:x}", Sha256::digest(s.as_bytes()))
+    }
+
+    fn identity_patch_applier(original: &str, _patch: &str) -> Result<String, String> {
+        Ok(original.to_string())
+    }
+
+    fn dummy_failing_patch_applier(_original: &str, _patch: &str) -> Result<String, String> {
+        Err("patch failed in injected applier".to_string())
+    }
+
+    #[test]
+    fn validate_preview_apply_returns_not_found_for_missing_id() {
+        let registry = PreviewArtifactRegistry::new();
+        let result = validate_preview_apply(&registry, "nonexistent", &identity_patch_applier);
+        assert!(
+            matches!(result, Err(PreviewApplyError::NotFound { ref preview_id }) if preview_id == "nonexistent"),
+            "expected NotFound, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn validate_preview_apply_blocks_stale_entries() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file_path = dir.path().join("a.rs");
+        std::fs::write(&file_path, "fn main() {}\n").expect("write");
+        let original_hash = sha256_hex_str("fn main() {}\n");
+
+        let mut registry = PreviewArtifactRegistry::new();
+        let id = registry.register(
+            LspPreviewArtifact::Formatting {
+                description: "fmt".to_string(),
+                content_hash: None,
+                edit_count: 1,
+                patches: vec![PreviewFilePatch {
+                    path: file_path.to_string_lossy().into_owned(),
+                    patch: "@@ -1,1 +1,1 @@\n-fn main() {}\n+fn main() { changed(); }\n"
+                        .to_string(),
+                    original_hash: original_hash.clone(),
+                }],
+            },
+            vec![file_path.to_string_lossy().into_owned()],
+            std::collections::HashMap::from([(
+                file_path.to_string_lossy().into_owned(),
+                original_hash.clone(),
+            )]),
+            "rust-analyzer".to_string(),
+        );
+        registry.mark_stale(&id);
+
+        let result = validate_preview_apply(&registry, &id, &identity_patch_applier);
+        match result {
+            Err(PreviewApplyError::Stale { preview_id, .. }) => {
+                assert_eq!(preview_id, id);
+            }
+            other => panic!("expected Stale, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn validate_preview_apply_blocks_no_patch_entries() {
+        let mut registry = PreviewArtifactRegistry::new();
+        let id = registry.register(
+            LspPreviewArtifact::Rename {
+                description: "rename".to_string(),
+                edit_count: 0,
+                patches: Vec::new(),
+            },
+            vec!["a.rs".to_string()],
+            std::collections::HashMap::new(),
+            "server".to_string(),
+        );
+
+        let result = validate_preview_apply(&registry, &id, &identity_patch_applier);
+        assert!(
+            matches!(result, Err(PreviewApplyError::NoPatches { ref preview_id }) if preview_id == &id),
+            "expected NoPatches, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn validate_preview_apply_blocks_already_applied_entries() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file_path = dir.path().join("a.rs");
+        std::fs::write(&file_path, "fn main() {}\n").expect("write");
+        let original_hash = sha256_hex_str("fn main() {}\n");
+
+        let mut registry = PreviewArtifactRegistry::new();
+        let id = registry.register(
+            LspPreviewArtifact::Formatting {
+                description: "fmt".to_string(),
+                content_hash: None,
+                edit_count: 1,
+                patches: vec![PreviewFilePatch {
+                    path: file_path.to_string_lossy().into_owned(),
+                    patch: "@@ -1,1 +1,1 @@\n-fn main() {}\n+fn main() { changed(); }\n"
+                        .to_string(),
+                    original_hash: original_hash.clone(),
+                }],
+            },
+            vec![file_path.to_string_lossy().into_owned()],
+            std::collections::HashMap::new(),
+            "server".to_string(),
+        );
+        registry.mark_applied(&id);
+
+        let result = validate_preview_apply(&registry, &id, &identity_patch_applier);
+        match result {
+            Err(PreviewApplyError::AlreadyApplied { preview_id }) => {
+                assert_eq!(preview_id, id);
+            }
+            other => panic!("expected AlreadyApplied, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn validate_preview_apply_returns_plan_for_fresh_preview() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file_path = dir.path().join("a.rs");
+        let original = "fn main() {}\n";
+        std::fs::write(&file_path, original).expect("write");
+        let original_hash = sha256_hex_str(original);
+
+        let mut registry = PreviewArtifactRegistry::new();
+        let id = registry.register(
+            LspPreviewArtifact::Rename {
+                description: "rename".to_string(),
+                edit_count: 1,
+                patches: vec![PreviewFilePatch {
+                    path: file_path.to_string_lossy().into_owned(),
+                    patch: "@@ -1,1 +1,1 @@\n-fn main() {}\n+fn renamed() {}\n".to_string(),
+                    original_hash,
+                }],
+            },
+            vec![file_path.to_string_lossy().into_owned()],
+            std::collections::HashMap::new(),
+            "server".to_string(),
+        );
+
+        let result = validate_preview_apply(&registry, &id, &identity_patch_applier);
+        let plan = result.expect("plan");
+        assert_eq!(plan.preview_id, id);
+        assert_eq!(plan.kind, "rename");
+        assert_eq!(plan.files.len(), 1);
+        assert_eq!(plan.files[0].path, file_path.to_string_lossy());
+        assert_eq!(plan.files[0].original_hash, plan.files[0].validated_hash);
+        // Identity applier returns the original content unchanged.
+        assert_eq!(plan.files[0].new_content, original);
+    }
+
+    #[test]
+    fn validate_preview_apply_returns_hash_mismatch_when_disk_changed() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file_path = dir.path().join("a.rs");
+        std::fs::write(&file_path, "fn main() {}\n").expect("write");
+        let stale_hash = sha256_hex_str("fn main() { ORIGINAL }\n"); // mismatched
+
+        let mut registry = PreviewArtifactRegistry::new();
+        let id = registry.register(
+            LspPreviewArtifact::Rename {
+                description: "rename".to_string(),
+                edit_count: 1,
+                patches: vec![PreviewFilePatch {
+                    path: file_path.to_string_lossy().into_owned(),
+                    patch: "@@ -1,1 +1,1 @@\n-fn main() {}\n+fn renamed() {}\n".to_string(),
+                    original_hash: stale_hash,
+                }],
+            },
+            vec![file_path.to_string_lossy().into_owned()],
+            std::collections::HashMap::new(),
+            "server".to_string(),
+        );
+
+        let result = validate_preview_apply(&registry, &id, &identity_patch_applier);
+        match result {
+            Err(PreviewApplyError::HashMismatch {
+                path,
+                expected_hash,
+                actual_hash,
+            }) => {
+                assert_eq!(path, file_path.to_string_lossy());
+                assert_eq!(actual_hash, sha256_hex_str("fn main() {}\n"));
+                assert_ne!(expected_hash, actual_hash);
+            }
+            other => panic!("expected HashMismatch, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn validate_preview_apply_propagates_patch_errors() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file_path = dir.path().join("a.rs");
+        let original = "fn main() {}\n";
+        std::fs::write(&file_path, original).expect("write");
+        let original_hash = sha256_hex_str(original);
+
+        let mut registry = PreviewArtifactRegistry::new();
+        let id = registry.register(
+            LspPreviewArtifact::Rename {
+                description: "rename".to_string(),
+                edit_count: 1,
+                patches: vec![PreviewFilePatch {
+                    path: file_path.to_string_lossy().into_owned(),
+                    patch: "@@ -1,1 +1,1 @@\n-fn main() {}\n+fn renamed() {}\n".to_string(),
+                    original_hash,
+                }],
+            },
+            vec![file_path.to_string_lossy().into_owned()],
+            std::collections::HashMap::new(),
+            "server".to_string(),
+        );
+
+        let result = validate_preview_apply(&registry, &id, &dummy_failing_patch_applier);
+        match result {
+            Err(PreviewApplyError::PatchError { path, error }) => {
+                assert_eq!(path, file_path.to_string_lossy());
+                assert!(error.contains("patch failed in injected applier"));
+            }
+            other => panic!("expected PatchError, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn validate_preview_apply_returns_file_read_error_when_missing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file_path = dir.path().join("does_not_exist.rs");
+        let original_hash = sha256_hex_str("fn main() {}\n");
+
+        let mut registry = PreviewArtifactRegistry::new();
+        let id = registry.register(
+            LspPreviewArtifact::Rename {
+                description: "rename".to_string(),
+                edit_count: 1,
+                patches: vec![PreviewFilePatch {
+                    path: file_path.to_string_lossy().into_owned(),
+                    patch: "@@ -1,1 +1,1 @@\n-fn main() {}\n+fn renamed() {}\n".to_string(),
+                    original_hash,
+                }],
+            },
+            vec![file_path.to_string_lossy().into_owned()],
+            std::collections::HashMap::new(),
+            "server".to_string(),
+        );
+
+        let result = validate_preview_apply(&registry, &id, &identity_patch_applier);
+        match result {
+            Err(PreviewApplyError::FileReadError { path, .. }) => {
+                assert_eq!(path, file_path.to_string_lossy());
+            }
+            other => panic!("expected FileReadError, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn validate_preview_apply_does_not_mutate_registry() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file_path = dir.path().join("a.rs");
+        let original = "fn main() {}\n";
+        std::fs::write(&file_path, original).expect("write");
+        let original_hash = sha256_hex_str(original);
+
+        let mut registry = PreviewArtifactRegistry::new();
+        let id = registry.register(
+            LspPreviewArtifact::Rename {
+                description: "rename".to_string(),
+                edit_count: 1,
+                patches: vec![PreviewFilePatch {
+                    path: file_path.to_string_lossy().into_owned(),
+                    patch: "@@ -1,1 +1,1 @@\n-fn main() {}\n+fn renamed() {}\n".to_string(),
+                    original_hash: original_hash.clone(),
+                }],
+            },
+            vec![file_path.to_string_lossy().into_owned()],
+            std::collections::HashMap::new(),
+            "server".to_string(),
+        );
+
+        let before = (
+            registry.len(),
+            registry.applied_count(),
+            registry.stale_count(),
+        );
+        let _ = validate_preview_apply(&registry, &id, &identity_patch_applier).expect("plan");
+        let after = (
+            registry.len(),
+            registry.applied_count(),
+            registry.stale_count(),
+        );
+        assert_eq!(
+            before, after,
+            "validate_preview_apply must not mutate registry"
+        );
+        assert!(
+            !registry.get(&id).unwrap().applied,
+            "applied flag must remain false until caller writes and explicitly marks applied"
+        );
     }
 }

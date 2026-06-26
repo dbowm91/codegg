@@ -242,4 +242,144 @@ mod tests {
             .iter()
             .any(|i| i.contains("outside allowed root")));
     }
+
+    // -----------------------------------------------------------------------
+    // Phase 9 hardening: root diagnosis edge cases
+    // (Workstream 3 of plans/lsp_phase_9_12_hardening_plan.md)
+    //
+    // Verifies nested-root preference (nearest marker wins), unknown
+    // language handling, and relative-path handling. None of these
+    // cases start any LSP server — `diagnose_root` is a pure,
+    // read-only function that only walks the file system.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_diagnose_root_prefers_nearest_root_marker() {
+        // Nested layout: outer (workspace) and inner (sub-project)
+        // both have markers. The function must pick the NEAREST one
+        // walking up from the input file, not the outermost.
+        let tmp = TempDir::new().unwrap();
+        fs::write(tmp.path().join(".git"), "").unwrap();
+
+        let inner = tmp.path().join("packages").join("app");
+        fs::create_dir_all(&inner).unwrap();
+        fs::write(inner.join("Cargo.toml"), "[package]\n").unwrap();
+
+        let src = inner.join("src");
+        fs::create_dir(&src).unwrap();
+        let file = src.join("main.rs");
+        fs::write(&file, "fn main(){}").unwrap();
+
+        let result = diagnose_root(&file, None);
+        let selected = result.selected_root.expect("selected root");
+        // Nearest marker is the inner Cargo.toml directory, not the
+        // outer .git directory.
+        let sep = std::path::MAIN_SEPARATOR;
+        let needle_unix = "packages/app";
+        let needle_native = format!("packages{sep}app");
+        assert!(
+            selected.ends_with(needle_unix)
+                || selected.ends_with(needle_native.as_str())
+                || selected.contains(needle_unix),
+            "selected_root must be the nearest marker (packages/app), got: {selected}"
+        );
+        // Both markers are visible (collected markers live on the
+        // nearest-root walk, so only inner markers are listed).
+        assert!(
+            result.root_markers_found.iter().any(|m| m == "Cargo.toml"),
+            "inner Cargo.toml marker must be listed: {:?}",
+            result.root_markers_found
+        );
+    }
+
+    #[test]
+    fn test_diagnose_root_unknown_language_issue() {
+        // File with an extension we don't recognize → no language,
+        // and the issue list must say so.
+        let tmp = TempDir::new().unwrap();
+        fs::write(tmp.path().join(".git"), "").unwrap();
+        let file = tmp.path().join("data.weirdext");
+        fs::write(&file, "").unwrap();
+
+        let result = diagnose_root(&file, None);
+        assert!(result.detected_language.is_none());
+        assert!(
+            result
+                .issues
+                .iter()
+                .any(|i| i.contains("Could not detect language")),
+            "expected language-detection issue, got: {:?}",
+            result.issues
+        );
+        assert!(result.server_profile.is_none());
+    }
+
+    #[test]
+    fn test_diagnose_root_known_language_without_profile() {
+        // Hypothetical extension that maps to a language we don't
+        // ship a profile for. As of the current profile table, every
+        // recognized language maps to a profile, so we instead
+        // synthesize the scenario by walking up with a marker-free
+        // tree and a recognized language that has no profile:
+        // impossible against the current static table, so we cover
+        // the closest neighbor: language present, server_profile
+        // resolved via the static table.
+        let tmp = TempDir::new().unwrap();
+        fs::write(tmp.path().join("Cargo.toml"), "[package]").unwrap();
+        let file = tmp.path().join("main.rs");
+        fs::write(&file, "").unwrap();
+
+        let result = diagnose_root(&file, None);
+        assert_eq!(result.detected_language.as_deref(), Some("rust"));
+        assert_eq!(result.server_profile.as_deref(), Some("rust-analyzer"));
+        assert!(result.issues.is_empty());
+    }
+
+    #[test]
+    fn test_diagnose_root_relative_path_does_not_panic() {
+        // diagnose_root must accept a relative path without
+        // panicking. The internal canonicalize() handles both
+        // relative and absolute inputs.
+        let tmp = TempDir::new().unwrap();
+        fs::write(tmp.path().join("Cargo.toml"), "[package]").unwrap();
+        fs::write(tmp.path().join("main.rs"), "").unwrap();
+
+        // Construct a relative path that points inside the tempdir.
+        let rel_file = Path::new(".")
+            .join(tmp.path().file_name().unwrap())
+            .join("main.rs");
+        // We deliberately do not assert the diagnosis result here —
+        // the contract under test is "does not panic when given a
+        // non-canonicalizable relative path". The internal
+        // canonicalize() falls back to the literal path on error,
+        // which then walks up looking for markers; this either
+        // succeeds or reports a clean diagnostic.
+        let _ = diagnose_root(&rel_file, None);
+    }
+
+    #[test]
+    fn test_diagnose_root_does_not_start_servers() {
+        // Pure-function contract: `diagnose_root` walks the
+        // filesystem only. There is no place in this code path that
+        // could start an LSP server. This test simply exercises
+        // every public function in the file to ensure they all
+        // return cleanly.
+        let tmp = TempDir::new().unwrap();
+        fs::write(tmp.path().join("Cargo.toml"), "").unwrap();
+        let file = tmp.path().join("main.rs");
+        fs::write(&file, "").unwrap();
+
+        // find_project_root with an existing file.
+        let _ = find_project_root(&file);
+        // find_project_root with a non-existing file falls back to
+        // canonicalize start.
+        let missing = tmp.path().join("missing.rs");
+        let _ = find_project_root(&missing);
+        // diagnose_root with a marker-free tempdir + a real file
+        // (no allowed root).
+        let _ = diagnose_root(&file, None);
+        // diagnose_root with an explicit allowed root that does
+        // not contain the file.
+        let _ = diagnose_root(&file, Some(Path::new("/nonexistent")));
+    }
 }

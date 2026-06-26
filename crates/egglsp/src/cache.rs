@@ -214,10 +214,7 @@ impl LspCacheKeyBuilder {
     }
 
     /// Add multiple file hashes at once.
-    pub fn with_file_hashes(
-        mut self,
-        hashes: impl IntoIterator<Item = (PathBuf, String)>,
-    ) -> Self {
+    pub fn with_file_hashes(mut self, hashes: impl IntoIterator<Item = (PathBuf, String)>) -> Self {
         self.input_hashes.extend(hashes);
         self
     }
@@ -1177,7 +1174,7 @@ mod tests {
         let mut cache = LspSemanticCache::new(config);
 
         for i in 0..5 {
-            let key = LspCacheKeyBuilder::new("/ws", "s", &format!("op_{i}")).build();
+            let key = LspCacheKeyBuilder::new("/ws", "s", format!("op_{i}")).build();
             cache.insert(
                 key,
                 make_packet(&format!("p{i}")),
@@ -1198,7 +1195,7 @@ mod tests {
         let mut cache = LspSemanticCache::new(config);
 
         for i in 0..10 {
-            let key = LspCacheKeyBuilder::new("/ws", "s", &format!("op_{i}")).build();
+            let key = LspCacheKeyBuilder::new("/ws", "s", format!("op_{i}")).build();
             cache.insert(
                 key,
                 make_packet(&format!("p{i}")),
