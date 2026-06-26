@@ -1132,6 +1132,18 @@ All lifecycle commands are read-only (restart/stop are safe mutations that do no
 
 Hash revalidation ensures patches are only applied when the file content matches what the preview was based on. File writes go through standard `std::fs` operations — `LspTool` remains read-only (no LSP `workspace/applyEdit`). The `export_preview_apply_candidate` function remains strictly read-only; the TUI handler orchestrates the apply flow externally.
 
+**Write-side hardening:** The apply path uses
+`write_preview_apply_plan_atomically_enough()` in
+`crates/egglsp/src/tui_summary.rs`, which writes files with per-file
+SHA-256 recheck before each write. A `PreviewApplyWriteReport` tracks
+per-file successes and failures. The TUI handler at
+`src/tui/app/mod.rs:4222` correctly tracks successes/failures separately
+and only calls `mark_preview_applied` when all writes succeed — partial
+failures are reported without marking applied. New types
+`PreviewApplyWriteError` and `PreviewApplyWriteReport` surface the
+write-side invariant. 10 new tests prove the invariant: partial failures
+don't mark applied, race conditions are caught.
+
 All gating logic for the apply path lives in
 `egglsp::tui_summary::validate_preview_apply` as a **testable boundary**.
 The function performs every check (not-found, stale-base, no-patches,
@@ -1410,6 +1422,15 @@ semantic queries without making stale evidence appear fresh.
 | `capability_fingerprint` | Server capability snapshot hash |
 | `budget_fingerprint` | Budget configuration hash |
 
+**Production file-hash population:** `collect_cache_file_hashes_for_request()`
+in `src/tool/lsp.rs` extracts file paths from `LspContextRequest` and
+computes SHA-256 hashes for each referenced file. The production
+`lsp_context_for_agent_with_input()` path now includes these
+request-scoped file hashes in `input_hashes` (previously empty on the
+production path). When the primary file is unreadable, cache is
+bypassed for that request. A cap of 16 files applies with debug logging
+for files beyond the cap.
+
 ### Freshness Rules
 
 The cache uses **conservative eviction**: file-hash mismatches, server-generation
@@ -1473,8 +1494,12 @@ through `LspTool::with_cache_config(Arc<LspService>, Option<LspCacheConfig>)`.
 When the cache is `Disabled` (default), the path is a no-op passthrough
 identical to the pre-cache behavior. When `Memory` is enabled, the path
 performs a sync lookup (`LspSemanticCache::get`) keyed on
-`(workspace_root, server_id, operation, request_fingerprint, capability_fingerprint, budget_fingerprint)`,
+`(workspace_root, server_id, operation, request_fingerprint, input_hashes, capability_fingerprint, budget_fingerprint)`,
 attaches a `[cache-hit]` note on hit, and inserts a fresh packet on miss.
+The production path now includes request-scoped file hashes in
+`input_hashes` via `collect_cache_file_hashes_for_request()`, which
+extracts file paths from `LspContextRequest` and computes SHA-256 hashes.
+When the primary file is unreadable, cache is bypassed for that request.
 The path uses the sync API directly (rather than
 `collect_context_cached`) because the cache guard is `!Send` and cannot
 cross `.await`; lock is dropped at every await point. Unit tests in

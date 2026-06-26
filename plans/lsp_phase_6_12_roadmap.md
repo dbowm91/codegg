@@ -61,9 +61,9 @@ Exit condition: users and agents can list previews, inspect affected files and p
 
 Detailed execution plan: `plans/lsp_phase_8_preview_artifact_ux_plan.md`.
 
-### Phase 9: lifecycle/workspace/server-health ergonomics — Implemented + hardened
+### Phase 9: lifecycle/workspace/server-health ergonomics — Closed
 
-Status: Implemented + hardened. All Phase 9 lifecycle commands shipped and documented; preview-apply path is now gated by the testable boundary `egglsp::tui_summary::validate_preview_apply`.
+Status: Closed. All Phase 9 lifecycle commands shipped and documented; preview-apply path is gated by the testable boundary `egglsp::tui_summary::validate_preview_apply` with write-side hardening via `write_preview_apply_plan_atomically_enough()` (per-file SHA-256 recheck before each write, partial failures reported without marking applied).
 
 Completed deliverables:
 
@@ -76,9 +76,9 @@ Completed deliverables:
 
 **Deferred:** `/lsp-start` and `/lsp-replay-docs` commands deferred to a future phase (no clean scoped API; service auto-starts on demand and handles document replay internally). Per-key server stop uses `shutdown_all` fallback.
 
-### Phase 10: broader semantic operations via bounded packets — Implemented + hardened
+### Phase 10: broader semantic operations via bounded packets — Closed
 
-Status: Implemented + hardened. All five candidate operations are implemented, tested, and packet-first. Each operation lowers into the canonical `LspContextPacket` via named recipe functions in `crates/egglsp/src/workflow_recipes.rs`.
+Status: Closed. All five candidate operations are implemented, tested, and packet-first. Each operation lowers into the canonical `LspContextPacket` via named recipe functions in `crates/egglsp/src/workflow_recipes.rs`.
 
 Completed deliverables:
 
@@ -97,9 +97,9 @@ reference-count and budget enforcement are correct.
 
 Remaining: UX polish, renderer section refinements, and expanded recipe composition. See `architecture/lsp.md` Phase 10 section for full details.
 
-### Phase 11: routing/model-tier-aware LSP context policy — Implemented + hardened
+### Phase 11: routing/model-tier-aware LSP context policy — Closed
 
-Status: Implemented + hardened. The repo now has a central `LspContextPolicy` in `crates/egglsp/src/context_policy.rs` that resolves tier, workflow, risk, budget, and stale-evidence decisions.
+Status: Closed. The repo now has a central `LspContextPolicy` in `crates/egglsp/src/context_policy.rs` that resolves tier, workflow, risk, budget, and stale-evidence decisions.
 
 Completed deliverables:
 
@@ -117,14 +117,16 @@ does not propagate those policy flags. The `RecipeSettings` path
 the renderer should use `RecipeSettings` until `LspContextRenderConfig`
 is extended.
 
-### Phase 12: optional semantic memory/cache layer — Implemented + hardened
+### Phase 12: optional semantic memory/cache layer — Closed
 
-Status: Implemented + hardened. Optional bounded in-memory cache for
+Status: Closed. Optional bounded in-memory cache for
 LSP-derived evidence packets is wired into the production `LspTool` path.
+Production cache keys now include request-scoped file hashes via
+`collect_cache_file_hashes_for_request()` in `src/tool/lsp.rs`.
 
 Completed deliverables:
 
-- Optional per-workspace semantic cache keyed by root, server ID, server generation, file hash, operation, request fingerprint, capability fingerprint, and budget fingerprint.
+- Optional per-workspace semantic cache keyed by root, server ID, server generation, file hash, operation, request fingerprint, capability fingerprint, and budget fingerprint. Production cache keys include request-scoped file hashes via `collect_cache_file_hashes_for_request()`.
 - Explicit invalidation on file edit, restart, root change, server change, capability change, and config change (conservative eviction; never silently retained).
 - Cache transparency in TUI status (`/lsp-cache-status`) and rendered context notes (`[cache-hit]`).
 - Hard caps and TTLs; no unbounded semantic memory growth.

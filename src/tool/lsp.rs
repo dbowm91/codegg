@@ -797,34 +797,48 @@ impl LspTool {
         //
         // The cache is held in a `parking_lot::Mutex`, whose guard is
         // not `Send`, so the lock is dropped before any `.await`
-        // point. The file-hashes map is empty here because the
-        // agent-context collection path does not track on-disk file
-        // hashes; that is the correct behavior for this entry point
-        // (cache key omits the file-hash dimension).
+        // point. File hashes are collected from the on-disk files
+        // referenced by the request and included in the cache key so
+        // that content changes invalidate stale entries.
         let budget = egglsp::default_budget();
         let mode = egglsp::LspContextMode::Opportunistic;
-        let packet = if self.semantic_cache.lock().is_enabled() {
+        let file_hashes = collect_cache_file_hashes_for_request(&request, &self.allowed_root);
+
+        let has_primary = !matches!(request, egglsp::LspContextRequest::Review { .. });
+        let cache_eligible =
+            self.semantic_cache.lock().is_enabled() && !(file_hashes.is_empty() && has_primary);
+
+        if file_hashes.is_empty() && has_primary && self.semantic_cache.lock().is_enabled() {
+            tracing::debug!(
+                "lsp_context_for_agent_with_input: file_hashes empty for primary-file \
+                 request; bypassing semantic cache"
+            );
+        }
+
+        let packet = if cache_eligible {
             // Cache enabled: sync lookup, then conditional collect +
             // sync insert. The two `.await` points each release the
             // parking_lot lock.
             let (server_id, server_generation) = adapter.server_info().await;
             let server_id_str = server_id.unwrap_or_else(|| "unknown".to_string());
             let operation = lsp_cache_operation_name(&request).to_string();
-            let key = egglsp::cache::LspCacheKeyBuilder::new(
+
+            let mut key_builder = egglsp::cache::LspCacheKeyBuilder::new(
                 self.allowed_root.clone(),
                 server_id_str,
                 operation,
             )
             .with_request(&request)
-            .with_budget(&budget)
-            .build();
-            let empty_hashes: std::collections::BTreeMap<std::path::PathBuf, String> =
-                std::collections::BTreeMap::new();
+            .with_budget(&budget);
+            for (path, hash) in &file_hashes {
+                key_builder = key_builder.with_file_hash(path.clone(), hash.clone());
+            }
+            let key = key_builder.build();
 
             let cache_hit: Option<egglsp::context::LspContextPacket> = self
                 .semantic_cache
                 .lock()
-                .get(&key, server_generation, &empty_hashes)
+                .get(&key, server_generation, &file_hashes)
                 .cloned();
 
             if let Some(mut cached) = cache_hit {
@@ -4401,6 +4415,140 @@ fn derive_cache_freshness(
             .map(|i| i.provenance.freshness)
             .unwrap_or(LspEvidenceFreshness::Unknown)
     }
+}
+
+/// Maximum number of files to hash for cache key construction.
+const MAX_CACHE_FILE_HASHES: usize = 16;
+
+/// Collect SHA-256 file content hashes for all files referenced by the
+/// given [`egglsp::LspContextRequest`]. The hashes are used as the
+/// file-hash dimension of the semantic cache key so that on-disk file
+/// changes invalidate stale cache entries.
+///
+/// Rules:
+/// - Normalize paths against `allowed_root`; skip files outside root.
+/// - Cap at [`MAX_CACHE_FILE_HASHES`] files (deterministic via BTreeMap).
+/// - Skip missing/unreadable files with a debug log.
+/// - If the PRIMARY file for the request cannot be read, return an empty
+///   map to signal a cache bypass.
+fn collect_cache_file_hashes_for_request(
+    request: &egglsp::LspContextRequest,
+    allowed_root: &std::path::Path,
+) -> std::collections::BTreeMap<std::path::PathBuf, String> {
+    use egglsp::LspContextRequest;
+    use sha2::{Digest, Sha256};
+
+    fn hash_file(
+        path: &std::path::Path,
+        allowed_root: &std::path::Path,
+    ) -> Option<(std::path::PathBuf, String)> {
+        let canonical = path.canonicalize().ok()?;
+        let root_canonical = allowed_root
+            .canonicalize()
+            .unwrap_or_else(|_| allowed_root.to_path_buf());
+        if !canonical.starts_with(&root_canonical) {
+            return None;
+        }
+        let content = std::fs::read(&canonical).ok()?;
+        let hash = format!("{:x}", Sha256::digest(&content));
+        Some((canonical, hash))
+    }
+
+    /// Attempt to hash the primary file; return None if unreadable.
+    fn hash_primary(
+        path: &std::path::Path,
+        allowed_root: &std::path::Path,
+    ) -> Option<(std::path::PathBuf, String)> {
+        hash_file(path, allowed_root)
+    }
+
+    /// Hash a secondary file; skip silently on error.
+    fn hash_secondary(
+        path: &std::path::Path,
+        allowed_root: &std::path::Path,
+        hashes: &mut std::collections::BTreeMap<std::path::PathBuf, String>,
+    ) {
+        if hashes.len() >= MAX_CACHE_FILE_HASHES {
+            return;
+        }
+        if let Some((canonical, hash)) = hash_file(path, allowed_root) {
+            hashes.insert(canonical, hash);
+        } else {
+            tracing::debug!(
+                "collect_cache_file_hashes: skipping unreadable/outside-root file {}",
+                path.display()
+            );
+        }
+    }
+
+    // Extract primary + secondary file paths per request variant.
+    let (primary, secondaries): (Option<&std::path::Path>, Vec<&std::path::Path>) = match request {
+        LspContextRequest::File { file, .. } => (Some(file.as_path()), vec![]),
+        LspContextRequest::Hunk { file, .. } => (Some(file.as_path()), vec![]),
+        LspContextRequest::Symbol { file, .. } => (Some(file.as_path()), vec![]),
+        LspContextRequest::Review { changed_files, .. } => {
+            (None, changed_files.iter().map(|p| p.as_path()).collect())
+        }
+        LspContextRequest::ImpactAnalysis {
+            symbol,
+            changed_files,
+            ..
+        } => (
+            Some(symbol.file.as_path()),
+            changed_files.iter().map(|p| p.as_path()).collect(),
+        ),
+        LspContextRequest::TestFailureRepair {
+            test_file,
+            related_files,
+            ..
+        } => (
+            Some(test_file.as_path()),
+            related_files.iter().map(|p| p.as_path()).collect(),
+        ),
+        LspContextRequest::InterfaceBoundary { file, .. } => (Some(file.as_path()), vec![]),
+        LspContextRequest::CrossFileRepair {
+            primary_file,
+            related_files,
+            ..
+        } => (
+            Some(primary_file.as_path()),
+            related_files.iter().map(|p| p.as_path()).collect(),
+        ),
+        LspContextRequest::CallNeighborhood { file, .. } => (Some(file.as_path()), vec![]),
+    };
+
+    let mut hashes = std::collections::BTreeMap::new();
+
+    // Hash the primary file first. If it can't be read, return empty
+    // to signal a cache bypass.
+    if let Some(p) = primary {
+        match hash_primary(p, allowed_root) {
+            Some((canonical, hash)) => {
+                hashes.insert(canonical, hash);
+            }
+            None => {
+                tracing::debug!(
+                    "collect_cache_file_hashes: primary file {} unreadable/outside-root; bypassing cache",
+                    p.display()
+                );
+                return std::collections::BTreeMap::new();
+            }
+        }
+    }
+
+    // Hash secondary files.
+    for path in secondaries {
+        hash_secondary(path, allowed_root, &mut hashes);
+        if hashes.len() >= MAX_CACHE_FILE_HASHES {
+            tracing::debug!(
+                "collect_cache_file_hashes: hit cap of {MAX_CACHE_FILE_HASHES} files; \
+                 remaining files omitted from cache key"
+            );
+            break;
+        }
+    }
+
+    hashes
 }
 
 /// Build an [`egglsp::LspContextRequest`] from a
@@ -8318,5 +8466,186 @@ diff --git a/src/lib.rs b/src/lib.rs
         assert_eq!(tool.clear_semantic_cache(), 0);
         let root = std::path::Path::new("/tmp");
         assert_eq!(tool.clear_semantic_cache_for_root(root), 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // collect_cache_file_hashes_for_request tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn collect_cache_file_hashes_file_request_hashes_exactly_the_file() {
+        let (dir, path) = temp_rs_file("fn main() {}");
+        let request = egglsp::LspContextRequest::File {
+            file: path.clone(),
+            line_ranges: vec![],
+            include_symbols: false,
+            include_diagnostics: false,
+        };
+        let hashes = collect_cache_file_hashes_for_request(&request, dir.path());
+        assert_eq!(hashes.len(), 1, "File request should hash exactly one file");
+        let canonical = path.canonicalize().unwrap();
+        assert!(
+            hashes.contains_key(&canonical),
+            "Hash map should contain the canonical path"
+        );
+        // Verify it's a valid hex SHA-256 (64 chars).
+        let hash = hashes.get(&canonical).unwrap();
+        assert_eq!(hash.len(), 64, "SHA-256 hex should be 64 chars");
+    }
+
+    #[test]
+    fn collect_cache_file_hashes_review_request_hashes_changed_files_deterministically() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_a = dir.path().join("a.rs");
+        let file_b = dir.path().join("b.rs");
+        std::fs::write(&file_a, "fn a() {}").unwrap();
+        std::fs::write(&file_b, "fn b() {}").unwrap();
+
+        let request = egglsp::LspContextRequest::Review {
+            changed_files: vec![file_a.clone(), file_b.clone()],
+            hunks: vec![],
+            risk_mode: egglsp::LspRiskMode::default(),
+        };
+        let hashes = collect_cache_file_hashes_for_request(&request, dir.path());
+        assert_eq!(hashes.len(), 2, "Review request should hash both files");
+
+        // BTreeMap gives deterministic order; verify both files present.
+        let canonical_a = file_a.canonicalize().unwrap();
+        let canonical_b = file_b.canonicalize().unwrap();
+        assert!(hashes.contains_key(&canonical_a));
+        assert!(hashes.contains_key(&canonical_b));
+
+        // Call again and verify same hashes (deterministic).
+        let hashes2 = collect_cache_file_hashes_for_request(&request, dir.path());
+        assert_eq!(
+            hashes, hashes2,
+            "Hashes should be deterministic across calls"
+        );
+    }
+
+    #[test]
+    fn collect_cache_file_hashes_cross_file_repair_hashes_primary_and_related_up_to_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        let primary = dir.path().join("primary.rs");
+        std::fs::write(&primary, "fn primary() {}").unwrap();
+
+        let mut related = Vec::new();
+        for i in 0..20 {
+            let p = dir.path().join(format!("related_{i}.rs"));
+            std::fs::write(&p, format!("fn r{i}() {{}}")).unwrap();
+            related.push(p);
+        }
+
+        let request = egglsp::LspContextRequest::CrossFileRepair {
+            primary_file: primary.clone(),
+            related_files: related.clone(),
+            ranges: vec![],
+        };
+        let hashes = collect_cache_file_hashes_for_request(&request, dir.path());
+        // 1 primary + 15 related (cap at 16).
+        assert!(
+            hashes.len() <= MAX_CACHE_FILE_HASHES,
+            "Should not exceed cap of {MAX_CACHE_FILE_HASHES}, got {}",
+            hashes.len()
+        );
+        assert!(
+            hashes.len() > 1,
+            "Should have hashed at least primary + some related files"
+        );
+        // Primary must always be present.
+        assert!(
+            hashes.contains_key(&primary.canonicalize().unwrap()),
+            "Primary file must be in the hash map"
+        );
+    }
+
+    #[test]
+    fn collect_cache_file_hashes_missing_primary_returns_empty_map() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("does_not_exist.rs");
+
+        let request = egglsp::LspContextRequest::File {
+            file: missing,
+            line_ranges: vec![],
+            include_symbols: false,
+            include_diagnostics: false,
+        };
+        let hashes = collect_cache_file_hashes_for_request(&request, dir.path());
+        assert!(
+            hashes.is_empty(),
+            "Missing primary file should return empty map (cache bypass signal)"
+        );
+    }
+
+    #[test]
+    fn collect_cache_file_hashes_changed_content_produces_different_hashes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.rs");
+
+        std::fs::write(&path, "fn original() {}").unwrap();
+        let request = egglsp::LspContextRequest::File {
+            file: path.clone(),
+            line_ranges: vec![],
+            include_symbols: false,
+            include_diagnostics: false,
+        };
+        let hashes_v1 = collect_cache_file_hashes_for_request(&request, dir.path());
+
+        std::fs::write(&path, "fn modified() {}").unwrap();
+        let hashes_v2 = collect_cache_file_hashes_for_request(&request, dir.path());
+
+        assert_ne!(
+            hashes_v1, hashes_v2,
+            "Different file contents should produce different hashes"
+        );
+    }
+
+    #[test]
+    fn collect_cache_file_hashes_disabled_cache_bypasses_hash_behavior() {
+        // When the cache is disabled, file hashes are collected but never used.
+        // This test verifies that the LspTool with a disabled cache still
+        // produces a valid result (the hashes are computed but the cache
+        // path is skipped).
+        let tool = LspTool::new(sample_service());
+        assert!(
+            !tool.semantic_cache().is_enabled(),
+            "Default cache should be disabled"
+        );
+        // The helper itself is independent of cache state; just verify
+        // it works regardless of cache config.
+        let (dir, path) = temp_rs_file("fn main() {}");
+        let request = egglsp::LspContextRequest::File {
+            file: path,
+            line_ranges: vec![],
+            include_symbols: false,
+            include_diagnostics: false,
+        };
+        let hashes = collect_cache_file_hashes_for_request(&request, dir.path());
+        assert_eq!(hashes.len(), 1);
+    }
+
+    #[test]
+    fn collect_cache_file_hashes_outside_root_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        let allowed = dir.path().join("allowed");
+        std::fs::create_dir_all(&allowed).unwrap();
+        let inside = allowed.join("inside.rs");
+        std::fs::write(&inside, "fn inside() {}").unwrap();
+
+        // File outside the allowed root.
+        let outside = dir.path().join("outside.rs");
+        std::fs::write(&outside, "fn outside() {}").unwrap();
+
+        let request = egglsp::LspContextRequest::File {
+            file: outside,
+            line_ranges: vec![],
+            include_symbols: false,
+            include_diagnostics: false,
+        };
+        let hashes = collect_cache_file_hashes_for_request(&request, &allowed);
+        assert!(
+            hashes.is_empty(),
+            "File outside allowed root should be skipped"
+        );
     }
 }

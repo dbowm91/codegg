@@ -95,7 +95,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   returns a typed `PreviewApplyPlan` without writing to disk. The TUI
   handler performs the actual `std::fs::write` calls and only calls
   `mark_preview_applied` after every write succeeds; failed writes leave
-  the preview pending.
+  the preview pending. Write-side hardening via
+  `write_preview_apply_plan_atomically_enough()` performs per-file SHA-256
+  recheck before each write; `PreviewApplyWriteReport` tracks per-file
+  successes/failures; `mark_preview_applied` only called on full success;
+  partial failures reported without marking applied. 10 new tests prove the
+  write-side invariant.
 - Phase 10 known notes-text bug: `crates/egglsp/src/evidence_collector.rs:1633`
   emits the `"references capped"` note when references are **not** capped
   (inverted comparison). Underlying reference count and budget enforcement
@@ -108,12 +113,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   now routes through the cache when enabled, via the sync
   `LspSemanticCache::get` / `insert` API (rather than
   `collect_context_cached`) because the cache guard is `!Send` and cannot
-  cross `.await`. Pattern: lock, lookup, drop lock, await
-  `collect_context` on miss, lock again, insert. Unit tests cover
-  `with_cache_config` propagation, `lsp_cache_status` reporting, and
-  `clear_semantic_cache` zero-clear behavior in disabled mode. Cache
-  eviction is conservative: generation mismatch, file hash change, TTL
-  expiry, and capability fingerprint change all remove entries.
+  cross `.await`. Production cache keys now include request-scoped file
+  hashes via `collect_cache_file_hashes_for_request()` in
+  `src/tool/lsp.rs` (cap of 16 files with debug logging). When the primary
+  file is unreadable, cache is bypassed for that request. Pattern: lock,
+  lookup, drop lock, await `collect_context` on miss, lock again, insert.
+  Unit tests cover `with_cache_config` propagation, `lsp_cache_status`
+  reporting, and `clear_semantic_cache` zero-clear behavior in disabled
+  mode. Cache eviction is conservative: generation mismatch, file hash
+  change, TTL expiry, and capability fingerprint change all remove entries.
+- Phase 9–12 safety sweep: all 3 static searches passed with 0 disallowed
+  matches. `workspace/applyEdit` is rejected by the dispatcher.
+  `workspace/executeCommand` is never invoked. `mark_applied` is only
+  called after all writes succeed.
 
 ### Security
 

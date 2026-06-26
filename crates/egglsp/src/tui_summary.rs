@@ -1078,6 +1078,119 @@ pub fn validate_preview_apply(
     })
 }
 
+// ---------------------------------------------------------------------------
+// Preview apply write-side (atomic-ish with hash recheck)
+// ---------------------------------------------------------------------------
+
+/// Error type for the write-side of preview application.
+#[derive(Debug)]
+pub enum PreviewApplyWriteError {
+    /// File changed between validation and write (hash mismatch).
+    StaleDuringWrite {
+        /// Affected file path.
+        path: String,
+        /// Hash at validation time.
+        expected_hash: String,
+        /// Current on-disk hash at write time.
+        actual_hash: String,
+    },
+    /// File could not be written (or re-read for hash check).
+    WriteFailed {
+        /// Affected file path.
+        path: String,
+        /// Underlying error message.
+        error: String,
+        /// Files that were successfully written before this failure.
+        completed: Vec<String>,
+    },
+}
+
+impl std::fmt::Display for PreviewApplyWriteError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::StaleDuringWrite {
+                path,
+                expected_hash,
+                actual_hash,
+            } => write!(
+                f,
+                "{path} changed since validation (expected {expected_hash}, got {actual_hash})"
+            ),
+            Self::WriteFailed {
+                path,
+                error,
+                completed,
+            } => write!(
+                f,
+                "write failed for {path}: {error} ({}/{} files completed)",
+                completed.len(),
+                completed.len() + 1
+            ),
+        }
+    }
+}
+
+impl std::error::Error for PreviewApplyWriteError {}
+
+/// Report of a preview-apply write attempt.
+#[derive(Debug)]
+pub struct PreviewApplyWriteReport {
+    /// Files successfully written (absolute or relative paths as in the plan).
+    pub written: Vec<String>,
+    /// Whether all writes succeeded.
+    pub all_succeeded: bool,
+}
+
+/// Write a validated preview-apply plan with hash rechecks.
+///
+/// Before writing each file, re-reads the file and confirms its
+/// SHA-256 equals `file.validated_hash`. If the hash has changed
+/// since validation, returns a [`PreviewApplyWriteError::StaleDuringWrite`]
+/// error without writing that file.
+///
+/// Returns a [`PreviewApplyWriteReport`] indicating which files were
+/// written and whether all writes succeeded. The caller **MUST NOT**
+/// call `mark_applied` unless `all_succeeded` is true.
+pub fn write_preview_apply_plan_atomically_enough(
+    plan: &PreviewApplyPlan,
+) -> Result<PreviewApplyWriteReport, PreviewApplyWriteError> {
+    let mut written = Vec::new();
+    for file in &plan.files {
+        // Recheck hash before write.
+        let current_content = std::fs::read_to_string(&file.path).map_err(|e| {
+            PreviewApplyWriteError::WriteFailed {
+                path: file.path.clone(),
+                error: format!("read error: {e}"),
+                completed: written.clone(),
+            }
+        })?;
+        let current_hash = {
+            use sha2::{Digest, Sha256};
+            format!("{:x}", Sha256::digest(current_content.as_bytes()))
+        };
+        if current_hash != file.validated_hash {
+            return Err(PreviewApplyWriteError::StaleDuringWrite {
+                path: file.path.clone(),
+                expected_hash: file.validated_hash.clone(),
+                actual_hash: current_hash,
+            });
+        }
+        // Write the new content.
+        std::fs::write(&file.path, &file.new_content).map_err(|e| {
+            PreviewApplyWriteError::WriteFailed {
+                path: file.path.clone(),
+                error: format!("write error: {e}"),
+                completed: written.clone(),
+            }
+        })?;
+        written.push(file.path.clone());
+    }
+    Ok(PreviewApplyWriteReport {
+        written,
+        all_succeeded: true,
+    })
+}
+
 /// Format a human-readable age from a millisecond timestamp.
 fn format_age(created_at: u64) -> String {
     let now = std::time::SystemTime::now()
@@ -3087,6 +3200,412 @@ mod tests {
         assert!(
             !registry.get(&id).unwrap().applied,
             "applied flag must remain false until caller writes and explicitly marks applied"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Phase 9 / 12 write-side: write_preview_apply_plan_atomically_enough
+    //
+    // These tests prove the write-side handler correctly handles partial
+    // failures, race conditions, and normal success paths.
+    // -----------------------------------------------------------------------
+
+    fn make_write_plan(files: Vec<PreviewApplyFilePlan>) -> PreviewApplyPlan {
+        PreviewApplyPlan {
+            preview_id: "test-id".to_string(),
+            kind: "rename".to_string(),
+            title: "test preview".to_string(),
+            provenance: "rust-analyzer".to_string(),
+            files,
+        }
+    }
+
+    #[test]
+    fn write_plan_successful_single_file_apply() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file_path = dir.path().join("a.rs");
+        let original = "fn main() {}\n";
+        let new_content = "fn main() { changed(); }\n";
+        std::fs::write(&file_path, original).expect("write");
+
+        let plan = make_write_plan(vec![PreviewApplyFilePlan {
+            path: file_path.to_string_lossy().into_owned(),
+            original_hash: sha256_hex_str(original),
+            validated_hash: sha256_hex_str(original),
+            new_content: new_content.to_string(),
+        }]);
+
+        let report = write_preview_apply_plan_atomically_enough(&plan).expect("write plan");
+        assert!(report.all_succeeded);
+        assert_eq!(report.written.len(), 1);
+        assert_eq!(std::fs::read_to_string(&file_path).unwrap(), new_content);
+    }
+
+    #[test]
+    fn write_plan_successful_multi_file_apply() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut plans = Vec::new();
+        let mut expected_contents = Vec::new();
+
+        for i in 0..3 {
+            let path = dir.path().join(format!("file_{i}.rs"));
+            let original = format!("fn a{i}() {{}}\n");
+            let new_content = format!("fn a{i}() {{ changed(); }}\n");
+            std::fs::write(&path, &original).expect("write");
+            plans.push(PreviewApplyFilePlan {
+                path: path.to_string_lossy().into_owned(),
+                original_hash: sha256_hex_str(&original),
+                validated_hash: sha256_hex_str(&original),
+                new_content: new_content.clone(),
+            });
+            expected_contents.push((path, new_content));
+        }
+
+        let plan = make_write_plan(plans);
+        let report = write_preview_apply_plan_atomically_enough(&plan).expect("write plan");
+        assert!(report.all_succeeded);
+        assert_eq!(report.written.len(), 3);
+
+        for (path, expected) in expected_contents {
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn write_plan_stale_during_write_blocks_apply() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file_path = dir.path().join("a.rs");
+        let original = "fn main() {}\n";
+        let new_content = "fn main() { changed(); }\n";
+        std::fs::write(&file_path, original).expect("write");
+
+        // Plan records the hash of the original content.
+        let plan = make_write_plan(vec![PreviewApplyFilePlan {
+            path: file_path.to_string_lossy().into_owned(),
+            original_hash: sha256_hex_str(original),
+            validated_hash: sha256_hex_str(original),
+            new_content: new_content.to_string(),
+        }]);
+
+        // Modify the file AFTER plan creation but BEFORE calling the helper.
+        std::fs::write(&file_path, "fn main() { external_edit(); }\n").expect("external edit");
+
+        let err =
+            write_preview_apply_plan_atomically_enough(&plan).expect_err("should fail on stale");
+        match err {
+            PreviewApplyWriteError::StaleDuringWrite {
+                path,
+                expected_hash,
+                actual_hash,
+            } => {
+                assert_eq!(path, file_path.to_string_lossy());
+                assert_eq!(expected_hash, sha256_hex_str(original));
+                assert_eq!(
+                    actual_hash,
+                    sha256_hex_str("fn main() { external_edit(); }\n")
+                );
+            }
+            other => panic!("expected StaleDuringWrite, got {other:?}"),
+        }
+
+        // File must NOT be modified by the helper.
+        assert_eq!(
+            std::fs::read_to_string(&file_path).unwrap(),
+            "fn main() { external_edit(); }\n"
+        );
+    }
+
+    #[test]
+    fn write_plan_failure_on_first_file_reports_empty_completed() {
+        let plan = make_write_plan(vec![PreviewApplyFilePlan {
+            path: "/nonexistent/dir/a.rs".to_string(),
+            original_hash: sha256_hex_str("doesn't matter"),
+            validated_hash: sha256_hex_str("doesn't matter"),
+            new_content: "new content\n".to_string(),
+        }]);
+
+        let err =
+            write_preview_apply_plan_atomically_enough(&plan).expect_err("should fail on read");
+        match err {
+            PreviewApplyWriteError::WriteFailed {
+                path,
+                error,
+                completed,
+            } => {
+                assert_eq!(path, "/nonexistent/dir/a.rs");
+                assert!(error.contains("read error"));
+                assert!(
+                    completed.is_empty(),
+                    "no files should have been completed before first-file failure"
+                );
+            }
+            other => panic!("expected WriteFailed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn write_plan_failure_on_second_file_reports_partial_completed() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file1 = dir.path().join("ok.rs");
+        let original1 = "fn ok() {}\n";
+        std::fs::write(&file1, original1).expect("write");
+
+        let plan = make_write_plan(vec![
+            PreviewApplyFilePlan {
+                path: file1.to_string_lossy().into_owned(),
+                original_hash: sha256_hex_str(original1),
+                validated_hash: sha256_hex_str(original1),
+                new_content: "fn ok() { changed(); }\n".to_string(),
+            },
+            PreviewApplyFilePlan {
+                path: "/nonexistent/dir/fail.rs".to_string(),
+                original_hash: sha256_hex_str("whatever"),
+                validated_hash: sha256_hex_str("whatever"),
+                new_content: "fail content\n".to_string(),
+            },
+        ]);
+
+        let err =
+            write_preview_apply_plan_atomically_enough(&plan).expect_err("should fail on 2nd");
+        match err {
+            PreviewApplyWriteError::WriteFailed {
+                path,
+                error,
+                completed,
+            } => {
+                assert_eq!(path, "/nonexistent/dir/fail.rs");
+                assert!(error.contains("read error"));
+                assert_eq!(completed.len(), 1);
+                assert_eq!(completed[0], file1.to_string_lossy());
+            }
+            other => panic!("expected WriteFailed, got {other:?}"),
+        }
+
+        // First file WAS written.
+        assert_eq!(
+            std::fs::read_to_string(&file1).unwrap(),
+            "fn ok() { changed(); }\n"
+        );
+    }
+
+    #[test]
+    fn write_plan_stale_during_write_on_second_file_blocks_third() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file1 = dir.path().join("ok.rs");
+        let file2 = dir.path().join("stale.rs");
+        let file3 = dir.path().join("never.rs");
+        let original1 = "fn ok() {}\n";
+        let original2 = "fn stale() {}\n";
+        let original3 = "fn never() {}\n";
+
+        std::fs::write(&file1, original1).expect("write");
+        std::fs::write(&file2, original2).expect("write");
+        std::fs::write(&file3, original3).expect("write");
+
+        let plan = make_write_plan(vec![
+            PreviewApplyFilePlan {
+                path: file1.to_string_lossy().into_owned(),
+                original_hash: sha256_hex_str(original1),
+                validated_hash: sha256_hex_str(original1),
+                new_content: "fn ok() { changed(); }\n".to_string(),
+            },
+            PreviewApplyFilePlan {
+                path: file2.to_string_lossy().into_owned(),
+                original_hash: sha256_hex_str(original2),
+                validated_hash: sha256_hex_str(original2),
+                new_content: "fn stale() { changed(); }\n".to_string(),
+            },
+            PreviewApplyFilePlan {
+                path: file3.to_string_lossy().into_owned(),
+                original_hash: sha256_hex_str(original3),
+                validated_hash: sha256_hex_str(original3),
+                new_content: "fn never() { changed(); }\n".to_string(),
+            },
+        ]);
+
+        // Modify file2 after plan creation.
+        std::fs::write(&file2, "fn stale() { external(); }\n").expect("external edit");
+
+        let err =
+            write_preview_apply_plan_atomically_enough(&plan).expect_err("should fail on 2nd");
+        match err {
+            PreviewApplyWriteError::StaleDuringWrite {
+                path,
+                expected_hash,
+                ..
+            } => {
+                assert_eq!(path, file2.to_string_lossy());
+                assert_eq!(expected_hash, sha256_hex_str(original2));
+            }
+            other => panic!("expected StaleDuringWrite, got {other:?}"),
+        }
+
+        // file1 was written, file2 was NOT, file3 was NOT.
+        assert_eq!(
+            std::fs::read_to_string(&file1).unwrap(),
+            "fn ok() { changed(); }\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&file2).unwrap(),
+            "fn stale() { external(); }\n"
+        );
+        assert_eq!(std::fs::read_to_string(&file3).unwrap(), original3);
+    }
+
+    #[test]
+    fn write_plan_success_then_stale_returns_only_written() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file1 = dir.path().join("first.rs");
+        let file2 = dir.path().join("second.rs");
+        let original1 = "fn first() {}\n";
+        let original2 = "fn second() {}\n";
+
+        std::fs::write(&file1, original1).expect("write");
+        std::fs::write(&file2, original2).expect("write");
+
+        let plan = make_write_plan(vec![
+            PreviewApplyFilePlan {
+                path: file1.to_string_lossy().into_owned(),
+                original_hash: sha256_hex_str(original1),
+                validated_hash: sha256_hex_str(original1),
+                new_content: "fn first() { changed(); }\n".to_string(),
+            },
+            PreviewApplyFilePlan {
+                path: file2.to_string_lossy().into_owned(),
+                original_hash: sha256_hex_str(original2),
+                validated_hash: sha256_hex_str(original2),
+                new_content: "fn second() { changed(); }\n".to_string(),
+            },
+        ]);
+
+        // Stale file2 after plan creation.
+        std::fs::write(&file2, "fn second() { surprise(); }\n").expect("stale edit");
+
+        let err = write_preview_apply_plan_atomically_enough(&plan).expect_err("should fail");
+        match err {
+            PreviewApplyWriteError::StaleDuringWrite { path, .. } => {
+                assert_eq!(path, file2.to_string_lossy());
+            }
+            other => panic!("expected StaleDuringWrite, got {other:?}"),
+        }
+
+        // file1 was written successfully.
+        assert_eq!(
+            std::fs::read_to_string(&file1).unwrap(),
+            "fn first() { changed(); }\n"
+        );
+    }
+
+    /// Patch applier that replaces the first line of `original` with the
+    /// first line after the `+` marker in the unified diff header.
+    fn simple_replacement_applier(original: &str, patch: &str) -> Result<String, String> {
+        // Extract the "+replacement" line from the patch.
+        let replacement = patch
+            .lines()
+            .find(|l| l.starts_with('+'))
+            .ok_or_else(|| "no + line in patch".to_string())?;
+        let mut lines: Vec<&str> = original.lines().collect();
+        if let Some(first) = lines.first_mut() {
+            *first = &replacement[1..]; // strip the '+' prefix
+        }
+        let mut result = lines.join("\n");
+        // Preserve trailing newline if original had one.
+        if original.ends_with('\n') {
+            result.push('\n');
+        }
+        Ok(result)
+    }
+
+    #[test]
+    fn validate_then_write_end_to_end() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file_path = dir.path().join("a.rs");
+        let original = "fn main() {}\n";
+        let new_content = "fn main() { renamed(); }\n";
+        std::fs::write(&file_path, original).expect("write");
+        let original_hash = sha256_hex_str(original);
+
+        let mut registry = PreviewArtifactRegistry::new();
+        let id = registry.register(
+            LspPreviewArtifact::Rename {
+                description: "rename".to_string(),
+                edit_count: 1,
+                patches: vec![PreviewFilePatch {
+                    path: file_path.to_string_lossy().into_owned(),
+                    patch: "@@ -1,1 +1,1 @@\n-fn main() {}\n+fn main() { renamed(); }\n"
+                        .to_string(),
+                    original_hash,
+                }],
+            },
+            vec![file_path.to_string_lossy().into_owned()],
+            std::collections::HashMap::new(),
+            "rust-analyzer".to_string(),
+        );
+
+        // Validate with a real-ish patch applier.
+        let plan = validate_preview_apply(&registry, &id, &simple_replacement_applier)
+            .expect("validate should succeed");
+        assert_eq!(plan.files[0].new_content, new_content);
+
+        // Write.
+        let report =
+            write_preview_apply_plan_atomically_enough(&plan).expect("write should succeed");
+        assert!(report.all_succeeded);
+
+        // Mark applied only after all writes succeed.
+        registry.mark_applied(&id);
+        assert!(registry.get(&id).unwrap().applied);
+
+        // File content is updated.
+        assert_eq!(std::fs::read_to_string(&file_path).unwrap(), new_content);
+    }
+
+    #[test]
+    fn validate_then_write_end_to_end_stale_file_blocks_write() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file_path = dir.path().join("a.rs");
+        let original = "fn main() {}\n";
+        std::fs::write(&file_path, original).expect("write");
+        let original_hash = sha256_hex_str(original);
+
+        let mut registry = PreviewArtifactRegistry::new();
+        let id = registry.register(
+            LspPreviewArtifact::Rename {
+                description: "rename".to_string(),
+                edit_count: 1,
+                patches: vec![PreviewFilePatch {
+                    path: file_path.to_string_lossy().into_owned(),
+                    patch: "@@ -1,1 +1,1 @@\n-fn main() {}\n+fn main() { renamed(); }\n"
+                        .to_string(),
+                    original_hash,
+                }],
+            },
+            vec![file_path.to_string_lossy().into_owned()],
+            std::collections::HashMap::new(),
+            "rust-analyzer".to_string(),
+        );
+
+        // Validate first (succeeds — file unchanged).
+        let plan = validate_preview_apply(&registry, &id, &simple_replacement_applier)
+            .expect("validate should succeed");
+
+        // External edit after validation.
+        std::fs::write(&file_path, "fn main() { external(); }\n").expect("external edit");
+
+        // Write-side detects stale.
+        let err = write_preview_apply_plan_atomically_enough(&plan).expect_err("should fail");
+        assert!(matches!(
+            err,
+            PreviewApplyWriteError::StaleDuringWrite { .. }
+        ));
+
+        // NOT marked applied.
+        assert!(!registry.get(&id).unwrap().applied);
+
+        // File content is the external edit, not the patch.
+        assert_eq!(
+            std::fs::read_to_string(&file_path).unwrap(),
+            "fn main() { external(); }\n"
         );
     }
 }

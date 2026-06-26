@@ -774,7 +774,7 @@ The vertical slice entry point is `plan_security_review_from_diff(diff, repo_roo
 | `/lsp-root <path>` | Diagnose root detection for a file path (read-only, no server start) |
 | `/lsp-restart <key>` | Manually restart a specific LSP server |
 | `/lsp-stop [key]` | Stop LSP servers (all or specific key) |
-| `/lsp-preview-apply <id>` | Apply a previewed patch to disk with SHA-256 hash revalidation; blocks stale previews; `LspTool` remains read-only — file writes go through standard `std::fs` operations guarded by `validate_preview_apply` |
+| `/lsp-preview-apply <id>` | Apply a previewed patch to disk with SHA-256 hash revalidation; blocks stale previews; write-side hardening via `write_preview_apply_plan_atomically_enough()` (per-file SHA-256 recheck before each write); `mark_preview_applied` only called on full success; partial failures reported without marking applied; `LspTool` remains read-only — file writes go through standard `std::fs` operations guarded by `validate_preview_apply` |
 
 Use `/lsp-servers` to discover available server keys. Keys have the format `<root>:<server-id>` (e.g. `/path/to/project:rust-analyzer`).
 
@@ -2317,7 +2317,12 @@ The agent-context path uses the **sync** `LspSemanticCache::get` /
 `insert` API (not `collect_context_cached`) because the cache guard is
 held in a `parking_lot::Mutex` whose guard is `!Send` and cannot cross
 `.await`. The pattern is: lock, lookup, drop lock, await
-`collect_context` if miss, lock again, insert. Cache config flows from
+`collect_context` if miss, lock again, insert. The production path now
+includes request-scoped file hashes in cache keys via
+`collect_cache_file_hashes_for_request()`, which extracts file paths
+from `LspContextRequest` and computes SHA-256 hashes (cap of 16 files
+with debug logging). When the primary file is unreadable, cache is
+bypassed for that request. Cache config flows from
 `codegg-config`'s `[lsp_semantic_cache]` table through
 `ToolRegistryOptions` to `LspTool::with_cache_config(...)`. The default
 mode is `Disabled`, so out-of-the-box behavior is identical to
@@ -2343,10 +2348,13 @@ ttl_seconds = 300
 Phase 9 preview apply is now guarded by `validate_preview_apply` in
 `egglsp::tui_summary` as a testable boundary that performs all gating
 (not-found, stale-base, no-patches, already-applied, hash mismatch,
-patch failure) without writing to disk. The TUI handler performs the
-actual `std::fs::write` calls and only then calls `mark_preview_applied`
-after every write succeeds; failed writes leave the preview pending.
-Phase 10 has one known notes-text bug: `evidence_collector.rs:1633`
+patch failure) without writing to disk. The write path uses
+`write_preview_apply_plan_atomically_enough()` which performs per-file
+SHA-256 recheck before each write; a `PreviewApplyWriteReport` tracks
+per-file successes and failures. The TUI handler only calls
+`mark_preview_applied` when all writes succeed; partial failures are
+reported without marking applied. 10 new tests prove the write-side
+invariant. Phase 10 has one known notes-text bug: `evidence_collector.rs:1633`
 emits the `"references capped"` note when references are **not** capped
 (inverted comparison). Tracked as a follow-up; the underlying
 reference-count and budget enforcement are correct.
@@ -2354,8 +2362,12 @@ Phase 11 has a known limitation: `LspContextRenderConfig` does not
 currently expose `include_cross_file` / `include_hierarchy` fields, so
 `to_render_config()` does not propagate those policy flags. Consumers
 needing those flags at the renderer should use `RecipeSettings`. Phase 12
-is wired through `LspTool::lsp_context_for_agent_with_input` (see
-"Production Wiring" above).
+production cache keys now include request-scoped file hashes via
+`collect_cache_file_hashes_for_request()` in `src/tool/lsp.rs` (see
+"Production Wiring" above). Phase 9–12 safety sweep passed with 0
+disallowed matches: `workspace/applyEdit` is rejected by the
+dispatcher, `workspace/executeCommand` is never invoked, and
+`mark_applied` is only called after all writes succeed.
 
 ## See Also
 
