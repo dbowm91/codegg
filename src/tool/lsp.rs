@@ -578,6 +578,7 @@ pub struct LspTool {
     /// the async tool path can register without `await` holding
     /// the lock.
     preview_registry: parking_lot::Mutex<egglsp::preview_registry::PreviewArtifactRegistry>,
+    semantic_cache: parking_lot::Mutex<egglsp::cache::LspSemanticCache>,
 }
 
 impl std::fmt::Debug for LspTool {
@@ -586,6 +587,10 @@ impl std::fmt::Debug for LspTool {
             .field("service", &Arc::as_ptr(&self.service))
             .field("allowed_root", &self.allowed_root)
             .field("preview_registry_len", &self.preview_registry.lock().len())
+            .field(
+                "semantic_cache_entries",
+                &self.semantic_cache.lock().stats().entries,
+            )
             .finish()
     }
 }
@@ -604,6 +609,9 @@ impl LspTool {
             preview_registry: parking_lot::Mutex::new(
                 egglsp::preview_registry::PreviewArtifactRegistry::new(),
             ),
+            semantic_cache: parking_lot::Mutex::new(egglsp::cache::LspSemanticCache::new(
+                egglsp::cache::LspCacheConfig::default(),
+            )),
         }
     }
 
@@ -618,6 +626,41 @@ impl LspTool {
         &self,
     ) -> parking_lot::MutexGuard<'_, egglsp::preview_registry::PreviewArtifactRegistry> {
         self.preview_registry.lock()
+    }
+
+    /// Borrow the shared semantic cache for inspection.
+    pub fn semantic_cache(&self) -> parking_lot::MutexGuard<'_, egglsp::cache::LspSemanticCache> {
+        self.semantic_cache.lock()
+    }
+
+    /// Render cache status as human-readable text.
+    pub fn lsp_cache_status(&self) -> String {
+        let cache = self.semantic_cache();
+        let stats = cache.stats();
+        let mode = if cache.is_enabled() {
+            "memory"
+        } else {
+            "disabled"
+        };
+        format!(
+            "LSP Semantic Cache\n  mode: {}\n  entries: {}\n  bytes: {}\n  hits: {}\n  misses: {}\n  stale misses: {}\n  evictions: {}",
+            mode, stats.entries, stats.bytes, stats.hits, stats.misses, stats.stale_misses, stats.evictions
+        )
+    }
+
+    /// Clear the entire semantic cache. Returns number of entries cleared.
+    pub fn clear_semantic_cache(&self) -> usize {
+        let mut cache = self.semantic_cache();
+        let stats = cache.stats();
+        let count = stats.entries;
+        cache.clear();
+        count
+    }
+
+    /// Clear semantic cache entries for a specific workspace root.
+    pub fn clear_semantic_cache_for_root(&self, root: &Path) -> usize {
+        let mut cache = self.semantic_cache();
+        cache.clear_for_root(root)
     }
 
     /// Register a preview artifact with the shared registry. Called
@@ -773,14 +816,7 @@ impl LspTool {
             egglsp::context_policy::LspTaskRisk::Normal
         };
         let policy = egglsp::context_policy::LspContextPolicy::resolve(
-            tier,
-            workflow,
-            task_risk,
-            None,
-            None,
-            None,
-            None,
-            None,
+            tier, workflow, task_risk, None, None, None, None, None,
         );
 
         // Render through the canonical renderer using the policy-derived config.

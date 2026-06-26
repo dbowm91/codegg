@@ -12,6 +12,7 @@
 //! - [`collect_hunk_context`] specializes in hunk-aware collection.
 //! - [`make_provenance`] and [`item_kind_from_severity`] are helpers.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
@@ -2479,6 +2480,122 @@ async fn collect_call_neighborhood(
             "call neighborhood: depth {effective_depth} requested, but recursive expansion is capped for safety"
         ));
     }
+}
+
+// ---------------------------------------------------------------------------
+// Cached collection
+// ---------------------------------------------------------------------------
+
+/// Collect context with optional caching.
+///
+/// On cache hit, returns the cached packet with adjusted freshness notes.
+/// On cache miss, calls `collect_context` and inserts the result if eligible.
+///
+/// The `file_hashes` parameter provides current file content hashes for
+/// cache key construction and freshness validation.
+///
+/// Returns `(packet, cache_hit)` where `cache_hit` indicates whether the
+/// result came from cache.
+pub async fn collect_context_cached(
+    provider: &dyn LspEvidenceProvider,
+    request: &LspContextRequest,
+    budget: &LspContextBudget,
+    mode: &LspContextMode,
+    workspace_root: &std::path::Path,
+    file_hashes: &BTreeMap<PathBuf, String>,
+    cache: Option<&mut crate::cache::LspSemanticCache>,
+    capability_fingerprint: Option<&str>,
+) -> Result<(LspContextPacket, bool), LspContextError> {
+    use crate::cache::LspCacheKeyBuilder;
+
+    // If cache is disabled or not provided, fall through to direct collection.
+    let Some(cache) = cache else {
+        let packet = collect_context(provider, request, budget, mode).await?;
+        return Ok((packet, false));
+    };
+
+    if !cache.is_enabled() {
+        let packet = collect_context(provider, request, budget, mode).await?;
+        return Ok((packet, false));
+    }
+
+    // Build cache key.
+    let (server_id, server_generation) = provider.server_info().await;
+    let server_id_str = server_id.as_deref().unwrap_or("unknown");
+
+    let operation = match request {
+        LspContextRequest::File { .. } => "file",
+        LspContextRequest::Hunk { .. } => "hunk",
+        LspContextRequest::Symbol { .. } => "symbol",
+        LspContextRequest::Review { .. } => "review",
+        LspContextRequest::ImpactAnalysis { .. } => "impact_analysis",
+        LspContextRequest::TestFailureRepair { .. } => "test_failure_repair",
+        LspContextRequest::InterfaceBoundary { .. } => "interface_boundary",
+        LspContextRequest::CrossFileRepair { .. } => "cross_file_repair",
+        LspContextRequest::CallNeighborhood { .. } => "call_neighborhood",
+    };
+
+    let mut builder = LspCacheKeyBuilder::new(
+        workspace_root.to_path_buf(),
+        server_id_str.to_string(),
+        operation.to_string(),
+    )
+    .with_request(request)
+    .with_budget(budget);
+    if let Some(fp) = capability_fingerprint {
+        builder = builder.with_capability_fingerprint(fp.to_string());
+    }
+    let key = builder;
+
+    // Add file hashes to key
+    let mut key = key;
+    for (path, hash) in file_hashes {
+        key = key.with_file_hash(path.clone(), hash.clone());
+    }
+    let key = key.build();
+
+    // Cache lookup
+    if let Some(packet) = cache.get(&key, server_generation, file_hashes) {
+        let mut packet = packet.clone();
+        // Add cache hit note
+        packet
+            .notes
+            .push("[cache-hit] Evidence served from semantic cache".to_string());
+        tracing::debug!("LSP semantic cache hit for operation={}", operation);
+        return Ok((packet, true));
+    }
+
+    // Cache miss: collect fresh evidence
+    tracing::debug!("LSP semantic cache miss for operation={}", operation);
+    let packet = collect_context(provider, request, budget, mode).await?;
+
+    // Determine original freshness for cache entry
+    let original_freshness = if packet.items.is_empty() {
+        LspEvidenceFreshness::Unknown
+    } else {
+        // Use the most common freshness from items, or Fresh if all fresh
+        let fresh_count = packet
+            .items
+            .iter()
+            .filter(|i| i.provenance.freshness == LspEvidenceFreshness::Fresh)
+            .count();
+        if fresh_count == packet.items.len() {
+            LspEvidenceFreshness::Fresh
+        } else if fresh_count > 0 {
+            LspEvidenceFreshness::PossiblyStale
+        } else {
+            packet
+                .items
+                .first()
+                .map(|i| i.provenance.freshness)
+                .unwrap_or(LspEvidenceFreshness::Unknown)
+        }
+    };
+
+    // Insert into cache (cache handles eviction)
+    cache.insert(key, packet.clone(), original_freshness, server_generation);
+
+    Ok((packet, false))
 }
 
 // ---------------------------------------------------------------------------

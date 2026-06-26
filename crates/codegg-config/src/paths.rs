@@ -189,6 +189,7 @@ pub fn merge_configs(configs: &[Config]) -> Config {
             tools,
             formatter,
             lsp,
+            lsp_semantic_cache,
             snapshot,
             snapshot_config,
             plugin,

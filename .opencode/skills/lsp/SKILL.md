@@ -2291,6 +2291,38 @@ let render_config = policy.to_render_config();
 eprintln!("{}", policy.policy_summary());
 ```
 
+## Phase 12: Semantic Memory Cache
+
+The `cache.rs` module provides an optional bounded memory cache for LSP-derived evidence packets.
+
+### Key Types
+
+- `LspSemanticCache` — bounded LRU-ish memory cache (max entries, max bytes, TTL)
+- `LspCacheKey` — cache key encoding workspace root, server ID, operation, request fingerprint, file hashes, capability/budget fingerprints
+- `LspCacheKeyBuilder` — fluent builder for constructing cache keys
+- `LspCacheEntry` — entry with packet, timestamps, hit count, original freshness
+- `LspCacheConfig` — configuration (mode, max_entries, max_bytes, ttl_seconds)
+- `LspCacheMode` — `Disabled` (default) or `Memory`
+
+### Integration Point
+
+`collect_context_cached()` in `evidence_collector.rs` wraps `collect_context()` with cache lookup/insert. Use it for high-cost operations (impact analysis, cross-file repair, etc.).
+
+### TUI Commands
+
+- `/lsp-cache-status` — show cache stats
+- `/lsp-cache-clear [--all|<root>]` — clear cache entries
+
+### Config
+
+```toml
+[lsp_semantic_cache]
+mode = "memory"
+max_entries = 64
+max_bytes = 4194304
+ttl_seconds = 300
+```
+
 ## See Also
 
 - [tool.md](tool.md) - LSP tool wrapper

@@ -226,6 +226,7 @@ pub struct Config {
     pub tools: Option<HashMap<String, bool>>,
     pub formatter: Option<FormatterConfig>,
     pub lsp: Option<LspConfig>,
+    pub lsp_semantic_cache: Option<LspSemanticCacheConfig>,
     pub watcher: Option<WatcherConfig>,
     pub snapshot: Option<bool>,
     pub snapshot_config: Option<SnapshotConfig>,
@@ -926,6 +927,20 @@ impl Default for LspConfig {
 pub enum LspRestartModeConfig {
     Disabled,
     OnUnexpectedExit,
+}
+
+/// Configuration for the LSP semantic memory cache.
+#[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq)]
+#[serde(default)]
+pub struct LspSemanticCacheConfig {
+    /// Cache mode: "disabled" (default) or "memory".
+    pub mode: Option<String>,
+    /// Maximum number of cache entries (default 64).
+    pub max_entries: Option<usize>,
+    /// Maximum cache size in bytes (default 4194304 = 4 MB).
+    pub max_bytes: Option<usize>,
+    /// Cache TTL in seconds (default 300 = 5 minutes).
+    pub ttl_seconds: Option<u64>,
 }
 
 /// Restart policy as serialized in the config layer.

@@ -237,6 +237,10 @@ impl CommandRegistry {
                 .with_description("Restart an LSP server (args: server-key)"),
             Command::new("/lsp-stop", CommandCategory::System, None)
                 .with_description("Stop LSP servers (args: server-key or --all)"),
+            Command::new("/lsp-cache-status", CommandCategory::System, None)
+                .with_description("Show LSP semantic cache status and stats"),
+            Command::new("/lsp-cache-clear", CommandCategory::System, None)
+                .with_description("Clear LSP semantic cache (args: --all or <root-path>)"),
             Command::new("/tool-backends", CommandCategory::System, None)
                 .with_aliases(&["/tools", "/backends"])
                 .with_description("Show resolved backend for each model-facing tool (Native / MCP / Builtin / Disabled)"),

@@ -1343,6 +1343,70 @@ LSP policy: tier=workhorse workflow=repair_local risk=normal stale=include_with_
 - The resolved policy is passed to `collect_context()` and recipe functions
 - `TierSource` is logged at trace level for observability of tier resolution decisions
 
+## Semantic Memory Cache (Phase 12)
+
+An optional bounded memory cache for LSP-derived evidence packets lives in
+`crates/egglsp/src/cache.rs`. The cache improves latency for repeated
+semantic queries without making stale evidence appear fresh.
+
+### Design Principles
+
+1. **Correctness over speed** — cached evidence is always provenance-carrying
+2. **Conservative invalidation** — file hash, server generation, capability, or TTL changes invalidate entries
+3. **Optional and disabled by default** — safe to ignore; no behavioral change unless explicitly enabled
+4. **Workspace-scoped** — entries never cross workspace roots
+
+### Cache Key
+
+`LspCacheKey` encodes every input that can change the answer:
+
+| Field | Purpose |
+|-------|---------|
+| `workspace_root` | Prevents cross-root leakage |
+| `server_id` | Identifies the LSP server |
+| `operation` | Request kind (file, hunk, symbol, etc.) |
+| `request_fingerprint` | Serialized request content |
+| `input_hashes` | File content hashes (BTreeMap) |
+| `capability_fingerprint` | Server capability snapshot hash |
+| `budget_fingerprint` | Budget configuration hash |
+
+### Freshness Rules
+
+- Same file hashes + same server generation → `Fresh` (if TTL valid)
+- Same file hashes + different server generation → `RetainedAfterRestart`
+- Changed file hash → invalidate (miss)
+- TTL expired → invalidate (miss)
+- Capability fingerprint changed → invalidate (miss)
+
+### Configuration
+
+```toml
+[lsp_semantic_cache]
+mode = "memory"        # "disabled" (default) or "memory"
+max_entries = 64       # maximum cache entries
+max_bytes = 4194304    # 4 MB
+ttl_seconds = 300      # 5 minutes
+```
+
+### TUI Commands
+
+- `/lsp-cache-status` — show cache mode, entries, bytes, hits/misses, evictions
+- `/lsp-cache-clear [--all|<root>]` — clear all entries or entries for a specific workspace root
+
+### Integration
+
+`collect_context_cached()` in `evidence_collector.rs` wraps `collect_context()`
+with cache lookup/insert. On hit, returns cached packet with a `[cache-hit]` note.
+On miss, collects fresh evidence and inserts if eligible. The cache is opt-in;
+existing uncached behavior is unchanged.
+
+### Privacy and Security
+
+- Memory-only by default; no disk persistence
+- No cross-workspace root leakage (workspace root is part of cache key)
+- Cache entries store serialized `LspContextPacket` (source-derived evidence)
+- Clear commands available for manual invalidation
+
 ## Supported Languages (39 servers)
 
 | Language | Server | Command |

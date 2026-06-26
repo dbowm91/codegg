@@ -17,6 +17,7 @@
 //!   domain-agnostic semantic queries.
 
 pub mod bridges;
+pub mod cache;
 pub mod capability;
 pub mod client;
 pub mod compatibility;

@@ -4460,6 +4460,37 @@ impl App {
                     self.messages_state.toasts.info("LSP not available");
                 }
             }
+            "/lsp-cache-status" => {
+                self.ui_state.command_mode = false;
+                if let Some(ref lsp_tool) = self.lsp_tool {
+                    let text = lsp_tool.lsp_cache_status();
+                    self.messages_state.toasts.info(&text);
+                } else {
+                    self.messages_state.toasts.info("LSP not available");
+                }
+            }
+            "/lsp-cache-clear" => {
+                self.ui_state.command_mode = false;
+                let query = self.dialog_state.command_palette.query.clone();
+                let arg = query.strip_prefix("/lsp-cache-clear ").unwrap_or("").trim();
+                if let Some(ref lsp_tool) = self.lsp_tool {
+                    if arg.is_empty() || arg == "--all" {
+                        let count = lsp_tool.clear_semantic_cache();
+                        self.messages_state
+                            .toasts
+                            .info(&format!("Cleared {count} cached entries"));
+                    } else {
+                        let root = std::path::PathBuf::from(arg);
+                        let count = lsp_tool.clear_semantic_cache_for_root(&root);
+                        self.messages_state.toasts.info(&format!(
+                            "Cleared {count} cached entries for root: {}",
+                            root.display()
+                        ));
+                    }
+                } else {
+                    self.messages_state.toasts.info("LSP not available");
+                }
+            }
             "/tool-backends" | "/tools" | "/backends" => {
                 // Build the report synchronously from the resolved
                 // config. The App doesn't hold a direct reference to
