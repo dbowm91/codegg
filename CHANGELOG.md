@@ -50,7 +50,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `/themes`, `/tui`, `/sessions`, `/goto`, `/share`, `/unshare`,
   `/timeline`, `/undo`, `/redo`, `/export`, `/import`, `/timestamps`,
   `/thinking`, `/models-refresh`, `/variants`, `/mcps`, `/fork`,
-  `/worktree`, `/editor`, `/loop`, `/lsp-status`, `/tasks`, `/task-del`, `/memory`,
+  `/worktree`, `/editor`, `/loop`, `/lsp-status`, `/lsp-servers`,
+  `/lsp-capabilities`, `/lsp-errors`, `/lsp-root`, `/lsp-restart`,
+  `/lsp-stop`, `/lsp-preview-apply`, `/tasks`, `/task-del`, `/memory`,
   `/memory-search`, `/memory-list`, `/memory-remember`,
   `/memory-forget`, `/memory-consolidate`, `/checkpoint`, `/goal`,
   `/plan`, `/state`, `/pr`, `/issue`, `/review`, `/diff`, `/tests`,
@@ -58,6 +60,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `/research-show`, `/search`, `/doctor`, `/tool-backends`,
   `/security-review`, `/security-review-show`, `/security-review-cancel`,
   `/commit`, `/init`, `/skill:*`, `/skills`, plus `/exit` aliases.
+- Phase 9 LSP lifecycle commands: `/lsp-servers` (list active servers
+  with root, state, generation, capabilities, and supported features),
+  `/lsp-capabilities <key>` (effective capability snapshot for a server),
+  `/lsp-errors <key>` (error history and health info),
+  `/lsp-root <path>` (diagnose workspace root detection without starting
+  servers), `/lsp-restart <key>` (manually restart a server),
+  `/lsp-stop [key]` (stop all or a specific server). `/lsp-preview-apply`
+  now applies patches directly with hash revalidation instead of
+  read-only export. Lifecycle-state warnings in agent context (indexing,
+  degraded, restarting, failed states produce explicit notes).
+
+  **Deferred:** `/lsp-start` and `/lsp-replay-docs` commands deferred to
+  a future phase. Per-key server stop uses `shutdown_all` fallback (stop
+  per-key requires service API changes).
 
 ### Security
 

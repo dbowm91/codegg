@@ -223,7 +223,7 @@ impl CommandRegistry {
                 .with_description("Refresh LSP preview staleness (args: <id>)"),
             Command::new("/lsp-preview-apply", CommandCategory::System, None)
                 .with_aliases(&["/preview-apply"])
-                .with_description("Export LSP preview apply candidate, read-only (args: <id>)"),
+                .with_description("Apply LSP preview patches to disk with hash revalidation (args: <id>)"),
             Command::new("/lsp-servers", CommandCategory::System, None)
                 .with_aliases(&["/lsp-detail"])
                 .with_description("List active LSP servers with status, root, generation"),

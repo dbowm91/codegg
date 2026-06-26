@@ -4256,33 +4256,76 @@ impl App {
                                     ));
                                 }
                                 self.messages_state.toasts.info(&msg);
+                            } else if candidate.patches.is_empty() {
+                                self.messages_state.toasts.info(&format!(
+                                    "Preview {} has no patches — re-run the original LSP preview command.",
+                                    candidate.preview_id
+                                ));
                             } else {
-                                let mut msg = format!(
-                                    "Apply candidate (read-only export): {} ({})\n\
-                                     Affected files: {}\nStatus: FRESH",
-                                    candidate.preview_id,
-                                    candidate.kind,
-                                    candidate.affected_files.join(", "),
-                                );
-                                if candidate.patches.is_empty() {
-                                    msg.push_str(
-                                        "\n\nNo patches available — re-run the original LSP preview command.",
-                                    );
-                                } else {
-                                    msg.push_str(&format!(
-                                        "\n\n{} patch(es) available. Use apply_patch to apply with user approval.\n\
-                                         LspTool remains read-only — actual file changes require the separate mutating apply path.",
-                                        candidate.patches.len()
-                                    ));
-                                    for p in &candidate.patches {
-                                        msg.push_str(&format!(
-                                            "\n  {} (hash: {})",
-                                            p.path,
-                                            &p.original_hash[..8.min(p.original_hash.len())]
+                                use sha2::{Digest, Sha256};
+                                let mut successes: Vec<String> = Vec::new();
+                                let mut failures: Vec<(String, String)> = Vec::new();
+
+                                for p in &candidate.patches {
+                                    let file_content = match std::fs::read_to_string(&p.path) {
+                                        Ok(c) => c,
+                                        Err(e) => {
+                                            failures.push((p.path.clone(), format!("read error: {e}")));
+                                            continue;
+                                        }
+                                    };
+
+                                    let actual_hash = {
+                                        let digest = Sha256::digest(file_content.as_bytes());
+                                        format!("{digest:x}")
+                                    };
+                                    if actual_hash != p.original_hash {
+                                        failures.push((
+                                            p.path.clone(),
+                                            "file changed since preview was created".to_string(),
                                         ));
+                                        continue;
+                                    }
+
+                                    match crate::tool::patch_util::apply_unified_diff(&file_content, &p.patch) {
+                                        Ok(patched) => {
+                                            if let Err(e) = std::fs::write(&p.path, patched) {
+                                                failures.push((p.path.clone(), format!("write error: {e}")));
+                                            } else {
+                                                successes.push(p.path.clone());
+                                            }
+                                        }
+                                        Err(e) => {
+                                            failures.push((p.path.clone(), format!("patch error: {e}")));
+                                        }
                                     }
                                 }
-                                self.messages_state.toasts.info(&msg);
+
+                                if failures.is_empty() {
+                                    lsp_tool.mark_preview_applied(&candidate.preview_id);
+                                    self.messages_state.toasts.info(&format!(
+                                        "Applied {} patch(es) for preview {} successfully.\nFiles: {}",
+                                        successes.len(),
+                                        candidate.preview_id,
+                                        successes.join(", ")
+                                    ));
+                                } else if successes.is_empty() {
+                                    self.messages_state.toasts.info(&format!(
+                                        "Failed to apply all {} patch(es) for preview {}:\n{}",
+                                        failures.len(),
+                                        candidate.preview_id,
+                                        failures.iter().map(|(f, e)| format!("  {f}: {e}")).collect::<Vec<_>>().join("\n")
+                                    ));
+                                } else {
+                                    self.messages_state.toasts.info(&format!(
+                                        "Partial apply for preview {}: {} succeeded, {} failed.\nSucceeded: {}\nFailed:\n{}",
+                                        candidate.preview_id,
+                                        successes.len(),
+                                        failures.len(),
+                                        successes.join(", "),
+                                        failures.iter().map(|(f, e)| format!("  {f}: {e}")).collect::<Vec<_>>().join("\n")
+                                    ));
+                                }
                             }
                         }
                         None => {

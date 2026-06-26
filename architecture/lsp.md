@@ -1079,7 +1079,7 @@ Pure formatting helpers in `tui_summary.rs`:
 
 #### Apply candidate export
 
-`export_preview_apply_candidate(registry, id)` returns an `Option<PreviewApplyCandidate>` carrying all metadata the mutating apply path needs (preview_id, kind, title, affected_files, original_hashes, edit_count, stale_base, provenance, applied). Export is strictly read-only — it does not call `mark_applied` or modify registry state.
+`export_preview_apply_candidate(registry, id)` returns an `Option<PreviewApplyCandidate>` carrying all metadata the mutating apply path needs (preview_id, kind, title, affected_files, original_hashes, edit_count, stale_base, provenance, applied). Export is strictly read-only — it does not call `mark_applied` or modify registry state. The TUI `/lsp-preview-apply` handler uses this as the first step of the direct-apply flow (hash revalidation, diff application, and file writes happen outside the export function).
 
 #### Agent-facing preview policy
 
@@ -1121,9 +1121,16 @@ All lifecycle commands are read-only (restart/stop are safe mutations that do no
 
 ### Preview apply handoff
 
-`/lsp-preview-apply <id>` now refreshes stale-base status before exporting. When the preview is stale (base content changed since creation), the command blocks by default and instructs the user to re-run the original LSP preview command. When fresh, it exports the apply candidate with clear instructions for the mutating apply path.
+`/lsp-preview-apply <id>` applies patches directly to disk with hash revalidation:
 
-**Invariant**: `LspTool` remains read-only. Actual file changes require the separate mutating `apply_patch` tool with user approval. Stale previews are blocked or warn prominently. Applied previews are not silently re-applied.
+1. Refreshes stale-base status by re-hashing on-disk files.
+2. If stale, blocks by default and instructs the user to recompute.
+3. If no patches, shows an informational message.
+4. For each patch: reads the file, recomputes SHA-256 hash, compares to `original_hash`, applies the unified diff via `apply_unified_diff`, writes the result.
+5. Tracks per-file successes/failures and reports results.
+6. On full success, marks the preview as applied in the registry.
+
+Hash revalidation ensures patches are only applied when the file content matches what the preview was based on. File writes go through standard `std::fs` operations — `LspTool` remains read-only (no LSP `workspace/applyEdit`). The `export_preview_apply_candidate` function remains strictly read-only; the TUI handler orchestrates the apply flow externally.
 
 ### Health-aware agent context
 
@@ -1140,7 +1147,7 @@ New types in `egglsp::tui_summary`:
 ### What remains deferred
 
 - Per-key server stop (current API only supports `shutdown_all`)
-- Automatic apply flow wiring (requires mutating apply tool integration)
+- `/lsp-start` and `/lsp-replay-docs` commands (no clean scoped API; service auto-starts on demand and handles document replay internally)
 - Semantic context cache (Phase 12)
 
 ## Supported Languages (39 servers)

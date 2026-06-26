@@ -652,6 +652,11 @@ impl LspTool {
         }
     }
 
+    /// Mark a preview as applied in the registry.
+    pub fn mark_preview_applied(&self, id: &str) {
+        self.preview_registry().mark_applied(id);
+    }
+
     /// Refresh staleness for a preview by re-hashing affected files.
     /// Returns `(is_stale, detail_text)` or `None` if not found.
     pub fn refresh_preview_staleness(&self, id: &str) -> Option<(bool, String)> {
@@ -8026,5 +8031,17 @@ diff --git a/src/lib.rs b/src/lib.rs
         let after = std::fs::read_to_string(&path).unwrap();
         assert_eq!(after, before, "preview registration must not mutate disk");
         assert_eq!(tool.preview_registry().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn lsp_restart_server_invalid_key_returns_failure_message() {
+        let tool = LspTool::new(crate::lsp::service::LspService::new_arc(
+            crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
+        ));
+        let result = tool.lsp_restart_server("nonexistent_key").await;
+        assert!(
+            result.starts_with("Restart failed for nonexistent_key:"),
+            "expected failure message, got: {result}"
+        );
     }
 }
