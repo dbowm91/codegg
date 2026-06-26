@@ -243,6 +243,26 @@ impl CommandRegistry {
                 .with_description("Clear LSP semantic cache (args: --all or <root-path>)"),
             Command::new("/lsp-doctor", CommandCategory::System, None)
                 .with_description("Diagnose LSP status for a file path (args: <path>)"),
+            Command::new("/lsp-repair-local", CommandCategory::System, None)
+                .with_description("Repair localized issue (args: <path[:line]>)"),
+            Command::new("/lsp-repair-hunk", CommandCategory::System, None)
+                .with_description("Repair code around diff hunks (args: <path> [hunk-id|range])"),
+            Command::new("/lsp-review-file", CommandCategory::System, None)
+                .with_description("Semantic review of a file (args: <path>)"),
+            Command::new("/lsp-review-diff", CommandCategory::System, None)
+                .with_description("Review changed files/hunks in current diff"),
+            Command::new("/lsp-security-review", CommandCategory::System, None)
+                .with_description("Enriched security review (args: [path|diff])"),
+            Command::new("/lsp-impact", CommandCategory::System, None)
+                .with_description("Impact analysis for a symbol (args: <path:line:col>)"),
+            Command::new("/lsp-test-repair", CommandCategory::System, None)
+                .with_description("Test failure repair (args: <test-file> [failure-text])"),
+            Command::new("/lsp-interface", CommandCategory::System, None)
+                .with_description("API boundary review (args: <path[:symbol]>)"),
+            Command::new("/lsp-cross-repair", CommandCategory::System, None)
+                .with_description("Cross-file repair context (args: <primary> [related...])"),
+            Command::new("/lsp-call-neighbors", CommandCategory::System, None)
+                .with_description("Call neighborhood (args: <path:line:col> [incoming|outgoing|both])"),
             Command::new("/tool-backends", CommandCategory::System, None)
                 .with_aliases(&["/tools", "/backends"])
                 .with_description("Show resolved backend for each model-facing tool (Native / MCP / Builtin / Disabled)"),

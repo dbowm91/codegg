@@ -36,8 +36,8 @@
 use std::path::PathBuf;
 
 use crate::context::{
-    AgentContextSource, HunkRange, LineRange, LspContextBudget, LspContextMode, LspContextPacket,
-    LspContextPacketMode, LspContextRequest, LspContextTruncation, LspRiskMode,
+    AgentContextSource, HierarchyDirection, HunkRange, LineRange, LspContextBudget, LspContextMode,
+    LspContextPacket, LspContextPacketMode, LspContextRequest, LspContextTruncation, LspRiskMode,
 };
 use crate::context_renderer::{render_lsp_context_for_agent, LspContextRenderConfig, ModelTier};
 use crate::evidence_collector::{
@@ -258,6 +258,428 @@ pub struct RecipeOutcome {
     pub preview_ids: Vec<String>,
     /// Stale/freshness summary.
     pub freshness_summary: String,
+}
+
+// ---------------------------------------------------------------------------
+// Workflow invocation types
+// ---------------------------------------------------------------------------
+
+/// User-facing workflow invocation parameters.
+/// Maps a TUI command or agent intent to a specific recipe.
+#[derive(Debug, Clone)]
+pub struct LspWorkflowInvocation {
+    pub recipe: LspWorkflowRecipe,
+    pub primary_path: Option<String>,
+    pub line: Option<u32>,
+    pub column: Option<u32>,
+    pub symbol: Option<String>,
+    pub direction: Option<HierarchyDirection>,
+    pub related_files: Vec<String>,
+    pub failure_text: Option<String>,
+    pub diagnostic_message: Option<String>,
+    pub hunk_ranges: Vec<HunkRange>,
+    pub line_ranges: Vec<LineRange>,
+    pub model_tier: Option<ModelTier>,
+    pub review_mode: Option<String>,
+    pub max_depth: Option<u8>,
+    pub include_implementations: Option<bool>,
+}
+
+/// Structured display result for a workflow execution.
+#[derive(Debug, Clone)]
+pub struct LspWorkflowDisplay {
+    pub recipe: LspWorkflowRecipe,
+    pub title: String,
+    pub target: String,
+    pub rendered: String,
+    pub evidence_count: usize,
+    pub stale_count: usize,
+    pub fresh_count: usize,
+    pub truncation_notes: Vec<String>,
+    pub preview_ids: Vec<String>,
+    pub unsupported_notes: Vec<String>,
+    pub notes: Vec<String>,
+    pub suggested_next: Option<String>,
+    pub sub_recipes: Vec<SubRecipeProvenance>,
+}
+
+/// Provenance for a sub-recipe in a composed workflow.
+#[derive(Debug, Clone)]
+pub struct SubRecipeProvenance {
+    pub recipe: LspWorkflowRecipe,
+    pub ran: bool,
+    pub skipped_reason: Option<String>,
+}
+
+impl Default for LspWorkflowInvocation {
+    fn default() -> Self {
+        Self {
+            recipe: LspWorkflowRecipe::RepairLocal,
+            primary_path: None,
+            line: None,
+            column: None,
+            symbol: None,
+            direction: None,
+            related_files: Vec::new(),
+            failure_text: None,
+            diagnostic_message: None,
+            hunk_ranges: Vec::new(),
+            line_ranges: Vec::new(),
+            model_tier: None,
+            review_mode: None,
+            max_depth: None,
+            include_implementations: None,
+        }
+    }
+}
+
+impl LspWorkflowInvocation {
+    pub async fn execute(
+        &self,
+        provider: &dyn LspEvidenceProvider,
+    ) -> Result<RecipeOutcome, LspContextError> {
+        let tier = self.model_tier.unwrap_or(ModelTier::Workhorse);
+        let settings = default_settings_for_recipe(self.recipe, tier);
+
+        match self.recipe {
+            LspWorkflowRecipe::RepairLocal => {
+                let file = self
+                    .primary_path
+                    .as_ref()
+                    .map(PathBuf::from)
+                    .ok_or_else(|| {
+                        LspContextError::RequiredFailed(
+                            "primary_path required for repair_local".to_string(),
+                        )
+                    })?;
+                let line = self.line.unwrap_or(0);
+                let column = self.column.unwrap_or(0);
+                execute_repair_local(
+                    provider,
+                    &RepairLocalRequest {
+                        file,
+                        line,
+                        column,
+                        diagnostic_message: self.diagnostic_message.clone(),
+                        settings,
+                    },
+                )
+                .await
+            }
+            LspWorkflowRecipe::RepairHunk => {
+                let file = self
+                    .primary_path
+                    .as_ref()
+                    .map(PathBuf::from)
+                    .ok_or_else(|| {
+                        LspContextError::RequiredFailed(
+                            "primary_path required for repair_hunk".to_string(),
+                        )
+                    })?;
+                execute_repair_hunk(
+                    provider,
+                    &RepairHunkRequest {
+                        file,
+                        hunks: self.hunk_ranges.clone(),
+                        settings,
+                    },
+                )
+                .await
+            }
+            LspWorkflowRecipe::ReviewFile => {
+                let file = self
+                    .primary_path
+                    .as_ref()
+                    .map(PathBuf::from)
+                    .ok_or_else(|| {
+                        LspContextError::RequiredFailed(
+                            "primary_path required for review_file".to_string(),
+                        )
+                    })?;
+                execute_review_file(
+                    provider,
+                    &ReviewFileRequest {
+                        file,
+                        line_ranges: self.line_ranges.clone(),
+                        settings,
+                    },
+                )
+                .await
+            }
+            LspWorkflowRecipe::ReviewDiff => {
+                let changed_files: Vec<PathBuf> =
+                    self.related_files.iter().map(PathBuf::from).collect();
+                execute_review_diff(
+                    provider,
+                    &ReviewDiffRequest {
+                        changed_files,
+                        hunks: Vec::new(),
+                        settings,
+                    },
+                )
+                .await
+            }
+            LspWorkflowRecipe::SecurityReviewEnriched => {
+                let changed_files: Vec<PathBuf> =
+                    self.related_files.iter().map(PathBuf::from).collect();
+                execute_security_review_enriched(
+                    provider,
+                    &SecurityReviewEnrichedRequest {
+                        changed_files,
+                        hunks: Vec::new(),
+                        settings,
+                    },
+                )
+                .await
+            }
+            LspWorkflowRecipe::HunkSourceNavigation => {
+                let file = self
+                    .primary_path
+                    .as_ref()
+                    .map(PathBuf::from)
+                    .ok_or_else(|| {
+                        LspContextError::RequiredFailed(
+                            "primary_path required for hunk_source_navigation".to_string(),
+                        )
+                    })?;
+                let intent = self
+                    .review_mode
+                    .clone()
+                    .unwrap_or_else(|| "navigating hunks".to_string());
+                execute_hunk_source_navigation(
+                    provider,
+                    &HunkSourceNavigationRecipeRequest {
+                        file,
+                        hunks: Vec::new(),
+                        intent,
+                        settings,
+                    },
+                )
+                .await
+            }
+            LspWorkflowRecipe::PreviewSuggestion => {
+                let file = self
+                    .primary_path
+                    .as_ref()
+                    .map(PathBuf::from)
+                    .ok_or_else(|| {
+                        LspContextError::RequiredFailed(
+                            "primary_path required for preview_suggestion".to_string(),
+                        )
+                    })?;
+                let line = self.line.unwrap_or(0);
+                let column = self.column.unwrap_or(0);
+                execute_preview_suggestion(
+                    provider,
+                    &PreviewSuggestionRequest {
+                        file,
+                        line,
+                        column,
+                        settings,
+                    },
+                )
+                .await
+            }
+            LspWorkflowRecipe::ImpactAnalysis => {
+                let file = self
+                    .primary_path
+                    .as_ref()
+                    .map(PathBuf::from)
+                    .ok_or_else(|| {
+                        LspContextError::RequiredFailed(
+                            "primary_path required for impact_analysis".to_string(),
+                        )
+                    })?;
+                let line = self.line.unwrap_or(0);
+                let column = self.column.unwrap_or(0);
+                let changed_files: Vec<PathBuf> =
+                    self.related_files.iter().map(PathBuf::from).collect();
+                execute_impact_analysis(
+                    provider,
+                    &ImpactAnalysisRequest {
+                        symbol: crate::context::SymbolTarget {
+                            file,
+                            position: lsp_types::Position {
+                                line,
+                                character: column,
+                            },
+                        },
+                        changed_files,
+                        settings,
+                    },
+                )
+                .await
+            }
+            LspWorkflowRecipe::TestFailureRepair => {
+                let file = self
+                    .primary_path
+                    .as_ref()
+                    .map(PathBuf::from)
+                    .ok_or_else(|| {
+                        LspContextError::RequiredFailed(
+                            "primary_path required for test_failure_repair".to_string(),
+                        )
+                    })?;
+                let failure_message = self.failure_text.clone().unwrap_or_default();
+                let related_files: Vec<PathBuf> =
+                    self.related_files.iter().map(PathBuf::from).collect();
+                execute_test_failure_repair(
+                    provider,
+                    &TestFailureRepairRequest {
+                        test_file: file,
+                        failure_message,
+                        related_files,
+                        settings,
+                    },
+                )
+                .await
+            }
+            LspWorkflowRecipe::InterfaceBoundary => {
+                let file = self
+                    .primary_path
+                    .as_ref()
+                    .map(PathBuf::from)
+                    .ok_or_else(|| {
+                        LspContextError::RequiredFailed(
+                            "primary_path required for interface_boundary".to_string(),
+                        )
+                    })?;
+                let include_implementations = self.include_implementations.unwrap_or(false);
+                execute_interface_boundary(
+                    provider,
+                    &InterfaceBoundaryRequest {
+                        file,
+                        symbol: self.symbol.clone(),
+                        include_implementations,
+                        settings,
+                    },
+                )
+                .await
+            }
+            LspWorkflowRecipe::CrossFileRepair => {
+                let file = self
+                    .primary_path
+                    .as_ref()
+                    .map(PathBuf::from)
+                    .ok_or_else(|| {
+                        LspContextError::RequiredFailed(
+                            "primary_path required for cross_file_repair".to_string(),
+                        )
+                    })?;
+                let related_files: Vec<PathBuf> =
+                    self.related_files.iter().map(PathBuf::from).collect();
+                execute_cross_file_repair(
+                    provider,
+                    &CrossFileRepairRequest {
+                        primary_file: file,
+                        related_files,
+                        ranges: self.line_ranges.clone(),
+                        settings,
+                    },
+                )
+                .await
+            }
+            LspWorkflowRecipe::CallNeighborhood => {
+                let file = self
+                    .primary_path
+                    .as_ref()
+                    .map(PathBuf::from)
+                    .ok_or_else(|| {
+                        LspContextError::RequiredFailed(
+                            "primary_path required for call_neighborhood".to_string(),
+                        )
+                    })?;
+                let line = self.line.unwrap_or(0);
+                let column = self.column.unwrap_or(0);
+                let direction = self.direction.unwrap_or(HierarchyDirection::Both);
+                let max_depth = self.max_depth.unwrap_or(1);
+                execute_call_neighborhood(
+                    provider,
+                    &CallNeighborhoodRequest {
+                        file,
+                        line,
+                        column,
+                        direction,
+                        max_depth,
+                        settings,
+                    },
+                )
+                .await
+            }
+        }
+    }
+
+    /// Execute a composed workflow that combines multiple recipes.
+    pub async fn execute_composed(
+        &self,
+        provider: &dyn LspEvidenceProvider,
+    ) -> Result<RecipeOutcome, LspContextError> {
+        match self.recipe {
+            LspWorkflowRecipe::SecurityReviewEnriched => {
+                let changed_files: Vec<PathBuf> =
+                    self.related_files.iter().map(PathBuf::from).collect();
+                let hunks: Vec<HunkDescriptor> = self
+                    .hunk_ranges
+                    .iter()
+                    .enumerate()
+                    .map(|(i, h)| HunkDescriptor {
+                        id: format!("composed:{}", i),
+                        file_path: self.primary_path.clone().unwrap_or_default(),
+                        old_range: h
+                            .original_start
+                            .map(|s| crate::hunk_context::HunkLineRange {
+                                start_line: s + 1,
+                                end_line: h.original_end.unwrap_or(s + 1),
+                            }),
+                        new_range: Some(crate::hunk_context::HunkLineRange {
+                            start_line: h.start + 1,
+                            end_line: h.end,
+                        }),
+                        header: None,
+                        added_lines: 0,
+                        removed_lines: 0,
+                        context_lines: 3,
+                    })
+                    .collect();
+                let call_file = self.primary_path.as_ref().map(PathBuf::from);
+                let call_pos = self
+                    .line
+                    .zip(self.column)
+                    .or_else(|| self.line.map(|l| (l, 0)));
+                let settings =
+                    RecipeSettings::for_tier(self.model_tier.unwrap_or(ModelTier::Workhorse));
+                execute_composed_security_review(
+                    provider,
+                    changed_files,
+                    hunks,
+                    call_file,
+                    call_pos,
+                    settings,
+                )
+                .await
+            }
+            LspWorkflowRecipe::TestFailureRepair => {
+                let test_file = self
+                    .primary_path
+                    .as_ref()
+                    .map(PathBuf::from)
+                    .ok_or_else(|| {
+                        LspContextError::RequiredFailed(
+                            "primary_path required for composed test_failure_repair".to_string(),
+                        )
+                    })?;
+                let failure = self.failure_text.clone().unwrap_or_default();
+                let related: Vec<PathBuf> = self.related_files.iter().map(PathBuf::from).collect();
+                let settings =
+                    RecipeSettings::for_tier(self.model_tier.unwrap_or(ModelTier::Workhorse));
+                execute_composed_repair_failing_test(
+                    provider, test_file, failure, related, settings,
+                )
+                .await
+            }
+            _ => self.execute(provider).await,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -973,6 +1395,215 @@ impl From<&crate::context_policy::LspContextPolicy> for RecipeSettings {
     fn from(policy: &crate::context_policy::LspContextPolicy) -> Self {
         policy.to_recipe_settings()
     }
+}
+
+// ---------------------------------------------------------------------------
+// Composed workflows
+// ---------------------------------------------------------------------------
+
+/// Compose a security review: deterministic review + enriched + optional call-neighborhood.
+pub async fn execute_composed_security_review(
+    provider: &dyn LspEvidenceProvider,
+    changed_files: Vec<PathBuf>,
+    hunks: Vec<HunkDescriptor>,
+    call_neighborhood_file: Option<PathBuf>,
+    call_neighborhood_pos: Option<(u32, u32)>,
+    settings: RecipeSettings,
+) -> Result<RecipeOutcome, LspContextError> {
+    let mut sub_recipes = Vec::new();
+    let mut all_notes = Vec::new();
+    let mut all_preview_ids = Vec::new();
+    let mut final_rendered = String::new();
+    let mut final_packet = None;
+
+    let request = SecurityReviewEnrichedRequest {
+        changed_files: changed_files.clone(),
+        hunks: hunks.clone(),
+        settings: settings.clone(),
+    };
+    match execute_security_review_enriched(provider, &request).await {
+        Ok(outcome) => {
+            all_notes.extend(outcome.notes.clone());
+            all_preview_ids.extend(outcome.preview_ids.clone());
+            final_rendered.push_str(&outcome.rendered);
+            final_packet = Some(outcome.packet);
+            sub_recipes.push(SubRecipeProvenance {
+                recipe: LspWorkflowRecipe::SecurityReviewEnriched,
+                ran: true,
+                skipped_reason: None,
+            });
+        }
+        Err(e) => {
+            sub_recipes.push(SubRecipeProvenance {
+                recipe: LspWorkflowRecipe::SecurityReviewEnriched,
+                ran: false,
+                skipped_reason: Some(format!("{}", e)),
+            });
+        }
+    }
+
+    if let (Some(file), Some((line, col))) = (call_neighborhood_file, call_neighborhood_pos) {
+        let request = CallNeighborhoodRequest {
+            file,
+            line,
+            column: col,
+            direction: HierarchyDirection::Both,
+            max_depth: 1,
+            settings: settings.clone(),
+        };
+        match execute_call_neighborhood(provider, &request).await {
+            Ok(outcome) => {
+                all_notes.extend(outcome.notes);
+                all_preview_ids.extend(outcome.preview_ids);
+                final_rendered.push_str("\n\n");
+                final_rendered.push_str(&outcome.rendered);
+                sub_recipes.push(SubRecipeProvenance {
+                    recipe: LspWorkflowRecipe::CallNeighborhood,
+                    ran: true,
+                    skipped_reason: None,
+                });
+            }
+            Err(e) => {
+                sub_recipes.push(SubRecipeProvenance {
+                    recipe: LspWorkflowRecipe::CallNeighborhood,
+                    ran: false,
+                    skipped_reason: Some(format!("{}", e)),
+                });
+            }
+        }
+    }
+
+    let packet = final_packet.unwrap_or_else(|| LspContextPacket {
+        request: LspContextRequest::Review {
+            changed_files,
+            hunks,
+            risk_mode: settings.risk_mode,
+        },
+        items: vec![],
+        previews: vec![],
+        preview_ids: vec![],
+        mode: settings.mode,
+        workspace_root: None,
+        generated_at: None,
+        server_id: None,
+        server_generation: None,
+        operational_state: None,
+        budget: None,
+        truncation: LspContextTruncation::default(),
+        notes: vec![],
+    });
+
+    Ok(RecipeOutcome {
+        recipe: LspWorkflowRecipe::SecurityReviewEnriched,
+        packet,
+        rendered: final_rendered,
+        notes: all_notes,
+        fallback_used: false,
+        preview_ids: all_preview_ids,
+        freshness_summary: "composed security review".to_string(),
+    })
+}
+
+/// Compose test failure repair + repair_local for likely source file.
+pub async fn execute_composed_repair_failing_test(
+    provider: &dyn LspEvidenceProvider,
+    test_file: PathBuf,
+    failure_message: String,
+    related_files: Vec<PathBuf>,
+    settings: RecipeSettings,
+) -> Result<RecipeOutcome, LspContextError> {
+    let mut sub_recipes = Vec::new();
+    let mut all_notes = Vec::new();
+    let mut all_preview_ids = Vec::new();
+    let mut final_rendered = String::new();
+    let mut final_packet = None;
+
+    let request = TestFailureRepairRequest {
+        test_file: test_file.clone(),
+        failure_message: failure_message.clone(),
+        related_files: related_files.clone(),
+        settings: settings.clone(),
+    };
+    match execute_test_failure_repair(provider, &request).await {
+        Ok(outcome) => {
+            all_notes.extend(outcome.notes.clone());
+            all_preview_ids.extend(outcome.preview_ids.clone());
+            final_rendered.push_str(&outcome.rendered);
+            final_packet = Some(outcome.packet);
+            sub_recipes.push(SubRecipeProvenance {
+                recipe: LspWorkflowRecipe::TestFailureRepair,
+                ran: true,
+                skipped_reason: None,
+            });
+        }
+        Err(e) => {
+            sub_recipes.push(SubRecipeProvenance {
+                recipe: LspWorkflowRecipe::TestFailureRepair,
+                ran: false,
+                skipped_reason: Some(format!("{}", e)),
+            });
+        }
+    }
+
+    for file in related_files.iter().take(3) {
+        let request = RepairLocalRequest {
+            file: file.clone(),
+            line: 1,
+            column: 0,
+            diagnostic_message: Some(failure_message.clone()),
+            settings: settings.clone(),
+        };
+        match execute_repair_local(provider, &request).await {
+            Ok(outcome) => {
+                all_notes.extend(outcome.notes);
+                all_preview_ids.extend(outcome.preview_ids);
+                final_rendered.push_str("\n\n");
+                final_rendered.push_str(&outcome.rendered);
+                sub_recipes.push(SubRecipeProvenance {
+                    recipe: LspWorkflowRecipe::RepairLocal,
+                    ran: true,
+                    skipped_reason: None,
+                });
+            }
+            Err(e) => {
+                sub_recipes.push(SubRecipeProvenance {
+                    recipe: LspWorkflowRecipe::RepairLocal,
+                    ran: false,
+                    skipped_reason: Some(format!("{}", e)),
+                });
+            }
+        }
+    }
+
+    let packet = final_packet.unwrap_or_else(|| LspContextPacket {
+        request: LspContextRequest::TestFailureRepair {
+            test_file,
+            failure_message,
+            related_files,
+        },
+        items: vec![],
+        previews: vec![],
+        preview_ids: vec![],
+        mode: settings.mode,
+        workspace_root: None,
+        generated_at: None,
+        server_id: None,
+        server_generation: None,
+        operational_state: None,
+        budget: None,
+        truncation: LspContextTruncation::default(),
+        notes: vec![],
+    });
+
+    Ok(RecipeOutcome {
+        recipe: LspWorkflowRecipe::TestFailureRepair,
+        packet,
+        rendered: final_rendered,
+        notes: all_notes,
+        fallback_used: false,
+        preview_ids: all_preview_ids,
+        freshness_summary: "composed test failure repair".to_string(),
+    })
 }
 
 // ---------------------------------------------------------------------------

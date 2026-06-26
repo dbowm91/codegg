@@ -305,6 +305,53 @@ pub fn render_tui_summary_detail(summary: &LspTuiSummary) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// Workflow display rendering (Phase 14)
+// ---------------------------------------------------------------------------
+
+/// Render a workflow display result as human-readable text for TUI toast/panel.
+pub fn render_workflow_display(display: &crate::workflow_recipes::LspWorkflowDisplay) -> String {
+    let mut out = String::new();
+    out.push_str(&format!("## {}\n", display.title));
+    if !display.target.is_empty() {
+        out.push_str(&format!("Target: {}\n", display.target));
+    }
+    out.push_str(&format!(
+        "Evidence: {} items ({} fresh, {} stale)\n",
+        display.evidence_count, display.fresh_count, display.stale_count
+    ));
+    if !display.truncation_notes.is_empty() {
+        out.push_str(&format!(
+            "Truncated: {}\n",
+            display.truncation_notes.join(", ")
+        ));
+    }
+    if !display.preview_ids.is_empty() {
+        out.push_str(&format!("Previews: {}\n", display.preview_ids.join(", ")));
+    }
+    if !display.unsupported_notes.is_empty() {
+        out.push_str(&format!(
+            "Unsupported: {}\n",
+            display.unsupported_notes.join("; ")
+        ));
+    }
+    if !display.notes.is_empty() {
+        out.push_str(&format!("Notes: {}\n", display.notes.join("; ")));
+    }
+    if let Some(ref next) = display.suggested_next {
+        out.push_str(&format!("Suggested: {}\n", next));
+    }
+    if !display.rendered.is_empty() {
+        let rendered = if display.rendered.len() > 2000 {
+            format!("{}...", &display.rendered[..2000])
+        } else {
+            display.rendered.clone()
+        };
+        out.push_str(&format!("\n{}", rendered));
+    }
+    out
+}
+
+// ---------------------------------------------------------------------------
 // Phase 9: Lifecycle status DTOs
 // ---------------------------------------------------------------------------
 

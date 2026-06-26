@@ -2432,6 +2432,29 @@ cargo test -p egglsp --features lsp-real-server-tests --test real_server_smoke -
 /lsp-doctor /path/to/project
 ```
 
+## Phase 14: Workflow Composition UX
+
+User-facing workflow commands invoke named recipes via `LspTool::run_lsp_workflow()`:
+
+- `/lsp-repair-local <path[:line]>` — Repair localized issue
+- `/lsp-repair-hunk <path> [hunk]` — Repair around diff hunks
+- `/lsp-review-file <path>` — Semantic file review
+- `/lsp-review-diff` — Review current diff
+- `/lsp-security-review [path|diff]` — Enriched security review
+- `/lsp-impact <path:line:col>` — Symbol impact analysis
+- `/lsp-test-repair <file> [text]` — Test failure repair
+- `/lsp-interface <path[:symbol]>` — API boundary review
+- `/lsp-cross-repair <primary> [related]` — Cross-file repair
+- `/lsp-call-neighbors <path:line:col> [dir]` — Call neighborhood
+
+All commands are read-only. Output includes evidence count, freshness, truncation, preview IDs, and suggested next actions.
+
+Composed workflows combine recipes with explicit caps:
+- Security review = enriched + optional call-neighborhood (cap: 1)
+- Test repair = test_failure_repair + repair_local (cap: 3 related files)
+
+Agent-facing invocation uses `LspWorkflowInvocation` with minimal fields.
+
 ## See Also
 
 - [tool.md](tool.md) - LSP tool wrapper

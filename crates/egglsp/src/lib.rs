@@ -144,12 +144,17 @@ pub use restart::{
 };
 pub use runtime::{spawn_process_runtime, LspProcessIntent, LspProcessRuntime};
 pub use supervisor::{LspProcessExitEvent, StderrRingBuffer};
+pub use tui_summary::render_workflow_display;
 pub use workflow_recipes::{
-    default_settings_for_recipe, execute_hunk_source_navigation, execute_preview_suggestion,
+    default_settings_for_recipe, execute_composed_repair_failing_test,
+    execute_composed_security_review, execute_hunk_source_navigation, execute_preview_suggestion,
     execute_repair_hunk, execute_repair_local, execute_review_diff, execute_review_file,
-    execute_security_review_enriched, HunkSourceNavigationRecipeRequest, LspWorkflowRecipe,
-    PreviewSuggestionRequest, RecipeOutcome, RecipeSettings, RepairHunkRequest, RepairLocalRequest,
-    ReviewDiffRequest, ReviewFileRequest, SecurityReviewEnrichedRequest,
+    execute_security_review_enriched, CallNeighborhoodRequest, CrossFileRepairRequest,
+    HunkSourceNavigationRecipeRequest, ImpactAnalysisRequest, InterfaceBoundaryRequest,
+    LspWorkflowDisplay, LspWorkflowInvocation, LspWorkflowRecipe, PreviewSuggestionRequest,
+    RecipeOutcome, RecipeSettings, RepairHunkRequest, RepairLocalRequest, ReviewDiffRequest,
+    ReviewFileRequest, SecurityReviewEnrichedRequest, SubRecipeProvenance,
+    TestFailureRepairRequest,
 };
 
 #[cfg(feature = "lsp-test-support")]

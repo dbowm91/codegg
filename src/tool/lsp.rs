@@ -567,6 +567,19 @@ fn infer_workflow_from_input(
     }
 }
 
+fn suggest_next_workflow_action(outcome: &egglsp::RecipeOutcome) -> Option<String> {
+    if !outcome.preview_ids.is_empty() {
+        Some(format!(
+            "Preview available: /lsp-preview {}",
+            outcome.preview_ids[0]
+        ))
+    } else if outcome.fallback_used {
+        Some("Try /lsp-doctor for server health info".to_string())
+    } else {
+        None
+    }
+}
+
 pub struct LspTool {
     service: Arc<crate::lsp::service::LspService>,
     allowed_root: PathBuf,
@@ -1920,6 +1933,55 @@ impl LspTool {
         let caps = self.service.effective_capabilities_for_key(key).await;
         let detail = build_server_status_detail(key, &snapshot, caps.as_ref());
         Some(render_server_errors(&detail))
+    }
+
+    /// Execute a user-facing workflow invocation and return display-ready output.
+    pub async fn run_lsp_workflow(
+        &self,
+        invocation: &egglsp::LspWorkflowInvocation,
+    ) -> Result<egglsp::LspWorkflowDisplay, String> {
+        use egglsp::evidence_adapter::ServiceLspEvidenceProvider;
+
+        let adapter =
+            ServiceLspEvidenceProvider::new(Arc::clone(&self.service), self.allowed_root.clone());
+
+        let outcome = invocation
+            .execute(&adapter)
+            .await
+            .map_err(|e| format!("Workflow failed: {e}"))?;
+
+        let stale_count = outcome
+            .packet
+            .notes
+            .iter()
+            .filter(|n| n.contains("stale"))
+            .count();
+        let fresh_count = outcome.packet.items.len().saturating_sub(stale_count);
+        let truncation_notes = outcome.packet.truncation.notes.clone();
+        let unsupported_notes: Vec<String> = outcome
+            .packet
+            .notes
+            .iter()
+            .filter(|n| n.contains("unsupported") || n.contains("not supported"))
+            .cloned()
+            .collect();
+        let suggested_next = suggest_next_workflow_action(&outcome);
+
+        Ok(egglsp::LspWorkflowDisplay {
+            recipe: outcome.recipe,
+            title: format!("{}", outcome.recipe),
+            target: invocation.primary_path.clone().unwrap_or_default(),
+            rendered: outcome.rendered,
+            evidence_count: outcome.packet.items.len(),
+            stale_count,
+            fresh_count,
+            truncation_notes,
+            preview_ids: outcome.preview_ids,
+            unsupported_notes,
+            notes: outcome.notes,
+            suggested_next,
+            sub_recipes: vec![],
+        })
     }
 
     /// Diagnose the LSP root for a file path without starting a server.

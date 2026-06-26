@@ -47,6 +47,7 @@ use crate::tts::Tts;
 use crate::tui::components::toast::Toast;
 use crate::util::fuzzy::fuzzy_score;
 use crossterm::event::KeyEvent;
+use egglsp::{render_workflow_display, LspWorkflowInvocation, LspWorkflowRecipe};
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span, Text};
@@ -4479,6 +4480,304 @@ impl App {
                     self.messages_state.toasts.info("LSP not available");
                 }
             }
+            "/lsp-repair-local" => {
+                self.ui_state.command_mode = false;
+                let query = self.dialog_state.command_palette.query.clone();
+                let arg = query
+                    .strip_prefix("/lsp-repair-local ")
+                    .unwrap_or("")
+                    .trim();
+                if arg.is_empty() {
+                    self.messages_state
+                        .toasts
+                        .info("Usage: /lsp-repair-local <path[:line]>");
+                } else if let Some(ref lsp_tool) = self.lsp_tool {
+                    let (path, line, col) = parse_path_line_col(arg);
+                    let invocation = LspWorkflowInvocation {
+                        recipe: LspWorkflowRecipe::RepairLocal,
+                        primary_path: Some(path),
+                        line,
+                        column: col,
+                        ..Default::default()
+                    };
+                    let handle = tokio::runtime::Handle::current();
+                    match handle.block_on(lsp_tool.run_lsp_workflow(&invocation)) {
+                        Ok(display) => {
+                            let text = render_workflow_display(&display);
+                            self.messages_state.toasts.info(&text);
+                        }
+                        Err(e) => self.messages_state.toasts.info(&e),
+                    }
+                } else {
+                    self.messages_state.toasts.info("LSP not available");
+                }
+            }
+            "/lsp-repair-hunk" => {
+                self.ui_state.command_mode = false;
+                let query = self.dialog_state.command_palette.query.clone();
+                let arg = query.strip_prefix("/lsp-repair-hunk ").unwrap_or("").trim();
+                if arg.is_empty() {
+                    self.messages_state
+                        .toasts
+                        .info("Usage: /lsp-repair-hunk <path> [hunk-id|range]");
+                } else if let Some(ref lsp_tool) = self.lsp_tool {
+                    let parts: Vec<&str> = arg.splitn(2, ' ').collect();
+                    let path = parts[0].to_string();
+                    let invocation = LspWorkflowInvocation {
+                        recipe: LspWorkflowRecipe::RepairHunk,
+                        primary_path: Some(path),
+                        ..Default::default()
+                    };
+                    let handle = tokio::runtime::Handle::current();
+                    match handle.block_on(lsp_tool.run_lsp_workflow(&invocation)) {
+                        Ok(display) => {
+                            let text = render_workflow_display(&display);
+                            self.messages_state.toasts.info(&text);
+                        }
+                        Err(e) => self.messages_state.toasts.info(&e),
+                    }
+                } else {
+                    self.messages_state.toasts.info("LSP not available");
+                }
+            }
+            "/lsp-review-file" => {
+                self.ui_state.command_mode = false;
+                let query = self.dialog_state.command_palette.query.clone();
+                let arg = query.strip_prefix("/lsp-review-file ").unwrap_or("").trim();
+                if arg.is_empty() {
+                    self.messages_state
+                        .toasts
+                        .info("Usage: /lsp-review-file <path>");
+                } else if let Some(ref lsp_tool) = self.lsp_tool {
+                    let invocation = LspWorkflowInvocation {
+                        recipe: LspWorkflowRecipe::ReviewFile,
+                        primary_path: Some(arg.to_string()),
+                        ..Default::default()
+                    };
+                    let handle = tokio::runtime::Handle::current();
+                    match handle.block_on(lsp_tool.run_lsp_workflow(&invocation)) {
+                        Ok(display) => {
+                            let text = render_workflow_display(&display);
+                            self.messages_state.toasts.info(&text);
+                        }
+                        Err(e) => self.messages_state.toasts.info(&e),
+                    }
+                } else {
+                    self.messages_state.toasts.info("LSP not available");
+                }
+            }
+            "/lsp-review-diff" => {
+                self.ui_state.command_mode = false;
+                if let Some(ref lsp_tool) = self.lsp_tool {
+                    let invocation = LspWorkflowInvocation {
+                        recipe: LspWorkflowRecipe::ReviewDiff,
+                        ..Default::default()
+                    };
+                    let handle = tokio::runtime::Handle::current();
+                    match handle.block_on(lsp_tool.run_lsp_workflow(&invocation)) {
+                        Ok(display) => {
+                            let text = render_workflow_display(&display);
+                            self.messages_state.toasts.info(&text);
+                        }
+                        Err(e) => self.messages_state.toasts.info(&e),
+                    }
+                } else {
+                    self.messages_state.toasts.info("LSP not available");
+                }
+            }
+            "/lsp-security-review" => {
+                self.ui_state.command_mode = false;
+                let query = self.dialog_state.command_palette.query.clone();
+                let arg = query
+                    .strip_prefix("/lsp-security-review ")
+                    .unwrap_or("")
+                    .trim();
+                if let Some(ref lsp_tool) = self.lsp_tool {
+                    let review_mode = if arg.is_empty() {
+                        Some("diff".to_string())
+                    } else {
+                        Some(arg.to_string())
+                    };
+                    let invocation = LspWorkflowInvocation {
+                        recipe: LspWorkflowRecipe::SecurityReviewEnriched,
+                        review_mode,
+                        ..Default::default()
+                    };
+                    let handle = tokio::runtime::Handle::current();
+                    match handle.block_on(lsp_tool.run_lsp_workflow(&invocation)) {
+                        Ok(display) => {
+                            let text = render_workflow_display(&display);
+                            self.messages_state.toasts.info(&text);
+                        }
+                        Err(e) => self.messages_state.toasts.info(&e),
+                    }
+                } else {
+                    self.messages_state.toasts.info("LSP not available");
+                }
+            }
+            "/lsp-impact" => {
+                self.ui_state.command_mode = false;
+                let query = self.dialog_state.command_palette.query.clone();
+                let arg = query.strip_prefix("/lsp-impact ").unwrap_or("").trim();
+                if arg.is_empty() {
+                    self.messages_state
+                        .toasts
+                        .info("Usage: /lsp-impact <path:line:col>");
+                } else if let Some(ref lsp_tool) = self.lsp_tool {
+                    let (path, line, col) = parse_path_line_col(arg);
+                    let invocation = LspWorkflowInvocation {
+                        recipe: LspWorkflowRecipe::ImpactAnalysis,
+                        primary_path: Some(path),
+                        line,
+                        column: col,
+                        ..Default::default()
+                    };
+                    let handle = tokio::runtime::Handle::current();
+                    match handle.block_on(lsp_tool.run_lsp_workflow(&invocation)) {
+                        Ok(display) => {
+                            let text = render_workflow_display(&display);
+                            self.messages_state.toasts.info(&text);
+                        }
+                        Err(e) => self.messages_state.toasts.info(&e),
+                    }
+                } else {
+                    self.messages_state.toasts.info("LSP not available");
+                }
+            }
+            "/lsp-test-repair" => {
+                self.ui_state.command_mode = false;
+                let query = self.dialog_state.command_palette.query.clone();
+                let arg = query.strip_prefix("/lsp-test-repair ").unwrap_or("").trim();
+                if arg.is_empty() {
+                    self.messages_state
+                        .toasts
+                        .info("Usage: /lsp-test-repair <test-file> [failure-text]");
+                } else if let Some(ref lsp_tool) = self.lsp_tool {
+                    let parts: Vec<&str> = arg.splitn(2, ' ').collect();
+                    let test_file = parts[0].to_string();
+                    let failure_text = parts.get(1).map(|s| s.to_string());
+                    let invocation = LspWorkflowInvocation {
+                        recipe: LspWorkflowRecipe::TestFailureRepair,
+                        primary_path: Some(test_file),
+                        failure_text,
+                        ..Default::default()
+                    };
+                    let handle = tokio::runtime::Handle::current();
+                    match handle.block_on(lsp_tool.run_lsp_workflow(&invocation)) {
+                        Ok(display) => {
+                            let text = render_workflow_display(&display);
+                            self.messages_state.toasts.info(&text);
+                        }
+                        Err(e) => self.messages_state.toasts.info(&e),
+                    }
+                } else {
+                    self.messages_state.toasts.info("LSP not available");
+                }
+            }
+            "/lsp-interface" => {
+                self.ui_state.command_mode = false;
+                let query = self.dialog_state.command_palette.query.clone();
+                let arg = query.strip_prefix("/lsp-interface ").unwrap_or("").trim();
+                if arg.is_empty() {
+                    self.messages_state
+                        .toasts
+                        .info("Usage: /lsp-interface <path[:symbol]>");
+                } else if let Some(ref lsp_tool) = self.lsp_tool {
+                    let parts: Vec<&str> = arg.splitn(2, ':').collect();
+                    let path = parts[0].to_string();
+                    let symbol = parts.get(1).map(|s| s.to_string());
+                    let invocation = LspWorkflowInvocation {
+                        recipe: LspWorkflowRecipe::InterfaceBoundary,
+                        primary_path: Some(path),
+                        symbol,
+                        ..Default::default()
+                    };
+                    let handle = tokio::runtime::Handle::current();
+                    match handle.block_on(lsp_tool.run_lsp_workflow(&invocation)) {
+                        Ok(display) => {
+                            let text = render_workflow_display(&display);
+                            self.messages_state.toasts.info(&text);
+                        }
+                        Err(e) => self.messages_state.toasts.info(&e),
+                    }
+                } else {
+                    self.messages_state.toasts.info("LSP not available");
+                }
+            }
+            "/lsp-cross-repair" => {
+                self.ui_state.command_mode = false;
+                let query = self.dialog_state.command_palette.query.clone();
+                let arg = query
+                    .strip_prefix("/lsp-cross-repair ")
+                    .unwrap_or("")
+                    .trim();
+                if arg.is_empty() {
+                    self.messages_state
+                        .toasts
+                        .info("Usage: /lsp-cross-repair <primary> [related...]");
+                } else if let Some(ref lsp_tool) = self.lsp_tool {
+                    let parts: Vec<&str> = arg.split_whitespace().collect();
+                    let primary = parts[0].to_string();
+                    let related_files: Vec<String> =
+                        parts[1..].iter().map(|s| s.to_string()).collect();
+                    let invocation = LspWorkflowInvocation {
+                        recipe: LspWorkflowRecipe::CrossFileRepair,
+                        primary_path: Some(primary),
+                        related_files,
+                        ..Default::default()
+                    };
+                    let handle = tokio::runtime::Handle::current();
+                    match handle.block_on(lsp_tool.run_lsp_workflow(&invocation)) {
+                        Ok(display) => {
+                            let text = render_workflow_display(&display);
+                            self.messages_state.toasts.info(&text);
+                        }
+                        Err(e) => self.messages_state.toasts.info(&e),
+                    }
+                } else {
+                    self.messages_state.toasts.info("LSP not available");
+                }
+            }
+            "/lsp-call-neighbors" => {
+                self.ui_state.command_mode = false;
+                let query = self.dialog_state.command_palette.query.clone();
+                let arg = query
+                    .strip_prefix("/lsp-call-neighbors ")
+                    .unwrap_or("")
+                    .trim();
+                if arg.is_empty() {
+                    self.messages_state.toasts.info(
+                        "Usage: /lsp-call-neighbors <path:line:col> [incoming|outgoing|both]",
+                    );
+                } else if let Some(ref lsp_tool) = self.lsp_tool {
+                    let parts: Vec<&str> = arg.splitn(2, ' ').collect();
+                    let (path, line, col) = parse_path_line_col(parts[0]);
+                    let direction = match parts.get(1).copied() {
+                        Some("incoming") => Some(egglsp::context::HierarchyDirection::Incoming),
+                        Some("outgoing") => Some(egglsp::context::HierarchyDirection::Outgoing),
+                        Some("both") => Some(egglsp::context::HierarchyDirection::Both),
+                        _ => None,
+                    };
+                    let invocation = LspWorkflowInvocation {
+                        recipe: LspWorkflowRecipe::CallNeighborhood,
+                        primary_path: Some(path),
+                        line,
+                        column: col,
+                        direction,
+                        ..Default::default()
+                    };
+                    let handle = tokio::runtime::Handle::current();
+                    match handle.block_on(lsp_tool.run_lsp_workflow(&invocation)) {
+                        Ok(display) => {
+                            let text = render_workflow_display(&display);
+                            self.messages_state.toasts.info(&text);
+                        }
+                        Err(e) => self.messages_state.toasts.info(&e),
+                    }
+                } else {
+                    self.messages_state.toasts.info("LSP not available");
+                }
+            }
             "/lsp-restart" => {
                 self.ui_state.command_mode = false;
                 let query = self.dialog_state.command_palette.query.clone();
@@ -8896,6 +9195,14 @@ pub(crate) fn format_goal_status_line(g: &crate::bus::events::GoalSnapshot) -> S
         format!("  {}", budget_parts.join(" "))
     };
     format!("[{}] {}{}", g.status, title, budget)
+}
+
+fn parse_path_line_col(s: &str) -> (String, Option<u32>, Option<u32>) {
+    let parts: Vec<&str> = s.splitn(3, ':').collect();
+    let path = parts[0].to_string();
+    let line = parts.get(1).and_then(|l| l.parse::<u32>().ok());
+    let col = parts.get(2).and_then(|c| c.parse::<u32>().ok());
+    (path, line, col)
 }
 
 #[cfg(test)]

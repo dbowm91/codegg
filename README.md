@@ -215,6 +215,16 @@ The TUI supports inline slash commands for quick actions.
 | `/lsp-preview-apply <id>` | Apply a previewed patch to disk with SHA-256 hash revalidation; blocks stale previews |
 | `/lsp-cache-status` | Show LSP semantic memory cache status (mode, entries, bytes, hits, evictions) |
 | `/lsp-cache-clear [--all\|<root>]` | Clear LSP semantic cache (all entries or for a specific workspace root) |
+| `/lsp-repair-local <path[:line]>` | Repair localized issue around a target line or diagnostic |
+| `/lsp-repair-hunk <path> [hunk]` | Repair code around changed diff hunks |
+| `/lsp-review-file <path>` | Semantic review of a single file |
+| `/lsp-review-diff` | Review changed files in current diff |
+| `/lsp-security-review [path\|diff]` | Enriched security review with LSP evidence |
+| `/lsp-impact <path:line:col>` | Impact analysis for a symbol change |
+| `/lsp-test-repair <file> [text]` | Test failure repair with heuristic symbol extraction |
+| `/lsp-interface <path[:symbol]>` | API/interface boundary review |
+| `/lsp-cross-repair <primary> [related]` | Cross-file repair context |
+| `/lsp-call-neighbors <path:line:col> [dir]` | Call neighborhood (incoming/outgoing/both) |
 | `/context` | Open context dialog |
 | `/cost` | Show cost/usage statistics |
 | `/usage` | Open usage details dialog |

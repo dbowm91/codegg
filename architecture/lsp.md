@@ -1597,6 +1597,44 @@ cargo test -p egglsp --features lsp-real-server-tests --test real_server_smoke
 # /lsp-doctor <file-path>
 ```
 
+## Phase 14: Workflow Composition UX
+
+Phase 14 exposes existing LSP workflow recipes as user- and agent-facing workflows.
+
+### Workflow Commands
+
+| Command | Recipe | Args |
+|---------|--------|------|
+| `/lsp-repair-local` | `RepairLocal` | `<path[:line]>` |
+| `/lsp-repair-hunk` | `RepairHunk` | `<path> [hunk-id\|range]` |
+| `/lsp-review-file` | `ReviewFile` | `<path>` |
+| `/lsp-review-diff` | `ReviewDiff` | (none) |
+| `/lsp-security-review` | `SecurityReviewEnriched` | `[path\|diff]` |
+| `/lsp-impact` | `ImpactAnalysis` | `<path:line:col>` |
+| `/lsp-test-repair` | `TestFailureRepair` | `<test-file> [failure-text]` |
+| `/lsp-interface` | `InterfaceBoundary` | `<path[:symbol]>` |
+| `/lsp-cross-repair` | `CrossFileRepair` | `<primary> [related...]` |
+| `/lsp-call-neighbors` | `CallNeighborhood` | `<path:line:col> [incoming\|outgoing\|both]` |
+
+### Key Types
+
+- `LspWorkflowInvocation`: User-facing invocation parameters mapping commands to recipes
+- `LspWorkflowDisplay`: Structured display result with evidence count, freshness, truncation, preview IDs
+- `SubRecipeProvenance`: Tracks which sub-recipes ran in composed workflows
+
+### Composed Workflows
+
+- `execute_composed_security_review`: security_review_enriched + optional call_neighborhood (capped at 1)
+- `execute_composed_repair_failing_test`: test_failure_repair + repair_local for related files (capped at 3)
+
+### Safety Invariants
+
+- All commands are read-only
+- Preview suggestions are never auto-applied
+- Composed workflows have explicit caps on sub-recipes
+- Stale evidence is visible in output
+- Suggested next actions reference preview IDs or /lsp-doctor
+
 ## Supported Languages (39 servers)
 
 | Language | Server | Command |
@@ -1627,6 +1665,15 @@ cargo test -p egglsp --features lsp-real-server-tests --test real_server_smoke
 
 - **Pinned/CI-verified**: Servers with dedicated compatibility profiles tested in the real-server CI matrix (rust-analyzer, basedpyright, gopls, typescript-language-server, clangd). These have pinned versions, root-marker expectations, and known limitations documented.
 - **Discovery/launch definitions**: Additional server definitions in `server.rs` provide language-to-server mapping and launch configuration. These are best-effort and have not been verified against the pinned CI matrix.
+
+### Platform Caveats
+
+- **macOS**: Some servers (e.g. `jdtls`) require Java on PATH. `clangd` from Homebrew may differ from LLVM apt releases. Gate operations may be slower due to `fs::canonicalize` resolving symlinks.
+- **Linux**: `gopls` and `rust-analyzer` work well from system package managers. `typescript-language-server` requires Node.js. Some servers write temp files to `/tmp`; ensure adequate disk space.
+- **Windows**: Path separators differ (`\` vs `/`). Some servers (e.g. `gopls`) may have Windows-specific initialization quirks. Ensure servers are on `PATH` with `.exe` extensions where applicable.
+- **Server binary versions**: Pinned CI versions may differ from locally installed versions. Use `/lsp-doctor` to verify the detected server binary and version.
+- **Monorepo roots**: LSP selects the nearest root marker walking up from the file. Nested project roots (e.g. `packages/app/Cargo.toml` inside a workspace `.git`) may cause unexpected root selection. Use `/lsp-doctor` to diagnose.
+- **Large projects**: First-time indexing can take minutes for large codebases. The `Indexing` operational state is normal during warmup. Use `/lsp-status` to monitor progress.
 
 ## Tool Integration
 
