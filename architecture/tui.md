@@ -395,6 +395,36 @@ Key methods:
 
 **Closing**: `close_dialog()` pops FocusManager and syncs `ui_state.dialog` from `active_dialog_type()`
 
+## Terminal Lifecycle
+
+Terminal setup and teardown is managed by `TerminalGuard` (`src/tui/terminal.rs`).
+
+### Setup Order (in `TerminalGuard::enter()`)
+
+1. Enter alternate screen
+2. Enable raw mode
+3. Enable bracketed paste
+4. Enable mouse capture
+
+### Teardown Order (in `TerminalGuard::restore()`)
+
+1. Disable mouse capture
+2. Disable bracketed paste
+3. Disable raw mode
+4. Leave alternate screen
+
+`TerminalGuard::restore()` is idempotent. The `Drop` impl calls `restore()`. If any setup step fails, all previously enabled features are rolled back before returning the error.
+
+### Render Panic Recovery
+
+- **Component-level**: `App::render()` wraps risky surfaces (viewport, sidebar, dialog, completions, timeline) in `std::panic::catch_unwind`. A component panic renders a compact fallback in that region.
+- **Root-level**: `run_event_loop` wraps `terminal.draw()` in `catch_unwind`. Recovery is progressive:
+  - First root failure: log + render error screen
+  - Repeated failures (≥1): hide optional overlays/dialogs
+  - Final fallback (≥3 = `MAX_RENDER_PANICS`): reset minimal volatile UI state
+- `clear_render_error()` resets only `render_panic_count` and `last_render_error`.
+- `App::reset_state()` clears dialog, command_mode, timeline_visible, show_completions, completion_filter. Does NOT clear prompt text or search state.
+
 ## Rendering Flow
 
 ```
@@ -535,4 +565,4 @@ pub struct App {
 - [agent.md](agent.md) - AgentLoop that processes TUI commands
 - [bus.md](bus.md) - GlobalEventBus and event types
 - [session.md](session.md) - Session storage
-- `.skills/tui/SKILL.md` - Detailed TUI development guide
+- `.opencode/skills/tui/SKILL.md` - Detailed TUI development guide

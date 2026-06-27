@@ -1,7 +1,7 @@
 ---
 name: tui
 description: Guide for working with Terminal UI in opencode-rs
-version: 3.2.0
+version: 3.3.0
 tags:
   - tui
   - ratatui
@@ -15,11 +15,13 @@ tags:
 
 This skill covers working with the Terminal UI (TUI) in opencode-rs, built using **Ratatui**. All dialogs implement the `Component` trait with FocusManager integration.
 
-## Notable Corrections (v3.2.0)
+## Notable Corrections (v3.3.0)
 
 - **Component trait location**: The trait is in `src/tui/components/component.rs`, NOT in a `mod.rs` within `component/` subdirectory. The `component/` subdirectory contains only `context.rs` and `focus.rs` submodules.
 - **Additional components**: `help_overlay.rs`, `tool_output.rs` are now documented in the project structure.
 - **Core separation**: Most session/history/task/memory/worktree flows now route through `src/core/` instead of direct store access in TUI.
+- **Terminal lifecycle**: `TerminalGuard` (`src/tui/terminal.rs`) owns terminal setup/teardown. Legacy `enter_raw()`/`exit_raw()` exist but are unused.
+- **Component-level render fallbacks**: `App::render()` wraps risky surfaces in `catch_unwind` for graceful degradation.
 
 ## Project Structure
 
@@ -73,6 +75,7 @@ src/tui/
 ├── input.rs            # Key event handling, keybindings
 ├── layout.rs           # Layout calculations
 ├── route.rs            # Route/RouteManager (Home, Session routes)
+├── terminal.rs         # TerminalGuard for terminal lifecycle management
 ├── theme.rs            # Theme definitions
 ├── command.rs          # Slash command registry
 └── mod.rs              # TUI entry point, event loop
@@ -998,6 +1001,41 @@ AgentFinished { session_id: String, stop_reason: String },
 PermissionPending { session_id: String, perm_id: String, tool: String, path: Option<String>, args: Option<serde_json::Value> },
 QuestionPending { session_id: String, questions: String },
 ```
+
+## Terminal Lifecycle
+
+Terminal setup and teardown is managed by `TerminalGuard` (`src/tui/terminal.rs`).
+
+### TerminalGuard
+
+```rust
+pub struct TerminalGuard {
+    raw_enabled: bool,
+    alt_screen: bool,
+    bracketed_paste: bool,
+    mouse_capture: bool,
+    restored: bool,
+}
+```
+
+- `TerminalGuard::enter()` enables features in order: alt screen → raw mode → bracketed paste → mouse capture. If any step fails, all previously enabled features are rolled back.
+- `TerminalGuard::restore()` disables features in reverse order. Idempotent — safe to call multiple times.
+- `Drop` calls `restore()`.
+- `run_event_loop` creates a `TerminalGuard` and calls `restore()` before returning.
+
+### Render Panic Recovery
+
+`App::render()` wraps risky surfaces in `std::panic::catch_unwind`:
+- **Viewport/messages**: fallback "Messages render error" block
+- **Sidebar**: fallback "Sidebar unavailable" block
+- **Dialog**: closes only that dialog
+- **Completions**: hides completions
+- **Timeline**: hides timeline
+
+Root render panic recovery in `run_event_loop` is progressive:
+- First failure: log + render error screen
+- Repeated failures (≥1): hide optional overlays/dialogs
+- Final fallback (≥3 = `MAX_RENDER_PANICS`): reset minimal volatile UI state
 
 ### TUI Event Loop Pattern
 

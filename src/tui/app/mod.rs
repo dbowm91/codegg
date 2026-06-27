@@ -1446,8 +1446,6 @@ impl App {
         self.ui_state.timeline_visible = false;
         self.prompt_state.show_completions = false;
         self.prompt_state.completion_filter.clear();
-        self.prompt_state.prompt.clear();
-        self.messages_state.messages.clear_search();
     }
 
     pub fn render(&mut self, frame: &mut Frame) {
@@ -1491,25 +1489,59 @@ impl App {
         );
 
         self.render_header(frame, session_chunks[0]);
-        self.render_viewport(frame, session_chunks[1]);
+
+        // Viewport (messages) — highest-risk surface for render panics
+        let viewport_result =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<(), String> {
+                self.render_viewport(frame, session_chunks[1]);
+                Ok(())
+            }));
+        if let Err(err) = viewport_result {
+            let msg = Self::extract_panic_message(&err);
+            tracing::error!("Messages render panic: {msg}");
+            self.ui_state.last_render_error = Some(msg);
+            self.render_component_fallback(frame, session_chunks[1], "Messages render error");
+        }
+
         self.render_prompt(frame, session_chunks[2]);
         self.render_footer(frame, session_chunks[3]);
 
+        // Sidebar — dynamic content can trigger panics
         if self.ui_state.sidebar_visible && main_chunks.len() > 1 {
             self.sidebar_area = Some(main_chunks[1]);
-            self.render_sidebar(frame, main_chunks[1]);
+            let sidebar_result =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<(), String> {
+                    self.render_sidebar(frame, main_chunks[1]);
+                    Ok(())
+                }));
+            if let Err(err) = sidebar_result {
+                let msg = Self::extract_panic_message(&err);
+                tracing::error!("Sidebar render panic: {msg}");
+                self.render_component_fallback(frame, main_chunks[1], "Sidebar unavailable");
+            }
         } else {
             self.sidebar_area = None;
         }
 
+        // Dialog — failures close only that dialog
         if self.ui_state.dialog.is_open() {
             let popup_area = centered_rect(60, 50, area);
             self.dialog_area = Some(popup_area);
-            self.render_dialog(frame, area);
+            let dialog_result =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<(), String> {
+                    self.render_dialog(frame, area);
+                    Ok(())
+                }));
+            if let Err(err) = dialog_result {
+                let msg = Self::extract_panic_message(&err);
+                tracing::error!("Dialog render panic: {msg}");
+                self.ui_state.dialog = Dialog::None;
+            }
         } else {
             self.dialog_area = None;
         }
 
+        // Completion overlay — failures hide completions
         if self.prompt_state.show_completions {
             let prompt_area = session_chunks[2];
             let max_h = 8.min(self.prompt_state.slash_completions.len() as u16);
@@ -1522,13 +1554,32 @@ impl App {
                 height: compl_h,
             };
             self.completion_area = Some(compl_area);
-            self.render_completions(frame, session_chunks[2]);
+            let compl_result =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<(), String> {
+                    self.render_completions(frame, session_chunks[2]);
+                    Ok(())
+                }));
+            if let Err(err) = compl_result {
+                let msg = Self::extract_panic_message(&err);
+                tracing::error!("Completion overlay render panic: {msg}");
+                self.prompt_state.show_completions = false;
+            }
         } else {
             self.completion_area = None;
         }
 
+        // Timeline
         if self.ui_state.timeline_visible {
-            self.render_timeline(frame, area);
+            let tl_result =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<(), String> {
+                    self.render_timeline(frame, area);
+                    Ok(())
+                }));
+            if let Err(err) = tl_result {
+                let msg = Self::extract_panic_message(&err);
+                tracing::error!("Timeline render panic: {msg}");
+                self.ui_state.timeline_visible = false;
+            }
         }
 
         if !self.messages_state.toasts.is_empty() {
@@ -1589,6 +1640,35 @@ impl App {
         let center_area = centered_rect(60, 40, area);
         frame.render_widget(Clear, center_area);
         frame.render_widget(paragraph, center_area);
+    }
+
+    /// Render a compact fallback block when a component panics.
+    fn render_component_fallback(&self, frame: &mut Frame, area: Rect, title: &str) {
+        let theme = &self.ui_state.theme;
+        let block = Block::default()
+            .title(format!(" {title} "))
+            .borders(Borders::ALL)
+            .border_style(ratatui::style::Style::default().fg(theme.warning))
+            .style(
+                ratatui::style::Style::default()
+                    .bg(theme.background)
+                    .fg(theme.muted),
+            );
+        let paragraph = Paragraph::new("Render failed — see log for details")
+            .block(block)
+            .wrap(Wrap { trim: true });
+        frame.render_widget(paragraph, area);
+    }
+
+    /// Extract a human-readable message from a panic payload.
+    fn extract_panic_message(err: &Box<dyn std::any::Any + Send>) -> String {
+        if let Some(s) = err.downcast_ref::<&str>() {
+            s.to_string()
+        } else if let Some(s) = err.downcast_ref::<String>() {
+            s.clone()
+        } else {
+            "Unknown render panic".to_string()
+        }
     }
 
     fn render_header(&mut self, frame: &mut Frame, area: Rect) {
@@ -10779,5 +10859,46 @@ mod lsp_command_dispatch_tests {
             texts.iter().any(|t| t.contains("LSP not available")),
             "no-tool dispatch must surface LSP-not-available, got: {texts:?}"
         );
+    }
+
+    // ── render fallback helpers ──
+
+    #[test]
+    fn extract_panic_message_from_str_ref() {
+        let err: Box<dyn std::any::Any + Send> = Box::new("something broke");
+        let msg = App::extract_panic_message(&err);
+        assert_eq!(msg, "something broke");
+    }
+
+    #[test]
+    fn extract_panic_message_from_string() {
+        let err: Box<dyn std::any::Any + Send> = Box::new(String::from("owned msg"));
+        let msg = App::extract_panic_message(&err);
+        assert_eq!(msg, "owned msg");
+    }
+
+    #[test]
+    fn extract_panic_message_from_unknown_type() {
+        let err: Box<dyn std::any::Any + Send> = Box::new(42u32);
+        let msg = App::extract_panic_message(&err);
+        assert_eq!(msg, "Unknown render panic");
+    }
+
+    #[test]
+    fn component_fallback_does_not_panic() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+        let app = App::new_for_testing("/tmp".into());
+        let backend = ratatui::backend::TestBackend::new(80, 24);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    panic!("test component panic");
+                }));
+                assert!(result.is_err());
+                app.render_component_fallback(frame, frame.area(), "Test fallback");
+            })
+            .unwrap();
     }
 }

@@ -110,6 +110,7 @@ pub mod file_diff;
 pub mod input;
 pub mod layout;
 pub mod route;
+pub mod terminal;
 pub mod theme;
 
 pub use app::{App, Dialog, TuiCommand};
@@ -157,6 +158,7 @@ macro_rules! debug_log {
     };
 }
 
+#[allow(dead_code)]
 pub fn enter_raw() -> Result<(), AppError> {
     execute!(stdout(), EnterAlternateScreen)?;
     crossterm::terminal::enable_raw_mode()?;
@@ -201,8 +203,6 @@ fn render_error(
 fn clear_render_error(app: &mut app::App) {
     app.ui_state.render_panic_count = 0;
     app.ui_state.last_render_error = None;
-    app.ui_state.dialog = Dialog::None;
-    app.ui_state.command_mode = false;
 }
 
 const MAX_RENDER_PANICS: usize = 3;
@@ -4089,7 +4089,7 @@ fn apply_research_section_loaded(
 }
 
 pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
-    enter_raw()?;
+    let mut terminal_guard = terminal::TerminalGuard::enter()?;
     let mut terminal = create_terminal()?;
     let mut reader = EventStream::new();
     let mut bus_rx = GlobalEventBus::subscribe();
@@ -4114,14 +4114,24 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
 
     while app.ui_state.running {
         let loop_start = std::time::Instant::now();
-        let needs_reset = app.ui_state.render_panic_count >= MAX_RENDER_PANICS;
-        if needs_reset {
+        let panic_count = app.ui_state.render_panic_count;
+
+        // Progressive panic recovery:
+        //   1+ failures: hide optional overlays/dialogs
+        //   3+ failures: reset minimal volatile UI state
+        if panic_count >= MAX_RENDER_PANICS {
             tracing::error!(
-                "Too many render panics ({}), attempting state reset",
-                app.ui_state.render_panic_count
+                "Too many root render panics ({panic_count}), resetting minimal volatile state"
             );
             clear_render_error(app);
-            app.reset_state();
+            app.ui_state.dialog = Dialog::None;
+            app.ui_state.timeline_visible = false;
+            app.prompt_state.show_completions = false;
+        } else if panic_count >= 1 {
+            // On repeated root failures, hide optional overlays
+            app.ui_state.dialog = Dialog::None;
+            app.ui_state.timeline_visible = false;
+            app.prompt_state.show_completions = false;
         }
 
         if app.messages_state.toasts.tick() {
@@ -4959,7 +4969,7 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
         }
     }
 
-    exit_raw();
+    terminal_guard.restore();
     Ok(())
 }
 
