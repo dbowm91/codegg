@@ -1,0 +1,89 @@
+//! Async command helpers for spawning TUI background tasks.
+//!
+//! Provides [`spawn_tui_task`] for moving high-latency core-backed work
+//! off the event loop while keeping all UI state mutation on the event loop
+//! through typed completion commands.
+
+use super::app::TuiCommand;
+use tokio::sync::mpsc;
+
+/// Spawn a Tokio task that performs async work and sends a completion
+/// [`TuiCommand`] back to the event loop.
+///
+/// If `tx` is `None` (no command sender available), the task is not spawned
+/// and a warning is logged. If the receiver is gone when the task completes,
+/// the completion is silently dropped.
+pub fn spawn_tui_task<F>(tx: Option<mpsc::Sender<TuiCommand>>, name: &'static str, fut: F)
+where
+    F: std::future::Future<Output = Option<TuiCommand>> + Send + 'static,
+{
+    let Some(tx) = tx else {
+        tracing::warn!(task = name, "cannot spawn TUI task without command sender");
+        return;
+    };
+    tokio::spawn(async move {
+        let started = std::time::Instant::now();
+        let result = fut.await;
+        tracing::debug!(
+            task = name,
+            elapsed_ms = started.elapsed().as_millis(),
+            "TUI async task finished"
+        );
+        if let Some(cmd) = result {
+            if tx.send(cmd).await.is_err() {
+                tracing::debug!(task = name, "TUI task completion dropped: receiver gone");
+            }
+        }
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tui::app::TuiCommand;
+
+    #[tokio::test]
+    async fn spawn_helper_sends_completion() {
+        let (tx, mut rx) = mpsc::channel(10);
+        let handle = tokio::spawn(async move {
+            spawn_tui_task(Some(tx), "test_task", async {
+                Some(TuiCommand::ReloadSessions)
+            });
+        });
+        handle.await.unwrap();
+        // Give the task a moment to complete
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let cmd = rx.try_recv();
+        assert!(cmd.is_ok(), "should receive completion command");
+        assert!(matches!(cmd.unwrap(), TuiCommand::ReloadSessions));
+    }
+
+    #[tokio::test]
+    async fn spawn_helper_drops_when_receiver_gone() {
+        let (tx, rx) = mpsc::channel(10);
+        drop(rx);
+        // Should not panic
+        spawn_tui_task(Some(tx), "test_drop", async {
+            Some(TuiCommand::ReloadSessions)
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        // No panic = success
+    }
+
+    #[tokio::test]
+    async fn spawn_helper_no_sender_does_not_panic() {
+        spawn_tui_task(None, "test_no_sender", async {
+            Some(TuiCommand::ReloadSessions)
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        // No panic = success
+    }
+
+    #[tokio::test]
+    async fn spawn_helper_none_result_is_noop() {
+        let (tx, mut rx) = mpsc::channel(10);
+        spawn_tui_task(Some(tx), "test_none", async { None });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(rx.try_recv().is_err(), "should not receive anything");
+    }
+}

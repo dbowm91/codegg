@@ -103,6 +103,7 @@
 //! The event loop uses `catch_unwind` to recover from rendering panics.
 
 pub mod app;
+pub mod async_cmd;
 pub mod command;
 pub mod components;
 pub mod input;
@@ -120,6 +121,7 @@ use crate::bus::global::GlobalEventBus;
 use crate::error::AppError;
 use crate::permission::PermissionRequest;
 use crate::protocol::core::{CoreRequest, CoreResponse};
+use crate::tui::async_cmd::spawn_tui_task;
 use crate::tui::components::dialogs::import::ImportSource;
 use crate::tui::components::toast::Toast;
 use crossterm::event::{
@@ -366,6 +368,105 @@ async fn reload_sessions(app: &mut app::App) {
         tracing::warn!("core client unavailable for session message counts");
         HashMap::new()
     };
+
+    app.dialog_state
+        .session_dialog
+        .load_sessions(crate::protocol_conversions::dtos_to_sessions(sessions));
+    for (id, count) in message_counts {
+        app.dialog_state
+            .session_dialog
+            .set_message_count(&id, count);
+    }
+}
+
+fn start_reload_sessions(app: &mut app::App) {
+    app.dialog_state.session_dialog.set_loading(true);
+    app.dialog_state.session_reload_in_flight = true;
+
+    let core_client = app.core_client.clone();
+    let project_id = app.session_state.project_dir.clone();
+    let show_archived = app.dialog_state.session_dialog.show_archived;
+    let tx = app.tui_cmd_tx.clone();
+
+    spawn_tui_task(tx, "reload_sessions", async move {
+        let Some(core_client) = core_client else {
+            return Some(TuiCommand::SessionsReloaded {
+                sessions: Vec::new(),
+                message_counts: std::collections::HashMap::new(),
+                error: Some("Core client not available".to_string()),
+            });
+        };
+
+        let request = crate::core::new_request(
+            format!("session-list-{}", uuid::Uuid::new_v4()),
+            CoreRequest::SessionList {
+                project_id: project_id.clone(),
+                show_archived,
+                limit: 100,
+            },
+        );
+        let sessions = match core_client.request(request).await {
+            Ok(CoreResponse::SessionList { sessions }) => sessions,
+            Ok(CoreResponse::Error { code, message }) => {
+                return Some(TuiCommand::SessionsReloaded {
+                    sessions: Vec::new(),
+                    message_counts: std::collections::HashMap::new(),
+                    error: Some(format!("Session list failed ({}): {}", code, message)),
+                });
+            }
+            Ok(other) => {
+                return Some(TuiCommand::SessionsReloaded {
+                    sessions: Vec::new(),
+                    message_counts: std::collections::HashMap::new(),
+                    error: Some(format!("Unexpected response: {:?}", other)),
+                });
+            }
+            Err(e) => {
+                return Some(TuiCommand::SessionsReloaded {
+                    sessions: Vec::new(),
+                    message_counts: std::collections::HashMap::new(),
+                    error: Some(format!("Session list error: {}", e)),
+                });
+            }
+        };
+
+        let session_ids: Vec<String> = sessions.iter().map(|s| s.id.clone()).collect();
+        let message_counts = if session_ids.is_empty() {
+            std::collections::HashMap::new()
+        } else {
+            let count_request = crate::core::new_request(
+                format!("session-message-counts-{}", uuid::Uuid::new_v4()),
+                CoreRequest::SessionMessageCounts {
+                    session_ids: session_ids.clone(),
+                },
+            );
+            match core_client.request(count_request).await {
+                Ok(CoreResponse::SessionMessageCounts { counts }) => counts,
+                _ => std::collections::HashMap::new(),
+            }
+        };
+
+        Some(TuiCommand::SessionsReloaded {
+            sessions,
+            message_counts,
+            error: None,
+        })
+    });
+}
+
+fn apply_sessions_reloaded(
+    app: &mut app::App,
+    sessions: Vec<crate::protocol::dto::Session>,
+    message_counts: std::collections::HashMap<String, usize>,
+    error: Option<String>,
+) {
+    app.dialog_state.session_reload_in_flight = false;
+    app.dialog_state.session_dialog.set_loading(false);
+
+    if let Some(err) = error {
+        app.messages_state.toasts.error(&err);
+        return;
+    }
 
     app.dialog_state
         .session_dialog
@@ -744,6 +845,7 @@ async fn handle_rename_session(app: &mut app::App, session_id: String, new_title
     }
 }
 
+#[allow(dead_code)]
 async fn handle_open_tree_dialog(app: &mut app::App) {
     use crate::tui::components::dialogs::tree::TreeNode;
     use std::collections::HashMap;
@@ -863,6 +965,163 @@ async fn handle_open_tree_dialog(app: &mut app::App) {
         .load_nodes(tree_nodes, Some(current_session.id));
 }
 
+fn start_open_tree_dialog(app: &mut app::App) {
+    let Some(current_session) = app.session_state.session.clone() else {
+        app.dialog_state.tree_dialog.load_nodes(Vec::new(), None);
+        return;
+    };
+
+    app.dialog_state
+        .tree_dialog
+        .load_nodes(Vec::new(), Some(current_session.id.clone()));
+    app.open_dialog(crate::tui::Dialog::Tree);
+
+    let core_client = app.core_client.clone();
+    let project_dir = app.session_state.project_dir.clone();
+    let current_session_id = current_session.id.clone();
+    let tx = app.tui_cmd_tx.clone();
+
+    spawn_tui_task(tx, "open_tree_dialog", async move {
+        let Some(core_client) = core_client else {
+            return Some(TuiCommand::TreeDialogLoaded {
+                current_session_id: Some(current_session_id),
+                nodes: Vec::new(),
+                error: Some("Core client not available".to_string()),
+            });
+        };
+
+        let list_request = crate::core::new_request(
+            format!("session-tree-list-{}", uuid::Uuid::new_v4()),
+            CoreRequest::SessionList {
+                project_id: project_dir,
+                show_archived: true,
+                limit: 1000,
+            },
+        );
+        let sessions = match core_client.request(list_request).await {
+            Ok(CoreResponse::SessionList { sessions }) => sessions,
+            Ok(CoreResponse::Error { message, .. }) => {
+                return Some(TuiCommand::TreeDialogLoaded {
+                    current_session_id: Some(current_session_id),
+                    nodes: Vec::new(),
+                    error: Some(format!("Failed to load tree sessions: {}", message)),
+                });
+            }
+            Ok(other) => {
+                return Some(TuiCommand::TreeDialogLoaded {
+                    current_session_id: Some(current_session_id),
+                    nodes: Vec::new(),
+                    error: Some(format!("Unexpected tree response: {:?}", other)),
+                });
+            }
+            Err(e) => {
+                return Some(TuiCommand::TreeDialogLoaded {
+                    current_session_id: Some(current_session_id),
+                    nodes: Vec::new(),
+                    error: Some(format!("Failed to load tree sessions: {}", e)),
+                });
+            }
+        };
+
+        let counts_request = crate::core::new_request(
+            format!("session-tree-counts-{}", uuid::Uuid::new_v4()),
+            CoreRequest::SessionMessageCounts {
+                session_ids: sessions.iter().map(|s| s.id.clone()).collect(),
+            },
+        );
+        let counts = match core_client.request(counts_request).await {
+            Ok(CoreResponse::SessionMessageCounts { counts }) => counts,
+            _ => std::collections::HashMap::new(),
+        };
+
+        let by_id: std::collections::HashMap<String, crate::session::Session> = sessions
+            .iter()
+            .cloned()
+            .map(|s| (s.id.clone(), crate::protocol_conversions::dto_to_session(s)))
+            .collect();
+
+        let mut root_id = current_session_id.clone();
+        while let Some(parent_id) = by_id.get(&root_id).and_then(|s| s.parent_id.clone()) {
+            if !by_id.contains_key(&parent_id) {
+                break;
+            }
+            root_id = parent_id;
+        }
+
+        let mut children_map: std::collections::HashMap<String, Vec<crate::session::Session>> =
+            std::collections::HashMap::new();
+        for session in &sessions {
+            if let Some(parent_id) = &session.parent_id {
+                children_map
+                    .entry(parent_id.clone())
+                    .or_default()
+                    .push(crate::protocol_conversions::dto_to_session(session.clone()));
+            }
+        }
+
+        fn build_node(
+            session: &crate::session::Session,
+            depth: usize,
+            current_session_id: &str,
+            children_map: &std::collections::HashMap<String, Vec<crate::session::Session>>,
+            counts: &std::collections::HashMap<String, usize>,
+        ) -> crate::tui::components::dialogs::tree::TreeNode {
+            use crate::tui::components::dialogs::tree::TreeNode;
+            let mut children = children_map.get(&session.id).cloned().unwrap_or_default();
+            children.sort_by_key(|s| s.time_updated);
+            let child_nodes = children
+                .iter()
+                .map(|child| build_node(child, depth + 1, current_session_id, children_map, counts))
+                .collect();
+            TreeNode {
+                id: session.id.clone(),
+                session_id: session.id.clone(),
+                label: session.title.clone(),
+                time_updated: session.time_updated,
+                message_count: counts.get(&session.id).copied(),
+                is_current: session.id == current_session_id,
+                is_archived: session.time_archived.is_some(),
+                children: child_nodes,
+                depth,
+            }
+        }
+
+        let tree_nodes = if let Some(root) = by_id.get(&root_id) {
+            vec![build_node(
+                root,
+                0,
+                &current_session_id,
+                &children_map,
+                &counts,
+            )]
+        } else {
+            Vec::new()
+        };
+
+        Some(TuiCommand::TreeDialogLoaded {
+            current_session_id: Some(current_session_id),
+            nodes: tree_nodes,
+            error: None,
+        })
+    });
+}
+
+fn apply_tree_dialog_loaded(
+    app: &mut app::App,
+    current_session_id: Option<String>,
+    nodes: Vec<crate::tui::components::dialogs::tree::TreeNode>,
+    error: Option<String>,
+) {
+    if let Some(err) = error {
+        app.messages_state.toasts.error(&err);
+        return;
+    }
+    app.dialog_state
+        .tree_dialog
+        .load_nodes(nodes, current_session_id);
+}
+
+#[allow(dead_code)]
 async fn handle_preview_import(app: &mut app::App, source: ImportSource) {
     if let Some(core_client) = app.core_client.clone() {
         match source {
@@ -983,6 +1242,7 @@ async fn handle_preview_import(app: &mut app::App, source: ImportSource) {
     }
 }
 
+#[allow(dead_code)]
 async fn handle_confirm_import(app: &mut app::App, source: ImportSource) {
     if let Some(core_client) = app.core_client.clone() {
         match source {
@@ -1025,6 +1285,245 @@ async fn handle_confirm_import(app: &mut app::App, source: ImportSource) {
 
     if let Some(ref mut import) = app.dialog_state.import_dialog {
         import.set_error("Core client not available".to_string());
+    }
+}
+
+fn start_preview_import(app: &mut app::App, source: ImportSource) {
+    app.dialog_state.import_preview_request_id += 1;
+    let request_id = app.dialog_state.import_preview_request_id;
+
+    if let Some(ref mut import) = app.dialog_state.import_dialog {
+        import.set_error("Loading preview...".to_string());
+    }
+
+    let core_client = app.core_client.clone();
+    let tx = app.tui_cmd_tx.clone();
+
+    spawn_tui_task(tx, "preview_import", async move {
+        let Some(core_client) = core_client else {
+            return Some(TuiCommand::ImportPreviewLoaded {
+                request_id,
+                session: None,
+                msg_count: 0,
+                error: Some("Core client not available".to_string()),
+            });
+        };
+
+        match source {
+            ImportSource::SessionId(id) => {
+                let load_request = crate::core::new_request(
+                    format!("session-load-{}", uuid::Uuid::new_v4()),
+                    CoreRequest::SessionLoad {
+                        session_id: id.clone(),
+                    },
+                );
+                let count_request = crate::core::new_request(
+                    format!("session-message-counts-{}", uuid::Uuid::new_v4()),
+                    CoreRequest::SessionMessageCounts {
+                        session_ids: vec![id.clone()],
+                    },
+                );
+                match (
+                    core_client.request(load_request).await,
+                    core_client.request(count_request).await,
+                ) {
+                    (
+                        Ok(CoreResponse::Session { session }),
+                        Ok(CoreResponse::SessionMessageCounts { counts }),
+                    ) => {
+                        let msg_count = counts.get(&id).copied().unwrap_or(0);
+                        Some(TuiCommand::ImportPreviewLoaded {
+                            request_id,
+                            session: Some(crate::protocol_conversions::dto_to_session(session)),
+                            msg_count,
+                            error: None,
+                        })
+                    }
+                    (Ok(CoreResponse::Error { message, .. }), _)
+                    | (_, Ok(CoreResponse::Error { message, .. })) => {
+                        Some(TuiCommand::ImportPreviewLoaded {
+                            request_id,
+                            session: None,
+                            msg_count: 0,
+                            error: Some(format!("Failed to load session: {}", message)),
+                        })
+                    }
+                    (Err(e), _) | (_, Err(e)) => Some(TuiCommand::ImportPreviewLoaded {
+                        request_id,
+                        session: None,
+                        msg_count: 0,
+                        error: Some(format!("Failed to load session: {}", e)),
+                    }),
+                    _ => Some(TuiCommand::ImportPreviewLoaded {
+                        request_id,
+                        session: None,
+                        msg_count: 0,
+                        error: Some("Unexpected response while loading session".to_string()),
+                    }),
+                }
+            }
+            ImportSource::FilePath(path) => match tokio::fs::read_to_string(path.as_str()).await {
+                Ok(content) => match serde_json::from_str::<serde_json::Value>(&content) {
+                    Ok(data) => {
+                        let import_request = crate::core::new_request(
+                            format!("session-import-data-{}", uuid::Uuid::new_v4()),
+                            CoreRequest::SessionImportData { data },
+                        );
+                        match core_client.request(import_request).await {
+                            Ok(CoreResponse::Session { session }) => {
+                                let count_request = crate::core::new_request(
+                                    format!("session-message-counts-{}", uuid::Uuid::new_v4()),
+                                    CoreRequest::SessionMessageCounts {
+                                        session_ids: vec![session.id.clone()],
+                                    },
+                                );
+                                let msg_count = match core_client.request(count_request).await {
+                                    Ok(CoreResponse::SessionMessageCounts { counts }) => {
+                                        counts.get(&session.id).copied().unwrap_or(0)
+                                    }
+                                    _ => 0,
+                                };
+                                Some(TuiCommand::ImportPreviewLoaded {
+                                    request_id,
+                                    session: Some(crate::protocol_conversions::dto_to_session(
+                                        session,
+                                    )),
+                                    msg_count,
+                                    error: None,
+                                })
+                            }
+                            Ok(CoreResponse::Error { message, .. }) => {
+                                Some(TuiCommand::ImportPreviewLoaded {
+                                    request_id,
+                                    session: None,
+                                    msg_count: 0,
+                                    error: Some(format!("Import failed: {}", message)),
+                                })
+                            }
+                            Ok(other) => Some(TuiCommand::ImportPreviewLoaded {
+                                request_id,
+                                session: None,
+                                msg_count: 0,
+                                error: Some(format!("Unexpected import response: {:?}", other)),
+                            }),
+                            Err(e) => Some(TuiCommand::ImportPreviewLoaded {
+                                request_id,
+                                session: None,
+                                msg_count: 0,
+                                error: Some(format!("Import failed: {}", e)),
+                            }),
+                        }
+                    }
+                    Err(e) => Some(TuiCommand::ImportPreviewLoaded {
+                        request_id,
+                        session: None,
+                        msg_count: 0,
+                        error: Some(format!("Invalid JSON: {}", e)),
+                    }),
+                },
+                Err(e) => Some(TuiCommand::ImportPreviewLoaded {
+                    request_id,
+                    session: None,
+                    msg_count: 0,
+                    error: Some(format!("Failed to read file: {}", e)),
+                }),
+            },
+        }
+    });
+}
+
+fn apply_import_preview_loaded(
+    app: &mut app::App,
+    request_id: u64,
+    session: Option<crate::session::Session>,
+    msg_count: usize,
+    error: Option<String>,
+) {
+    if request_id != app.dialog_state.import_preview_request_id {
+        return;
+    }
+    if let Some(ref mut import) = app.dialog_state.import_dialog {
+        if let Some(err) = error {
+            import.set_error(err);
+        } else if let Some(session) = session {
+            import.set_preview(session, msg_count);
+        }
+    }
+}
+
+fn start_confirm_import(app: &mut app::App, source: ImportSource) {
+    app.dialog_state.import_preview_request_id += 1;
+    let request_id = app.dialog_state.import_preview_request_id;
+
+    if let Some(ref mut import) = app.dialog_state.import_dialog {
+        import.set_error("Importing...".to_string());
+    }
+
+    let core_client = app.core_client.clone();
+    let tx = app.tui_cmd_tx.clone();
+
+    spawn_tui_task(tx, "confirm_import", async move {
+        let Some(core_client) = core_client else {
+            return Some(TuiCommand::ImportConfirmed {
+                request_id,
+                session: None,
+                error: Some("Core client not available".to_string()),
+            });
+        };
+
+        match source {
+            ImportSource::SessionId(id) => {
+                let request = crate::core::new_request(
+                    format!("session-fork-{}", uuid::Uuid::new_v4()),
+                    CoreRequest::SessionFork { session_id: id },
+                );
+                match core_client.request(request).await {
+                    Ok(CoreResponse::Session { session }) => Some(TuiCommand::ImportConfirmed {
+                        request_id,
+                        session: Some(crate::protocol_conversions::dto_to_session(session)),
+                        error: None,
+                    }),
+                    Ok(CoreResponse::Error { message, .. }) => Some(TuiCommand::ImportConfirmed {
+                        request_id,
+                        session: None,
+                        error: Some(format!("Import failed: {}", message)),
+                    }),
+                    Ok(other) => Some(TuiCommand::ImportConfirmed {
+                        request_id,
+                        session: None,
+                        error: Some(format!("Unexpected import response: {:?}", other)),
+                    }),
+                    Err(e) => Some(TuiCommand::ImportConfirmed {
+                        request_id,
+                        session: None,
+                        error: Some(format!("Import failed: {}", e)),
+                    }),
+                }
+            }
+            ImportSource::FilePath(_) => Some(TuiCommand::ImportConfirmed {
+                request_id,
+                session: None,
+                error: Some("File already imported via preview".to_string()),
+            }),
+        }
+    });
+}
+
+fn apply_import_confirmed(
+    app: &mut app::App,
+    request_id: u64,
+    session: Option<crate::session::Session>,
+    error: Option<String>,
+) {
+    if request_id != app.dialog_state.import_preview_request_id {
+        return;
+    }
+    if let Some(ref mut import) = app.dialog_state.import_dialog {
+        if let Some(err) = error {
+            import.set_error(err);
+        } else if let Some(session) = session {
+            import.set_done(session);
+        }
     }
 }
 
@@ -1162,6 +1661,7 @@ async fn handle_spawn_subagent(app: &mut app::App, agent_name: String, prompt: S
         .add_user_message(format!("@{} {}", agent_name, prompt), None);
 }
 
+#[allow(dead_code)]
 async fn handle_load_session_messages(app: &mut app::App, session_id: String) {
     use crate::tui::components::messages::{MessageRole, MsgPart, UIMessage};
 
@@ -1216,6 +1716,144 @@ async fn handle_load_session_messages(app: &mut app::App, session_id: String) {
         app.messages_state.toasts.error("Core client not available");
         return;
     };
+
+    for msg in messages {
+        let role = {
+            fn determine_role(msg: &crate::session::message::Message) -> MessageRole {
+                for part in &msg.data.parts {
+                    match &part.data {
+                        crate::session::message::PartData::Reasoning { .. }
+                        | crate::session::message::PartData::ToolCall { .. } => {
+                            return MessageRole::Assistant;
+                        }
+                        _ => {}
+                    }
+                }
+                MessageRole::User
+            }
+            determine_role(&msg)
+        };
+        let parts = {
+            fn convert(parts: &[crate::session::message::PartInfo]) -> Vec<MsgPart> {
+                parts
+                    .iter()
+                    .map(|p| match &p.data {
+                        crate::session::message::PartData::Text { text } => MsgPart::Text {
+                            content: text.clone(),
+                        },
+                        crate::session::message::PartData::Reasoning { reasoning } => {
+                            MsgPart::Reasoning {
+                                content: reasoning.clone(),
+                                collapsed: false,
+                            }
+                        }
+                        crate::session::message::PartData::ToolCall {
+                            id,
+                            name,
+                            input,
+                            output,
+                            status,
+                        } => MsgPart::ToolCall {
+                            id: id.clone(),
+                            name: name.clone(),
+                            input: serde_json::to_string(input).unwrap_or_default(),
+                            output: output.clone().unwrap_or_default(),
+                            status: status.clone(),
+                            duration_ms: None,
+                            exit_code: None,
+                            output_lines: None,
+                            expanded: false,
+                        },
+                        crate::session::message::PartData::Image { url } => MsgPart::Image {
+                            data_uri: url.clone(),
+                            alt_text: "[Image]".to_string(),
+                            width: 0,
+                            height: 0,
+                        },
+                        crate::session::message::PartData::File { .. } => MsgPart::Text {
+                            content: "[File]".to_string(),
+                        },
+                    })
+                    .collect()
+            }
+            convert(&msg.data.parts)
+        };
+
+        if !parts.is_empty() || role == MessageRole::Assistant {
+            app.messages_state.messages.messages.push(UIMessage {
+                role,
+                parts,
+                timestamp: None,
+                is_plan_mode: None,
+            });
+        }
+    }
+}
+
+fn start_load_session_messages(app: &mut app::App, session_id: String) {
+    app.messages_state.toasts.info("Loading messages...");
+
+    let core_client = app.core_client.clone();
+    let tx = app.tui_cmd_tx.clone();
+    let sid = session_id.clone();
+
+    spawn_tui_task(tx, "load_session_messages", async move {
+        let Some(core_client) = core_client else {
+            return Some(TuiCommand::SessionMessagesLoaded {
+                session_id: sid,
+                messages: Vec::new(),
+                error: Some("Core client not available".to_string()),
+            });
+        };
+
+        let request = crate::core::new_request(
+            uuid::Uuid::new_v4().to_string(),
+            CoreRequest::SessionMessagesLoad {
+                session_id: sid.clone(),
+            },
+        );
+        match core_client.request(request).await {
+            Ok(CoreResponse::SessionMessages { messages, .. }) => {
+                let messages = crate::protocol_conversions::dtos_to_messages(messages);
+                Some(TuiCommand::SessionMessagesLoaded {
+                    session_id: sid,
+                    messages,
+                    error: None,
+                })
+            }
+            Ok(CoreResponse::Error { message, .. }) => Some(TuiCommand::SessionMessagesLoaded {
+                session_id: sid,
+                messages: Vec::new(),
+                error: Some(format!("Failed to load messages: {}", message)),
+            }),
+            Ok(_) => Some(TuiCommand::SessionMessagesLoaded {
+                session_id: sid,
+                messages: Vec::new(),
+                error: Some("Unexpected response".to_string()),
+            }),
+            Err(e) => Some(TuiCommand::SessionMessagesLoaded {
+                session_id: sid,
+                messages: Vec::new(),
+                error: Some(format!("Failed to load messages: {}", e)),
+            }),
+        }
+    });
+}
+
+fn apply_session_messages_loaded(
+    app: &mut app::App,
+    _session_id: String,
+    messages: Vec<crate::session::message::Message>,
+    error: Option<String>,
+) {
+    use crate::tui::components::messages::{MessageRole, MsgPart, UIMessage};
+
+    if let Some(err) = error {
+        app.messages_state.toasts.error(&err);
+        return;
+    }
+
+    app.messages_state.messages.clear();
 
     for msg in messages {
         let role = {
@@ -1416,6 +2054,7 @@ async fn handle_delete_task(app: &mut app::App, id: String) {
     }
 }
 
+#[allow(dead_code)]
 async fn handle_memory_summary(app: &mut app::App) {
     let Some(core_client) = app.core_client.clone() else {
         app.messages_state.toasts.warning("Core client unavailable");
@@ -1499,6 +2138,7 @@ async fn handle_memory_summary(app: &mut app::App) {
     app.messages_state.toasts.info(&lines.join("\n"));
 }
 
+#[allow(dead_code)]
 async fn handle_memory_search(app: &mut app::App, query: String) {
     if query.is_empty() {
         app.messages_state
@@ -1568,6 +2208,7 @@ async fn handle_memory_search(app: &mut app::App, query: String) {
     }
 }
 
+#[allow(dead_code)]
 async fn handle_memory_remember(app: &mut app::App, text: String) {
     if text.is_empty() {
         app.messages_state
@@ -1605,6 +2246,7 @@ async fn handle_memory_remember(app: &mut app::App, text: String) {
     }
 }
 
+#[allow(dead_code)]
 async fn handle_memory_forget(app: &mut app::App, id: String) {
     if id.is_empty() {
         app.messages_state
@@ -1646,6 +2288,294 @@ async fn handle_memory_forget(app: &mut app::App, id: String) {
             .messages_state
             .toasts
             .warning(&format!("Memory forget failed: {}", e)),
+    }
+}
+
+fn start_memory_summary(app: &mut app::App) {
+    let core_client = app.core_client.clone();
+    let project_dir = app.session_state.project_dir.clone();
+    let tx = app.tui_cmd_tx.clone();
+
+    spawn_tui_task(tx, "memory_summary", async move {
+        let Some(core_client) = core_client else {
+            return Some(TuiCommand::MemoryResult {
+                toast_message: "Core client unavailable".to_string(),
+                is_error: true,
+            });
+        };
+
+        let project_hash = format!("{:x}", md5::compute(project_dir.as_bytes()));
+        let project_namespace = format!("project/{}", project_hash);
+        let req_prefs = crate::core::new_request(
+            format!("memory-list-{}", uuid::Uuid::new_v4()),
+            CoreRequest::MemoryList {
+                namespace: "user/preferences".to_string(),
+            },
+        );
+        let req_proj = crate::core::new_request(
+            format!("memory-list-{}", uuid::Uuid::new_v4()),
+            CoreRequest::MemoryList {
+                namespace: project_namespace.clone(),
+            },
+        );
+        let prefs = match core_client.request(req_prefs).await {
+            Ok(CoreResponse::Json { data }) => data
+                .get("memories")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default(),
+            _ => Vec::new(),
+        };
+        let proj = match core_client.request(req_proj).await {
+            Ok(CoreResponse::Json { data }) => data
+                .get("memories")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default(),
+            _ => Vec::new(),
+        };
+        let total = prefs.len() + proj.len();
+        if total == 0 {
+            return Some(TuiCommand::MemoryResult {
+                toast_message: "No memories yet. Use /memory-remember <text> to save something."
+                    .to_string(),
+                is_error: false,
+            });
+        }
+        let mut lines = vec![format!("Memory Summary ({} total):", total)];
+        if !prefs.is_empty() {
+            lines.push(format!("  user/preferences ({}):", prefs.len()));
+            for m in prefs.iter().take(5) {
+                let id = m
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .chars()
+                    .take(8)
+                    .collect::<String>();
+                let title = m
+                    .get("title")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("(untitled)");
+                lines.push(format!("    - [{}] {}", id, title));
+            }
+        }
+        if !proj.is_empty() {
+            lines.push(format!("  {} ({}):", project_namespace, proj.len()));
+            for m in proj.iter().take(5) {
+                let id = m
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .chars()
+                    .take(8)
+                    .collect::<String>();
+                let title = m
+                    .get("title")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("(untitled)");
+                lines.push(format!("    - [{}] {}", id, title));
+            }
+        }
+        Some(TuiCommand::MemoryResult {
+            toast_message: lines.join("\n"),
+            is_error: false,
+        })
+    });
+}
+
+fn start_memory_search(app: &mut app::App, query: String) {
+    if query.is_empty() {
+        app.messages_state
+            .toasts
+            .warning("Usage: /memory-search <query>");
+        return;
+    }
+
+    let core_client = app.core_client.clone();
+    let tx = app.tui_cmd_tx.clone();
+
+    spawn_tui_task(tx, "memory_search", async move {
+        let Some(core_client) = core_client else {
+            return Some(TuiCommand::MemoryResult {
+                toast_message: "Core client unavailable".to_string(),
+                is_error: true,
+            });
+        };
+
+        let request = crate::core::new_request(
+            format!("memory-search-{}", uuid::Uuid::new_v4()),
+            CoreRequest::MemorySearch {
+                query: query.clone(),
+            },
+        );
+        match core_client.request(request).await {
+            Ok(CoreResponse::Json { data }) => {
+                let results = data
+                    .get("memories")
+                    .and_then(|v| v.as_array())
+                    .cloned()
+                    .unwrap_or_default();
+                if results.is_empty() {
+                    return Some(TuiCommand::MemoryResult {
+                        toast_message: format!("No memories found matching '{}'", query),
+                        is_error: false,
+                    });
+                }
+                let lines: Vec<String> = results
+                    .iter()
+                    .take(10)
+                    .map(|m| {
+                        let id = m
+                            .get("id")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or_default()
+                            .chars()
+                            .take(8)
+                            .collect::<String>();
+                        let title = m
+                            .get("title")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("(untitled)");
+                        format!("- [{}] {}", id, title)
+                    })
+                    .collect();
+                Some(TuiCommand::MemoryResult {
+                    toast_message: format!(
+                        "Found {} memories:\n{}",
+                        results.len(),
+                        lines.join("\n")
+                    ),
+                    is_error: false,
+                })
+            }
+            Ok(CoreResponse::Error { message, .. }) => Some(TuiCommand::MemoryResult {
+                toast_message: format!("Memory search failed: {}", message),
+                is_error: true,
+            }),
+            Ok(other) => Some(TuiCommand::MemoryResult {
+                toast_message: format!("Unexpected memory search response: {:?}", other),
+                is_error: true,
+            }),
+            Err(e) => Some(TuiCommand::MemoryResult {
+                toast_message: format!("Memory search failed: {}", e),
+                is_error: true,
+            }),
+        }
+    });
+}
+
+fn start_memory_remember(app: &mut app::App, text: String) {
+    if text.is_empty() {
+        app.messages_state
+            .toasts
+            .warning("Usage: /memory-remember <text to remember>");
+        return;
+    }
+
+    let core_client = app.core_client.clone();
+    let tx = app.tui_cmd_tx.clone();
+
+    spawn_tui_task(tx, "memory_remember", async move {
+        let Some(core_client) = core_client else {
+            return Some(TuiCommand::MemoryResult {
+                toast_message: "Core client unavailable".to_string(),
+                is_error: true,
+            });
+        };
+
+        let request = crate::core::new_request(
+            format!("memory-remember-{}", uuid::Uuid::new_v4()),
+            CoreRequest::MemoryRemember {
+                text,
+                namespace: Some("user/preferences".to_string()),
+            },
+        );
+        match core_client.request(request).await {
+            Ok(CoreResponse::Json { .. }) | Ok(CoreResponse::Ack) => {
+                Some(TuiCommand::MemoryResult {
+                    toast_message: "Remembered".to_string(),
+                    is_error: false,
+                })
+            }
+            Ok(CoreResponse::Error { message, .. }) => Some(TuiCommand::MemoryResult {
+                toast_message: format!("Memory remember failed: {}", message),
+                is_error: true,
+            }),
+            Ok(other) => Some(TuiCommand::MemoryResult {
+                toast_message: format!("Unexpected memory remember response: {:?}", other),
+                is_error: true,
+            }),
+            Err(e) => Some(TuiCommand::MemoryResult {
+                toast_message: format!("Memory remember failed: {}", e),
+                is_error: true,
+            }),
+        }
+    });
+}
+
+fn start_memory_forget(app: &mut app::App, id: String) {
+    if id.is_empty() {
+        app.messages_state
+            .toasts
+            .warning("Usage: /memory-forget <id>");
+        return;
+    }
+
+    let core_client = app.core_client.clone();
+    let tx = app.tui_cmd_tx.clone();
+
+    spawn_tui_task(tx, "memory_forget", async move {
+        let Some(core_client) = core_client else {
+            return Some(TuiCommand::MemoryResult {
+                toast_message: "Core client unavailable".to_string(),
+                is_error: true,
+            });
+        };
+
+        let request = crate::core::new_request(
+            format!("memory-forget-{}", uuid::Uuid::new_v4()),
+            CoreRequest::MemoryForget { id: id.clone() },
+        );
+        match core_client.request(request).await {
+            Ok(CoreResponse::Json { data }) => {
+                let deleted = data
+                    .get("deleted")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                if deleted {
+                    Some(TuiCommand::MemoryResult {
+                        toast_message: "Memory deleted".to_string(),
+                        is_error: false,
+                    })
+                } else {
+                    Some(TuiCommand::MemoryResult {
+                        toast_message: format!("Memory '{}' not found", id),
+                        is_error: false,
+                    })
+                }
+            }
+            Ok(CoreResponse::Error { message, .. }) => Some(TuiCommand::MemoryResult {
+                toast_message: format!("Memory forget failed: {}", message),
+                is_error: true,
+            }),
+            Ok(other) => Some(TuiCommand::MemoryResult {
+                toast_message: format!("Unexpected memory forget response: {:?}", other),
+                is_error: true,
+            }),
+            Err(e) => Some(TuiCommand::MemoryResult {
+                toast_message: format!("Memory forget failed: {}", e),
+                is_error: true,
+            }),
+        }
+    });
+}
+
+fn apply_memory_result(app: &mut app::App, toast_message: String, is_error: bool) {
+    if is_error {
+        app.messages_state.toasts.error(&toast_message);
+    } else {
+        app.messages_state.toasts.info(&toast_message);
     }
 }
 
@@ -2108,6 +3038,7 @@ async fn handle_send_notification(
     }
 }
 
+#[allow(dead_code)]
 async fn handle_run_doctor(app: &mut app::App) {
     use crate::search_backend::bootstrap;
     let config = match crate::config::schema::Config::load() {
@@ -2144,6 +3075,59 @@ async fn handle_run_doctor(app: &mut app::App) {
         tracing::info!(target: "codegg::doctor", "MCP servers: {}", mcp.len());
     }
     app.messages_state.toasts.info(&summary);
+}
+
+fn start_run_doctor(app: &mut app::App) {
+    let tx = app.tui_cmd_tx.clone();
+
+    spawn_tui_task(tx, "run_doctor", async move {
+        use crate::search_backend::bootstrap;
+        let config = match crate::config::schema::Config::load() {
+            Ok(c) => c,
+            Err(e) => {
+                return Some(TuiCommand::DoctorResult {
+                    summary: format!("doctor: failed to load config: {e}"),
+                    is_error: true,
+                });
+            }
+        };
+        let (_svc, report) = bootstrap::bootstrap_search_backend(&config).await;
+        let summary = if report.connected {
+            format!(
+                "doctor: {} OK ({})",
+                report.search_backend.as_deref().unwrap_or("?"),
+                report.tools.join(", ")
+            )
+        } else if let Some(err) = &report.connection_error {
+            format!(
+                "doctor: {} unavailable ({err})",
+                report.search_backend.as_deref().unwrap_or("?")
+            )
+        } else {
+            format!(
+                "doctor: {} (no MCP service)",
+                report.search_backend.as_deref().unwrap_or("?")
+            )
+        };
+        for line in report.summary_lines() {
+            tracing::info!(target: "codegg::doctor", "{}", line);
+        }
+        if let Some(mcp) = config.mcp.as_ref() {
+            tracing::info!(target: "codegg::doctor", "MCP servers: {}", mcp.len());
+        }
+        Some(TuiCommand::DoctorResult {
+            summary,
+            is_error: false,
+        })
+    });
+}
+
+fn apply_doctor_result(app: &mut app::App, summary: String, is_error: bool) {
+    if is_error {
+        app.messages_state.toasts.error(&summary);
+    } else {
+        app.messages_state.toasts.info(&summary);
+    }
 }
 
 async fn handle_security_review_run(
@@ -2217,7 +3201,7 @@ fn handle_run_human_shell(app: &mut app::App, command: String, promote_after: bo
                 .error(&format!("Blocked: {}", reason));
             return;
         }
-                crate::shell::policy::HumanShellPolicyDecision::Warn { reason } => {
+        crate::shell::policy::HumanShellPolicyDecision::Warn { reason } => {
             let confirm_enabled = crate::config::schema::Config::load()
                 .ok()
                 .and_then(|c| c.human_shell)
@@ -2300,11 +3284,9 @@ fn spawn_human_shell(app: &mut app::App, command: String, promote_after: bool) {
 fn handle_shell_event(app: &mut app::App, event: crate::shell::ShellEvent) {
     match &event {
         crate::shell::ShellEvent::Started { id, .. } => {
-            app.messages_state
-                .messages
-                .update_shell_cell(id.0, |cell| {
-                    cell.status = Some("running".to_string());
-                });
+            app.messages_state.messages.update_shell_cell(id.0, |cell| {
+                cell.status = Some("running".to_string());
+            });
         }
         crate::shell::ShellEvent::Stdout { id, bytes } => {
             app.shell_store.append_stdout(*id, bytes);
@@ -2314,12 +3296,10 @@ fn handle_shell_event(app: &mut app::App, event: crate::shell::ShellEvent) {
             let stdout_preview: Vec<&str> = preview_lines.into_iter().rev().collect();
             let stdout_preview = stdout_preview.join("\n");
             let truncated = entry.map(|e| e.stdout.omitted_bytes > 0).unwrap_or(false);
-            app.messages_state
-                .messages
-                .update_shell_cell(id.0, |cell| {
-                    cell.stdout_preview = Some(stdout_preview);
-                    cell.truncated = Some(truncated);
-                });
+            app.messages_state.messages.update_shell_cell(id.0, |cell| {
+                cell.stdout_preview = Some(stdout_preview);
+                cell.truncated = Some(truncated);
+            });
         }
         crate::shell::ShellEvent::Stderr { id, bytes } => {
             app.shell_store.append_stderr(*id, bytes);
@@ -2328,11 +3308,9 @@ fn handle_shell_event(app: &mut app::App, event: crate::shell::ShellEvent) {
             let preview_lines: Vec<&str> = preview.lines().rev().take(8).collect();
             let stderr_preview: Vec<&str> = preview_lines.into_iter().rev().collect();
             let stderr_preview = stderr_preview.join("\n");
-            app.messages_state
-                .messages
-                .update_shell_cell(id.0, |cell| {
-                    cell.stderr_preview = Some(stderr_preview);
-                });
+            app.messages_state.messages.update_shell_cell(id.0, |cell| {
+                cell.stderr_preview = Some(stderr_preview);
+            });
         }
         crate::shell::ShellEvent::Exited {
             id,
@@ -2348,17 +3326,17 @@ fn handle_shell_event(app: &mut app::App, event: crate::shell::ShellEvent) {
             let stderr_preview = entry.map(|e| e.stderr.head_str_lossy()).unwrap_or_default();
             let truncated = entry.map(|e| e.stdout.omitted_bytes > 0).unwrap_or(false);
             let command = entry.map(|e| e.command.clone()).unwrap_or_default();
-            let _cwd = entry.map(|e| e.cwd.to_string_lossy().to_string()).unwrap_or_default();
-            app.messages_state
-                .messages
-                .update_shell_cell(id.0, |cell| {
-                    cell.status = Some(status_str);
-                    cell.elapsed_ms = Some(elapsed_ms);
-                    cell.exit_code = exit_code;
-                    cell.stdout_preview = Some(stdout_preview);
-                    cell.stderr_preview = Some(stderr_preview);
-                    cell.truncated = Some(truncated);
-                });
+            let _cwd = entry
+                .map(|e| e.cwd.to_string_lossy().to_string())
+                .unwrap_or_default();
+            app.messages_state.messages.update_shell_cell(id.0, |cell| {
+                cell.status = Some(status_str);
+                cell.elapsed_ms = Some(elapsed_ms);
+                cell.exit_code = exit_code;
+                cell.stdout_preview = Some(stdout_preview);
+                cell.stderr_preview = Some(stderr_preview);
+                cell.truncated = Some(truncated);
+            });
 
             let should_promote = entry
                 .map(|e| e.promote_after && !e.promoted)
@@ -2405,21 +3383,17 @@ fn handle_shell_event(app: &mut app::App, event: crate::shell::ShellEvent) {
         }
         crate::shell::ShellEvent::TimedOut { id, elapsed } => {
             app.shell_store.mark_timeout(*id, *elapsed);
-            app.messages_state
-                .messages
-                .update_shell_cell(id.0, |cell| {
-                    cell.status = Some("timed_out".to_string());
-                    cell.elapsed_ms = Some(elapsed.as_millis() as u64);
-                });
+            app.messages_state.messages.update_shell_cell(id.0, |cell| {
+                cell.status = Some("timed_out".to_string());
+                cell.elapsed_ms = Some(elapsed.as_millis() as u64);
+            });
         }
         crate::shell::ShellEvent::FailedToStart { id, error } => {
             app.shell_store.mark_failed_to_start(*id);
-            app.messages_state
-                .messages
-                .update_shell_cell(id.0, |cell| {
-                    cell.status = Some("failed".to_string());
-                    cell.stderr_preview = Some(format!("Failed to start: {}", error));
-                });
+            app.messages_state.messages.update_shell_cell(id.0, |cell| {
+                cell.status = Some("failed".to_string());
+                cell.stderr_preview = Some(format!("Failed to start: {}", error));
+            });
         }
     }
 }
@@ -2454,12 +3428,7 @@ fn handle_shell_include(app: &mut app::App, id: u64, mode: String, _question: Op
             }
             ShellPromotionMode::StdoutOnly => {
                 let digest = crate::shell::ShellDigest::build(
-                    &command,
-                    &cwd,
-                    exit_code,
-                    elapsed,
-                    stdout,
-                    stderr,
+                    &command, &cwd, exit_code, elapsed, stdout, stderr,
                 );
                 if digest.has_failures() {
                     format!(
@@ -2484,12 +3453,7 @@ fn handle_shell_include(app: &mut app::App, id: u64, mode: String, _question: Op
             }
             ShellPromotionMode::Summary => {
                 let digest = crate::shell::ShellDigest::build(
-                    &command,
-                    &cwd,
-                    exit_code,
-                    elapsed,
-                    stdout,
-                    stderr,
+                    &command, &cwd, exit_code, elapsed, stdout, stderr,
                 );
                 format!(
                     "Shell output (summary) for `{}`:\n{}",
@@ -2499,12 +3463,7 @@ fn handle_shell_include(app: &mut app::App, id: u64, mode: String, _question: Op
             }
             ShellPromotionMode::FailureDigest => {
                 let digest = crate::shell::ShellDigest::build(
-                    &command,
-                    &cwd,
-                    exit_code,
-                    elapsed,
-                    stdout,
-                    stderr,
+                    &command, &cwd, exit_code, elapsed, stdout, stderr,
                 );
                 if digest.has_failures() {
                     format!(
@@ -2523,19 +3482,10 @@ fn handle_shell_include(app: &mut app::App, id: u64, mode: String, _question: Op
             }
             ShellPromotionMode::Full => {
                 let digest = crate::shell::ShellDigest::build(
-                    &command,
-                    &cwd,
-                    exit_code,
-                    elapsed,
-                    stdout,
-                    stderr,
+                    &command, &cwd, exit_code, elapsed, stdout, stderr,
                 );
                 if digest.has_failures() {
-                    format!(
-                        "Shell output for `{}`:\n{}",
-                        command,
-                        digest.render()
-                    )
+                    format!("Shell output for `{}`:\n{}", command, digest.render())
                 } else {
                     format!(
                         "Shell output for `{}`:\nstdout:\n{}\nstderr:\n{}",
@@ -2691,6 +3641,7 @@ fn handle_security_review_finished(
     }
 }
 
+#[allow(dead_code)]
 async fn handle_research_list_runs(app: &mut app::App) {
     let project_dir = app.session_state.project_dir.clone();
     let service =
@@ -2717,6 +3668,7 @@ async fn handle_research_list_runs(app: &mut app::App) {
     }
 }
 
+#[allow(dead_code)]
 async fn handle_research_load_run(app: &mut app::App, run_id: String) {
     let project_dir = app.session_state.project_dir.clone();
     let service =
@@ -2743,6 +3695,7 @@ async fn handle_research_load_run(app: &mut app::App, run_id: String) {
     }
 }
 
+#[allow(dead_code)]
 async fn handle_research_load_section(app: &mut app::App, run_id: String, section: String) {
     let project_dir = app.session_state.project_dir.clone();
     let service =
@@ -2870,6 +3823,262 @@ async fn handle_research_load_section(app: &mut app::App, run_id: String, sectio
     }
 }
 
+fn start_research_list_runs(app: &mut app::App) {
+    app.dialog_state.research_request_id += 1;
+    let request_id = app.dialog_state.research_request_id;
+
+    if let Some(ref mut browser) = app.dialog_state.research_browser {
+        browser.loading = true;
+    }
+
+    let project_dir = app.session_state.project_dir.clone();
+    let tx = app.tui_cmd_tx.clone();
+
+    spawn_tui_task(tx, "research_list_runs", async move {
+        let service =
+            crate::research::service::ResearchService::new(std::path::PathBuf::from(&project_dir));
+        match service.list_runs().await {
+            Ok(runs) => Some(TuiCommand::ResearchRunsLoaded {
+                request_id,
+                runs,
+                error: None,
+            }),
+            Err(e) => Some(TuiCommand::ResearchRunsLoaded {
+                request_id,
+                runs: Vec::new(),
+                error: Some(format!("Failed to list research runs: {}", e)),
+            }),
+        }
+    });
+}
+
+fn apply_research_runs_loaded(
+    app: &mut app::App,
+    request_id: u64,
+    runs: Vec<crate::research::service::ResearchRunSummary>,
+    error: Option<String>,
+) {
+    if request_id != app.dialog_state.research_request_id {
+        return;
+    }
+    if let Some(ref mut browser) = app.dialog_state.research_browser {
+        browser.loading = false;
+        if let Some(err) = error {
+            app.messages_state.toasts.error(&err);
+        } else {
+            browser.set_runs(runs);
+        }
+    }
+}
+
+fn start_research_load_run(app: &mut app::App, run_id: String) {
+    app.dialog_state.research_request_id += 1;
+    let request_id = app.dialog_state.research_request_id;
+
+    if let Some(ref mut browser) = app.dialog_state.research_browser {
+        browser.loading = true;
+    }
+
+    let project_dir = app.session_state.project_dir.clone();
+    let tx = app.tui_cmd_tx.clone();
+
+    spawn_tui_task(tx, "research_load_run", async move {
+        let service =
+            crate::research::service::ResearchService::new(std::path::PathBuf::from(&project_dir));
+        match service.load_run(&run_id).await {
+            Ok(bundle) => Some(TuiCommand::ResearchRunLoaded {
+                request_id,
+                run_id,
+                bundle: Some(Box::new(bundle)),
+                error: None,
+            }),
+            Err(e) => Some(TuiCommand::ResearchRunLoaded {
+                request_id,
+                run_id,
+                bundle: None,
+                error: Some(format!("Failed to load research run: {}", e)),
+            }),
+        }
+    });
+}
+
+fn apply_research_run_loaded(
+    app: &mut app::App,
+    request_id: u64,
+    _run_id: String,
+    bundle: Option<Box<crate::research::types::ResearchBundle>>,
+    error: Option<String>,
+) {
+    if request_id != app.dialog_state.research_request_id {
+        return;
+    }
+    if let Some(ref mut browser) = app.dialog_state.research_browser {
+        browser.loading = false;
+        if let Some(err) = error {
+            app.messages_state.toasts.error(&err);
+        } else if let Some(bundle) = bundle {
+            browser.set_bundle(*bundle);
+        }
+    }
+}
+
+fn start_research_load_section(app: &mut app::App, run_id: String, section: String) {
+    app.dialog_state.research_request_id += 1;
+    let request_id = app.dialog_state.research_request_id;
+
+    let project_dir = app.session_state.project_dir.clone();
+    let tx = app.tui_cmd_tx.clone();
+
+    spawn_tui_task(tx, "research_load_section", async move {
+        let service =
+            crate::research::service::ResearchService::new(std::path::PathBuf::from(&project_dir));
+
+        let result = match section.as_str() {
+            "Research Plan" => {
+                if let Ok(bundle) = service.load_run(&run_id).await {
+                    if let Some(ref plan) = bundle.plan {
+                        let content = format!(
+                            "Scope: {}\n\nComparison Axes:\n{}\n\nSource Classes:\n{}\n\nExclusion Criteria:\n{}\n\nStopping Conditions:\n{}\n\nExpected Outputs:\n{}",
+                            plan.scope,
+                            plan.comparison_axes.iter().map(|s| format!("  - {}", s)).collect::<Vec<_>>().join("\n"),
+                            plan.source_classes.iter().map(|s| format!("  - {}", s)).collect::<Vec<_>>().join("\n"),
+                            plan.exclusion_criteria.iter().map(|s| format!("  - {}", s)).collect::<Vec<_>>().join("\n"),
+                            plan.stopping_conditions.iter().map(|s| format!("  - {}", s)).collect::<Vec<_>>().join("\n"),
+                            plan.expected_outputs.iter().map(|s| format!("  - {}", s)).collect::<Vec<_>>().join("\n"),
+                        );
+                        Some((
+                            crate::tui::components::dialogs::research::ReportSection::Report,
+                            content,
+                        ))
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            }
+            "Sources" => {
+                if let Ok(bundle) = service.load_run(&run_id).await {
+                    if bundle.sources.is_empty() {
+                        Some((
+                            crate::tui::components::dialogs::research::ReportSection::Brief,
+                            "No sources collected.".to_string(),
+                        ))
+                    } else {
+                        let lines: Vec<String> = bundle
+                            .sources
+                            .iter()
+                            .enumerate()
+                            .map(|(i, src)| {
+                                let title = src.title.as_deref().unwrap_or(&src.uri);
+                                format!(
+                                    "{}. {} [{:?}]\n   URI: {}",
+                                    i + 1,
+                                    title,
+                                    src.source_type,
+                                    src.uri
+                                )
+                            })
+                            .collect();
+                        Some((
+                            crate::tui::components::dialogs::research::ReportSection::Brief,
+                            lines.join("\n\n"),
+                        ))
+                    }
+                } else {
+                    None
+                }
+            }
+            "Claims" => {
+                if let Ok(bundle) = service.load_run(&run_id).await {
+                    if bundle.claims.is_empty() {
+                        Some((
+                            crate::tui::components::dialogs::research::ReportSection::AgentAnswer,
+                            "No claims derived.".to_string(),
+                        ))
+                    } else {
+                        let lines: Vec<String> = bundle.claims.iter().map(|claim| {
+                            format!("[{}] {} (confidence: {:?})\n   Evidence: {} sources\n   Caveats: {}",
+                                claim.claim_type.as_str(), claim.text, claim.confidence,
+                                claim.evidence_ids.len(),
+                                if claim.caveats.is_empty() { "none".to_string() } else { claim.caveats.join("; ") })
+                        }).collect();
+                        Some((
+                            crate::tui::components::dialogs::research::ReportSection::AgentAnswer,
+                            lines.join("\n\n"),
+                        ))
+                    }
+                } else {
+                    None
+                }
+            }
+            "Contradictions" => {
+                if let Ok(bundle) = service.load_run(&run_id).await {
+                    if bundle.contradictions.is_empty() {
+                        Some((
+                            crate::tui::components::dialogs::research::ReportSection::Handoff,
+                            "No contradictions detected.".to_string(),
+                        ))
+                    } else {
+                        let lines: Vec<String> = bundle
+                            .contradictions
+                            .iter()
+                            .map(|c| {
+                                format!(
+                                    "[{:?}] {}\n   Claims: {}",
+                                    c.severity,
+                                    c.description,
+                                    c.claim_ids.join(", ")
+                                )
+                            })
+                            .collect();
+                        Some((
+                            crate::tui::components::dialogs::research::ReportSection::Handoff,
+                            lines.join("\n\n"),
+                        ))
+                    }
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
+
+        Some(TuiCommand::ResearchSectionLoaded {
+            request_id,
+            section,
+            content: result,
+            error: None,
+        })
+    });
+}
+
+fn apply_research_section_loaded(
+    app: &mut app::App,
+    request_id: u64,
+    _section: String,
+    content: Option<(
+        crate::tui::components::dialogs::research::ReportSection,
+        String,
+    )>,
+    error: Option<String>,
+) {
+    if request_id != app.dialog_state.research_request_id {
+        return;
+    }
+    if let Some(ref mut browser) = app.dialog_state.research_browser {
+        if let Some(err) = error {
+            app.messages_state.toasts.warning(&err);
+        } else if let Some((section_type, content)) = content {
+            browser.set_report_content(section_type, content);
+        } else {
+            app.messages_state
+                .toasts
+                .warning("Could not load section content");
+        }
+    }
+}
+
 pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
     enter_raw()?;
     let mut terminal = create_terminal()?;
@@ -2895,6 +4104,7 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
     }
 
     while app.ui_state.running {
+        let loop_start = std::time::Instant::now();
         let needs_reset = app.ui_state.render_panic_count >= MAX_RENDER_PANICS;
         if needs_reset {
             tracing::error!(
@@ -3011,6 +4221,15 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
             (Some(delay), None) | (None, Some(delay)) => Some(delay),
             (None, None) => None,
         };
+
+        // Loop-block diagnostics: warn if the loop iteration took too long
+        let loop_elapsed = loop_start.elapsed();
+        if loop_elapsed.as_millis() > 250 {
+            tracing::warn!(
+                elapsed_ms = loop_elapsed.as_millis(),
+                "TUI event loop iteration exceeded 250ms threshold"
+            );
+        }
 
         tokio::select! {
             biased;
@@ -3512,22 +4731,22 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                         handle_bulk_export(app, session_ids).await;
                     }
                     TuiCommand::ReloadSessions => {
-                        reload_sessions(app).await;
+                        start_reload_sessions(app);
                     }
                     TuiCommand::OpenTreeDialog => {
-                        handle_open_tree_dialog(app).await;
+                        start_open_tree_dialog(app);
                     }
                     TuiCommand::PreviewImport { source } => {
-                        handle_preview_import(app, source).await;
+                        start_preview_import(app, source);
                     }
                     TuiCommand::ConfirmImport { source } => {
-                        handle_confirm_import(app, source).await;
+                        start_confirm_import(app, source);
                     }
                     TuiCommand::CreateFromTemplate { key, template } => {
                         handle_create_from_template(app, key, template).await;
                     }
                     TuiCommand::LoadSessionMessages { session_id } => {
-                        handle_load_session_messages(app, session_id).await;
+                        start_load_session_messages(app, session_id);
                     }
                     TuiCommand::RefreshSessionState { session_id } => {
                         handle_refresh_session_state(app, session_id).await;
@@ -3558,16 +4777,16 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                         handle_worktree_list(app).await;
                     }
                     TuiCommand::MemorySummary => {
-                        handle_memory_summary(app).await;
+                        start_memory_summary(app);
                     }
                     TuiCommand::MemorySearch { query } => {
-                        handle_memory_search(app, query).await;
+                        start_memory_search(app, query);
                     }
                     TuiCommand::MemoryRemember { text } => {
-                        handle_memory_remember(app, text).await;
+                        start_memory_remember(app, text);
                     }
                     TuiCommand::MemoryForget { id } => {
-                        handle_memory_forget(app, id).await;
+                        start_memory_forget(app, id);
                     }
                     TuiCommand::CompactSession => {
                         handle_compact_session(app).await;
@@ -3623,16 +4842,16 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                         handle_goal_budget(app, session_id, subcommand).await;
                     }
                     TuiCommand::ResearchListRuns => {
-                        handle_research_list_runs(app).await;
+                        start_research_list_runs(app);
                     }
                     TuiCommand::ResearchLoadRun { run_id } => {
-                        handle_research_load_run(app, run_id).await;
+                        start_research_load_run(app, run_id);
                     }
                     TuiCommand::ResearchLoadSection { run_id, section } => {
-                        handle_research_load_section(app, run_id, section).await;
+                        start_research_load_section(app, run_id, section);
                     }
                     TuiCommand::RunDoctor => {
-                        handle_run_doctor(app).await;
+                        start_run_doctor(app);
                     }
                     TuiCommand::SecurityReviewRun {
                         id,
@@ -3644,6 +4863,36 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                     }
                     TuiCommand::SecurityReviewFinished { id, receipt, error } => {
                         handle_security_review_finished(app, id, receipt, error);
+                    }
+                    TuiCommand::SessionsReloaded { sessions, message_counts, error } => {
+                        apply_sessions_reloaded(app, sessions, message_counts, error);
+                    }
+                    TuiCommand::SessionMessagesLoaded { session_id, messages, error } => {
+                        apply_session_messages_loaded(app, session_id, messages, error);
+                    }
+                    TuiCommand::TreeDialogLoaded { current_session_id, nodes, error } => {
+                        apply_tree_dialog_loaded(app, current_session_id, nodes, error);
+                    }
+                    TuiCommand::ImportPreviewLoaded { request_id, session, msg_count, error } => {
+                        apply_import_preview_loaded(app, request_id, session, msg_count, error);
+                    }
+                    TuiCommand::ImportConfirmed { request_id, session, error } => {
+                        apply_import_confirmed(app, request_id, session, error);
+                    }
+                    TuiCommand::ResearchRunsLoaded { request_id, runs, error } => {
+                        apply_research_runs_loaded(app, request_id, runs, error);
+                    }
+                    TuiCommand::ResearchRunLoaded { request_id, run_id, bundle, error } => {
+                        apply_research_run_loaded(app, request_id, run_id, bundle, error);
+                    }
+                    TuiCommand::ResearchSectionLoaded { request_id, section, content, error } => {
+                        apply_research_section_loaded(app, request_id, section, content, error);
+                    }
+                    TuiCommand::MemoryResult { toast_message, is_error } => {
+                        apply_memory_result(app, toast_message, is_error);
+                    }
+                    TuiCommand::DoctorResult { summary, is_error } => {
+                        apply_doctor_result(app, summary, is_error);
                     }
                     TuiCommand::RunHumanShell {
                         command,
@@ -3696,11 +4945,10 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
 #[cfg(test)]
 mod shell_dispatch_tests {
     use super::*;
-    use crate::tui::app::App;
     use crate::shell::types::{
-        ShellCapturePolicy, ShellCommandId, ShellEnvPolicy, ShellOrigin,
-        ShellRequest,
+        ShellCapturePolicy, ShellCommandId, ShellEnvPolicy, ShellOrigin, ShellRequest,
     };
+    use crate::tui::app::App;
     use crate::tui::components::messages::MessageRole;
     use std::time::Duration;
 
@@ -3771,8 +5019,14 @@ mod shell_dispatch_tests {
         handle_shell_list(&mut app);
         let toasts = get_toasts(&app);
         let text = toasts.join("\n");
-        assert!(text.contains("echo hello"), "should list command, got: {text}");
-        assert!(text.contains("cargo test"), "should list command, got: {text}");
+        assert!(
+            text.contains("echo hello"),
+            "should list command, got: {text}"
+        );
+        assert!(
+            text.contains("cargo test"),
+            "should list command, got: {text}"
+        );
     }
 
     #[test]
@@ -3851,7 +5105,14 @@ mod shell_dispatch_tests {
     fn shell_include_tail_mode() {
         let mut app = make_test_app();
         let big_stderr = (0..500).map(|i| format!("line {i}\n")).collect::<String>();
-        insert_completed_entry(&mut app, 1, "big output", b"", big_stderr.as_bytes(), Some(1));
+        insert_completed_entry(
+            &mut app,
+            1,
+            "big output",
+            b"",
+            big_stderr.as_bytes(),
+            Some(1),
+        );
         handle_shell_include(&mut app, 1, "tail 5".to_string(), None);
         let msgs = get_user_messages(&app);
         let included = msgs.iter().find(|m| m.contains("tail 5")).unwrap();
@@ -3952,7 +5213,10 @@ mod shell_dispatch_tests {
         handle_shell_include(&mut app, 1, "all".to_string(), None);
         let msgs = get_user_messages(&app);
         let include_count = msgs.iter().filter(|m| m.contains("echo test")).count();
-        assert_eq!(include_count, 2, "each /shell-include creates a new message");
+        assert_eq!(
+            include_count, 2,
+            "each /shell-include creates a new message"
+        );
         let entry = app.shell_store.get(ShellCommandId(1)).unwrap();
         assert!(entry.promoted, "entry should remain promoted");
     }
@@ -3975,10 +5239,137 @@ mod shell_dispatch_tests {
         handle_shell_list(&mut app);
         let toasts = get_toasts(&app);
         let text = toasts.join("\n");
-        assert!(text.contains("done"), "should show done status, got: {text}");
+        assert!(
+            text.contains("done"),
+            "should show done status, got: {text}"
+        );
         assert!(
             text.contains("running"),
             "should show running status, got: {text}"
         );
+    }
+}
+
+#[cfg(test)]
+mod async_cmd_tests {
+    use super::*;
+    use crate::tui::app::App;
+    use std::collections::HashMap;
+
+    fn make_test_app() -> App {
+        App::new_for_testing("/tmp".into())
+    }
+
+    #[test]
+    fn apply_sessions_reloaded_with_error_shows_toast() {
+        let mut app = make_test_app();
+        apply_sessions_reloaded(
+            &mut app,
+            Vec::new(),
+            HashMap::new(),
+            Some("test error".into()),
+        );
+        let toasts: Vec<String> = app
+            .messages_state
+            .toasts
+            .iter()
+            .map(|t| t.message.clone())
+            .collect();
+        assert!(
+            toasts.iter().any(|t| t.contains("test error")),
+            "should show error toast, got: {toasts:?}"
+        );
+    }
+
+    #[test]
+    fn apply_sessions_reloaded_clears_loading() {
+        let mut app = make_test_app();
+        app.dialog_state.session_reload_in_flight = true;
+        apply_sessions_reloaded(&mut app, Vec::new(), HashMap::new(), None);
+        assert!(!app.dialog_state.session_reload_in_flight);
+    }
+
+    #[test]
+    fn apply_session_messages_loaded_with_error_preserves_old_messages() {
+        let mut app = make_test_app();
+        app.messages_state
+            .messages
+            .add_user_message("old message".to_string(), None);
+        apply_session_messages_loaded(
+            &mut app,
+            "session-1".into(),
+            Vec::new(),
+            Some("load failed".into()),
+        );
+        assert_eq!(
+            app.messages_state.messages.message_count(),
+            1,
+            "old messages should be preserved on error"
+        );
+    }
+
+    #[test]
+    fn apply_memory_result_shows_info_toast() {
+        let mut app = make_test_app();
+        apply_memory_result(&mut app, "operation succeeded".to_string(), false);
+        let toasts: Vec<String> = app
+            .messages_state
+            .toasts
+            .iter()
+            .map(|t| t.message.clone())
+            .collect();
+        assert!(toasts.iter().any(|t| t.contains("operation succeeded")));
+    }
+
+    #[test]
+    fn apply_memory_result_error_shows_error_toast() {
+        let mut app = make_test_app();
+        apply_memory_result(&mut app, "something failed".to_string(), true);
+        let toasts: Vec<String> = app
+            .messages_state
+            .toasts
+            .iter()
+            .map(|t| t.message.clone())
+            .collect();
+        assert!(toasts.iter().any(|t| t.contains("something failed")));
+    }
+
+    #[test]
+    fn apply_doctor_result_shows_summary() {
+        let mut app = make_test_app();
+        apply_doctor_result(&mut app, "doctor: OK (mcp, provider)".to_string(), false);
+        let toasts: Vec<String> = app
+            .messages_state
+            .toasts
+            .iter()
+            .map(|t| t.message.clone())
+            .collect();
+        assert!(toasts.iter().any(|t| t.contains("doctor: OK")));
+    }
+
+    #[test]
+    fn import_preview_stale_request_id_ignored() {
+        let mut app = make_test_app();
+        // Set a high request id on the dialog to simulate a newer request
+        app.dialog_state.import_preview_request_id = 5;
+        app.dialog_state.import_dialog =
+            Some(crate::tui::components::dialogs::import::ImportDialog::new(
+                std::sync::Arc::new(crate::tui::theme::Theme::dark()),
+            ));
+        // Completion with old request_id should be ignored
+        apply_import_preview_loaded(&mut app, 3, None, 0, Some("old".into()));
+        // The dialog should NOT show the error (it was for a stale request)
+        if let Some(ref dialog) = app.dialog_state.import_dialog {
+            // The error should NOT have been set since request_id was stale
+            assert!(
+                dialog.error.is_none()
+                    || !dialog
+                        .error
+                        .as_ref()
+                        .map(|e| e.contains("old"))
+                        .unwrap_or(false),
+                "stale import preview should be ignored"
+            );
+        }
     }
 }

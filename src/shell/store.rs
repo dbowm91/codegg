@@ -148,10 +148,7 @@ impl ShellOutputStore {
             stderr: BoundedOutput::new(),
             elapsed: None,
             promoted: false,
-            promote_after: matches!(
-                req.capture_policy,
-                ShellCapturePolicy::StoreAndPromote
-            ),
+            promote_after: matches!(req.capture_policy, ShellCapturePolicy::StoreAndPromote),
             capture_policy: req.capture_policy,
         };
         self.entries.push_back(entry);

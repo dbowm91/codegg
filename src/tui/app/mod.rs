@@ -84,7 +84,7 @@ macro_rules! debug_log {
     ($($arg:tt)*) => {};
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub enum TuiCommand {
     DeleteSession {
         session_id: String,
@@ -223,6 +223,70 @@ pub enum TuiCommand {
     ResearchLoadSection {
         run_id: String,
         section: String,
+    },
+    /// Completion: sessions have been reloaded from core.
+    SessionsReloaded {
+        sessions: Vec<crate::protocol::dto::Session>,
+        message_counts: std::collections::HashMap<String, usize>,
+        error: Option<String>,
+    },
+    /// Completion: session messages have been loaded from core.
+    SessionMessagesLoaded {
+        session_id: String,
+        messages: Vec<crate::session::message::Message>,
+        error: Option<String>,
+    },
+    /// Completion: tree dialog nodes have been loaded from core.
+    TreeDialogLoaded {
+        current_session_id: Option<String>,
+        nodes: Vec<crate::tui::components::dialogs::tree::TreeNode>,
+        error: Option<String>,
+    },
+    /// Completion: import preview has been loaded.
+    ImportPreviewLoaded {
+        request_id: u64,
+        session: Option<crate::session::Session>,
+        msg_count: usize,
+        error: Option<String>,
+    },
+    /// Completion: import confirm has finished.
+    ImportConfirmed {
+        request_id: u64,
+        session: Option<crate::session::Session>,
+        error: Option<String>,
+    },
+    /// Completion: research runs have been listed.
+    ResearchRunsLoaded {
+        request_id: u64,
+        runs: Vec<crate::research::service::ResearchRunSummary>,
+        error: Option<String>,
+    },
+    /// Completion: a research run bundle has been loaded.
+    ResearchRunLoaded {
+        request_id: u64,
+        run_id: String,
+        bundle: Option<Box<crate::research::types::ResearchBundle>>,
+        error: Option<String>,
+    },
+    /// Completion: a research section has been loaded.
+    ResearchSectionLoaded {
+        request_id: u64,
+        section: String,
+        content: Option<(
+            crate::tui::components::dialogs::research::ReportSection,
+            String,
+        )>,
+        error: Option<String>,
+    },
+    /// Completion: a memory operation has finished.
+    MemoryResult {
+        toast_message: String,
+        is_error: bool,
+    },
+    /// Completion: the doctor diagnostic has finished.
+    DoctorResult {
+        summary: String,
+        is_error: bool,
     },
     /// Run diagnostics (search backend, MCP, providers). The result is
     /// logged at `codegg::doctor` and surfaced as a toast. The
@@ -666,6 +730,9 @@ impl App {
                 pending_bulk_archive: None,
                 pending_bulk_archive_ids: None,
                 pending_shell_command: None,
+                import_preview_request_id: 0,
+                research_request_id: 0,
+                session_reload_in_flight: false,
             },
             agent_state: AgentState {
                 agents,
@@ -880,6 +947,9 @@ impl App {
                 pending_bulk_archive: None,
                 pending_bulk_archive_ids: None,
                 pending_shell_command: None,
+                import_preview_request_id: 0,
+                research_request_id: 0,
+                session_reload_in_flight: false,
             },
             agent_state: AgentState {
                 agents,
@@ -3029,34 +3099,39 @@ impl App {
                                                 server.name
                                             ));
                                         }
-            }
-            "/shell-ask" => {
-                self.ui_state.command_mode = false;
-                let query = self.dialog_state.command_palette.query.clone();
-                let args_str = query.strip_prefix("/shell-ask").unwrap_or("").trim();
-                let parts: Vec<&str> = args_str.splitn(2, ' ').collect();
-                let id_str = parts.first().copied().unwrap_or("");
-                let question = parts.get(1).copied().unwrap_or("").to_string();
-                if question.is_empty() {
-                    self.messages_state
-                        .toasts
-                        .warning("Usage: /shell-ask <id|last> <question>");
-                } else {
-                    match self.resolve_shell_id(id_str) {
-                        Some(id) => {
-                            if let Some(ref tx) = self.tui_cmd_tx {
-                                let _ = tx.try_send(TuiCommand::ShellAsk { id, question });
-                            }
-                        }
-                        None => {
-                            self.messages_state
-                                .toasts
-                                .warning("Usage: /shell-ask <id|last> <question>");
-                        }
-                    }
-                }
-            }
-            _ => {}
+                                    }
+                                    "/shell-ask" => {
+                                        self.ui_state.command_mode = false;
+                                        let query = self.dialog_state.command_palette.query.clone();
+                                        let args_str =
+                                            query.strip_prefix("/shell-ask").unwrap_or("").trim();
+                                        let parts: Vec<&str> = args_str.splitn(2, ' ').collect();
+                                        let id_str = parts.first().copied().unwrap_or("");
+                                        let question =
+                                            parts.get(1).copied().unwrap_or("").to_string();
+                                        if question.is_empty() {
+                                            self.messages_state
+                                                .toasts
+                                                .warning("Usage: /shell-ask <id|last> <question>");
+                                        } else {
+                                            match self.resolve_shell_id(id_str) {
+                                                Some(id) => {
+                                                    if let Some(ref tx) = self.tui_cmd_tx {
+                                                        let _ = tx.try_send(TuiCommand::ShellAsk {
+                                                            id,
+                                                            question,
+                                                        });
+                                                    }
+                                                }
+                                                None => {
+                                                    self.messages_state.toasts.warning(
+                                                        "Usage: /shell-ask <id|last> <question>",
+                                                    );
+                                                }
+                                            }
+                                        }
+                                    }
+                                    _ => {}
                                 }
                             }
                         } else {
@@ -5143,10 +5218,7 @@ impl App {
             "/shell-include" => {
                 self.ui_state.command_mode = false;
                 let query = self.dialog_state.command_palette.query.clone();
-                let args_str = query
-                    .strip_prefix("/shell-include")
-                    .unwrap_or("")
-                    .trim();
+                let args_str = query.strip_prefix("/shell-include").unwrap_or("").trim();
                 let args: Vec<&str> = args_str.splitn(3, ' ').collect();
                 let id_str = args.first().copied().unwrap_or("");
                 let flag = args.get(1).copied().unwrap_or("all");

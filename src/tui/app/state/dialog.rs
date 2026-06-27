@@ -59,4 +59,12 @@ pub struct DialogState {
     pub pending_bulk_archive: Option<(usize, bool)>,
     pub pending_bulk_archive_ids: Option<Vec<String>>,
     pub pending_shell_command: Option<(String, bool)>,
+    /// Generation counter for import preview requests. Stale completions
+    /// with a mismatched id are silently ignored.
+    pub import_preview_request_id: u64,
+    /// Generation counter for research browser operations.
+    pub research_request_id: u64,
+    /// True while a session reload is in flight. The completion handler
+    /// clears this on both success and failure.
+    pub session_reload_in_flight: bool,
 }

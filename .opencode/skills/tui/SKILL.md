@@ -758,6 +758,38 @@ Some(cmd) = cmd_rx.recv() => {
 4. **Prefer `CoreClient` for migrated flows** - avoid direct `session_store` or `message_store` access if a request already exists in `CoreRequest`
 5. **Handler updates UI state directly** - modifies app state after async operation completes
 
+### Async Spawn-and-Complete Pattern
+
+For high-latency handlers, the TUI uses a spawn-and-complete pattern to keep the event loop responsive:
+
+1. **`start_*` function**: Sets immediate UI state (loading indicator, toast), clones inputs, spawns work via `spawn_tui_task`.
+2. **Typed completion**: The spawned task sends a `TuiCommand::SomeCompletion { ... }` variant back through the channel.
+3. **`apply_*` function**: The event loop receives the completion and applies results to UI state.
+
+```rust
+// In src/tui/mod.rs
+fn start_reload_sessions(app: &mut App) {
+    app.dialog_state.session_dialog.set_loading(true);
+    let core_client = app.core_client.clone();
+    let project_id = app.session_state.project_dir.clone();
+    let show_archived = app.dialog_state.session_dialog.show_archived;
+    let tx = app.tui_cmd_tx.clone();
+    spawn_tui_task(tx, "reload_sessions", async move {
+        // ... fetch sessions from core ...
+        Some(TuiCommand::SessionsReloaded { sessions, message_counts, error })
+    });
+}
+
+// In run_event_loop command dispatch
+TuiCommand::SessionsReloaded { sessions, message_counts, error } => {
+    apply_sessions_reloaded(app, sessions, message_counts, error);
+}
+```
+
+**Stale protection**: Import preview and research operations use a `request_id` generation counter. Completions with a mismatched id are silently ignored.
+
+**See also**: `src/tui/async_cmd.rs` for the `spawn_tui_task` helper, `plans/tui_phase_1_event_loop_responsiveness.md` for the design plan.
+
 ## TuiMsg Enum (src/tui/app/types.rs)
 
 The `TuiMsg` enum provides a centralized message type for UI intentions, enabling decoupled event handling. All dialogs emit explicit TuiMsg for user-visible effects:

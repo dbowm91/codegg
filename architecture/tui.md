@@ -23,6 +23,24 @@ Local transport selection is handled by `--core-transport` or `CODEGG_CORE_TRANS
 - `stdio` spawns `codegg core-stdio`
 - `socket` connects to a Unix socket endpoint supplied by `--core-endpoint` or `CODEGG_CORE_ENDPOINT`
 
+## Async Command Pattern
+
+High-latency `TuiCommand` handlers are converted to a spawn-and-complete pattern to keep the event loop responsive. The pattern:
+
+1. **Start**: `start_*` function performs immediate UI mutation (sets loading state, adds toast), clones needed inputs, and spawns a Tokio task via `spawn_tui_task`.
+2. **Complete**: The spawned task sends a typed completion `TuiCommand` (e.g., `SessionsReloaded`, `SessionMessagesLoaded`) back through the command channel.
+3. **Apply**: The event loop receives the completion and applies results to UI state synchronously.
+
+This ensures keyboard input, resize handling, streaming redraws, spinner animation, and toast expiry continue even while core requests are slow.
+
+**Stale protection**: Operations that can be repeated rapidly (import preview, research loading) use a `request_id` / generation counter. Completions with a mismatched id are silently ignored.
+
+**Converted handlers**: `ReloadSessions`, `LoadSessionMessages`, `OpenTreeDialog`, `PreviewImport`, `ConfirmImport`, `ResearchListRuns`, `ResearchLoadRun`, `ResearchLoadSection`, `MemorySummary`, `MemorySearch`, `MemoryRemember`, `MemoryForget`, `RunDoctor`.
+
+**Not converted** (remain synchronous in command dispatch): session mutations (delete, archive, fork, share, export, rename), bulk operations, goal commands, shell commands, security review, and other already-fast or already-spawned handlers.
+
+See `src/tui/async_cmd.rs` for the `spawn_tui_task` helper.
+
 ## Directory Structure
 
 ```
@@ -292,6 +310,16 @@ pub enum TuiCommand {
     GoalBudget { session_id, subcommand },  // "show" or "raise <axis> <n>"
     RefreshSessionState { session_id },
     UpdateModels(Vec<String>),
+    SessionsReloaded { sessions: Vec<SessionDto>, message_counts: HashMap<String, usize>, error: Option<String> },
+    SessionMessagesLoaded { session_id: String, messages: Vec<Message>, error: Option<String> },
+    TreeDialogLoaded { current_session_id: Option<String>, nodes: Vec<TreeNode>, error: Option<String> },
+    ImportPreviewLoaded { request_id: u64, session: Option<Session>, msg_count: usize, error: Option<String> },
+    ImportConfirmed { request_id: u64, session: Option<Session>, error: Option<String> },
+    ResearchRunsLoaded { request_id: u64, runs: Vec<ResearchRunSummary>, error: Option<String> },
+    ResearchRunLoaded { request_id: u64, run_id: String, bundle: Option<Box<ResearchBundle>>, error: Option<String> },
+    ResearchSectionLoaded { request_id: u64, section: String, content: Option<(ReportSection, String)>, error: Option<String> },
+    MemoryResult { toast_message: String, is_error: bool },
+    DoctorResult { summary: String, is_error: bool },
 }
 ```
 

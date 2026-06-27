@@ -198,8 +198,8 @@ impl ShellHandle {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::types::ShellEnvPolicy;
+    use super::*;
     use tokio::sync::mpsc;
 
     async fn collect_events(

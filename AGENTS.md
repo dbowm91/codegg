@@ -114,6 +114,7 @@ cargo test -p egglsp --features lsp-real-server-tests --test real_server_smoke
 - **Dialog::Info doesn't exist**: Despite `src/tui/components/dialogs/info.rs` existing, `Dialog::Info` is NOT in the Dialog enum (`src/tui/app/types.rs:2-25`).
 - **DialogType is in component.rs**, not `types.rs`. FocusManager is in `component/focus.rs`.
 - **UiState has 27 fields** (lines 40-92 in `src/tui/app/state/ui.rs`). `timeline_visible` and `timeline_selected` are in `UiState`, NOT `App`.
+- **Async command pattern**: High-latency TuiCommand handlers (reload, load messages, tree, import, research, memory, doctor) use a spawn-and-complete pattern via `spawn_tui_task`. The `start_*` function spawns work; a typed completion variant arrives back on the command channel. Stale protection uses request IDs for import and research operations. See `src/tui/async_cmd.rs` and `plans/tui_phase_1_event_loop_responsiveness.md`.
 - **AgentLoop has 49 fields** at `src/agent/loop.rs:1380`. Many docs claim 15.
 
 ### Tool Registry
