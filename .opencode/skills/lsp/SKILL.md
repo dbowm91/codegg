@@ -777,6 +777,8 @@ The vertical slice entry point is `plan_security_review_from_diff(diff, repo_roo
 | `/lsp-preview-apply <id>` | Apply a previewed patch to disk with SHA-256 hash revalidation; blocks stale previews; write-side hardening via `write_preview_apply_plan_atomically_enough()` (per-file SHA-256 recheck before each write); `mark_preview_applied` only called on full success; partial failures reported without marking applied; `LspTool` remains read-only — file writes go through standard `std::fs` operations guarded by `validate_preview_apply` |
 | `/lsp-context-diagnostics <path>` | Show structured context-shaping diagnostics for a file (Phase 15) |
 
+**Phase 17 (deferred):** `/lsp-start` and `/lsp-replay-docs` were evaluated and deferred. Auto-start via `get_or_create_client()` handles server startup on demand; document replay is handled internally by the restart coordinator. See `plans/lsp_phase_17_decision_note.md` for the full rationale.
+
 Use `/lsp-servers` to discover available server keys. Keys have the format `<root>:<server-id>` (e.g. `/path/to/project:rust-analyzer`).
 
 ### Phase 15: Renderer-Policy Unification and Context Diagnostics

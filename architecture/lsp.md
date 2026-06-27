@@ -1726,6 +1726,37 @@ Required mitigations before any disk persistence: encryption at rest, content fi
 - Threat model: `architecture/lsp_disk_cache_threat_model.md`
 - Benchmark harness: `crates/egglsp/tests/lsp_cache_benchmark.rs`
 
+## Phase 17: Manual Lifecycle Controls (Deferred)
+
+Phase 17 evaluated whether `/lsp-start` and `/lsp-replay-docs` commands are needed. The conclusion is **deferred** — no evidence of lifecycle control failures exists.
+
+### Current Lifecycle Model
+
+The LSP service uses an auto-start model:
+
+1. **On-demand start**: `LspService::get_or_create_client(file_path)` starts a server the first time a file is accessed
+2. **Document replay**: The restart coordinator replays open documents after server restart via `replay_documents()`
+3. **Per-key stop**: Uses `shutdown_all()` fallback (service API does not yet expose per-key termination)
+
+### What Was Evaluated
+
+| Command | Evaluation | Decision |
+|---------|-----------|----------|
+| `/lsp-start <path>` | Would duplicate `get_or_create_client()` behavior | Deferred — auto-start works reliably |
+| `/lsp-replay-docs <server-key>` | Would expose internal replay to manual control | Deferred — coordinator handles replay correctly |
+| Per-key stop refinement | Requires `terminate_runtime()` API not yet exposed at service level | Deferred — `shutdown_all()` fallback is acceptable |
+
+### Reconsideration Criteria
+
+Phase 17 may be reopened if:
+- User reports show auto-start fails in common scenarios
+- Document replay after restart is observed to be unreliable
+- Multi-root sessions require finer-grained stop control
+
+### Decision Note
+
+See `plans/lsp_phase_17_decision_note.md` for the full evidence assessment and rationale.
+
 ## Supported Languages (39 servers)
 
 | Language | Server | Command |

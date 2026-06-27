@@ -89,18 +89,13 @@ Deliverables:
 
 Exit condition: either disk cache is explicitly rejected/deferred based on evidence, or a safe opt-in implementation lands with tests and docs.
 
-### Phase 17: manual lifecycle controls for start/replay, if needed
+### Phase 17: manual lifecycle controls for start/replay — DEFERRED
 
-Goal: add manual lifecycle controls only if real-world usage shows the current auto-start/document-replay behavior is insufficient.
+Status: **Deferred** (2026-06-27). No evidence of lifecycle control failures. Decision note: `plans/lsp_phase_17_decision_note.md`.
 
-Deliverables:
+Auto-start via `get_or_create_client()` handles server startup on demand. Document replay is handled internally by the restart coordinator. Per-key stop uses `shutdown_all()` fallback. `/lsp-start` and `/lsp-replay-docs` were evaluated and deferred.
 
-- `/lsp-start <path|profile>` only if service APIs can scope startup cleanly.
-- `/lsp-replay-docs <server-key>` only if document replay can be safely scoped and inspected.
-- Safer per-key stop behavior if the current stop-all fallback proves too coarse.
-- Lifecycle tests for start, replay, restart, stop, generation change, stale evidence, and failed startup.
-
-Exit condition: manual controls exist only where they are scoped, tested, and more useful than the current auto-start behavior.
+May be reconsidered if: auto-start fails in common scenarios, document replay is unreliable, or multi-root sessions require finer-grained stop control.
 
 ## Recommended order
 
