@@ -277,13 +277,13 @@ impl CommandRegistry {
             Command::new("/shell-list", CommandCategory::System, None)
                 .with_description("List recent shell commands"),
             Command::new("/shell-include", CommandCategory::System, None)
-                .with_description("Include shell output in context (args: <id> [stdout|stderr|all])"),
+                .with_description("Include shell output in context (args: <id|last> [--tail N|--stdout|--stderr|--summary])"),
             Command::new("/shell-rerun", CommandCategory::System, None)
-                .with_description("Re-run a shell command (args: <id>)"),
+                .with_description("Re-run a shell command (args: <id|last>)"),
             Command::new("/shell-kill", CommandCategory::System, None)
-                .with_description("Kill a running shell command (args: <id>)"),
+                .with_description("Kill a running shell command (args: <id|last>)"),
             Command::new("/shell-ask", CommandCategory::System, None)
-                .with_description("Ask about shell output (args: <id> <question>)"),
+                .with_description("Ask about shell output (args: <id|last> <question>)"),
         ];
 
         Self::append_dynamic_commands(&mut commands);

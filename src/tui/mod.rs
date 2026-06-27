@@ -2425,7 +2425,7 @@ fn handle_shell_event(app: &mut app::App, event: crate::shell::ShellEvent) {
 }
 
 fn handle_shell_include(app: &mut app::App, id: u64, mode: String, _question: Option<String>) {
-    use crate::shell::types::ShellCommandId;
+    use crate::shell::types::{ShellCommandId, ShellPromotionMode};
 
     let cmd_id = ShellCommandId(id);
     if let Some(entry) = app.shell_store.get(cmd_id) {
@@ -2439,80 +2439,111 @@ fn handle_shell_include(app: &mut app::App, id: u64, mode: String, _question: Op
         let stdout = &entry.stdout;
         let stderr = &entry.stderr;
 
-        let include_text = if mode.starts_with("tail") {
-            let n: usize = mode
-                .strip_prefix("tail")
-                .and_then(|s| s.trim().parse().ok())
-                .unwrap_or(200);
-            let stderr_text = stderr.head_str_lossy();
-            let all_lines: Vec<&str> = stderr_text.lines().collect();
-            let tail: Vec<&str> = all_lines.iter().rev().take(n).rev().copied().collect();
-            format!(
-                "Shell output (tail {} lines) for `{}`:\n{}",
-                n,
-                command,
-                tail.join("\n")
-            )
-        } else if mode == "stdout" {
-            let digest = crate::shell::ShellDigest::build(
-                &command,
-                &cwd,
-                exit_code,
-                elapsed,
-                stdout,
-                stderr,
-            );
-            if digest.has_failures() {
+        let promotion = ShellPromotionMode::parse(&mode);
+        let include_text = match promotion {
+            ShellPromotionMode::Tail { lines } => {
+                let stderr_text = stderr.head_str_lossy();
+                let all_lines: Vec<&str> = stderr_text.lines().collect();
+                let tail: Vec<&str> = all_lines.iter().rev().take(lines).rev().copied().collect();
                 format!(
-                    "Shell output (stdout + failures) for `{}`:\n{}",
+                    "Shell output (tail {} lines) for `{}`:\n{}",
+                    lines,
                     command,
-                    digest.render()
-                )
-            } else {
-                format!(
-                    "Shell output (stdout) for `{}`:\n{}",
-                    command,
-                    stdout.head_str_lossy()
+                    tail.join("\n")
                 )
             }
-        } else if mode == "stderr" {
-            format!(
-                "Shell output (stderr) for `{}`:\n{}",
-                command,
-                stderr.head_str_lossy()
-            )
-        } else if mode == "summary" {
-            let digest = crate::shell::ShellDigest::build(
-                &command,
-                &cwd,
-                exit_code,
-                elapsed,
-                stdout,
-                stderr,
-            );
-            format!("Shell output (summary) for `{}`:\n{}", command, digest.render())
-        } else {
-            let digest = crate::shell::ShellDigest::build(
-                &command,
-                &cwd,
-                exit_code,
-                elapsed,
-                stdout,
-                stderr,
-            );
-            if digest.has_failures() {
+            ShellPromotionMode::StdoutOnly => {
+                let digest = crate::shell::ShellDigest::build(
+                    &command,
+                    &cwd,
+                    exit_code,
+                    elapsed,
+                    stdout,
+                    stderr,
+                );
+                if digest.has_failures() {
+                    format!(
+                        "Shell output (stdout + failures) for `{}`:\n{}",
+                        command,
+                        digest.render()
+                    )
+                } else {
+                    format!(
+                        "Shell output (stdout) for `{}`:\n{}",
+                        command,
+                        stdout.head_str_lossy()
+                    )
+                }
+            }
+            ShellPromotionMode::StderrOnly => {
                 format!(
-                    "Shell output for `{}`:\n{}",
+                    "Shell output (stderr) for `{}`:\n{}",
+                    command,
+                    stderr.head_str_lossy()
+                )
+            }
+            ShellPromotionMode::Summary => {
+                let digest = crate::shell::ShellDigest::build(
+                    &command,
+                    &cwd,
+                    exit_code,
+                    elapsed,
+                    stdout,
+                    stderr,
+                );
+                format!(
+                    "Shell output (summary) for `{}`:\n{}",
                     command,
                     digest.render()
                 )
-            } else {
-                format!(
-                    "Shell output for `{}`:\nstdout:\n{}\nstderr:\n{}",
-                    command,
-                    stdout.head_str_lossy(),
-                    stderr.head_str_lossy()
-                )
+            }
+            ShellPromotionMode::FailureDigest => {
+                let digest = crate::shell::ShellDigest::build(
+                    &command,
+                    &cwd,
+                    exit_code,
+                    elapsed,
+                    stdout,
+                    stderr,
+                );
+                if digest.has_failures() {
+                    format!(
+                        "Shell output (failure digest) for `{}`:\n{}",
+                        command,
+                        digest.render()
+                    )
+                } else {
+                    format!(
+                        "Shell output for `{}`:\nstdout:\n{}\nstderr:\n{}",
+                        command,
+                        stdout.head_str_lossy(),
+                        stderr.head_str_lossy()
+                    )
+                }
+            }
+            ShellPromotionMode::Full => {
+                let digest = crate::shell::ShellDigest::build(
+                    &command,
+                    &cwd,
+                    exit_code,
+                    elapsed,
+                    stdout,
+                    stderr,
+                );
+                if digest.has_failures() {
+                    format!(
+                        "Shell output for `{}`:\n{}",
+                        command,
+                        digest.render()
+                    )
+                } else {
+                    format!(
+                        "Shell output for `{}`:\nstdout:\n{}\nstderr:\n{}",
+                        command,
+                        stdout.head_str_lossy(),
+                        stderr.head_str_lossy()
+                    )
+                }
             }
         };
         app.shell_store.mark_promoted(cmd_id);

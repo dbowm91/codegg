@@ -1350,6 +1350,12 @@ impl Config {
             }
         }
 
+        if let Some(ref hs) = self.human_shell {
+            if let Err(hs_errors) = hs.validate() {
+                errors.extend(hs_errors);
+            }
+        }
+
         if errors.is_empty() {
             Ok(())
         } else {
@@ -1616,6 +1622,49 @@ impl HumanShellConfig {
     pub fn auto_promote_bangbang(&self) -> bool {
         self.auto_promote_bangbang.unwrap_or(true)
     }
+
+    pub fn validate(&self) -> Result<(), Vec<String>> {
+        let mut errors = Vec::new();
+
+        if let Some(0) = self.default_timeout_secs {
+            errors.push("human_shell.default_timeout_secs cannot be 0".to_string());
+        }
+        if let Some(t) = self.default_timeout_secs {
+            if t > 3600 {
+                errors.push("human_shell.default_timeout_secs exceeds 1 hour".to_string());
+            }
+        }
+        if let Some(0) = self.max_history_entries {
+            errors.push("human_shell.max_history_entries cannot be 0".to_string());
+        }
+        if let Some(n) = self.max_history_entries {
+            if n > 10_000 {
+                errors.push("human_shell.max_history_entries exceeds 10,000".to_string());
+            }
+        }
+        if let Some(0) = self.max_bytes_per_command {
+            errors.push("human_shell.max_bytes_per_command cannot be 0".to_string());
+        }
+        if let Some(b) = self.max_bytes_per_command {
+            if b > 100_000_000 {
+                errors.push("human_shell.max_bytes_per_command exceeds 100MB".to_string());
+            }
+        }
+        if let Some(0) = self.max_total_bytes {
+            errors.push("human_shell.max_total_bytes cannot be 0".to_string());
+        }
+        if let Some(b) = self.max_total_bytes {
+            if b > 1_000_000_000 {
+                errors.push("human_shell.max_total_bytes exceeds 1GB".to_string());
+            }
+        }
+
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors)
+        }
+    }
 }
 
 /// User-facing theme configuration.
@@ -1817,5 +1866,64 @@ mod tests {
         assert_eq!(resolved.backend_for("lsp"), None);
         assert_eq!(resolved.backend_for("security"), None);
         assert_eq!(resolved.backend_for("context"), None);
+    }
+
+    #[test]
+    fn human_shell_config_valid_defaults() {
+        let cfg = HumanShellConfig::default();
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn human_shell_config_rejects_zero_timeout() {
+        let cfg = HumanShellConfig {
+            default_timeout_secs: Some(0),
+            ..Default::default()
+        };
+        let errs = cfg.validate().unwrap_err();
+        assert!(errs.iter().any(|e| e.contains("default_timeout_secs")));
+    }
+
+    #[test]
+    fn human_shell_config_rejects_zero_history() {
+        let cfg = HumanShellConfig {
+            max_history_entries: Some(0),
+            ..Default::default()
+        };
+        let errs = cfg.validate().unwrap_err();
+        assert!(errs.iter().any(|e| e.contains("max_history_entries")));
+    }
+
+    #[test]
+    fn human_shell_config_rejects_zero_bytes_per_command() {
+        let cfg = HumanShellConfig {
+            max_bytes_per_command: Some(0),
+            ..Default::default()
+        };
+        let errs = cfg.validate().unwrap_err();
+        assert!(errs.iter().any(|e| e.contains("max_bytes_per_command")));
+    }
+
+    #[test]
+    fn human_shell_config_rejects_zero_total_bytes() {
+        let cfg = HumanShellConfig {
+            max_total_bytes: Some(0),
+            ..Default::default()
+        };
+        let errs = cfg.validate().unwrap_err();
+        assert!(errs.iter().any(|e| e.contains("max_total_bytes")));
+    }
+
+    #[test]
+    fn human_shell_config_rejects_unreasonable_values() {
+        let cfg = HumanShellConfig {
+            default_timeout_secs: Some(7200),
+            max_history_entries: Some(100_000),
+            max_bytes_per_command: Some(200_000_000),
+            max_total_bytes: Some(2_000_000_000),
+            ..Default::default()
+        };
+        let errs = cfg.validate().unwrap_err();
+        assert!(errs.len() >= 4);
     }
 }

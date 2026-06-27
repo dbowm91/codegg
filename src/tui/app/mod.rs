@@ -3040,18 +3040,18 @@ impl App {
                 if question.is_empty() {
                     self.messages_state
                         .toasts
-                        .warning("Usage: /shell-ask <id> <question>");
+                        .warning("Usage: /shell-ask <id|last> <question>");
                 } else {
-                    match id_str.parse::<u64>() {
-                        Ok(id) => {
+                    match self.resolve_shell_id(id_str) {
+                        Some(id) => {
                             if let Some(ref tx) = self.tui_cmd_tx {
                                 let _ = tx.try_send(TuiCommand::ShellAsk { id, question });
                             }
                         }
-                        Err(_) => {
+                        None => {
                             self.messages_state
                                 .toasts
-                                .warning("Usage: /shell-ask <id> <question>");
+                                .warning("Usage: /shell-ask <id|last> <question>");
                         }
                     }
                 }
@@ -5140,6 +5140,85 @@ impl App {
                 self.ui_state.command_mode = false;
                 self.cancel_security_review();
             }
+            "/shell-include" => {
+                self.ui_state.command_mode = false;
+                let query = self.dialog_state.command_palette.query.clone();
+                let args_str = query
+                    .strip_prefix("/shell-include")
+                    .unwrap_or("")
+                    .trim();
+                let args: Vec<&str> = args_str.splitn(3, ' ').collect();
+                let id_str = args.first().copied().unwrap_or("");
+                let flag = args.get(1).copied().unwrap_or("all");
+                let extra = args.get(2).map(|s| s.to_string());
+                match self.resolve_shell_id(id_str) {
+                    Some(id) => {
+                        let mode = match flag {
+                            "--tail" => {
+                                let n = extra
+                                    .as_deref()
+                                    .and_then(|s| s.parse::<usize>().ok())
+                                    .unwrap_or(200);
+                                format!("tail {}", n)
+                            }
+                            "--stdout" => "stdout".to_string(),
+                            "--stderr" => "stderr".to_string(),
+                            "--summary" => "summary".to_string(),
+                            "stdout" => "stdout".to_string(),
+                            "stderr" => "stderr".to_string(),
+                            "summary" => "summary".to_string(),
+                            "all" => "all".to_string(),
+                            _ => "all".to_string(),
+                        };
+                        if let Some(ref tx) = self.tui_cmd_tx {
+                            let _ = tx.try_send(TuiCommand::ShellInclude {
+                                id,
+                                mode,
+                                question: None,
+                            });
+                        }
+                    }
+                    None => {
+                        self.messages_state.toasts.warning(
+                            "Usage: /shell-include <id|last> [--tail N|--stdout|--stderr|--summary|all]",
+                        );
+                    }
+                }
+            }
+            "/shell-rerun" => {
+                self.ui_state.command_mode = false;
+                let query = self.dialog_state.command_palette.query.clone();
+                let id_str = query.strip_prefix("/shell-rerun").unwrap_or("").trim();
+                match self.resolve_shell_id(id_str) {
+                    Some(id) => {
+                        if let Some(ref tx) = self.tui_cmd_tx {
+                            let _ = tx.try_send(TuiCommand::ShellRerun { id });
+                        }
+                    }
+                    None => {
+                        self.messages_state
+                            .toasts
+                            .warning("Usage: /shell-rerun <id|last>");
+                    }
+                }
+            }
+            "/shell-kill" => {
+                self.ui_state.command_mode = false;
+                let query = self.dialog_state.command_palette.query.clone();
+                let id_str = query.strip_prefix("/shell-kill").unwrap_or("").trim();
+                match self.resolve_shell_id(id_str) {
+                    Some(id) => {
+                        if let Some(ref tx) = self.tui_cmd_tx {
+                            let _ = tx.try_send(TuiCommand::ShellKill { id });
+                        }
+                    }
+                    None => {
+                        self.messages_state
+                            .toasts
+                            .warning("Usage: /shell-kill <id|last>");
+                    }
+                }
+            }
             "/shell-list" => {
                 self.ui_state.command_mode = false;
                 if let Some(ref tx) = self.tui_cmd_tx {
@@ -5168,85 +5247,6 @@ impl App {
                             })
                             .collect();
                         self.messages_state.toasts.info(&lines.join("\n"));
-                    }
-                }
-            }
-            "/shell-include" => {
-                self.ui_state.command_mode = false;
-                let query = self.dialog_state.command_palette.query.clone();
-                let args_str = query
-                    .strip_prefix("/shell-include")
-                    .unwrap_or("")
-                    .trim();
-                let args: Vec<&str> = args_str.splitn(3, ' ').collect();
-                let id_str = args.first().copied().unwrap_or("");
-                let flag = args.get(1).copied().unwrap_or("all");
-                let extra = args.get(2).map(|s| s.to_string());
-                match id_str.parse::<u64>() {
-                    Ok(id) => {
-                        let mode = match flag {
-                            "--tail" => {
-                                let n = extra
-                                    .as_deref()
-                                    .and_then(|s| s.parse::<usize>().ok())
-                                    .unwrap_or(200);
-                                format!("tail {}", n)
-                            }
-                            "--stdout" => "stdout".to_string(),
-                            "--stderr" => "stderr".to_string(),
-                            "--summary" => "summary".to_string(),
-                            "stdout" => "stdout".to_string(),
-                            "stderr" => "stderr".to_string(),
-                            "summary" => "summary".to_string(),
-                            "all" => "all".to_string(),
-                            _ => "all".to_string(),
-                        };
-                        if let Some(ref tx) = self.tui_cmd_tx {
-                            let _ = tx.try_send(TuiCommand::ShellInclude {
-                                id,
-                                mode,
-                                question: None,
-                            });
-                        }
-                    }
-                    Err(_) => {
-                        self.messages_state.toasts.warning(
-                            "Usage: /shell-include <id> [--tail N|--stdout|--stderr|--summary|all]",
-                        );
-                    }
-                }
-            }
-            "/shell-rerun" => {
-                self.ui_state.command_mode = false;
-                let query = self.dialog_state.command_palette.query.clone();
-                let id_str = query.strip_prefix("/shell-rerun").unwrap_or("").trim();
-                match id_str.parse::<u64>() {
-                    Ok(id) => {
-                        if let Some(ref tx) = self.tui_cmd_tx {
-                            let _ = tx.try_send(TuiCommand::ShellRerun { id });
-                        }
-                    }
-                    Err(_) => {
-                        self.messages_state
-                            .toasts
-                            .warning("Usage: /shell-rerun <id>");
-                    }
-                }
-            }
-            "/shell-kill" => {
-                self.ui_state.command_mode = false;
-                let query = self.dialog_state.command_palette.query.clone();
-                let id_str = query.strip_prefix("/shell-kill").unwrap_or("").trim();
-                match id_str.parse::<u64>() {
-                    Ok(id) => {
-                        if let Some(ref tx) = self.tui_cmd_tx {
-                            let _ = tx.try_send(TuiCommand::ShellKill { id });
-                        }
-                    }
-                    Err(_) => {
-                        self.messages_state
-                            .toasts
-                            .warning("Usage: /shell-kill <id>");
                     }
                 }
             }
@@ -5936,6 +5936,13 @@ impl App {
         }
 
         debug_log!("send_prompt: completed - pending_send set to true, status=Working");
+    }
+
+    fn resolve_shell_id(&self, id_str: &str) -> Option<u64> {
+        match id_str {
+            "last" => self.shell_store.get_last().map(|e| e.id.0),
+            s => s.parse::<u64>().ok(),
+        }
     }
 
     fn handle_slash_command(&mut self, text: &str) -> bool {

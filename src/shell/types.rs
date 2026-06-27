@@ -25,6 +25,23 @@ pub enum ShellPromotionMode {
     FailureDigest,
 }
 
+impl ShellPromotionMode {
+    pub fn parse(mode: &str) -> Self {
+        if let Some(n) = mode.strip_prefix("tail ") {
+            let lines = n.trim().parse().unwrap_or(200);
+            ShellPromotionMode::Tail { lines }
+        } else {
+            match mode {
+                "stdout" => ShellPromotionMode::StdoutOnly,
+                "stderr" => ShellPromotionMode::StderrOnly,
+                "summary" => ShellPromotionMode::Summary,
+                "failure_digest" => ShellPromotionMode::FailureDigest,
+                _ => ShellPromotionMode::Full,
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ShellEnvPolicy {
     Inherit,
@@ -264,5 +281,47 @@ mod tests {
         set.insert(ShellCommandId(2));
         set.insert(ShellCommandId(1));
         assert_eq!(set.len(), 2);
+    }
+
+    #[test]
+    fn promotion_mode_parse_full() {
+        assert_eq!(ShellPromotionMode::parse("all"), ShellPromotionMode::Full);
+        assert_eq!(ShellPromotionMode::parse("bogus"), ShellPromotionMode::Full);
+    }
+
+    #[test]
+    fn promotion_mode_parse_tail() {
+        assert_eq!(
+            ShellPromotionMode::parse("tail 100"),
+            ShellPromotionMode::Tail { lines: 100 }
+        );
+        assert_eq!(
+            ShellPromotionMode::parse("tail 5"),
+            ShellPromotionMode::Tail { lines: 5 }
+        );
+        assert_eq!(
+            ShellPromotionMode::parse("tail notanum"),
+            ShellPromotionMode::Tail { lines: 200 }
+        );
+    }
+
+    #[test]
+    fn promotion_mode_parse_variants() {
+        assert_eq!(
+            ShellPromotionMode::parse("stdout"),
+            ShellPromotionMode::StdoutOnly
+        );
+        assert_eq!(
+            ShellPromotionMode::parse("stderr"),
+            ShellPromotionMode::StderrOnly
+        );
+        assert_eq!(
+            ShellPromotionMode::parse("summary"),
+            ShellPromotionMode::Summary
+        );
+        assert_eq!(
+            ShellPromotionMode::parse("failure_digest"),
+            ShellPromotionMode::FailureDigest
+        );
     }
 }

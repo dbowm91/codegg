@@ -2092,7 +2092,7 @@ impl MessagesWidget {
                     )]));
                 }
                 MsgPart::ShellCell {
-                    id: _,
+                    id,
                     command,
                     cwd: _,
                     stdout_preview,
@@ -2197,6 +2197,17 @@ impl MessagesWidget {
                                 ]));
                             }
                         }
+                    }
+                    if status != "running" && !*promoted {
+                        lines.push(Line::from(vec![
+                            Span::raw("    "),
+                            Span::styled(
+                                format!("not in model context; /shell-include {id} to attach"),
+                                Style::default()
+                                    .fg(self.theme.muted)
+                                    .add_modifier(Modifier::DIM),
+                            ),
+                        ]));
                     }
                 }
             }
