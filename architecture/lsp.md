@@ -1757,6 +1757,46 @@ Phase 17 may be reopened if:
 
 See `plans/lsp_phase_17_decision_note.md` for the full evidence assessment and rationale.
 
+## Phase 13-17 Corrective Verification Pass (2026-06-27)
+
+This pass closes the gap between "implemented by commit message" and "verified by code, tests, docs, and command behavior" for the Phase 13-15 surface, and confirms Phase 16/17 deferrals are accurate. The verification plan lives at `plans/lsp_phase_13_17_corrective_verification_plan.md` and is structured around eight workstreams. No new LSP protocol operations, no new workflow recipes, and no `workspace/applyEdit` / `workspace/executeCommand` execution were introduced.
+
+### Closure Summary
+
+| Workstream | Outcome |
+|------------|---------|
+| 1 — Command registration and dispatch | All 12 Phase 13-15 commands have dispatch tests; command names match docs exactly. |
+| 2 — `/lsp-doctor` behavior | Read-only and never starts servers; diagnoses 16 cases (no service, outside root, unsupported language, no active server, active server with capabilities, observability, cache enabled/disabled, stale previews, etc.). |
+| 3 — Workflow UX and composition | Every workflow command maps to a named recipe; 11 new table-driven tests cover 70+ recipe/provenance/cap cases. |
+| 4 — Context diagnostics | `LspContextDiagnostics` inspectable on demand via `/lsp-context-diagnostics`; normal agent prompts remain compact (no diagnostic bloat). |
+| 5 — Disk-cache / lifecycle decision consistency | Disk cache remains decision-only; `/lsp-start` and `/lsp-replay-docs` are NOT registered; `/lsp-restart` and `/lsp-stop` remain functional. |
+| 6 — Safety-boundary static sweep | 0 disallowed matches; `mark_preview_applied` only called after `all_succeeded`. |
+| 7 — Docs and roadmap reconciliation | This section; `AGENTS.md`, `.opencode/skills/lsp/SKILL.md` (v1.9.0), `README.md`, `CHANGELOG.md`, and `plans/lsp_phase_13_17_roadmap.md` updated. |
+| 8 — Focused test matrix | All targeted tests pass; formatting clean. |
+
+### New Tests Added (52 total)
+
+| File | New tests | Coverage |
+|------|-----------|----------|
+| `crates/egglsp/src/doctor.rs` | 8 | Doctor scenarios (no service, outside root, unsupported language, no active server, active server with capabilities, observability, cache enabled/disabled, stale previews) |
+| `crates/egglsp/src/workflow_recipes.rs` | 11 | Table-driven recipe coverage, invalid-input rejection, no-auto-apply invariant, tier-specific caps, sub-recipe provenance rendering |
+| `crates/egglsp/src/context_policy.rs` | 8 | `LspContextDiagnostics` from empty/truncated/cache-hit packets; stale-policy and unavailable-policy behavior |
+| `crates/egglsp/src/context_renderer.rs` | 4 | Renderer feature-flag propagation; render-compact output stability |
+| `src/tui/app/mod.rs` | 6 | `/lsp-doctor` and `/lsp-context-diagnostics` dispatch tests (missing arg, with path, no tool) |
+| `tests/lsp.rs` | 15 | Tool-level integration tests for Phase 13-15 surface |
+
+### Bug Fixes
+
+- `crates/egglsp/src/workflow_recipes.rs` line 923: `end: request.line + 20` → `end: request.line.saturating_add(20)`. Without saturating arithmetic, extreme line numbers would overflow `u32`.
+- `crates/egglsp/src/workflow_recipes.rs` line 1167: `end: request.line + 10` → `end: request.line.saturating_add(10)`. Same class of bug.
+
+### Static Safety Sweep
+
+- 0 outbound `workspace/applyEdit` / `workspace/executeCommand` from the model-facing path.
+- `mark_preview_applied` only called after `PreviewApplyWriteReport.all_succeeded == true`.
+- 0 active `/lsp-start` or `/lsp-replay-docs` registrations.
+- 0 active disk cache mode (only `Disabled` and `Memory` variants in `LspCacheMode`).
+
 ## Supported Languages (39 servers)
 
 | Language | Server | Command |

@@ -1,7 +1,7 @@
 ---
 name: lsp
 description: LSP client-side integration for Language Server Protocol support
-version: 1.8.0
+version: 1.9.0
 tags:
   - lsp
   - language-server
@@ -2498,6 +2498,37 @@ Composed workflows combine recipes with explicit caps and sub-recipe provenance:
 Each composed workflow records which sub-recipes ran or were skipped (with reasons) via `SubRecipeProvenance`.
 
 Agent-facing invocation uses `LspWorkflowInvocation` with minimal fields. Schema operations: `workflow_repair_local`, `workflow_repair_hunk`, `workflow_review_file`, `workflow_review_diff`, `workflow_security_review`, `workflow_impact`, `workflow_test_repair`, `workflow_interface`, `workflow_cross_repair`, `workflow_call_neighbors`.
+
+## Phase 13-17 Corrective Verification Pass (2026-06-27)
+
+Skill version bumped to **1.9.0** to reflect the corrective verification pass for Phases 13-17. The pass closes the gap between "implemented by commit message" and "verified by code, tests, docs, and command behavior". No new protocol operations, recipes, or mutation paths were introduced; this is a docs/roadmap reconciliation plus test hardening pass per `plans/lsp_phase_13_17_corrective_verification_plan.md`.
+
+### Verification highlights
+
+- **Phase 13 doctor**: `/lsp-doctor` is read-only and never starts servers. Diagnoses no service, outside-root, unsupported language, no active server, active server with capabilities, observability snapshot, cache enabled/disabled, stale previews. 8 new tests in `crates/egglsp/src/doctor.rs`.
+- **Phase 14 workflows**: All ten workflow commands invoke named recipes via `LspTool::run_lsp_workflow()`. All composed workflows record `SubRecipeProvenance`. No auto-apply invariant verified. 11 new tests in `crates/egglsp/src/workflow_recipes.rs` covering table-driven recipe coverage, invalid-input rejection, tier-specific caps, sub-recipe provenance rendering, and the no-auto-apply invariant.
+- **Phase 15 diagnostics**: `LspContextDiagnostics` available on demand via `/lsp-context-diagnostics`. Normal agent prompts are NOT bloated with diagnostics. 8 new tests in `crates/egglsp/src/context_policy.rs` + 4 new tests in `crates/egglsp/src/context_renderer.rs`.
+- **Phase 16 disk cache (deferred)**: Memory-only cache remains the only active mode. `LspCacheMode` enum has only `Disabled` and `Memory` variants. Decision: `plans/lsp_phase_16_disk_cache_decision.md`.
+- **Phase 17 manual lifecycle (deferred)**: `/lsp-start` and `/lsp-replay-docs` are NOT registered. `/lsp-restart` and `/lsp-stop` remain functional. Decision: `plans/lsp_phase_17_decision_note.md`.
+
+### TUI command dispatch tests
+
+6 new dispatch tests in `src/tui/app/mod.rs` (3 for `/lsp-doctor` and 3 for `/lsp-context-diagnostics`): missing-arg-shows-usage, with-path-produces-toast, without-tool-shows-unavailable.
+
+### Tool-level integration tests
+
+15 new tests in `tests/lsp.rs` cover Phase 13-15 surface end-to-end through the model-facing tool.
+
+### Bug fixes
+
+Two saturation-arithmetic bugs in `crates/egglsp/src/workflow_recipes.rs` were fixed (lines 923 and 1167): bare `+ 20` / `+ 10` replaced with `saturating_add` to protect against overflow with extreme line numbers.
+
+### Static safety sweep
+
+- 0 outbound `workspace/applyEdit` / `workspace/executeCommand` from the model-facing path.
+- `mark_preview_applied` only called after `PreviewApplyWriteReport.all_succeeded == true`.
+- 0 active `/lsp-start` or `/lsp-replay-docs` registrations.
+- 0 active disk cache mode.
 
 ## See Also
 

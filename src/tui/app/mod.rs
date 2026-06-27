@@ -10370,4 +10370,108 @@ mod lsp_command_dispatch_tests {
         dispatch(&mut app, "/lsp-call-neighbors /tmp/test.rs:10:5");
         assert!(!app.messages_state.toasts.is_empty());
     }
+
+    // ── /lsp-doctor ──
+
+    #[test]
+    fn lsp_doctor_missing_arg_shows_usage() {
+        let mut app = App::new_for_testing("/tmp".into());
+        app.lsp_tool = Some(sample_lsp_tool());
+        dispatch(&mut app, "/lsp-doctor");
+        assert!(!app.messages_state.toasts.is_empty());
+        let texts: Vec<String> = app
+            .messages_state
+            .toasts
+            .iter()
+            .map(|t| t.message.clone())
+            .collect();
+        assert!(
+            texts.iter().any(|t| t.contains("Usage")),
+            "missing arg must show Usage toast, got: {texts:?}"
+        );
+    }
+
+    #[test]
+    fn lsp_doctor_with_path_produces_toast() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+        let mut app = App::new_for_testing("/tmp".into());
+        app.lsp_tool = Some(sample_lsp_tool());
+        dispatch(&mut app, "/lsp-doctor /tmp/test.rs");
+        assert!(!app.messages_state.toasts.is_empty());
+        let texts: Vec<String> = app
+            .messages_state
+            .toasts
+            .iter()
+            .map(|t| t.message.clone())
+            .collect();
+        assert!(
+            texts.iter().any(|t| t.contains("LSP Doctor")),
+            "doctor toast must contain 'LSP Doctor', got: {texts:?}"
+        );
+    }
+
+    #[test]
+    fn lsp_doctor_without_tool_shows_unavailable() {
+        let mut app = App::new_for_testing("/tmp".into());
+        dispatch(&mut app, "/lsp-doctor /tmp/test.rs");
+        assert!(!app.messages_state.toasts.is_empty());
+        let texts: Vec<String> = app
+            .messages_state
+            .toasts
+            .iter()
+            .map(|t| t.message.clone())
+            .collect();
+        assert!(
+            texts.iter().any(|t| t.contains("LSP not available")),
+            "no-tool dispatch must surface LSP-not-available, got: {texts:?}"
+        );
+    }
+
+    // ── /lsp-context-diagnostics ──
+
+    #[test]
+    fn lsp_context_diagnostics_missing_arg_shows_usage() {
+        let mut app = App::new_for_testing("/tmp".into());
+        app.lsp_tool = Some(sample_lsp_tool());
+        dispatch(&mut app, "/lsp-context-diagnostics");
+        assert!(!app.messages_state.toasts.is_empty());
+        let texts: Vec<String> = app
+            .messages_state
+            .toasts
+            .iter()
+            .map(|t| t.message.clone())
+            .collect();
+        assert!(
+            texts.iter().any(|t| t.contains("Usage")),
+            "missing arg must show Usage toast, got: {texts:?}"
+        );
+    }
+
+    #[test]
+    fn lsp_context_diagnostics_with_path_produces_toast() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+        let mut app = App::new_for_testing("/tmp".into());
+        app.lsp_tool = Some(sample_lsp_tool());
+        dispatch(&mut app, "/lsp-context-diagnostics /tmp/test.rs");
+        assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    #[test]
+    fn lsp_context_diagnostics_without_tool_shows_unavailable() {
+        let mut app = App::new_for_testing("/tmp".into());
+        dispatch(&mut app, "/lsp-context-diagnostics /tmp/test.rs");
+        assert!(!app.messages_state.toasts.is_empty());
+        let texts: Vec<String> = app
+            .messages_state
+            .toasts
+            .iter()
+            .map(|t| t.message.clone())
+            .collect();
+        assert!(
+            texts.iter().any(|t| t.contains("LSP not available")),
+            "no-tool dispatch must surface LSP-not-available, got: {texts:?}"
+        );
+    }
 }

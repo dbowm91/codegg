@@ -920,7 +920,7 @@ pub async fn execute_repair_local(
     let budget = request.settings.to_budget();
     let range = LineRange {
         start: request.line.saturating_sub(20),
-        end: request.line + 20,
+        end: request.line.saturating_add(20),
     };
 
     let ctx_request = LspContextRequest::File {
@@ -1164,7 +1164,7 @@ pub async fn execute_preview_suggestion(
         file: request.file.clone(),
         line_ranges: vec![LineRange {
             start: request.line.saturating_sub(10),
-            end: request.line + 10,
+            end: request.line.saturating_add(10),
         }],
         include_symbols: false,
         include_diagnostics: true,
@@ -4266,5 +4266,706 @@ mod tests {
             outcome.sub_recipes.is_empty(),
             "non-composed recipe must have empty sub_recipes"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Workstream 3: Phase 14/15 verification — table-driven recipe
+    // coverage, invalid-input rejection, no-auto-apply invariant, and
+    // tier-specific caps for every recipe.
+    // -----------------------------------------------------------------------
+
+    /// Provider that always returns an empty/unusable result. Used to
+    /// observe the "read-only" side of recipes without exercising the
+    /// happy path.
+    struct EmptyProvider;
+
+    #[async_trait]
+    impl LspEvidenceProvider for EmptyProvider {
+        async fn diagnostics_for_file(
+            &self,
+            _: &std::path::Path,
+        ) -> Result<Vec<(String, String, String)>, LspError> {
+            Ok(Vec::new())
+        }
+        async fn document_symbols(
+            &self,
+            _: &std::path::Path,
+        ) -> Result<Vec<(String, String, String)>, LspError> {
+            Ok(Vec::new())
+        }
+        async fn go_to_definition(
+            &self,
+            _: &std::path::Path,
+            _: u32,
+            _: u32,
+        ) -> Result<Vec<(String, String)>, LspError> {
+            Ok(Vec::new())
+        }
+        async fn find_references(
+            &self,
+            _: &std::path::Path,
+            _: u32,
+            _: u32,
+        ) -> Result<Vec<(String, String)>, LspError> {
+            Ok(Vec::new())
+        }
+        async fn implementations(
+            &self,
+            _: &std::path::Path,
+            _: u32,
+            _: u32,
+        ) -> Result<Vec<(String, String)>, LspError> {
+            Ok(Vec::new())
+        }
+        async fn hover(
+            &self,
+            _: &std::path::Path,
+            _: u32,
+            _: u32,
+        ) -> Result<Option<String>, LspError> {
+            Ok(None)
+        }
+        async fn document_highlights(
+            &self,
+            _: &std::path::Path,
+            _: u32,
+            _: u32,
+        ) -> Result<Vec<String>, LspError> {
+            Ok(Vec::new())
+        }
+        async fn signature_help(
+            &self,
+            _: &std::path::Path,
+            _: u32,
+            _: u32,
+        ) -> Result<Vec<(String, String)>, LspError> {
+            Ok(Vec::new())
+        }
+        async fn completion(
+            &self,
+            _: &std::path::Path,
+            _: u32,
+            _: u32,
+        ) -> Result<Vec<(String, String, String)>, LspError> {
+            Ok(Vec::new())
+        }
+        async fn semantic_tokens(
+            &self,
+            _: &std::path::Path,
+            _: u32,
+            _: u32,
+        ) -> Result<Vec<(u32, u32, u32, String)>, LspError> {
+            Ok(Vec::new())
+        }
+        async fn workspace_symbols(
+            &self,
+            _: &str,
+        ) -> Result<Vec<(String, String, String, String)>, LspError> {
+            Ok(Vec::new())
+        }
+        async fn operational_state(&self) -> String {
+            "ready".to_string()
+        }
+        async fn server_info(&self) -> (Option<String>, Option<u64>) {
+            (Some("empty-mock".into()), Some(1))
+        }
+    }
+
+    /// Table-driven direct recipe test. Every one of the 12 named
+    /// recipes must be invokable on an empty provider, must succeed
+    /// (or yield a typed error), and must not panic. The recipe name
+    /// is verified via the Outcome's recipe field.
+    #[tokio::test]
+    async fn test_table_driven_recipe_execution_all_twelve() {
+        let provider = EmptyProvider;
+
+        // Each tuple: (recipe, invocation, expected_outcome_recipe).
+        // We deliberately use LspWorkflowInvocation::execute which
+        // already routes every recipe correctly.
+        let cases: Vec<(LspWorkflowRecipe, LspWorkflowInvocation)> = vec![
+            (
+                LspWorkflowRecipe::RepairLocal,
+                LspWorkflowInvocation {
+                    recipe: LspWorkflowRecipe::RepairLocal,
+                    primary_path: Some("src/a.rs".to_string()),
+                    line: Some(5),
+                    column: Some(0),
+                    ..Default::default()
+                },
+            ),
+            (
+                LspWorkflowRecipe::RepairHunk,
+                LspWorkflowInvocation {
+                    recipe: LspWorkflowRecipe::RepairHunk,
+                    primary_path: Some("src/a.rs".to_string()),
+                    hunk_ranges: vec![crate::context::HunkRange {
+                        start: 0,
+                        end: 10,
+                        original_start: None,
+                        original_end: None,
+                    }],
+                    ..Default::default()
+                },
+            ),
+            (
+                LspWorkflowRecipe::ReviewFile,
+                LspWorkflowInvocation {
+                    recipe: LspWorkflowRecipe::ReviewFile,
+                    primary_path: Some("src/a.rs".to_string()),
+                    ..Default::default()
+                },
+            ),
+            (
+                LspWorkflowRecipe::ReviewDiff,
+                LspWorkflowInvocation {
+                    recipe: LspWorkflowRecipe::ReviewDiff,
+                    related_files: vec!["src/a.rs".to_string()],
+                    ..Default::default()
+                },
+            ),
+            (
+                LspWorkflowRecipe::SecurityReviewEnriched,
+                LspWorkflowInvocation {
+                    recipe: LspWorkflowRecipe::SecurityReviewEnriched,
+                    related_files: vec!["src/auth.rs".to_string()],
+                    ..Default::default()
+                },
+            ),
+            (
+                LspWorkflowRecipe::HunkSourceNavigation,
+                LspWorkflowInvocation {
+                    recipe: LspWorkflowRecipe::HunkSourceNavigation,
+                    primary_path: Some("src/a.rs".to_string()),
+                    ..Default::default()
+                },
+            ),
+            (
+                LspWorkflowRecipe::PreviewSuggestion,
+                LspWorkflowInvocation {
+                    recipe: LspWorkflowRecipe::PreviewSuggestion,
+                    primary_path: Some("src/a.rs".to_string()),
+                    line: Some(5),
+                    ..Default::default()
+                },
+            ),
+            (
+                LspWorkflowRecipe::ImpactAnalysis,
+                LspWorkflowInvocation {
+                    recipe: LspWorkflowRecipe::ImpactAnalysis,
+                    primary_path: Some("src/lib.rs".to_string()),
+                    line: Some(10),
+                    column: Some(0),
+                    related_files: vec!["src/other.rs".to_string()],
+                    ..Default::default()
+                },
+            ),
+            (
+                LspWorkflowRecipe::TestFailureRepair,
+                LspWorkflowInvocation {
+                    recipe: LspWorkflowRecipe::TestFailureRepair,
+                    primary_path: Some("tests/foo.rs".to_string()),
+                    failure_text: Some("panicked at my_helper".to_string()),
+                    related_files: vec!["src/helper.rs".to_string()],
+                    ..Default::default()
+                },
+            ),
+            (
+                LspWorkflowRecipe::InterfaceBoundary,
+                LspWorkflowInvocation {
+                    recipe: LspWorkflowRecipe::InterfaceBoundary,
+                    primary_path: Some("src/api.rs".to_string()),
+                    symbol: Some("PublicApi".to_string()),
+                    include_implementations: Some(false),
+                    ..Default::default()
+                },
+            ),
+            (
+                LspWorkflowRecipe::CrossFileRepair,
+                LspWorkflowInvocation {
+                    recipe: LspWorkflowRecipe::CrossFileRepair,
+                    primary_path: Some("src/main.rs".to_string()),
+                    related_files: vec!["src/lib.rs".to_string()],
+                    ..Default::default()
+                },
+            ),
+            (
+                LspWorkflowRecipe::CallNeighborhood,
+                LspWorkflowInvocation {
+                    recipe: LspWorkflowRecipe::CallNeighborhood,
+                    primary_path: Some("src/main.rs".to_string()),
+                    line: Some(10),
+                    column: Some(5),
+                    direction: Some(crate::context::HierarchyDirection::Both),
+                    ..Default::default()
+                },
+            ),
+        ];
+
+        assert_eq!(
+            cases.len(),
+            12,
+            "all 12 recipes must be represented in the table"
+        );
+
+        for (expected_recipe, inv) in cases {
+            let outcome = inv
+                .execute(&provider)
+                .await
+                .unwrap_or_else(|e| panic!("recipe {expected_recipe} failed: {e}"));
+            assert_eq!(
+                outcome.recipe, expected_recipe,
+                "outcome.recipe must match the invocation recipe"
+            );
+            assert!(
+                outcome.rendered.contains("LSP:"),
+                "recipe {expected_recipe} must render the standard LSP status header"
+            );
+        }
+    }
+
+    /// Test that recipes which require a primary_path must fail with
+    /// RequiredFailed rather than panic when the path is missing.
+    #[tokio::test]
+    async fn test_recipes_reject_missing_primary_path_without_panic() {
+        let provider = EmptyProvider;
+
+        // Recipes that require a primary_path.
+        for recipe in [
+            LspWorkflowRecipe::RepairLocal,
+            LspWorkflowRecipe::RepairHunk,
+            LspWorkflowRecipe::ReviewFile,
+            LspWorkflowRecipe::HunkSourceNavigation,
+            LspWorkflowRecipe::PreviewSuggestion,
+            LspWorkflowRecipe::ImpactAnalysis,
+            LspWorkflowRecipe::InterfaceBoundary,
+            LspWorkflowRecipe::CrossFileRepair,
+            LspWorkflowRecipe::CallNeighborhood,
+        ] {
+            let inv = LspWorkflowInvocation {
+                recipe,
+                primary_path: None,
+                line: Some(10),
+                column: Some(5),
+                ..Default::default()
+            };
+            let result = inv.execute(&provider).await;
+            // Must not panic, must produce a typed error.
+            assert!(
+                result.is_err(),
+                "recipe {recipe} without primary_path must fail"
+            );
+            match result.unwrap_err() {
+                LspContextError::RequiredFailed(msg) => {
+                    assert!(
+                        msg.contains("primary_path required"),
+                        "recipe {recipe}: error must mention primary_path; got: {msg}"
+                    );
+                }
+                other => panic!("recipe {recipe}: expected RequiredFailed, got {other:?}"),
+            }
+        }
+    }
+
+    /// Test that call_neighborhood with max_depth=0 still succeeds
+    /// without panicking (early-return path).
+    #[tokio::test]
+    async fn test_call_neighborhood_zero_depth_does_not_panic() {
+        let provider = EmptyProvider;
+        let request = CallNeighborhoodRequest {
+            file: std::path::PathBuf::from("src/main.rs"),
+            line: 0,
+            column: 0,
+            direction: crate::context::HierarchyDirection::Both,
+            max_depth: 0,
+            settings: RecipeSettings::default(),
+        };
+        let outcome = execute_call_neighborhood(&provider, &request)
+            .await
+            .expect("depth=0 must succeed");
+        assert_eq!(outcome.recipe, LspWorkflowRecipe::CallNeighborhood);
+        assert!(
+            outcome.packet.notes.iter().any(|n| n.contains("depth 0")),
+            "depth=0 must surface the early-return note"
+        );
+    }
+
+    /// Test that recipes tolerate extreme line/column values without
+    /// panicking (saturating arithmetic must protect against overflow).
+    #[tokio::test]
+    async fn test_repair_local_extreme_position_does_not_panic() {
+        let provider = EmptyProvider;
+        // Use a large but bounded value so the `start = line.saturating_sub(20)
+        // .. end = line + 20` window math does not overflow.
+        let extreme_line: u32 = 4_000_000_000;
+        let request = RepairLocalRequest {
+            file: std::path::PathBuf::from("src/main.rs"),
+            line: extreme_line,
+            column: extreme_line,
+            diagnostic_message: None,
+            settings: RecipeSettings::default(),
+        };
+        let outcome = execute_repair_local(&provider, &request)
+            .await
+            .expect("extreme line/col must succeed via saturating math");
+        assert_eq!(outcome.recipe, LspWorkflowRecipe::RepairLocal);
+        assert!(outcome.rendered.contains("LSP:"));
+    }
+
+    /// No-auto-apply invariant: every composed workflow must NEVER
+    /// include a preview id (composed recipes only *suggest* previews,
+    /// never apply them) and must NEVER mutate files. We verify both
+    /// by checking that preview_ids remain empty for every composed
+    /// recipe (when the underlying provider yields no preview ids).
+    #[tokio::test]
+    async fn test_composed_workflows_never_apply_previews() {
+        let provider = EmptyProvider;
+        let settings = RecipeSettings::for_tier(ModelTier::Workhorse);
+
+        // Security review composed: with no call_neighborhood params,
+        // only SecurityReviewEnriched runs as a sub-recipe.
+        let security = execute_composed_security_review(
+            &provider,
+            vec![std::path::PathBuf::from("src/auth.rs")],
+            vec![],
+            None,
+            None,
+            settings.clone(),
+        )
+        .await
+        .unwrap();
+        assert!(
+            security.preview_ids.is_empty(),
+            "composed security review must never auto-apply previews: {:?}",
+            security.preview_ids
+        );
+
+        // Repair failing test: with no related files, only
+        // TestFailureRepair runs.
+        let repair = execute_composed_repair_failing_test(
+            &provider,
+            std::path::PathBuf::from("tests/foo.rs"),
+            "panicked".to_string(),
+            Vec::new(),
+            settings.clone(),
+        )
+        .await
+        .unwrap();
+        assert!(
+            repair.preview_ids.is_empty(),
+            "composed repair_failing_test must never auto-apply previews"
+        );
+
+        // API change review: composed of InterfaceBoundary + ImpactAnalysis.
+        let api = execute_composed_review_api_change(
+            &provider,
+            std::path::PathBuf::from("src/api.rs"),
+            Some("UserApi".to_string()),
+            10,
+            5,
+            Vec::new(),
+            settings.clone(),
+        )
+        .await
+        .unwrap();
+        assert!(
+            api.preview_ids.is_empty(),
+            "composed api change review must never auto-apply previews"
+        );
+
+        // Repair hunk with preview: composed of RepairHunk + (conditional)
+        // PreviewSuggestion. Even when PreviewSuggestion runs, the
+        // composed outcome must not carry preview_ids because the recipe
+        // itself explicitly avoids applying previews.
+        let rh = execute_composed_repair_hunk_with_preview(
+            &provider,
+            std::path::PathBuf::from("src/main.rs"),
+            vec![crate::context::HunkRange {
+                start: 0,
+                end: 10,
+                original_start: None,
+                original_end: None,
+            }],
+            Some(10),
+            Some(5),
+            settings,
+        )
+        .await
+        .unwrap();
+        assert!(
+            rh.preview_ids.is_empty(),
+            "composed repair_hunk_with_preview must never auto-apply previews"
+        );
+    }
+
+    /// Tier-specific caps: every recipe must preserve the tier label across
+    /// `default_settings_for_recipe`. The `include_references` flag follows
+    /// a documented set of recipe-specific rules:
+    /// - Tier-scaled (Small off, Workhorse+Frontier on): RepairLocal /
+    ///   RepairHunk / ReviewFile / ReviewDiff / HunkSourceNavigation /
+    ///   InterfaceBoundary / CrossFileRepair / CallNeighborhood.
+    /// - Always on (security + impact analyses): SecurityReviewEnriched /
+    ///   ImpactAnalysis.
+    /// - Always off (focus on previews or symbols): PreviewSuggestion /
+    ///   TestFailureRepair.
+    #[tokio::test]
+    async fn test_tier_caps_diverge_for_all_recipes() {
+        // Recipes whose reference policy tracks tier (Small off, others on).
+        let tier_scaled: &[LspWorkflowRecipe] = &[
+            LspWorkflowRecipe::RepairLocal,
+            LspWorkflowRecipe::RepairHunk,
+            LspWorkflowRecipe::ReviewFile,
+            LspWorkflowRecipe::ReviewDiff,
+            LspWorkflowRecipe::HunkSourceNavigation,
+            LspWorkflowRecipe::InterfaceBoundary,
+            LspWorkflowRecipe::CrossFileRepair,
+            LspWorkflowRecipe::CallNeighborhood,
+        ];
+        // Recipes that force include_references regardless of tier.
+        let always_refs: &[LspWorkflowRecipe] = &[
+            LspWorkflowRecipe::SecurityReviewEnriched,
+            LspWorkflowRecipe::ImpactAnalysis,
+        ];
+        // Recipes that always omit references regardless of tier.
+        let never_refs: &[LspWorkflowRecipe] = &[
+            LspWorkflowRecipe::PreviewSuggestion,
+            LspWorkflowRecipe::TestFailureRepair,
+        ];
+
+        // Verify tier-scaled recipes.
+        for recipe in tier_scaled {
+            let small = default_settings_for_recipe(*recipe, ModelTier::Small);
+            let workhorse = default_settings_for_recipe(*recipe, ModelTier::Workhorse);
+            let frontier = default_settings_for_recipe(*recipe, ModelTier::Frontier);
+
+            assert_eq!(small.model_tier, ModelTier::Small, "recipe {recipe}");
+            assert_eq!(
+                workhorse.model_tier,
+                ModelTier::Workhorse,
+                "recipe {recipe}"
+            );
+            assert_eq!(frontier.model_tier, ModelTier::Frontier, "recipe {recipe}");
+
+            assert!(
+                !small.include_references,
+                "tier-scaled recipe {recipe}: Small must omit references"
+            );
+            assert!(
+                workhorse.include_references,
+                "tier-scaled recipe {recipe}: Workhorse must include references"
+            );
+            assert!(
+                frontier.include_references,
+                "tier-scaled recipe {recipe}: Frontier must include references"
+            );
+        }
+
+        // Verify always-on recipes.
+        for recipe in always_refs {
+            for tier in [ModelTier::Small, ModelTier::Workhorse, ModelTier::Frontier] {
+                let settings = default_settings_for_recipe(*recipe, tier);
+                assert!(
+                    settings.include_references,
+                    "always-refs recipe {recipe} at {tier:?} must include references"
+                );
+            }
+        }
+
+        // Verify never-on recipes.
+        for recipe in never_refs {
+            for tier in [ModelTier::Small, ModelTier::Workhorse, ModelTier::Frontier] {
+                let settings = default_settings_for_recipe(*recipe, tier);
+                assert!(
+                    !settings.include_references,
+                    "never-refs recipe {recipe} at {tier:?} must omit references"
+                );
+            }
+        }
+
+        // Sanity: union covers all 12 recipes.
+        let total = tier_scaled.len() + always_refs.len() + never_refs.len();
+        assert_eq!(total, 12, "tier-cap recipes must cover all 12");
+    }
+
+    /// Tier cap depth: Frontier includes previews for RepairLocal;
+    /// Small never does. Security review forces Aggressive risk on
+    /// every tier.
+    #[tokio::test]
+    async fn test_tier_caps_preview_hints_for_repair_local() {
+        let small = default_settings_for_recipe(LspWorkflowRecipe::RepairLocal, ModelTier::Small);
+        let workhorse =
+            default_settings_for_recipe(LspWorkflowRecipe::RepairLocal, ModelTier::Workhorse);
+        let frontier =
+            default_settings_for_recipe(LspWorkflowRecipe::RepairLocal, ModelTier::Frontier);
+
+        assert!(!small.include_preview_hints);
+        assert!(!workhorse.include_preview_hints);
+        assert!(frontier.include_preview_hints);
+    }
+
+    /// Security review enforces Aggressive risk on every tier (no
+    /// scaling down to Conservative for safety-critical review).
+    #[tokio::test]
+    async fn test_security_review_aggressive_on_all_tiers() {
+        for tier in [ModelTier::Small, ModelTier::Workhorse, ModelTier::Frontier] {
+            let settings =
+                default_settings_for_recipe(LspWorkflowRecipe::SecurityReviewEnriched, tier);
+            assert_eq!(
+                settings.risk_mode,
+                LspRiskMode::Aggressive,
+                "security review must be Aggressive at {tier:?}"
+            );
+        }
+    }
+
+    /// Sub-recipe provenance rendering: confirm that the provenance
+    /// fields populated by composed workflows flow through to the
+    /// public SubRecipeProvenance struct used by LspWorkflowDisplay.
+    #[tokio::test]
+    async fn test_sub_recipe_provenance_fields_round_trip() {
+        let provider = EmptyProvider;
+        let settings = RecipeSettings::for_tier(ModelTier::Workhorse);
+
+        // Repair failing test with related files: must produce
+        // TestFailureRepair (ran) + RepairLocal (ran).
+        let outcome = execute_composed_repair_failing_test(
+            &provider,
+            std::path::PathBuf::from("tests/foo.rs"),
+            "panicked".to_string(),
+            vec![std::path::PathBuf::from("src/a.rs")],
+            settings,
+        )
+        .await
+        .unwrap();
+
+        // Every sub-recipe must carry either ran=true (with no skipped
+        // reason) or ran=false (with a skipped reason).
+        for sr in &outcome.sub_recipes {
+            if sr.ran {
+                assert!(
+                    sr.skipped_reason.is_none(),
+                    "sub-recipe {:?} ran=true must have no skipped_reason; got {:?}",
+                    sr.recipe,
+                    sr.skipped_reason
+                );
+            } else {
+                assert!(
+                    sr.skipped_reason.is_some(),
+                    "sub-recipe {:?} ran=false must carry a skipped_reason",
+                    sr.recipe
+                );
+            }
+        }
+
+        // Sub-recipes list must be non-empty and contain the primary
+        // recipe we dispatched.
+        assert!(!outcome.sub_recipes.is_empty());
+        assert!(
+            outcome
+                .sub_recipes
+                .iter()
+                .any(|sr| sr.recipe == LspWorkflowRecipe::TestFailureRepair),
+            "composed test_failure_repair must record TestFailureRepair provenance"
+        );
+    }
+
+    /// Composed workflows must surface distinct freshness summaries
+    /// that name the composition (so downstream consumers can tell
+    /// composed from direct).
+    #[tokio::test]
+    async fn test_composed_workflows_freshness_summary_distinct() {
+        let provider = EmptyProvider;
+        let settings = RecipeSettings::for_tier(ModelTier::Workhorse);
+
+        let security = execute_composed_security_review(
+            &provider,
+            vec![std::path::PathBuf::from("src/a.rs")],
+            Vec::new(),
+            None,
+            None,
+            settings.clone(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(security.freshness_summary, "composed security review");
+
+        let repair = execute_composed_repair_failing_test(
+            &provider,
+            std::path::PathBuf::from("tests/a.rs"),
+            "msg".to_string(),
+            Vec::new(),
+            settings.clone(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(repair.freshness_summary, "composed test failure repair");
+
+        let api = execute_composed_review_api_change(
+            &provider,
+            std::path::PathBuf::from("src/api.rs"),
+            None,
+            0,
+            0,
+            Vec::new(),
+            settings.clone(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(api.freshness_summary, "composed api change review");
+
+        let rh = execute_composed_repair_hunk_with_preview(
+            &provider,
+            std::path::PathBuf::from("src/a.rs"),
+            Vec::new(),
+            None,
+            None,
+            settings,
+        )
+        .await
+        .unwrap();
+        assert_eq!(rh.freshness_summary, "composed repair hunk with preview");
+    }
+
+    /// Composed workflows fall through to direct execute when the
+    /// dispatched recipe has no composed variant. Verify that
+    /// sub_recipes stays empty for non-composed recipes.
+    #[tokio::test]
+    async fn test_composed_dispatch_falls_through_for_non_composed_recipes() {
+        let provider = EmptyProvider;
+
+        // RepairLocal has no composed variant.
+        let inv = LspWorkflowInvocation {
+            recipe: LspWorkflowRecipe::RepairLocal,
+            primary_path: Some("src/a.rs".to_string()),
+            line: Some(5),
+            ..Default::default()
+        };
+        let outcome = inv.execute_composed(&provider).await.unwrap();
+        assert_eq!(outcome.recipe, LspWorkflowRecipe::RepairLocal);
+        assert!(
+            outcome.sub_recipes.is_empty(),
+            "non-composed recipe must have empty sub_recipes via execute_composed"
+        );
+
+        // ReviewDiff, ReviewFile, HunkSourceNavigation, and PreviewSuggestion
+        // also have no composed variants — they fall through to execute().
+        for recipe in [
+            LspWorkflowRecipe::ReviewDiff,
+            LspWorkflowRecipe::ReviewFile,
+            LspWorkflowRecipe::HunkSourceNavigation,
+            LspWorkflowRecipe::PreviewSuggestion,
+        ] {
+            let inv = LspWorkflowInvocation {
+                recipe,
+                primary_path: Some("src/a.rs".to_string()),
+                related_files: vec!["src/a.rs".to_string()],
+                ..Default::default()
+            };
+            let outcome = inv.execute_composed(&provider).await.unwrap();
+            assert_eq!(outcome.recipe, recipe);
+            assert!(
+                outcome.sub_recipes.is_empty(),
+                "recipe {recipe} must fall through with empty sub_recipes"
+            );
+        }
     }
 }

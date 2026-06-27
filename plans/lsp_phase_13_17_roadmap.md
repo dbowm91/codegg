@@ -126,3 +126,17 @@ Manual lifecycle controls can introduce race conditions with auto-start/restart.
 ## Completion definition for the whole roadmap
 
 The Phase 13-17 roadmap is complete when Codegg's LSP subsystem is validated against real server profiles, exposed through workflow-first UX, diagnosable from TUI/debug surfaces, and still preserves the read-only LSP boundary, bounded context, explicit stale evidence, and conservative cache semantics established in Phases 6-12.
+
+## Status update — corrective verification pass (2026-06-27)
+
+Verification plan: `plans/lsp_phase_13_17_corrective_verification_plan.md`. The roadmap is now considered **verified** with Phases 13-15 implemented and Phases 16-17 explicitly deferred.
+
+| Phase | Status | Evidence |
+|-------|--------|----------|
+| 13 — Real-world validation + `/lsp-doctor` | Implemented | `crates/egglsp/src/doctor.rs` + `/lsp-doctor` dispatch + 8 new doctor tests + 6 new dispatch tests |
+| 14 — Workflow composition UX | Implemented | 10 `/lsp-*` workflow commands + `LspWorkflowDisplay` + 11 new workflow_recipes tests + 15 tool-level tests |
+| 15 — Renderer-policy unification + context diagnostics | Implemented | `LspContextDiagnostics` + `/lsp-context-diagnostics` + 12 new policy/renderer tests |
+| 16 — Optional disk-cache evaluation | Deferred | `plans/lsp_phase_16_disk_cache_decision.md`; memory-only mode remains the only active mode |
+| 17 — Manual lifecycle controls | Deferred | `plans/lsp_phase_17_decision_note.md`; `/lsp-start` and `/lsp-replay-docs` NOT registered |
+
+Closure criteria met for all eight workstreams in the verification plan. 52 new tests added total (8 doctor + 11 workflow + 8 policy + 4 renderer + 6 dispatch + 15 tool). Two saturating-arithmetic bug fixes in `crates/egglsp/src/workflow_recipes.rs` (lines 923 and 1167). Static safety sweep confirmed 0 disallowed matches.

@@ -111,6 +111,12 @@ impl ToastManager {
         self.toasts.is_empty()
     }
 
+    /// Iterate over the active toasts in insertion order. Intended for
+    /// assertions and tests; production rendering should use `render`.
+    pub fn iter(&self) -> impl Iterator<Item = &Toast> {
+        self.toasts.iter()
+    }
+
     pub fn render(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
         if self.toasts.is_empty() {
             return;

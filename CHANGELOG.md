@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## Phase 13-17 Corrective Verification Pass (2026-06-27)
+
+Docs/roadmap reconciliation plus test hardening for the Phase 13-17 surface. No new LSP protocol operations, no new workflow recipes, and no `workspace/applyEdit` / `workspace/executeCommand` execution were introduced. Plan: `plans/lsp_phase_13_17_corrective_verification_plan.md`. All eight workstreams meet final closure criteria.
+
+### Added (52 new tests)
+
+- `crates/egglsp/src/doctor.rs` (8): doctor scenarios — no service, outside root, unsupported language, no active server, active server with capabilities, observability snapshot, cache enabled/disabled, stale previews.
+- `crates/egglsp/src/workflow_recipes.rs` (11): table-driven recipe coverage (all 12 named recipes), invalid-input rejection (missing path, max_depth=0, extreme line/column), no-auto-apply invariant (every composed workflow must NEVER include a preview id), tier-specific caps (Small/Workhorse/Frontier depth differences, security review forces Aggressive risk on every tier), sub-recipe provenance rendering.
+- `crates/egglsp/src/context_policy.rs` (8): `LspContextDiagnostics` from empty/truncated/cache-hit packets; `StaleEvidencePolicy` and `LspUnavailablePolicy` behavior tests.
+- `crates/egglsp/src/context_renderer.rs` (4): renderer feature-flag propagation (`include_cross_file` / `include_hierarchy` from policy); render-compact output stability.
+- `src/tui/app/mod.rs` (6): dispatch tests for `/lsp-doctor` (missing-arg-shows-usage, with-path-produces-toast, without-tool-shows-unavailable) and `/lsp-context-diagnostics` (same three).
+- `tests/lsp.rs` (15): tool-level integration tests covering Phase 13-15 surface end-to-end.
+
+### Fixed
+
+- `crates/egglsp/src/workflow_recipes.rs` line 923: `end: request.line + 20` → `end: request.line.saturating_add(20)`. Bare addition could overflow `u32` with extreme line numbers.
+- `crates/egglsp/src/workflow_recipes.rs` line 1167: `end: request.line + 10` → `end: request.line.saturating_add(10)`. Same class of bug.
+
+### Documented
+
+- `architecture/lsp.md`: added "Phase 13-17 Corrective Verification Pass (2026-06-27)" section with closure summary table, new test counts, and bug fixes.
+- `.opencode/skills/lsp/SKILL.md`: bumped version 1.8.0 → 1.9.0; added "Phase 13-17 Corrective Verification Pass" section near the bottom.
+- `AGENTS.md`: added a one-line corrective verification note after Phase 17 describing the 52 new tests and two bug fixes.
+- `README.md`: clarified Phase 16/17 are explicitly deferred.
+- `plans/lsp_phase_13_17_roadmap.md`: marked Phase 13-17 as verified.
+
+### Verified
+
+- All 12 Phase 13-15 commands are registered and dispatched.
+- `/lsp-doctor` is read-only and never starts servers.
+- Workflow commands never auto-apply previews.
+- `/lsp-context-diagnostics` is on-demand and does NOT bloat normal agent prompts.
+- Disk cache remains memory-only (`LspCacheMode::Disabled | Memory` only).
+- `/lsp-start` and `/lsp-replay-docs` are NOT registered.
+- `mark_preview_applied` is only called after `PreviewApplyWriteReport.all_succeeded == true`.
+
 ## Phase 15: Renderer-Policy Unification and Context Diagnostics
 
 - Fixed impact-analysis cap-note bug (inverted comparison emitted note when references were NOT capped)

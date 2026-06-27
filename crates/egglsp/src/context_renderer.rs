@@ -1574,4 +1574,167 @@ mod tests {
         assert!(rendered.contains("Outgoing Calls"));
         assert!(rendered.contains("Incoming Calls"));
     }
+
+    // -----------------------------------------------------------------------
+    // Phase 15 verification: prompt bloat + policy flag propagation
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_render_config_has_include_cross_file_and_include_hierarchy_fields() {
+        // Phase 15 fix: LspContextRenderConfig must carry policy flags
+        // for cross-file and hierarchy inclusion. Verify the fields exist
+        // and are present in the default value.
+        let config = LspContextRenderConfig::default();
+        // Default is conservative: both off, model tier Workhorse.
+        assert!(!config.include_cross_file);
+        assert!(!config.include_hierarchy);
+        assert_eq!(config.model_tier, ModelTier::Workhorse);
+    }
+
+    #[test]
+    fn test_to_render_config_propagates_policy_flags() {
+        // Phase 15 fix: LspContextPolicy::to_render_config must propagate
+        // include_cross_file and include_hierarchy verbatim. Confirmed by
+        // direct struct construction here to avoid depending on defaults.
+        let on_policy = crate::context_policy::LspContextPolicy {
+            model_tier: ModelTier::Frontier,
+            include_cross_file: true,
+            include_hierarchy: true,
+            include_previews: true,
+            ..Default::default()
+        };
+        let on_config: LspContextRenderConfig = (&on_policy).into();
+        assert!(
+            on_config.include_cross_file,
+            "policy.include_cross_file=true must reach render config"
+        );
+        assert!(
+            on_config.include_hierarchy,
+            "policy.include_hierarchy=true must reach render config"
+        );
+        assert!(on_config.include_previews);
+
+        let off_policy = crate::context_policy::LspContextPolicy {
+            model_tier: ModelTier::Small,
+            include_cross_file: false,
+            include_hierarchy: false,
+            include_previews: false,
+            ..Default::default()
+        };
+        let off_config: LspContextRenderConfig = (&off_policy).into();
+        assert!(
+            !off_config.include_cross_file,
+            "policy.include_cross_file=false must reach render config"
+        );
+        assert!(
+            !off_config.include_hierarchy,
+            "policy.include_hierarchy=false must reach render config"
+        );
+        assert!(!off_config.include_previews);
+    }
+
+    #[test]
+    fn test_render_lsp_context_does_not_include_verbose_diagnostics() {
+        // Phase 15 fix: render_lsp_context_for_agent is the normal
+        // agent-prompt renderer and must NOT include verbose diagnostics
+        // markers. The on-demand diagnostics surface lives in
+        // LspContextDiagnostics::render_compact, not here.
+        let items = vec![
+            make_item(
+                LspContextItemKind::Diagnostic,
+                "a.rs",
+                Some(5),
+                "warning: unused variable",
+                false,
+            ),
+            make_item(
+                LspContextItemKind::Reference,
+                "b.rs",
+                Some(20),
+                "ref: foo",
+                false,
+            ),
+        ];
+        let packet = make_packet(items, Vec::new());
+
+        // Test with default config (most common prompt path).
+        let config = LspContextRenderConfig::default();
+        let rendered = render_lsp_context_for_agent(&packet, &config);
+
+        // Verbose diagnostics markers from LspContextDiagnostics must NOT
+        // appear in normal agent rendering.
+        assert!(
+            !rendered.contains("Tier:"),
+            "normal agent prompt must not include Tier: diagnostics block"
+        );
+        assert!(
+            !rendered.contains("Workflow:"),
+            "normal agent prompt must not include Workflow: diagnostics block"
+        );
+        assert!(
+            !rendered.contains("Policy: stale="),
+            "normal agent prompt must not include stale-policy diagnostics"
+        );
+        assert!(
+            !rendered.contains("Items: "),
+            "normal agent prompt must not include Items: diagnostics summary"
+        );
+        assert!(
+            !rendered.contains("[cache-hit]"),
+            "normal agent prompt must not surface the cache-hit tag"
+        );
+
+        // The renderer must still produce the standard sections so we
+        // don't accidentally regress the agent-facing output.
+        assert!(rendered.contains("## Diagnostics"));
+    }
+
+    #[test]
+    fn test_render_lsp_context_no_prompt_bloat_with_frontier_policy() {
+        // Even at the Frontier tier with all flags on, the normal agent
+        // renderer must remain free of LspContextDiagnostics markers.
+        let items = vec![
+            make_item(
+                LspContextItemKind::Definition,
+                "a.rs",
+                Some(10),
+                "def: foo",
+                false,
+            ),
+            make_item(
+                LspContextItemKind::Reference,
+                "b.rs",
+                Some(20),
+                "ref: bar",
+                false,
+            ),
+            make_item(
+                LspContextItemKind::Diagnostic,
+                "c.rs",
+                Some(5),
+                "warning: lint",
+                false,
+            ),
+        ];
+        let packet = make_packet(items, Vec::new());
+
+        let policy = crate::context_policy::LspContextPolicy {
+            model_tier: ModelTier::Frontier,
+            include_cross_file: true,
+            include_hierarchy: true,
+            include_previews: true,
+            ..Default::default()
+        };
+        let config: LspContextRenderConfig = (&policy).into();
+        let rendered = render_lsp_context_for_agent(&packet, &config);
+
+        // No diagnostics markers.
+        assert!(!rendered.contains("Tier:"));
+        assert!(!rendered.contains("Policy: stale="));
+        assert!(!rendered.contains("[cache-hit]"));
+        assert!(!rendered.contains("Max bytes:"));
+
+        // Standard sections still emitted.
+        assert!(rendered.contains("## Diagnostics"));
+    }
 }

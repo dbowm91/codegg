@@ -2466,3 +2466,265 @@ async fn workspaceSymbol_requires_symbol() {
         .unwrap_err();
     assert!(matches!(err, ToolError::Execution(ref m) if m.contains("symbol")));
 }
+
+// ── LspTool::lsp_doctor (Phase 13) ─────────────────────────────────────
+
+#[tokio::test]
+#[allow(non_snake_case)]
+async fn lsp_doctor_missing_path_returns_usage_section() {
+    let tool = make_tool();
+    let rendered = tool.lsp_doctor("/no/such/path.rs").await;
+    // Should still render a structured report (no panic, no server start).
+    assert!(rendered.starts_with("LSP Doctor:"));
+    assert!(rendered.contains("Inside allowed root:"));
+    assert!(rendered.contains("Server profile:"));
+    assert!(rendered.contains("Issues:"));
+    assert!(rendered.contains("Remediation:"));
+}
+
+#[tokio::test]
+#[allow(non_snake_case)]
+async fn lsp_doctor_real_rust_file_is_read_only_and_deterministic() {
+    let (_dir, path) = temp_rs_file("fn main() {}\n");
+    let tool = make_tool_with_root(_dir.path());
+    let first = tool.lsp_doctor(path.to_str().unwrap()).await;
+    let second = tool.lsp_doctor(path.to_str().unwrap()).await;
+    // Doctor must be deterministic for the same input.
+    assert_eq!(first, second);
+    assert!(first.contains("Language: rust"));
+    assert!(first.contains("Server profile: rust-analyzer"));
+    assert!(first.contains("Cache:"));
+    assert!(first.contains("Previews:"));
+}
+
+#[tokio::test]
+#[allow(non_snake_case)]
+async fn lsp_doctor_unsupported_extension_says_unrecognized() {
+    let dir = tempfile::tempdir().expect("create tempdir");
+    let path = dir.path().join("data.weirdext");
+    std::fs::write(&path, "").expect("write temp file");
+    let tool = make_tool_with_root(dir.path());
+    let rendered = tool.lsp_doctor(path.to_str().unwrap()).await;
+    assert!(rendered.contains("Language: (unrecognized)"));
+    assert!(rendered.contains("Server profile: (none)"));
+    assert!(
+        rendered.contains("Could not detect language"),
+        "doctor must surface the unrecognized language issue: {rendered}"
+    );
+}
+
+#[tokio::test]
+#[allow(non_snake_case)]
+async fn lsp_doctor_outside_allowed_root_suggests_move() {
+    let dir = tempfile::tempdir().expect("create tempdir");
+    let file = dir.path().join("main.rs");
+    std::fs::write(&file, "fn main() {}\n").expect("write temp file");
+    // Build a tool whose allowed_root is somewhere else entirely so the
+    // file is definitively outside the boundary.
+    let tool = codegg::tool::lsp::LspTool::new(codegg::lsp::service::LspService::new_arc(
+        codegg::lsp::config::LspConfig::default(),
+    ))
+    .with_allowed_root(std::path::PathBuf::from("/some/other/place"));
+    let rendered = tool.lsp_doctor(file.to_str().unwrap()).await;
+    assert!(rendered.contains("Inside allowed root: no"));
+    assert!(
+        rendered.contains("Move the file"),
+        "doctor must surface the move-file remediation: {rendered}"
+    );
+}
+
+#[tokio::test]
+#[allow(non_snake_case)]
+async fn lsp_doctor_with_previews_renders_counts() {
+    let (_dir, path) = temp_rs_file("fn main() {}\n");
+    let tool = make_tool_with_root(_dir.path());
+    // Register a preview via the public preview_registry accessor so
+    // the doctor output reflects non-zero counts.
+    let _id = tool.preview_registry().register(
+        egglsp::context::LspPreviewArtifact::Formatting {
+            description: "format-test".to_string(),
+            content_hash: None,
+            edit_count: 0,
+            patches: Vec::new(),
+        },
+        vec![path.to_string_lossy().to_string()],
+        std::collections::HashMap::new(),
+        "test".to_string(),
+    );
+    let rendered = tool.lsp_doctor(path.to_str().unwrap()).await;
+    assert!(
+        rendered.contains("Previews: total=1, stale=0"),
+        "doctor must reflect registered preview count: {rendered}"
+    );
+}
+
+// ── LspTool::lsp_context_diagnostics (Phase 15) ─────────────────────────
+
+#[tokio::test]
+#[allow(non_snake_case)]
+async fn lsp_context_diagnostics_for_unknown_path_does_not_panic() {
+    let tool = make_tool();
+    let rendered = tool.lsp_context_diagnostics("/no/such/path.weirdext").await;
+    // Diagnostics output should always be a non-empty string; either
+    // it succeeds and renders, or it surfaces a structured "Failed"
+    // error rather than panicking.
+    assert!(!rendered.is_empty(), "diagnostics output must be non-empty");
+    assert!(
+        rendered.contains("Cache:") || rendered.contains("Failed to collect context"),
+        "diagnostics must end with cache line or a structured error: {rendered}"
+    );
+}
+
+#[tokio::test]
+#[allow(non_snake_case)]
+async fn lsp_context_diagnostics_for_real_file_emits_cache_line() {
+    let (_dir, path) = temp_rs_file("fn main() {}\n");
+    let tool = make_tool_with_root(_dir.path());
+    let rendered = tool.lsp_context_diagnostics(path.to_str().unwrap()).await;
+    // Diagnostics always include the cache/preview footer so the user
+    // can correlate shaping decisions with cache state.
+    assert!(
+        rendered.contains("Cache:"),
+        "diagnostics must include the Cache footer: {rendered}"
+    );
+    assert!(
+        rendered.contains("Previews:"),
+        "diagnostics must include the Previews footer: {rendered}"
+    );
+}
+
+// ── LspTool::run_lsp_workflow (Phase 14) ────────────────────────────────
+//
+// These tests verify dispatch + read-only invariants for the user-facing
+// workflow entry point. They use a fresh LspTool with no servers running
+// so the underlying evidence provider returns empty packets; we assert
+// that the resulting LspWorkflowDisplay is well-formed and never
+// claims to have auto-applied a preview.
+
+fn empty_invocation(
+    recipe: egglsp::LspWorkflowRecipe,
+    primary_path: Option<&str>,
+) -> egglsp::LspWorkflowInvocation {
+    egglsp::LspWorkflowInvocation {
+        recipe,
+        primary_path: primary_path.map(|s| s.to_string()),
+        ..Default::default()
+    }
+}
+
+#[tokio::test]
+#[allow(non_snake_case)]
+async fn run_lsp_workflow_repair_local_emits_display() {
+    let (_dir, path) = temp_rs_file("fn main() {}\n");
+    let tool = make_tool_with_root(_dir.path());
+    let inv = empty_invocation(
+        egglsp::LspWorkflowRecipe::RepairLocal,
+        Some(path.to_str().unwrap()),
+    );
+    let display = tool.run_lsp_workflow(&inv).await.expect("workflow runs");
+    assert_eq!(display.recipe, egglsp::LspWorkflowRecipe::RepairLocal);
+    assert!(
+        display.title.contains("repair_local"),
+        "title must name the recipe: {}",
+        display.title
+    );
+    assert!(
+        display.preview_ids.is_empty(),
+        "no previews should be auto-applied"
+    );
+}
+
+#[tokio::test]
+#[allow(non_snake_case)]
+async fn run_lsp_workflow_review_file_emits_display() {
+    let (_dir, path) = temp_rs_file("fn main() {}\n");
+    let tool = make_tool_with_root(_dir.path());
+    let inv = empty_invocation(
+        egglsp::LspWorkflowRecipe::ReviewFile,
+        Some(path.to_str().unwrap()),
+    );
+    let display = tool.run_lsp_workflow(&inv).await.expect("workflow runs");
+    assert_eq!(display.recipe, egglsp::LspWorkflowRecipe::ReviewFile);
+    assert!(display.title.contains("review_file"));
+}
+
+#[tokio::test]
+#[allow(non_snake_case)]
+async fn run_lsp_workflow_review_diff_runs_without_args() {
+    let tool = make_tool();
+    let inv = empty_invocation(egglsp::LspWorkflowRecipe::ReviewDiff, None);
+    let display = tool.run_lsp_workflow(&inv).await.expect("workflow runs");
+    assert_eq!(display.recipe, egglsp::LspWorkflowRecipe::ReviewDiff);
+}
+
+#[tokio::test]
+#[allow(non_snake_case)]
+async fn run_lsp_workflow_impact_requires_path() {
+    let tool = make_tool();
+    let inv = empty_invocation(egglsp::LspWorkflowRecipe::ImpactAnalysis, None);
+    let err = tool.run_lsp_workflow(&inv).await.unwrap_err();
+    assert!(
+        err.contains("primary_path required"),
+        "impact_analysis without path must surface a primary_path error: {err}"
+    );
+}
+
+#[tokio::test]
+#[allow(non_snake_case)]
+async fn run_lsp_workflow_test_failure_repair_carries_failure_text() {
+    let (_dir, path) = temp_rs_file("#[test] fn smoke() {}\n");
+    let tool = make_tool_with_root(_dir.path());
+    let mut inv = empty_invocation(
+        egglsp::LspWorkflowRecipe::TestFailureRepair,
+        Some(path.to_str().unwrap()),
+    );
+    inv.failure_text = Some("assertion failed: 1 == 2".to_string());
+    let display = tool.run_lsp_workflow(&inv).await.expect("workflow runs");
+    assert_eq!(display.recipe, egglsp::LspWorkflowRecipe::TestFailureRepair);
+}
+
+#[tokio::test]
+#[allow(non_snake_case)]
+async fn run_lsp_workflow_call_neighborhood_carries_direction() {
+    let (_dir, path) = temp_rs_file("fn main() {}\n");
+    let tool = make_tool_with_root(_dir.path());
+    let mut inv = empty_invocation(
+        egglsp::LspWorkflowRecipe::CallNeighborhood,
+        Some(path.to_str().unwrap()),
+    );
+    inv.line = Some(1);
+    inv.column = Some(1);
+    inv.direction = Some(egglsp::context::HierarchyDirection::Incoming);
+    let display = tool.run_lsp_workflow(&inv).await.expect("workflow runs");
+    assert_eq!(display.recipe, egglsp::LspWorkflowRecipe::CallNeighborhood);
+}
+
+#[tokio::test]
+#[allow(non_snake_case)]
+async fn run_lsp_workflow_security_review_defaults_to_diff_mode() {
+    let tool = make_tool();
+    let inv = empty_invocation(egglsp::LspWorkflowRecipe::SecurityReviewEnriched, None);
+    let display = tool.run_lsp_workflow(&inv).await.expect("workflow runs");
+    assert_eq!(
+        display.recipe,
+        egglsp::LspWorkflowRecipe::SecurityReviewEnriched
+    );
+}
+
+#[tokio::test]
+#[allow(non_snake_case)]
+async fn run_lsp_workflow_does_not_apply_previews() {
+    let (_dir, path) = temp_rs_file("fn main() {}\n");
+    let tool = make_tool_with_root(_dir.path());
+    let inv = empty_invocation(
+        egglsp::LspWorkflowRecipe::InterfaceBoundary,
+        Some(path.to_str().unwrap()),
+    );
+    let display = tool.run_lsp_workflow(&inv).await.expect("workflow runs");
+    // Workflows must NEVER auto-apply previews. preview_ids may carry
+    // suggested preview IDs for the user to apply manually, but the
+    // underlying file must remain unchanged.
+    let original = std::fs::read_to_string(&path).expect("file still readable");
+    assert_eq!(original, "fn main() {}\n", "file must be unchanged");
+    assert!(!display.rendered.contains("applied="));
+}

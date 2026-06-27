@@ -1316,4 +1316,478 @@ mod tests {
         assert!(rendered.contains("Small"));
         assert!(rendered.contains("test note"));
     }
+
+    // -----------------------------------------------------------------------
+    // Workstream 4: LspContextDiagnostics hardening tests
+    // -----------------------------------------------------------------------
+
+    fn diag_item(
+        freshness: crate::context::LspEvidenceFreshness,
+        file: &str,
+        kind: crate::context::LspContextItemKind,
+    ) -> crate::context::LspContextItem {
+        use crate::context::{LspContextItem, LspContextScore, LspEvidenceProvenance};
+        LspContextItem {
+            kind,
+            file: std::path::PathBuf::from(file),
+            range: None,
+            line: None,
+            column: None,
+            message: format!("diag@{file}"),
+            symbol: None,
+            source: None,
+            provenance: LspEvidenceProvenance {
+                server_id: "rust-analyzer".to_string(),
+                server_generation: Some(1),
+                operation: "test".to_string(),
+                freshness,
+                capability_decision: None,
+                document_version: None,
+                age_ms: None,
+                post_restart: false,
+            },
+            score: LspContextScore {
+                priority: 10,
+                is_hunk_local: false,
+                is_error: false,
+                is_same_file: false,
+                freshness_rank: 0,
+            },
+            payload: None,
+        }
+    }
+
+    fn diag_policy_for_tier(tier: ModelTier) -> LspContextPolicy {
+        LspContextPolicy {
+            model_tier: tier,
+            tier_source: TierSource::WorkflowDefault,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn diagnostics_from_empty_packet_reports_zero_items_no_cache_hit() {
+        use crate::context::{
+            LineRange, LspContextPacket, LspContextPacketMode, LspContextRequest,
+            LspContextTruncation,
+        };
+
+        let packet = LspContextPacket {
+            request: LspContextRequest::File {
+                file: std::path::PathBuf::from("test.rs"),
+                line_ranges: vec![LineRange { start: 0, end: 10 }],
+                include_symbols: false,
+                include_diagnostics: false,
+            },
+            items: vec![],
+            previews: vec![],
+            preview_ids: vec![],
+            mode: LspContextPacketMode::Opportunistic,
+            workspace_root: None,
+            generated_at: None,
+            server_id: None,
+            server_generation: None,
+            operational_state: None,
+            budget: None,
+            notes: vec![],
+            truncation: LspContextTruncation::default(),
+        };
+        let policy = diag_policy_for_tier(ModelTier::Workhorse);
+
+        let diag = LspContextDiagnostics::from_packet_and_policy(&packet, &policy);
+
+        assert_eq!(diag.included_items, 0);
+        assert_eq!(diag.omitted_items, 0);
+        assert_eq!(diag.stale_items, 0);
+        assert!(diag.truncated_sections.is_empty());
+        assert!(!diag.cache_hit);
+        assert_eq!(diag.model_tier, ModelTier::Workhorse);
+        assert_eq!(diag.tier_source, TierSource::WorkflowDefault);
+    }
+
+    #[test]
+    fn diagnostics_from_truncated_packet_reports_truncated_sections() {
+        use crate::context::{
+            LineRange, LspContextPacket, LspContextPacketMode, LspContextRequest,
+            LspContextTruncation,
+        };
+
+        let truncation = LspContextTruncation {
+            bytes_truncated: true,
+            total_bytes: 8192,
+            max_bytes: 4096,
+            files_truncated: true,
+            references_truncated: true,
+            diagnostics_truncated: true,
+            ..Default::default()
+        };
+        let packet = LspContextPacket {
+            request: LspContextRequest::File {
+                file: std::path::PathBuf::from("test.rs"),
+                line_ranges: vec![LineRange { start: 0, end: 10 }],
+                include_symbols: false,
+                include_diagnostics: true,
+            },
+            items: vec![],
+            previews: vec![],
+            preview_ids: vec![],
+            mode: LspContextPacketMode::Opportunistic,
+            workspace_root: None,
+            generated_at: None,
+            server_id: None,
+            server_generation: None,
+            operational_state: None,
+            budget: None,
+            notes: vec!["reference category capped at 20".to_string()],
+            truncation,
+        };
+        let policy = diag_policy_for_tier(ModelTier::Frontier);
+
+        let diag = LspContextDiagnostics::from_packet_and_policy(&packet, &policy);
+
+        assert!(
+            diag.truncated_sections
+                .iter()
+                .any(|s| s.contains("bytes truncated")),
+            "expected byte-truncation note; got {:?}",
+            diag.truncated_sections
+        );
+        assert!(
+            diag.truncated_sections
+                .iter()
+                .any(|s| s.contains("files truncated")),
+            "expected files-truncated note"
+        );
+        assert!(
+            diag.truncated_sections
+                .iter()
+                .any(|s| s.contains("references truncated")),
+            "expected references-truncated note"
+        );
+        assert!(
+            diag.truncated_sections
+                .iter()
+                .any(|s| s.contains("diagnostics truncated")),
+            "expected diagnostics-truncated note"
+        );
+        assert!(
+            diag.truncated_sections
+                .iter()
+                .any(|s| s.contains("capped at 20")),
+            "expected note-derived truncation section"
+        );
+    }
+
+    #[test]
+    fn diagnostics_with_stale_items_counts_only_stale_and_possibly_stale() {
+        use crate::context::{
+            LineRange, LspContextItemKind, LspContextPacket, LspContextPacketMode,
+            LspContextRequest, LspContextTruncation, LspEvidenceFreshness,
+        };
+
+        let items = vec![
+            diag_item(
+                LspEvidenceFreshness::Fresh,
+                "a.rs",
+                LspContextItemKind::Diagnostic,
+            ),
+            diag_item(
+                LspEvidenceFreshness::PossiblyStale,
+                "b.rs",
+                LspContextItemKind::Reference,
+            ),
+            diag_item(
+                LspEvidenceFreshness::Stale,
+                "c.rs",
+                LspContextItemKind::Definition,
+            ),
+            diag_item(
+                LspEvidenceFreshness::StaleAfterEdit,
+                "d.rs",
+                LspContextItemKind::Diagnostic,
+            ),
+            diag_item(
+                LspEvidenceFreshness::RetainedAfterRestart,
+                "e.rs",
+                LspContextItemKind::Diagnostic,
+            ),
+        ];
+        let packet = LspContextPacket {
+            request: LspContextRequest::File {
+                file: std::path::PathBuf::from("test.rs"),
+                line_ranges: vec![LineRange { start: 0, end: 10 }],
+                include_symbols: false,
+                include_diagnostics: true,
+            },
+            items,
+            previews: vec![],
+            preview_ids: vec![],
+            mode: LspContextPacketMode::Opportunistic,
+            workspace_root: None,
+            generated_at: None,
+            server_id: None,
+            server_generation: None,
+            operational_state: None,
+            budget: None,
+            notes: vec![],
+            truncation: LspContextTruncation::default(),
+        };
+        let policy = diag_policy_for_tier(ModelTier::Workhorse);
+
+        let diag = LspContextDiagnostics::from_packet_and_policy(&packet, &policy);
+
+        // included_items reflects total packet items.
+        assert_eq!(diag.included_items, 5);
+        // Only PossiblyStale and Stale count toward stale_items.
+        assert_eq!(diag.stale_items, 2);
+
+        let rendered = diag.render_compact();
+        assert!(
+            rendered.contains("2 stale"),
+            "rendered must include stale count: {rendered}"
+        );
+        assert!(rendered.contains("5 included"));
+    }
+
+    #[test]
+    fn diagnostics_detects_cache_hit_from_special_prefix() {
+        use crate::context::{
+            LineRange, LspContextPacket, LspContextPacketMode, LspContextRequest,
+            LspContextTruncation,
+        };
+
+        let packet = LspContextPacket {
+            request: LspContextRequest::File {
+                file: std::path::PathBuf::from("test.rs"),
+                line_ranges: vec![LineRange { start: 0, end: 10 }],
+                include_symbols: false,
+                include_diagnostics: false,
+            },
+            items: vec![],
+            previews: vec![],
+            preview_ids: vec![],
+            mode: LspContextPacketMode::Opportunistic,
+            workspace_root: None,
+            generated_at: None,
+            server_id: None,
+            server_generation: None,
+            operational_state: None,
+            budget: None,
+            notes: vec![
+                "[cache-hit] served from in-memory cache".to_string(),
+                "post-cache note".to_string(),
+            ],
+            truncation: LspContextTruncation::default(),
+        };
+        let policy = diag_policy_for_tier(ModelTier::Workhorse);
+
+        let diag = LspContextDiagnostics::from_packet_and_policy(&packet, &policy);
+
+        assert!(
+            diag.cache_hit,
+            "cache-hit prefix should flip cache_hit to true"
+        );
+        let rendered = diag.render_compact();
+        assert!(
+            rendered.contains("[cache-hit]"),
+            "render_compact must surface the cache-hit tag: {rendered}"
+        );
+    }
+
+    #[test]
+    fn diagnostics_render_compact_snapshot_is_stable_across_calls() {
+        // render_compact is allowed to evolve, but the core structured
+        // fields and stable substrings must remain consistent across
+        // repeated calls (no random or time-dependent output).
+        use crate::context::{
+            LineRange, LspContextPacket, LspContextPacketMode, LspContextRequest,
+            LspContextTruncation,
+        };
+
+        let packet = LspContextPacket {
+            request: LspContextRequest::File {
+                file: std::path::PathBuf::from("test.rs"),
+                line_ranges: vec![LineRange { start: 0, end: 10 }],
+                include_symbols: false,
+                include_diagnostics: true,
+            },
+            items: vec![],
+            previews: vec![],
+            preview_ids: vec![],
+            mode: LspContextPacketMode::Opportunistic,
+            workspace_root: None,
+            generated_at: None,
+            server_id: None,
+            server_generation: None,
+            operational_state: None,
+            budget: None,
+            notes: vec!["alpha".to_string(), "beta".to_string()],
+            truncation: LspContextTruncation::default(),
+        };
+        let policy = diag_policy_for_tier(ModelTier::Workhorse);
+
+        let diag = LspContextDiagnostics::from_packet_and_policy(&packet, &policy);
+
+        let a = diag.render_compact();
+        let b = diag.render_compact();
+        let c = diag.render_compact();
+
+        assert_eq!(a, b, "render_compact must be deterministic across calls");
+        assert_eq!(b, c, "render_compact must be deterministic across calls");
+
+        // Stable substrings: tier label, workflow name, item counts, max bytes.
+        assert!(a.contains("Workflow: RepairLocal"));
+        assert!(a.contains("Items: 0 included, 0 omitted"));
+        assert!(a.contains("Max bytes: 32768"));
+        assert!(a.contains("Notes: alpha; beta"));
+    }
+
+    #[test]
+    fn diagnostics_render_compact_includes_truncation_block_when_truncated() {
+        use crate::context::{
+            LineRange, LspContextPacket, LspContextPacketMode, LspContextRequest,
+            LspContextTruncation,
+        };
+
+        let packet = LspContextPacket {
+            request: LspContextRequest::File {
+                file: std::path::PathBuf::from("test.rs"),
+                line_ranges: vec![LineRange { start: 0, end: 10 }],
+                include_symbols: false,
+                include_diagnostics: true,
+            },
+            items: vec![],
+            previews: vec![],
+            preview_ids: vec![],
+            mode: LspContextPacketMode::Opportunistic,
+            workspace_root: None,
+            generated_at: None,
+            server_id: None,
+            server_generation: None,
+            operational_state: None,
+            budget: None,
+            notes: vec![],
+            truncation: LspContextTruncation {
+                bytes_truncated: true,
+                total_bytes: 4096,
+                max_bytes: 1024,
+                ..Default::default()
+            },
+        };
+        let policy = diag_policy_for_tier(ModelTier::Workhorse);
+
+        let diag = LspContextDiagnostics::from_packet_and_policy(&packet, &policy);
+        let rendered = diag.render_compact();
+        assert!(
+            rendered.contains("1 truncated sections"),
+            "rendered must report truncation count: {rendered}"
+        );
+        assert!(
+            rendered.contains("Truncation:"),
+            "rendered must include Truncation block: {rendered}"
+        );
+    }
+
+    #[test]
+    fn diagnostics_is_idempotent_under_repeated_construction() {
+        // Simulating a "command before/after" pattern: building the same
+        // diagnostics struct twice in a row with no inputs changed must
+        // yield identical fields.
+        use crate::context::{
+            LineRange, LspContextPacket, LspContextPacketMode, LspContextRequest,
+            LspContextTruncation,
+        };
+
+        let packet = LspContextPacket {
+            request: LspContextRequest::File {
+                file: std::path::PathBuf::from("test.rs"),
+                line_ranges: vec![LineRange { start: 0, end: 10 }],
+                include_symbols: false,
+                include_diagnostics: true,
+            },
+            items: vec![diag_item(
+                crate::context::LspEvidenceFreshness::Fresh,
+                "x.rs",
+                crate::context::LspContextItemKind::Diagnostic,
+            )],
+            previews: vec![],
+            preview_ids: vec![],
+            mode: LspContextPacketMode::Opportunistic,
+            workspace_root: None,
+            generated_at: None,
+            server_id: None,
+            server_generation: None,
+            operational_state: None,
+            budget: None,
+            notes: vec!["n1".to_string()],
+            truncation: LspContextTruncation::default(),
+        };
+        let policy = diag_policy_for_tier(ModelTier::Frontier);
+
+        let first = LspContextDiagnostics::from_packet_and_policy(&packet, &policy);
+        let second = LspContextDiagnostics::from_packet_and_policy(&packet, &policy);
+
+        assert_eq!(first.included_items, second.included_items);
+        assert_eq!(first.stale_items, second.stale_items);
+        assert_eq!(first.omitted_items, second.omitted_items);
+        assert_eq!(first.max_context_bytes, second.max_context_bytes);
+        assert_eq!(first.model_tier, second.model_tier);
+        assert_eq!(first.cache_hit, second.cache_hit);
+        assert_eq!(first.render_compact(), second.render_compact());
+    }
+
+    #[test]
+    fn diagnostics_propagate_policy_fields_verbatim() {
+        // The diagnostics struct must surface every field it claims to
+        // surface. This guards against accidental drops during refactors.
+        use crate::context::{
+            LineRange, LspContextPacket, LspContextPacketMode, LspContextRequest,
+            LspContextTruncation,
+        };
+
+        let policy = LspContextPolicy {
+            model_tier: ModelTier::Frontier,
+            workflow: LspWorkflowRecipe::ImpactAnalysis,
+            task_risk: LspTaskRisk::High,
+            stale_evidence_policy: StaleEvidencePolicy::RequireFresh,
+            unavailable_policy: LspUnavailablePolicy::FailWhenRequired,
+            max_context_bytes: 65_536,
+            tier_source: TierSource::ExplicitOverride,
+            ..Default::default()
+        };
+        let packet = LspContextPacket {
+            request: LspContextRequest::File {
+                file: std::path::PathBuf::from("test.rs"),
+                line_ranges: vec![LineRange { start: 0, end: 10 }],
+                include_symbols: false,
+                include_diagnostics: false,
+            },
+            items: vec![],
+            previews: vec![],
+            preview_ids: vec![],
+            mode: LspContextPacketMode::Required,
+            workspace_root: None,
+            generated_at: None,
+            server_id: None,
+            server_generation: None,
+            operational_state: None,
+            budget: None,
+            notes: vec![],
+            truncation: LspContextTruncation::default(),
+        };
+
+        let diag = LspContextDiagnostics::from_packet_and_policy(&packet, &policy);
+
+        assert_eq!(diag.model_tier, ModelTier::Frontier);
+        assert_eq!(diag.tier_source, TierSource::ExplicitOverride);
+        assert_eq!(diag.workflow, LspWorkflowRecipe::ImpactAnalysis);
+        assert_eq!(diag.task_risk, LspTaskRisk::High);
+        assert_eq!(diag.stale_policy, StaleEvidencePolicy::RequireFresh);
+        assert_eq!(
+            diag.unavailable_policy,
+            LspUnavailablePolicy::FailWhenRequired
+        );
+        assert_eq!(diag.max_context_bytes, 65_536);
+        assert_eq!(diag.notes, Vec::<String>::new());
+    }
 }

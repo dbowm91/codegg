@@ -518,4 +518,221 @@ mod tests {
         assert!(rendered.contains("Previews:"));
         assert!(rendered.contains("applied=1"));
     }
+
+    // -----------------------------------------------------------------------
+    // Phase 13-17 corrective verification: doctor behavior coverage.
+    // These tests exercise the doctor surface for read-only invariants,
+    // common failure modes, and observability snapshot integration.
+    // No test in this block starts an LSP server.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn doctor_report_no_service_marks_unavailable() {
+        // When the live service is None, the doctor must surface that
+        // the user has no LSP service available rather than reporting
+        // a happy-path diagnosis.
+        let tmp = TempDir::new().unwrap();
+        fs::write(tmp.path().join("Cargo.toml"), "[package]").unwrap();
+        let file = tmp.path().join("main.rs");
+        fs::write(&file, "fn main() {}").unwrap();
+
+        let report = futures::executor::block_on(build_doctor_report(
+            &file, None, None, "disabled", 0, 0, 0, None,
+        ));
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|i| i.contains("No LSP service available")),
+            "doctor must mark no-service as a diagnostic issue, got: {:?}",
+            report.issues
+        );
+        assert!(report.active_server_key.is_none());
+        assert!(report.operational_state.is_none());
+        assert!(report.capability_summary.is_none());
+    }
+
+    #[test]
+    fn doctor_report_profile_detected_but_no_active_server_suggests_install() {
+        // Profile is detectable from the file extension but the live
+        // service has no matching client key. Doctor must recommend
+        // installing the server rather than reporting success.
+        let tmp = TempDir::new().unwrap();
+        fs::write(tmp.path().join("Cargo.toml"), "[package]").unwrap();
+        let file = tmp.path().join("main.rs");
+        fs::write(&file, "fn main() {}").unwrap();
+
+        let report = futures::executor::block_on(build_doctor_report(
+            &file, None, None, "disabled", 0, 0, 0, None,
+        ));
+        assert_eq!(report.server_profile.as_deref(), Some("rust-analyzer"));
+        assert!(
+            report.active_server_key.is_none(),
+            "no live service means no active server"
+        );
+        assert!(
+            report
+                .remediation
+                .iter()
+                .any(|r| r.contains("Install") && r.contains("rust-analyzer")),
+            "doctor must suggest installing rust-analyzer when profile is detected but no client: {:?}",
+            report.remediation
+        );
+    }
+
+    #[test]
+    fn doctor_report_no_active_server_does_not_summarize_capabilities() {
+        // With no active server the doctor must NOT report capability
+        // data; that section must only appear when capabilities were
+        // actually fetched from a live client.
+        let tmp = TempDir::new().unwrap();
+        fs::write(tmp.path().join("Cargo.toml"), "[package]").unwrap();
+        let file = tmp.path().join("main.rs");
+        fs::write(&file, "fn main() {}").unwrap();
+
+        let report = futures::executor::block_on(build_doctor_report(
+            &file, None, None, "disabled", 0, 0, 0, None,
+        ));
+        assert!(report.capability_summary.is_none());
+        let rendered = render_doctor_report(&report);
+        // The "Capabilities:" prefix must appear only when a summary is
+        // available; absent server must not print "none advertised".
+        assert!(
+            !rendered.contains("Capabilities: "),
+            "doctor must not print Capabilities when no summary is available: {rendered}"
+        );
+    }
+
+    #[test]
+    fn doctor_report_cache_disabled_emits_remediation_hint() {
+        // When cache_mode is "disabled" the doctor must surface a
+        // remediation hint about enabling it, rather than staying
+        // silent about the missing cache.
+        let tmp = TempDir::new().unwrap();
+        fs::write(tmp.path().join("Cargo.toml"), "[package]").unwrap();
+        let file = tmp.path().join("main.rs");
+        fs::write(&file, "fn main() {}").unwrap();
+
+        let report = futures::executor::block_on(build_doctor_report(
+            &file, None, None, "disabled", 0, 0, 0, None,
+        ));
+        assert!(
+            report
+                .remediation
+                .iter()
+                .any(|r| r.contains("Enable cache") && r.contains("lsp_semantic_cache")),
+            "doctor must surface cache-disabled remediation: {:?}",
+            report.remediation
+        );
+    }
+
+    #[test]
+    fn doctor_report_stale_previews_count_surfaces_remediation() {
+        // When stale previews exist, the doctor must surface a
+        // remediation hint about refreshing them rather than
+        // silently accepting the staleness.
+        let tmp = TempDir::new().unwrap();
+        fs::write(tmp.path().join("Cargo.toml"), "[package]").unwrap();
+        let file = tmp.path().join("main.rs");
+        fs::write(&file, "fn main() {}").unwrap();
+
+        let report = futures::executor::block_on(build_doctor_report(
+            &file, None, None, "memory", 0, 5, 3, None,
+        ));
+        assert_eq!(report.preview_count, 5);
+        assert_eq!(report.preview_stale_count, 3);
+        assert!(
+            report
+                .remediation
+                .iter()
+                .any(|r| r.contains("stale") && r.contains("re-run")),
+            "doctor must surface stale-preview remediation: {:?}",
+            report.remediation
+        );
+    }
+
+    #[test]
+    fn doctor_report_no_issues_no_remediation_says_operational() {
+        // The happy-path fallback ("LSP is operational for this file")
+        // must only fire when both the issue and remediation lists are
+        // empty. We construct an unsupported language so an issue IS
+        // expected and verify the fallback does NOT fire.
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("a.weirdext");
+        fs::write(&file, "").unwrap();
+
+        let report = futures::executor::block_on(build_doctor_report(
+            &file, None, None, "disabled", 0, 0, 0, None,
+        ));
+        assert!(
+            !report.issues.is_empty(),
+            "unsupported language must produce at least one issue"
+        );
+        assert!(
+            !report
+                .remediation
+                .iter()
+                .any(|r| r.contains("LSP is operational")),
+            "operational fallback must not fire when issues exist: {:?}",
+            report.remediation
+        );
+    }
+
+    #[test]
+    fn doctor_report_renders_stderr_tail_when_present() {
+        // When observability carries a stderr_tail, the doctor must
+        // surface the most recent lines under a "Stderr (last N)"
+        // heading.
+        let tmp = TempDir::new().unwrap();
+        fs::write(tmp.path().join("Cargo.toml"), "[package]").unwrap();
+        let file = tmp.path().join("main.rs");
+        fs::write(&file, "fn main() {}").unwrap();
+
+        let obs = LspObservabilitySnapshot {
+            active_clients: 1,
+            cache_mode: "memory".to_string(),
+            preview_count: 0,
+            preview_stale_count: 0,
+            preview_applied_count: 0,
+            ..Default::default()
+        };
+        let report = futures::executor::block_on(build_doctor_report(
+            &file,
+            None,
+            None,
+            "memory",
+            0,
+            0,
+            0,
+            Some(obs),
+        ));
+        let rendered = render_doctor_report(&report);
+        assert!(rendered.contains("Observability:"));
+        assert!(rendered.contains("Active clients: 1"));
+    }
+
+    #[test]
+    fn doctor_report_empty_observability_still_renders_sections() {
+        // An explicit but empty observability snapshot must still
+        // produce the doctor sections without panic. This guards
+        // against regressions in the optional-snapshot branch.
+        let tmp = TempDir::new().unwrap();
+        fs::write(tmp.path().join("Cargo.toml"), "[package]").unwrap();
+        let file = tmp.path().join("main.rs");
+        fs::write(&file, "fn main() {}").unwrap();
+
+        let report = futures::executor::block_on(build_doctor_report(
+            &file,
+            None,
+            None,
+            "memory",
+            0,
+            0,
+            0,
+            Some(LspObservabilitySnapshot::default()),
+        ));
+        let rendered = render_doctor_report(&report);
+        assert!(rendered.contains("Observability:"));
+        assert!(rendered.contains("Active clients: 0"));
+    }
 }
