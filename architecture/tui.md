@@ -37,6 +37,8 @@ This ensures keyboard input, resize handling, streaming redraws, spinner animati
 
 **Converted handlers**: `ReloadSessions`, `LoadSessionMessages`, `OpenTreeDialog`, `PreviewImport`, `ConfirmImport`, `ResearchListRuns`, `ResearchLoadRun`, `ResearchLoadSection`, `MemorySummary`, `MemorySearch`, `MemoryRemember`, `MemoryForget`, `RunDoctor`.
 
+**File diff pipeline** (related but distinct): `FileDiffStatsReady` uses a separate spawn-and-complete pattern via `spawn_sidebar_diff_stats()` in `src/tui/file_diff.rs`. It does not go through `spawn_tui_task`. The background worker is bounded by a semaphore (max 2 concurrent tasks), enforces 1 MiB size caps, binary detection, and stale-generation protection.
+
 **Not converted** (remain synchronous in command dispatch): session mutations (delete, archive, fork, share, export, rename), bulk operations, goal commands, shell commands, security review, and other already-fast or already-spawned handlers.
 
 See `src/tui/async_cmd.rs` for the `spawn_tui_task` helper.
@@ -91,7 +93,7 @@ tui/
 │   ├── notification.rs     # NotificationManager (desktop notifications)
 │   ├── prompt.rs           # PromptWidget (input prompt)
 │   ├── scroll.rs           # CenteredScroll (reusable scrolling)
-│   ├── sidebar.rs          # SidebarWidget (side panel, git info)
+│   ├── sidebar.rs          # SidebarWidget (side panel, git info, file changes with diff stats)
 │   ├── spinner.rs          # SpinnerWidget (busy indicator)
 │   ├── status_bar.rs       # StatusBarWidget (bottom status: status + tokens)
 │   ├── toast.rs            # ToastManager (notifications)
@@ -100,6 +102,7 @@ tui/
 ├── layout.rs               # Layout calculations, TuiLayout
 ├── route.rs                # Route/RouteManager (Home, Session routes)
 ├── theme.rs                # Theme definitions (31 themes)
+├── file_diff.rs             # Async diff stats computation for sidebar file changes
 ├── command.rs              # Slash command registry
 └── mod.rs                  # TUI entry point, event loop, GlobalEventBus
 ```
@@ -156,6 +159,13 @@ pub struct SessionState {
     pub project_dir: String,
     pub last_edited_file: Option<String>, // Most recently edited file path
     pub changed_files: Vec<ChangedFile>,
+    // DiffStatsState (src/tui/app/state/session.rs):
+    // pub enum DiffStatsState {
+    //     Pending { generation: u64 },
+    //     Ready { generation: u64, additions: usize, deletions: usize },
+    //     Skipped { generation: u64, reason: &'static str },
+    //     Error { generation: u64, message: String },
+    // }
     pub mcp_servers: Vec<(String, String)>,
     pub context_tokens: usize,
     pub context_limit: usize,
@@ -320,6 +330,7 @@ pub enum TuiCommand {
     ResearchSectionLoaded { request_id: u64, section: String, content: Option<(ReportSection, String)>, error: Option<String> },
     MemoryResult { toast_message: String, is_error: bool },
     DoctorResult { summary: String, is_error: bool },
+    FileDiffStatsReady { path: PathBuf, generation: u64, result: FileDiffStatsResult },
 }
 ```
 
@@ -428,7 +439,7 @@ TUI subscribes to `GlobalEventBus` for:
 | `AgentFinished` | Update session status, trigger memory consolidation |
 | `PermissionPending` | Show permission dialog |
 | `QuestionPending` | Show question dialog |
-| `FileChanged` | Track changed files |
+| `FileChanged` | Cheap state mutation (mark Pending, update sidebar), spawn background diff via `spawn_sidebar_diff_stats()` |
 | `SubagentStarted/Progress/Completed/Failed` | Show toasts |
 | `CompactionTriggered` | Show toast |
 | `TodoUpdated` | Update sidebar todo list |

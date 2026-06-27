@@ -106,6 +106,7 @@ pub mod app;
 pub mod async_cmd;
 pub mod command;
 pub mod components;
+pub mod file_diff;
 pub mod input;
 pub mod layout;
 pub mod route;
@@ -143,37 +144,6 @@ use md5;
 use rand;
 use std::fs::OpenOptions;
 use tokio::sync::mpsc;
-
-#[derive(Debug, Clone, Copy, Default)]
-struct SidebarDiffStats {
-    additions: usize,
-    deletions: usize,
-}
-
-fn sidebar_diff_stats(
-    project_dir: &str,
-    path: &str,
-    old_content: Option<&str>,
-) -> SidebarDiffStats {
-    let abs_path = if std::path::Path::new(path).is_absolute() {
-        std::path::PathBuf::from(path)
-    } else {
-        std::path::Path::new(project_dir).join(path)
-    };
-    let new_content = std::fs::read_to_string(abs_path).unwrap_or_default();
-    let old_content = old_content.unwrap_or_default();
-
-    let diff = similar::TextDiff::from_lines(old_content, &new_content);
-    let mut stats = SidebarDiffStats::default();
-    for change in diff.iter_all_changes() {
-        match change.tag() {
-            similar::ChangeTag::Delete => stats.deletions += 1,
-            similar::ChangeTag::Insert => stats.additions += 1,
-            similar::ChangeTag::Equal => {}
-        };
-    }
-    stats
-}
 
 macro_rules! debug_log {
     ($($arg:tt)*) => {
@@ -3609,6 +3579,45 @@ fn handle_shell_list(app: &mut app::App) {
     app.messages_state.toasts.info(&lines.join("\n"));
 }
 
+fn handle_file_diff_stats_ready(
+    app: &mut app::App,
+    path: std::path::PathBuf,
+    generation: u64,
+    result: crate::tui::file_diff::FileDiffStatsResult,
+) {
+    use crate::tui::app::state::session::DiffStatsState;
+
+    // Find the changed-file entry by path.
+    if let Some(entry) = app
+        .session_state
+        .changed_files
+        .iter_mut()
+        .find(|f| f.path == path)
+    {
+        // Ignore stale completions.
+        if entry.diff_state.generation() != generation {
+            return;
+        }
+        entry.diff_state = DiffStatsState::from_result(generation, result);
+    } else {
+        return;
+    }
+
+    // Refresh sidebar.
+    let changes = app
+        .session_state
+        .changed_files
+        .iter()
+        .map(|file| crate::tui::components::sidebar::SidebarFileChange {
+            path: file.path.to_string_lossy().into_owned(),
+            action: file.action.clone(),
+            diff_preview: file.diff_preview.clone(),
+            diff_state: file.diff_state.clone(),
+        })
+        .collect();
+    app.sidebar.set_file_changes(changes);
+}
+
 /// Handle a `TuiCommand::SecurityReviewFinished` notification from the
 /// spawned background task. Stale completions (id mismatch) are
 /// silently ignored so cancellation cannot be undone by a late
@@ -4436,33 +4445,33 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                     }
                     AppEvent::FileChanged { path, action, old_content } => {
                         debug_log!("Event loop: FileChanged for path={}, action={}", path, action);
-                        let diff_stats = sidebar_diff_stats(
-                            &app.session_state.project_dir,
-                            &path,
-                            old_content.as_deref(),
-                        );
                         let path_buf = std::path::PathBuf::from(&path);
-                        if let Some(existing) = app
+
+                        // Increment generation for this path.
+                        let generation = if let Some(existing) = app
                             .session_state
                             .changed_files
                             .iter_mut()
                             .find(|file| file.path == path_buf)
                         {
+                            let new_gen = existing.diff_state.generation().saturating_add(1);
                             existing.action = action.clone();
                             existing.diff_preview = Vec::new();
-                            existing.additions = diff_stats.additions;
-                            existing.deletions = diff_stats.deletions;
+                            existing.diff_state = crate::tui::app::state::session::DiffStatsState::Pending { generation: new_gen };
+                            new_gen
                         } else {
                             app.session_state.changed_files.push(
                                 crate::tui::app::state::session::ChangedFile {
-                                    path: path_buf,
+                                    path: path_buf.clone(),
                                     action: action.clone(),
                                     diff_preview: Vec::new(),
-                                    additions: diff_stats.additions,
-                                    deletions: diff_stats.deletions,
+                                    diff_state: crate::tui::app::state::session::DiffStatsState::Pending { generation: 0 },
                                 },
                             );
-                        }
+                            0
+                        };
+
+                        // Update sidebar immediately with pending state.
                         let changes = app
                             .session_state
                             .changed_files
@@ -4471,11 +4480,20 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                                 path: file.path.to_string_lossy().into_owned(),
                                 action: file.action.clone(),
                                 diff_preview: file.diff_preview.clone(),
-                                additions: file.additions,
-                                deletions: file.deletions,
+                                diff_state: file.diff_state.clone(),
                             })
                             .collect();
                         app.sidebar.set_file_changes(changes);
+
+                        // Spawn background diff computation.
+                        crate::tui::file_diff::spawn_sidebar_diff_stats(
+                            app.tui_cmd_tx.clone(),
+                            app.session_state.project_dir.clone(),
+                            path,
+                            old_content,
+                            generation,
+                        );
+
                         needs_render = true;
                     }
                     AppEvent::Error { message } => {
@@ -4917,6 +4935,9 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                     }
                     TuiCommand::ShellAsk { id, question } => {
                         handle_shell_ask(app, id, question);
+                    }
+                    TuiCommand::FileDiffStatsReady { path, generation, result } => {
+                        handle_file_diff_stats_ready(app, path, generation, result);
                     }
                 }
                 needs_render = true;

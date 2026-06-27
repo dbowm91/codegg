@@ -340,6 +340,11 @@ pub enum TuiCommand {
         id: u64,
         question: String,
     },
+    FileDiffStatsReady {
+        path: PathBuf,
+        generation: u64,
+        result: crate::tui::file_diff::FileDiffStatsResult,
+    },
 }
 
 /// Main application state for the TUI.
@@ -1938,8 +1943,7 @@ impl App {
                     path: file.path.to_string_lossy().into_owned(),
                     action: file.action.clone(),
                     diff_preview: file.diff_preview.clone(),
-                    additions: file.additions,
-                    deletions: file.deletions,
+                    diff_state: file.diff_state.clone(),
                 })
                 .collect(),
         );

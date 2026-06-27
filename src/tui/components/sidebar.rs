@@ -1,5 +1,6 @@
 use crate::session::events::AgentPlan;
 use crate::session::Session;
+use crate::tui::app::state::session::DiffStatsState;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -34,8 +35,7 @@ pub struct SidebarFileChange {
     pub path: String,
     pub action: String,
     pub diff_preview: Vec<String>,
-    pub additions: usize,
-    pub deletions: usize,
+    pub diff_state: DiffStatsState,
 }
 
 pub struct SidebarWidget {
@@ -469,9 +469,25 @@ impl SidebarWidget {
             ));
             if !self.file_changes_collapsed {
                 for change in &self.file_changes {
-                    let stats = format!("+{} -{}", change.additions, change.deletions);
-                    let stats_width = stats.len() + 1;
-                    lines.push(Line::from(vec![
+                    let (stats_text, stats_style) = match &change.diff_state {
+                        DiffStatsState::Ready {
+                            additions,
+                            deletions,
+                            ..
+                        } => (format!("+{additions} -{deletions}"), Style::default()),
+                        DiffStatsState::Pending { .. } => {
+                            ("diff...".to_string(), Style::default().fg(self.theme.muted))
+                        }
+                        DiffStatsState::Skipped { reason, .. } => {
+                            (reason.to_string(), Style::default().fg(self.theme.muted))
+                        }
+                        DiffStatsState::Error { .. } => (
+                            "diff err".to_string(),
+                            Style::default().fg(self.theme.error),
+                        ),
+                    };
+                    let stats_width = stats_text.len() + 1;
+                    let mut spans = vec![
                         Span::styled(
                             format!("  {} ", clean_inline_text(&change.action, 1)),
                             Style::default().fg(self.theme.warning),
@@ -481,16 +497,27 @@ impl SidebarWidget {
                             width.saturating_sub(6 + stats_width),
                         )),
                         Span::raw(" "),
-                        Span::styled(
-                            format!("+{}", change.additions),
+                    ];
+                    // For Ready state, split into colored +/- spans.
+                    if let DiffStatsState::Ready {
+                        additions,
+                        deletions,
+                        ..
+                    } = &change.diff_state
+                    {
+                        spans.push(Span::styled(
+                            format!("+{additions}"),
                             Style::default().fg(self.theme.success),
-                        ),
-                        Span::raw(" "),
-                        Span::styled(
-                            format!("-{}", change.deletions),
+                        ));
+                        spans.push(Span::raw(" "));
+                        spans.push(Span::styled(
+                            format!("-{deletions}"),
                             Style::default().fg(self.theme.error),
-                        ),
-                    ]));
+                        ));
+                    } else {
+                        spans.push(Span::styled(stats_text, stats_style));
+                    }
+                    lines.push(Line::from(spans));
                 }
             }
         }
@@ -522,9 +549,21 @@ impl SidebarWidget {
                 .file_changes
                 .get(*idx)
                 .map(|change| {
+                    let stats_str = match &change.diff_state {
+                        DiffStatsState::Ready {
+                            additions,
+                            deletions,
+                            ..
+                        } => {
+                            format!("+{additions} -{deletions}")
+                        }
+                        DiffStatsState::Pending { .. } => "computing diff...".to_string(),
+                        DiffStatsState::Skipped { reason, .. } => format!("skipped: {reason}"),
+                        DiffStatsState::Error { message, .. } => format!("error: {message}"),
+                    };
                     format!(
-                        "Modified: {} ({}, +{} -{})",
-                        change.path, change.action, change.additions, change.deletions
+                        "Modified: {} ({}, {})",
+                        change.path, change.action, stats_str
                     )
                 })
                 .unwrap_or_default(),

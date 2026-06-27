@@ -69,6 +69,7 @@ src/tui/
 │   ├── toast.rs             # ToastManager (notifications)
 │   ├── tool_output.rs       # Tool call result display
 │   └── mod.rs
+├── file_diff.rs         # Async diff stats computation for sidebar file changes
 ├── input.rs            # Key event handling, keybindings
 ├── layout.rs           # Layout calculations
 ├── route.rs            # Route/RouteManager (Home, Session routes)
@@ -700,6 +701,7 @@ pub enum TuiCommand {
     ListTasks,
     DeleteTask { id: String },
     CompactSession,
+    FileDiffStatsReady { path: PathBuf, generation: u64, result: FileDiffStatsResult },
     OpenDiffDialog { old_content: String, new_content: String, title: String },
     SendNotification { notification_type: NotificationType, body: String },
 }
@@ -789,6 +791,7 @@ TuiCommand::SessionsReloaded { sessions, message_counts, error } => {
 **Stale protection**: Import preview and research operations use a `request_id` generation counter. Completions with a mismatched id are silently ignored.
 
 **See also**: `src/tui/async_cmd.rs` for the `spawn_tui_task` helper, `plans/tui_phase_1_event_loop_responsiveness.md` for the design plan.
+- `src/tui/file_diff.rs` - Async diff-stats background pipeline for sidebar file changes
 
 ## TuiMsg Enum (src/tui/app/types.rs)
 
@@ -1022,6 +1025,11 @@ pub async fn run_event_loop(app: &mut App) -> Result<(), AppError> {
                 AppEvent::QuestionPending { session_id, questions } => {
                     let questions: Vec<QuestionSpec> = serde_json::from_str(&questions).unwrap();
                     app.show_question_dialog(questions, session_id);
+                }
+                AppEvent::FileChanged { path, action, old_content } => {
+                    // Cheap state mutation: mark diff as Pending, update sidebar immediately,
+                    // then spawn background diff computation via spawn_sidebar_diff_stats().
+                    // Completion arrives as TuiCommand::FileDiffStatsReady.
                 }
                 // ... handle other events
             }
