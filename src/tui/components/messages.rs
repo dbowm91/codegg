@@ -89,6 +89,19 @@ pub enum MsgPart {
         width: u32,
         height: u32,
     },
+    ShellCell {
+        id: u64,
+        command: String,
+        cwd: String,
+        stdout_preview: String,
+        stderr_preview: String,
+        status: String,
+        elapsed_ms: Option<u64>,
+        exit_code: Option<i32>,
+        truncated: bool,
+        promoted: bool,
+        expanded: bool,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -144,6 +157,21 @@ impl UIMessage {
                         text.push(' ');
                     }
                     text.push_str(&format!("[Image: {}]", alt_text));
+                }
+                MsgPart::ShellCell {
+                    command,
+                    status,
+                    stdout_preview,
+                    stderr_preview,
+                    ..
+                } => {
+                    if !text.is_empty() {
+                        text.push('\n');
+                    }
+                    text.push_str(&format!(
+                        "$ {} [{}] stdout: {} stderr: {}",
+                        command, status, stdout_preview, stderr_preview
+                    ));
                 }
             }
         }
@@ -574,6 +602,28 @@ impl MessagesWidget {
                 }
                 MsgPart::Image { .. } => {
                     lines += 1;
+                }
+                MsgPart::ShellCell {
+                    stdout_preview,
+                    stderr_preview,
+                    expanded,
+                    ..
+                } => {
+                    lines += 1;
+                    if *expanded {
+                        lines += stdout_preview.lines().count().max(1);
+                        if !stderr_preview.is_empty() {
+                            lines += stderr_preview.lines().count().max(1);
+                        }
+                    } else {
+                        lines += stdout_preview
+                            .lines()
+                            .count()
+                            .min(TOOL_OUTPUT_PREVIEW_LINES);
+                        if stdout_preview.lines().count() > TOOL_OUTPUT_PREVIEW_LINES {
+                            lines += 1;
+                        }
+                    }
                 }
             }
         }
@@ -1060,6 +1110,20 @@ impl MessagesWidget {
                             }
                             content.push_str(&format!("[Image: {}]", alt_text));
                         }
+                        MsgPart::ShellCell {
+                            command,
+                            stdout_preview,
+                            stderr_preview,
+                            ..
+                        } => {
+                            if !content.is_empty() {
+                                content.push('\n');
+                            }
+                            content.push_str(&format!(
+                                "$ {}\nstdout: {}\nstderr: {}",
+                                command, stdout_preview, stderr_preview
+                            ));
+                        }
                     }
                 }
                 return content;
@@ -1295,6 +1359,14 @@ impl MessagesWidget {
                     MsgPart::Image { alt_text, .. } => {
                         format!("[Image: {}]", alt_text)
                     }
+                    MsgPart::ShellCell {
+                        command,
+                        stdout_preview,
+                        stderr_preview,
+                        ..
+                    } => {
+                        format!("{}\n{}\n{}", command, stdout_preview, stderr_preview)
+                    }
                 };
 
                 let lower_content = part_content.to_lowercase();
@@ -1402,6 +1474,20 @@ impl MessagesWidget {
                             content.push('\n');
                         }
                         content.push_str(&format!("[Image: {}]", alt_text));
+                    }
+                    MsgPart::ShellCell {
+                        command,
+                        stdout_preview,
+                        stderr_preview,
+                        ..
+                    } => {
+                        if !content.is_empty() {
+                            content.push('\n');
+                        }
+                        content.push_str(&format!(
+                            "$ {}\nstdout: {}\nstderr: {}",
+                            command, stdout_preview, stderr_preview
+                        ));
                     }
                 }
             }
@@ -1911,6 +1997,114 @@ impl MessagesWidget {
                         img_text,
                         Style::default().fg(self.theme.muted),
                     )]));
+                }
+                MsgPart::ShellCell {
+                    id: _,
+                    command,
+                    cwd: _,
+                    stdout_preview,
+                    stderr_preview,
+                    status,
+                    elapsed_ms,
+                    exit_code,
+                    truncated,
+                    promoted,
+                    expanded,
+                } => {
+                    let (icon, base_style) = match status.as_str() {
+                        "running" => (
+                            tool_spinner_frame(),
+                            Style::default().fg(self.theme.warning),
+                        ),
+                        "exited" => ("✓", Style::default().fg(self.theme.success)),
+                        "timed_out" => ("✗", Style::default().fg(self.theme.error)),
+                        _ => ("○", Style::default().fg(self.theme.muted)),
+                    };
+                    let mut summary_parts: Vec<String> = Vec::new();
+                    if let Some(ms) = elapsed_ms {
+                        if *ms < 1000 {
+                            summary_parts.push(format!("{}ms", ms));
+                        } else {
+                            summary_parts.push(format!("{:.1}s", *ms as f64 / 1000.0));
+                        }
+                    }
+                    if let Some(code) = exit_code {
+                        summary_parts.push(format!("exit {code}"));
+                    }
+                    if *truncated {
+                        summary_parts.push("truncated".to_string());
+                    }
+                    if *promoted {
+                        summary_parts.push("promoted".to_string());
+                    }
+                    let summary_str = if summary_parts.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" ({})", summary_parts.join(", "))
+                    };
+                    let _toggle = if stdout_preview.lines().count() > TOOL_OUTPUT_PREVIEW_LINES {
+                        if *expanded {
+                            " collapse"
+                        } else {
+                            " expand"
+                        }
+                    } else {
+                        ""
+                    };
+                    lines.push(Line::from(vec![Span::styled(
+                        format!("  {} $ {}{}", icon, command, summary_str),
+                        base_style,
+                    )]));
+                    if status == "running" && stdout_preview.is_empty() && stderr_preview.is_empty()
+                    {
+                        lines.push(Line::from(vec![
+                            Span::raw("    "),
+                            Span::styled("running...", Style::default().fg(self.theme.muted)),
+                        ]));
+                    } else if !stdout_preview.is_empty() || !stderr_preview.is_empty() {
+                        let limit = if *expanded {
+                            usize::MAX
+                        } else {
+                            TOOL_OUTPUT_PREVIEW_LINES
+                        };
+                        if !stdout_preview.is_empty() {
+                            for output_line in stdout_preview.lines().take(limit) {
+                                lines.push(Line::from(vec![
+                                    Span::raw("    "),
+                                    Span::styled(
+                                        output_line.to_string(),
+                                        Style::default().fg(self.theme.muted),
+                                    ),
+                                ]));
+                            }
+                            let total_lines = stdout_preview.lines().count();
+                            if !*expanded && total_lines > TOOL_OUTPUT_PREVIEW_LINES {
+                                lines.push(Line::from(vec![
+                                    Span::raw("    "),
+                                    Span::styled(
+                                        format!(
+                                            "... (+{} more lines, click or toggle to expand)",
+                                            total_lines - TOOL_OUTPUT_PREVIEW_LINES
+                                        ),
+                                        Style::default()
+                                            .fg(self.theme.muted)
+                                            .add_modifier(Modifier::DIM),
+                                    ),
+                                ]));
+                            }
+                        }
+                        if !stderr_preview.is_empty() {
+                            for error_line in stderr_preview.lines().take(limit) {
+                                lines.push(Line::from(vec![
+                                    Span::raw("    "),
+                                    Span::styled(
+                                        error_line.to_string(),
+                                        Style::default().fg(self.theme.error),
+                                    ),
+                                ]));
+                            }
+                        }
+                    }
                 }
             }
         }

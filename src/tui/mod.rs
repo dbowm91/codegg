@@ -2206,6 +2206,274 @@ fn apply_security_review_receipt(
     }
 }
 
+fn handle_run_human_shell(app: &mut app::App, command: String, promote_after: bool) {
+    use crate::shell::policy::evaluate_command;
+    use crate::shell::types::{ShellCapturePolicy, ShellOrigin, ShellRequest};
+
+    let policy = evaluate_command(&command);
+    match policy {
+        crate::shell::policy::HumanShellPolicyDecision::Block { reason } => {
+            app.messages_state
+                .toasts
+                .error(&format!("Blocked: {}", reason));
+            return;
+        }
+        crate::shell::policy::HumanShellPolicyDecision::Warn { reason } => {
+            app.messages_state
+                .toasts
+                .warning(&format!("Warning: {}", reason));
+        }
+        crate::shell::policy::HumanShellPolicyDecision::Allow => {}
+    }
+
+    let id = app.shell_store.alloc_id();
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let capture_policy = if promote_after {
+        ShellCapturePolicy::StoreAndPromote
+    } else {
+        ShellCapturePolicy::StoreEphemeral
+    };
+    let req = ShellRequest {
+        id,
+        origin: ShellOrigin::HumanEphemeral,
+        command: command.clone(),
+        cwd: cwd.clone(),
+        timeout: std::time::Duration::from_secs(crate::shell::DEFAULT_TIMEOUT_SECS),
+        capture_policy,
+    };
+    app.shell_store.insert_started(&req);
+
+    app.messages_state
+        .messages
+        .add_assistant_text(String::new());
+    app.messages_state.messages.add_tool_call(
+        format!("shell-{}", id.0),
+        "human_shell".to_string(),
+        serde_json::json!({ "command": command, "cwd": cwd }),
+    );
+    app.messages_state
+        .messages
+        .mark_tool_call_running(&format!("shell-{}", id.0));
+
+    let (tx, mut rx) = tokio::sync::mpsc::channel(128);
+    let runtime = crate::shell::ShellRuntime::new();
+    let tui_cmd_tx = app.tui_cmd_tx.clone();
+    let id_val = id.0;
+    tokio::spawn(async move {
+        match runtime.spawn(req, tx.clone()).await {
+            Ok(_handle) => {
+                if let Some(ref ttx) = tui_cmd_tx {
+                    let _ = ttx.try_send(app::TuiCommand::ShellEvent(
+                        crate::shell::ShellEvent::Started { id, command, cwd },
+                    ));
+                }
+                while let Some(event) = rx.recv().await {
+                    if let Some(ref ttx) = tui_cmd_tx {
+                        let _ = ttx.try_send(app::TuiCommand::ShellEvent(event));
+                    }
+                }
+            }
+            Err(e) => {
+                if let Some(ref ttx) = tui_cmd_tx {
+                    let _ = ttx.try_send(app::TuiCommand::ShellEvent(
+                        crate::shell::ShellEvent::FailedToStart { id, error: e },
+                    ));
+                }
+            }
+        }
+    });
+    let _ = id_val;
+}
+
+fn handle_shell_event(app: &mut app::App, event: crate::shell::ShellEvent) {
+    match &event {
+        crate::shell::ShellEvent::Started { id, .. } => {
+            app.messages_state
+                .messages
+                .mark_tool_call_running(&format!("shell-{}", id.0));
+        }
+        crate::shell::ShellEvent::Stdout { id, bytes } => {
+            app.shell_store.append_stdout(*id, bytes);
+            let entry = app.shell_store.get(*id);
+            let preview = entry.map(|e| e.stdout.head_str_lossy()).unwrap_or_default();
+            let _truncated = entry.map(|e| e.stdout.omitted_bytes > 0).unwrap_or(false);
+            let preview_lines: Vec<&str> = preview.lines().take(8).collect();
+            let stdout_preview = preview_lines.join("\n");
+            app.messages_state.messages.update_tool_call(
+                &format!("shell-{}", id.0),
+                stdout_preview,
+                crate::session::message::ToolStatus::Running,
+                None,
+                None,
+                None,
+            );
+        }
+        crate::shell::ShellEvent::Stderr { id, bytes } => {
+            app.shell_store.append_stderr(*id, bytes);
+        }
+        crate::shell::ShellEvent::Exited {
+            id,
+            status,
+            elapsed,
+        } => {
+            app.shell_store.mark_exited(*id, *status, *elapsed);
+            let entry = app.shell_store.get(*id);
+            let stdout_preview = entry.map(|e| e.stdout.head_str_lossy()).unwrap_or_default();
+            let stderr_preview = entry.map(|e| e.stderr.head_str_lossy()).unwrap_or_default();
+            let _truncated = entry.map(|e| e.stdout.omitted_bytes > 0).unwrap_or(false);
+            let _exit_code_str = status
+                .map(|c| format!("exit {}", c))
+                .unwrap_or_else(|| "no exit code".to_string());
+            let elapsed_ms = elapsed.as_millis() as u64;
+            let output = format!(
+                "$ {}\n\n{}{}",
+                entry.map(|e| e.command.as_str()).unwrap_or(""),
+                stdout_preview,
+                if stderr_preview.is_empty() {
+                    String::new()
+                } else {
+                    format!("\nstderr:\n{}", stderr_preview)
+                }
+            );
+            app.messages_state.messages.update_tool_call(
+                &format!("shell-{}", id.0),
+                output,
+                if status.unwrap_or(-1) == 0 {
+                    crate::session::message::ToolStatus::Completed
+                } else {
+                    crate::session::message::ToolStatus::Error
+                },
+                Some(elapsed_ms),
+                *status,
+                None,
+            );
+        }
+        crate::shell::ShellEvent::TimedOut { id, elapsed } => {
+            app.shell_store.mark_timeout(*id, *elapsed);
+            app.messages_state.messages.update_tool_call(
+                &format!("shell-{}", id.0),
+                "Timed out".to_string(),
+                crate::session::message::ToolStatus::Error,
+                Some(elapsed.as_millis() as u64),
+                None,
+                None,
+            );
+        }
+        crate::shell::ShellEvent::FailedToStart { id, error } => {
+            app.shell_store.mark_failed_to_start(*id);
+            app.messages_state.messages.update_tool_call(
+                &format!("shell-{}", id.0),
+                format!("Failed to start: {}", error),
+                crate::session::message::ToolStatus::Error,
+                None,
+                None,
+                None,
+            );
+        }
+    }
+}
+
+fn handle_shell_include(app: &mut app::App, id: u64, mode: String, _question: Option<String>) {
+    use crate::shell::types::ShellCommandId;
+
+    let cmd_id = ShellCommandId(id);
+    if let Some(entry) = app.shell_store.get(cmd_id) {
+        let stdout = entry.stdout.head_str_lossy();
+        let stderr = entry.stderr.head_str_lossy();
+        let include_text = match mode.as_str() {
+            "stdout" => {
+                format!(
+                    "Shell output (stdout) for ` {}`:\n{}",
+                    entry.command, stdout
+                )
+            }
+            "stderr" => {
+                format!(
+                    "Shell output (stderr) for ` {}`:\n{}",
+                    entry.command, stderr
+                )
+            }
+            _ => {
+                format!(
+                    "Shell output for ` {}`:\nstdout:\n{}\nstderr:\n{}",
+                    entry.command, stdout, stderr
+                )
+            }
+        };
+        app.shell_store.mark_promoted(cmd_id);
+        app.messages_state
+            .messages
+            .add_user_message(include_text, Some(false));
+        app.messages_state
+            .toasts
+            .info("Shell output included in context");
+    } else {
+        app.messages_state
+            .toasts
+            .error(&format!("Shell command {} not found", id));
+    }
+}
+
+fn handle_shell_rerun(app: &mut app::App, id: u64) {
+    use crate::shell::types::ShellCommandId;
+
+    let cmd_id = ShellCommandId(id);
+    if let Some(entry) = app.shell_store.get(cmd_id) {
+        let command = entry.command.clone();
+        let promote_after = entry.promoted;
+        if let Some(ref tx) = app.tui_cmd_tx {
+            let _ = tx.try_send(app::TuiCommand::RunHumanShell {
+                command,
+                promote_after,
+            });
+        }
+    } else {
+        app.messages_state
+            .toasts
+            .error(&format!("Shell command {} not found", id));
+    }
+}
+
+fn handle_shell_kill(app: &mut app::App, id: u64) {
+    if let Some(handle) = app.shell_handles.remove(&id) {
+        handle.kill();
+        app.messages_state
+            .toasts
+            .info(&format!("Killed shell command {}", id));
+    } else {
+        app.messages_state
+            .toasts
+            .error(&format!("No running shell command with id {}", id));
+    }
+}
+
+fn handle_shell_list(app: &mut app::App) {
+    let recent = app.shell_store.list_recent(10);
+    if recent.is_empty() {
+        app.messages_state
+            .toasts
+            .info("No shell commands in history");
+        return;
+    }
+    let lines: Vec<String> = recent
+        .iter()
+        .map(|e| {
+            format!(
+                "[{}] ${} ({})",
+                e.id.0,
+                e.command,
+                match e.status {
+                    crate::shell::types::ShellStatus::Running => "running",
+                    crate::shell::types::ShellStatus::Exited => "done",
+                    crate::shell::types::ShellStatus::TimedOut => "timeout",
+                    crate::shell::types::ShellStatus::FailedToStart => "failed",
+                }
+            )
+        })
+        .collect();
+    app.messages_state.toasts.info(&lines.join("\n"));
+}
+
 /// Handle a `TuiCommand::SecurityReviewFinished` notification from the
 /// spawned background task. Stale completions (id mismatch) are
 /// silently ignored so cancellation cannot be undone by a late
@@ -3191,6 +3459,27 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                     }
                     TuiCommand::SecurityReviewFinished { id, receipt, error } => {
                         handle_security_review_finished(app, id, receipt, error);
+                    }
+                    TuiCommand::RunHumanShell {
+                        command,
+                        promote_after,
+                    } => {
+                        handle_run_human_shell(app, command, promote_after);
+                    }
+                    TuiCommand::ShellEvent(event) => {
+                        handle_shell_event(app, event);
+                    }
+                    TuiCommand::ShellInclude { id, mode, question } => {
+                        handle_shell_include(app, id, mode, question);
+                    }
+                    TuiCommand::ShellRerun { id } => {
+                        handle_shell_rerun(app, id);
+                    }
+                    TuiCommand::ShellKill { id } => {
+                        handle_shell_kill(app, id);
+                    }
+                    TuiCommand::ShellList => {
+                        handle_shell_list(app);
                     }
                 }
                 needs_render = true;

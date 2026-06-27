@@ -29,6 +29,7 @@ pub mod research;
 pub mod search;
 pub mod search_backend;
 pub mod security;
+pub mod shell;
 pub mod shell_session;
 pub mod skills;
 pub mod theme;

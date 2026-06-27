@@ -252,11 +252,26 @@ pub enum TuiCommand {
     /// the active guard so stale completions are ignored.
     SecurityReviewFinished {
         id: String,
-        /// Set on success; the panel data for the latest review.
         receipt: Option<Box<crate::security::workflow::SecurityReviewReceipt>>,
-        /// Set on failure; the human-readable error.
         error: Option<String>,
     },
+    RunHumanShell {
+        command: String,
+        promote_after: bool,
+    },
+    ShellEvent(crate::shell::ShellEvent),
+    ShellInclude {
+        id: u64,
+        mode: String,
+        question: Option<String>,
+    },
+    ShellRerun {
+        id: u64,
+    },
+    ShellKill {
+        id: u64,
+    },
+    ShellList,
 }
 
 /// Main application state for the TUI.
@@ -376,6 +391,8 @@ pub struct App {
     /// structured receipt as a JSON blob on the assistant message row
     /// once such a mechanism exists. No schema migration in this pass.
     pub latest_security_review: Option<crate::security::workflow::SecurityReviewReceipt>,
+    pub shell_store: crate::shell::ShellOutputStore,
+    pub shell_handles: std::collections::HashMap<u64, crate::shell::runtime::ShellHandle>,
 }
 
 /// What to do at TUI startup with respect to session loading. The TUI
@@ -697,6 +714,11 @@ impl App {
             lsp_tool: None,
             security_review_running: None,
             latest_security_review: None,
+            shell_store: cfg
+                .and_then(|c| c.human_shell.as_ref())
+                .map(crate::shell::ShellOutputStore::from_config)
+                .unwrap_or_default(),
+            shell_handles: std::collections::HashMap::new(),
         }
     }
 
@@ -901,6 +923,8 @@ impl App {
             lsp_tool: None,
             security_review_running: None,
             latest_security_review: None,
+            shell_store: crate::shell::ShellOutputStore::new(),
+            shell_handles: std::collections::HashMap::new(),
         }
     }
 
@@ -1158,6 +1182,21 @@ impl App {
                             image_url: crate::provider::ImageUrl {
                                 url: data_uri.clone().into(),
                             },
+                        });
+                    }
+                    MsgPart::ShellCell {
+                        command,
+                        stdout_preview,
+                        stderr_preview,
+                        status,
+                        ..
+                    } => {
+                        content.push(crate::provider::ContentPart::Text {
+                            text: format!(
+                                "$ {} [{}]\nstdout: {}\nstderr: {}",
+                                command, status, stdout_preview, stderr_preview
+                            )
+                            .into(),
                         });
                     }
                 }
@@ -5054,6 +5093,96 @@ impl App {
                 self.ui_state.command_mode = false;
                 self.cancel_security_review();
             }
+            "/shell-list" => {
+                self.ui_state.command_mode = false;
+                if let Some(ref tx) = self.tui_cmd_tx {
+                    let _ = tx.try_send(TuiCommand::ShellList);
+                } else {
+                    let recent = self.shell_store.list_recent(10);
+                    if recent.is_empty() {
+                        self.messages_state
+                            .toasts
+                            .info("No shell commands in history");
+                    } else {
+                        let lines: Vec<String> = recent
+                            .iter()
+                            .map(|e| {
+                                format!(
+                                    "[{}] ${} ({})",
+                                    e.id.0,
+                                    e.command,
+                                    match e.status {
+                                        crate::shell::types::ShellStatus::Running => "running",
+                                        crate::shell::types::ShellStatus::Exited => "done",
+                                        crate::shell::types::ShellStatus::TimedOut => "timeout",
+                                        crate::shell::types::ShellStatus::FailedToStart => "failed",
+                                    }
+                                )
+                            })
+                            .collect();
+                        self.messages_state.toasts.info(&lines.join("\n"));
+                    }
+                }
+            }
+            "/shell-include" => {
+                self.ui_state.command_mode = false;
+                let query = self.dialog_state.command_palette.query.clone();
+                let args: Vec<&str> = query
+                    .strip_prefix("/shell-include")
+                    .unwrap_or("")
+                    .trim()
+                    .splitn(3, ' ')
+                    .collect();
+                let id_str = args.first().copied().unwrap_or("");
+                let mode = args.get(1).copied().unwrap_or("all").to_string();
+                let question = args.get(2).map(|s| s.to_string());
+                match id_str.parse::<u64>() {
+                    Ok(id) => {
+                        if let Some(ref tx) = self.tui_cmd_tx {
+                            let _ = tx.try_send(TuiCommand::ShellInclude { id, mode, question });
+                        }
+                    }
+                    Err(_) => {
+                        self.messages_state
+                            .toasts
+                            .warning("Usage: /shell-include <id> [stdout|stderr|all]");
+                    }
+                }
+            }
+            "/shell-rerun" => {
+                self.ui_state.command_mode = false;
+                let query = self.dialog_state.command_palette.query.clone();
+                let id_str = query.strip_prefix("/shell-rerun").unwrap_or("").trim();
+                match id_str.parse::<u64>() {
+                    Ok(id) => {
+                        if let Some(ref tx) = self.tui_cmd_tx {
+                            let _ = tx.try_send(TuiCommand::ShellRerun { id });
+                        }
+                    }
+                    Err(_) => {
+                        self.messages_state
+                            .toasts
+                            .warning("Usage: /shell-rerun <id>");
+                    }
+                }
+            }
+            "/shell-kill" => {
+                self.ui_state.command_mode = false;
+                let query = self.dialog_state.command_palette.query.clone();
+                let id_str = query.strip_prefix("/shell-kill").unwrap_or("").trim();
+                match id_str.parse::<u64>() {
+                    Ok(id) => {
+                        if let Some(ref tx) = self.tui_cmd_tx {
+                            let _ = tx.try_send(TuiCommand::ShellKill { id });
+                        }
+                    }
+                    Err(_) => {
+                        self.messages_state
+                            .toasts
+                            .warning("Usage: /shell-kill <id>");
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -5660,6 +5789,29 @@ impl App {
             self.prompt_state.prompt.clear();
             self.prompt_state.show_completions = false;
             return;
+        }
+
+        match crate::shell::classify_prompt_submission(&trimmed_text) {
+            crate::shell::types::PromptSubmissionKind::HumanShell {
+                command,
+                promote_after,
+            } => {
+                debug_log!("send_prompt: intercepted human shell command: {}", command);
+                self.prompt_state.prompt.clear();
+                self.prompt_state.show_completions = false;
+                if let Some(ref tx) = self.tui_cmd_tx {
+                    let _ = tx.try_send(TuiCommand::RunHumanShell {
+                        command,
+                        promote_after,
+                    });
+                }
+                return;
+            }
+            crate::shell::types::PromptSubmissionKind::Slash(s) => {
+                let _ = &s;
+                debug_log!("send_prompt: slash command via classify: {}", s);
+            }
+            crate::shell::types::PromptSubmissionKind::Chat(_) => {}
         }
 
         if let Some(pos) = self
@@ -8580,7 +8732,9 @@ impl App {
                         Some(MsgPart::Reasoning { .. }) | Some(MsgPart::ToolCall { .. }) => {
                             String::new()
                         }
-                        Some(MsgPart::Image { .. }) => String::new(),
+                        Some(MsgPart::Image { .. }) | Some(MsgPart::ShellCell { .. }) => {
+                            String::new()
+                        }
                         None => String::new(),
                     };
 
@@ -8636,7 +8790,9 @@ impl App {
                         }
                         Some(MsgPart::Reasoning { .. }) => "reasoning...".to_string(),
                         Some(MsgPart::ToolCall { name, .. }) => format!("[{}]", name),
-                        Some(MsgPart::Image { .. }) => String::new(),
+                        Some(MsgPart::Image { .. }) | Some(MsgPart::ShellCell { .. }) => {
+                            String::new()
+                        }
                         None => String::new(),
                     };
 

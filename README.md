@@ -12,6 +12,7 @@ A lightweight, pure-Rust implementation of an AI coding agent.
 - **Server Mode** - Headless HTTP server for remote access
 - **Session Management** - Persistent conversations with SQLite storage
 - **Context System** - Artifact storage, tool-output projection, cache-aware context packing (observe/diagnostic), and hardened gated active context policy (first use: phase-scoped tool-palette reduction (base-derived, non-cumulative, backoff/starvation, Warn dry-run, threshold gate; still disabled by default); volatile-tail compaction for late-context token reduction of old tool results with recovery handles; see architecture/cache-aware-context.md and `[context_policy]` config)
+- **Human Shell** - Run shell commands with `!command` (ephemeral, hidden from model) or `!!command` (auto-promoted into context). Bounded output storage, safety policy blocking destructive commands, and TUI commands for listing, including, rerunning, and killing commands. See `architecture/human_shell.md`.
 - **Security** - SSRF protection, path validation, Landlock sandboxing, and security review workflow (diff-based preset selection, risk-marker-to-prompt synthesis, read-only evidence gathering via `securityContext`)
 
 ## Installation
@@ -252,6 +253,10 @@ The TUI supports inline slash commands for quick actions.
 | `/loop <interval> "<msg>"` | Schedule recurring background task |
 | `/tasks` | List background tasks |
 | `/task-del <id>` | Delete background task |
+| `/shell-list` | List recent shell commands with status |
+| `/shell-include <id> [mode]` | Promote shell output into context (stdout/stderr/all) |
+| `/shell-rerun <id>` | Rerun a previous shell command |
+| `/shell-kill <id>` | Kill a running shell command |
 | `/exit`, `/quit`, `/q` | Exit the application |
 | `/skill:<name>` | Activate a skill |
 | `/skills` | List available skills |

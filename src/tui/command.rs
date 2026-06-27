@@ -274,6 +274,14 @@ impl CommandRegistry {
                 .with_description("Reopen the latest security review result panel (no rerun)"),
             Command::new("/security-review-cancel", CommandCategory::Agent, None)
                 .with_description("Cancel an in-flight security review"),
+            Command::new("/shell-list", CommandCategory::System, None)
+                .with_description("List recent shell commands"),
+            Command::new("/shell-include", CommandCategory::System, None)
+                .with_description("Include shell output in context (args: <id> [stdout|stderr|all])"),
+            Command::new("/shell-rerun", CommandCategory::System, None)
+                .with_description("Re-run a shell command (args: <id>)"),
+            Command::new("/shell-kill", CommandCategory::System, None)
+                .with_description("Kill a running shell command (args: <id>)"),
         ];
 
         Self::append_dynamic_commands(&mut commands);

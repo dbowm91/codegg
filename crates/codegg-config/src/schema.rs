@@ -257,6 +257,8 @@ pub struct Config {
     /// Gated active context policy (first use: tool-palette reduction driven by effective-cost diagnostics).
     /// Disabled by default; observe -> warn -> tool_palette_reduce rollout.
     pub context_policy: Option<ContextPolicyConfig>,
+    /// Human shell feature configuration.
+    pub human_shell: Option<HumanShellConfig>,
 }
 
 /// Configuration for the context ledger and artifact projection system.
@@ -1547,6 +1549,72 @@ impl ToolImplementationBackendSchema {
             ToolImplementationBackendSchema::Builtin => "builtin",
             ToolImplementationBackendSchema::Disabled => "disabled",
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum AnsiMode {
+    #[default]
+    SgrOnly,
+    Strip,
+    Raw,
+}
+
+impl AnsiMode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            AnsiMode::SgrOnly => "sgr-only",
+            AnsiMode::Strip => "strip",
+            AnsiMode::Raw => "raw",
+        }
+    }
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq)]
+#[serde(default)]
+pub struct HumanShellConfig {
+    pub enabled: Option<bool>,
+    pub default_timeout_secs: Option<u64>,
+    pub max_history_entries: Option<usize>,
+    pub max_bytes_per_command: Option<usize>,
+    pub max_total_bytes: Option<usize>,
+    pub ansi: Option<AnsiMode>,
+    pub confirm_dangerous: Option<bool>,
+    pub auto_promote_bangbang: Option<bool>,
+}
+
+impl HumanShellConfig {
+    pub fn enabled(&self) -> bool {
+        self.enabled.unwrap_or(true)
+    }
+
+    pub fn default_timeout_secs(&self) -> u64 {
+        self.default_timeout_secs.unwrap_or(300)
+    }
+
+    pub fn max_history_entries(&self) -> usize {
+        self.max_history_entries.unwrap_or(100)
+    }
+
+    pub fn max_bytes_per_command(&self) -> usize {
+        self.max_bytes_per_command.unwrap_or(1_000_000)
+    }
+
+    pub fn max_total_bytes(&self) -> usize {
+        self.max_total_bytes.unwrap_or(8_000_000)
+    }
+
+    pub fn ansi(&self) -> AnsiMode {
+        self.ansi.unwrap_or_default()
+    }
+
+    pub fn confirm_dangerous(&self) -> bool {
+        self.confirm_dangerous.unwrap_or(true)
+    }
+
+    pub fn auto_promote_bangbang(&self) -> bool {
+        self.auto_promote_bangbang.unwrap_or(true)
     }
 }
 
