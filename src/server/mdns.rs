@@ -9,6 +9,14 @@ use socket2::{Domain, Protocol, Socket, Type};
 
 const MDNS_PORT: u16 = 5353;
 const MDNS_MULTICAST_ADDR: Ipv4Addr = Ipv4Addr::new(224, 0, 0, 251);
+const DNS_HEADER_LEN: usize = 12;
+const DNS_POINTER_MASK: usize = 0xC0;
+const DNS_POINTER_TAG: usize = 0xC0;
+const DNS_LABEL_MASK: usize = 0x3F;
+const DNS_SRV_RECORD: u16 = 0x0021;
+const DNS_CLASS_IN: u16 = 0x0001;
+const DNS_QUESTION_TRAILER_LEN: usize = 4;
+const DNS_RESOURCE_FIXED_LEN: usize = 10;
 
 pub struct MdnsService {
     running: Arc<AtomicBool>,
@@ -132,10 +140,20 @@ impl MdnsService {
             return None;
         }
 
-        let query_name = Self::parse_name(data, 12)?;
+        let (query_name, question_name_end) = parse_dns_name(data, DNS_HEADER_LEN)?;
+        let question_end = question_name_end.checked_add(DNS_QUESTION_TRAILER_LEN)?;
+        if question_end > data.len() {
+            return None;
+        }
+
+        let service_name = service_name.trim_end_matches('.');
         if !query_name.contains(service_name) && !query_name.contains("_opencode") {
             return None;
         }
+
+        let target = encode_dns_name(hostname)?;
+        let rdlen = 6usize.checked_add(target.len())?;
+        let rdlen = u16::try_from(rdlen).ok()?;
 
         let mut response = Vec::new();
         response.extend_from_slice(&id);
@@ -143,69 +161,20 @@ impl MdnsService {
         response.extend_from_slice(&1u16.to_be_bytes());
         response.extend_from_slice(&1u16.to_be_bytes());
         response.extend_from_slice(&0u16.to_be_bytes());
-        response.extend_from_slice(&1u16.to_be_bytes());
+        response.extend_from_slice(&0u16.to_be_bytes());
+        response.extend_from_slice(&data[DNS_HEADER_LEN..question_end]);
 
-        let svc_name = "\x09_opencode\x04_tcp\x05local\x00".to_string();
-        response.extend_from_slice(svc_name.as_bytes());
-        response.extend_from_slice(&0x0021u16.to_be_bytes());
-        response.extend_from_slice(&0x0001u16.to_be_bytes());
+        response.extend_from_slice(&0xC00Cu16.to_be_bytes());
+        response.extend_from_slice(&DNS_SRV_RECORD.to_be_bytes());
+        response.extend_from_slice(&DNS_CLASS_IN.to_be_bytes());
         response.extend_from_slice(&120u32.to_be_bytes());
-        response.extend_from_slice(&10u16.to_be_bytes());
+        response.extend_from_slice(&rdlen.to_be_bytes());
         response.extend_from_slice(&0u16.to_be_bytes());
         response.extend_from_slice(&0u16.to_be_bytes());
         response.extend_from_slice(&port.to_be_bytes());
-        if hostname.len() > 255 {
-            return None;
-        }
-        response.extend_from_slice(hostname.as_bytes());
+        response.extend_from_slice(&target);
 
         Some(response)
-    }
-
-    fn parse_name(data: &[u8], offset: usize) -> Option<String> {
-        let mut result = String::new();
-        let mut pos = offset;
-        let mut visited = std::collections::HashSet::new();
-
-        loop {
-            if pos >= data.len() {
-                break;
-            }
-            if !visited.insert(pos) {
-                break;
-            }
-            let len = data[pos] as usize;
-            if len == 0 {
-                break;
-            }
-            if len & 0xC0 == 0xC0 {
-                if pos + 1 >= data.len() {
-                    break;
-                }
-                let ptr = (len & 0x3F) << 8 | data[pos + 1] as usize;
-                if ptr >= data.len() {
-                    break;
-                }
-                if !result.is_empty() {
-                    result.push('.');
-                }
-                if let Some(name) = Self::parse_name(data, ptr) {
-                    result.push_str(&name);
-                }
-                break;
-            }
-            pos += 1;
-            if pos + len > data.len() {
-                return None;
-            }
-            if !result.is_empty() {
-                result.push('.');
-            }
-            result.push_str(&String::from_utf8_lossy(&data[pos..pos + len]));
-            pos += len;
-        }
-
-        Some(result)
     }
 }
 
@@ -255,23 +224,16 @@ fn build_query(name: &str) -> Vec<u8> {
     query.extend_from_slice(&0u16.to_be_bytes());
     query.extend_from_slice(&0u16.to_be_bytes());
 
-    for label in name.split('.') {
-        if label.is_empty() {
-            query.push(0);
-        } else {
-            query.push(label.len() as u8);
-            query.extend_from_slice(label.as_bytes());
-        }
-    }
+    query.extend_from_slice(&encode_dns_name(name).unwrap_or_else(|| vec![0]));
 
     query.extend_from_slice(&0x000cu16.to_be_bytes());
-    query.extend_from_slice(&0x0001u16.to_be_bytes());
+    query.extend_from_slice(&DNS_CLASS_IN.to_be_bytes());
 
     query
 }
 
 fn parse_mdns_response(data: &[u8]) -> Option<String> {
-    if data.len() < 12 {
+    if data.len() < DNS_HEADER_LEN {
         return None;
     }
 
@@ -280,58 +242,100 @@ fn parse_mdns_response(data: &[u8]) -> Option<String> {
         return None;
     }
 
-    let mut pos = 12;
+    let mut pos = DNS_HEADER_LEN;
     for _ in 0..u16::from_be_bytes([data[4], data[5]]) {
-        while pos < data.len() && data[pos] != 0 {
-            pos += 1 + data[pos] as usize;
+        let (_, next) = parse_dns_name(data, pos)?;
+        pos = next.checked_add(DNS_QUESTION_TRAILER_LEN)?;
+        if pos > data.len() {
+            return None;
         }
-        pos += 1;
     }
 
     for _ in 0..answer_count {
-        if pos + 10 > data.len() {
+        let (_, record_start) = parse_dns_name(data, pos)?;
+        if record_start + DNS_RESOURCE_FIXED_LEN > data.len() {
             return None;
         }
 
-        let rtype = u16::from_be_bytes([data[pos], data[pos + 1]]);
-        let rdlen = u16::from_be_bytes([data[pos + 8], data[pos + 9]]);
-        pos += 10;
+        let rtype = u16::from_be_bytes([data[record_start], data[record_start + 1]]);
+        let rdlen = u16::from_be_bytes([data[record_start + 8], data[record_start + 9]]) as usize;
+        let rdata_start = record_start + DNS_RESOURCE_FIXED_LEN;
+        let rdata_end = rdata_start.checked_add(rdlen)?;
+        if rdata_end > data.len() {
+            return None;
+        }
 
-        if rtype == 0x0021 && pos + 6 + rdlen as usize <= data.len() {
-            let port = u16::from_be_bytes([data[pos + 4], data[pos + 5]]);
-            let host_start = pos + 6;
-            if let Some(host) = extract_host(&data[host_start..]) {
+        if rtype == DNS_SRV_RECORD && rdlen >= 7 {
+            let port = u16::from_be_bytes([data[rdata_start + 4], data[rdata_start + 5]]);
+            if let Some((host, _)) = parse_dns_name(data, rdata_start + 6) {
                 return Some(format!("{host}:{port}"));
             }
         }
 
-        pos += rdlen as usize;
+        pos = rdata_end;
     }
 
     None
 }
 
-fn extract_host(data: &[u8]) -> Option<String> {
-    let mut result = String::new();
-    let mut pos = 0;
+fn parse_dns_name(data: &[u8], offset: usize) -> Option<(String, usize)> {
+    let mut labels = Vec::new();
+    let mut pos = offset;
+    let mut next_pos = None;
+    let mut visited = std::collections::HashSet::new();
 
-    while pos < data.len() && data[pos] != 0 {
+    loop {
+        if pos >= data.len() || !visited.insert(pos) {
+            return None;
+        }
+
         let len = data[pos] as usize;
-        if len == 0 || pos + 1 + len > data.len() {
-            break;
+        if len == 0 {
+            let end = next_pos.unwrap_or(pos + 1);
+            return Some((labels.join("."), end));
         }
-        if !result.is_empty() {
-            result.push('.');
-        }
-        result.push_str(&String::from_utf8_lossy(&data[pos + 1..pos + 1 + len]));
-        pos += 1 + len;
-    }
 
-    if result.is_empty() {
-        None
-    } else {
-        Some(result)
+        if len & DNS_POINTER_MASK == DNS_POINTER_TAG {
+            if pos + 1 >= data.len() {
+                return None;
+            }
+            let ptr = ((len & DNS_LABEL_MASK) << 8) | data[pos + 1] as usize;
+            if ptr >= data.len() {
+                return None;
+            }
+            next_pos.get_or_insert(pos + 2);
+            pos = ptr;
+            continue;
+        }
+
+        if len & DNS_POINTER_MASK != 0 || len > 63 {
+            return None;
+        }
+
+        let label_start = pos + 1;
+        let label_end = label_start.checked_add(len)?;
+        if label_end > data.len() {
+            return None;
+        }
+        labels.push(String::from_utf8_lossy(&data[label_start..label_end]).to_string());
+        pos = label_end;
     }
+}
+
+fn encode_dns_name(name: &str) -> Option<Vec<u8>> {
+    let mut out = Vec::new();
+    for label in name.trim_end_matches('.').split('.') {
+        if label.is_empty() || label.len() > 63 {
+            return None;
+        }
+        out.push(u8::try_from(label.len()).ok()?);
+        out.extend_from_slice(label.as_bytes());
+    }
+    out.push(0);
+    if out.len() > 255 {
+        return None;
+    }
+    Some(out)
 }
 
 #[cfg(test)]
@@ -341,8 +345,9 @@ mod tests {
     #[test]
     fn test_parse_name_simple() {
         let data = b"\x09_opencode\x04_tcp\x05local\x00";
-        let name = MdnsService::parse_name(data, 0).unwrap();
+        let (name, next) = parse_dns_name(data, 0).unwrap();
         assert_eq!(name, "_opencode._tcp.local");
+        assert_eq!(next, data.len());
     }
 
     #[test]
@@ -356,8 +361,53 @@ mod tests {
     #[test]
     fn test_extract_host() {
         let data = b"\x06codegg\x05local\x00";
-        let host = extract_host(data).unwrap();
+        let (host, next) = parse_dns_name(data, 0).unwrap();
         assert_eq!(host, "codegg.local");
+        assert_eq!(next, data.len());
+    }
+
+    #[test]
+    fn test_parse_compressed_srv_response() {
+        let mut response = Vec::new();
+        response.extend_from_slice(&[0x00, 0x00]);
+        response.extend_from_slice(&0x8400u16.to_be_bytes());
+        response.extend_from_slice(&1u16.to_be_bytes());
+        response.extend_from_slice(&1u16.to_be_bytes());
+        response.extend_from_slice(&0u16.to_be_bytes());
+        response.extend_from_slice(&0u16.to_be_bytes());
+        response.extend_from_slice(&encode_dns_name("_opencode._tcp.local.").unwrap());
+        response.extend_from_slice(&0x000cu16.to_be_bytes());
+        response.extend_from_slice(&DNS_CLASS_IN.to_be_bytes());
+
+        let target = encode_dns_name("codegg.local.").unwrap();
+        let rdlen = u16::try_from(6 + target.len()).unwrap();
+        response.extend_from_slice(&0xC00Cu16.to_be_bytes());
+        response.extend_from_slice(&DNS_SRV_RECORD.to_be_bytes());
+        response.extend_from_slice(&DNS_CLASS_IN.to_be_bytes());
+        response.extend_from_slice(&120u32.to_be_bytes());
+        response.extend_from_slice(&rdlen.to_be_bytes());
+        response.extend_from_slice(&0u16.to_be_bytes());
+        response.extend_from_slice(&0u16.to_be_bytes());
+        response.extend_from_slice(&3000u16.to_be_bytes());
+        response.extend_from_slice(&target);
+
+        assert_eq!(
+            parse_mdns_response(&response).as_deref(),
+            Some("codegg.local:3000")
+        );
+    }
+
+    #[test]
+    fn test_handle_query_builds_parseable_srv_response() {
+        let query = build_query("_opencode._tcp.local.");
+        let response =
+            MdnsService::handle_query(&query, "_opencode._tcp.local.", "codegg.local.", 3000)
+                .unwrap();
+
+        assert_eq!(
+            parse_mdns_response(&response).as_deref(),
+            Some("codegg.local:3000")
+        );
     }
 
     #[test]

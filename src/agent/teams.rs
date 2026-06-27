@@ -81,6 +81,12 @@ impl TeamManager {
         teams.get(name).cloned()
     }
 
+    async fn require_team(&self, name: &str) -> Result<Arc<Team>, TeamError> {
+        self.get_team(name)
+            .await
+            .ok_or_else(|| TeamError::NotFound(name.to_string()))
+    }
+
     pub async fn list_teams(&self) -> Vec<String> {
         let teams = self.teams.read().await;
         teams.keys().cloned().collect()
@@ -114,27 +120,15 @@ impl TeamManager {
     }
 
     pub async fn send_message(&self, team_name: &str, message: &TeamMessage) -> Result<(), TeamError> {
-        let team = self.get_team(team_name).await;
-        if team.is_none() {
-            return Err(TeamError::NotFound(team_name.to_string()));
-        }
-        team.unwrap().send_message(message)
+        self.require_team(team_name).await?.send_message(message)
     }
 
     pub async fn deliver_messages(&self, team_name: &str, agent_name: &str) -> Result<Vec<TeamMessage>, TeamError> {
-        let team = self.get_team(team_name).await;
-        if team.is_none() {
-            return Err(TeamError::NotFound(team_name.to_string()));
-        }
-        team.unwrap().deliver_messages(agent_name)
+        self.require_team(team_name).await?.deliver_messages(agent_name)
     }
 
     pub async fn get_team_status(&self, team_name: &str) -> Result<crate::agent::team::TeamStatus, TeamError> {
-        let team = self.get_team(team_name).await;
-        if team.is_none() {
-            return Err(TeamError::NotFound(team_name.to_string()));
-        }
-        team.unwrap().get_status()
+        self.require_team(team_name).await?.get_status()
     }
 }
 

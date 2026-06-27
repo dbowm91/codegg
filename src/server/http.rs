@@ -11,6 +11,7 @@ use axum::{
     Router,
 };
 use http::header;
+use http::HeaderValue;
 use tokio::sync::RwLock;
 use tower_http::compression::{predicate::Predicate, CompressionLayer};
 use tower_http::cors::CorsLayer;
@@ -60,15 +61,19 @@ impl RateLimiter {
 
         requests.retain(|&t| now.duration_since(t) < self.window);
 
-        let remaining = self.max_requests.saturating_sub(requests.len());
         let allowed = requests.len() < self.max_requests;
 
         if allowed {
             requests.push(now);
         }
 
+        let remaining = self.max_requests.saturating_sub(requests.len());
         (allowed, remaining)
     }
+}
+
+fn rate_limit_header_value(value: impl ToString) -> HeaderValue {
+    HeaderValue::from_str(&value.to_string()).unwrap_or_else(|_| HeaderValue::from_static("0"))
 }
 
 async fn rate_limit_middleware(
@@ -95,15 +100,14 @@ async fn rate_limit_middleware(
     let mut response = next.run(request).await;
     response.headers_mut().insert(
         "X-RateLimit-Limit",
-        std::convert::TryFrom::try_from(rate_limiter.max_requests.to_string()).unwrap(),
+        rate_limit_header_value(rate_limiter.max_requests),
     );
-    response.headers_mut().insert(
-        "X-RateLimit-Remaining",
-        std::convert::TryFrom::try_from(remaining.to_string()).unwrap(),
-    );
+    response
+        .headers_mut()
+        .insert("X-RateLimit-Remaining", rate_limit_header_value(remaining));
     response.headers_mut().insert(
         "X-RateLimit-Reset",
-        std::convert::TryFrom::try_from(rate_limiter.window.as_secs().to_string()).unwrap(),
+        rate_limit_header_value(rate_limiter.window.as_secs()),
     );
 
     response
@@ -302,4 +306,18 @@ pub async fn run_server(
         .map_err(|e| crate::error::ServerRuntimeError::Shutdown(e.to_string()))?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn rate_limiter_reports_remaining_after_consuming_request() {
+        let limiter = RateLimiter::new(2, 60);
+
+        assert_eq!(limiter.check_rate_limit("client").await, (true, 1));
+        assert_eq!(limiter.check_rate_limit("client").await, (true, 0));
+        assert_eq!(limiter.check_rate_limit("client").await, (false, 0));
+    }
 }
