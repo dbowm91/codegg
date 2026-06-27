@@ -28,6 +28,17 @@ static URL_REGEX: Lazy<regex::Regex> =
 static FILE_PATH_REGEX: Lazy<regex::Regex> = Lazy::new(|| {
     regex::Regex::new(r#"(?:^|[\s])(\/(?:[a-zA-Z0-9._~-]+\/)*[a-zA-Z0-9._~-]+|~\/[a-zA-Z0-9._~-]+(?:\/[a-zA-Z0-9._~-]+)*|\.\.?\/[a-zA-Z0-9._~-]+(?:\/[a-zA-Z0-9._~-]+)*)"#).expect("invalid file path regex")
 });
+
+#[derive(Debug, Clone, Default)]
+pub struct ShellCellUpdate {
+    pub status: Option<String>,
+    pub stdout_preview: Option<String>,
+    pub stderr_preview: Option<String>,
+    pub elapsed_ms: Option<u64>,
+    pub exit_code: Option<i32>,
+    pub truncated: Option<bool>,
+    pub promoted: Option<bool>,
+}
 static MARKDOWN_OPTIONS: Lazy<Options<'static>> = Lazy::new(|| {
     let mut options = Options::default();
     options.extension.strikethrough = true;
@@ -874,6 +885,88 @@ impl MessagesWidget {
         self.invalidate_render_cache();
         if self.auto_scroll && was_at_bottom {
             self.scroll = usize::MAX;
+        }
+    }
+
+    pub fn add_shell_cell(&mut self, id: u64, command: &str, cwd: &str) {
+        let was_at_bottom = self.is_at_bottom();
+        self.messages.push(UIMessage {
+            role: MessageRole::Assistant,
+            parts: vec![MsgPart::ShellCell {
+                id,
+                command: command.to_string(),
+                cwd: cwd.to_string(),
+                stdout_preview: String::new(),
+                stderr_preview: String::new(),
+                status: "running".to_string(),
+                elapsed_ms: None,
+                exit_code: None,
+                truncated: false,
+                promoted: false,
+                expanded: false,
+            }],
+            timestamp: Some(chrono::Local::now().timestamp()),
+            is_plan_mode: None,
+        });
+        self.invalidate_layout_cache();
+        self.invalidate_render_cache();
+        if self.auto_scroll && was_at_bottom {
+            self.scroll = usize::MAX;
+        }
+    }
+
+    pub fn update_shell_cell(&mut self, id: u64, f: impl FnOnce(&mut ShellCellUpdate)) {
+        let mut update = ShellCellUpdate::default();
+        f(&mut update);
+        let mut updated = false;
+        for msg in &mut self.messages {
+            for part in &mut msg.parts {
+                if let MsgPart::ShellCell {
+                    id: cell_id,
+                    status,
+                    stdout_preview,
+                    stderr_preview,
+                    elapsed_ms,
+                    exit_code,
+                    truncated,
+                    promoted,
+                    ..
+                } = part
+                {
+                    if *cell_id == id {
+                        if let Some(ref s) = update.status {
+                            *status = s.clone();
+                        }
+                        if let Some(ref s) = update.stdout_preview {
+                            *stdout_preview = s.clone();
+                        }
+                        if let Some(ref s) = update.stderr_preview {
+                            *stderr_preview = s.clone();
+                        }
+                        if let Some(ms) = update.elapsed_ms {
+                            *elapsed_ms = Some(ms);
+                        }
+                        if update.exit_code.is_some() {
+                            *exit_code = update.exit_code;
+                        }
+                        if let Some(t) = update.truncated {
+                            *truncated = t;
+                        }
+                        if let Some(p) = update.promoted {
+                            *promoted = p;
+                        }
+                        updated = true;
+                        break;
+                    }
+                }
+            }
+            if updated {
+                break;
+            }
+        }
+        if updated {
+            self.invalidate_layout_cache();
+            self.invalidate_render_cache();
         }
     }
 

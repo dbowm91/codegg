@@ -58,4 +58,5 @@ pub struct DialogState {
     pub pending_bulk_delete_ids: Option<Vec<String>>,
     pub pending_bulk_archive: Option<(usize, bool)>,
     pub pending_bulk_archive_ids: Option<Vec<String>>,
+    pub pending_shell_command: Option<(String, bool)>,
 }

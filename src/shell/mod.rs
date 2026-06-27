@@ -10,9 +10,69 @@ pub use runtime::{ShellHandle, ShellRuntime};
 pub use store::{BoundedOutput, ShellOutputEntry, ShellOutputStore};
 pub use types::{
     classify_prompt_submission, PromptSubmissionKind, ShellCapturePolicy, ShellCommandId,
-    ShellEvent, ShellOrigin, ShellRequest, ShellStatus, DEFAULT_MAX_BYTES_PER_COMMAND,
-    DEFAULT_MAX_HISTORY_ENTRIES, DEFAULT_MAX_TOTAL_BYTES, DEFAULT_TIMEOUT_SECS,
+    ShellEnvPolicy, ShellEvent, ShellOrigin, ShellPromotionMode, ShellRequest, ShellStatus,
+    DEFAULT_MAX_BYTES_PER_COMMAND, DEFAULT_MAX_HISTORY_ENTRIES, DEFAULT_MAX_TOTAL_BYTES,
+    DEFAULT_TIMEOUT_SECS,
 };
+
+pub fn sanitize_ansi(input: &str, mode: crate::config::schema::AnsiMode) -> String {
+    match mode {
+        crate::config::schema::AnsiMode::Raw => input.to_string(),
+        crate::config::schema::AnsiMode::Strip => {
+            let mut out = String::with_capacity(input.len());
+            let mut chars = input.chars().peekable();
+            while let Some(c) = chars.next() {
+                if c == '\x1b' {
+                    if chars.peek() == Some(&'[') {
+                        chars.next();
+                        while let Some(&nc) = chars.peek() {
+                            chars.next();
+                            if nc.is_ascii_alphabetic() {
+                                break;
+                            }
+                        }
+                    } else {
+                        out.push(c);
+                    }
+                } else {
+                    out.push(c);
+                }
+            }
+            out
+        }
+        crate::config::schema::AnsiMode::SgrOnly => {
+            let mut out = String::with_capacity(input.len());
+            let mut chars = input.chars().peekable();
+            while let Some(c) = chars.next() {
+                if c == '\x1b' {
+                    if chars.peek() == Some(&'[') {
+                        chars.next();
+                        let mut seq = String::new();
+                        while let Some(&nc) = chars.peek() {
+                            chars.next();
+                            seq.push(nc);
+                            if nc.is_ascii_alphabetic() {
+                                break;
+                            }
+                        }
+                        if seq.starts_with(|c: char| c.is_ascii_digit() || c == ';')
+                            && seq.ends_with('m')
+                        {
+                            out.push('\x1b');
+                            out.push('[');
+                            out.push_str(&seq);
+                        }
+                    } else {
+                        out.push(c);
+                    }
+                } else {
+                    out.push(c);
+                }
+            }
+            out
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -25,6 +85,8 @@ mod tests {
         let _ = std::mem::size_of::<ShellStatus>();
         let _ = std::mem::size_of::<ShellOrigin>();
         let _ = std::mem::size_of::<ShellCapturePolicy>();
+        let _ = std::mem::size_of::<ShellPromotionMode>();
+        let _ = std::mem::size_of::<ShellEnvPolicy>();
     }
 
     #[test]
@@ -33,5 +95,33 @@ mod tests {
         const _: () = assert!(DEFAULT_MAX_BYTES_PER_COMMAND > 0);
         const _: () = assert!(DEFAULT_MAX_TOTAL_BYTES >= DEFAULT_MAX_BYTES_PER_COMMAND);
         const _: () = assert!(DEFAULT_MAX_HISTORY_ENTRIES > 0);
+    }
+
+    #[test]
+    fn ansi_strip_removes_csi() {
+        let input = "hello\x1b[31mworld\x1b[0m";
+        let result = sanitize_ansi(input, crate::config::schema::AnsiMode::Strip);
+        assert_eq!(result, "helloworld");
+    }
+
+    #[test]
+    fn ansi_sgr_only_keeps_color() {
+        let input = "hello\x1b[31mworld\x1b[0m";
+        let result = sanitize_ansi(input, crate::config::schema::AnsiMode::SgrOnly);
+        assert_eq!(result, "hello\x1b[31mworld\x1b[0m");
+    }
+
+    #[test]
+    fn ansi_sgr_only_removes_cursor() {
+        let input = "hello\x1b[2J\x1b[Hworld";
+        let result = sanitize_ansi(input, crate::config::schema::AnsiMode::SgrOnly);
+        assert_eq!(result, "helloworld");
+    }
+
+    #[test]
+    fn ansi_raw_passthrough() {
+        let input = "hello\x1b[31mworld\x1b[0m";
+        let result = sanitize_ansi(input, crate::config::schema::AnsiMode::Raw);
+        assert_eq!(result, input);
     }
 }

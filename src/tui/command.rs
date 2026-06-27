@@ -282,6 +282,8 @@ impl CommandRegistry {
                 .with_description("Re-run a shell command (args: <id>)"),
             Command::new("/shell-kill", CommandCategory::System, None)
                 .with_description("Kill a running shell command (args: <id>)"),
+            Command::new("/shell-ask", CommandCategory::System, None)
+                .with_description("Ask about shell output (args: <id> <question>)"),
         ];
 
         Self::append_dynamic_commands(&mut commands);

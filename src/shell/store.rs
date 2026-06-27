@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
 
 use super::types::{
-    ShellCommandId, ShellRequest, ShellStatus, DEFAULT_MAX_BYTES_PER_COMMAND,
+    ShellCapturePolicy, ShellCommandId, ShellRequest, ShellStatus, DEFAULT_MAX_BYTES_PER_COMMAND,
     DEFAULT_MAX_HISTORY_ENTRIES, DEFAULT_MAX_TOTAL_BYTES,
 };
 
@@ -86,6 +86,8 @@ pub struct ShellOutputEntry {
     pub stderr: BoundedOutput,
     pub elapsed: Option<Duration>,
     pub promoted: bool,
+    pub promote_after: bool,
+    pub capture_policy: ShellCapturePolicy,
 }
 
 #[derive(Debug)]
@@ -146,6 +148,11 @@ impl ShellOutputStore {
             stderr: BoundedOutput::new(),
             elapsed: None,
             promoted: false,
+            promote_after: matches!(
+                req.capture_policy,
+                ShellCapturePolicy::StoreAndPromote
+            ),
+            capture_policy: req.capture_policy,
         };
         self.entries.push_back(entry);
         self.evict();
@@ -254,7 +261,7 @@ mod tests {
     use std::time::Duration;
 
     fn make_req(id: u64, cmd: &str) -> ShellRequest {
-        use super::super::types::{ShellCapturePolicy, ShellOrigin};
+        use super::super::types::{ShellCapturePolicy, ShellEnvPolicy, ShellOrigin};
         ShellRequest {
             id: ShellCommandId(id),
             origin: ShellOrigin::HumanEphemeral,
@@ -262,6 +269,7 @@ mod tests {
             cwd: PathBuf::from("/tmp"),
             timeout: Duration::from_secs(300),
             capture_policy: ShellCapturePolicy::StoreEphemeral,
+            env_policy: ShellEnvPolicy::Inherit,
         }
     }
 
@@ -461,6 +469,35 @@ mod tests {
         let store = ShellOutputStore::new();
         assert!(store.is_empty());
         assert_eq!(store.len(), 0);
+    }
+
+    #[test]
+    fn store_promote_after_from_capture_policy() {
+        use super::super::types::{ShellCapturePolicy, ShellEnvPolicy, ShellOrigin};
+        let mut store = ShellOutputStore::new();
+        let req_ephemeral = ShellRequest {
+            id: ShellCommandId(1),
+            origin: ShellOrigin::HumanEphemeral,
+            command: "cmd".to_string(),
+            cwd: PathBuf::from("/tmp"),
+            timeout: Duration::from_secs(300),
+            capture_policy: ShellCapturePolicy::StoreEphemeral,
+            env_policy: ShellEnvPolicy::Inherit,
+        };
+        store.insert_started(&req_ephemeral);
+        assert!(!store.get(ShellCommandId(1)).unwrap().promote_after);
+
+        let req_promote = ShellRequest {
+            id: ShellCommandId(2),
+            origin: ShellOrigin::HumanEphemeral,
+            command: "cmd2".to_string(),
+            cwd: PathBuf::from("/tmp"),
+            timeout: Duration::from_secs(300),
+            capture_policy: ShellCapturePolicy::StoreAndPromote,
+            env_policy: ShellEnvPolicy::Inherit,
+        };
+        store.insert_started(&req_promote);
+        assert!(store.get(ShellCommandId(2)).unwrap().promote_after);
     }
 
     #[test]

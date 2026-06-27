@@ -194,6 +194,7 @@ impl ShellHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::types::ShellEnvPolicy;
     use tokio::sync::mpsc;
 
     async fn collect_events(
@@ -220,6 +221,7 @@ mod tests {
             cwd: std::env::temp_dir(),
             timeout: Duration::from_secs(10),
             capture_policy: super::super::types::ShellCapturePolicy::StoreEphemeral,
+            env_policy: ShellEnvPolicy::Inherit,
         };
 
         let handle = runtime.spawn(req, tx.clone()).await.unwrap();
@@ -262,6 +264,7 @@ mod tests {
             cwd: std::env::temp_dir(),
             timeout: Duration::from_secs(10),
             capture_policy: super::super::types::ShellCapturePolicy::StoreEphemeral,
+            env_policy: ShellEnvPolicy::Inherit,
         };
 
         let handle = runtime.spawn(req, tx.clone()).await.unwrap();
@@ -299,6 +302,7 @@ mod tests {
             cwd: std::env::temp_dir(),
             timeout: Duration::from_secs(10),
             capture_policy: super::super::types::ShellCapturePolicy::StoreEphemeral,
+            env_policy: ShellEnvPolicy::Inherit,
         };
 
         let handle = runtime.spawn(req, tx.clone()).await.unwrap();
@@ -330,6 +334,7 @@ mod tests {
             cwd: std::env::temp_dir(),
             timeout: Duration::from_secs(5),
             capture_policy: super::super::types::ShellCapturePolicy::StoreEphemeral,
+            env_policy: ShellEnvPolicy::Inherit,
         };
 
         let handle = runtime.spawn(req, tx.clone()).await;
@@ -364,6 +369,7 @@ mod tests {
             cwd: tmp.clone(),
             timeout: Duration::from_secs(5),
             capture_policy: super::super::types::ShellCapturePolicy::StoreEphemeral,
+            env_policy: ShellEnvPolicy::Inherit,
         };
 
         let handle = runtime.spawn(req, tx.clone()).await.unwrap();

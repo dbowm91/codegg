@@ -2208,7 +2208,6 @@ fn apply_security_review_receipt(
 
 fn handle_run_human_shell(app: &mut app::App, command: String, promote_after: bool) {
     use crate::shell::policy::evaluate_command;
-    use crate::shell::types::{ShellCapturePolicy, ShellOrigin, ShellRequest};
 
     let policy = evaluate_command(&command);
     match policy {
@@ -2218,13 +2217,35 @@ fn handle_run_human_shell(app: &mut app::App, command: String, promote_after: bo
                 .error(&format!("Blocked: {}", reason));
             return;
         }
-        crate::shell::policy::HumanShellPolicyDecision::Warn { reason } => {
-            app.messages_state
-                .toasts
-                .warning(&format!("Warning: {}", reason));
+                crate::shell::policy::HumanShellPolicyDecision::Warn { reason } => {
+            let confirm_enabled = crate::config::schema::Config::load()
+                .ok()
+                .and_then(|c| c.human_shell)
+                .map(|h| h.confirm_dangerous())
+                .unwrap_or(true);
+            if confirm_enabled {
+                app.dialog_state.pending_shell_command = Some((command, promote_after));
+                let title = "Dangerous Command".to_string();
+                let msg = format!("{}\n\nRun this command anyway?", reason);
+                app.ui_state.dialog = crate::tui::Dialog::Confirm;
+                app.focus_manager.push(Box::new(
+                    crate::tui::components::dialogs::confirm::ConfirmDialog::new(title, msg),
+                ));
+                return;
+            } else {
+                app.messages_state
+                    .toasts
+                    .warning(&format!("Warning: {}", reason));
+            }
         }
         crate::shell::policy::HumanShellPolicyDecision::Allow => {}
     }
+
+    spawn_human_shell(app, command, promote_after);
+}
+
+fn spawn_human_shell(app: &mut app::App, command: String, promote_after: bool) {
+    use crate::shell::types::{ShellCapturePolicy, ShellEnvPolicy, ShellOrigin, ShellRequest};
 
     let id = app.shell_store.alloc_id();
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
@@ -2240,25 +2261,17 @@ fn handle_run_human_shell(app: &mut app::App, command: String, promote_after: bo
         cwd: cwd.clone(),
         timeout: std::time::Duration::from_secs(crate::shell::DEFAULT_TIMEOUT_SECS),
         capture_policy,
+        env_policy: ShellEnvPolicy::Inherit,
     };
     app.shell_store.insert_started(&req);
 
     app.messages_state
         .messages
-        .add_assistant_text(String::new());
-    app.messages_state.messages.add_tool_call(
-        format!("shell-{}", id.0),
-        "human_shell".to_string(),
-        serde_json::json!({ "command": command, "cwd": cwd }),
-    );
-    app.messages_state
-        .messages
-        .mark_tool_call_running(&format!("shell-{}", id.0));
+        .add_shell_cell(id.0, &command, &cwd.to_string_lossy());
 
     let (tx, mut rx) = tokio::sync::mpsc::channel(128);
     let runtime = crate::shell::ShellRuntime::new();
     let tui_cmd_tx = app.tui_cmd_tx.clone();
-    let id_val = id.0;
     tokio::spawn(async move {
         match runtime.spawn(req, tx.clone()).await {
             Ok(_handle) => {
@@ -2282,7 +2295,6 @@ fn handle_run_human_shell(app: &mut app::App, command: String, promote_after: bo
             }
         }
     });
-    let _ = id_val;
 }
 
 fn handle_shell_event(app: &mut app::App, event: crate::shell::ShellEvent) {
@@ -2290,26 +2302,37 @@ fn handle_shell_event(app: &mut app::App, event: crate::shell::ShellEvent) {
         crate::shell::ShellEvent::Started { id, .. } => {
             app.messages_state
                 .messages
-                .mark_tool_call_running(&format!("shell-{}", id.0));
+                .update_shell_cell(id.0, |cell| {
+                    cell.status = Some("running".to_string());
+                });
         }
         crate::shell::ShellEvent::Stdout { id, bytes } => {
             app.shell_store.append_stdout(*id, bytes);
             let entry = app.shell_store.get(*id);
             let preview = entry.map(|e| e.stdout.head_str_lossy()).unwrap_or_default();
-            let _truncated = entry.map(|e| e.stdout.omitted_bytes > 0).unwrap_or(false);
-            let preview_lines: Vec<&str> = preview.lines().take(8).collect();
-            let stdout_preview = preview_lines.join("\n");
-            app.messages_state.messages.update_tool_call(
-                &format!("shell-{}", id.0),
-                stdout_preview,
-                crate::session::message::ToolStatus::Running,
-                None,
-                None,
-                None,
-            );
+            let preview_lines: Vec<&str> = preview.lines().rev().take(8).collect();
+            let stdout_preview: Vec<&str> = preview_lines.into_iter().rev().collect();
+            let stdout_preview = stdout_preview.join("\n");
+            let truncated = entry.map(|e| e.stdout.omitted_bytes > 0).unwrap_or(false);
+            app.messages_state
+                .messages
+                .update_shell_cell(id.0, |cell| {
+                    cell.stdout_preview = Some(stdout_preview);
+                    cell.truncated = Some(truncated);
+                });
         }
         crate::shell::ShellEvent::Stderr { id, bytes } => {
             app.shell_store.append_stderr(*id, bytes);
+            let entry = app.shell_store.get(*id);
+            let preview = entry.map(|e| e.stderr.head_str_lossy()).unwrap_or_default();
+            let preview_lines: Vec<&str> = preview.lines().rev().take(8).collect();
+            let stderr_preview: Vec<&str> = preview_lines.into_iter().rev().collect();
+            let stderr_preview = stderr_preview.join("\n");
+            app.messages_state
+                .messages
+                .update_shell_cell(id.0, |cell| {
+                    cell.stderr_preview = Some(stderr_preview);
+                });
         }
         crate::shell::ShellEvent::Exited {
             id,
@@ -2317,58 +2340,86 @@ fn handle_shell_event(app: &mut app::App, event: crate::shell::ShellEvent) {
             elapsed,
         } => {
             app.shell_store.mark_exited(*id, *status, *elapsed);
+            let elapsed_ms = elapsed.as_millis() as u64;
+            let exit_code = *status;
+            let status_str = "exited".to_string();
             let entry = app.shell_store.get(*id);
             let stdout_preview = entry.map(|e| e.stdout.head_str_lossy()).unwrap_or_default();
             let stderr_preview = entry.map(|e| e.stderr.head_str_lossy()).unwrap_or_default();
-            let _truncated = entry.map(|e| e.stdout.omitted_bytes > 0).unwrap_or(false);
-            let _exit_code_str = status
-                .map(|c| format!("exit {}", c))
-                .unwrap_or_else(|| "no exit code".to_string());
-            let elapsed_ms = elapsed.as_millis() as u64;
-            let output = format!(
-                "$ {}\n\n{}{}",
-                entry.map(|e| e.command.as_str()).unwrap_or(""),
-                stdout_preview,
-                if stderr_preview.is_empty() {
-                    String::new()
-                } else {
-                    format!("\nstderr:\n{}", stderr_preview)
+            let truncated = entry.map(|e| e.stdout.omitted_bytes > 0).unwrap_or(false);
+            let command = entry.map(|e| e.command.clone()).unwrap_or_default();
+            let _cwd = entry.map(|e| e.cwd.to_string_lossy().to_string()).unwrap_or_default();
+            app.messages_state
+                .messages
+                .update_shell_cell(id.0, |cell| {
+                    cell.status = Some(status_str);
+                    cell.elapsed_ms = Some(elapsed_ms);
+                    cell.exit_code = exit_code;
+                    cell.stdout_preview = Some(stdout_preview);
+                    cell.stderr_preview = Some(stderr_preview);
+                    cell.truncated = Some(truncated);
+                });
+
+            let should_promote = entry
+                .map(|e| e.promote_after && !e.promoted)
+                .unwrap_or(false);
+            if should_promote {
+                if let Some(entry) = app.shell_store.get(*id) {
+                    let digest = crate::shell::ShellDigest::build(
+                        &command,
+                        &entry.cwd,
+                        exit_code,
+                        *elapsed,
+                        &entry.stdout,
+                        &entry.stderr,
+                    );
+                    let include_text = if digest.has_failures() {
+                        format!(
+                            "Shell command output (auto-promoted on failure):\n{}",
+                            digest.render()
+                        )
+                    } else {
+                        let tail = entry.stderr.tail_str_lossy();
+                        if tail.is_empty() {
+                            let tail = entry.stdout.tail_str_lossy();
+                            format!(
+                                "Shell command output (auto-promoted):\n$ {}\n\n{}",
+                                command, tail
+                            )
+                        } else {
+                            format!(
+                                "Shell command output (auto-promoted):\n$ {}\n\nstderr:\n{}",
+                                command, tail
+                            )
+                        }
+                    };
+                    app.messages_state
+                        .messages
+                        .add_user_message(include_text, Some(false));
+                    app.shell_store.mark_promoted(*id);
+                    app.messages_state
+                        .toasts
+                        .info("Shell output auto-promoted to context");
                 }
-            );
-            app.messages_state.messages.update_tool_call(
-                &format!("shell-{}", id.0),
-                output,
-                if status.unwrap_or(-1) == 0 {
-                    crate::session::message::ToolStatus::Completed
-                } else {
-                    crate::session::message::ToolStatus::Error
-                },
-                Some(elapsed_ms),
-                *status,
-                None,
-            );
+            }
         }
         crate::shell::ShellEvent::TimedOut { id, elapsed } => {
             app.shell_store.mark_timeout(*id, *elapsed);
-            app.messages_state.messages.update_tool_call(
-                &format!("shell-{}", id.0),
-                "Timed out".to_string(),
-                crate::session::message::ToolStatus::Error,
-                Some(elapsed.as_millis() as u64),
-                None,
-                None,
-            );
+            app.messages_state
+                .messages
+                .update_shell_cell(id.0, |cell| {
+                    cell.status = Some("timed_out".to_string());
+                    cell.elapsed_ms = Some(elapsed.as_millis() as u64);
+                });
         }
         crate::shell::ShellEvent::FailedToStart { id, error } => {
             app.shell_store.mark_failed_to_start(*id);
-            app.messages_state.messages.update_tool_call(
-                &format!("shell-{}", id.0),
-                format!("Failed to start: {}", error),
-                crate::session::message::ToolStatus::Error,
-                None,
-                None,
-                None,
-            );
+            app.messages_state
+                .messages
+                .update_shell_cell(id.0, |cell| {
+                    cell.status = Some("failed".to_string());
+                    cell.stderr_preview = Some(format!("Failed to start: {}", error));
+                });
         }
     }
 }
@@ -2378,25 +2429,89 @@ fn handle_shell_include(app: &mut app::App, id: u64, mode: String, _question: Op
 
     let cmd_id = ShellCommandId(id);
     if let Some(entry) = app.shell_store.get(cmd_id) {
-        let stdout = entry.stdout.head_str_lossy();
-        let stderr = entry.stderr.head_str_lossy();
-        let include_text = match mode.as_str() {
-            "stdout" => {
+        let command = entry.command.clone();
+        let cwd = entry.cwd.clone();
+        let exit_code = match entry.status {
+            crate::shell::types::ShellStatus::Exited => Some(0),
+            _ => None,
+        };
+        let elapsed = entry.elapsed.unwrap_or_default();
+        let stdout = &entry.stdout;
+        let stderr = &entry.stderr;
+
+        let include_text = if mode.starts_with("tail") {
+            let n: usize = mode
+                .strip_prefix("tail")
+                .and_then(|s| s.trim().parse().ok())
+                .unwrap_or(200);
+            let stderr_text = stderr.head_str_lossy();
+            let all_lines: Vec<&str> = stderr_text.lines().collect();
+            let tail: Vec<&str> = all_lines.iter().rev().take(n).rev().copied().collect();
+            format!(
+                "Shell output (tail {} lines) for `{}`:\n{}",
+                n,
+                command,
+                tail.join("\n")
+            )
+        } else if mode == "stdout" {
+            let digest = crate::shell::ShellDigest::build(
+                &command,
+                &cwd,
+                exit_code,
+                elapsed,
+                stdout,
+                stderr,
+            );
+            if digest.has_failures() {
                 format!(
-                    "Shell output (stdout) for ` {}`:\n{}",
-                    entry.command, stdout
+                    "Shell output (stdout + failures) for `{}`:\n{}",
+                    command,
+                    digest.render()
+                )
+            } else {
+                format!(
+                    "Shell output (stdout) for `{}`:\n{}",
+                    command,
+                    stdout.head_str_lossy()
                 )
             }
-            "stderr" => {
+        } else if mode == "stderr" {
+            format!(
+                "Shell output (stderr) for `{}`:\n{}",
+                command,
+                stderr.head_str_lossy()
+            )
+        } else if mode == "summary" {
+            let digest = crate::shell::ShellDigest::build(
+                &command,
+                &cwd,
+                exit_code,
+                elapsed,
+                stdout,
+                stderr,
+            );
+            format!("Shell output (summary) for `{}`:\n{}", command, digest.render())
+        } else {
+            let digest = crate::shell::ShellDigest::build(
+                &command,
+                &cwd,
+                exit_code,
+                elapsed,
+                stdout,
+                stderr,
+            );
+            if digest.has_failures() {
                 format!(
-                    "Shell output (stderr) for ` {}`:\n{}",
-                    entry.command, stderr
+                    "Shell output for `{}`:\n{}",
+                    command,
+                    digest.render()
                 )
-            }
-            _ => {
+            } else {
                 format!(
-                    "Shell output for ` {}`:\nstdout:\n{}\nstderr:\n{}",
-                    entry.command, stdout, stderr
+                    "Shell output for `{}`:\nstdout:\n{}\nstderr:\n{}",
+                    command,
+                    stdout.head_str_lossy(),
+                    stderr.head_str_lossy()
                 )
             }
         };
@@ -2414,13 +2529,52 @@ fn handle_shell_include(app: &mut app::App, id: u64, mode: String, _question: Op
     }
 }
 
+fn handle_shell_ask(app: &mut app::App, id: u64, question: String) {
+    use crate::shell::types::ShellCommandId;
+
+    let cmd_id = ShellCommandId(id);
+    if let Some(entry) = app.shell_store.get(cmd_id) {
+        let command = entry.command.clone();
+        let cwd = entry.cwd.clone();
+        let exit_code = match entry.status {
+            crate::shell::types::ShellStatus::Exited => Some(0),
+            _ => None,
+        };
+        let elapsed = entry.elapsed.unwrap_or_default();
+        let digest = crate::shell::ShellDigest::build(
+            &command,
+            &cwd,
+            exit_code,
+            elapsed,
+            &entry.stdout,
+            &entry.stderr,
+        );
+        let include_text = format!(
+            "Using the attached shell output, answer: {}\n\n{}",
+            question,
+            digest.render()
+        );
+        app.shell_store.mark_promoted(cmd_id);
+        app.messages_state
+            .messages
+            .add_user_message(include_text, Some(false));
+        app.messages_state
+            .toasts
+            .info("Shell output and question included in context");
+    } else {
+        app.messages_state
+            .toasts
+            .error(&format!("Shell command {} not found", id));
+    }
+}
+
 fn handle_shell_rerun(app: &mut app::App, id: u64) {
     use crate::shell::types::ShellCommandId;
 
     let cmd_id = ShellCommandId(id);
     if let Some(entry) = app.shell_store.get(cmd_id) {
         let command = entry.command.clone();
-        let promote_after = entry.promoted;
+        let promote_after = entry.promote_after;
         if let Some(ref tx) = app.tui_cmd_tx {
             let _ = tx.try_send(app::TuiCommand::RunHumanShell {
                 command,
@@ -3480,6 +3634,9 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                     }
                     TuiCommand::ShellList => {
                         handle_shell_list(app);
+                    }
+                    TuiCommand::ShellAsk { id, question } => {
+                        handle_shell_ask(app, id, question);
                     }
                 }
                 needs_render = true;

@@ -272,6 +272,10 @@ pub enum TuiCommand {
         id: u64,
     },
     ShellList,
+    ShellAsk {
+        id: u64,
+        question: String,
+    },
 }
 
 /// Main application state for the TUI.
@@ -661,6 +665,7 @@ impl App {
                 pending_bulk_delete_ids: None,
                 pending_bulk_archive: None,
                 pending_bulk_archive_ids: None,
+                pending_shell_command: None,
             },
             agent_state: AgentState {
                 agents,
@@ -874,6 +879,7 @@ impl App {
                 pending_bulk_delete_ids: None,
                 pending_bulk_archive: None,
                 pending_bulk_archive_ids: None,
+                pending_shell_command: None,
             },
             agent_state: AgentState {
                 agents,
@@ -1782,9 +1788,14 @@ impl App {
         self.prompt_state.prompt.set_theme(&self.ui_state.theme);
         self.prompt_state.prompt.set_mode_indicator(mode_indicator);
         self.prompt_state.prompt.set_prefix(session_prefix);
-        self.prompt_state
-            .prompt
-            .set_placeholder("Ask anything…".to_string());
+
+        let prompt_text = self.prompt_state.prompt.get_text();
+        let placeholder = if prompt_text.starts_with('!') {
+            "shell: run locally; not included in model context".to_string()
+        } else {
+            "Ask anything…".to_string()
+        };
+        self.prompt_state.prompt.set_placeholder(placeholder);
         let visible_lines = area.height.saturating_sub(2) as usize;
         self.prompt_state
             .prompt
@@ -2187,6 +2198,15 @@ impl App {
                             });
                         }
                         self.dialog_state.session_dialog.toggle_bulk_mode();
+                    } else if let Some((command, promote_after)) =
+                        self.dialog_state.pending_shell_command.take()
+                    {
+                        if let Some(ref tx) = self.tui_cmd_tx {
+                            let _ = tx.try_send(TuiCommand::RunHumanShell {
+                                command,
+                                promote_after,
+                            });
+                        }
                     }
                 } else {
                     self.dialog_state.pending_delete_session = None;
@@ -2195,6 +2215,7 @@ impl App {
                     self.dialog_state.pending_bulk_delete_ids = None;
                     self.dialog_state.pending_bulk_archive = None;
                     self.dialog_state.pending_bulk_archive_ids = None;
+                    self.dialog_state.pending_shell_command = None;
                 }
             }
             TuiMsg::McpAction {
@@ -3008,8 +3029,34 @@ impl App {
                                                 server.name
                                             ));
                                         }
-                                    }
-                                    _ => {}
+            }
+            "/shell-ask" => {
+                self.ui_state.command_mode = false;
+                let query = self.dialog_state.command_palette.query.clone();
+                let args_str = query.strip_prefix("/shell-ask").unwrap_or("").trim();
+                let parts: Vec<&str> = args_str.splitn(2, ' ').collect();
+                let id_str = parts.first().copied().unwrap_or("");
+                let question = parts.get(1).copied().unwrap_or("").to_string();
+                if question.is_empty() {
+                    self.messages_state
+                        .toasts
+                        .warning("Usage: /shell-ask <id> <question>");
+                } else {
+                    match id_str.parse::<u64>() {
+                        Ok(id) => {
+                            if let Some(ref tx) = self.tui_cmd_tx {
+                                let _ = tx.try_send(TuiCommand::ShellAsk { id, question });
+                            }
+                        }
+                        Err(_) => {
+                            self.messages_state
+                                .toasts
+                                .warning("Usage: /shell-ask <id> <question>");
+                        }
+                    }
+                }
+            }
+            _ => {}
                                 }
                             }
                         } else {
@@ -5127,25 +5174,45 @@ impl App {
             "/shell-include" => {
                 self.ui_state.command_mode = false;
                 let query = self.dialog_state.command_palette.query.clone();
-                let args: Vec<&str> = query
+                let args_str = query
                     .strip_prefix("/shell-include")
                     .unwrap_or("")
-                    .trim()
-                    .splitn(3, ' ')
-                    .collect();
+                    .trim();
+                let args: Vec<&str> = args_str.splitn(3, ' ').collect();
                 let id_str = args.first().copied().unwrap_or("");
-                let mode = args.get(1).copied().unwrap_or("all").to_string();
-                let question = args.get(2).map(|s| s.to_string());
+                let flag = args.get(1).copied().unwrap_or("all");
+                let extra = args.get(2).map(|s| s.to_string());
                 match id_str.parse::<u64>() {
                     Ok(id) => {
+                        let mode = match flag {
+                            "--tail" => {
+                                let n = extra
+                                    .as_deref()
+                                    .and_then(|s| s.parse::<usize>().ok())
+                                    .unwrap_or(200);
+                                format!("tail {}", n)
+                            }
+                            "--stdout" => "stdout".to_string(),
+                            "--stderr" => "stderr".to_string(),
+                            "--summary" => "summary".to_string(),
+                            "stdout" => "stdout".to_string(),
+                            "stderr" => "stderr".to_string(),
+                            "summary" => "summary".to_string(),
+                            "all" => "all".to_string(),
+                            _ => "all".to_string(),
+                        };
                         if let Some(ref tx) = self.tui_cmd_tx {
-                            let _ = tx.try_send(TuiCommand::ShellInclude { id, mode, question });
+                            let _ = tx.try_send(TuiCommand::ShellInclude {
+                                id,
+                                mode,
+                                question: None,
+                            });
                         }
                     }
                     Err(_) => {
-                        self.messages_state
-                            .toasts
-                            .warning("Usage: /shell-include <id> [stdout|stderr|all]");
+                        self.messages_state.toasts.warning(
+                            "Usage: /shell-include <id> [--tail N|--stdout|--stderr|--summary|all]",
+                        );
                     }
                 }
             }

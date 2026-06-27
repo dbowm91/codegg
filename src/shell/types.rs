@@ -15,6 +15,22 @@ pub enum ShellCapturePolicy {
     StoreAndPromote,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShellPromotionMode {
+    Full,
+    Tail { lines: usize },
+    StdoutOnly,
+    StderrOnly,
+    Summary,
+    FailureDigest,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShellEnvPolicy {
+    Inherit,
+    Clean,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ShellCommandId(pub u64);
 
@@ -26,6 +42,7 @@ pub struct ShellRequest {
     pub cwd: PathBuf,
     pub timeout: Duration,
     pub capture_policy: ShellCapturePolicy,
+    pub env_policy: ShellEnvPolicy,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -88,6 +105,9 @@ pub fn classify_prompt_submission(input: &str) -> PromptSubmissionKind {
     }
     if trimmed.starts_with('/') {
         return PromptSubmissionKind::Slash(trimmed.to_string());
+    }
+    if let Some(rest) = trimmed.strip_prefix("\\!") {
+        return PromptSubmissionKind::Chat(format!("!{}", rest));
     }
     if let Some(rest) = trimmed.strip_prefix("!!") {
         let cmd = rest.trim();
@@ -208,6 +228,22 @@ mod tests {
                 command: "grep foo bar | wc -l".to_string(),
                 promote_after: false,
             }
+        );
+    }
+
+    #[test]
+    fn escape_bang_is_chat() {
+        assert_eq!(
+            classify_prompt_submission("\\!not-shell"),
+            PromptSubmissionKind::Chat("!not-shell".to_string())
+        );
+    }
+
+    #[test]
+    fn escape_bang_preserves_rest() {
+        assert_eq!(
+            classify_prompt_submission("\\!cargo test"),
+            PromptSubmissionKind::Chat("!cargo test".to_string())
         );
     }
 
