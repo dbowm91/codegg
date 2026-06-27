@@ -3692,3 +3692,293 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
     exit_raw();
     Ok(())
 }
+
+#[cfg(test)]
+mod shell_dispatch_tests {
+    use super::*;
+    use crate::tui::app::App;
+    use crate::shell::types::{
+        ShellCapturePolicy, ShellCommandId, ShellEnvPolicy, ShellOrigin,
+        ShellRequest,
+    };
+    use crate::tui::components::messages::MessageRole;
+    use std::time::Duration;
+
+    fn make_test_app() -> App {
+        App::new_for_testing("/tmp".into())
+    }
+
+    fn insert_completed_entry(
+        app: &mut App,
+        id: u64,
+        command: &str,
+        stdout: &[u8],
+        stderr: &[u8],
+        exit_code: Option<i32>,
+    ) {
+        let cmd_id = ShellCommandId(id);
+        let req = ShellRequest {
+            id: cmd_id,
+            origin: ShellOrigin::HumanEphemeral,
+            command: command.to_string(),
+            cwd: std::env::temp_dir(),
+            timeout: Duration::from_secs(300),
+            capture_policy: ShellCapturePolicy::StoreEphemeral,
+            env_policy: ShellEnvPolicy::Inherit,
+        };
+        app.shell_store.insert_started(&req);
+        app.shell_store.append_stdout(cmd_id, stdout);
+        app.shell_store.append_stderr(cmd_id, stderr);
+        let exit = exit_code.unwrap_or(0);
+        app.shell_store
+            .mark_exited(cmd_id, Some(exit), Duration::from_secs(1));
+    }
+
+    fn get_toasts(app: &App) -> Vec<String> {
+        app.messages_state
+            .toasts
+            .iter()
+            .map(|t| t.message.clone())
+            .collect()
+    }
+
+    fn get_user_messages(app: &App) -> Vec<String> {
+        app.messages_state
+            .messages
+            .messages
+            .iter()
+            .filter(|m| m.role == MessageRole::User)
+            .map(|m| m.text_content())
+            .collect()
+    }
+
+    #[test]
+    fn shell_list_empty_shows_toast() {
+        let mut app = make_test_app();
+        handle_shell_list(&mut app);
+        let toasts = get_toasts(&app);
+        assert!(
+            toasts.iter().any(|t| t.contains("No shell commands")),
+            "should show empty message, got: {toasts:?}"
+        );
+    }
+
+    #[test]
+    fn shell_list_with_entries_shows_recent() {
+        let mut app = make_test_app();
+        insert_completed_entry(&mut app, 1, "echo hello", b"hello\n", b"", Some(0));
+        insert_completed_entry(&mut app, 2, "cargo test", b"", b"fail\n", Some(1));
+        handle_shell_list(&mut app);
+        let toasts = get_toasts(&app);
+        let text = toasts.join("\n");
+        assert!(text.contains("echo hello"), "should list command, got: {text}");
+        assert!(text.contains("cargo test"), "should list command, got: {text}");
+    }
+
+    #[test]
+    fn shell_include_unknown_id_shows_warning() {
+        let mut app = make_test_app();
+        handle_shell_include(&mut app, 999, "all".to_string(), None);
+        let toasts = get_toasts(&app);
+        assert!(
+            toasts.iter().any(|t| t.contains("not found")),
+            "should show not-found warning, got: {toasts:?}"
+        );
+    }
+
+    #[test]
+    fn shell_include_full_mode_promotes_output() {
+        let mut app = make_test_app();
+        insert_completed_entry(&mut app, 1, "echo hello", b"hello\n", b"", Some(0));
+        handle_shell_include(&mut app, 1, "all".to_string(), None);
+        let msgs = get_user_messages(&app);
+        assert!(
+            msgs.iter().any(|m| m.contains("echo hello")),
+            "should include command in promoted message, got: {msgs:?}"
+        );
+        assert!(
+            msgs.iter().any(|m| m.contains("hello")),
+            "should include stdout in promoted message, got: {msgs:?}"
+        );
+        let toasts = get_toasts(&app);
+        assert!(
+            toasts.iter().any(|t| t.contains("included")),
+            "should show success toast, got: {toasts:?}"
+        );
+        let entry = app.shell_store.get(ShellCommandId(1)).unwrap();
+        assert!(entry.promoted, "entry should be marked as promoted");
+    }
+
+    #[test]
+    fn shell_include_stdout_mode() {
+        let mut app = make_test_app();
+        insert_completed_entry(
+            &mut app,
+            1,
+            "cargo check",
+            b"checking...\n",
+            b"warning: unused\n",
+            Some(0),
+        );
+        handle_shell_include(&mut app, 1, "stdout".to_string(), None);
+        let msgs = get_user_messages(&app);
+        assert!(
+            msgs.iter().any(|m| m.contains("checking...")),
+            "should include stdout, got: {msgs:?}"
+        );
+    }
+
+    #[test]
+    fn shell_include_stderr_mode() {
+        let mut app = make_test_app();
+        insert_completed_entry(
+            &mut app,
+            1,
+            "cargo check",
+            b"checking...\n",
+            b"error[E0308]: mismatched\n",
+            Some(1),
+        );
+        handle_shell_include(&mut app, 1, "stderr".to_string(), None);
+        let msgs = get_user_messages(&app);
+        assert!(
+            msgs.iter().any(|m| m.contains("error[E0308]")),
+            "should include stderr, got: {msgs:?}"
+        );
+    }
+
+    #[test]
+    fn shell_include_tail_mode() {
+        let mut app = make_test_app();
+        let big_stderr = (0..500).map(|i| format!("line {i}\n")).collect::<String>();
+        insert_completed_entry(&mut app, 1, "big output", b"", big_stderr.as_bytes(), Some(1));
+        handle_shell_include(&mut app, 1, "tail 5".to_string(), None);
+        let msgs = get_user_messages(&app);
+        let included = msgs.iter().find(|m| m.contains("tail 5")).unwrap();
+        assert!(
+            included.contains("line 499"),
+            "tail should include last lines, got: {included}"
+        );
+        assert!(
+            !included.contains("line 0"),
+            "tail should not include first lines"
+        );
+    }
+
+    #[test]
+    fn shell_ask_unknown_id_shows_warning() {
+        let mut app = make_test_app();
+        handle_shell_ask(&mut app, 999, "why did this fail?".to_string());
+        let toasts = get_toasts(&app);
+        assert!(
+            toasts.iter().any(|t| t.contains("not found")),
+            "should show not-found warning, got: {toasts:?}"
+        );
+    }
+
+    #[test]
+    fn shell_ask_includes_question_and_output() {
+        let mut app = make_test_app();
+        insert_completed_entry(
+            &mut app,
+            1,
+            "cargo test",
+            b"",
+            b"test result: FAILED\n",
+            Some(101),
+        );
+        handle_shell_ask(&mut app, 1, "why did this fail?".to_string());
+        let msgs = get_user_messages(&app);
+        assert!(
+            msgs.iter().any(|m| m.contains("why did this fail?")),
+            "should include question, got: {msgs:?}"
+        );
+        assert!(
+            msgs.iter().any(|m| m.contains("cargo test")),
+            "should include command, got: {msgs:?}"
+        );
+        let entry = app.shell_store.get(ShellCommandId(1)).unwrap();
+        assert!(entry.promoted, "entry should be marked as promoted");
+    }
+
+    #[test]
+    fn shell_kill_nonexistent_shows_error() {
+        let mut app = make_test_app();
+        handle_shell_kill(&mut app, 999);
+        let toasts = get_toasts(&app);
+        assert!(
+            toasts.iter().any(|t| t.contains("No running")),
+            "should show error for unknown id, got: {toasts:?}"
+        );
+    }
+
+    #[test]
+    fn shell_kill_running_command() {
+        let mut app = make_test_app();
+        let cmd_id = ShellCommandId(1);
+        let req = ShellRequest {
+            id: cmd_id,
+            origin: ShellOrigin::HumanEphemeral,
+            command: "sleep 999".to_string(),
+            cwd: std::env::temp_dir(),
+            timeout: Duration::from_secs(300),
+            capture_policy: ShellCapturePolicy::StoreEphemeral,
+            env_policy: ShellEnvPolicy::Inherit,
+        };
+        app.shell_store.insert_started(&req);
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let abort_handle = rt.block_on(async { tokio::spawn(async {}).abort_handle() });
+        let handle = crate::shell::runtime::ShellHandle::new_for_test(cmd_id, abort_handle);
+        app.shell_handles.insert(1, handle);
+
+        handle_shell_kill(&mut app, 1);
+        assert!(
+            !app.shell_handles.contains_key(&1),
+            "handle should be removed"
+        );
+        let toasts = get_toasts(&app);
+        assert!(
+            toasts.iter().any(|t| t.contains("Killed")),
+            "should show kill confirmation, got: {toasts:?}"
+        );
+    }
+
+    #[test]
+    fn shell_include_promotes_only_once() {
+        let mut app = make_test_app();
+        insert_completed_entry(&mut app, 1, "echo test", b"test\n", b"", Some(0));
+        handle_shell_include(&mut app, 1, "all".to_string(), None);
+        handle_shell_include(&mut app, 1, "all".to_string(), None);
+        let msgs = get_user_messages(&app);
+        let include_count = msgs.iter().filter(|m| m.contains("echo test")).count();
+        assert_eq!(include_count, 2, "each /shell-include creates a new message");
+        let entry = app.shell_store.get(ShellCommandId(1)).unwrap();
+        assert!(entry.promoted, "entry should remain promoted");
+    }
+
+    #[test]
+    fn shell_list_shows_status_labels() {
+        let mut app = make_test_app();
+        insert_completed_entry(&mut app, 1, "cmd1", b"", b"", Some(0));
+        let cmd_id = ShellCommandId(2);
+        let req = ShellRequest {
+            id: cmd_id,
+            origin: ShellOrigin::HumanEphemeral,
+            command: "cmd2".to_string(),
+            cwd: std::env::temp_dir(),
+            timeout: Duration::from_secs(300),
+            capture_policy: ShellCapturePolicy::StoreEphemeral,
+            env_policy: ShellEnvPolicy::Inherit,
+        };
+        app.shell_store.insert_started(&req);
+        handle_shell_list(&mut app);
+        let toasts = get_toasts(&app);
+        let text = toasts.join("\n");
+        assert!(text.contains("done"), "should show done status, got: {text}");
+        assert!(
+            text.contains("running"),
+            "should show running status, got: {text}"
+        );
+    }
+}
