@@ -126,16 +126,11 @@ use crate::protocol::core::{CoreRequest, CoreResponse};
 use crate::tui::async_cmd::spawn_tui_task;
 use crate::tui::components::dialogs::import::ImportSource;
 use crate::tui::components::toast::Toast;
-use crossterm::event::{
-    DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture, Event,
-    EventStream, KeyEventKind,
-};
-use crossterm::execute;
-use crossterm::terminal::{EnterAlternateScreen, LeaveAlternateScreen};
+use crossterm::event::{Event, EventStream, KeyEventKind};
 use futures::StreamExt;
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
-use std::io::{self, stdout};
+use std::io;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -157,24 +152,6 @@ macro_rules! debug_log {
             });
     };
 }
-
-#[allow(dead_code)]
-pub fn enter_raw() -> Result<(), AppError> {
-    execute!(stdout(), EnterAlternateScreen)?;
-    crossterm::terminal::enable_raw_mode()?;
-    execute!(stdout(), EnableBracketedPaste)?;
-    execute!(stdout(), EnableMouseCapture)?;
-    Ok(())
-}
-
-pub fn exit_raw() {
-    print!("\x1b[?1049l");
-    let _ = execute!(stdout(), DisableBracketedPaste);
-    let _ = execute!(stdout(), DisableMouseCapture);
-    let _ = crossterm::terminal::disable_raw_mode();
-    let _ = execute!(stdout(), LeaveAlternateScreen);
-}
-
 pub type AppTerminal = Terminal<CrosstermBackend<io::Stdout>>;
 
 pub fn create_terminal() -> Result<AppTerminal, AppError> {
