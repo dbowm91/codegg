@@ -796,6 +796,50 @@ TuiCommand::SessionsReloaded { sessions, message_counts, error } => {
 **See also**: `src/tui/async_cmd.rs` for the `spawn_tui_task` helper, `plans/tui_phase_1_event_loop_responsiveness.md` for the design plan.
 - `src/tui/file_diff.rs` - Async diff-stats background pipeline for sidebar file changes
 
+## Background Task Lifecycle (Phase 7)
+
+TUI-owned background tasks are tracked via `TuiTaskRegistry` on `App`.
+
+### Key Types
+
+- `TuiTaskId(u64)` -- monotonically increasing task identifier
+- `TuiTaskKind` -- category enum: `Command`, `FileDiff`, `Shell`, `Research`, `Memory`, `Notification`, `SecurityReview`, `Indexer`, `Other`
+- `TuiTaskRecord` -- stores name, kind, started_at, abort_handle
+
+### Spawning Tracked Tasks
+
+Use `spawn_registered_tui_task` for tasks that should be lifecycle-tracked:
+
+```rust
+use crate::tui::async_cmd::spawn_registered_tui_task;
+use crate::tui::task_lifecycle::TuiTaskKind;
+
+let id = spawn_registered_tui_task(
+    app.tui_cmd_tx.clone(),
+    &mut app.task_registry,
+    TuiTaskKind::Command,
+    "reload_sessions",
+    async move {
+        // ... do work ...
+        Some(TuiCommand::SessionsReloaded { ... })
+    },
+);
+```
+
+### Cancellation
+
+- `cancel(id)` -- abort a specific task by id
+- `cancel_kind(kind)` -- abort all tasks of a given kind
+- `cancel_all()` -- abort everything (called on shutdown)
+
+### Shutdown
+
+`App::prepare_shutdown()` cancels all registered tasks, kills shell handles, and is called before terminal restoration in `run_event_loop`.
+
+### Diagnostics
+
+`/tui-stats` includes task registry stats: active counts by kind, oldest active task, and cancelled count.
+
 ## TuiMsg Enum (src/tui/app/types.rs)
 
 The `TuiMsg` enum provides a centralized message type for UI intentions, enabling decoupled event handling. All dialogs emit explicit TuiMsg for user-visible effects:

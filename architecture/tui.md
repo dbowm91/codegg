@@ -43,6 +43,31 @@ This ensures keyboard input, resize handling, streaming redraws, spinner animati
 
 See `src/tui/async_cmd.rs` for the `spawn_tui_task` helper.
 
+### Background Task Lifecycle (Phase 7)
+
+TUI-owned background tasks are tracked via [`TuiTaskRegistry`](src/tui/task_lifecycle.rs) on `App`.
+
+**Key types:**
+- `TuiTaskId(u64)` -- monotonically increasing task identifier
+- `TuiTaskKind` -- category enum: `Command`, `FileDiff`, `Shell`, `Research`, `Memory`, `Notification`, `SecurityReview`, `Indexer`, `Other`
+- `TuiTaskRecord` -- stores name, kind, started_at, abort_handle
+
+**Registry operations:**
+- `spawn(kind, name, future)` -- register and spawn a tracked task, returns `TuiTaskId`
+- `cancel(id)` -- abort a specific task
+- `cancel_kind(kind)` -- abort all tasks of a given kind
+- `cancel_all()` -- abort all registered tasks
+- `reap_finished()` -- remove completed tasks from the registry
+- `active_count()` / `summary()` -- diagnostics
+
+**Integration with spawn_tui_task:**
+- `spawn_tui_task()` -- unchanged, fire-and-forget (no tracking)
+- `spawn_registered_tui_task(tx, registry, kind, name, fut)` -- tracked variant, returns `Option<TuiTaskId>`
+
+**Shutdown:** `App::prepare_shutdown()` cancels all registered tasks and kills shell handles. Called before `terminal_guard.restore()` in `run_event_loop`.
+
+**Diagnostics:** `/tui-stats` now includes task registry stats (active counts by kind, oldest task, cancelled count) and shell handle count.
+
 ## Directory Structure
 
 ```
@@ -448,6 +473,8 @@ The `TuiDiagnostics` struct tracks runtime performance metrics:
 | Last render error | Most recent render panic message |
 
 Recent slow commands, slow renders, and component render panics are stored in bounded ring buffers for inspection.
+
+`/tui-stats` also reports background task lifecycle stats (active tasks by kind, oldest task, cancelled count) and shell handle count, appended to the diagnostics summary.
 
 ### Diagnostics Command
 

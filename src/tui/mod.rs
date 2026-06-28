@@ -110,6 +110,7 @@ pub mod file_diff;
 pub mod input;
 pub mod layout;
 pub mod route;
+pub mod task_lifecycle;
 pub mod terminal;
 pub mod theme;
 
@@ -6673,7 +6674,18 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                         handle_file_diff_stats_ready(app, path, generation, result);
                     }
                     TuiCommand::TuiStats => {
-                        let summary = app.ui_state.diagnostics.summary();
+                        let mut summary = app.ui_state.diagnostics.summary();
+                        // Append task registry stats
+                        let task_summary = app.task_registry.summary();
+                        summary.push('\n');
+                        summary.push_str(&task_summary);
+                        // Append shell handle count
+                        if !app.shell_handles.is_empty() {
+                            summary.push_str(&format!(
+                                "\nShell handles: {}",
+                                app.shell_handles.len()
+                            ));
+                        }
                         app.messages_state.toasts.info(&summary);
                     }
                 }
@@ -6695,6 +6707,9 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
             else => {}
         }
     }
+
+    // Cancel background tasks and kill shell commands before restoring terminal
+    app.prepare_shutdown();
 
     terminal_guard.restore();
     Ok(())

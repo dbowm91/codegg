@@ -544,6 +544,9 @@ pub struct App {
     pub latest_security_review: Option<crate::security::workflow::SecurityReviewReceipt>,
     pub shell_store: crate::shell::ShellOutputStore,
     pub shell_handles: std::collections::HashMap<u64, crate::shell::runtime::ShellHandle>,
+    /// Registry of TUI-owned background tasks.  Tracked tasks can be
+    /// counted, cancelled, and reaped on shutdown or dialog close.
+    pub task_registry: crate::tui::task_lifecycle::TuiTaskRegistry,
 }
 
 /// What to do at TUI startup with respect to session loading. The TUI
@@ -855,6 +858,7 @@ impl App {
                 .map(crate::shell::ShellOutputStore::from_config)
                 .unwrap_or_default(),
             shell_handles: std::collections::HashMap::new(),
+            task_registry: crate::tui::task_lifecycle::TuiTaskRegistry::new(),
         }
     }
 
@@ -1069,6 +1073,7 @@ impl App {
             latest_security_review: None,
             shell_store: crate::shell::ShellOutputStore::new(),
             shell_handles: std::collections::HashMap::new(),
+            task_registry: crate::tui::task_lifecycle::TuiTaskRegistry::new(),
         }
     }
 
@@ -1500,6 +1505,35 @@ impl App {
             _ => {
                 debug_log!("handle_remote_event: unhandled type={}", _event_type);
             }
+        }
+    }
+
+    /// Prepare for TUI shutdown.
+    ///
+    /// Cancels all registered background tasks, kills running shell
+    /// commands, and clears command senders.  Call this before leaving
+    /// the event loop to ensure clean shutdown.  The
+    /// [`TerminalGuard`](super::terminal::TerminalGuard) still restores
+    /// terminal state even if this method encounters errors.
+    pub fn prepare_shutdown(&mut self) {
+        // Cancel all registered background tasks
+        let active = self.task_registry.active_count();
+        if active > 0 {
+            tracing::info!(
+                active_tasks = active,
+                "cancelling background tasks on shutdown"
+            );
+            self.task_registry.cancel_all();
+        }
+
+        // Kill running shell commands
+        for (id, handle) in self.shell_handles.drain() {
+            tracing::debug!(shell_id = id, "killing shell command on shutdown");
+            handle.kill();
+            // Mark as killed in the store if the entry exists
+            let cmd_id = crate::shell::types::ShellCommandId(id);
+            self.shell_store
+                .mark_killed(cmd_id, std::time::Duration::ZERO);
         }
     }
 
@@ -3872,7 +3906,15 @@ impl App {
             }
             "/tui-stats" => {
                 self.ui_state.command_mode = false;
-                let summary = self.ui_state.diagnostics.summary();
+                let mut summary = self.ui_state.diagnostics.summary();
+                // Append task registry stats
+                let task_summary = self.task_registry.summary();
+                summary.push('\n');
+                summary.push_str(&task_summary);
+                // Append shell handle count
+                if !self.shell_handles.is_empty() {
+                    summary.push_str(&format!("\nShell handles: {}", self.shell_handles.len()));
+                }
                 self.messages_state.toasts.info(&summary);
             }
             "/tts" => {
