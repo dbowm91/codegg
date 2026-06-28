@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use regex::Regex;
 
-use super::store::BoundedOutput;
+use super::store::{BoundedOutput, ShellOutputEntry};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ShellFailureKind {
@@ -95,6 +95,17 @@ impl ShellDigest {
                 stderr_omitted_bytes: stderr.omitted_bytes,
             },
         }
+    }
+
+    pub fn build_from_entry(entry: &ShellOutputEntry) -> Self {
+        Self::build(
+            &entry.command,
+            &entry.cwd,
+            entry.exit_code,
+            entry.elapsed.unwrap_or_default(),
+            &entry.stdout,
+            &entry.stderr,
+        )
     }
 
     pub fn has_failures(&self) -> bool {
@@ -436,5 +447,37 @@ mod tests {
         let s = summarize(&"a".repeat(200), 100);
         assert!(s.len() < 120);
         assert!(s.contains("[truncated]"));
+    }
+
+    #[test]
+    fn build_from_entry_matches_manual_build() {
+        use crate::shell::store::ShellOutputEntry;
+        use crate::shell::types::{ShellCapturePolicy, ShellCommandId, ShellStatus};
+        use std::path::PathBuf;
+        use std::time::SystemTime;
+
+        let mut stdout = BoundedOutput::new();
+        stdout.append(b"hello world");
+        let entry = ShellOutputEntry {
+            id: ShellCommandId(1),
+            command: "echo hello".to_string(),
+            cwd: PathBuf::from("/tmp"),
+            started_at: SystemTime::now(),
+            finished_at: Some(SystemTime::now()),
+            status: ShellStatus::Exited,
+            exit_code: Some(0),
+            stdout,
+            stderr: BoundedOutput::new(),
+            elapsed: Some(Duration::from_secs(1)),
+            promoted: false,
+            promote_after: false,
+            capture_policy: ShellCapturePolicy::StoreEphemeral,
+        };
+
+        let from_entry = ShellDigest::build_from_entry(&entry);
+        assert_eq!(from_entry.command, "echo hello");
+        assert_eq!(from_entry.exit_code, Some(0));
+        assert_eq!(from_entry.elapsed, Duration::from_secs(1));
+        assert!(from_entry.stdout_summary.is_some());
     }
 }

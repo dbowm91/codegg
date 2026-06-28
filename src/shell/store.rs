@@ -82,6 +82,7 @@ pub struct ShellOutputEntry {
     pub started_at: SystemTime,
     pub finished_at: Option<SystemTime>,
     pub status: ShellStatus,
+    pub exit_code: Option<i32>,
     pub stdout: BoundedOutput,
     pub stderr: BoundedOutput,
     pub elapsed: Option<Duration>,
@@ -144,6 +145,7 @@ impl ShellOutputStore {
             started_at: SystemTime::now(),
             finished_at: None,
             status: ShellStatus::Running,
+            exit_code: None,
             stdout: BoundedOutput::new(),
             stderr: BoundedOutput::new(),
             elapsed: None,
@@ -170,9 +172,9 @@ impl ShellOutputStore {
     pub fn mark_exited(&mut self, id: ShellCommandId, status: Option<i32>, elapsed: Duration) {
         if let Some(entry) = self.find_mut(id) {
             entry.status = ShellStatus::Exited;
+            entry.exit_code = status;
             entry.finished_at = Some(SystemTime::now());
             entry.elapsed = Some(elapsed);
-            let _ = status;
         }
     }
 
@@ -368,6 +370,7 @@ mod tests {
         store.mark_exited(id, Some(0), Duration::from_secs(1));
         let entry = store.get(id).unwrap();
         assert_eq!(entry.status, ShellStatus::Exited);
+        assert_eq!(entry.exit_code, Some(0));
         assert!(entry.elapsed.is_some());
         assert!(entry.finished_at.is_some());
     }
@@ -501,5 +504,27 @@ mod tests {
     fn bounded_output_default() {
         let bo = BoundedOutput::default();
         assert!(bo.is_empty());
+    }
+
+    #[test]
+    fn store_mark_exited_nonzero_exit_code() {
+        let mut store = ShellOutputStore::new();
+        let req = make_req(1, "failing cmd");
+        let id = req.id;
+        store.insert_started(&req);
+        store.mark_exited(id, Some(101), Duration::from_secs(2));
+        let entry = store.get(id).unwrap();
+        assert_eq!(entry.exit_code, Some(101));
+    }
+
+    #[test]
+    fn store_mark_exited_none_exit_code() {
+        let mut store = ShellOutputStore::new();
+        let req = make_req(1, "killed cmd");
+        let id = req.id;
+        store.insert_started(&req);
+        store.mark_exited(id, None, Duration::from_secs(0));
+        let entry = store.get(id).unwrap();
+        assert_eq!(entry.exit_code, None);
     }
 }

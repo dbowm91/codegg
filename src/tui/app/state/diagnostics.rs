@@ -189,6 +189,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::field_reassign_with_default)]
     fn summary_includes_all_fields() {
         let mut d = TuiDiagnostics::default();
         d.slow_render_count = 2;

@@ -3330,10 +3330,7 @@ fn handle_shell_include(app: &mut app::App, id: u64, mode: String, _question: Op
     if let Some(entry) = app.shell_store.get(cmd_id) {
         let command = entry.command.clone();
         let cwd = entry.cwd.clone();
-        let exit_code = match entry.status {
-            crate::shell::types::ShellStatus::Exited => Some(0),
-            _ => None,
-        };
+        let exit_code = entry.exit_code;
         let elapsed = entry.elapsed.unwrap_or_default();
         let stdout = &entry.stdout;
         let stderr = &entry.stderr;
@@ -3442,10 +3439,7 @@ fn handle_shell_ask(app: &mut app::App, id: u64, question: String) {
     if let Some(entry) = app.shell_store.get(cmd_id) {
         let command = entry.command.clone();
         let cwd = entry.cwd.clone();
-        let exit_code = match entry.status {
-            crate::shell::types::ShellStatus::Exited => Some(0),
-            _ => None,
-        };
+        let exit_code = entry.exit_code;
         let elapsed = entry.elapsed.unwrap_or_default();
         let digest = crate::shell::ShellDigest::build(
             &command,
@@ -3497,6 +3491,9 @@ fn handle_shell_rerun(app: &mut app::App, id: u64) {
 fn handle_shell_kill(app: &mut app::App, id: u64) {
     if let Some(handle) = app.shell_handles.remove(&id) {
         handle.kill();
+        let cmd_id = crate::shell::types::ShellCommandId(id);
+        app.shell_store
+            .mark_exited(cmd_id, None, std::time::Duration::default());
         app.messages_state
             .toasts
             .info(&format!("Killed shell command {}", id));
@@ -3518,17 +3515,42 @@ fn handle_shell_list(app: &mut app::App) {
     let lines: Vec<String> = recent
         .iter()
         .map(|e| {
-            format!(
-                "[{}] ${} ({})",
-                e.id.0,
-                e.command,
-                match e.status {
-                    crate::shell::types::ShellStatus::Running => "running",
-                    crate::shell::types::ShellStatus::Exited => "done",
-                    crate::shell::types::ShellStatus::TimedOut => "timeout",
-                    crate::shell::types::ShellStatus::FailedToStart => "failed",
+            let status_str = match e.status {
+                crate::shell::types::ShellStatus::Running => {
+                    let elapsed_str = e
+                        .elapsed
+                        .map(|d| format!("{:.1}s", d.as_secs_f64()))
+                        .unwrap_or_else(|| "0.0s".to_string());
+                    format!("running {}", elapsed_str)
                 }
-            )
+                crate::shell::types::ShellStatus::Exited => match e.exit_code {
+                    Some(code) => {
+                        let elapsed_str = e
+                            .elapsed
+                            .map(|d| format!("{:.1}s", d.as_secs_f64()))
+                            .unwrap_or_default();
+                        if elapsed_str.is_empty() {
+                            format!("done exit={}", code)
+                        } else {
+                            format!("done exit={} {}", code, elapsed_str)
+                        }
+                    }
+                    None => "done".to_string(),
+                },
+                crate::shell::types::ShellStatus::TimedOut => {
+                    let elapsed_str = e
+                        .elapsed
+                        .map(|d| format!("{:.0}s", d.as_secs_f64()))
+                        .unwrap_or_default();
+                    if elapsed_str.is_empty() {
+                        "timeout".to_string()
+                    } else {
+                        format!("timeout {}", elapsed_str)
+                    }
+                }
+                crate::shell::types::ShellStatus::FailedToStart => "failed".to_string(),
+            };
+            format!("[{}] {} $ {}", e.id.0, status_str, e.command)
         })
         .collect();
     app.messages_state.toasts.info(&lines.join("\n"));
@@ -5271,6 +5293,97 @@ mod shell_dispatch_tests {
         assert!(
             text.contains("running"),
             "should show running status, got: {text}"
+        );
+    }
+
+    #[test]
+    fn shell_list_shows_exit_code() {
+        let mut app = make_test_app();
+        insert_completed_entry(&mut app, 1, "passing", b"", b"", Some(0));
+        insert_completed_entry(&mut app, 2, "failing", b"", b"err\n", Some(101));
+        handle_shell_list(&mut app);
+        let toasts = get_toasts(&app);
+        let text = toasts.join("\n");
+        assert!(
+            text.contains("exit=0"),
+            "should show exit=0 for passing cmd, got: {text}"
+        );
+        assert!(
+            text.contains("exit=101"),
+            "should show exit=101 for failing cmd, got: {text}"
+        );
+    }
+
+    #[test]
+    fn shell_include_preserves_nonzero_exit_code() {
+        let mut app = make_test_app();
+        insert_completed_entry(
+            &mut app,
+            1,
+            "cargo test",
+            b"",
+            b"test result: FAILED\n",
+            Some(101),
+        );
+        handle_shell_include(&mut app, 1, "summary".to_string(), None);
+        let msgs = get_user_messages(&app);
+        let included = msgs.iter().find(|m| m.contains("cargo test")).unwrap();
+        assert!(
+            included.contains("Exit code: 101"),
+            "should show actual exit code 101, got: {included}"
+        );
+    }
+
+    #[test]
+    fn shell_ask_preserves_nonzero_exit_code() {
+        let mut app = make_test_app();
+        insert_completed_entry(
+            &mut app,
+            1,
+            "cargo check",
+            b"",
+            b"error[E0308]: mismatched\n",
+            Some(1),
+        );
+        handle_shell_ask(&mut app, 1, "fix this error".to_string());
+        let msgs = get_user_messages(&app);
+        let included = msgs.iter().find(|m| m.contains("fix this error")).unwrap();
+        assert!(
+            included.contains("Exit code: 1"),
+            "should show actual exit code 1, got: {included}"
+        );
+    }
+
+    #[test]
+    fn shell_kill_marks_entry_exited() {
+        let mut app = make_test_app();
+        let cmd_id = ShellCommandId(1);
+        let req = ShellRequest {
+            id: cmd_id,
+            origin: ShellOrigin::HumanEphemeral,
+            command: "sleep 999".to_string(),
+            cwd: std::env::temp_dir(),
+            timeout: Duration::from_secs(300),
+            capture_policy: ShellCapturePolicy::StoreEphemeral,
+            env_policy: ShellEnvPolicy::Inherit,
+        };
+        app.shell_store.insert_started(&req);
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let abort_handle = rt.block_on(async { tokio::spawn(async {}).abort_handle() });
+        let handle = crate::shell::runtime::ShellHandle::new_for_test(cmd_id, abort_handle);
+        app.shell_handles.insert(1, handle);
+
+        handle_shell_kill(&mut app, 1);
+        let entry = app.shell_store.get(ShellCommandId(1)).unwrap();
+        assert_eq!(
+            entry.status,
+            crate::shell::types::ShellStatus::Exited,
+            "killed entry should be marked as exited"
+        );
+        assert_eq!(
+            entry.exit_code, None,
+            "killed entry should have no exit code"
         );
     }
 }

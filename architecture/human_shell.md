@@ -105,6 +105,13 @@ Key behaviors:
 
 Bounded in-memory store using `VecDeque<ShellOutputEntry>`.
 
+### Key Methods
+
+- `insert_started(req)` — Creates entry with `exit_code: None`, status `Running`
+- `mark_exited(id, status, elapsed)` — Sets status to `Exited`, stores `exit_code: Option<i32>`, records elapsed time
+- `mark_timeout(id, elapsed)` — Sets status to `TimedOut`
+- `mark_failed_to_start(id)` — Sets status to `FailedToStart`
+
 ### Storage Limits
 
 | Default | Value |
@@ -126,6 +133,15 @@ Each command's stdout/stderr is stored as a `BoundedOutput`:
 - `omitted_bytes`: bytes dropped from the middle
 - `total_bytes`, `total_lines`: full counts
 
+### ShellOutputEntry
+
+Each stored entry includes:
+- `id`, `command`, `cwd`, `started_at`, `finished_at`
+- `status`: `ShellStatus` (Running, Exited, TimedOut, FailedToStart)
+- `exit_code: Option<i32>` — process exit code (None if killed or not yet exited)
+- `stdout`, `stderr`: `BoundedOutput`
+- `elapsed: Option<Duration>`, `promoted: bool`, `capture_policy`
+
 ## Policy Evaluation
 
 `evaluate_command()` inspects normalized command text and returns:
@@ -146,6 +162,8 @@ Blocked commands are refused before execution. Warned commands show a confirmati
 - Panics (`thread '...' panicked at '...'`)
 - Generic non-zero exit codes
 
+`ShellDigest::build_from_entry()` is a convenience constructor that takes a `&ShellOutputEntry` directly, extracting command, cwd, exit_code, elapsed, stdout, and stderr from the entry.
+
 Used by the TUI to render concise failure summaries in the `ShellCell`.
 
 ## TUI Integration
@@ -159,6 +177,26 @@ Renders shell output as a collapsible cell with:
 - elapsed time, exit code
 - truncation flag, promoted flag
 - expanded/collapsed state
+
+### `/shell-list` Display Format
+
+The `/shell-list` command displays recent commands in a compact format:
+```
+[id] <status> $ <command>
+```
+
+Status labels vary by state:
+- `running X.Xs` — command still in progress
+- `done exit=N X.Xs` — exited with code N and elapsed time
+- `done` — exited with no recorded exit code
+- `timeout X.Xs` — killed by timeout
+- `failed` — failed to start
+
+Example: `[1] done exit=0 1.2s $ cargo test`
+
+### `/shell-kill` Behavior
+
+`/shell-kill <id>` aborts a running command and marks the store entry as exited with `exit_code: None` and zero elapsed time.
 
 ### TuiCommand Variants
 

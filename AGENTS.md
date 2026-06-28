@@ -177,15 +177,15 @@ cargo test -p egglsp --features lsp-real-server-tests --test real_server_smoke
 
 - **Central invariant**: A human `!` command is not model context unless the user explicitly promotes it.
 - **Syntax**: `!command` runs a shell command with output hidden from the model (ephemeral). `!!command` runs and auto-promotes output into the conversation.
-- **Module location**: `src/shell/` — `types.rs` (ShellOrigin, ShellCapturePolicy, ShellCommandId, ShellRequest, ShellEvent, PromptSubmissionKind), `runtime.rs` (ShellRuntime, ShellHandle), `store.rs` (ShellOutputStore, BoundedOutput, ShellOutputEntry), `policy.rs` (HumanShellPolicyDecision, evaluate_command), `digest.rs` (ShellDigest, ShellFailure, TruncationReport).
-- **TUI commands**: `/shell-list`, `/shell-include <id> [stdout|stderr|all]`, `/shell-rerun <id>`, `/shell-kill <id>`. `TuiCommand` variants: `RunHumanShell`, `ShellEvent`, `ShellInclude`, `ShellRerun`, `ShellKill`, `ShellList`.
+- **Module location**: `src/shell/` — `types.rs` (ShellOrigin, ShellCapturePolicy, ShellCommandId, ShellRequest, ShellEvent, PromptSubmissionKind), `runtime.rs` (ShellRuntime, ShellHandle), `store.rs` (ShellOutputStore, BoundedOutput, ShellOutputEntry with `exit_code: Option<i32>`), `policy.rs` (HumanShellPolicyDecision, evaluate_command), `digest.rs` (ShellDigest, ShellFailure, TruncationReport, `build_from_entry()` convenience API).
+- **TUI commands**: `/shell-list`, `/shell-include <id> [stdout|stderr|all]`, `/shell-rerun <id>`, `/shell-kill <id>`. `TuiCommand` variants: `RunHumanShell`, `ShellEvent`, `ShellInclude`, `ShellRerun`, `ShellKill`, `ShellList`. `handle_shell_list` shows compact status with exit codes (format: `[id] done exit=N X.Xs $ command`). `handle_shell_kill` marks the store entry as exited after killing.
 - **MsgPart::ShellCell**: TUI renders shell output as a collapsible cell with id, command, cwd, stdout/stderr preview, status, elapsed, exit code, truncation flag, promoted flag, and expanded state.
 - **Config section**: `[human_shell]` — `enabled`, `default_timeout_secs`, `max_history_entries`, `max_bytes_per_command`, `max_total_bytes`, `ansi`, `confirm_dangerous`, `auto_promote_bangbang`.
 - **ShellCapturePolicy**: `DisplayOnly` (no storage), `StoreEphemeral` (stored but not in context), `StoreAndPromote` (stored and promoted into context).
 - **ShellOrigin**: `HumanEphemeral` (user `!`), `HumanPromoted` (user `!!` or `/shell-include`), `AgentTool` (tool execution).
 - **Policy evaluation**: `evaluate_command()` blocks destructive commands (rm -rf /, mkfs, dd to device, fork bombs, shutdown/reboot/halt) and warns on risky ones (rm -rf ., git clean -f, sudo, curl|sh, chmod 777, recursive chown).
 - **Bounded storage**: `ShellOutputStore` uses `BoundedOutput` (head 256KB + tail 256KB per command), evicts oldest entries by count and total bytes.
-- **Digest extraction**: `ShellDigest::build()` extracts Rust compiler errors, warnings, test failures, and panics from stdout/stderr for structured failure reporting.
+- **Digest extraction**: `ShellDigest::build()` extracts Rust compiler errors, warnings, test failures, and panics from stdout/stderr for structured failure reporting. `ShellDigest::build_from_entry()` is a convenience constructor that takes a `&ShellOutputEntry` directly.
 
 ### Context Policy
 
