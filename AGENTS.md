@@ -122,6 +122,7 @@ cargo test -p egglsp --features lsp-real-server-tests --test real_server_smoke
 - **Progressive panic recovery**: First root failure: log + render error. Repeated failures (≥1): hide optional overlays/dialogs. Final fallback (≥3 = `MAX_RENDER_PANICS`): reset minimal volatile UI state. `clear_render_error()` only resets panic tracking, not dialog/command state.
 - **`App::reset_state()` is conservative**: Only clears dialog, command_mode, timeline_visible, show_completions, completion_filter. Does NOT clear prompt text or search state.
 - **`App::extract_panic_message()`**: Associated function that extracts a human-readable string from `Box<dyn Any + Send>` panic payloads. Used by both component fallbacks and root render recovery.
+- **TUI Phase 4 logging/diagnostics**: `src/tui/mod.rs` no longer has an unconditional `debug_log!` macro that writes `codegg_debug.log` to the working directory. All TUI debug logging goes through `tracing` with structured fields under targets like `codegg::tui::events`, `codegg::tui::session`, `codegg::tui::input`, `codegg::tui::render`, `codegg::tui::loop`. The `debug_log!` macro in `src/tui/app/mod.rs` and `src/tui/input.rs` remains feature-gated behind `debug-logging`. `TuiDiagnostics` struct in `src/tui/app/state/diagnostics.rs` tracks slow loops, slow renders, slow commands, dropped bus events, and render panics. The `/tui-stats` slash command displays a diagnostics summary.
 
 ### Tool Registry
 

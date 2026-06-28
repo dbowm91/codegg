@@ -284,6 +284,8 @@ impl CommandRegistry {
                 .with_description("Kill a running shell command (args: <id|last>)"),
             Command::new("/shell-ask", CommandCategory::System, None)
                 .with_description("Ask about shell output (args: <id|last> <question>)"),
+            Command::new("/tui-stats", CommandCategory::System, None)
+                .with_description("Show TUI runtime diagnostics"),
         ];
 
         Self::append_dynamic_commands(&mut commands);

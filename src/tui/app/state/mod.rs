@@ -1,4 +1,5 @@
 pub mod agent;
+pub mod diagnostics;
 pub mod dialog;
 pub mod messages;
 pub mod prompt;
@@ -6,6 +7,7 @@ pub mod session;
 pub mod ui;
 
 pub use agent::AgentState;
+pub use diagnostics::TuiDiagnostics;
 pub use dialog::DialogState;
 pub use messages::MessagesState;
 pub use prompt::PromptState;

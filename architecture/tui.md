@@ -415,6 +415,43 @@ Terminal setup and teardown is managed by `TerminalGuard` (`src/tui/terminal.rs`
 
 `TerminalGuard::restore()` is idempotent. The `Drop` impl calls `restore()`. If any setup step fails, all previously enabled features are rolled back before returning the error.
 
+## Logging and Diagnostics
+
+### Logging Policy
+
+Normal builds use `tracing` only. The `debug_log!` macro in `src/tui/mod.rs` was removed. Feature-gated `debug_log!` macros remain in `src/tui/app/mod.rs` and `src/tui/input.rs` behind the `debug-logging` feature flag. No `codegg_debug.log` file is created in the working directory during normal operation.
+
+### Tracing Targets
+
+TUI tracing events use these targets:
+
+| Target | Module |
+|--------|--------|
+| `codegg::tui::events` | Event loop and bus subscription |
+| `codegg::tui::session` | Session state transitions |
+| `codegg::tui::input` | Key event handling and dispatch |
+| `codegg::tui::render` | Render pipeline and panic recovery |
+| `codegg::tui::loop` | Main loop timing and diagnostics |
+
+### TuiDiagnostics
+
+The `TuiDiagnostics` struct tracks runtime performance metrics:
+
+| Metric | Description |
+|--------|-------------|
+| Slow loop iterations | Iterations exceeding 250ms |
+| Slow render frames | Frames exceeding 16ms (streaming) or 100ms (always logged) |
+| Slow command handlers | Command dispatch exceeding threshold |
+| Dropped bus events | Broadcast receiver lag (missed events) |
+| Render panic count | Number of render panics recovered |
+| Last render error | Most recent render panic message |
+
+Recent slow commands and render frames are stored in bounded ring buffers for inspection.
+
+### Diagnostics Command
+
+`/tui-stats` displays a summary of runtime diagnostics including slow iterations, dropped events, render panics, and recent slow command/render records.
+
 ### Render Panic Recovery
 
 - **Component-level**: `App::render()` wraps risky surfaces (viewport, sidebar, dialog, completions, timeline) in `std::panic::catch_unwind`. A component panic renders a compact fallback in that region.

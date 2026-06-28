@@ -345,6 +345,8 @@ pub enum TuiCommand {
         generation: u64,
         result: crate::tui::file_diff::FileDiffStatsResult,
     },
+    /// Request to display TUI diagnostics stats.
+    TuiStats,
 }
 
 /// Main application state for the TUI.
@@ -658,6 +660,7 @@ impl App {
                 dirty_regions: Vec::new(),
                 resize_debounce: None,
                 tts_via_daemon: false,
+                diagnostics: Default::default(),
             },
             session_state: SessionState {
                 session: None,
@@ -875,6 +878,7 @@ impl App {
                 dirty_regions: Vec::new(),
                 resize_debounce: None,
                 tts_via_daemon: false,
+                diagnostics: Default::default(),
             },
             session_state: SessionState {
                 session: None,
@@ -3791,6 +3795,11 @@ impl App {
             }
             "/tui" => {
                 self.toggle_fullscreen();
+            }
+            "/tui-stats" => {
+                self.ui_state.command_mode = false;
+                let summary = self.ui_state.diagnostics.summary();
+                self.messages_state.toasts.info(&summary);
             }
             "/tts" => {
                 self.toggle_tts();

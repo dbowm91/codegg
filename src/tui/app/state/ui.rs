@@ -89,6 +89,7 @@ pub struct UiState {
     /// When true, TTS requests route through the daemon's NotificationRouter
     /// instead of speaking locally. Set in RemoteCore mode.
     pub tts_via_daemon: bool,
+    pub diagnostics: crate::tui::app::state::diagnostics::TuiDiagnostics,
 }
 
 impl UiState {

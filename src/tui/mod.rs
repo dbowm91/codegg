@@ -138,20 +138,8 @@ use crate::tui::app::state::AppMode;
 use crate::tui::app::SessionStatus;
 use md5;
 use rand;
-use std::fs::OpenOptions;
 use tokio::sync::mpsc;
 
-macro_rules! debug_log {
-    ($($arg:tt)*) => {
-        let _ = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open("codegg_debug.log")
-            .and_then(|mut file| {
-                std::io::Write::write_all(&mut file, format!("[MOD-DEBUG] {}\n", format!($($arg)*)).as_bytes())
-            });
-    };
-}
 pub type AppTerminal = Terminal<CrosstermBackend<io::Stdout>>;
 
 pub fn create_terminal() -> Result<AppTerminal, AppError> {
@@ -200,7 +188,7 @@ async fn ensure_local_session(app: &mut app::App) {
     if app.session_state.session.is_some() {
         return;
     }
-    debug_log!("Event loop: no session exists, creating new session");
+    tracing::debug!(target: "codegg::tui::session", "no session exists, creating new session");
     if let Some(core_client) = app.core_client.clone() {
         let project_dir = app.session_state.project_dir.clone();
         let request = crate::core::new_request(
@@ -215,30 +203,20 @@ async fn ensure_local_session(app: &mut app::App) {
                 let session_id = session.id.clone();
                 app.session_state.session =
                     Some(crate::protocol_conversions::dto_to_session(session));
-                debug_log!(
-                    "Event loop: session created via core with id={}",
-                    session_id
-                );
+                tracing::debug!(target: "codegg::tui::session", session_id = %session_id, "session created via core");
             }
             Ok(CoreResponse::Error { code, message }) => {
-                debug_log!(
-                    "Event loop: failed to create session via core ({}): {}",
-                    code,
-                    message
-                );
+                tracing::debug!(target: "codegg::tui::session", code = %code, message = %message, "failed to create session via core");
             }
-            Ok(other) => {
-                debug_log!(
-                    "Event loop: unexpected session-create response: {:?}",
-                    other
-                );
+            Ok(_other) => {
+                tracing::debug!(target: "codegg::tui::session", "unexpected session-create response");
             }
             Err(e) => {
-                debug_log!("Event loop: failed to create session via core: {:?}", e);
+                tracing::debug!(target: "codegg::tui::session", error = ?e, "failed to create session via core");
             }
         }
     } else {
-        debug_log!("Event loop: no core client available for session creation");
+        tracing::debug!(target: "codegg::tui::session", "no core client available for session creation");
     }
 }
 
@@ -4128,9 +4106,33 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
             last_render = Some(Instant::now());
             needs_render = false;
 
+            let render_start = Instant::now();
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 render_app(&mut terminal, app)
             }));
+            let render_elapsed = render_start.elapsed();
+            let render_elapsed_ms = render_elapsed.as_millis();
+            if render_elapsed_ms > 16 && app.streaming_active {
+                tracing::debug!(
+                    target: "codegg::tui::render",
+                    elapsed_ms = render_elapsed_ms,
+                    streaming_active = app.streaming_active,
+                    "slow render frame"
+                );
+                app.ui_state
+                    .diagnostics
+                    .record_slow_render(render_elapsed_ms, app.streaming_active);
+            }
+            if render_elapsed_ms > 100 {
+                tracing::warn!(
+                    target: "codegg::tui::render",
+                    elapsed_ms = render_elapsed_ms,
+                    "render exceeded 100ms"
+                );
+                app.ui_state
+                    .diagnostics
+                    .record_slow_render(render_elapsed_ms, app.streaming_active);
+            }
 
             match result {
                 Err(panic_err) => {
@@ -4143,7 +4145,10 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                     };
                     tracing::error!("Render panic: {}", msg);
                     app.ui_state.render_panic_count += 1;
+                    app.ui_state.diagnostics.render_panic_count =
+                        app.ui_state.render_panic_count as u64;
                     app.ui_state.last_render_error = Some(msg.clone());
+                    app.ui_state.diagnostics.last_render_error = Some(msg.clone());
                     if let Err(e) = render_error(&mut terminal, app, &msg) {
                         tracing::error!("Failed to render error state: {}", e);
                     }
@@ -4152,6 +4157,7 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                 Ok(Err(draw_err)) => {
                     tracing::error!("Draw error: {}", draw_err);
                     app.ui_state.last_render_error = Some(draw_err.to_string());
+                    app.ui_state.diagnostics.last_render_error = Some(draw_err.to_string());
                     if let Err(e) = render_error(&mut terminal, app, &draw_err.to_string()) {
                         tracing::error!("Failed to render error state: {}", e);
                     }
@@ -4160,13 +4166,15 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                 Ok(Ok(())) => {
                     app.ui_state.render_panic_count = 0;
                     app.ui_state.last_render_error = None;
+                    app.ui_state.diagnostics.render_panic_count = 0;
+                    app.ui_state.diagnostics.last_render_error = None;
                 }
             }
         }
 
         if !matches!(app.ui_state.mode, AppMode::RemoteCore { .. }) && app.prompt_state.pending_send
         {
-            debug_log!("Event loop: pending_send=true, submitting through core facade");
+            tracing::debug!(target: "codegg::tui::events", "pending_send=true, submitting through core facade");
             let Some(_) = app.core_client else {
                 app.prompt_state.pending_send = false;
                 app.session_state.session_status = SessionStatus::Error;
@@ -4222,9 +4230,11 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
         let loop_elapsed = loop_start.elapsed();
         if loop_elapsed.as_millis() > 250 {
             tracing::warn!(
+                target: "codegg::tui::loop",
                 elapsed_ms = loop_elapsed.as_millis(),
                 "TUI event loop iteration exceeded 250ms threshold"
             );
+            app.ui_state.diagnostics.record_slow_loop(loop_elapsed);
         }
 
         tokio::select! {
@@ -4242,10 +4252,7 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                         continue;
                     }
                     if let Event::Key(key) = event {
-                        debug_log!(
-                            "key event: kind={:?}, code={:?}, modifiers={:?}",
-                            key.kind, key.code, key.modifiers
-                        );
+                        tracing::debug!(target: "codegg::tui::input", kind = ?key.kind, code = ?key.code, modifiers = ?key.modifiers, "key event");
                         if key.kind == KeyEventKind::Press || key.kind == KeyEventKind::Repeat {
                             app.on_key(key);
                             needs_render = true;
@@ -4264,7 +4271,7 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
             result = bus_rx.recv() => {
                 match result {
                     Ok(first_event) => {
-                        debug_log!("Event loop: received event: {:?}", std::mem::discriminant(&first_event));
+                        tracing::debug!(target: "codegg::tui::events", discriminant = ?std::mem::discriminant(&first_event), "received bus event");
                         // Coalesce: drain any additional events already in the
                         // bus buffer (non-blocking) so we don't pay parse cost
                         // N times for N small deltas in the same frame.
@@ -4276,7 +4283,7 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                         for event in events {
                 match event {
                     AppEvent::TextDelta { delta, session_id, .. } => {
-                        debug_log!("Event loop: TextDelta received session_id={}, delta_len={}", session_id, delta.len());
+                        tracing::debug!(target: "codegg::tui::events", session_id = %session_id, delta_len = delta.len(), "TextDelta received");
                         let delta_str = delta.to_string();
                         if delta_str.contains('\n') {
                             app.messages_state.messages.finalize_streaming();
@@ -4290,13 +4297,13 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                         }
                     }
                     AppEvent::ReasoningDelta { delta, .. } => {
-                        debug_log!("Event loop: ReasoningDelta received");
+                        tracing::debug!(target: "codegg::tui::events", "ReasoningDelta received");
                         app.messages_state.messages.add_reasoning(delta);
                         app.streaming_active = true;
                         needs_render = true;
                     }
                     AppEvent::ToolCallStarted { tool_name, tool_id, arguments, .. } => {
-                        debug_log!("Event loop: ToolCallStarted for tool={}", tool_name);
+                        tracing::debug!(target: "codegg::tui::events", tool = %tool_name, "ToolCallStarted");
                         app.messages_state.messages.finalize_streaming();
                         app.streaming_active = true;
                         needs_render = true;
@@ -4320,7 +4327,7 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                         }
                     }
                     AppEvent::ToolResult { tool_id, tool_name: _, output, success, .. } => {
-                        debug_log!("Event loop: ToolResult for tool_id={}", tool_id);
+                        tracing::debug!(target: "codegg::tui::events", tool_id = %tool_id, "ToolResult received");
                         let status = if success {
                             crate::session::message::ToolStatus::Completed
                         } else {
@@ -4330,7 +4337,7 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                         needs_render = true;
                     }
                     AppEvent::AgentFinished { stop_reason, input_tokens, output_tokens, cached_tokens, reasoning_tokens, .. } => {
-                        debug_log!("Event loop: AgentFinished received stop_reason={}", stop_reason);
+                        tracing::debug!(target: "codegg::tui::events", stop_reason = %stop_reason, "AgentFinished received");
                         if stop_reason != "tool_calls" {
                             app.session_state.session_status = SessionStatus::Idle;
                             app.prompt_state.pending_send = false;
@@ -4415,7 +4422,7 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                         }
                     }
                     AppEvent::PermissionPending { perm_id, tool, path, args, .. } => {
-                        debug_log!("Event loop: PermissionPending for tool={}, path={:?}", tool, path);
+                        tracing::debug!(target: "codegg::tui::events", tool = %tool, ?path, "PermissionPending");
                         app.show_permission_dialog(perm_id, PermissionRequest {
                             tool,
                             path,
@@ -4424,14 +4431,14 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                         needs_render = true;
                     }
                     AppEvent::QuestionPending { session_id, questions, .. } => {
-                        debug_log!("Event loop: QuestionPending for session={}", session_id);
+                        tracing::debug!(target: "codegg::tui::events", session_id = %session_id, "QuestionPending");
                         if let Ok(questions_vec) = serde_json::from_str::<Vec<crate::tui::components::dialogs::question::QuestionSpec>>(&questions) {
                             app.show_question_dialog(questions_vec, session_id);
                             needs_render = true;
                         }
                     }
                     AppEvent::FileChanged { path, action, old_content } => {
-                        debug_log!("Event loop: FileChanged for path={}, action={}", path, action);
+                        tracing::debug!(target: "codegg::tui::events", path = %path, action = %action, "FileChanged");
                         let path_buf = std::path::PathBuf::from(&path);
 
                         // Increment generation for this path.
@@ -4484,7 +4491,7 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                         needs_render = true;
                     }
                     AppEvent::Error { message } => {
-                        debug_log!("Event loop: Error received: {}", message);
+                        tracing::debug!(target: "codegg::tui::events", message = %message, "Error received");
                         tracing::error!("Agent error: {}", message);
                         app.session_state.session_status = SessionStatus::Error;
                         app.status_bar.set_thinking(false, None);
@@ -4493,7 +4500,7 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                         needs_render = true;
                     }
                     AppEvent::CompactionTriggered { tokens_before, tokens_after, .. } => {
-                        debug_log!("Event loop: CompactionTriggered");
+                        tracing::debug!(target: "codegg::tui::events", "CompactionTriggered");
                         let compact_count = app.session_state.compaction_count + 1;
                         app.session_state.compaction_count = compact_count;
                         let before_str = if tokens_before > 0 {
@@ -4514,7 +4521,7 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                         needs_render = true;
                     }
                     AppEvent::ModelChanged { model, complexity } => {
-                        debug_log!("Event loop: ModelChanged model={} complexity={}", model, complexity);
+                        tracing::debug!(target: "codegg::tui::events", model = %model, complexity = %complexity, "ModelChanged");
                         let short = model.split('/').next_back().unwrap_or(&model);
                         app.messages_state
                             .toasts
@@ -4522,17 +4529,17 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                         needs_render = true;
                     }
                     AppEvent::SubagentStarted { agent, description, .. } => {
-                        debug_log!("Event loop: SubagentStarted agent={}", agent);
+                        tracing::debug!(target: "codegg::tui::events", agent = %agent, "SubagentStarted");
                         app.messages_state.toasts.add(Toast::info(&format!("Subagent '{}' started: {}", agent, description)));
                         needs_render = true;
                     }
                     AppEvent::SubagentProgress { agent, message, .. } => {
-                        debug_log!("Event loop: SubagentProgress agent={}", agent);
+                        tracing::debug!(target: "codegg::tui::events", agent = %agent, "SubagentProgress");
                         app.messages_state.toasts.add(Toast::info(&format!("[{}] {}", agent, message)));
                         needs_render = true;
                     }
                     AppEvent::SubagentCompleted { agent, result_summary: _, .. } => {
-                        debug_log!("Event loop: SubagentCompleted agent={}", agent);
+                        tracing::debug!(target: "codegg::tui::events", agent = %agent, "SubagentCompleted");
                         app.messages_state.toasts.add(Toast::success(&format!("Subagent '{}' completed", agent)));
                         needs_render = true;
                         if let Some(ref notif_mgr) = app.notification_manager {
@@ -4547,7 +4554,7 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                         }
                     }
                     AppEvent::SubagentFailed { agent, error, .. } => {
-                        debug_log!("Event loop: SubagentFailed agent={}, error={}", agent, error);
+                        tracing::debug!(target: "codegg::tui::events", agent = %agent, error = %error, "SubagentFailed");
                         app.messages_state.toasts.add(Toast::error(&format!("Subagent '{}' failed: {}", agent, error)));
                         needs_render = true;
                         if let Some(ref notif_mgr) = app.notification_manager {
@@ -4562,7 +4569,7 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                         }
                     }
                     AppEvent::ContextUpdated { context_tokens, context_limit, .. } => {
-                        debug_log!("Event loop: ContextUpdated tokens={} limit={}", context_tokens, context_limit);
+                        tracing::debug!(target: "codegg::tui::events", context_tokens, context_limit, "ContextUpdated");
                         app.session_state.context_tokens = context_tokens;
                         app.session_state.context_limit = context_limit;
                         needs_render = true;
@@ -4641,13 +4648,19 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                         }
                     }
                     _ => {
-                        debug_log!("Event loop: unhandled event");
+                        tracing::debug!(target: "codegg::tui::events", "unhandled bus event");
                     }
                 }
                         } // end for event in events
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                        tracing::warn!("Event bus lagged, {} events dropped", n);
+                        tracing::warn!(
+                            target: "codegg::tui::events",
+                            dropped = n,
+                            total_dropped = app.ui_state.diagnostics.dropped_bus_events + n,
+                            "event bus lagged"
+                        );
+                        app.ui_state.diagnostics.add_dropped_bus_events(n);
                         app.messages_state.toasts.warning(&format!("Events dropped ({})", n));
                         needs_render = true;
                     }
@@ -4926,6 +4939,10 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                     TuiCommand::FileDiffStatsReady { path, generation, result } => {
                         handle_file_diff_stats_ready(app, path, generation, result);
                     }
+                    TuiCommand::TuiStats => {
+                        let summary = app.ui_state.diagnostics.summary();
+                        app.messages_state.toasts.info(&summary);
+                    }
                 }
                 needs_render = true;
             }
@@ -4937,7 +4954,7 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                     futures::future::pending().await
                 }
             } => {
-                debug_log!("Event loop: processing remote event");
+                tracing::debug!(target: "codegg::tui::events", "processing remote event");
                 app.handle_remote_event(remote_event);
                 needs_render = true;
             }

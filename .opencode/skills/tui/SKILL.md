@@ -847,48 +847,54 @@ pub enum TuiMsg {
 
 **Important**: TuiMsg carries payload for state synchronization. Dialogs should NOT read stale `dialog_state` - instead, the TuiMsg contains all necessary data.
 
-## Debug Patterns
+## Debug Patterns and Diagnostics
 
-### File Logging
+### Tracing (Primary Logging)
 
-Since TUI captures terminal output, use file logging for debugging:
+All TUI event logging uses the `tracing` crate with structured fields under these targets:
 
-```rust
-// In main.rs or dialog file
-let _ = std::fs::OpenOptions::new()
-    .create(true)
-    .append(true)
-    .open("debug.log")
-    .and_then(|mut file| {
-        writeln!(file, "[DEBUG] Selected item: {}", selected_index)
-    });
-```
+| Target | Used for |
+|--------|----------|
+| `codegg::tui::events` | Keyboard/mouse event processing |
+| `codegg::tui::session` | Session state changes |
+| `codegg::tui::input` | Input handling and keybindings |
+| `codegg::tui::render` | Render cycle timing and errors |
+| `codegg::tui::loop` | Event loop iteration timing |
 
-### Conditional Debug Logging
+Log with `tracing::info!`, `tracing::debug!`, `tracing::warn!`, etc. The tracing subscriber filters these at runtime — no file I/O unless explicitly configured.
 
-Use compile-time feature flag:
+### Legacy debug_log! Macro (Feature-Gated)
 
-```rust
-#[cfg(feature = "debug-logging")]
-macro_rules! debug_log {
-    ($($arg:tt)*) => {
-        let _ = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open("opencode_debug.log")
-            .and_then(|mut file| {
-                writeln!(file, format!($($arg)*))
-            });
-    };
-}
+The old `debug_log!` macro that wrote to `codegg_debug.log` is **no longer unconditional**. The unconditional version in `src/tui/mod.rs` was removed. The macro now exists only behind the `debug-logging` feature in two files:
 
-#[cfg(not(feature = "debug-logging"))]
-macro_rules! debug_log {
-    ($($arg:tt)*) => {};
-}
-```
+- `src/tui/app/mod.rs` — app-level debug logging
+- `src/tui/input.rs` — input handling debug logging
 
 Enable with: `cargo run --features debug-logging`
+
+### TuiDiagnostics
+
+`TuiDiagnostics` (`src/tui/app/state/diagnostics.rs`) provides lightweight runtime counters with essentially zero per-frame overhead (one comparison + branch per update). All fields are updated only when thresholds are crossed.
+
+```rust
+pub struct TuiDiagnostics {
+    pub slow_loop_count: u64,           // iterations > 250 ms
+    pub slow_render_count: u64,         // frames > 16 ms while streaming
+    pub slow_command_count: u64,        // command handlers > 250 ms
+    pub dropped_bus_events: u64,        // broadcast receiver lag
+    pub render_panic_count: u64,        // recoverable render panics
+    pub last_render_error: Option<String>,
+    pub last_slow_loop: Option<SlowLoopRecord>,
+    pub recent_slow_commands: VecDeque<SlowCommandRecord>,  // ring buffer, max 8
+    pub recent_slow_renders: VecDeque<SlowRenderRecord>,    // ring buffer, max 4
+}
+```
+
+Methods: `record_slow_loop()`, `record_slow_render()`, `record_slow_command()`, `add_dropped_bus_events()`, `summary()`.
+
+### /tui-stats Command
+
+The `/tui-stats` slash command displays a runtime diagnostics summary by calling `TuiDiagnostics::summary()`. Output includes counts of slow loops, slow renders, slow commands, dropped bus events, render panics, and the last error message if any.
 
 ## Multi-line Items (Themes, Models with Providers)
 
