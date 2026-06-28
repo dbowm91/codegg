@@ -14,6 +14,7 @@ pub enum InfoType {
     Context,
     Cost,
     Usage,
+    ShellShow,
 }
 
 #[derive(Clone)]
@@ -49,6 +50,7 @@ impl InfoDialog {
             InfoType::Context => " Context ",
             InfoType::Cost => " Cost ",
             InfoType::Usage => " Usage ",
+            InfoType::ShellShow => " Shell Command ",
         }
     }
 
@@ -57,11 +59,16 @@ impl InfoDialog {
             InfoType::Context => DialogType::Context,
             InfoType::Cost => DialogType::Cost,
             InfoType::Usage => DialogType::Usage,
+            InfoType::ShellShow => DialogType::ShellShow,
         }
     }
 
     pub fn set_theme(&mut self, theme: &Arc<Theme>) {
         self.theme = Arc::clone(theme);
+    }
+
+    pub fn content_lines(&self) -> &[String] {
+        &self.lines
     }
 }
 

@@ -337,6 +337,9 @@ pub enum TuiCommand {
         id: u64,
     },
     ShellList,
+    ShellShow {
+        id: u64,
+    },
     ShellAsk {
         id: u64,
         question: String,
@@ -706,6 +709,7 @@ impl App {
                 research_browser: None,
                 help_dialog: None,
                 info_dialog: None,
+                shell_detail_dialog: None,
                 pending_delete_session: None,
                 pending_archive_session: None,
                 pending_bulk_delete: None,
@@ -921,6 +925,7 @@ impl App {
                 research_browser: None,
                 help_dialog: None,
                 info_dialog: None,
+                shell_detail_dialog: None,
                 pending_delete_session: None,
                 pending_archive_session: None,
                 pending_bulk_delete: None,
@@ -2951,7 +2956,7 @@ impl App {
                     }
                 } else if matches!(
                     self.ui_state.dialog,
-                    Dialog::Context | Dialog::Cost | Dialog::Usage
+                    Dialog::Context | Dialog::Cost | Dialog::Usage | Dialog::ShellShow
                 ) {
                     self.close_dialog();
                 } else {
@@ -2999,7 +3004,7 @@ impl App {
                             cd.cursor_up();
                         }
                     }
-                    Dialog::Context | Dialog::Cost | Dialog::Usage => {}
+                    Dialog::Context | Dialog::Cost | Dialog::Usage | Dialog::ShellShow => {}
                     _ => {}
                 }
             }
@@ -5384,6 +5389,23 @@ impl App {
                             })
                             .collect();
                         self.messages_state.toasts.info(&lines.join("\n"));
+                    }
+                }
+            }
+            "/shell-show" => {
+                self.ui_state.command_mode = false;
+                let query = self.dialog_state.command_palette.query.clone();
+                let id_str = query.strip_prefix("/shell-show").unwrap_or("").trim();
+                match self.resolve_shell_id(id_str) {
+                    Some(id) => {
+                        if let Some(ref tx) = self.tui_cmd_tx {
+                            let _ = tx.try_send(TuiCommand::ShellShow { id });
+                        }
+                    }
+                    None => {
+                        self.messages_state
+                            .toasts
+                            .warning("Usage: /shell-show <id|last>");
                     }
                 }
             }

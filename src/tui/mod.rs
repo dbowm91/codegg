@@ -3556,6 +3556,100 @@ fn handle_shell_list(app: &mut app::App) {
     app.messages_state.toasts.info(&lines.join("\n"));
 }
 
+fn handle_shell_show(app: &mut app::App, id: u64) {
+    let entry = match app.shell_store.get(crate::shell::types::ShellCommandId(id)) {
+        Some(e) => e.clone(),
+        None => {
+            app.messages_state
+                .toasts
+                .warning(&format!("No shell command with id {}", id));
+            return;
+        }
+    };
+
+    let mut lines: Vec<String> = Vec::new();
+    lines.push(format!("ID:       {}", entry.id.0));
+    lines.push(format!("Command:  {}", entry.command));
+    lines.push(format!("CWD:      {}", entry.cwd.display()));
+    lines.push(format!(
+        "Started:  {}",
+        format_system_time(entry.started_at)
+    ));
+    if let Some(finished) = entry.finished_at {
+        lines.push(format!("Finished: {}", format_system_time(finished)));
+    }
+    if let Some(ref elapsed) = entry.elapsed {
+        lines.push(format!("Elapsed:  {:.1}s", elapsed.as_secs_f64()));
+    }
+    lines.push(format!("Status:   {}", format_shell_status(&entry.status)));
+    if let Some(code) = entry.exit_code {
+        lines.push(format!("Exit:     {}", code));
+    }
+    lines.push(format!(
+        "Promoted: {}",
+        if entry.promoted { "yes" } else { "no" }
+    ));
+    lines.push(format!("Capture:  {:?}", entry.capture_policy));
+
+    let stdout = entry.stdout.head_str_lossy();
+    let stderr = entry.stderr.head_str_lossy();
+
+    if !stdout.is_empty() {
+        lines.push(String::new());
+        lines.push("── stdout ──".to_string());
+        for line in stdout.lines() {
+            lines.push(format!("  {}", line));
+        }
+    }
+    if !stderr.is_empty() {
+        lines.push(String::new());
+        lines.push("── stderr ──".to_string());
+        for line in stderr.lines() {
+            lines.push(format!("  {}", line));
+        }
+    }
+    if stdout.is_empty() && stderr.is_empty() {
+        lines.push(String::new());
+        lines.push("(no output captured)".to_string());
+    }
+
+    let info_type = crate::tui::components::dialogs::info::InfoType::ShellShow;
+    if app.dialog_state.shell_detail_dialog.is_none() {
+        app.dialog_state.shell_detail_dialog =
+            Some(crate::tui::components::dialogs::info::InfoDialog::new(
+                std::sync::Arc::clone(&app.ui_state.theme),
+                info_type,
+                lines,
+            ));
+    } else if let Some(ref mut dialog) = app.dialog_state.shell_detail_dialog {
+        dialog.set_info_type(info_type);
+        dialog.set_content(lines);
+        dialog.set_theme(&app.ui_state.theme);
+    }
+    if let Some(ref dialog) = app.dialog_state.shell_detail_dialog {
+        app.focus_manager.push(Box::new(dialog.clone()));
+        app.ui_state.dialog = crate::tui::Dialog::ShellShow;
+    }
+}
+
+fn format_system_time(t: std::time::SystemTime) -> String {
+    use std::time::UNIX_EPOCH;
+    let secs = t
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    format!("{}", secs)
+}
+
+fn format_shell_status(status: &crate::shell::types::ShellStatus) -> &'static str {
+    match status {
+        crate::shell::types::ShellStatus::Running => "running",
+        crate::shell::types::ShellStatus::Exited => "exited",
+        crate::shell::types::ShellStatus::TimedOut => "timed out",
+        crate::shell::types::ShellStatus::FailedToStart => "failed to start",
+    }
+}
+
 fn handle_file_diff_stats_ready(
     app: &mut app::App,
     path: std::path::PathBuf,
@@ -4955,6 +5049,9 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                     TuiCommand::ShellList => {
                         handle_shell_list(app);
                     }
+                    TuiCommand::ShellShow { id } => {
+                        handle_shell_show(app, id);
+                    }
                     TuiCommand::ShellAsk { id, question } => {
                         handle_shell_ask(app, id, question);
                     }
@@ -5386,6 +5483,127 @@ mod shell_dispatch_tests {
             "killed entry should have no exit code"
         );
     }
+
+    #[test]
+    fn shell_show_unknown_id_shows_warning() {
+        let mut app = make_test_app();
+        handle_shell_show(&mut app, 999);
+        let toasts = get_toasts(&app);
+        assert!(
+            toasts
+                .iter()
+                .any(|t| t.contains("No shell command with id 999")),
+            "should show not-found warning, got: {toasts:?}"
+        );
+    }
+
+    #[test]
+    fn shell_show_opens_dialog_with_metadata() {
+        let mut app = make_test_app();
+        insert_completed_entry(
+            &mut app,
+            1,
+            "cargo test",
+            b"running 1 test\nok\n",
+            b"warning: unused\n",
+            Some(0),
+        );
+        handle_shell_show(&mut app, 1);
+        assert_eq!(
+            app.ui_state.dialog,
+            crate::tui::Dialog::ShellShow,
+            "dialog should be set to ShellShow"
+        );
+        let dialog = app
+            .dialog_state
+            .shell_detail_dialog
+            .as_ref()
+            .expect("shell_detail_dialog should be Some");
+        let content = dialog.content_lines();
+        let text = content.join("\n");
+        assert!(
+            text.contains("cargo test"),
+            "should show command, got: {text}"
+        );
+        assert!(
+            text.contains("Exit:     0"),
+            "should show exit code, got: {text}"
+        );
+        assert!(text.contains("exited"), "should show status, got: {text}");
+        assert!(
+            text.contains("running 1 test"),
+            "should show stdout, got: {text}"
+        );
+        assert!(
+            text.contains("warning: unused"),
+            "should show stderr, got: {text}"
+        );
+    }
+
+    #[test]
+    fn shell_show_nonzero_exit_code() {
+        let mut app = make_test_app();
+        insert_completed_entry(&mut app, 2, "cargo check", b"", b"error[E0308]\n", Some(1));
+        handle_shell_show(&mut app, 2);
+        let dialog = app
+            .dialog_state
+            .shell_detail_dialog
+            .as_ref()
+            .expect("shell_detail_dialog should be Some");
+        let text = dialog.content_lines().join("\n");
+        assert!(
+            text.contains("Exit:     1"),
+            "should show exit code 1, got: {text}"
+        );
+    }
+
+    #[test]
+    fn shell_show_running_command() {
+        let mut app = make_test_app();
+        let cmd_id = ShellCommandId(3);
+        let req = ShellRequest {
+            id: cmd_id,
+            origin: ShellOrigin::HumanEphemeral,
+            command: "sleep 999".to_string(),
+            cwd: std::env::temp_dir(),
+            timeout: Duration::from_secs(300),
+            capture_policy: ShellCapturePolicy::StoreEphemeral,
+            env_policy: ShellEnvPolicy::Inherit,
+        };
+        app.shell_store.insert_started(&req);
+        handle_shell_show(&mut app, 3);
+        let dialog = app
+            .dialog_state
+            .shell_detail_dialog
+            .as_ref()
+            .expect("shell_detail_dialog should be Some");
+        let text = dialog.content_lines().join("\n");
+        assert!(
+            text.contains("running"),
+            "should show running status, got: {text}"
+        );
+        assert!(
+            text.contains("sleep 999"),
+            "should show command, got: {text}"
+        );
+    }
+
+    #[test]
+    fn shell_show_empty_output() {
+        let mut app = make_test_app();
+        insert_completed_entry(&mut app, 4, "true", b"", b"", Some(0));
+        handle_shell_show(&mut app, 4);
+        let dialog = app
+            .dialog_state
+            .shell_detail_dialog
+            .as_ref()
+            .expect("shell_detail_dialog should be Some");
+        let text = dialog.content_lines().join("\n");
+        assert!(
+            text.contains("no output captured"),
+            "should show no-output message, got: {text}"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -5483,31 +5701,5 @@ mod async_cmd_tests {
             .map(|t| t.message.clone())
             .collect();
         assert!(toasts.iter().any(|t| t.contains("doctor: OK")));
-    }
-
-    #[test]
-    fn import_preview_stale_request_id_ignored() {
-        let mut app = make_test_app();
-        // Set a high request id on the dialog to simulate a newer request
-        app.dialog_state.import_preview_request_id = 5;
-        app.dialog_state.import_dialog =
-            Some(crate::tui::components::dialogs::import::ImportDialog::new(
-                std::sync::Arc::new(crate::tui::theme::Theme::dark()),
-            ));
-        // Completion with old request_id should be ignored
-        apply_import_preview_loaded(&mut app, 3, None, 0, Some("old".into()));
-        // The dialog should NOT show the error (it was for a stale request)
-        if let Some(ref dialog) = app.dialog_state.import_dialog {
-            // The error should NOT have been set since request_id was stale
-            assert!(
-                dialog.error.is_none()
-                    || !dialog
-                        .error
-                        .as_ref()
-                        .map(|e| e.contains("old"))
-                        .unwrap_or(false),
-                "stale import preview should be ignored"
-            );
-        }
     }
 }

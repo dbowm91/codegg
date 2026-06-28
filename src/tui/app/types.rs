@@ -27,6 +27,7 @@ pub enum Dialog {
     ResearchBrowser,
     SecurityReview,
     SourcePreview,
+    ShellShow,
 }
 
 impl Dialog {
@@ -59,6 +60,7 @@ impl Dialog {
                 | Self::ResearchBrowser
                 | Self::SecurityReview
                 | Self::SourcePreview
+                | Self::ShellShow
         )
     }
 }

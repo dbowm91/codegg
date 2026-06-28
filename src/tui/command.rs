@@ -276,6 +276,8 @@ impl CommandRegistry {
                 .with_description("Cancel an in-flight security review"),
             Command::new("/shell-list", CommandCategory::System, None)
                 .with_description("List recent shell commands"),
+            Command::new("/shell-show", CommandCategory::System, None)
+                .with_description("Show detailed info for a shell command (args: <id|last>)"),
             Command::new("/shell-include", CommandCategory::System, None)
                 .with_description("Include shell output in context (args: <id|last> [--tail N|--stdout|--stderr|--summary])"),
             Command::new("/shell-rerun", CommandCategory::System, None)

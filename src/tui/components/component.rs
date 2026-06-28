@@ -46,6 +46,7 @@ pub enum DialogType {
     ResearchBrowser,
     SecurityReview,
     SourcePreview,
+    ShellShow,
     None,
 }
 
@@ -84,6 +85,7 @@ impl From<DialogType> for Dialog {
             DialogType::ResearchBrowser => Dialog::ResearchBrowser,
             DialogType::SecurityReview => Dialog::SecurityReview,
             DialogType::SourcePreview => Dialog::SourcePreview,
+            DialogType::ShellShow => Dialog::ShellShow,
             DialogType::None => Dialog::None,
         }
     }
