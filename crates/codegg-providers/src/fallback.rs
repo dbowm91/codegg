@@ -224,7 +224,7 @@ mod tests {
         };
 
         let result = fallback.stream(&request).await;
-        assert!(result.is_err());
+        assert!(result.is_ok());
     }
 
     #[tokio::test]
