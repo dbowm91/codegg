@@ -1,3 +1,5 @@
+pub const REMOTE_TUI_PROTOCOL_VERSION: u32 = 1;
+
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
 #[serde(tag = "type")]
 pub enum TuiMessage {
@@ -66,6 +68,13 @@ pub enum TuiMessage {
     Error {
         message: String,
     },
+    StateSnapshot {
+        sequence: u64,
+        snapshot: RemoteTuiStateSnapshot,
+    },
+    RequestSnapshot {
+        reason: Option<String>,
+    },
     #[serde(rename = "resync_required")]
     ResyncRequired {
         reason: Option<String>,
@@ -79,4 +88,39 @@ pub struct QuestionSpec {
     pub id: String,
     pub prompt: String,
     pub default: Option<String>,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
+pub struct RemoteTuiStateSnapshot {
+    pub protocol_version: u32,
+    pub sequence: u64,
+    pub session_id: Option<String>,
+    pub route: String,
+    pub model: String,
+    pub agent: String,
+    pub status: String,
+    pub messages: Vec<RemoteMessageView>,
+    pub prompt: String,
+    pub dialog: Option<String>,
+    pub toasts: Vec<RemoteToastView>,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
+pub struct RemoteMessageView {
+    pub role: String,
+    pub content_preview: String,
+    pub tool_calls: Vec<RemoteToolCallView>,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
+pub struct RemoteToolCallView {
+    pub tool_id: String,
+    pub tool_name: String,
+    pub status: String,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
+pub struct RemoteToastView {
+    pub message: String,
+    pub level: String,
 }

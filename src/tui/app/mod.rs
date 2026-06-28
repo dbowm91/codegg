@@ -874,6 +874,114 @@ impl App {
         app
     }
 
+    pub fn remote_snapshot(&self) -> crate::protocol::tui::RemoteTuiStateSnapshot {
+        use crate::protocol::tui::{RemoteMessageView, RemoteToolCallView, RemoteToastView, REMOTE_TUI_PROTOCOL_VERSION};
+
+        let route = match self.ui_state.routes.current() {
+            crate::tui::route::Route::Home => "home".to_string(),
+            crate::tui::route::Route::Session(id) => format!("session:{}", id),
+        };
+
+        let session_id = self.session_state.session.as_ref().map(|s| s.id.clone());
+
+        let status = match self.session_state.session_status {
+            crate::tui::app::types::SessionStatus::Idle => "idle".to_string(),
+            crate::tui::app::types::SessionStatus::Working => "working".to_string(),
+            crate::tui::app::types::SessionStatus::Error => "error".to_string(),
+        };
+
+        let model = self.agent_state.current_model.clone();
+        let agent = self
+            .agent_state
+            .agents
+            .get(self.agent_state.current_agent)
+            .map(|a| a.name.clone())
+            .unwrap_or_default();
+
+        let messages: Vec<RemoteMessageView> = self
+            .messages_state
+            .messages
+            .messages
+            .iter()
+            .map(|msg| {
+                let role = match msg.role {
+                    crate::tui::components::messages::MessageRole::User => "user".to_string(),
+                    crate::tui::components::messages::MessageRole::Assistant => "assistant".to_string(),
+                };
+                let content_preview = msg.text_content();
+                let content_preview = if content_preview.len() > 200 {
+                    format!("{}...", &content_preview[..200])
+                } else {
+                    content_preview
+                };
+                let tool_calls: Vec<RemoteToolCallView> = msg
+                    .parts
+                    .iter()
+                    .filter_map(|part| {
+                        if let crate::tui::components::messages::MsgPart::ToolCall {
+                            id,
+                            name,
+                            status,
+                            ..
+                        } = part
+                        {
+                            let status_str = match status {
+                                crate::session::message::ToolStatus::Pending => "pending".to_string(),
+                                crate::session::message::ToolStatus::Running => "running".to_string(),
+                                crate::session::message::ToolStatus::Completed => "completed".to_string(),
+                                crate::session::message::ToolStatus::Error => "error".to_string(),
+                            };
+                            Some(RemoteToolCallView {
+                                tool_id: id.clone(),
+                                tool_name: name.clone(),
+                                status: status_str,
+                            })
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                RemoteMessageView {
+                    role,
+                    content_preview,
+                    tool_calls,
+                }
+            })
+            .collect();
+
+        let prompt = self.prompt_state.prompt.get_text();
+
+        let dialog = if self.ui_state.dialog.is_open() {
+            Some(format!("{:?}", self.ui_state.dialog))
+        } else {
+            None
+        };
+
+        let toasts: Vec<RemoteToastView> = self
+            .messages_state
+            .toasts
+            .iter()
+            .map(|t| RemoteToastView {
+                message: t.message.clone(),
+                level: format!("{:?}", t.level),
+            })
+            .collect();
+
+        crate::protocol::tui::RemoteTuiStateSnapshot {
+            protocol_version: REMOTE_TUI_PROTOCOL_VERSION,
+            sequence: 0,
+            session_id,
+            route,
+            model,
+            agent,
+            status,
+            messages,
+            prompt,
+            dialog,
+            toasts,
+        }
+    }
+
     /// Create a minimal App instance for testing.
     /// This avoids spawning background tasks that interfere with tests.
     pub fn new_for_testing(project_dir: String) -> Self {
@@ -1479,9 +1587,12 @@ impl App {
             }
             Ok(RemoteTuiMessage::RenderFrame { content }) => {
                 tracing::warn!(
-                    "RenderFrame received ({} bytes) but rendering not implemented",
+                    "RenderFrame received ({} bytes) — unsupported, sending error response",
                     content.len()
                 );
+                self.send_remote_message(RemoteTuiMessage::Error {
+                    message: "Frame-driven remote rendering is not supported; request state snapshots instead (unsupported_render_frame)".to_string(),
+                });
             }
             Ok(RemoteTuiMessage::ResyncRequired {
                 reason,
@@ -1501,6 +1612,18 @@ impl App {
                     pending_permissions,
                     pending_questions
                 );
+            }
+            Ok(RemoteTuiMessage::RequestSnapshot { reason }) => {
+                tracing::info!(
+                    "RequestSnapshot received: reason={:?}",
+                    reason
+                );
+                let snapshot = self.remote_snapshot();
+                let seq = snapshot.sequence;
+                self.send_remote_message(RemoteTuiMessage::StateSnapshot {
+                    sequence: seq,
+                    snapshot,
+                });
             }
             _ => {
                 debug_log!("handle_remote_event: unhandled type={}", _event_type);
@@ -11062,5 +11185,128 @@ mod lsp_command_dispatch_tests {
                 app.render_component_fallback(frame, frame.area(), "Test fallback");
             })
             .unwrap();
+    }
+}
+
+#[cfg(test)]
+mod remote_protocol_tests {
+    use super::*;
+    use crate::protocol::tui::{TuiMessage as RemoteTuiMessage, REMOTE_TUI_PROTOCOL_VERSION};
+
+    #[test]
+    fn remote_snapshot_does_not_panic_on_empty_app() {
+        let app = App::new_for_testing("/tmp".into());
+        let snapshot = app.remote_snapshot();
+        assert_eq!(snapshot.protocol_version, REMOTE_TUI_PROTOCOL_VERSION);
+        assert_eq!(snapshot.route, "home");
+        assert!(snapshot.session_id.is_none());
+        assert_eq!(snapshot.status, "idle");
+        assert!(snapshot.messages.is_empty());
+    }
+
+    #[test]
+    fn remote_snapshot_includes_route_status_model_agent() {
+        let mut app = App::new_for_testing("/tmp".into());
+        app.agent_state.current_model = "test-model".to_string();
+        app.agent_state.current_agent = 0;
+        let snapshot = app.remote_snapshot();
+        assert_eq!(snapshot.model, "test-model");
+        assert!(!snapshot.agent.is_empty());
+    }
+
+    #[test]
+    fn remote_snapshot_session_route() {
+        let mut app = App::new_for_testing("/tmp".into());
+        app.ui_state
+            .routes
+            .navigate_to(crate::tui::route::Route::Session("abc123".to_string()));
+        let snapshot = app.remote_snapshot();
+        assert_eq!(snapshot.route, "session:abc123");
+    }
+
+    #[test]
+    fn remote_snapshot_dialog_reflected() {
+        let mut app = App::new_for_testing("/tmp".into());
+        app.ui_state.dialog = Dialog::Model;
+        let snapshot = app.remote_snapshot();
+        assert!(snapshot.dialog.is_some());
+        assert!(snapshot.dialog.unwrap().contains("Model"));
+    }
+
+    #[test]
+    fn remote_snapshot_no_dialog_when_none() {
+        let app = App::new_for_testing("/tmp".into());
+        let snapshot = app.remote_snapshot();
+        assert!(snapshot.dialog.is_none());
+    }
+
+    #[test]
+    fn render_frame_sends_error_response() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new_for_testing("/tmp".into());
+        app.remote_send_tx = Some(tx);
+
+        let event = serde_json::json!({
+            "type": "RenderFrame",
+            "content": "some frame data"
+        });
+        app.handle_remote_event(event);
+
+        let msg = rx.try_recv().unwrap();
+        match msg {
+            RemoteTuiMessage::Error { message } => {
+                assert!(
+                    message.contains("unsupported_render_frame"),
+                    "error must mention unsupported_render_frame: {message}"
+                );
+            }
+            other => panic!("expected Error, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn request_snapshot_returns_state_snapshot() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new_for_testing("/tmp".into());
+        app.remote_send_tx = Some(tx);
+
+        let event = serde_json::json!({
+            "type": "RequestSnapshot",
+            "reason": "test"
+        });
+        app.handle_remote_event(event);
+
+        let msg = rx.try_recv().unwrap();
+        match msg {
+            RemoteTuiMessage::StateSnapshot { snapshot, .. } => {
+                assert_eq!(snapshot.protocol_version, REMOTE_TUI_PROTOCOL_VERSION);
+                assert_eq!(snapshot.route, "home");
+            }
+            other => panic!("expected StateSnapshot, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn protocol_version_constant_is_one() {
+        assert_eq!(REMOTE_TUI_PROTOCOL_VERSION, 1);
+    }
+
+    #[test]
+    fn remote_tui_state_snapshot_serializes() {
+        let snapshot = crate::protocol::tui::RemoteTuiStateSnapshot {
+            protocol_version: 1,
+            sequence: 0,
+            session_id: None,
+            route: "home".to_string(),
+            model: "m".to_string(),
+            agent: "a".to_string(),
+            status: "idle".to_string(),
+            messages: vec![],
+            prompt: String::new(),
+            dialog: None,
+            toasts: vec![],
+        };
+        let json = serde_json::to_string(&snapshot).unwrap();
+        assert!(json.contains("\"protocol_version\":1"));
     }
 }

@@ -123,7 +123,9 @@ impl RemoteClient {
 
 ## TuiMessage Protocol
 
-Defined in `crates/codegg-protocol/src/tui.rs`:
+Defined in `crates/codegg-protocol/src/tui.rs`. Protocol version: `REMOTE_TUI_PROTOCOL_VERSION = 1`.
+
+**Note (Phase 8)**: The remote protocol is event/state-driven. `RenderFrame` is **unsupported** — receiving it returns an `Error` with code `unsupported_render_frame`. Remote clients should use `StateSnapshot` (full state push from server) and `RequestSnapshot` (client-initiated pull) instead.
 
 ### Client → Server (Input)
 | Variant | Fields | Purpose |
@@ -147,7 +149,9 @@ Defined in `crates/codegg-protocol/src/tui.rs`:
 | `QuestionPending` | `id`, `questions: Vec<QuestionSpec>` | Ask user question |
 | `SessionInfo` | `id`, `model` | Session metadata |
 | `SessionEnded` | `stop_reason: String` | Agent finished |
-| `Error` | `message: String` | Error message |
+| `StateSnapshot` | `snapshot: Value` | Full UI state snapshot (preferred for remote rendering) |
+| `RequestSnapshot` | — | Client requests a fresh `StateSnapshot` from the server |
+| `Error` | `message: String` | Error message (e.g. `unsupported_render_frame` for `RenderFrame`) |
 | `ResyncRequired` | `reason`, `pending_permissions`, `pending_questions` | Resync needed |
 
 ## TUI Integration

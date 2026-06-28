@@ -195,18 +195,19 @@ pub enum TuiMessage { ... }
 | `KeyDown` | `key, modifiers` | Key press event |
 | `MouseClick` | `x, y` | Mouse click event |
 
-### Connection Management (2)
+### Connection Management (3)
 - `Resize { w, h }` - Terminal resize
 - `Resume { from_event_seq }` - Resume from event sequence
+- `RequestSnapshot` - Request a full state snapshot from the daemon
 
 ### Response Messages (2)
 - `PermissionResponse { id, choice }` - Permission response
 - `QuestionResponse { id, answers }` - Question response
 
-### Server-to-Client Events (9)
+### Server-to-Client Events (10)
 | Variant | Fields | Purpose |
 |---------|--------|---------|
-| `RenderFrame` | `content` | Rendered frame content |
+| `RenderFrame` | `content` | ❌ unsupported — returns `Error` with code `unsupported_render_frame` |
 | `TextDelta` | `delta` | Text delta for streaming |
 | `PermissionPending` | `id, tool, path` | Permission request |
 | `QuestionPending` | `id, questions` | Question request |
@@ -215,6 +216,7 @@ pub enum TuiMessage { ... }
 | `ToolCallStarted` | `tool_name, tool_id, arguments` | Tool call started |
 | `ToolResult` | `tool_id, output, success` | Tool result |
 | `Error` | `message` | Error message |
+| `StateSnapshot` | `snapshot: RemoteTuiStateSnapshot` | Full state snapshot for remote rendering |
 
 ### Special (1)
 - `ResyncRequired { reason, pending_permissions, pending_questions }` - Resync needed
@@ -228,6 +230,23 @@ pub struct QuestionSpec {
     pub default: Option<String>,
 }
 ```
+
+### RemoteTuiStateSnapshot
+
+```rust
+pub struct RemoteTuiStateSnapshot {
+    pub route: String,
+    pub model: String,
+    pub agent: String,
+    pub status: String,
+    pub messages: Vec<MessagePreview>,
+    pub prompt: String,
+    pub dialog: Option<String>,
+    pub toasts: Vec<String>,
+}
+```
+
+Frontend-neutral DTO containing render-relevant state. Produced by `App::remote_snapshot()` as a pure, nonblocking read of current `App` state. Used by the remote TUI event/state-driven protocol (Phase 8).
 
 ## Request/Response Flow
 

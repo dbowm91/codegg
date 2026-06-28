@@ -170,6 +170,7 @@ The primary WebSocket for remote TUI communication. Handles bidirectional TuiMes
 | `MouseClick` | `x: u16`, `y: u16` | Mouse click events |
 | `Resize` | `w: u16`, `h: u16` | Terminal resize |
 | `Resume` | `from_event_seq: u64` | Client resume request for replay |
+| `RequestSnapshot` | - | Request a full state snapshot from the daemon |
 | `PermissionResponse` | `id: String`, `choice: String` | Permission decision (allow/deny/always_allow/always_deny) |
 | `QuestionResponse` | `id: String`, `answers: serde_json::Value` | Question answers |
 | `SessionInfo` | `id: String`, `model: String` | Session metadata announcement |
@@ -179,7 +180,8 @@ The primary WebSocket for remote TUI communication. Handles bidirectional TuiMes
 |---------|--------|---------|
 | `EventEnvelope` | `event_seq: u64`, `payload: Box<TuiMessage>` | Sequence-tagged wrapper for replay |
 | `TextDelta` | `delta: String` | Streaming text output |
-| `RenderFrame` | `content: String` | Complete terminal frame content |
+| `RenderFrame` | `content: String` | ❌ unsupported — returns `Error` with code `unsupported_render_frame` |
+| `StateSnapshot` | `snapshot: RemoteTuiStateSnapshot` | Full state snapshot for remote rendering |
 | `ToolCallStarted` | `tool_name`, `tool_id`, `arguments` | Tool execution started |
 | `ToolResult` | `tool_id`, `output`, `success` | Tool execution completed |
 | `PermissionPending` | `id`, `tool`, `path` | Pending permission request |

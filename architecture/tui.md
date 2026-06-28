@@ -641,6 +641,35 @@ pub struct App {
 
 **`busy_spinner: SpinnerWidget`** - Located at `src/tui/components/spinner.rs`. Shows animated busy indicator (frames: `["░", "▏", "▎", "▍", "▌", "▋", "▊", "▉"]`). Starts when `session_status` is `Working`, stops on `Idle` or `Error`. Tick called every render frame (~60fps).
 
+## Remote TUI Protocol (Phase 8)
+
+### Protocol Model
+
+The remote TUI uses an **event/state-driven** protocol. The daemon sends typed state snapshots and event deltas; remote clients render independently. Frame-driven rendering (`RenderFrame`) is explicitly **unsupported** — receiving it returns an `Error` response with code `unsupported_render_frame`.
+
+### Protocol Version
+
+The remote TUI protocol version is defined as `REMOTE_TUI_PROTOCOL_VERSION = 1` in `crates/codegg-protocol/src/tui.rs`. Handshakes should reject incompatible major versions.
+
+### State Snapshots
+
+`RemoteTuiStateSnapshot` is a frontend-neutral DTO containing only render-relevant state: route, model, agent, status, messages (as previews), prompt, dialog, and toasts. Snapshots are produced by `App::remote_snapshot()` which is a pure, nonblocking read of current `App` state.
+
+### Resync
+
+On reconnect or sequence gaps, the daemon sends a full `StateSnapshot`. Clients can also request a snapshot via `RequestSnapshot`. The `ResyncRequired` event is sent when the broadcast channel lags.
+
+### Unsupported RenderFrame
+
+If a `RenderFrame` payload is received, the handler returns an `Error` with:
+- code: `unsupported_render_frame`
+- message: `Frame-driven remote rendering is not supported; request state snapshots instead`
+- recoverable: `true`
+
+This replaces the previous silent log-and-ignore behavior.
+
+## See Also
+
 - [agent.md](agent.md) - AgentLoop that processes TUI commands
 - [bus.md](bus.md) - GlobalEventBus and event types
 - [session.md](session.md) - Session storage

@@ -86,7 +86,9 @@ The client uses `TuiMessage` enum (from `crates/codegg-protocol/src/tui.rs`) wit
 | `MouseClick` | `x: u16`, `y: u16` | Mouse clicks |
 | `Resize` | `w: u16`, `h: u16` | Terminal resize |
 | `Resume` | `from_event_seq: u64` | Resume handshake for replayed server events |
-| `RenderFrame` | `content: String` | Frame content (legacy - received and logged, not rendered) |
+| `RenderFrame` | `content: String` | ❌ unsupported — returns `Error` with code `unsupported_render_frame` |
+| `StateSnapshot` | `snapshot: RemoteTuiStateSnapshot` | Full state snapshot (server→client, on reconnect or request) |
+| `RequestSnapshot` | - | Request a full state snapshot from the daemon |
 | `PermissionResponse` | `id: String`, `choice: String` | Permission answer |
 | `QuestionResponse` | `id: String`, `answers: serde_json::Value` | Question answer |
 
