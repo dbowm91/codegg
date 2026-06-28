@@ -2364,6 +2364,10 @@ impl App {
                 self.close_dialog();
             }
             TuiMsg::SelectSession(session) => {
+                // Cancel research and memory tasks from the previous session.
+                use crate::tui::task_lifecycle::TuiTaskKind;
+                self.task_registry.cancel_kind(TuiTaskKind::Research);
+                self.task_registry.cancel_kind(TuiTaskKind::Memory);
                 self.set_session(*session);
                 self.close_dialog();
             }
@@ -6417,6 +6421,22 @@ impl App {
             }
             self.dialog_state.theme_picker = None;
         }
+
+        // Cancel background tasks scoped to the dialog being closed.
+        use crate::tui::task_lifecycle::TuiTaskKind;
+        match self.ui_state.dialog {
+            Dialog::Tree => {
+                self.task_registry.cancel_kind(TuiTaskKind::Command);
+            }
+            Dialog::Import => {
+                self.task_registry.cancel_kind(TuiTaskKind::Command);
+            }
+            Dialog::ResearchBrowser => {
+                self.task_registry.cancel_kind(TuiTaskKind::Research);
+            }
+            _ => {}
+        }
+
         self.focus_manager.pop();
         let active_type = self.focus_manager.active_dialog_type();
         if active_type != DialogType::None {

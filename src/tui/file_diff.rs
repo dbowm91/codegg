@@ -7,6 +7,7 @@
 //! loop can apply the result if it still matches the latest generation.
 
 use super::app::TuiCommand;
+use super::task_lifecycle::{TuiTaskKind, TuiTaskRegistry};
 use once_cell::sync::Lazy;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -37,13 +38,14 @@ pub fn spawn_sidebar_diff_stats(
     path: String,
     old_content: Option<String>,
     generation: u64,
+    registry: Option<&mut TuiTaskRegistry>,
 ) {
     let Some(tx) = tui_cmd_tx else {
         tracing::warn!("spawn_sidebar_diff_stats: no command sender available");
         return;
     };
 
-    tokio::spawn(async move {
+    let future = async move {
         let _permit = match DIFF_SEMAPHORE.clone().acquire_owned().await {
             Ok(p) => p,
             Err(_) => {
@@ -67,7 +69,13 @@ pub fn spawn_sidebar_diff_stats(
             result,
         };
         let _ = tx.send(cmd).await;
-    });
+    };
+
+    if let Some(reg) = registry {
+        reg.spawn(TuiTaskKind::FileDiff, "sidebar_diff", future);
+    } else {
+        tokio::spawn(future);
+    }
 }
 
 fn compute_diff_stats(
@@ -273,6 +281,7 @@ mod tests {
             "slow.txt".to_string(),
             None,
             1, // generation 1
+            None,
         );
 
         // Wait for the command.
@@ -305,6 +314,7 @@ mod tests {
             "a.txt".to_string(),
             Some("a\nc\n".to_string()),
             42,
+            None,
         );
 
         let cmd = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())

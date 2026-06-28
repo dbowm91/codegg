@@ -124,9 +124,10 @@ use crate::bus::global::GlobalEventBus;
 use crate::error::AppError;
 use crate::permission::PermissionRequest;
 use crate::protocol::core::{CoreRequest, CoreResponse};
-use crate::tui::async_cmd::spawn_tui_task;
+use crate::tui::async_cmd::{spawn_registered_tui_task, spawn_tui_task};
 use crate::tui::components::dialogs::import::ImportSource;
 use crate::tui::components::toast::Toast;
+use crate::tui::task_lifecycle::TuiTaskKind;
 use crossterm::event::{Event, EventStream, KeyEventKind};
 use futures::StreamExt;
 use ratatui::backend::CrosstermBackend;
@@ -2161,129 +2162,137 @@ fn start_open_tree_dialog(app: &mut app::App) {
     let current_session_id = current_session.id.clone();
     let tx = app.tui_cmd_tx.clone();
 
-    spawn_tui_task(tx, "open_tree_dialog", async move {
-        let Some(core_client) = core_client else {
-            return Some(TuiCommand::TreeDialogLoaded {
-                current_session_id: Some(current_session_id),
-                nodes: Vec::new(),
-                error: Some("Core client not available".to_string()),
-            });
-        };
-
-        let list_request = crate::core::new_request(
-            format!("session-tree-list-{}", uuid::Uuid::new_v4()),
-            CoreRequest::SessionList {
-                project_id: project_dir,
-                show_archived: true,
-                limit: 1000,
-            },
-        );
-        let sessions = match core_client.request(list_request).await {
-            Ok(CoreResponse::SessionList { sessions }) => sessions,
-            Ok(CoreResponse::Error { message, .. }) => {
+    spawn_registered_tui_task(
+        tx,
+        &mut app.task_registry,
+        TuiTaskKind::Command,
+        "open_tree_dialog",
+        async move {
+            let Some(core_client) = core_client else {
                 return Some(TuiCommand::TreeDialogLoaded {
                     current_session_id: Some(current_session_id),
                     nodes: Vec::new(),
-                    error: Some(format!("Failed to load tree sessions: {}", message)),
+                    error: Some("Core client not available".to_string()),
                 });
-            }
-            Ok(other) => {
-                return Some(TuiCommand::TreeDialogLoaded {
-                    current_session_id: Some(current_session_id),
-                    nodes: Vec::new(),
-                    error: Some(format!("Unexpected tree response: {:?}", other)),
-                });
-            }
-            Err(e) => {
-                return Some(TuiCommand::TreeDialogLoaded {
-                    current_session_id: Some(current_session_id),
-                    nodes: Vec::new(),
-                    error: Some(format!("Failed to load tree sessions: {}", e)),
-                });
-            }
-        };
+            };
 
-        let counts_request = crate::core::new_request(
-            format!("session-tree-counts-{}", uuid::Uuid::new_v4()),
-            CoreRequest::SessionMessageCounts {
-                session_ids: sessions.iter().map(|s| s.id.clone()).collect(),
-            },
-        );
-        let counts = match core_client.request(counts_request).await {
-            Ok(CoreResponse::SessionMessageCounts { counts }) => counts,
-            _ => std::collections::HashMap::new(),
-        };
+            let list_request = crate::core::new_request(
+                format!("session-tree-list-{}", uuid::Uuid::new_v4()),
+                CoreRequest::SessionList {
+                    project_id: project_dir,
+                    show_archived: true,
+                    limit: 1000,
+                },
+            );
+            let sessions = match core_client.request(list_request).await {
+                Ok(CoreResponse::SessionList { sessions }) => sessions,
+                Ok(CoreResponse::Error { message, .. }) => {
+                    return Some(TuiCommand::TreeDialogLoaded {
+                        current_session_id: Some(current_session_id),
+                        nodes: Vec::new(),
+                        error: Some(format!("Failed to load tree sessions: {}", message)),
+                    });
+                }
+                Ok(other) => {
+                    return Some(TuiCommand::TreeDialogLoaded {
+                        current_session_id: Some(current_session_id),
+                        nodes: Vec::new(),
+                        error: Some(format!("Unexpected tree response: {:?}", other)),
+                    });
+                }
+                Err(e) => {
+                    return Some(TuiCommand::TreeDialogLoaded {
+                        current_session_id: Some(current_session_id),
+                        nodes: Vec::new(),
+                        error: Some(format!("Failed to load tree sessions: {}", e)),
+                    });
+                }
+            };
 
-        let by_id: std::collections::HashMap<String, crate::session::Session> = sessions
-            .iter()
-            .cloned()
-            .map(|s| (s.id.clone(), crate::protocol_conversions::dto_to_session(s)))
-            .collect();
+            let counts_request = crate::core::new_request(
+                format!("session-tree-counts-{}", uuid::Uuid::new_v4()),
+                CoreRequest::SessionMessageCounts {
+                    session_ids: sessions.iter().map(|s| s.id.clone()).collect(),
+                },
+            );
+            let counts = match core_client.request(counts_request).await {
+                Ok(CoreResponse::SessionMessageCounts { counts }) => counts,
+                _ => std::collections::HashMap::new(),
+            };
 
-        let mut root_id = current_session_id.clone();
-        while let Some(parent_id) = by_id.get(&root_id).and_then(|s| s.parent_id.clone()) {
-            if !by_id.contains_key(&parent_id) {
-                break;
-            }
-            root_id = parent_id;
-        }
-
-        let mut children_map: std::collections::HashMap<String, Vec<crate::session::Session>> =
-            std::collections::HashMap::new();
-        for session in &sessions {
-            if let Some(parent_id) = &session.parent_id {
-                children_map
-                    .entry(parent_id.clone())
-                    .or_default()
-                    .push(crate::protocol_conversions::dto_to_session(session.clone()));
-            }
-        }
-
-        fn build_node(
-            session: &crate::session::Session,
-            depth: usize,
-            current_session_id: &str,
-            children_map: &std::collections::HashMap<String, Vec<crate::session::Session>>,
-            counts: &std::collections::HashMap<String, usize>,
-        ) -> crate::tui::components::dialogs::tree::TreeNode {
-            use crate::tui::components::dialogs::tree::TreeNode;
-            let mut children = children_map.get(&session.id).cloned().unwrap_or_default();
-            children.sort_by_key(|s| s.time_updated);
-            let child_nodes = children
+            let by_id: std::collections::HashMap<String, crate::session::Session> = sessions
                 .iter()
-                .map(|child| build_node(child, depth + 1, current_session_id, children_map, counts))
+                .cloned()
+                .map(|s| (s.id.clone(), crate::protocol_conversions::dto_to_session(s)))
                 .collect();
-            TreeNode {
-                id: session.id.clone(),
-                session_id: session.id.clone(),
-                label: session.title.clone(),
-                time_updated: session.time_updated,
-                message_count: counts.get(&session.id).copied(),
-                is_current: session.id == current_session_id,
-                is_archived: session.time_archived.is_some(),
-                children: child_nodes,
-                depth,
+
+            let mut root_id = current_session_id.clone();
+            while let Some(parent_id) = by_id.get(&root_id).and_then(|s| s.parent_id.clone()) {
+                if !by_id.contains_key(&parent_id) {
+                    break;
+                }
+                root_id = parent_id;
             }
-        }
 
-        let tree_nodes = if let Some(root) = by_id.get(&root_id) {
-            vec![build_node(
-                root,
-                0,
-                &current_session_id,
-                &children_map,
-                &counts,
-            )]
-        } else {
-            Vec::new()
-        };
+            let mut children_map: std::collections::HashMap<String, Vec<crate::session::Session>> =
+                std::collections::HashMap::new();
+            for session in &sessions {
+                if let Some(parent_id) = &session.parent_id {
+                    children_map
+                        .entry(parent_id.clone())
+                        .or_default()
+                        .push(crate::protocol_conversions::dto_to_session(session.clone()));
+                }
+            }
 
-        Some(TuiCommand::TreeDialogLoaded {
-            current_session_id: Some(current_session_id),
-            nodes: tree_nodes,
-            error: None,
-        })
-    });
+            fn build_node(
+                session: &crate::session::Session,
+                depth: usize,
+                current_session_id: &str,
+                children_map: &std::collections::HashMap<String, Vec<crate::session::Session>>,
+                counts: &std::collections::HashMap<String, usize>,
+            ) -> crate::tui::components::dialogs::tree::TreeNode {
+                use crate::tui::components::dialogs::tree::TreeNode;
+                let mut children = children_map.get(&session.id).cloned().unwrap_or_default();
+                children.sort_by_key(|s| s.time_updated);
+                let child_nodes = children
+                    .iter()
+                    .map(|child| {
+                        build_node(child, depth + 1, current_session_id, children_map, counts)
+                    })
+                    .collect();
+                TreeNode {
+                    id: session.id.clone(),
+                    session_id: session.id.clone(),
+                    label: session.title.clone(),
+                    time_updated: session.time_updated,
+                    message_count: counts.get(&session.id).copied(),
+                    is_current: session.id == current_session_id,
+                    is_archived: session.time_archived.is_some(),
+                    children: child_nodes,
+                    depth,
+                }
+            }
+
+            let tree_nodes = if let Some(root) = by_id.get(&root_id) {
+                vec![build_node(
+                    root,
+                    0,
+                    &current_session_id,
+                    &children_map,
+                    &counts,
+                )]
+            } else {
+                Vec::new()
+            };
+
+            Some(TuiCommand::TreeDialogLoaded {
+                current_session_id: Some(current_session_id),
+                nodes: tree_nodes,
+                error: None,
+            })
+        },
+    );
 }
 
 fn apply_tree_dialog_loaded(
@@ -2479,137 +2488,154 @@ fn start_preview_import(app: &mut app::App, source: ImportSource) {
     let core_client = app.core_client.clone();
     let tx = app.tui_cmd_tx.clone();
 
-    spawn_tui_task(tx, "preview_import", async move {
-        let Some(core_client) = core_client else {
-            return Some(TuiCommand::ImportPreviewLoaded {
-                request_id,
-                session: None,
-                msg_count: 0,
-                error: Some("Core client not available".to_string()),
-            });
-        };
+    spawn_registered_tui_task(
+        tx,
+        &mut app.task_registry,
+        TuiTaskKind::Command,
+        "preview_import",
+        async move {
+            let Some(core_client) = core_client else {
+                return Some(TuiCommand::ImportPreviewLoaded {
+                    request_id,
+                    session: None,
+                    msg_count: 0,
+                    error: Some("Core client not available".to_string()),
+                });
+            };
 
-        match source {
-            ImportSource::SessionId(id) => {
-                let load_request = crate::core::new_request(
-                    format!("session-load-{}", uuid::Uuid::new_v4()),
-                    CoreRequest::SessionLoad {
-                        session_id: id.clone(),
-                    },
-                );
-                let count_request = crate::core::new_request(
-                    format!("session-message-counts-{}", uuid::Uuid::new_v4()),
-                    CoreRequest::SessionMessageCounts {
-                        session_ids: vec![id.clone()],
-                    },
-                );
-                match (
-                    core_client.request(load_request).await,
-                    core_client.request(count_request).await,
-                ) {
-                    (
-                        Ok(CoreResponse::Session { session }),
-                        Ok(CoreResponse::SessionMessageCounts { counts }),
-                    ) => {
-                        let msg_count = counts.get(&id).copied().unwrap_or(0);
-                        Some(TuiCommand::ImportPreviewLoaded {
-                            request_id,
-                            session: Some(crate::protocol_conversions::dto_to_session(session)),
-                            msg_count,
-                            error: None,
-                        })
-                    }
-                    (Ok(CoreResponse::Error { message, .. }), _)
-                    | (_, Ok(CoreResponse::Error { message, .. })) => {
-                        Some(TuiCommand::ImportPreviewLoaded {
-                            request_id,
-                            session: None,
-                            msg_count: 0,
-                            error: Some(format!("Failed to load session: {}", message)),
-                        })
-                    }
-                    (Err(e), _) | (_, Err(e)) => Some(TuiCommand::ImportPreviewLoaded {
-                        request_id,
-                        session: None,
-                        msg_count: 0,
-                        error: Some(format!("Failed to load session: {}", e)),
-                    }),
-                    _ => Some(TuiCommand::ImportPreviewLoaded {
-                        request_id,
-                        session: None,
-                        msg_count: 0,
-                        error: Some("Unexpected response while loading session".to_string()),
-                    }),
-                }
-            }
-            ImportSource::FilePath(path) => match tokio::fs::read_to_string(path.as_str()).await {
-                Ok(content) => match serde_json::from_str::<serde_json::Value>(&content) {
-                    Ok(data) => {
-                        let import_request = crate::core::new_request(
-                            format!("session-import-data-{}", uuid::Uuid::new_v4()),
-                            CoreRequest::SessionImportData { data },
-                        );
-                        match core_client.request(import_request).await {
-                            Ok(CoreResponse::Session { session }) => {
-                                let count_request = crate::core::new_request(
-                                    format!("session-message-counts-{}", uuid::Uuid::new_v4()),
-                                    CoreRequest::SessionMessageCounts {
-                                        session_ids: vec![session.id.clone()],
-                                    },
-                                );
-                                let msg_count = match core_client.request(count_request).await {
-                                    Ok(CoreResponse::SessionMessageCounts { counts }) => {
-                                        counts.get(&session.id).copied().unwrap_or(0)
-                                    }
-                                    _ => 0,
-                                };
-                                Some(TuiCommand::ImportPreviewLoaded {
-                                    request_id,
-                                    session: Some(crate::protocol_conversions::dto_to_session(
-                                        session,
-                                    )),
-                                    msg_count,
-                                    error: None,
-                                })
-                            }
-                            Ok(CoreResponse::Error { message, .. }) => {
-                                Some(TuiCommand::ImportPreviewLoaded {
-                                    request_id,
-                                    session: None,
-                                    msg_count: 0,
-                                    error: Some(format!("Import failed: {}", message)),
-                                })
-                            }
-                            Ok(other) => Some(TuiCommand::ImportPreviewLoaded {
+            match source {
+                ImportSource::SessionId(id) => {
+                    let load_request = crate::core::new_request(
+                        format!("session-load-{}", uuid::Uuid::new_v4()),
+                        CoreRequest::SessionLoad {
+                            session_id: id.clone(),
+                        },
+                    );
+                    let count_request = crate::core::new_request(
+                        format!("session-message-counts-{}", uuid::Uuid::new_v4()),
+                        CoreRequest::SessionMessageCounts {
+                            session_ids: vec![id.clone()],
+                        },
+                    );
+                    match (
+                        core_client.request(load_request).await,
+                        core_client.request(count_request).await,
+                    ) {
+                        (
+                            Ok(CoreResponse::Session { session }),
+                            Ok(CoreResponse::SessionMessageCounts { counts }),
+                        ) => {
+                            let msg_count = counts.get(&id).copied().unwrap_or(0);
+                            Some(TuiCommand::ImportPreviewLoaded {
+                                request_id,
+                                session: Some(crate::protocol_conversions::dto_to_session(session)),
+                                msg_count,
+                                error: None,
+                            })
+                        }
+                        (Ok(CoreResponse::Error { message, .. }), _)
+                        | (_, Ok(CoreResponse::Error { message, .. })) => {
+                            Some(TuiCommand::ImportPreviewLoaded {
                                 request_id,
                                 session: None,
                                 msg_count: 0,
-                                error: Some(format!("Unexpected import response: {:?}", other)),
-                            }),
+                                error: Some(format!("Failed to load session: {}", message)),
+                            })
+                        }
+                        (Err(e), _) | (_, Err(e)) => Some(TuiCommand::ImportPreviewLoaded {
+                            request_id,
+                            session: None,
+                            msg_count: 0,
+                            error: Some(format!("Failed to load session: {}", e)),
+                        }),
+                        _ => Some(TuiCommand::ImportPreviewLoaded {
+                            request_id,
+                            session: None,
+                            msg_count: 0,
+                            error: Some("Unexpected response while loading session".to_string()),
+                        }),
+                    }
+                }
+                ImportSource::FilePath(path) => {
+                    match tokio::fs::read_to_string(path.as_str()).await {
+                        Ok(content) => match serde_json::from_str::<serde_json::Value>(&content) {
+                            Ok(data) => {
+                                let import_request = crate::core::new_request(
+                                    format!("session-import-data-{}", uuid::Uuid::new_v4()),
+                                    CoreRequest::SessionImportData { data },
+                                );
+                                match core_client.request(import_request).await {
+                                    Ok(CoreResponse::Session { session }) => {
+                                        let count_request = crate::core::new_request(
+                                            format!(
+                                                "session-message-counts-{}",
+                                                uuid::Uuid::new_v4()
+                                            ),
+                                            CoreRequest::SessionMessageCounts {
+                                                session_ids: vec![session.id.clone()],
+                                            },
+                                        );
+                                        let msg_count =
+                                            match core_client.request(count_request).await {
+                                                Ok(CoreResponse::SessionMessageCounts {
+                                                    counts,
+                                                }) => counts.get(&session.id).copied().unwrap_or(0),
+                                                _ => 0,
+                                            };
+                                        Some(TuiCommand::ImportPreviewLoaded {
+                                            request_id,
+                                            session: Some(
+                                                crate::protocol_conversions::dto_to_session(
+                                                    session,
+                                                ),
+                                            ),
+                                            msg_count,
+                                            error: None,
+                                        })
+                                    }
+                                    Ok(CoreResponse::Error { message, .. }) => {
+                                        Some(TuiCommand::ImportPreviewLoaded {
+                                            request_id,
+                                            session: None,
+                                            msg_count: 0,
+                                            error: Some(format!("Import failed: {}", message)),
+                                        })
+                                    }
+                                    Ok(other) => Some(TuiCommand::ImportPreviewLoaded {
+                                        request_id,
+                                        session: None,
+                                        msg_count: 0,
+                                        error: Some(format!(
+                                            "Unexpected import response: {:?}",
+                                            other
+                                        )),
+                                    }),
+                                    Err(e) => Some(TuiCommand::ImportPreviewLoaded {
+                                        request_id,
+                                        session: None,
+                                        msg_count: 0,
+                                        error: Some(format!("Import failed: {}", e)),
+                                    }),
+                                }
+                            }
                             Err(e) => Some(TuiCommand::ImportPreviewLoaded {
                                 request_id,
                                 session: None,
                                 msg_count: 0,
-                                error: Some(format!("Import failed: {}", e)),
+                                error: Some(format!("Invalid JSON: {}", e)),
                             }),
-                        }
+                        },
+                        Err(e) => Some(TuiCommand::ImportPreviewLoaded {
+                            request_id,
+                            session: None,
+                            msg_count: 0,
+                            error: Some(format!("Failed to read file: {}", e)),
+                        }),
                     }
-                    Err(e) => Some(TuiCommand::ImportPreviewLoaded {
-                        request_id,
-                        session: None,
-                        msg_count: 0,
-                        error: Some(format!("Invalid JSON: {}", e)),
-                    }),
-                },
-                Err(e) => Some(TuiCommand::ImportPreviewLoaded {
-                    request_id,
-                    session: None,
-                    msg_count: 0,
-                    error: Some(format!("Failed to read file: {}", e)),
-                }),
-            },
-        }
-    });
+                }
+            }
+        },
+    );
 }
 
 fn apply_import_preview_loaded(
@@ -2642,51 +2668,61 @@ fn start_confirm_import(app: &mut app::App, source: ImportSource) {
     let core_client = app.core_client.clone();
     let tx = app.tui_cmd_tx.clone();
 
-    spawn_tui_task(tx, "confirm_import", async move {
-        let Some(core_client) = core_client else {
-            return Some(TuiCommand::ImportConfirmed {
-                request_id,
-                session: None,
-                error: Some("Core client not available".to_string()),
-            });
-        };
+    spawn_registered_tui_task(
+        tx,
+        &mut app.task_registry,
+        TuiTaskKind::Command,
+        "confirm_import",
+        async move {
+            let Some(core_client) = core_client else {
+                return Some(TuiCommand::ImportConfirmed {
+                    request_id,
+                    session: None,
+                    error: Some("Core client not available".to_string()),
+                });
+            };
 
-        match source {
-            ImportSource::SessionId(id) => {
-                let request = crate::core::new_request(
-                    format!("session-fork-{}", uuid::Uuid::new_v4()),
-                    CoreRequest::SessionFork { session_id: id },
-                );
-                match core_client.request(request).await {
-                    Ok(CoreResponse::Session { session }) => Some(TuiCommand::ImportConfirmed {
-                        request_id,
-                        session: Some(crate::protocol_conversions::dto_to_session(session)),
-                        error: None,
-                    }),
-                    Ok(CoreResponse::Error { message, .. }) => Some(TuiCommand::ImportConfirmed {
-                        request_id,
-                        session: None,
-                        error: Some(format!("Import failed: {}", message)),
-                    }),
-                    Ok(other) => Some(TuiCommand::ImportConfirmed {
-                        request_id,
-                        session: None,
-                        error: Some(format!("Unexpected import response: {:?}", other)),
-                    }),
-                    Err(e) => Some(TuiCommand::ImportConfirmed {
-                        request_id,
-                        session: None,
-                        error: Some(format!("Import failed: {}", e)),
-                    }),
+            match source {
+                ImportSource::SessionId(id) => {
+                    let request = crate::core::new_request(
+                        format!("session-fork-{}", uuid::Uuid::new_v4()),
+                        CoreRequest::SessionFork { session_id: id },
+                    );
+                    match core_client.request(request).await {
+                        Ok(CoreResponse::Session { session }) => {
+                            Some(TuiCommand::ImportConfirmed {
+                                request_id,
+                                session: Some(crate::protocol_conversions::dto_to_session(session)),
+                                error: None,
+                            })
+                        }
+                        Ok(CoreResponse::Error { message, .. }) => {
+                            Some(TuiCommand::ImportConfirmed {
+                                request_id,
+                                session: None,
+                                error: Some(format!("Import failed: {}", message)),
+                            })
+                        }
+                        Ok(other) => Some(TuiCommand::ImportConfirmed {
+                            request_id,
+                            session: None,
+                            error: Some(format!("Unexpected import response: {:?}", other)),
+                        }),
+                        Err(e) => Some(TuiCommand::ImportConfirmed {
+                            request_id,
+                            session: None,
+                            error: Some(format!("Import failed: {}", e)),
+                        }),
+                    }
                 }
+                ImportSource::FilePath(_) => Some(TuiCommand::ImportConfirmed {
+                    request_id,
+                    session: None,
+                    error: Some("File already imported via preview".to_string()),
+                }),
             }
-            ImportSource::FilePath(_) => Some(TuiCommand::ImportConfirmed {
-                request_id,
-                session: None,
-                error: Some("File already imported via preview".to_string()),
-            }),
-        }
-    });
+        },
+    );
 }
 
 fn apply_import_confirmed(
@@ -2978,47 +3014,55 @@ fn start_load_session_messages(app: &mut app::App, session_id: String) {
     let tx = app.tui_cmd_tx.clone();
     let sid = session_id.clone();
 
-    spawn_tui_task(tx, "load_session_messages", async move {
-        let Some(core_client) = core_client else {
-            return Some(TuiCommand::SessionMessagesLoaded {
-                session_id: sid,
-                messages: Vec::new(),
-                error: Some("Core client not available".to_string()),
-            });
-        };
-
-        let request = crate::core::new_request(
-            uuid::Uuid::new_v4().to_string(),
-            CoreRequest::SessionMessagesLoad {
-                session_id: sid.clone(),
-            },
-        );
-        match core_client.request(request).await {
-            Ok(CoreResponse::SessionMessages { messages, .. }) => {
-                let messages = crate::protocol_conversions::dtos_to_messages(messages);
-                Some(TuiCommand::SessionMessagesLoaded {
+    spawn_registered_tui_task(
+        tx,
+        &mut app.task_registry,
+        TuiTaskKind::Command,
+        "load_session_messages",
+        async move {
+            let Some(core_client) = core_client else {
+                return Some(TuiCommand::SessionMessagesLoaded {
                     session_id: sid,
-                    messages,
-                    error: None,
-                })
+                    messages: Vec::new(),
+                    error: Some("Core client not available".to_string()),
+                });
+            };
+
+            let request = crate::core::new_request(
+                uuid::Uuid::new_v4().to_string(),
+                CoreRequest::SessionMessagesLoad {
+                    session_id: sid.clone(),
+                },
+            );
+            match core_client.request(request).await {
+                Ok(CoreResponse::SessionMessages { messages, .. }) => {
+                    let messages = crate::protocol_conversions::dtos_to_messages(messages);
+                    Some(TuiCommand::SessionMessagesLoaded {
+                        session_id: sid,
+                        messages,
+                        error: None,
+                    })
+                }
+                Ok(CoreResponse::Error { message, .. }) => {
+                    Some(TuiCommand::SessionMessagesLoaded {
+                        session_id: sid,
+                        messages: Vec::new(),
+                        error: Some(format!("Failed to load messages: {}", message)),
+                    })
+                }
+                Ok(_) => Some(TuiCommand::SessionMessagesLoaded {
+                    session_id: sid,
+                    messages: Vec::new(),
+                    error: Some("Unexpected response".to_string()),
+                }),
+                Err(e) => Some(TuiCommand::SessionMessagesLoaded {
+                    session_id: sid,
+                    messages: Vec::new(),
+                    error: Some(format!("Failed to load messages: {}", e)),
+                }),
             }
-            Ok(CoreResponse::Error { message, .. }) => Some(TuiCommand::SessionMessagesLoaded {
-                session_id: sid,
-                messages: Vec::new(),
-                error: Some(format!("Failed to load messages: {}", message)),
-            }),
-            Ok(_) => Some(TuiCommand::SessionMessagesLoaded {
-                session_id: sid,
-                messages: Vec::new(),
-                error: Some("Unexpected response".to_string()),
-            }),
-            Err(e) => Some(TuiCommand::SessionMessagesLoaded {
-                session_id: sid,
-                messages: Vec::new(),
-                error: Some(format!("Failed to load messages: {}", e)),
-            }),
-        }
-    });
+        },
+    );
 }
 
 fn apply_session_messages_loaded(
@@ -3481,92 +3525,99 @@ fn start_memory_summary(app: &mut app::App) {
     let project_dir = app.session_state.project_dir.clone();
     let tx = app.tui_cmd_tx.clone();
 
-    spawn_tui_task(tx, "memory_summary", async move {
-        let Some(core_client) = core_client else {
-            return Some(TuiCommand::MemoryResult {
-                toast_message: "Core client unavailable".to_string(),
-                is_error: true,
-            });
-        };
+    spawn_registered_tui_task(
+        tx,
+        &mut app.task_registry,
+        TuiTaskKind::Memory,
+        "memory_summary",
+        async move {
+            let Some(core_client) = core_client else {
+                return Some(TuiCommand::MemoryResult {
+                    toast_message: "Core client unavailable".to_string(),
+                    is_error: true,
+                });
+            };
 
-        let project_hash = format!("{:x}", md5::compute(project_dir.as_bytes()));
-        let project_namespace = format!("project/{}", project_hash);
-        let req_prefs = crate::core::new_request(
-            format!("memory-list-{}", uuid::Uuid::new_v4()),
-            CoreRequest::MemoryList {
-                namespace: "user/preferences".to_string(),
-            },
-        );
-        let req_proj = crate::core::new_request(
-            format!("memory-list-{}", uuid::Uuid::new_v4()),
-            CoreRequest::MemoryList {
-                namespace: project_namespace.clone(),
-            },
-        );
-        let prefs = match core_client.request(req_prefs).await {
-            Ok(CoreResponse::Json { data }) => data
-                .get("memories")
-                .and_then(|v| v.as_array())
-                .cloned()
-                .unwrap_or_default(),
-            _ => Vec::new(),
-        };
-        let proj = match core_client.request(req_proj).await {
-            Ok(CoreResponse::Json { data }) => data
-                .get("memories")
-                .and_then(|v| v.as_array())
-                .cloned()
-                .unwrap_or_default(),
-            _ => Vec::new(),
-        };
-        let total = prefs.len() + proj.len();
-        if total == 0 {
-            return Some(TuiCommand::MemoryResult {
-                toast_message: "No memories yet. Use /memory-remember <text> to save something."
-                    .to_string(),
+            let project_hash = format!("{:x}", md5::compute(project_dir.as_bytes()));
+            let project_namespace = format!("project/{}", project_hash);
+            let req_prefs = crate::core::new_request(
+                format!("memory-list-{}", uuid::Uuid::new_v4()),
+                CoreRequest::MemoryList {
+                    namespace: "user/preferences".to_string(),
+                },
+            );
+            let req_proj = crate::core::new_request(
+                format!("memory-list-{}", uuid::Uuid::new_v4()),
+                CoreRequest::MemoryList {
+                    namespace: project_namespace.clone(),
+                },
+            );
+            let prefs = match core_client.request(req_prefs).await {
+                Ok(CoreResponse::Json { data }) => data
+                    .get("memories")
+                    .and_then(|v| v.as_array())
+                    .cloned()
+                    .unwrap_or_default(),
+                _ => Vec::new(),
+            };
+            let proj = match core_client.request(req_proj).await {
+                Ok(CoreResponse::Json { data }) => data
+                    .get("memories")
+                    .and_then(|v| v.as_array())
+                    .cloned()
+                    .unwrap_or_default(),
+                _ => Vec::new(),
+            };
+            let total = prefs.len() + proj.len();
+            if total == 0 {
+                return Some(TuiCommand::MemoryResult {
+                    toast_message:
+                        "No memories yet. Use /memory-remember <text> to save something."
+                            .to_string(),
+                    is_error: false,
+                });
+            }
+            let mut lines = vec![format!("Memory Summary ({} total):", total)];
+            if !prefs.is_empty() {
+                lines.push(format!("  user/preferences ({}):", prefs.len()));
+                for m in prefs.iter().take(5) {
+                    let id = m
+                        .get("id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default()
+                        .chars()
+                        .take(8)
+                        .collect::<String>();
+                    let title = m
+                        .get("title")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("(untitled)");
+                    lines.push(format!("    - [{}] {}", id, title));
+                }
+            }
+            if !proj.is_empty() {
+                lines.push(format!("  {} ({}):", project_namespace, proj.len()));
+                for m in proj.iter().take(5) {
+                    let id = m
+                        .get("id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default()
+                        .chars()
+                        .take(8)
+                        .collect::<String>();
+                    let title = m
+                        .get("title")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("(untitled)");
+                    lines.push(format!("    - [{}] {}", id, title));
+                }
+            }
+            Some(TuiCommand::MemoryResult {
+                toast_message: lines.join("\n"),
                 is_error: false,
-            });
-        }
-        let mut lines = vec![format!("Memory Summary ({} total):", total)];
-        if !prefs.is_empty() {
-            lines.push(format!("  user/preferences ({}):", prefs.len()));
-            for m in prefs.iter().take(5) {
-                let id = m
-                    .get("id")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default()
-                    .chars()
-                    .take(8)
-                    .collect::<String>();
-                let title = m
-                    .get("title")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("(untitled)");
-                lines.push(format!("    - [{}] {}", id, title));
-            }
-        }
-        if !proj.is_empty() {
-            lines.push(format!("  {} ({}):", project_namespace, proj.len()));
-            for m in proj.iter().take(5) {
-                let id = m
-                    .get("id")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default()
-                    .chars()
-                    .take(8)
-                    .collect::<String>();
-                let title = m
-                    .get("title")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("(untitled)");
-                lines.push(format!("    - [{}] {}", id, title));
-            }
-        }
-        Some(TuiCommand::MemoryResult {
-            toast_message: lines.join("\n"),
-            is_error: false,
-        })
-    });
+            })
+        },
+    );
 }
 
 fn start_memory_search(app: &mut app::App, query: String) {
@@ -3580,74 +3631,80 @@ fn start_memory_search(app: &mut app::App, query: String) {
     let core_client = app.core_client.clone();
     let tx = app.tui_cmd_tx.clone();
 
-    spawn_tui_task(tx, "memory_search", async move {
-        let Some(core_client) = core_client else {
-            return Some(TuiCommand::MemoryResult {
-                toast_message: "Core client unavailable".to_string(),
-                is_error: true,
-            });
-        };
+    spawn_registered_tui_task(
+        tx,
+        &mut app.task_registry,
+        TuiTaskKind::Memory,
+        "memory_search",
+        async move {
+            let Some(core_client) = core_client else {
+                return Some(TuiCommand::MemoryResult {
+                    toast_message: "Core client unavailable".to_string(),
+                    is_error: true,
+                });
+            };
 
-        let request = crate::core::new_request(
-            format!("memory-search-{}", uuid::Uuid::new_v4()),
-            CoreRequest::MemorySearch {
-                query: query.clone(),
-            },
-        );
-        match core_client.request(request).await {
-            Ok(CoreResponse::Json { data }) => {
-                let results = data
-                    .get("memories")
-                    .and_then(|v| v.as_array())
-                    .cloned()
-                    .unwrap_or_default();
-                if results.is_empty() {
-                    return Some(TuiCommand::MemoryResult {
-                        toast_message: format!("No memories found matching '{}'", query),
+            let request = crate::core::new_request(
+                format!("memory-search-{}", uuid::Uuid::new_v4()),
+                CoreRequest::MemorySearch {
+                    query: query.clone(),
+                },
+            );
+            match core_client.request(request).await {
+                Ok(CoreResponse::Json { data }) => {
+                    let results = data
+                        .get("memories")
+                        .and_then(|v| v.as_array())
+                        .cloned()
+                        .unwrap_or_default();
+                    if results.is_empty() {
+                        return Some(TuiCommand::MemoryResult {
+                            toast_message: format!("No memories found matching '{}'", query),
+                            is_error: false,
+                        });
+                    }
+                    let lines: Vec<String> = results
+                        .iter()
+                        .take(10)
+                        .map(|m| {
+                            let id = m
+                                .get("id")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or_default()
+                                .chars()
+                                .take(8)
+                                .collect::<String>();
+                            let title = m
+                                .get("title")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("(untitled)");
+                            format!("- [{}] {}", id, title)
+                        })
+                        .collect();
+                    Some(TuiCommand::MemoryResult {
+                        toast_message: format!(
+                            "Found {} memories:\n{}",
+                            results.len(),
+                            lines.join("\n")
+                        ),
                         is_error: false,
-                    });
-                }
-                let lines: Vec<String> = results
-                    .iter()
-                    .take(10)
-                    .map(|m| {
-                        let id = m
-                            .get("id")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or_default()
-                            .chars()
-                            .take(8)
-                            .collect::<String>();
-                        let title = m
-                            .get("title")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("(untitled)");
-                        format!("- [{}] {}", id, title)
                     })
-                    .collect();
-                Some(TuiCommand::MemoryResult {
-                    toast_message: format!(
-                        "Found {} memories:\n{}",
-                        results.len(),
-                        lines.join("\n")
-                    ),
-                    is_error: false,
-                })
+                }
+                Ok(CoreResponse::Error { message, .. }) => Some(TuiCommand::MemoryResult {
+                    toast_message: format!("Memory search failed: {}", message),
+                    is_error: true,
+                }),
+                Ok(other) => Some(TuiCommand::MemoryResult {
+                    toast_message: format!("Unexpected memory search response: {:?}", other),
+                    is_error: true,
+                }),
+                Err(e) => Some(TuiCommand::MemoryResult {
+                    toast_message: format!("Memory search failed: {}", e),
+                    is_error: true,
+                }),
             }
-            Ok(CoreResponse::Error { message, .. }) => Some(TuiCommand::MemoryResult {
-                toast_message: format!("Memory search failed: {}", message),
-                is_error: true,
-            }),
-            Ok(other) => Some(TuiCommand::MemoryResult {
-                toast_message: format!("Unexpected memory search response: {:?}", other),
-                is_error: true,
-            }),
-            Err(e) => Some(TuiCommand::MemoryResult {
-                toast_message: format!("Memory search failed: {}", e),
-                is_error: true,
-            }),
-        }
-    });
+        },
+    );
 }
 
 fn start_memory_remember(app: &mut app::App, text: String) {
@@ -5481,22 +5538,29 @@ fn start_research_list_runs(app: &mut app::App) {
     let project_dir = app.session_state.project_dir.clone();
     let tx = app.tui_cmd_tx.clone();
 
-    spawn_tui_task(tx, "research_list_runs", async move {
-        let service =
-            crate::research::service::ResearchService::new(std::path::PathBuf::from(&project_dir));
-        match service.list_runs().await {
-            Ok(runs) => Some(TuiCommand::ResearchRunsLoaded {
-                request_id,
-                runs,
-                error: None,
-            }),
-            Err(e) => Some(TuiCommand::ResearchRunsLoaded {
-                request_id,
-                runs: Vec::new(),
-                error: Some(format!("Failed to list research runs: {}", e)),
-            }),
-        }
-    });
+    spawn_registered_tui_task(
+        tx,
+        &mut app.task_registry,
+        TuiTaskKind::Research,
+        "research_list_runs",
+        async move {
+            let service = crate::research::service::ResearchService::new(std::path::PathBuf::from(
+                &project_dir,
+            ));
+            match service.list_runs().await {
+                Ok(runs) => Some(TuiCommand::ResearchRunsLoaded {
+                    request_id,
+                    runs,
+                    error: None,
+                }),
+                Err(e) => Some(TuiCommand::ResearchRunsLoaded {
+                    request_id,
+                    runs: Vec::new(),
+                    error: Some(format!("Failed to list research runs: {}", e)),
+                }),
+            }
+        },
+    );
 }
 
 fn apply_research_runs_loaded(
@@ -5529,24 +5593,31 @@ fn start_research_load_run(app: &mut app::App, run_id: String) {
     let project_dir = app.session_state.project_dir.clone();
     let tx = app.tui_cmd_tx.clone();
 
-    spawn_tui_task(tx, "research_load_run", async move {
-        let service =
-            crate::research::service::ResearchService::new(std::path::PathBuf::from(&project_dir));
-        match service.load_run(&run_id).await {
-            Ok(bundle) => Some(TuiCommand::ResearchRunLoaded {
-                request_id,
-                run_id,
-                bundle: Some(Box::new(bundle)),
-                error: None,
-            }),
-            Err(e) => Some(TuiCommand::ResearchRunLoaded {
-                request_id,
-                run_id,
-                bundle: None,
-                error: Some(format!("Failed to load research run: {}", e)),
-            }),
-        }
-    });
+    spawn_registered_tui_task(
+        tx,
+        &mut app.task_registry,
+        TuiTaskKind::Research,
+        "research_load_run",
+        async move {
+            let service = crate::research::service::ResearchService::new(std::path::PathBuf::from(
+                &project_dir,
+            ));
+            match service.load_run(&run_id).await {
+                Ok(bundle) => Some(TuiCommand::ResearchRunLoaded {
+                    request_id,
+                    run_id,
+                    bundle: Some(Box::new(bundle)),
+                    error: None,
+                }),
+                Err(e) => Some(TuiCommand::ResearchRunLoaded {
+                    request_id,
+                    run_id,
+                    bundle: None,
+                    error: Some(format!("Failed to load research run: {}", e)),
+                }),
+            }
+        },
+    );
 }
 
 fn apply_research_run_loaded(
@@ -5576,15 +5647,21 @@ fn start_research_load_section(app: &mut app::App, run_id: String, section: Stri
     let project_dir = app.session_state.project_dir.clone();
     let tx = app.tui_cmd_tx.clone();
 
-    spawn_tui_task(tx, "research_load_section", async move {
-        let service =
-            crate::research::service::ResearchService::new(std::path::PathBuf::from(&project_dir));
+    spawn_registered_tui_task(
+        tx,
+        &mut app.task_registry,
+        TuiTaskKind::Research,
+        "research_load_section",
+        async move {
+            let service = crate::research::service::ResearchService::new(std::path::PathBuf::from(
+                &project_dir,
+            ));
 
-        let result = match section.as_str() {
-            "Research Plan" => {
-                if let Ok(bundle) = service.load_run(&run_id).await {
-                    if let Some(ref plan) = bundle.plan {
-                        let content = format!(
+            let result = match section.as_str() {
+                "Research Plan" => {
+                    if let Ok(bundle) = service.load_run(&run_id).await {
+                        if let Some(ref plan) = bundle.plan {
+                            let content = format!(
                             "Scope: {}\n\nComparison Axes:\n{}\n\nSource Classes:\n{}\n\nExclusion Criteria:\n{}\n\nStopping Conditions:\n{}\n\nExpected Outputs:\n{}",
                             plan.scope,
                             plan.comparison_axes.iter().map(|s| format!("  - {}", s)).collect::<Vec<_>>().join("\n"),
@@ -5593,111 +5670,112 @@ fn start_research_load_section(app: &mut app::App, run_id: String, section: Stri
                             plan.stopping_conditions.iter().map(|s| format!("  - {}", s)).collect::<Vec<_>>().join("\n"),
                             plan.expected_outputs.iter().map(|s| format!("  - {}", s)).collect::<Vec<_>>().join("\n"),
                         );
-                        Some((
-                            crate::tui::components::dialogs::research::ReportSection::Report,
-                            content,
-                        ))
+                            Some((
+                                crate::tui::components::dialogs::research::ReportSection::Report,
+                                content,
+                            ))
+                        } else {
+                            None
+                        }
                     } else {
                         None
                     }
-                } else {
-                    None
                 }
-            }
-            "Sources" => {
-                if let Ok(bundle) = service.load_run(&run_id).await {
-                    if bundle.sources.is_empty() {
-                        Some((
-                            crate::tui::components::dialogs::research::ReportSection::Brief,
-                            "No sources collected.".to_string(),
-                        ))
+                "Sources" => {
+                    if let Ok(bundle) = service.load_run(&run_id).await {
+                        if bundle.sources.is_empty() {
+                            Some((
+                                crate::tui::components::dialogs::research::ReportSection::Brief,
+                                "No sources collected.".to_string(),
+                            ))
+                        } else {
+                            let lines: Vec<String> = bundle
+                                .sources
+                                .iter()
+                                .enumerate()
+                                .map(|(i, src)| {
+                                    let title = src.title.as_deref().unwrap_or(&src.uri);
+                                    format!(
+                                        "{}. {} [{:?}]\n   URI: {}",
+                                        i + 1,
+                                        title,
+                                        src.source_type,
+                                        src.uri
+                                    )
+                                })
+                                .collect();
+                            Some((
+                                crate::tui::components::dialogs::research::ReportSection::Brief,
+                                lines.join("\n\n"),
+                            ))
+                        }
                     } else {
-                        let lines: Vec<String> = bundle
-                            .sources
-                            .iter()
-                            .enumerate()
-                            .map(|(i, src)| {
-                                let title = src.title.as_deref().unwrap_or(&src.uri);
-                                format!(
-                                    "{}. {} [{:?}]\n   URI: {}",
-                                    i + 1,
-                                    title,
-                                    src.source_type,
-                                    src.uri
-                                )
-                            })
-                            .collect();
-                        Some((
-                            crate::tui::components::dialogs::research::ReportSection::Brief,
-                            lines.join("\n\n"),
-                        ))
+                        None
                     }
-                } else {
-                    None
                 }
-            }
-            "Claims" => {
-                if let Ok(bundle) = service.load_run(&run_id).await {
-                    if bundle.claims.is_empty() {
-                        Some((
+                "Claims" => {
+                    if let Ok(bundle) = service.load_run(&run_id).await {
+                        if bundle.claims.is_empty() {
+                            Some((
                             crate::tui::components::dialogs::research::ReportSection::AgentAnswer,
                             "No claims derived.".to_string(),
                         ))
-                    } else {
-                        let lines: Vec<String> = bundle.claims.iter().map(|claim| {
+                        } else {
+                            let lines: Vec<String> = bundle.claims.iter().map(|claim| {
                             format!("[{}] {} (confidence: {:?})\n   Evidence: {} sources\n   Caveats: {}",
                                 claim.claim_type.as_str(), claim.text, claim.confidence,
                                 claim.evidence_ids.len(),
                                 if claim.caveats.is_empty() { "none".to_string() } else { claim.caveats.join("; ") })
                         }).collect();
-                        Some((
+                            Some((
                             crate::tui::components::dialogs::research::ReportSection::AgentAnswer,
                             lines.join("\n\n"),
                         ))
-                    }
-                } else {
-                    None
-                }
-            }
-            "Contradictions" => {
-                if let Ok(bundle) = service.load_run(&run_id).await {
-                    if bundle.contradictions.is_empty() {
-                        Some((
-                            crate::tui::components::dialogs::research::ReportSection::Handoff,
-                            "No contradictions detected.".to_string(),
-                        ))
+                        }
                     } else {
-                        let lines: Vec<String> = bundle
-                            .contradictions
-                            .iter()
-                            .map(|c| {
-                                format!(
-                                    "[{:?}] {}\n   Claims: {}",
-                                    c.severity,
-                                    c.description,
-                                    c.claim_ids.join(", ")
-                                )
-                            })
-                            .collect();
-                        Some((
-                            crate::tui::components::dialogs::research::ReportSection::Handoff,
-                            lines.join("\n\n"),
-                        ))
+                        None
                     }
-                } else {
-                    None
                 }
-            }
-            _ => None,
-        };
+                "Contradictions" => {
+                    if let Ok(bundle) = service.load_run(&run_id).await {
+                        if bundle.contradictions.is_empty() {
+                            Some((
+                                crate::tui::components::dialogs::research::ReportSection::Handoff,
+                                "No contradictions detected.".to_string(),
+                            ))
+                        } else {
+                            let lines: Vec<String> = bundle
+                                .contradictions
+                                .iter()
+                                .map(|c| {
+                                    format!(
+                                        "[{:?}] {}\n   Claims: {}",
+                                        c.severity,
+                                        c.description,
+                                        c.claim_ids.join(", ")
+                                    )
+                                })
+                                .collect();
+                            Some((
+                                crate::tui::components::dialogs::research::ReportSection::Handoff,
+                                lines.join("\n\n"),
+                            ))
+                        }
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            };
 
-        Some(TuiCommand::ResearchSectionLoaded {
-            request_id,
-            section,
-            content: result,
-            error: None,
-        })
-    });
+            Some(TuiCommand::ResearchSectionLoaded {
+                request_id,
+                section,
+                content: result,
+                error: None,
+            })
+        },
+    );
 }
 
 fn apply_research_section_loaded(
@@ -6169,6 +6247,7 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                             path,
                             old_content,
                             generation,
+                            Some(&mut app.task_registry),
                         );
 
                         needs_render = true;
