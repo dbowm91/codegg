@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 use crate::tui::app::TuiMsg;
 use crate::tui::components::component::{Component, DialogType};
+use crate::tui::input::{build_help_lines, HelpMode, InputMode};
 use crate::tui::theme::Theme;
 
 pub struct HelpDialog {
@@ -29,6 +30,20 @@ impl Clone for HelpDialog {
 
 impl HelpDialog {
     pub fn new(theme: Arc<Theme>, help_lines: Vec<String>) -> Self {
+        Self {
+            help_lines,
+            theme,
+            scroll: 0,
+        }
+    }
+
+    /// Create a help dialog with mode-aware content.
+    pub fn new_with_mode(theme: Arc<Theme>, vim_mode: bool, input_mode: InputMode) -> Self {
+        let active_mode = match input_mode {
+            InputMode::Insert => HelpMode::Insert,
+            InputMode::Normal => HelpMode::Normal,
+        };
+        let help_lines = build_help_lines(vim_mode, active_mode);
         Self {
             help_lines,
             theme,

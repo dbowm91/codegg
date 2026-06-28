@@ -66,6 +66,8 @@ pub struct UiState {
     pub bindings: HashMap<(crossterm::event::KeyModifiers, crossterm::event::KeyCode), InputAction>,
     /// Raw keybind config (for editing)
     pub keybinds: Option<KeybindConfig>,
+    /// Whether vim mode is enabled (affects help text and normal mode bindings)
+    pub vim_mode: bool,
     /// Operating mode (Embedded vs RemoteCore)
     pub mode: AppMode,
     pub remote_status: Option<String>,

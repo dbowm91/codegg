@@ -26,7 +26,8 @@ use super::components::sidebar::{clean_inline_text, SidebarWidget};
 use super::components::status_bar::StatusBarWidget;
 use super::components::toast::ToastManager;
 use super::input::{
-    handle_event, handle_event_with_bindings_moded, InputAction, InputMode, KeybindConfig,
+    build_help_lines, handle_event, handle_event_with_bindings_moded, HelpMode, InputAction,
+    InputMode, KeybindConfig,
 };
 use super::layout::{LayoutConfig, TuiLayout};
 use super::route::{Route, RouteManager};
@@ -526,32 +527,8 @@ impl App {
                 kind: CompletionItemKind::File,
             })
             .collect();
-        let help_lines = vec![
-            "Keyboard Shortcuts".to_string(),
-            "".to_string(),
-            "Enter          Send prompt".to_string(),
-            "Shift+Enter    New line in prompt".to_string(),
-            "Tab            Switch agent".to_string(),
-            "Ctrl+L         Model selector".to_string(),
-            "Ctrl+K         Clear session".to_string(),
-            "Ctrl+N         New session".to_string(),
-            "Ctrl+T         Toggle sidebar".to_string(),
-            "Ctrl+W         Close session".to_string(),
-            "Esc            Close dialog / cancel".to_string(),
-            "j/k or arrows  Navigate".to_string(),
-            "PgUp/PgDown    Scroll viewport".to_string(),
-            "/              Focus prompt".to_string(),
-            "?              Help".to_string(),
-            "@              File completions".to_string(),
-            "Up/Down        History navigation".to_string(),
-            "Ctrl+S         Stash prompt".to_string(),
-            "Ctrl+R         Restore prompt".to_string(),
-            "Ctrl+P         Cycle model forward".to_string(),
-            "Ctrl+Shift+P   Cycle model backward".to_string(),
-            "Ctrl+Y         Toggle TTS (speak)".to_string(),
-            "Ctrl+Shift+Y   Stop TTS".to_string(),
-            "Ctrl+Shift+F   Toggle fullscreen".to_string(),
-        ];
+        let vim_mode = cfg.and_then(|c| c.vim_mode).unwrap_or(false);
+        let help_lines = build_help_lines(vim_mode, HelpMode::Insert);
         let keybinds = cfg.and_then(|c| c.keybinds.as_ref()).map(|raw| {
             let mut bindings: HashMap<String, crate::tui::input::ActionKey> = HashMap::new();
             for (k, v) in raw {
@@ -561,10 +538,7 @@ impl App {
             }
             KeybindConfig { bindings }
         });
-        let bindings = super::input::build_bindings(
-            keybinds.as_ref(),
-            cfg.and_then(|c| c.vim_mode).unwrap_or(false),
-        );
+        let bindings = super::input::build_bindings(keybinds.as_ref(), vim_mode);
         debug_log!(
             "loaded {} keybindings, custom config: {}",
             bindings.len(),
@@ -644,6 +618,7 @@ impl App {
                 help_lines,
                 bindings,
                 keybinds: keybinds.clone(),
+                vim_mode,
                 mode: AppMode::Embedded,
                 remote_status: None,
                 sidebar_visible: true,
@@ -840,11 +815,7 @@ impl App {
                 kind: CompletionItemKind::File,
             })
             .collect();
-        let help_lines = vec![
-            "Keyboard Shortcuts".to_string(),
-            "".to_string(),
-            "Enter          Send prompt".to_string(),
-        ];
+        let help_lines = build_help_lines(false, HelpMode::Insert);
         let bindings = super::input::build_bindings(None, false);
         let theme = Arc::new(Theme::dark());
         let indexed_files: Arc<RwLock<Vec<String>>> = Arc::new(RwLock::new(Vec::new()));
@@ -862,6 +833,7 @@ impl App {
                 help_lines,
                 bindings,
                 keybinds: None,
+                vim_mode: false,
                 mode: AppMode::Embedded,
                 remote_status: None,
                 sidebar_visible: true,
@@ -6335,15 +6307,14 @@ impl App {
                     .push(Box::new(self.dialog_state.agent_dialog.clone()));
             }
             Dialog::Help => {
-                if self.dialog_state.help_dialog.is_none() {
-                    self.dialog_state.help_dialog =
-                        Some(crate::tui::components::dialogs::help::HelpDialog::new(
-                            Arc::clone(&self.ui_state.theme),
-                            self.ui_state.help_lines.clone(),
-                        ));
-                }
+                // Always recreate to reflect current input mode
+                let help_dialog = crate::tui::components::dialogs::help::HelpDialog::new_with_mode(
+                    Arc::clone(&self.ui_state.theme),
+                    self.ui_state.vim_mode,
+                    self.ui_state.input_mode,
+                );
+                self.dialog_state.help_dialog = Some(help_dialog);
                 if let Some(ref mut help_dialog) = self.dialog_state.help_dialog {
-                    help_dialog.set_theme(&self.ui_state.theme);
                     self.focus_manager.push(Box::new(help_dialog.clone()));
                 }
             }

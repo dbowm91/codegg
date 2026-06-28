@@ -268,6 +268,12 @@ The TUI supports inline slash commands for quick actions.
 
 The TUI provides keyboard shortcuts for common actions.
 
+> **Mode-aware help:** The help dialog (`?`) displays different shortcuts depending
+> on the current input mode. In **insert mode**, only modifier-based shortcuts
+> (Ctrl+*, Shift+*) are shown — bare `?` and `/` insert text, and `j`/`k` are
+> regular characters. In **normal mode**, bare navigation keys (`?`, `/`, `j`, `k`,
+> `h`, `l`) appear as shortcuts. Press `?` in normal mode to open the help dialog.
+
 ### Global Shortcuts
 
 | Key | Action |
