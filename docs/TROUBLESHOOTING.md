@@ -217,8 +217,8 @@ RUST_LOG=debug codegg
 # Very verbose
 RUST_LOG=trace codegg -vvv
 
-# File-based logging (when debug-logging feature enabled)
-# Check codegg_debug.log in working directory
+# Feature-gated debug-logging (tracing-based, no file output by default)
+cargo run --features debug-logging
 ```
 
 ## Getting Help

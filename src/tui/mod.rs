@@ -113,7 +113,7 @@ pub mod route;
 pub mod terminal;
 pub mod theme;
 
-pub use app::{App, Dialog, TuiCommand};
+pub use app::{App, Dialog, SessionMutationOp, TuiCommand};
 pub use input::InputAction;
 pub use route::Route;
 pub use theme::Theme;
@@ -220,6 +220,8 @@ async fn ensure_local_session(app: &mut app::App) {
     }
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 async fn reload_sessions(app: &mut app::App) {
     use std::collections::HashMap;
 
@@ -403,6 +405,1237 @@ fn apply_sessions_reloaded(
     }
 }
 
+fn start_list_tasks(app: &mut app::App) {
+    app.dialog_state.task_list_in_flight = true;
+    let core_client = app.core_client.clone();
+    let tx = app.tui_cmd_tx.clone();
+
+    spawn_tui_task(tx, "list_tasks", async move {
+        let Some(core_client) = core_client else {
+            return Some(TuiCommand::TasksListed {
+                tasks: Vec::new(),
+                error: Some("Core client not available".to_string()),
+            });
+        };
+        let request = crate::core::new_request(
+            format!("task-list-{}", uuid::Uuid::new_v4()),
+            CoreRequest::TaskList,
+        );
+        match core_client.request(request).await {
+            Ok(CoreResponse::Json { data }) => {
+                let tasks = data
+                    .get("tasks")
+                    .and_then(|v| v.as_array())
+                    .cloned()
+                    .unwrap_or_default();
+                Some(TuiCommand::TasksListed { tasks, error: None })
+            }
+            Ok(CoreResponse::Error { message, .. }) => Some(TuiCommand::TasksListed {
+                tasks: Vec::new(),
+                error: Some(format!("Failed to list tasks: {}", message)),
+            }),
+            Ok(other) => Some(TuiCommand::TasksListed {
+                tasks: Vec::new(),
+                error: Some(format!("Unexpected task list response: {:?}", other)),
+            }),
+            Err(e) => Some(TuiCommand::TasksListed {
+                tasks: Vec::new(),
+                error: Some(format!("Failed to list tasks: {}", e)),
+            }),
+        }
+    });
+}
+
+fn apply_tasks_listed(app: &mut app::App, tasks: Vec<serde_json::Value>, error: Option<String>) {
+    app.dialog_state.task_list_in_flight = false;
+    if let Some(err) = error {
+        app.messages_state.toasts.warning(&err);
+        return;
+    }
+    if tasks.is_empty() {
+        app.messages_state.toasts.info("No background tasks");
+    } else {
+        let list: Vec<String> = tasks
+            .iter()
+            .map(|t| {
+                let id = t.get("id").and_then(|v| v.as_str()).unwrap_or_default();
+                let message = t
+                    .get("message")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default();
+                let interval_secs = t.get("interval_secs").and_then(|v| v.as_u64()).unwrap_or(0);
+                format!(
+                    "{}: {} ({}s)",
+                    id.chars().take(8).collect::<String>(),
+                    message.chars().take(30).collect::<String>(),
+                    interval_secs
+                )
+            })
+            .collect();
+        app.messages_state.toasts.info(&list.join(" | "));
+    }
+}
+
+fn start_delete_task(app: &mut app::App, id: String) {
+    app.dialog_state.task_delete_in_flight = true;
+    let core_client = app.core_client.clone();
+    let tx = app.tui_cmd_tx.clone();
+
+    spawn_tui_task(tx, "delete_task", async move {
+        let Ok(parsed_id) = id.parse::<u64>() else {
+            return Some(TuiCommand::TaskOperationFinished {
+                op: "delete".to_string(),
+                task_id: None,
+                error: Some("Task id must be numeric".to_string()),
+            });
+        };
+        let Some(core_client) = core_client else {
+            return Some(TuiCommand::TaskOperationFinished {
+                op: "delete".to_string(),
+                task_id: None,
+                error: Some("Core client not available".to_string()),
+            });
+        };
+        let request = crate::core::new_request(
+            format!("task-delete-{}", uuid::Uuid::new_v4()),
+            CoreRequest::TaskDelete { id: parsed_id },
+        );
+        match core_client.request(request).await {
+            Ok(CoreResponse::Ack) => Some(TuiCommand::TaskOperationFinished {
+                op: "delete".to_string(),
+                task_id: Some(parsed_id.to_string()),
+                error: None,
+            }),
+            Ok(CoreResponse::Error { code, .. }) if code == "task_not_found" => {
+                Some(TuiCommand::TaskOperationFinished {
+                    op: "delete".to_string(),
+                    task_id: Some(parsed_id.to_string()),
+                    error: Some("Task not found".to_string()),
+                })
+            }
+            Ok(CoreResponse::Error { message, .. }) => Some(TuiCommand::TaskOperationFinished {
+                op: "delete".to_string(),
+                task_id: Some(parsed_id.to_string()),
+                error: Some(format!("Failed to delete task: {}", message)),
+            }),
+            Ok(other) => Some(TuiCommand::TaskOperationFinished {
+                op: "delete".to_string(),
+                task_id: Some(parsed_id.to_string()),
+                error: Some(format!("Unexpected task delete response: {:?}", other)),
+            }),
+            Err(e) => Some(TuiCommand::TaskOperationFinished {
+                op: "delete".to_string(),
+                task_id: Some(parsed_id.to_string()),
+                error: Some(format!("Failed to delete task: {}", e)),
+            }),
+        }
+    });
+}
+
+fn apply_task_operation_finished(
+    app: &mut app::App,
+    op: String,
+    task_id: Option<String>,
+    error: Option<String>,
+) {
+    app.dialog_state.task_delete_in_flight = false;
+    if let Some(err) = error {
+        app.messages_state.toasts.warning(&err);
+        return;
+    }
+    match op.as_str() {
+        "delete" => {
+            app.messages_state.toasts.info("Task deleted");
+        }
+        "schedule" => {
+            let display_id = task_id
+                .as_deref()
+                .unwrap_or("")
+                .chars()
+                .take(8)
+                .collect::<String>();
+            app.messages_state
+                .toasts
+                .info(&format!("Task {} scheduled", display_id));
+        }
+        _ => {
+            app.messages_state.toasts.info(&format!("{} completed", op));
+        }
+    }
+}
+
+fn next_session_mutation_id(app: &mut app::App) -> u64 {
+    app.dialog_state.session_mutation_request_id += 1;
+    app.dialog_state.session_mutation_request_id
+}
+
+fn apply_session_mutation_finished(
+    app: &mut app::App,
+    request_id: u64,
+    op: SessionMutationOp,
+    _affected_ids: Vec<String>,
+    message: String,
+    reload_after: bool,
+    error: Option<String>,
+) {
+    if request_id != app.dialog_state.session_mutation_request_id {
+        return;
+    }
+    if let Some(err) = error {
+        app.messages_state.toasts.error(&err);
+        return;
+    }
+    if !message.is_empty() {
+        app.messages_state.toasts.info(&message);
+    }
+    if op == SessionMutationOp::UndoDelete {
+        app.undo_session_id = None;
+        app.undo_until = None;
+    }
+    if reload_after {
+        start_reload_sessions(app);
+    }
+}
+
+fn start_delete_session(app: &mut app::App, session_id: String) {
+    let request_id = next_session_mutation_id(app);
+    let core_client = app.core_client.clone();
+    let tx = app.tui_cmd_tx.clone();
+
+    spawn_tui_task(tx, "delete_session", async move {
+        let Some(core_client) = core_client else {
+            return Some(TuiCommand::SessionMutationFinished {
+                request_id,
+                op: SessionMutationOp::Delete,
+                affected_ids: vec![session_id],
+                message: String::new(),
+                reload_after: false,
+                error: Some("Core client not available".to_string()),
+            });
+        };
+        let request = crate::core::new_request(
+            format!("session-delete-{}", uuid::Uuid::new_v4()),
+            CoreRequest::SessionDelete {
+                session_id: session_id.clone(),
+                permanent: false,
+            },
+        );
+        match core_client.request(request).await {
+            Ok(CoreResponse::Ack) => Some(TuiCommand::SessionMutationFinished {
+                request_id,
+                op: SessionMutationOp::Delete,
+                affected_ids: vec![session_id],
+                message: "Session deleted".to_string(),
+                reload_after: true,
+                error: None,
+            }),
+            Ok(CoreResponse::Error { code, message }) => {
+                Some(TuiCommand::SessionMutationFinished {
+                    request_id,
+                    op: SessionMutationOp::Delete,
+                    affected_ids: vec![session_id],
+                    message: String::new(),
+                    reload_after: false,
+                    error: Some(format!("Session delete failed ({}): {}", code, message)),
+                })
+            }
+            Ok(other) => Some(TuiCommand::SessionMutationFinished {
+                request_id,
+                op: SessionMutationOp::Delete,
+                affected_ids: vec![session_id],
+                message: String::new(),
+                reload_after: false,
+                error: Some(format!("Unexpected response: {:?}", other)),
+            }),
+            Err(e) => Some(TuiCommand::SessionMutationFinished {
+                request_id,
+                op: SessionMutationOp::Delete,
+                affected_ids: vec![session_id],
+                message: String::new(),
+                reload_after: false,
+                error: Some(format!("Session delete error: {}", e)),
+            }),
+        }
+    });
+}
+
+fn start_archive_session(app: &mut app::App, session_id: String, unarchive: bool) {
+    let request_id = next_session_mutation_id(app);
+    let core_client = app.core_client.clone();
+    let tx = app.tui_cmd_tx.clone();
+
+    spawn_tui_task(tx, "archive_session", async move {
+        let Some(core_client) = core_client else {
+            return Some(TuiCommand::SessionMutationFinished {
+                request_id,
+                op: if unarchive {
+                    SessionMutationOp::Unarchive
+                } else {
+                    SessionMutationOp::Archive
+                },
+                affected_ids: vec![session_id],
+                message: String::new(),
+                reload_after: false,
+                error: Some("Core client not available".to_string()),
+            });
+        };
+        let request = crate::core::new_request(
+            format!("session-archive-{}", uuid::Uuid::new_v4()),
+            CoreRequest::SessionArchive {
+                session_id: session_id.clone(),
+                unarchive,
+            },
+        );
+        match core_client.request(request).await {
+            Ok(CoreResponse::Ack) => {
+                let msg = if unarchive {
+                    "Session unarchived"
+                } else {
+                    "Session archived"
+                };
+                Some(TuiCommand::SessionMutationFinished {
+                    request_id,
+                    op: if unarchive {
+                        SessionMutationOp::Unarchive
+                    } else {
+                        SessionMutationOp::Archive
+                    },
+                    affected_ids: vec![session_id],
+                    message: msg.to_string(),
+                    reload_after: true,
+                    error: None,
+                })
+            }
+            Ok(CoreResponse::Error { code, message }) => {
+                Some(TuiCommand::SessionMutationFinished {
+                    request_id,
+                    op: if unarchive {
+                        SessionMutationOp::Unarchive
+                    } else {
+                        SessionMutationOp::Archive
+                    },
+                    affected_ids: vec![session_id],
+                    message: String::new(),
+                    reload_after: false,
+                    error: Some(format!("Session archive failed ({}): {}", code, message)),
+                })
+            }
+            Ok(other) => Some(TuiCommand::SessionMutationFinished {
+                request_id,
+                op: if unarchive {
+                    SessionMutationOp::Unarchive
+                } else {
+                    SessionMutationOp::Archive
+                },
+                affected_ids: vec![session_id],
+                message: String::new(),
+                reload_after: false,
+                error: Some(format!("Unexpected response: {:?}", other)),
+            }),
+            Err(e) => Some(TuiCommand::SessionMutationFinished {
+                request_id,
+                op: if unarchive {
+                    SessionMutationOp::Unarchive
+                } else {
+                    SessionMutationOp::Archive
+                },
+                affected_ids: vec![session_id],
+                message: String::new(),
+                reload_after: false,
+                error: Some(format!("Session archive error: {}", e)),
+            }),
+        }
+    });
+}
+
+fn start_fork_session(app: &mut app::App, session_id: String) {
+    let request_id = next_session_mutation_id(app);
+    let core_client = app.core_client.clone();
+    let tx = app.tui_cmd_tx.clone();
+
+    spawn_tui_task(tx, "fork_session", async move {
+        let Some(core_client) = core_client else {
+            return Some(TuiCommand::SessionMutationFinished {
+                request_id,
+                op: SessionMutationOp::Fork,
+                affected_ids: vec![session_id],
+                message: String::new(),
+                reload_after: false,
+                error: Some("Core client not available".to_string()),
+            });
+        };
+        let request = crate::core::new_request(
+            format!("session-fork-{}", uuid::Uuid::new_v4()),
+            CoreRequest::SessionFork {
+                session_id: session_id.clone(),
+            },
+        );
+        match core_client.request(request).await {
+            Ok(CoreResponse::Ack) => Some(TuiCommand::SessionMutationFinished {
+                request_id,
+                op: SessionMutationOp::Fork,
+                affected_ids: vec![session_id],
+                message: "Session forked".to_string(),
+                reload_after: true,
+                error: None,
+            }),
+            Ok(CoreResponse::Error { code, message }) => {
+                Some(TuiCommand::SessionMutationFinished {
+                    request_id,
+                    op: SessionMutationOp::Fork,
+                    affected_ids: vec![session_id],
+                    message: String::new(),
+                    reload_after: false,
+                    error: Some(format!("Session fork failed ({}): {}", code, message)),
+                })
+            }
+            Ok(other) => Some(TuiCommand::SessionMutationFinished {
+                request_id,
+                op: SessionMutationOp::Fork,
+                affected_ids: vec![session_id],
+                message: String::new(),
+                reload_after: false,
+                error: Some(format!("Unexpected response: {:?}", other)),
+            }),
+            Err(e) => Some(TuiCommand::SessionMutationFinished {
+                request_id,
+                op: SessionMutationOp::Fork,
+                affected_ids: vec![session_id],
+                message: String::new(),
+                reload_after: false,
+                error: Some(format!("Session fork error: {}", e)),
+            }),
+        }
+    });
+}
+
+fn start_bulk_delete(app: &mut app::App, session_ids: Vec<String>) {
+    let request_id = next_session_mutation_id(app);
+    let count = session_ids.len();
+    let core_client = app.core_client.clone();
+    let tx = app.tui_cmd_tx.clone();
+
+    spawn_tui_task(tx, "bulk_delete", async move {
+        let Some(core_client) = core_client else {
+            return Some(TuiCommand::SessionMutationFinished {
+                request_id,
+                op: SessionMutationOp::BulkDelete,
+                affected_ids: session_ids,
+                message: String::new(),
+                reload_after: false,
+                error: Some("Core client not available".to_string()),
+            });
+        };
+        let mut succeeded = 0usize;
+        let mut failed = 0usize;
+        for id in &session_ids {
+            let request = crate::core::new_request(
+                format!("session-delete-{}", uuid::Uuid::new_v4()),
+                CoreRequest::SessionDelete {
+                    session_id: id.clone(),
+                    permanent: true,
+                },
+            );
+            match core_client.request(request).await {
+                Ok(CoreResponse::Ack) => succeeded += 1,
+                Ok(CoreResponse::Error { code, message }) => {
+                    tracing::warn!(
+                        "failed to permanently delete session {} via core ({}): {}",
+                        id,
+                        code,
+                        message
+                    );
+                    failed += 1;
+                }
+                Ok(other) => {
+                    tracing::warn!(
+                        "unexpected core response for permanent session delete {}: {:?}",
+                        id,
+                        other
+                    );
+                    failed += 1;
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "failed to permanently delete session {} via core: {}",
+                        id,
+                        e
+                    );
+                    failed += 1;
+                }
+            }
+        }
+        let (message, error) = if failed == 0 {
+            (format!("{} sessions deleted", count), None)
+        } else if succeeded == 0 {
+            (
+                String::new(),
+                Some(format!("Failed to delete {} sessions", count)),
+            )
+        } else {
+            (format!("Deleted {}/{} sessions", succeeded, count), None)
+        };
+        Some(TuiCommand::SessionMutationFinished {
+            request_id,
+            op: SessionMutationOp::BulkDelete,
+            affected_ids: session_ids,
+            message,
+            reload_after: true,
+            error,
+        })
+    });
+}
+
+fn start_bulk_archive(app: &mut app::App, session_ids: Vec<String>, unarchive: bool) {
+    let request_id = next_session_mutation_id(app);
+    let count = session_ids.len();
+    let core_client = app.core_client.clone();
+    let tx = app.tui_cmd_tx.clone();
+
+    spawn_tui_task(tx, "bulk_archive", async move {
+        let Some(core_client) = core_client else {
+            return Some(TuiCommand::SessionMutationFinished {
+                request_id,
+                op: if unarchive {
+                    SessionMutationOp::Unarchive
+                } else {
+                    SessionMutationOp::BulkArchive
+                },
+                affected_ids: session_ids,
+                message: String::new(),
+                reload_after: false,
+                error: Some("Core client not available".to_string()),
+            });
+        };
+        let mut succeeded = 0usize;
+        let mut failed = 0usize;
+        for id in &session_ids {
+            let request = crate::core::new_request(
+                format!("session-archive-{}", uuid::Uuid::new_v4()),
+                CoreRequest::SessionArchive {
+                    session_id: id.clone(),
+                    unarchive,
+                },
+            );
+            match core_client.request(request).await {
+                Ok(CoreResponse::Ack) => succeeded += 1,
+                Ok(CoreResponse::Error { code, message }) => {
+                    tracing::warn!(
+                        "failed to archive session {} via core ({}): {}",
+                        id,
+                        code,
+                        message
+                    );
+                    failed += 1;
+                }
+                Ok(other) => {
+                    tracing::warn!(
+                        "unexpected core response for session archive {}: {:?}",
+                        id,
+                        other
+                    );
+                    failed += 1;
+                }
+                Err(e) => {
+                    tracing::warn!("failed to archive session {} via core: {}", id, e);
+                    failed += 1;
+                }
+            }
+        }
+        let op_name = if unarchive { "unarchived" } else { "archived" };
+        let (message, error) = if failed == 0 {
+            (format!("{} sessions {}", count, op_name), None)
+        } else if succeeded == 0 {
+            (
+                String::new(),
+                Some(format!("Failed to {} {} sessions", op_name, count)),
+            )
+        } else {
+            (
+                format!("{} {}/{} sessions", op_name, succeeded, count),
+                None,
+            )
+        };
+        Some(TuiCommand::SessionMutationFinished {
+            request_id,
+            op: if unarchive {
+                SessionMutationOp::Unarchive
+            } else {
+                SessionMutationOp::BulkArchive
+            },
+            affected_ids: session_ids,
+            message,
+            reload_after: true,
+            error,
+        })
+    });
+}
+
+fn start_bulk_export(app: &mut app::App, session_ids: Vec<String>) {
+    let request_id = next_session_mutation_id(app);
+    let count = session_ids.len();
+    let core_client = app.core_client.clone();
+    let tx = app.tui_cmd_tx.clone();
+
+    spawn_tui_task(tx, "bulk_export", async move {
+        let Some(core_client) = core_client else {
+            return Some(TuiCommand::SessionMutationFinished {
+                request_id,
+                op: SessionMutationOp::BulkExport,
+                affected_ids: session_ids,
+                message: String::new(),
+                reload_after: false,
+                error: Some("Core client not available".to_string()),
+            });
+        };
+        let mut succeeded = 0usize;
+        let mut failed = 0usize;
+        for id in &session_ids {
+            let request = crate::core::new_request(
+                format!("session-export-{}", uuid::Uuid::new_v4()),
+                CoreRequest::SessionExport {
+                    session_id: id.clone(),
+                },
+            );
+            match core_client.request(request).await {
+                Ok(CoreResponse::Json { .. }) => {
+                    tracing::info!("exported session {}", id);
+                    succeeded += 1;
+                }
+                Ok(CoreResponse::Error { code, message }) => {
+                    tracing::warn!(
+                        "failed to export session {} via core ({}): {}",
+                        id,
+                        code,
+                        message
+                    );
+                    failed += 1;
+                }
+                Ok(other) => {
+                    tracing::warn!(
+                        "unexpected core response for session export {}: {:?}",
+                        id,
+                        other
+                    );
+                    failed += 1;
+                }
+                Err(e) => {
+                    tracing::warn!("failed to export session {} via core: {}", id, e);
+                    failed += 1;
+                }
+            }
+        }
+        let (message, error) = if failed == 0 {
+            (format!("{} sessions exported", count), None)
+        } else if succeeded == 0 {
+            (
+                String::new(),
+                Some(format!("Failed to export {} sessions", count)),
+            )
+        } else {
+            (format!("Exported {}/{} sessions", succeeded, count), None)
+        };
+        Some(TuiCommand::SessionMutationFinished {
+            request_id,
+            op: SessionMutationOp::BulkExport,
+            affected_ids: session_ids,
+            message,
+            reload_after: false,
+            error,
+        })
+    });
+}
+
+fn start_rename_session(app: &mut app::App, session_id: String, new_title: String) {
+    let request_id = next_session_mutation_id(app);
+    let core_client = app.core_client.clone();
+    let tx = app.tui_cmd_tx.clone();
+
+    spawn_tui_task(tx, "rename_session", async move {
+        let Some(core_client) = core_client else {
+            return Some(TuiCommand::SessionMutationFinished {
+                request_id,
+                op: SessionMutationOp::Rename,
+                affected_ids: vec![session_id],
+                message: String::new(),
+                reload_after: false,
+                error: Some("Core client not available".to_string()),
+            });
+        };
+        let request = crate::core::new_request(
+            format!("session-rename-{}", uuid::Uuid::new_v4()),
+            CoreRequest::SessionRename {
+                session_id: session_id.clone(),
+                new_title,
+            },
+        );
+        match core_client.request(request).await {
+            Ok(CoreResponse::Session { .. }) | Ok(CoreResponse::Ack) => {
+                Some(TuiCommand::SessionMutationFinished {
+                    request_id,
+                    op: SessionMutationOp::Rename,
+                    affected_ids: vec![session_id],
+                    message: "Session renamed".to_string(),
+                    reload_after: true,
+                    error: None,
+                })
+            }
+            Ok(CoreResponse::Error { message, .. }) => Some(TuiCommand::SessionMutationFinished {
+                request_id,
+                op: SessionMutationOp::Rename,
+                affected_ids: vec![session_id],
+                message: String::new(),
+                reload_after: false,
+                error: Some(format!("Failed to rename: {}", message)),
+            }),
+            Ok(other) => Some(TuiCommand::SessionMutationFinished {
+                request_id,
+                op: SessionMutationOp::Rename,
+                affected_ids: vec![session_id],
+                message: String::new(),
+                reload_after: false,
+                error: Some(format!("Unexpected rename response: {:?}", other)),
+            }),
+            Err(e) => Some(TuiCommand::SessionMutationFinished {
+                request_id,
+                op: SessionMutationOp::Rename,
+                affected_ids: vec![session_id],
+                message: String::new(),
+                reload_after: false,
+                error: Some(format!("Failed to rename: {}", e)),
+            }),
+        }
+    });
+}
+
+fn start_undo_delete(app: &mut app::App, session_id: String) {
+    let request_id = next_session_mutation_id(app);
+    let core_client = app.core_client.clone();
+    let tx = app.tui_cmd_tx.clone();
+
+    spawn_tui_task(tx, "undo_delete", async move {
+        let Some(core_client) = core_client else {
+            return Some(TuiCommand::SessionMutationFinished {
+                request_id,
+                op: SessionMutationOp::UndoDelete,
+                affected_ids: vec![session_id],
+                message: String::new(),
+                reload_after: false,
+                error: Some("Core client not available".to_string()),
+            });
+        };
+        let request = crate::core::new_request(
+            format!("session-restore-{}", uuid::Uuid::new_v4()),
+            CoreRequest::SessionRestore {
+                session_id: session_id.clone(),
+            },
+        );
+        match core_client.request(request).await {
+            Ok(CoreResponse::Session { .. }) | Ok(CoreResponse::Ack) => {
+                Some(TuiCommand::SessionMutationFinished {
+                    request_id,
+                    op: SessionMutationOp::UndoDelete,
+                    affected_ids: vec![session_id],
+                    message: "Session restored successfully".to_string(),
+                    reload_after: true,
+                    error: None,
+                })
+            }
+            Ok(CoreResponse::Error { message, .. }) => Some(TuiCommand::SessionMutationFinished {
+                request_id,
+                op: SessionMutationOp::UndoDelete,
+                affected_ids: vec![session_id],
+                message: String::new(),
+                reload_after: false,
+                error: Some(format!("Failed to restore session: {}", message)),
+            }),
+            Ok(other) => Some(TuiCommand::SessionMutationFinished {
+                request_id,
+                op: SessionMutationOp::UndoDelete,
+                affected_ids: vec![session_id],
+                message: String::new(),
+                reload_after: false,
+                error: Some(format!("Unexpected session restore response: {:?}", other)),
+            }),
+            Err(e) => Some(TuiCommand::SessionMutationFinished {
+                request_id,
+                op: SessionMutationOp::UndoDelete,
+                affected_ids: vec![session_id],
+                message: String::new(),
+                reload_after: false,
+                error: Some(format!("Failed to restore session: {}", e)),
+            }),
+        }
+    });
+}
+
+fn start_task_schedule(app: &mut app::App, interval_secs: u64, message: String) {
+    let core_client = app.core_client.clone();
+    let session_id = app
+        .session_state
+        .session
+        .as_ref()
+        .map(|s| s.id.clone())
+        .unwrap_or_default();
+    let tx = app.tui_cmd_tx.clone();
+
+    spawn_tui_task(tx, "task_schedule", async move {
+        let Some(core_client) = core_client else {
+            return Some(TuiCommand::TaskOperationFinished {
+                op: "schedule".to_string(),
+                task_id: None,
+                error: Some("Core client not available".to_string()),
+            });
+        };
+        let request = crate::core::new_request(
+            format!("task-schedule-{}", uuid::Uuid::new_v4()),
+            CoreRequest::TaskSchedule {
+                session_id,
+                interval_secs,
+                message,
+            },
+        );
+        match core_client.request(request).await {
+            Ok(CoreResponse::Json { data }) => {
+                let task_id = data
+                    .get("task_id")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                Some(TuiCommand::TaskOperationFinished {
+                    op: "schedule".to_string(),
+                    task_id,
+                    error: None,
+                })
+            }
+            Ok(CoreResponse::Error { message, .. }) => Some(TuiCommand::TaskOperationFinished {
+                op: "schedule".to_string(),
+                task_id: None,
+                error: Some(format!("Failed to schedule task: {}", message)),
+            }),
+            Ok(other) => Some(TuiCommand::TaskOperationFinished {
+                op: "schedule".to_string(),
+                task_id: None,
+                error: Some(format!("Unexpected task schedule response: {:?}", other)),
+            }),
+            Err(e) => Some(TuiCommand::TaskOperationFinished {
+                op: "schedule".to_string(),
+                task_id: None,
+                error: Some(format!("Failed to schedule task: {}", e)),
+            }),
+        }
+    });
+}
+
+fn start_worktree_list(app: &mut app::App) {
+    app.dialog_state.worktree_list_in_flight = true;
+    let core_client = app.core_client.clone();
+    let project_dir = app.session_state.project_dir.clone();
+    let tx = app.tui_cmd_tx.clone();
+
+    spawn_tui_task(tx, "worktree_list", async move {
+        let Some(core_client) = core_client else {
+            return Some(TuiCommand::WorktreeListed {
+                worktrees: Vec::new(),
+                error: Some("Core client not available".to_string()),
+            });
+        };
+        let request = crate::core::new_request(
+            format!("worktree-list-{}", uuid::Uuid::new_v4()),
+            CoreRequest::WorktreeList { project_dir },
+        );
+        match core_client.request(request).await {
+            Ok(CoreResponse::Json { data }) => {
+                let trees = data
+                    .get("worktrees")
+                    .and_then(|v| v.as_array())
+                    .cloned()
+                    .unwrap_or_default();
+                let names: Vec<String> = trees
+                    .iter()
+                    .map(|t| {
+                        let path = t.get("path").and_then(|v| v.as_str()).unwrap_or_default();
+                        let branch = t.get("branch").and_then(|v| v.as_str()).unwrap_or_default();
+                        format!("{} ({})", path, branch)
+                    })
+                    .collect();
+                Some(TuiCommand::WorktreeListed {
+                    worktrees: names,
+                    error: None,
+                })
+            }
+            Ok(CoreResponse::Error { message, .. }) => Some(TuiCommand::WorktreeListed {
+                worktrees: Vec::new(),
+                error: Some(format!("Failed to list worktrees: {}", message)),
+            }),
+            Ok(other) => Some(TuiCommand::WorktreeListed {
+                worktrees: Vec::new(),
+                error: Some(format!("Unexpected worktree response: {:?}", other)),
+            }),
+            Err(e) => Some(TuiCommand::WorktreeListed {
+                worktrees: Vec::new(),
+                error: Some(format!("Failed to list worktrees: {}", e)),
+            }),
+        }
+    });
+}
+
+fn apply_worktree_listed(app: &mut app::App, worktrees: Vec<String>, error: Option<String>) {
+    app.dialog_state.worktree_list_in_flight = false;
+    if let Some(err) = error {
+        app.messages_state.toasts.warning(&err);
+        return;
+    }
+    if worktrees.is_empty() {
+        app.messages_state.toasts.info("No worktrees found");
+    } else {
+        app.messages_state.toasts.info(&worktrees.join(", "));
+    }
+}
+
+fn start_create_from_template(
+    app: &mut app::App,
+    _key: String,
+    template: crate::config::schema::SessionTemplate,
+) {
+    app.dialog_state.template_create_in_flight = true;
+    let core_client = app.core_client.clone();
+    let project_dir = app.session_state.project_dir.clone();
+    let template_name = template.name.clone();
+    let agent = template.agent.clone();
+    let model = template.model.clone();
+    let tx = app.tui_cmd_tx.clone();
+
+    spawn_tui_task(tx, "create_from_template", async move {
+        let Some(core_client) = core_client else {
+            return Some(TuiCommand::TemplateSessionCreated {
+                session: None,
+                agent,
+                model,
+                template_name,
+                error: Some("Core client not available".to_string()),
+            });
+        };
+        let request = crate::core::new_request(
+            format!("session-create-template-{}", uuid::Uuid::new_v4()),
+            CoreRequest::SessionCreateFromTemplate {
+                template: crate::protocol_conversions::session_template_to_dto(template),
+                project_id: project_dir.clone(),
+                directory: project_dir,
+            },
+        );
+        match core_client.request(request).await {
+            Ok(CoreResponse::Session { session }) => Some(TuiCommand::TemplateSessionCreated {
+                session: Some(session),
+                agent,
+                model,
+                template_name,
+                error: None,
+            }),
+            Ok(CoreResponse::Error { message, .. }) => Some(TuiCommand::TemplateSessionCreated {
+                session: None,
+                agent,
+                model,
+                template_name,
+                error: Some(message),
+            }),
+            Ok(other) => Some(TuiCommand::TemplateSessionCreated {
+                session: None,
+                agent,
+                model,
+                template_name,
+                error: Some(format!("Unexpected response: {:?}", other)),
+            }),
+            Err(e) => Some(TuiCommand::TemplateSessionCreated {
+                session: None,
+                agent,
+                model,
+                template_name,
+                error: Some(e.to_string()),
+            }),
+        }
+    });
+}
+
+fn apply_template_session_created(
+    app: &mut app::App,
+    session: Option<crate::protocol::dto::Session>,
+    agent: Option<String>,
+    model: Option<String>,
+    template_name: String,
+    error: Option<String>,
+) {
+    app.dialog_state.template_create_in_flight = false;
+    if let Some(err) = error {
+        app.messages_state
+            .toasts
+            .error(&format!("Failed to create session from template: {}", err));
+        return;
+    }
+    let Some(session) = session else {
+        return;
+    };
+    app.session_state.session = Some(crate::protocol_conversions::dto_to_session(session.clone()));
+    app.ui_state
+        .routes
+        .navigate_to(crate::tui::Route::Session(session.id.clone()));
+
+    if let Some(agent_name) = agent {
+        if let Some(idx) = app
+            .agent_state
+            .agents
+            .iter()
+            .position(|a| a.name == agent_name)
+        {
+            app.agent_state.current_agent = idx;
+        }
+    }
+    if let Some(model_name) = model {
+        if let Some(idx) = app.agent_state.models.iter().position(|m| m == &model_name) {
+            app.agent_state.current_model = model_name.clone();
+            app.agent_state.model_idx = idx;
+        }
+    }
+
+    if let Some(ref tx) = app.tui_cmd_tx {
+        let session_id = session.id.clone();
+        let _ = tx.try_send(app::TuiCommand::LoadSessionMessages { session_id });
+    }
+    app.messages_state.toasts.info(&format!(
+        "Session '{}' created from template",
+        template_name
+    ));
+}
+
+fn start_send_notification(
+    app: &mut app::App,
+    notification_type: crate::tui::components::notification::NotificationType,
+    body: String,
+) {
+    let notification_mgr = app.notification_manager.clone();
+    let tx = app.tui_cmd_tx.clone();
+
+    spawn_tui_task(tx, "send_notification", async move {
+        let Some(mgr) = notification_mgr else {
+            return Some(TuiCommand::NotificationSent {
+                error: Some("Notification manager not available".to_string()),
+            });
+        };
+        match mgr.send(notification_type, &body).await {
+            Ok(()) => Some(TuiCommand::NotificationSent { error: None }),
+            Err(e) => Some(TuiCommand::NotificationSent {
+                error: Some(format!("Failed to send notification: {}", e)),
+            }),
+        }
+    });
+}
+
+fn apply_notification_sent(_app: &mut app::App, error: Option<String>) {
+    if let Some(err) = error {
+        tracing::warn!("{}", err);
+    }
+}
+
+fn start_share_session(app: &mut app::App, session_id: String) {
+    let core_client = app.core_client.clone();
+    let tx = app.tui_cmd_tx.clone();
+
+    spawn_tui_task(tx, "share_session", async move {
+        let Some(core_client) = core_client else {
+            return Some(TuiCommand::ShareSessionFinished {
+                session_id,
+                session: None,
+                error: Some("Core client not available".to_string()),
+            });
+        };
+        let request = crate::core::new_request(
+            format!("session-share-{}", uuid::Uuid::new_v4()),
+            CoreRequest::SessionShare {
+                session_id: session_id.clone(),
+            },
+        );
+        match core_client.request(request).await {
+            Ok(CoreResponse::Session { session }) => Some(TuiCommand::ShareSessionFinished {
+                session_id,
+                session: Some(session),
+                error: None,
+            }),
+            Ok(CoreResponse::Error { message, .. }) => Some(TuiCommand::ShareSessionFinished {
+                session_id,
+                session: None,
+                error: Some(format!("Failed to share: {}", message)),
+            }),
+            Ok(other) => Some(TuiCommand::ShareSessionFinished {
+                session_id,
+                session: None,
+                error: Some(format!("Unexpected share response: {:?}", other)),
+            }),
+            Err(e) => Some(TuiCommand::ShareSessionFinished {
+                session_id,
+                session: None,
+                error: Some(format!("Failed to share: {}", e)),
+            }),
+        }
+    });
+}
+
+fn apply_share_session_finished(
+    app: &mut app::App,
+    session_id: String,
+    session: Option<crate::protocol::dto::Session>,
+    error: Option<String>,
+) {
+    if let Some(err) = error {
+        app.messages_state.toasts.error(&err);
+        return;
+    }
+    if let Some(shared) = session {
+        app.session_state.session =
+            Some(crate::protocol_conversions::dto_to_session(shared.clone()));
+        let url = shared.share_url.unwrap_or_default();
+        let mut dialog = crate::tui::components::dialogs::share::ShareDialog::new(Arc::clone(
+            &app.ui_state.theme,
+        ));
+        dialog.set_theme(&app.ui_state.theme);
+        dialog.set_url(url);
+        app.dialog_state.share_dialog = Some(dialog);
+        app.open_dialog(Dialog::Share);
+    }
+    let _ = session_id;
+}
+
+fn start_unshare_session(app: &mut app::App, session_id: String) {
+    let core_client = app.core_client.clone();
+    let tx = app.tui_cmd_tx.clone();
+
+    spawn_tui_task(tx, "unshare_session", async move {
+        let Some(core_client) = core_client else {
+            return Some(TuiCommand::UnshareSessionFinished {
+                session_id,
+                session: None,
+                error: Some("Core client not available".to_string()),
+            });
+        };
+        let request = crate::core::new_request(
+            format!("session-unshare-{}", uuid::Uuid::new_v4()),
+            CoreRequest::SessionUnshare {
+                session_id: session_id.clone(),
+            },
+        );
+        match core_client.request(request).await {
+            Ok(CoreResponse::Session { session }) => Some(TuiCommand::UnshareSessionFinished {
+                session_id,
+                session: Some(session),
+                error: None,
+            }),
+            Ok(CoreResponse::Error { message, .. }) => Some(TuiCommand::UnshareSessionFinished {
+                session_id,
+                session: None,
+                error: Some(format!("Failed to unshare: {}", message)),
+            }),
+            Ok(other) => Some(TuiCommand::UnshareSessionFinished {
+                session_id,
+                session: None,
+                error: Some(format!("Unexpected unshare response: {:?}", other)),
+            }),
+            Err(e) => Some(TuiCommand::UnshareSessionFinished {
+                session_id,
+                session: None,
+                error: Some(format!("Failed to unshare: {}", e)),
+            }),
+        }
+    });
+}
+
+fn apply_unshare_session_finished(
+    app: &mut app::App,
+    _session_id: String,
+    session: Option<crate::protocol::dto::Session>,
+    error: Option<String>,
+) {
+    if let Some(err) = error {
+        app.messages_state.toasts.error(&err);
+        return;
+    }
+    if let Some(dto) = session {
+        app.session_state.session = Some(crate::protocol_conversions::dto_to_session(dto));
+        app.messages_state.toasts.info("Session unshared");
+    }
+}
+
+fn start_export_session(app: &mut app::App, session_id: String) {
+    let core_client = app.core_client.clone();
+    let tx = app.tui_cmd_tx.clone();
+
+    spawn_tui_task(tx, "export_session", async move {
+        let Some(core_client) = core_client else {
+            return Some(TuiCommand::ExportSessionFinished {
+                session_id,
+                json: None,
+                error: Some("Core client not available".to_string()),
+            });
+        };
+        let request = crate::core::new_request(
+            format!("session-export-{}", uuid::Uuid::new_v4()),
+            CoreRequest::SessionExport {
+                session_id: session_id.clone(),
+            },
+        );
+        match core_client.request(request).await {
+            Ok(CoreResponse::Json { data: export }) => {
+                let json = serde_json::to_string_pretty(&export).unwrap_or_default();
+                Some(TuiCommand::ExportSessionFinished {
+                    session_id,
+                    json: Some(json),
+                    error: None,
+                })
+            }
+            Ok(CoreResponse::Error { message, .. }) => Some(TuiCommand::ExportSessionFinished {
+                session_id,
+                json: None,
+                error: Some(format!("Failed to export: {}", message)),
+            }),
+            Ok(other) => Some(TuiCommand::ExportSessionFinished {
+                session_id,
+                json: None,
+                error: Some(format!("Unexpected export response: {:?}", other)),
+            }),
+            Err(e) => Some(TuiCommand::ExportSessionFinished {
+                session_id,
+                json: None,
+                error: Some(format!("Failed to export: {}", e)),
+            }),
+        }
+    });
+}
+
+fn apply_export_session_finished(
+    app: &mut app::App,
+    _session_id: String,
+    json: Option<String>,
+    error: Option<String>,
+) {
+    if let Some(err) = error {
+        app.messages_state.toasts.error(&err);
+        return;
+    }
+    if let Some(json) = json {
+        match crate::util::clipboard::copy_to_clipboard(&json) {
+            Ok(_) => {
+                app.messages_state
+                    .toasts
+                    .info("Session exported to clipboard");
+            }
+            Err(e) => {
+                app.messages_state
+                    .toasts
+                    .error(&format!("Clipboard error: {}", e));
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+#[allow(dead_code)]
 async fn handle_delete_session(app: &mut app::App, session_id: String) {
     if let Some(core_client) = app.core_client.clone() {
         let request = crate::core::new_request(
@@ -431,6 +1664,8 @@ async fn handle_delete_session(app: &mut app::App, session_id: String) {
     reload_sessions(app).await;
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 async fn handle_archive_session(app: &mut app::App, session_id: String, unarchive: bool) {
     if let Some(core_client) = app.core_client.clone() {
         let request = crate::core::new_request(
@@ -464,6 +1699,8 @@ async fn handle_archive_session(app: &mut app::App, session_id: String, unarchiv
     reload_sessions(app).await;
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 async fn handle_fork_session(app: &mut app::App, session_id: String) {
     if let Some(core_client) = app.core_client.clone() {
         let request = crate::core::new_request(
@@ -491,6 +1728,8 @@ async fn handle_fork_session(app: &mut app::App, session_id: String) {
     reload_sessions(app).await;
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 async fn handle_bulk_delete(app: &mut app::App, session_ids: Vec<String>) {
     let count = session_ids.len();
     if let Some(core_client) = app.core_client.clone() {
@@ -537,6 +1776,8 @@ async fn handle_bulk_delete(app: &mut app::App, session_ids: Vec<String>) {
     reload_sessions(app).await;
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 async fn handle_bulk_archive(app: &mut app::App, session_ids: Vec<String>, unarchive: bool) {
     let count = session_ids.len();
     if let Some(core_client) = app.core_client.clone() {
@@ -582,6 +1823,8 @@ async fn handle_bulk_archive(app: &mut app::App, session_ids: Vec<String>, unarc
     reload_sessions(app).await;
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 async fn handle_bulk_export(app: &mut app::App, session_ids: Vec<String>) {
     let count = session_ids.len();
     if let Some(core_client) = app.core_client.clone() {
@@ -618,6 +1861,9 @@ async fn handle_bulk_export(app: &mut app::App, session_ids: Vec<String>) {
         .info(&format!("{} sessions exported", count));
 }
 
+#[cfg(test)]
+#[cfg(test)]
+#[allow(dead_code)]
 async fn handle_share_session(app: &mut app::App, session_id: String) {
     if let Some(core_client) = app.core_client.clone() {
         let request = crate::core::new_request(
@@ -658,6 +1904,9 @@ async fn handle_share_session(app: &mut app::App, session_id: String) {
     }
 }
 
+#[cfg(test)]
+#[cfg(test)]
+#[allow(dead_code)]
 async fn handle_unshare_session(app: &mut app::App, session_id: String) {
     if let Some(core_client) = app.core_client.clone() {
         let request = crate::core::new_request(
@@ -691,6 +1940,9 @@ async fn handle_unshare_session(app: &mut app::App, session_id: String) {
     }
 }
 
+#[cfg(test)]
+#[cfg(test)]
+#[allow(dead_code)]
 async fn handle_export_session(app: &mut app::App, session_id: String) {
     if let Some(core_client) = app.core_client.clone() {
         let request = crate::core::new_request(
@@ -734,6 +1986,8 @@ async fn handle_export_session(app: &mut app::App, session_id: String) {
     }
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 async fn handle_rename_session(app: &mut app::App, session_id: String, new_title: String) {
     if let Some(core_client) = app.core_client.clone() {
         let request = crate::core::new_request(
@@ -1452,6 +2706,7 @@ fn apply_import_confirmed(
     }
 }
 
+#[allow(dead_code)]
 async fn handle_create_from_template(
     app: &mut app::App,
     _key: String,
@@ -1853,6 +3108,8 @@ fn apply_session_messages_loaded(
     }
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 async fn handle_undo_delete(app: &mut app::App, session_id: String) {
     if let Some(core_client) = app.core_client.clone() {
         let request = crate::core::new_request(
@@ -1886,6 +3143,7 @@ async fn handle_undo_delete(app: &mut app::App, session_id: String) {
     app.undo_until = None;
 }
 
+#[allow(dead_code)]
 async fn handle_list_tasks(app: &mut app::App) {
     if let Some(core_client) = app.core_client.clone() {
         let request = crate::core::new_request(
@@ -1944,6 +3202,7 @@ async fn handle_list_tasks(app: &mut app::App) {
     }
 }
 
+#[allow(dead_code)]
 async fn handle_delete_task(app: &mut app::App, id: String) {
     if let Some(core_client) = app.core_client.clone() {
         let parsed_id = id.parse::<u64>().ok();
@@ -2576,6 +3835,285 @@ async fn handle_goal_from_file(
     });
 }
 
+fn start_goal_show(app: &mut app::App, session_id: String) {
+    let core_client = app.core_client.clone();
+    let tx = app.tui_cmd_tx.clone();
+
+    spawn_tui_task(tx, "goal_show", async move {
+        let Some(core_client) = core_client else {
+            return Some(TuiCommand::GoalOperationFinished {
+                session_id,
+                op: "show".to_string(),
+                response: None,
+                error: Some("Core client not available".to_string()),
+            });
+        };
+        let response = core_client
+            .request(crate::core::new_request(
+                format!("goal-show-{}", uuid::Uuid::new_v4()),
+                CoreRequest::GoalShow {
+                    session_id: session_id.clone(),
+                },
+            ))
+            .await;
+        match response {
+            Ok(resp) => Some(TuiCommand::GoalOperationFinished {
+                session_id,
+                op: "show".to_string(),
+                response: Some(resp),
+                error: None,
+            }),
+            Err(e) => Some(TuiCommand::GoalOperationFinished {
+                session_id,
+                op: "show".to_string(),
+                response: None,
+                error: Some(format!("Goal show error: {}", e)),
+            }),
+        }
+    });
+}
+
+fn apply_goal_operation_finished(
+    app: &mut app::App,
+    session_id: String,
+    op: String,
+    response: Option<CoreResponse>,
+    error: Option<String>,
+) {
+    if let Some(err) = error {
+        app.messages_state.toasts.warning(&err);
+        return;
+    }
+    let Some(response) = response else { return };
+    match op.as_str() {
+        "show" => {
+            if let CoreResponse::Json { data } = response {
+                if data.get("active").and_then(|v| v.as_bool()) == Some(false) {
+                    app.messages_state.toasts.info("No active goal");
+                } else if let Some(rendered) = data.get("rendered").and_then(|v| v.as_str()) {
+                    app.messages_state.toasts.info(rendered);
+                }
+            }
+        }
+        "checkpoint" => {
+            if let CoreResponse::Json { data } = response {
+                if let Some(path) = data.get("checkpoint_path").and_then(|v| v.as_str()) {
+                    tracing::info!("Goal checkpoint: {}", path);
+                }
+            }
+        }
+        "budget-raise" => {
+            if let CoreResponse::Json { data } = response {
+                let status = data.get("status").and_then(|v| v.as_str()).unwrap_or("ok");
+                let label = data.get("label").and_then(|v| v.as_str()).unwrap_or("?");
+                let value = data.get("value").and_then(|v| v.as_i64()).unwrap_or(0);
+                app.messages_state.toasts.info(&format!(
+                    "Goal budget: {} = {} (status: {})",
+                    label, value, status
+                ));
+            }
+        }
+        _ => {}
+    }
+    let _ = session_id;
+}
+
+fn start_goal_checkpoint(app: &mut app::App, session_id: String, project_id: String) {
+    let core_client = app.core_client.clone();
+    let tx = app.tui_cmd_tx.clone();
+
+    spawn_tui_task(tx, "goal_checkpoint", async move {
+        let Some(core_client) = core_client else {
+            return Some(TuiCommand::GoalOperationFinished {
+                session_id,
+                op: "checkpoint".to_string(),
+                response: None,
+                error: Some("Core client not available".to_string()),
+            });
+        };
+        let response = core_client
+            .request(crate::core::new_request(
+                format!("goal-checkpoint-{}", uuid::Uuid::new_v4()),
+                CoreRequest::GoalCheckpoint {
+                    session_id: session_id.clone(),
+                    project_id,
+                },
+            ))
+            .await;
+        match response {
+            Ok(resp) => Some(TuiCommand::GoalOperationFinished {
+                session_id,
+                op: "checkpoint".to_string(),
+                response: Some(resp),
+                error: None,
+            }),
+            Err(e) => Some(TuiCommand::GoalOperationFinished {
+                session_id,
+                op: "checkpoint".to_string(),
+                response: None,
+                error: Some(format!("Goal checkpoint error: {}", e)),
+            }),
+        }
+    });
+}
+
+fn start_goal_budget_raise(
+    app: &mut app::App,
+    session_id: String,
+    label: String,
+    value: i64,
+    max_turns: Option<i64>,
+    max_model_tokens: Option<i64>,
+    max_tool_calls: Option<i64>,
+    max_wallclock_secs: Option<i64>,
+) {
+    let core_client = app.core_client.clone();
+    let tx = app.tui_cmd_tx.clone();
+
+    spawn_tui_task(tx, "goal_budget_raise", async move {
+        let Some(core_client) = core_client else {
+            return Some(TuiCommand::GoalOperationFinished {
+                session_id,
+                op: "budget-raise".to_string(),
+                response: None,
+                error: Some("Core client not available".to_string()),
+            });
+        };
+        let response = core_client
+            .request(crate::core::new_request(
+                format!("goal-budget-raise-{}", uuid::Uuid::new_v4()),
+                CoreRequest::GoalSetBudget {
+                    session_id: session_id.clone(),
+                    max_turns,
+                    max_model_tokens,
+                    max_tool_calls,
+                    max_wallclock_secs,
+                },
+            ))
+            .await;
+        match response {
+            Ok(CoreResponse::Json { data }) => {
+                // Enrich the data with label and value for the apply function.
+                let mut enriched = data;
+                enriched["label"] = serde_json::Value::String(label);
+                enriched["value"] = serde_json::json!(value);
+                Some(TuiCommand::GoalOperationFinished {
+                    session_id,
+                    op: "budget-raise".to_string(),
+                    response: Some(CoreResponse::Json { data: enriched }),
+                    error: None,
+                })
+            }
+            Ok(CoreResponse::Error { message, .. }) => Some(TuiCommand::GoalOperationFinished {
+                session_id,
+                op: "budget-raise".to_string(),
+                response: None,
+                error: Some(format!("Budget update failed: {}", message)),
+            }),
+            Ok(other) => Some(TuiCommand::GoalOperationFinished {
+                session_id,
+                op: "budget-raise".to_string(),
+                response: None,
+                error: Some(format!("Unexpected budget response: {:?}", other)),
+            }),
+            Err(e) => Some(TuiCommand::GoalOperationFinished {
+                session_id,
+                op: "budget-raise".to_string(),
+                response: None,
+                error: Some(format!("Budget update error: {}", e)),
+            }),
+        }
+    });
+}
+
+fn start_refresh_session_state(app: &mut app::App, session_id: String) {
+    let core_client = app.core_client.clone();
+    let tx = app.tui_cmd_tx.clone();
+
+    spawn_tui_task(tx, "refresh_session_state", async move {
+        let Some(core_client) = core_client else {
+            return Some(TuiCommand::SessionStateRefreshed {
+                todos: Vec::new(),
+                active_goal: None,
+                error: Some("Core client not available".to_string()),
+            });
+        };
+        // Hydrate the todo list.
+        let todos = match core_client
+            .request(crate::core::new_request(
+                format!("todo-list-{}", uuid::Uuid::new_v4()),
+                CoreRequest::TodoList {
+                    session_id: session_id.clone(),
+                },
+            ))
+            .await
+        {
+            Ok(CoreResponse::Json { data }) => {
+                if let Some(items) = data.get("items").and_then(|v| v.as_array()) {
+                    items
+                        .iter()
+                        .filter_map(|v| {
+                            Some(crate::tui::app::TodoEntry {
+                                content: v.get("content")?.as_str()?.to_string(),
+                                status: v.get("status")?.as_str()?.to_string(),
+                                priority: v.get("priority")?.as_str()?.to_string(),
+                            })
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                }
+            }
+            _ => Vec::new(),
+        };
+        // Hydrate the active goal.
+        let active_goal = match core_client
+            .request(crate::core::new_request(
+                format!("active-goal-{}", uuid::Uuid::new_v4()),
+                CoreRequest::ActiveGoalLoad {
+                    session_id: session_id.clone(),
+                },
+            ))
+            .await
+        {
+            Ok(CoreResponse::Json { data }) => {
+                if data.get("active").and_then(|v| v.as_bool()) == Some(true) {
+                    if let Some(goal_val) = data.get("goal") {
+                        serde_json::from_value::<crate::bus::events::GoalSnapshot>(goal_val.clone())
+                            .ok()
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
+        Some(TuiCommand::SessionStateRefreshed {
+            todos,
+            active_goal,
+            error: None,
+        })
+    });
+}
+
+fn apply_session_state_refreshed(
+    app: &mut app::App,
+    todos: Vec<crate::tui::app::TodoEntry>,
+    active_goal: Option<crate::bus::events::GoalSnapshot>,
+    error: Option<String>,
+) {
+    if let Some(err) = error {
+        tracing::warn!("Session state refresh failed: {}", err);
+        return;
+    }
+    app.set_todos(todos);
+    app.set_active_goal(active_goal);
+}
+
+#[cfg(test)]
+#[allow(dead_code)]
 async fn handle_goal_show(app: &mut app::App, session_id: String) {
     let Some(core_client) = app.core_client.clone() else {
         app.messages_state.toasts.warning("Core client unavailable");
@@ -2635,6 +4173,8 @@ async fn handle_goal_simple(app: &mut app::App, request: CoreRequest, label: &st
     });
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 async fn handle_refresh_session_state(app: &mut app::App, session_id: String) {
     let Some(core_client) = app.core_client.clone() else {
         return;
@@ -2687,6 +4227,8 @@ async fn handle_refresh_session_state(app: &mut app::App, session_id: String) {
     }
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 async fn handle_goal_checkpoint(app: &mut app::App, session_id: String, project_id: String) {
     let Some(core_client) = app.core_client.clone() else {
         app.messages_state.toasts.warning("Core client unavailable");
@@ -2723,11 +4265,6 @@ async fn handle_goal_checkpoint(app: &mut app::App, session_id: String, project_
 ///   * `raise <axis> <n>` — bump a single axis of the active goal's
 ///     budget. Valid axes: `tokens`, `turns`, `tool-calls`, `wallclock`.
 async fn handle_goal_budget(app: &mut app::App, session_id: String, subcommand: String) {
-    let Some(core_client) = app.core_client.clone() else {
-        app.messages_state.toasts.warning("Core client unavailable");
-        return;
-    };
-
     let trimmed = subcommand.trim();
     let mut parts = trimmed.splitn(3, ' ');
     let head = parts.next().unwrap_or("").to_string();
@@ -2793,38 +4330,16 @@ async fn handle_goal_budget(app: &mut app::App, session_id: String, subcommand: 
                 return;
             }
         }
-        let response = core_client
-            .request(crate::core::new_request(
-                format!("goal-budget-raise-{}", uuid::Uuid::new_v4()),
-                CoreRequest::GoalSetBudget {
-                    session_id: session_id.clone(),
-                    max_turns,
-                    max_model_tokens,
-                    max_tool_calls,
-                    max_wallclock_secs,
-                },
-            ))
-            .await;
-        match response {
-            Ok(CoreResponse::Json { data }) => {
-                let status = data.get("status").and_then(|v| v.as_str()).unwrap_or("ok");
-                app.messages_state.toasts.info(&format!(
-                    "Goal budget: {} = {} (status: {})",
-                    label, value, status
-                ));
-            }
-            Ok(CoreResponse::Error { message, .. }) => {
-                app.messages_state
-                    .toasts
-                    .warning(&format!("Budget update failed: {}", message));
-            }
-            Err(e) => {
-                app.messages_state
-                    .toasts
-                    .warning(&format!("Budget update error: {}", e));
-            }
-            _ => {}
-        }
+        start_goal_budget_raise(
+            app,
+            session_id,
+            label,
+            value,
+            max_turns,
+            max_model_tokens,
+            max_tool_calls,
+            max_wallclock_secs,
+        );
         return;
     }
 
@@ -2833,6 +4348,7 @@ async fn handle_goal_budget(app: &mut app::App, session_id: String, subcommand: 
         .warning("Usage: /goal budget [show | raise <axis> <n>]");
 }
 
+#[allow(dead_code)]
 async fn handle_task_schedule(app: &mut app::App, interval_secs: u64, message: String) {
     let Some(core_client) = app.core_client.clone() else {
         app.messages_state.toasts.warning("Core client unavailable");
@@ -2879,6 +4395,7 @@ async fn handle_task_schedule(app: &mut app::App, interval_secs: u64, message: S
     }
 }
 
+#[allow(dead_code)]
 async fn handle_worktree_list(app: &mut app::App) {
     let Some(core_client) = app.core_client.clone() else {
         app.messages_state.toasts.warning("Core client unavailable");
@@ -2951,6 +4468,7 @@ async fn handle_open_diff_dialog(
     app.open_dialog(Dialog::Diff);
 }
 
+#[allow(dead_code)]
 async fn handle_send_notification(
     app: &mut app::App,
     notification_type: crate::tui::components::notification::NotificationType,
@@ -3242,6 +4760,12 @@ fn handle_shell_event(app: &mut app::App, event: crate::shell::ShellEvent) {
             status,
             elapsed,
         } => {
+            // Do not overwrite Killed status from a late exited event
+            if let Some(entry) = app.shell_store.get(*id) {
+                if entry.status == crate::shell::types::ShellStatus::Killed {
+                    return;
+                }
+            }
             app.shell_store.mark_exited(*id, *status, *elapsed);
             let elapsed_ms = elapsed.as_millis() as u64;
             let exit_code = *status;
@@ -3271,6 +4795,7 @@ fn handle_shell_event(app: &mut app::App, event: crate::shell::ShellEvent) {
                     let digest = crate::shell::ShellDigest::build(
                         &command,
                         &entry.cwd,
+                        entry.status,
                         exit_code,
                         *elapsed,
                         &entry.stdout,
@@ -3350,7 +4875,13 @@ fn handle_shell_include(app: &mut app::App, id: u64, mode: String, _question: Op
             }
             ShellPromotionMode::StdoutOnly => {
                 let digest = crate::shell::ShellDigest::build(
-                    &command, &cwd, exit_code, elapsed, stdout, stderr,
+                    &command,
+                    &cwd,
+                    entry.status,
+                    exit_code,
+                    elapsed,
+                    stdout,
+                    stderr,
                 );
                 if digest.has_failures() {
                     format!(
@@ -3375,7 +4906,13 @@ fn handle_shell_include(app: &mut app::App, id: u64, mode: String, _question: Op
             }
             ShellPromotionMode::Summary => {
                 let digest = crate::shell::ShellDigest::build(
-                    &command, &cwd, exit_code, elapsed, stdout, stderr,
+                    &command,
+                    &cwd,
+                    entry.status,
+                    exit_code,
+                    elapsed,
+                    stdout,
+                    stderr,
                 );
                 format!(
                     "Shell output (summary) for `{}`:\n{}",
@@ -3385,7 +4922,13 @@ fn handle_shell_include(app: &mut app::App, id: u64, mode: String, _question: Op
             }
             ShellPromotionMode::FailureDigest => {
                 let digest = crate::shell::ShellDigest::build(
-                    &command, &cwd, exit_code, elapsed, stdout, stderr,
+                    &command,
+                    &cwd,
+                    entry.status,
+                    exit_code,
+                    elapsed,
+                    stdout,
+                    stderr,
                 );
                 if digest.has_failures() {
                     format!(
@@ -3404,7 +4947,13 @@ fn handle_shell_include(app: &mut app::App, id: u64, mode: String, _question: Op
             }
             ShellPromotionMode::Full => {
                 let digest = crate::shell::ShellDigest::build(
-                    &command, &cwd, exit_code, elapsed, stdout, stderr,
+                    &command,
+                    &cwd,
+                    entry.status,
+                    exit_code,
+                    elapsed,
+                    stdout,
+                    stderr,
                 );
                 if digest.has_failures() {
                     format!("Shell output for `{}`:\n{}", command, digest.render())
@@ -3444,6 +4993,7 @@ fn handle_shell_ask(app: &mut app::App, id: u64, question: String) {
         let digest = crate::shell::ShellDigest::build(
             &command,
             &cwd,
+            entry.status,
             exit_code,
             elapsed,
             &entry.stdout,
@@ -3492,8 +5042,12 @@ fn handle_shell_kill(app: &mut app::App, id: u64) {
     if let Some(handle) = app.shell_handles.remove(&id) {
         handle.kill();
         let cmd_id = crate::shell::types::ShellCommandId(id);
-        app.shell_store
-            .mark_exited(cmd_id, None, std::time::Duration::default());
+        let elapsed = app
+            .shell_store
+            .get(cmd_id)
+            .map(|e| e.started_at.elapsed().unwrap_or(std::time::Duration::ZERO))
+            .unwrap_or(std::time::Duration::ZERO);
+        app.shell_store.mark_killed(cmd_id, elapsed);
         app.messages_state
             .toasts
             .info(&format!("Killed shell command {}", id));
@@ -3549,6 +5103,17 @@ fn handle_shell_list(app: &mut app::App) {
                     }
                 }
                 crate::shell::types::ShellStatus::FailedToStart => "failed".to_string(),
+                crate::shell::types::ShellStatus::Killed => {
+                    let elapsed_str = e
+                        .elapsed
+                        .map(|d| format!("{:.1}s", d.as_secs_f64()))
+                        .unwrap_or_default();
+                    if elapsed_str.is_empty() {
+                        "killed".to_string()
+                    } else {
+                        format!("killed {}", elapsed_str)
+                    }
+                }
             };
             format!("[{}] {} $ {}", e.id.0, status_str, e.command)
         })
@@ -3647,6 +5212,7 @@ fn format_shell_status(status: &crate::shell::types::ShellStatus) -> &'static st
         crate::shell::types::ShellStatus::Exited => "exited",
         crate::shell::types::ShellStatus::TimedOut => "timed out",
         crate::shell::types::ShellStatus::FailedToStart => "failed to start",
+        crate::shell::types::ShellStatus::Killed => "killed",
     }
 }
 
@@ -4832,37 +6398,37 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
             Some(cmd) = cmd_rx.recv() => {
                 match cmd {
                     TuiCommand::DeleteSession { session_id } => {
-                        handle_delete_session(app, session_id).await;
+                        start_delete_session(app, session_id);
                     }
                     TuiCommand::ArchiveSession { session_id, unarchive } => {
-                        handle_archive_session(app, session_id, unarchive).await;
+                        start_archive_session(app, session_id, unarchive);
                     }
                     TuiCommand::ForkSession { session_id } => {
-                        handle_fork_session(app, session_id).await;
+                        start_fork_session(app, session_id);
                     }
                     TuiCommand::ShareSession { session_id } => {
-                        handle_share_session(app, session_id).await;
+                        start_share_session(app, session_id);
                     }
                     TuiCommand::UnshareSession { session_id } => {
-                        handle_unshare_session(app, session_id).await;
+                        start_unshare_session(app, session_id);
                     }
                     TuiCommand::ExportSession { session_id } => {
-                        handle_export_session(app, session_id).await;
+                        start_export_session(app, session_id);
                     }
                     TuiCommand::RenameSession { session_id, new_title } => {
-                        handle_rename_session(app, session_id, new_title).await;
+                        start_rename_session(app, session_id, new_title);
                     }
                     TuiCommand::BulkDelete { session_ids } => {
-                        handle_bulk_delete(app, session_ids).await;
+                        start_bulk_delete(app, session_ids);
                     }
                     TuiCommand::BulkArchive {
                         session_ids,
                         unarchive,
                     } => {
-                        handle_bulk_archive(app, session_ids, unarchive).await;
+                        start_bulk_archive(app, session_ids, unarchive);
                     }
                     TuiCommand::BulkExport { session_ids } => {
-                        handle_bulk_export(app, session_ids).await;
+                        start_bulk_export(app, session_ids);
                     }
                     TuiCommand::ReloadSessions => {
                         start_reload_sessions(app);
@@ -4877,38 +6443,38 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                         start_confirm_import(app, source);
                     }
                     TuiCommand::CreateFromTemplate { key, template } => {
-                        handle_create_from_template(app, key, template).await;
+                        start_create_from_template(app, key, template);
                     }
                     TuiCommand::LoadSessionMessages { session_id } => {
                         start_load_session_messages(app, session_id);
                     }
                     TuiCommand::RefreshSessionState { session_id } => {
-                        handle_refresh_session_state(app, session_id).await;
+                        start_refresh_session_state(app, session_id);
                     }
                     TuiCommand::SpawnSubagent { agent_name, prompt } => {
                         handle_spawn_subagent(app, agent_name, prompt).await;
                     }
                     TuiCommand::UndoDelete { session_id } => {
-                        handle_undo_delete(app, session_id).await;
+                        start_undo_delete(app, session_id);
                     }
                     TuiCommand::ListTasks => {
-                        handle_list_tasks(app).await;
+                        start_list_tasks(app);
                     }
                     TuiCommand::UpdateModels(models) => {
                         app.set_models(models);
                         app.messages_state.toasts.add(Toast::success("Models list updated"));
                     }
                     TuiCommand::DeleteTask { id } => {
-                        handle_delete_task(app, id).await;
+                        start_delete_task(app, id);
                     }
                     TuiCommand::TaskSchedule {
                         interval_secs,
                         message,
                     } => {
-                        handle_task_schedule(app, interval_secs, message).await;
+                        start_task_schedule(app, interval_secs, message);
                     }
                     TuiCommand::WorktreeList => {
-                        handle_worktree_list(app).await;
+                        start_worktree_list(app);
                     }
                     TuiCommand::MemorySummary => {
                         start_memory_summary(app);
@@ -4932,7 +6498,7 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                         notification_type,
                         body,
                     } => {
-                        handle_send_notification(app, notification_type, body).await;
+                        start_send_notification(app, notification_type, body);
                     }
                     TuiCommand::GoalSet {
                         session_id,
@@ -4949,7 +6515,7 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                         handle_goal_from_file(app, session_id, project_id, path).await;
                     }
                     TuiCommand::GoalShow { session_id } => {
-                        handle_goal_show(app, session_id).await;
+                        start_goal_show(app, session_id);
                     }
                     TuiCommand::GoalPause { session_id } => {
                         handle_goal_simple(app, CoreRequest::GoalPause { session_id }, "pause").await;
@@ -4967,7 +6533,7 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                         session_id,
                         project_id,
                     } => {
-                        handle_goal_checkpoint(app, session_id, project_id).await;
+                        start_goal_checkpoint(app, session_id, project_id);
                     }
                     TuiCommand::GoalBudget {
                         session_id,
@@ -5027,6 +6593,54 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                     }
                     TuiCommand::DoctorResult { summary, is_error } => {
                         apply_doctor_result(app, summary, is_error);
+                    }
+                    TuiCommand::ShareSessionFinished { session_id, session, error } => {
+                        apply_share_session_finished(app, session_id, session, error);
+                    }
+                    TuiCommand::UnshareSessionFinished { session_id, session, error } => {
+                        apply_unshare_session_finished(app, session_id, session, error);
+                    }
+                    TuiCommand::ExportSessionFinished { session_id, json, error } => {
+                        apply_export_session_finished(app, session_id, json, error);
+                    }
+                    TuiCommand::SessionMutationFinished {
+                        request_id,
+                        op,
+                        affected_ids,
+                        message,
+                        reload_after,
+                        error,
+                    } => {
+                        apply_session_mutation_finished(
+                            app, request_id, op, affected_ids, message, reload_after, error,
+                        );
+                    }
+                    TuiCommand::GoalOperationFinished { session_id, op, response, error } => {
+                        apply_goal_operation_finished(app, session_id, op, response, error);
+                    }
+                    TuiCommand::SessionStateRefreshed { todos, active_goal, error } => {
+                        apply_session_state_refreshed(app, todos, active_goal, error);
+                    }
+                    TuiCommand::TasksListed { tasks, error } => {
+                        apply_tasks_listed(app, tasks, error);
+                    }
+                    TuiCommand::TaskOperationFinished { op, task_id, error } => {
+                        apply_task_operation_finished(app, op, task_id, error);
+                    }
+                    TuiCommand::WorktreeListed { worktrees, error } => {
+                        apply_worktree_listed(app, worktrees, error);
+                    }
+                    TuiCommand::TemplateSessionCreated {
+                        session,
+                        agent,
+                        model,
+                        template_name,
+                        error,
+                    } => {
+                        apply_template_session_created(app, session, agent, model, template_name, error);
+                    }
+                    TuiCommand::NotificationSent { error } => {
+                        apply_notification_sent(app, error);
                     }
                     TuiCommand::RunHumanShell {
                         command,
@@ -5475,8 +7089,8 @@ mod shell_dispatch_tests {
         let entry = app.shell_store.get(ShellCommandId(1)).unwrap();
         assert_eq!(
             entry.status,
-            crate::shell::types::ShellStatus::Exited,
-            "killed entry should be marked as exited"
+            crate::shell::types::ShellStatus::Killed,
+            "killed entry should be marked as killed"
         );
         assert_eq!(
             entry.exit_code, None,

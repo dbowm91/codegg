@@ -28,11 +28,21 @@ const MAX_SLOW_COMMAND_RECORDS: usize = 8;
 /// Bounded ring-buffer capacity for slow-render records.
 const MAX_SLOW_RENDER_RECORDS: usize = 4;
 
+/// Bounded ring-buffer capacity for component render panic records.
+const MAX_COMPONENT_RENDER_PANIC_RECORDS: usize = 8;
+
 /// Record of a single slow render frame.
 #[derive(Debug, Clone)]
 pub struct SlowRenderRecord {
     pub elapsed_ms: u128,
     pub streaming_active: bool,
+    pub timestamp: std::time::Instant,
+}
+
+/// Record of a component-level render panic.
+#[derive(Debug, Clone)]
+pub struct ComponentRenderPanicRecord {
+    pub component: &'static str,
     pub timestamp: std::time::Instant,
 }
 
@@ -60,6 +70,10 @@ pub struct TuiDiagnostics {
     pub last_render_error: Option<String>,
     /// Number of render panics.
     pub render_panic_count: u64,
+    /// Number of component-level render panics (guarded surfaces).
+    pub component_render_panic_count: u64,
+    /// Ring buffer of recent component render panic records.
+    pub recent_component_render_panics: VecDeque<ComponentRenderPanicRecord>,
 }
 
 impl TuiDiagnostics {
@@ -103,6 +117,19 @@ impl TuiDiagnostics {
         self.dropped_bus_events += n;
     }
 
+    /// Record a component-level render panic.
+    pub fn record_component_render_panic(&mut self, component: &'static str) {
+        self.component_render_panic_count += 1;
+        if self.recent_component_render_panics.len() >= MAX_COMPONENT_RENDER_PANIC_RECORDS {
+            self.recent_component_render_panics.pop_front();
+        }
+        self.recent_component_render_panics
+            .push_back(ComponentRenderPanicRecord {
+                component,
+                timestamp: std::time::Instant::now(),
+            });
+    }
+
     /// Format a human-readable summary for the /tui-stats command.
     pub fn summary(&self) -> String {
         let mut lines = Vec::new();
@@ -111,6 +138,10 @@ impl TuiDiagnostics {
         lines.push(format!("Slow commands:   {}", self.slow_command_count));
         lines.push(format!("Dropped events:  {}", self.dropped_bus_events));
         lines.push(format!("Render panics:   {}", self.render_panic_count));
+        lines.push(format!(
+            "Component panics: {}",
+            self.component_render_panic_count
+        ));
         if let Some(ref err) = self.last_render_error {
             lines.push(format!("Last render err: {}", err));
         }
@@ -125,6 +156,13 @@ impl TuiDiagnostics {
                 "Last slow cmd:   '{}' took {}ms",
                 cmd.name,
                 cmd.elapsed.as_millis()
+            ));
+        }
+        if let Some(panic_rec) = self.recent_component_render_panics.back() {
+            lines.push(format!(
+                "Last comp panic: '{}' {}ms ago",
+                panic_rec.component,
+                panic_rec.timestamp.elapsed().as_millis()
             ));
         }
         lines.join("\n")
@@ -199,13 +237,50 @@ mod tests {
         d.last_render_error = Some("test error".to_string());
         d.record_slow_loop(Duration::from_millis(300));
         d.record_slow_command("test_cmd", Duration::from_millis(250));
+        d.record_component_render_panic("messages");
+        d.record_component_render_panic("sidebar");
         let s = d.summary();
         assert!(s.contains("Slow loops:      1"));
         assert!(s.contains("Slow renders:    2"));
         assert!(s.contains("Slow commands:   4"));
         assert!(s.contains("Dropped events:  4"));
         assert!(s.contains("Render panics:   5"));
+        assert!(s.contains("Component panics: 2"));
         assert!(s.contains("Last render err: test error"));
         assert!(s.contains("Last slow cmd:   'test_cmd'"));
+        assert!(s.contains("Last comp panic: 'sidebar'"));
+    }
+
+    #[test]
+    fn record_component_render_panic_increments_and_stores() {
+        let mut d = TuiDiagnostics::default();
+        d.record_component_render_panic("sidebar");
+        assert_eq!(d.component_render_panic_count, 1);
+        assert_eq!(d.recent_component_render_panics.len(), 1);
+        assert_eq!(d.recent_component_render_panics[0].component, "sidebar");
+    }
+
+    #[test]
+    fn record_component_render_panic_caps_ring_buffer() {
+        let mut d = TuiDiagnostics::default();
+        for i in 0..12 {
+            d.record_component_render_panic(match i % 3 {
+                0 => "messages",
+                1 => "sidebar",
+                _ => "dialog",
+            });
+        }
+        assert_eq!(d.component_render_panic_count, 12);
+        assert_eq!(
+            d.recent_component_render_panics.len(),
+            MAX_COMPONENT_RENDER_PANIC_RECORDS
+        );
+    }
+
+    #[test]
+    fn default_component_panic_fields_are_zero() {
+        let d = TuiDiagnostics::default();
+        assert_eq!(d.component_render_panic_count, 0);
+        assert!(d.recent_component_render_panics.is_empty());
     }
 }

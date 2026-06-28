@@ -65,18 +65,9 @@ use std::time::Instant;
 use tokio::sync::{broadcast, mpsc, RwLock};
 
 #[cfg(feature = "debug-logging")]
-use std::fs::OpenOptions;
-
-#[cfg(feature = "debug-logging")]
 macro_rules! debug_log {
     ($($arg:tt)*) => {
-        let _ = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open("codegg_debug.log")
-            .and_then(|mut file| {
-                std::io::Write::write_all(&mut file, format!("[TUI-DEBUG] {}\n", format!($($arg)*)).as_bytes())
-            });
+        tracing::debug!(target: "codegg::tui::app", "{}", format!($($arg)*));
     };
 }
 
@@ -349,8 +340,89 @@ pub enum TuiCommand {
         generation: u64,
         result: crate::tui::file_diff::FileDiffStatsResult,
     },
+    /// Completion: share operation finished.
+    ShareSessionFinished {
+        session_id: String,
+        session: Option<crate::protocol::dto::Session>,
+        error: Option<String>,
+    },
+    /// Completion: unshare operation finished.
+    UnshareSessionFinished {
+        session_id: String,
+        session: Option<crate::protocol::dto::Session>,
+        error: Option<String>,
+    },
+    /// Completion: export operation finished.
+    ExportSessionFinished {
+        session_id: String,
+        json: Option<String>,
+        error: Option<String>,
+    },
+    /// Completion: a goal operation finished (show, checkpoint, budget).
+    GoalOperationFinished {
+        session_id: String,
+        op: String,
+        response: Option<CoreResponse>,
+        error: Option<String>,
+    },
+    /// Completion: session state (todos + active goal) refreshed.
+    SessionStateRefreshed {
+        todos: Vec<TodoEntry>,
+        active_goal: Option<crate::bus::events::GoalSnapshot>,
+        error: Option<String>,
+    },
+    /// Completion: background task list has been fetched from core.
+    TasksListed {
+        tasks: Vec<serde_json::Value>,
+        error: Option<String>,
+    },
+    /// Completion: a task operation (delete, schedule) has finished.
+    TaskOperationFinished {
+        op: String,
+        task_id: Option<String>,
+        error: Option<String>,
+    },
+    /// Completion: worktree list has been fetched from core.
+    WorktreeListed {
+        worktrees: Vec<String>,
+        error: Option<String>,
+    },
+    /// Completion: a session has been created from a template.
+    TemplateSessionCreated {
+        session: Option<crate::protocol::dto::Session>,
+        agent: Option<String>,
+        model: Option<String>,
+        template_name: String,
+        error: Option<String>,
+    },
+    /// Completion: a desktop notification has been sent.
+    NotificationSent {
+        error: Option<String>,
+    },
     /// Request to display TUI diagnostics stats.
     TuiStats,
+    /// Completion: a session mutation (delete, archive, fork, rename, etc.) has finished.
+    SessionMutationFinished {
+        request_id: u64,
+        op: SessionMutationOp,
+        affected_ids: Vec<String>,
+        message: String,
+        reload_after: bool,
+        error: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SessionMutationOp {
+    Delete,
+    Archive,
+    Unarchive,
+    Fork,
+    BulkDelete,
+    BulkArchive,
+    BulkExport,
+    Rename,
+    UndoDelete,
 }
 
 /// Main application state for the TUI.
@@ -720,6 +792,11 @@ impl App {
                 import_preview_request_id: 0,
                 research_request_id: 0,
                 session_reload_in_flight: false,
+                task_list_in_flight: false,
+                task_delete_in_flight: false,
+                worktree_list_in_flight: false,
+                template_create_in_flight: false,
+                session_mutation_request_id: 0,
             },
             agent_state: AgentState {
                 agents,
@@ -936,6 +1013,11 @@ impl App {
                 import_preview_request_id: 0,
                 research_request_id: 0,
                 session_reload_in_flight: false,
+                task_list_in_flight: false,
+                task_delete_in_flight: false,
+                worktree_list_in_flight: false,
+                template_create_in_flight: false,
+                session_mutation_request_id: 0,
             },
             agent_state: AgentState {
                 agents,
@@ -1481,6 +1563,9 @@ impl App {
             let msg = Self::extract_panic_message(&err);
             tracing::error!("Messages render panic: {msg}");
             self.ui_state.last_render_error = Some(msg);
+            self.ui_state
+                .diagnostics
+                .record_component_render_panic("messages");
             self.render_component_fallback(frame, session_chunks[1], "Messages render error");
         }
 
@@ -1498,6 +1583,9 @@ impl App {
             if let Err(err) = sidebar_result {
                 let msg = Self::extract_panic_message(&err);
                 tracing::error!("Sidebar render panic: {msg}");
+                self.ui_state
+                    .diagnostics
+                    .record_component_render_panic("sidebar");
                 self.render_component_fallback(frame, main_chunks[1], "Sidebar unavailable");
             }
         } else {
@@ -1516,6 +1604,9 @@ impl App {
             if let Err(err) = dialog_result {
                 let msg = Self::extract_panic_message(&err);
                 tracing::error!("Dialog render panic: {msg}");
+                self.ui_state
+                    .diagnostics
+                    .record_component_render_panic("dialog");
                 self.ui_state.dialog = Dialog::None;
             }
         } else {
@@ -1543,6 +1634,9 @@ impl App {
             if let Err(err) = compl_result {
                 let msg = Self::extract_panic_message(&err);
                 tracing::error!("Completion overlay render panic: {msg}");
+                self.ui_state
+                    .diagnostics
+                    .record_component_render_panic("completions");
                 self.prompt_state.show_completions = false;
             }
         } else {
@@ -1559,6 +1653,9 @@ impl App {
             if let Err(err) = tl_result {
                 let msg = Self::extract_panic_message(&err);
                 tracing::error!("Timeline render panic: {msg}");
+                self.ui_state
+                    .diagnostics
+                    .record_component_render_panic("timeline");
                 self.ui_state.timeline_visible = false;
             }
         }
@@ -5384,6 +5481,7 @@ impl App {
                                         crate::shell::types::ShellStatus::Exited => "done",
                                         crate::shell::types::ShellStatus::TimedOut => "timeout",
                                         crate::shell::types::ShellStatus::FailedToStart => "failed",
+                                        crate::shell::types::ShellStatus::Killed => "killed",
                                     }
                                 )
                             })

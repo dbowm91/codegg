@@ -68,4 +68,15 @@ pub struct DialogState {
     /// True while a session reload is in flight. The completion handler
     /// clears this on both success and failure.
     pub session_reload_in_flight: bool,
+    /// True while a task list request is in flight.
+    pub task_list_in_flight: bool,
+    /// True while a task delete request is in flight.
+    pub task_delete_in_flight: bool,
+    /// True while a worktree list request is in flight.
+    pub worktree_list_in_flight: bool,
+    /// True while a template session creation is in flight.
+    pub template_create_in_flight: bool,
+    /// Generation counter for session mutation requests. Stale completions
+    /// with a mismatched id are silently ignored.
+    pub session_mutation_request_id: u64,
 }

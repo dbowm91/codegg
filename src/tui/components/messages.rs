@@ -2111,6 +2111,7 @@ impl MessagesWidget {
                         ),
                         "exited" => ("✓", Style::default().fg(self.theme.success)),
                         "timed_out" => ("✗", Style::default().fg(self.theme.error)),
+                        "killed" => ("✗", Style::default().fg(self.theme.error)),
                         _ => ("○", Style::default().fg(self.theme.muted)),
                     };
                     let mut summary_parts: Vec<String> = Vec::new();

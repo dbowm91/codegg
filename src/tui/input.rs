@@ -53,16 +53,9 @@ use serde::Deserialize;
 use std::collections::HashMap;
 
 #[cfg(feature = "debug-logging")]
-use std::fs::OpenOptions;
-
-#[cfg(feature = "debug-logging")]
-use std::io::Write;
-#[cfg(feature = "debug-logging")]
 macro_rules! debug_log {
     ($($arg:tt)*) => {
-        if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("codegg_debug.log") {
-            let _ = writeln!(file, "[INPUT-DEBUG] {}", format!($($arg)*));
-        }
+        tracing::debug!(target: "codegg::tui::input", "{}", format!($($arg)*));
     };
 }
 

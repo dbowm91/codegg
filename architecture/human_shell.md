@@ -111,6 +111,7 @@ Bounded in-memory store using `VecDeque<ShellOutputEntry>`.
 - `mark_exited(id, status, elapsed)` — Sets status to `Exited`, stores `exit_code: Option<i32>`, records elapsed time
 - `mark_timeout(id, elapsed)` — Sets status to `TimedOut`
 - `mark_failed_to_start(id)` — Sets status to `FailedToStart`
+- `mark_killed(id, elapsed)` — Sets status to `Killed` with elapsed time. Late `Exited` events no longer overwrite `Killed` status.
 
 ### Storage Limits
 
@@ -137,7 +138,7 @@ Each command's stdout/stderr is stored as a `BoundedOutput`:
 
 Each stored entry includes:
 - `id`, `command`, `cwd`, `started_at`, `finished_at`
-- `status`: `ShellStatus` (Running, Exited, TimedOut, FailedToStart)
+- `status`: `ShellStatus` (Running, Exited, TimedOut, FailedToStart, Killed)
 - `exit_code: Option<i32>` — process exit code (None if killed or not yet exited)
 - `stdout`, `stderr`: `BoundedOutput`
 - `elapsed: Option<Duration>`, `promoted: bool`, `capture_policy`
@@ -154,15 +155,16 @@ Blocked commands are refused before execution. Warned commands show a confirmati
 
 ## Digest Extraction
 
-`ShellDigest::build()` extracts structured failure information from stdout/stderr:
+`ShellDigest::build(status, ...)` extracts structured failure information from stdout/stderr:
 
 - Rust compiler errors (`error[E\d+]`)
 - Rust compiler warnings (`warning:`)
 - Test failures (`test result: FAILED`, `failures:` blocks)
 - Panics (`thread '...' panicked at '...'`)
 - Generic non-zero exit codes
+- Generates failures for `Killed`, `TimedOut`, and `FailedToStart` statuses
 
-`ShellDigest::build_from_entry()` is a convenience constructor that takes a `&ShellOutputEntry` directly, extracting command, cwd, exit_code, elapsed, stdout, and stderr from the entry.
+`ShellDigest::build_from_entry()` is a convenience constructor that takes a `&ShellOutputEntry` directly, extracting command, cwd, exit_code, elapsed, stdout, stderr, and status from the entry.
 
 Used by the TUI to render concise failure summaries in the `ShellCell`.
 
@@ -173,7 +175,7 @@ Used by the TUI to render concise failure summaries in the `ShellCell`.
 Renders shell output as a collapsible cell with:
 - id, command, cwd
 - stdout/stderr preview (head text)
-- status (running/done/timeout/failed)
+- status (running/done/timeout/failed/killed)
 - elapsed time, exit code
 - truncation flag, promoted flag
 - expanded/collapsed state
@@ -191,12 +193,13 @@ Status labels vary by state:
 - `done` — exited with no recorded exit code
 - `timeout X.Xs` — killed by timeout
 - `failed` — failed to start
+- `killed X.Xs` — aborted by user via `/shell-kill`
 
 Example: `[1] done exit=0 1.2s $ cargo test`
 
 ### `/shell-kill` Behavior
 
-`/shell-kill <id>` aborts a running command and marks the store entry as exited with `exit_code: None` and zero elapsed time.
+`/shell-kill <id>` aborts a running command and marks the store entry as `Killed` (not `Exited`) with proper elapsed time calculation. Late `Exited` events from the runtime no longer overwrite the `Killed` status.
 
 ### TuiCommand Variants
 

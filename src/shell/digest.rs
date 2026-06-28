@@ -4,6 +4,7 @@ use std::time::Duration;
 use regex::Regex;
 
 use super::store::{BoundedOutput, ShellOutputEntry};
+use super::types::ShellStatus;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ShellFailureKind {
@@ -33,6 +34,7 @@ pub struct TruncationReport {
 pub struct ShellDigest {
     pub command: String,
     pub cwd: PathBuf,
+    pub status: ShellStatus,
     pub exit_code: Option<i32>,
     pub elapsed: Duration,
     pub stdout_summary: Option<String>,
@@ -45,6 +47,7 @@ impl ShellDigest {
     pub fn build(
         command: &str,
         cwd: &Path,
+        status: ShellStatus,
         exit_code: Option<i32>,
         elapsed: Duration,
         stdout: &BoundedOutput,
@@ -61,12 +64,37 @@ impl ShellDigest {
         extract_panics(&stderr_text, &mut failures);
         extract_panics(&stdout_text, &mut failures);
 
-        if exit_code.is_some_and(|c| c != 0) && failures.is_empty() {
-            failures.push(ShellFailure {
-                kind: ShellFailureKind::GenericNonZeroExit,
-                message: format!("process exited with code {}", exit_code.unwrap()),
-                location: None,
-            });
+        match status {
+            ShellStatus::Killed => {
+                failures.push(ShellFailure {
+                    kind: ShellFailureKind::GenericNonZeroExit,
+                    message: "process killed by user".to_string(),
+                    location: None,
+                });
+            }
+            ShellStatus::TimedOut => {
+                failures.push(ShellFailure {
+                    kind: ShellFailureKind::GenericNonZeroExit,
+                    message: "process timed out".to_string(),
+                    location: None,
+                });
+            }
+            ShellStatus::FailedToStart => {
+                failures.push(ShellFailure {
+                    kind: ShellFailureKind::GenericNonZeroExit,
+                    message: "process failed to start".to_string(),
+                    location: None,
+                });
+            }
+            ShellStatus::Running | ShellStatus::Exited => {
+                if exit_code.is_some_and(|c| c != 0) && failures.is_empty() {
+                    failures.push(ShellFailure {
+                        kind: ShellFailureKind::GenericNonZeroExit,
+                        message: format!("process exited with code {}", exit_code.unwrap()),
+                        location: None,
+                    });
+                }
+            }
         }
 
         let stdout_summary = if stdout_text.trim().is_empty() {
@@ -83,6 +111,7 @@ impl ShellDigest {
         ShellDigest {
             command: command.to_string(),
             cwd: cwd.to_path_buf(),
+            status,
             exit_code,
             elapsed,
             stdout_summary,
@@ -101,6 +130,7 @@ impl ShellDigest {
         Self::build(
             &entry.command,
             &entry.cwd,
+            entry.status,
             entry.exit_code,
             entry.elapsed.unwrap_or_default(),
             &entry.stdout,
@@ -116,6 +146,16 @@ impl ShellDigest {
         let mut out = String::new();
         out.push_str(&format!("Command: {}\n", self.command));
         out.push_str(&format!("Cwd: {}\n", self.cwd.display()));
+        out.push_str(&format!(
+            "Status: {}\n",
+            match self.status {
+                ShellStatus::Running => "running",
+                ShellStatus::Exited => "exited",
+                ShellStatus::TimedOut => "timed out",
+                ShellStatus::FailedToStart => "failed to start",
+                ShellStatus::Killed => "killed",
+            }
+        ));
         if let Some(code) = self.exit_code {
             out.push_str(&format!("Exit code: {}\n", code));
         }
@@ -262,6 +302,7 @@ mod tests {
         let digest = ShellDigest::build(
             "cargo test",
             &PathBuf::from("/tmp"),
+            ShellStatus::Exited,
             Some(0),
             Duration::from_secs(2),
             &stdout,
@@ -276,6 +317,7 @@ mod tests {
         let digest = ShellDigest::build(
             "cargo build",
             &PathBuf::from("/tmp"),
+            ShellStatus::Exited,
             Some(1),
             Duration::from_secs(1),
             &empty_output(),
@@ -295,6 +337,7 @@ mod tests {
         let digest = ShellDigest::build(
             "cargo check",
             &PathBuf::from("/tmp"),
+            ShellStatus::Exited,
             Some(1),
             Duration::from_secs(1),
             &empty_output(),
@@ -315,6 +358,7 @@ mod tests {
         let digest = ShellDigest::build(
             "cargo check",
             &PathBuf::from("/tmp"),
+            ShellStatus::Exited,
             Some(0),
             Duration::from_secs(1),
             &empty_output(),
@@ -337,6 +381,7 @@ mod tests {
         let digest = ShellDigest::build(
             "cargo test",
             &PathBuf::from("/tmp"),
+            ShellStatus::Exited,
             Some(101),
             Duration::from_secs(5),
             &empty_output(),
@@ -359,6 +404,7 @@ mod tests {
         let digest = ShellDigest::build(
             "cargo run",
             &PathBuf::from("/tmp"),
+            ShellStatus::Exited,
             Some(101),
             Duration::from_secs(1),
             &empty_output(),
@@ -379,6 +425,7 @@ mod tests {
         let digest = ShellDigest::build(
             "cargo check",
             &PathBuf::from("/tmp"),
+            ShellStatus::Exited,
             Some(1),
             Duration::from_secs(1),
             &empty_output(),
@@ -395,6 +442,7 @@ mod tests {
         let digest = ShellDigest::build(
             "cmd",
             &PathBuf::from("/tmp"),
+            ShellStatus::Exited,
             Some(0),
             Duration::from_secs(1),
             &empty_output(),
@@ -410,6 +458,7 @@ mod tests {
         let digest = ShellDigest::build(
             "cmd",
             &PathBuf::from("/tmp"),
+            ShellStatus::Exited,
             Some(0),
             Duration::from_secs(1),
             &stdout,
@@ -426,6 +475,7 @@ mod tests {
         let digest = ShellDigest::build(
             "cmd",
             &PathBuf::from("/tmp"),
+            ShellStatus::Exited,
             Some(0),
             Duration::from_secs(1),
             &stdout,
@@ -479,5 +529,75 @@ mod tests {
         assert_eq!(from_entry.exit_code, Some(0));
         assert_eq!(from_entry.elapsed, Duration::from_secs(1));
         assert!(from_entry.stdout_summary.is_some());
+    }
+
+    #[test]
+    fn digest_killed_has_failure() {
+        let digest = ShellDigest::build(
+            "sleep 100",
+            &PathBuf::from("/tmp"),
+            ShellStatus::Killed,
+            None,
+            Duration::from_secs(5),
+            &empty_output(),
+            &empty_output(),
+        );
+        assert!(digest.has_failures());
+        assert!(digest
+            .extracted_failures
+            .iter()
+            .any(|f| f.message.contains("killed by user")));
+        assert_eq!(digest.status, ShellStatus::Killed);
+    }
+
+    #[test]
+    fn digest_timed_out_has_failure() {
+        let digest = ShellDigest::build(
+            "slow cmd",
+            &PathBuf::from("/tmp"),
+            ShellStatus::TimedOut,
+            None,
+            Duration::from_secs(300),
+            &empty_output(),
+            &empty_output(),
+        );
+        assert!(digest.has_failures());
+        assert!(digest
+            .extracted_failures
+            .iter()
+            .any(|f| f.message.contains("timed out")));
+    }
+
+    #[test]
+    fn digest_failed_to_start_has_failure() {
+        let digest = ShellDigest::build(
+            "nonexistent",
+            &PathBuf::from("/tmp"),
+            ShellStatus::FailedToStart,
+            None,
+            Duration::ZERO,
+            &empty_output(),
+            &empty_output(),
+        );
+        assert!(digest.has_failures());
+        assert!(digest
+            .extracted_failures
+            .iter()
+            .any(|f| f.message.contains("failed to start")));
+    }
+
+    #[test]
+    fn digest_killed_render_shows_status() {
+        let digest = ShellDigest::build(
+            "cmd",
+            &PathBuf::from("/tmp"),
+            ShellStatus::Killed,
+            None,
+            Duration::from_secs(3),
+            &empty_output(),
+            &empty_output(),
+        );
+        let rendered = digest.render();
+        assert!(rendered.contains("Status: killed"));
     }
 }

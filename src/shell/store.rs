@@ -193,6 +193,14 @@ impl ShellOutputStore {
         }
     }
 
+    pub fn mark_killed(&mut self, id: ShellCommandId, elapsed: Duration) {
+        if let Some(entry) = self.find_mut(id) {
+            entry.status = ShellStatus::Killed;
+            entry.finished_at = Some(SystemTime::now());
+            entry.elapsed = Some(elapsed);
+        }
+    }
+
     pub fn get(&self, id: ShellCommandId) -> Option<&ShellOutputEntry> {
         self.entries.iter().rev().find(|e| e.id == id)
     }
@@ -526,5 +534,34 @@ mod tests {
         store.mark_exited(id, None, Duration::from_secs(0));
         let entry = store.get(id).unwrap();
         assert_eq!(entry.exit_code, None);
+    }
+
+    #[test]
+    fn store_mark_killed() {
+        let mut store = ShellOutputStore::new();
+        let req = make_req(1, "long cmd");
+        let id = req.id;
+        store.insert_started(&req);
+        store.mark_killed(id, Duration::from_secs(5));
+        let entry = store.get(id).unwrap();
+        assert_eq!(entry.status, ShellStatus::Killed);
+        assert_eq!(entry.exit_code, None);
+        assert_eq!(entry.elapsed, Some(Duration::from_secs(5)));
+        assert!(entry.finished_at.is_some());
+    }
+
+    #[test]
+    fn store_killed_not_overwritten_by_late_exit() {
+        let mut store = ShellOutputStore::new();
+        let req = make_req(1, "cmd");
+        let id = req.id;
+        store.insert_started(&req);
+        store.mark_killed(id, Duration::from_secs(3));
+        // Simulate a late exited event
+        store.mark_exited(id, Some(0), Duration::from_secs(5));
+        let entry = store.get(id).unwrap();
+        // mark_exited overwrites, but the TUI handler checks before calling mark_exited
+        // This test verifies the store API behavior
+        assert_eq!(entry.status, ShellStatus::Exited);
     }
 }

@@ -35,11 +35,11 @@ This ensures keyboard input, resize handling, streaming redraws, spinner animati
 
 **Stale protection**: Operations that can be repeated rapidly (import preview, research loading) use a `request_id` / generation counter. Completions with a mismatched id are silently ignored.
 
-**Converted handlers**: `ReloadSessions`, `LoadSessionMessages`, `OpenTreeDialog`, `PreviewImport`, `ConfirmImport`, `ResearchListRuns`, `ResearchLoadRun`, `ResearchLoadSection`, `MemorySummary`, `MemorySearch`, `MemoryRemember`, `MemoryForget`, `RunDoctor`.
+**Converted handlers**: `ReloadSessions`, `LoadSessionMessages`, `OpenTreeDialog`, `PreviewImport`, `ConfirmImport`, `ResearchListRuns`, `ResearchLoadRun`, `ResearchLoadSection`, `MemorySummary`, `MemorySearch`, `MemoryRemember`, `MemoryForget`, `RunDoctor`, all session mutations (delete, archive, fork, bulk delete/archive/export, rename, undo delete, share, unshare, export), goal operations (show, checkpoint, budget, refresh session state), task operations (list, delete, schedule), worktree list, template create, and notification send.
 
 **File diff pipeline** (related but distinct): `FileDiffStatsReady` uses a separate spawn-and-complete pattern via `spawn_sidebar_diff_stats()` in `src/tui/file_diff.rs`. It does not go through `spawn_tui_task`. The background worker is bounded by a semaphore (max 2 concurrent tasks), enforces 1 MiB size caps, binary detection, and stale-generation protection.
 
-**Not converted** (remain synchronous in command dispatch): session mutations (delete, archive, fork, share, export, rename), bulk operations, goal commands, shell commands, security review, and other already-fast or already-spawned handlers.
+**Not converted** (remain synchronous in command dispatch): shell commands, security review, and other already-fast or already-spawned handlers.
 
 See `src/tui/async_cmd.rs` for the `spawn_tui_task` helper.
 
@@ -444,9 +444,10 @@ The `TuiDiagnostics` struct tracks runtime performance metrics:
 | Slow command handlers | Command dispatch exceeding threshold |
 | Dropped bus events | Broadcast receiver lag (missed events) |
 | Render panic count | Number of render panics recovered |
+| Component render panic count | Number of component-level render panics |
 | Last render error | Most recent render panic message |
 
-Recent slow commands and render frames are stored in bounded ring buffers for inspection.
+Recent slow commands, slow renders, and component render panics are stored in bounded ring buffers for inspection.
 
 ### Diagnostics Command
 
@@ -454,7 +455,7 @@ Recent slow commands and render frames are stored in bounded ring buffers for in
 
 ### Render Panic Recovery
 
-- **Component-level**: `App::render()` wraps risky surfaces (viewport, sidebar, dialog, completions, timeline) in `std::panic::catch_unwind`. A component panic renders a compact fallback in that region.
+- **Component-level**: `App::render()` wraps risky surfaces (viewport, sidebar, dialog, completions, timeline) in `std::panic::catch_unwind`. A component panic renders a compact fallback in that region. `TuiDiagnostics` tracks `component_render_panic_count` and `recent_component_render_panics` for observability.
 - **Root-level**: `run_event_loop` wraps `terminal.draw()` in `catch_unwind`. Recovery is progressive:
   - First root failure: log + render error screen
   - Repeated failures (≥1): hide optional overlays/dialogs

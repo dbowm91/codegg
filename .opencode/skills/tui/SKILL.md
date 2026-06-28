@@ -867,8 +867,10 @@ Log with `tracing::info!`, `tracing::debug!`, `tracing::warn!`, etc. The tracing
 
 The old `debug_log!` macro that wrote to `codegg_debug.log` is **no longer unconditional**. The unconditional version in `src/tui/mod.rs` was removed. The macro now exists only behind the `debug-logging` feature in two files:
 
-- `src/tui/app/mod.rs` — app-level debug logging
-- `src/tui/input.rs` — input handling debug logging
+- `src/tui/app/mod.rs` — app-level debug logging (now uses `tracing::debug!` internally)
+- `src/tui/input.rs` — input handling debug logging (now uses `tracing::debug!` internally)
+
+The dead `debug_log!` macro in `src/tui/components/dialogs/agent.rs` was removed entirely.
 
 Enable with: `cargo run --features debug-logging`
 
@@ -883,10 +885,12 @@ pub struct TuiDiagnostics {
     pub slow_command_count: u64,        // command handlers > 250 ms
     pub dropped_bus_events: u64,        // broadcast receiver lag
     pub render_panic_count: u64,        // recoverable render panics
+    pub component_render_panic_count: u64,  // component-level render panics
     pub last_render_error: Option<String>,
     pub last_slow_loop: Option<SlowLoopRecord>,
     pub recent_slow_commands: VecDeque<SlowCommandRecord>,  // ring buffer, max 8
     pub recent_slow_renders: VecDeque<SlowRenderRecord>,    // ring buffer, max 4
+    pub recent_component_render_panics: VecDeque<ComponentRenderPanicRecord>,  // ring buffer, max 8
 }
 ```
 
@@ -1037,6 +1041,8 @@ pub struct TerminalGuard {
 - **Dialog**: closes only that dialog
 - **Completions**: hides completions
 - **Timeline**: hides timeline
+
+Component-level panics are tracked in `TuiDiagnostics::component_render_panic_count` and `recent_component_render_panics`.
 
 Root render panic recovery in `run_event_loop` is progressive:
 - First failure: log + render error screen

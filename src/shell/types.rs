@@ -98,6 +98,7 @@ pub enum ShellStatus {
     Exited,
     TimedOut,
     FailedToStart,
+    Killed,
 }
 
 pub const DEFAULT_TIMEOUT_SECS: u64 = 300;

@@ -14,26 +14,6 @@ use super::super::component::{Component, DialogType};
 use super::super::scroll::CenteredScroll;
 use crate::tui::app::TuiMsg;
 
-#[allow(unused_macros)]
-#[cfg(feature = "debug-logging")]
-macro_rules! debug_log {
-    ($($arg:tt)*) => {
-        let _ = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open("codegg_debug.log")
-            .and_then(|mut file| {
-                std::io::Write::write_all(&mut file, format!($($arg)*).as_bytes())
-            });
-    };
-}
-
-#[allow(unused_macros)]
-#[cfg(not(feature = "debug-logging"))]
-macro_rules! debug_log {
-    ($($arg:tt)*) => {};
-}
-
 pub struct AgentDialog {
     pub theme: Arc<Theme>,
     pub agents: Vec<Agent>,
