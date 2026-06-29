@@ -551,6 +551,16 @@ fn render_all_dialog_variants_small_and_normal() {
         Dialog::Review,
         Dialog::Context,
         Dialog::Connect,
+        Dialog::Template,
+        Dialog::Share,
+        Dialog::Import,
+        Dialog::Question,
+        Dialog::Permission,
+        Dialog::Diff,
+        Dialog::ResearchBrowser,
+        Dialog::SecurityReview,
+        Dialog::SourcePreview,
+        Dialog::ShellShow,
     ];
     for dialog in &dialogs {
         for &(w, h) in &[(60, 20), (100, 32)] {
@@ -1128,5 +1138,488 @@ fn render_agent_dialog() {
     assert!(
         !buffer_contains(&buf, "Rendering Error"),
         "unexpected render error with agent dialog"
+    );
+}
+
+// ===========================================================================
+// 21. Panic injection mechanism
+// ===========================================================================
+
+#[test]
+fn panic_injection_messages_increments_diagnostics_and_shows_fallback() {
+    let mut app = app_with_messages();
+    app.render_panic_injection.messages = true;
+    let initial = app.ui_state.diagnostics.component_render_panic_count;
+    let buf = assert_render_ok(&mut app, 100, 32);
+    assert_eq!(
+        app.ui_state.diagnostics.component_render_panic_count,
+        initial + 1,
+        "messages panic injection should increment component_render_panic_count"
+    );
+    assert!(
+        buffer_contains(&buf, "Messages render error"),
+        "expected messages fallback text in buffer"
+    );
+}
+
+#[test]
+fn panic_injection_messages_root_panic_count_unchanged() {
+    let mut app = app_with_messages();
+    app.render_panic_injection.messages = true;
+    let initial_root = app.ui_state.render_panic_count;
+    assert_render_ok(&mut app, 100, 32);
+    assert_eq!(
+        app.ui_state.render_panic_count, initial_root,
+        "component panic should NOT increment root render_panic_count"
+    );
+}
+
+#[test]
+fn panic_injection_sidebar_increments_diagnostics_and_shows_fallback() {
+    let mut app = app_with_sidebar();
+    app.render_panic_injection.sidebar = true;
+    let initial = app.ui_state.diagnostics.component_render_panic_count;
+    let buf = assert_render_ok(&mut app, 100, 32);
+    assert_eq!(
+        app.ui_state.diagnostics.component_render_panic_count,
+        initial + 1,
+        "sidebar panic injection should increment component_render_panic_count"
+    );
+    assert!(
+        buffer_contains(&buf, "Sidebar unavailable"),
+        "expected sidebar fallback text in buffer"
+    );
+}
+
+#[test]
+fn panic_injection_dialog_closes_dialog() {
+    let mut app = test_app();
+    app.ui_state.dialog = Dialog::Help;
+    app.render_panic_injection.dialog = true;
+    let initial = app.ui_state.diagnostics.component_render_panic_count;
+    assert_render_ok(&mut app, 100, 32);
+    assert_eq!(
+        app.ui_state.diagnostics.component_render_panic_count,
+        initial + 1,
+        "dialog panic injection should increment component_render_panic_count"
+    );
+    assert_eq!(
+        app.ui_state.dialog,
+        Dialog::None,
+        "dialog panic should close the dialog to Dialog::None"
+    );
+}
+
+#[test]
+fn panic_injection_completions_hides_completions() {
+    let mut app = app_with_completions();
+    app.render_panic_injection.completions = true;
+    let initial = app.ui_state.diagnostics.component_render_panic_count;
+    assert_render_ok(&mut app, 100, 32);
+    assert_eq!(
+        app.ui_state.diagnostics.component_render_panic_count,
+        initial + 1,
+        "completions panic injection should increment component_render_panic_count"
+    );
+    assert!(
+        !app.prompt_state.show_completions,
+        "completions panic should hide completions"
+    );
+}
+
+#[test]
+fn panic_injection_timeline_hides_timeline() {
+    let mut app = test_app();
+    app.ui_state.timeline_visible = true;
+    app.render_panic_injection.timeline = true;
+    let initial = app.ui_state.diagnostics.component_render_panic_count;
+    assert_render_ok(&mut app, 100, 32);
+    assert_eq!(
+        app.ui_state.diagnostics.component_render_panic_count,
+        initial + 1,
+        "timeline panic injection should increment component_render_panic_count"
+    );
+    assert!(
+        !app.ui_state.timeline_visible,
+        "timeline panic should hide timeline"
+    );
+}
+
+#[test]
+fn panic_injection_multiple_components_in_single_render() {
+    let mut app = app_with_sidebar();
+    app.ui_state.dialog = Dialog::Help;
+    app.prompt_state.show_completions = true;
+    app.ui_state.timeline_visible = true;
+    app.render_panic_injection.messages = true;
+    app.render_panic_injection.sidebar = true;
+    app.render_panic_injection.dialog = true;
+    app.render_panic_injection.completions = true;
+    app.render_panic_injection.timeline = true;
+    let initial = app.ui_state.diagnostics.component_render_panic_count;
+    let buf = assert_render_ok(&mut app, 100, 32);
+    assert_eq!(
+        app.ui_state.diagnostics.component_render_panic_count,
+        initial + 5,
+        "all five panic injections should each increment component_render_panic_count"
+    );
+    assert!(
+        buffer_contains(&buf, "Messages render error"),
+        "expected messages fallback text"
+    );
+    assert_eq!(app.ui_state.dialog, Dialog::None, "dialog should be closed");
+    assert!(!app.prompt_state.show_completions, "completions should be hidden");
+    assert!(!app.ui_state.timeline_visible, "timeline should be hidden");
+}
+
+#[test]
+fn panic_injection_messages_at_tiny_terminal() {
+    let mut app = app_with_messages();
+    app.render_panic_injection.messages = true;
+    let buf = assert_render_ok(&mut app, 40, 12);
+    assert!(
+        buffer_contains(&buf, "Messages render error"),
+        "expected fallback text at tiny terminal size"
+    );
+}
+
+#[test]
+fn panic_injection_sidebar_at_small_terminal() {
+    let mut app = app_with_sidebar();
+    app.render_panic_injection.sidebar = true;
+    let buf = assert_render_ok(&mut app, 100, 32);
+    assert!(
+        buffer_contains(&buf, "Sidebar unavailable"),
+        "expected sidebar fallback at 100x32 terminal"
+    );
+}
+
+// ===========================================================================
+// 22. Additional targeted dialog tests
+// ===========================================================================
+
+#[test]
+fn render_tree_dialog() {
+    let mut app = test_app();
+    app.ui_state.dialog = Dialog::Tree;
+    let buf = assert_render_ok(&mut app, 100, 32);
+    assert!(
+        !buffer_contains(&buf, "Rendering Error"),
+        "unexpected render error with tree dialog"
+    );
+}
+
+#[test]
+fn render_question_dialog() {
+    let mut app = test_app();
+    app.ui_state.dialog = Dialog::Question;
+    let buf = assert_render_ok(&mut app, 100, 32);
+    assert!(
+        !buffer_contains(&buf, "Rendering Error"),
+        "unexpected render error with question dialog"
+    );
+}
+
+#[test]
+fn render_permission_dialog() {
+    let mut app = test_app();
+    app.ui_state.dialog = Dialog::Permission;
+    let buf = assert_render_ok(&mut app, 100, 32);
+    assert!(
+        !buffer_contains(&buf, "Rendering Error"),
+        "unexpected render error with permission dialog"
+    );
+}
+
+#[test]
+fn render_import_dialog() {
+    let mut app = test_app();
+    app.ui_state.dialog = Dialog::Import;
+    let buf = assert_render_ok(&mut app, 100, 32);
+    assert!(
+        !buffer_contains(&buf, "Rendering Error"),
+        "unexpected render error with import dialog"
+    );
+}
+
+#[test]
+fn render_share_dialog() {
+    let mut app = test_app();
+    app.ui_state.dialog = Dialog::Share;
+    let buf = assert_render_ok(&mut app, 100, 32);
+    assert!(
+        !buffer_contains(&buf, "Rendering Error"),
+        "unexpected render error with share dialog"
+    );
+}
+
+#[test]
+fn render_shell_show_dialog() {
+    let mut app = test_app();
+    app.ui_state.dialog = Dialog::ShellShow;
+    let buf = assert_render_ok(&mut app, 100, 32);
+    assert!(
+        !buffer_contains(&buf, "Rendering Error"),
+        "unexpected render error with shell show dialog"
+    );
+}
+
+#[test]
+fn render_research_browser_dialog() {
+    let mut app = test_app();
+    app.ui_state.dialog = Dialog::ResearchBrowser;
+    let buf = assert_render_ok(&mut app, 100, 32);
+    assert!(
+        !buffer_contains(&buf, "Rendering Error"),
+        "unexpected render error with research browser dialog"
+    );
+}
+
+#[test]
+fn render_security_review_dialog() {
+    let mut app = test_app();
+    app.ui_state.dialog = Dialog::SecurityReview;
+    let buf = assert_render_ok(&mut app, 100, 32);
+    assert!(
+        !buffer_contains(&buf, "Rendering Error"),
+        "unexpected render error with security review dialog"
+    );
+}
+
+#[test]
+fn render_template_dialog() {
+    let mut app = test_app();
+    app.ui_state.dialog = Dialog::Template;
+    let buf = assert_render_ok(&mut app, 100, 32);
+    assert!(
+        !buffer_contains(&buf, "Rendering Error"),
+        "unexpected render error with template dialog"
+    );
+}
+
+#[test]
+fn render_diff_dialog() {
+    let mut app = test_app();
+    app.ui_state.dialog = Dialog::Diff;
+    let buf = assert_render_ok(&mut app, 100, 32);
+    assert!(
+        !buffer_contains(&buf, "Rendering Error"),
+        "unexpected render error with diff dialog"
+    );
+}
+
+#[test]
+fn render_new_dialogs_at_small_size() {
+    let new_dialogs = [
+        Dialog::Template,
+        Dialog::Share,
+        Dialog::Import,
+        Dialog::Question,
+        Dialog::Permission,
+        Dialog::Diff,
+        Dialog::ResearchBrowser,
+        Dialog::SecurityReview,
+        Dialog::SourcePreview,
+        Dialog::ShellShow,
+    ];
+    for dialog in &new_dialogs {
+        let mut app = test_app();
+        app.ui_state.dialog = dialog.clone();
+        let buf = assert_render_ok(&mut app, 60, 20);
+        assert!(
+            !buffer_contains(&buf, "Rendering Error"),
+            "unexpected render error with dialog {:?} at 60x20",
+            dialog
+        );
+    }
+}
+
+// ===========================================================================
+// 23. Additional edge-case and combined-state tests
+// ===========================================================================
+
+#[test]
+fn render_timeline_visible() {
+    let mut app = app_with_messages();
+    app.ui_state.timeline_visible = true;
+    for &(w, h) in SIZES {
+        let buf = assert_render_ok(&mut app, w, h);
+        assert!(
+            !buffer_contains(&buf, "Rendering Error"),
+            "unexpected render error with timeline visible at {w}x{h}"
+        );
+    }
+}
+
+#[test]
+fn render_empty_messages_with_sidebar_visible() {
+    let mut app = test_app();
+    app.ui_state.sidebar_visible = true;
+    app.messages_state.messages.clear();
+    let buf = assert_render_ok(&mut app, 100, 32);
+    assert!(
+        !buffer_contains(&buf, "Rendering Error"),
+        "unexpected render error with empty messages and sidebar"
+    );
+}
+
+#[test]
+fn render_tool_only_messages_no_user_messages() {
+    let mut app = test_app();
+    app.messages_state.messages.add_tool_call(
+        "tc1".into(),
+        "bash".into(),
+        serde_json::json!({"command": "ls"}),
+    );
+    app.messages_state.messages.update_tool_call(
+        "tc1",
+        "file1.rs\nfile2.rs".into(),
+        ToolStatus::Completed,
+        Some(100),
+        Some(0),
+        Some(1),
+    );
+    let buf = assert_render_ok(&mut app, 80, 24);
+    assert!(
+        !buffer_contains(&buf, "Rendering Error"),
+        "unexpected render error with tool-only messages"
+    );
+}
+
+#[test]
+fn render_streaming_with_dialog_and_sidebar_and_toasts() {
+    let mut app = app_streaming();
+    app.ui_state.sidebar_visible = true;
+    app.ui_state.dialog = Dialog::Help;
+    app.messages_state.toasts.info("Streaming started");
+    let buf = assert_render_ok(&mut app, 100, 32);
+    assert!(
+        !buffer_contains(&buf, "Rendering Error"),
+        "unexpected render error with streaming + dialog + sidebar + toasts"
+    );
+}
+
+#[test]
+fn render_pathological_content_with_sidebar_and_dialog() {
+    let mut app = app_pathological_content();
+    app.ui_state.sidebar_visible = true;
+    app.ui_state.dialog = Dialog::Help;
+    let buf = assert_render_ok(&mut app, 100, 32);
+    assert!(
+        !buffer_contains(&buf, "Rendering Error"),
+        "unexpected render error with pathological content + sidebar + dialog"
+    );
+}
+
+#[test]
+fn render_long_prompt_with_completions_and_sidebar() {
+    let mut app = app_with_long_prompt();
+    app.prompt_state.show_completions = true;
+    app.ui_state.sidebar_visible = true;
+    let buf = assert_render_ok(&mut app, 100, 32);
+    assert!(
+        !buffer_contains(&buf, "Rendering Error"),
+        "unexpected render error with long prompt + completions + sidebar"
+    );
+}
+
+#[test]
+fn render_multiple_dialogs_sequentially() {
+    let dialogs = [
+        Dialog::Help,
+        Dialog::Model,
+        Dialog::Tree,
+        Dialog::Session,
+        Dialog::Agent,
+        Dialog::Mcp,
+        Dialog::Keybind,
+        Dialog::Theme,
+    ];
+    for dialog in &dialogs {
+        let mut app = test_app();
+        app.ui_state.dialog = dialog.clone();
+        let buf = assert_render_ok(&mut app, 100, 32);
+        assert!(
+            !buffer_contains(&buf, "Rendering Error"),
+            "unexpected render error with dialog {:?}",
+            dialog
+        );
+        assert_render_ok(&mut app, 60, 20);
+        assert_render_ok(&mut app, 40, 12);
+    }
+}
+
+#[test]
+fn render_tool_calls_with_sidebar_and_completions() {
+    let mut app = app_with_tool_calls();
+    app.ui_state.sidebar_visible = true;
+    app.prompt_state.show_completions = true;
+    let buf = assert_render_ok(&mut app, 100, 32);
+    assert!(
+        !buffer_contains(&buf, "Rendering Error"),
+        "unexpected render error with tool calls + sidebar + completions"
+    );
+}
+
+#[test]
+fn render_thinking_content_with_sidebar() {
+    let mut app = test_app();
+    app.ui_state.sidebar_visible = true;
+    app.messages_state
+        .messages
+        .add_user_message("Explain this code".into(), None);
+    app.messages_state
+        .messages
+        .add_reasoning("Let me analyze the code structure first...".into());
+    app.messages_state
+        .messages
+        .add_assistant_text("Here is my analysis.".into());
+    let buf = assert_render_ok(&mut app, 80, 24);
+    assert!(
+        !buffer_contains(&buf, "Rendering Error"),
+        "unexpected render error with thinking content and sidebar"
+    );
+}
+
+#[test]
+fn render_shell_cells_with_sidebar() {
+    let mut app = test_app();
+    app.ui_state.sidebar_visible = true;
+    app.messages_state
+        .messages
+        .add_user_message("Run a command".into(), None);
+    app.messages_state
+        .messages
+        .add_shell_cell(1, "ls -la", "/tmp");
+    let buf = assert_render_ok(&mut app, 80, 24);
+    assert!(
+        !buffer_contains(&buf, "Rendering Error"),
+        "unexpected render error with shell cells and sidebar"
+    );
+}
+
+#[test]
+fn render_many_messages_with_all_overlays() {
+    let mut app = test_app();
+    for i in 0..50 {
+        if i % 2 == 0 {
+            app.messages_state
+                .messages
+                .add_user_message(format!("User message {i}"), None);
+        } else {
+            app.messages_state
+                .messages
+                .add_assistant_text(format!("Assistant response {i} with some content"));
+        }
+    }
+    app.ui_state.sidebar_visible = true;
+    app.ui_state.timeline_visible = true;
+    app.prompt_state.show_completions = true;
+    app.messages_state.toasts.info("Info toast");
+    app.messages_state.toasts.warning("Warning toast");
+    let buf = assert_render_ok(&mut app, 100, 32);
+    assert!(
+        !buffer_contains(&buf, "Rendering Error"),
+        "unexpected render error with many messages and all overlays"
     );
 }

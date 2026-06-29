@@ -477,6 +477,25 @@ pub enum ClickTarget {
     None,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct RenderPanicInjection {
+    pub messages: bool,
+    pub sidebar: bool,
+    pub dialog: bool,
+    pub completions: bool,
+    pub timeline: bool,
+}
+
+impl RenderPanicInjection {
+    pub fn all_false() -> Self {
+        Self::default()
+    }
+
+    pub fn reset(&mut self) {
+        *self = Self::default();
+    }
+}
+
 pub struct App {
     pub ui_state: UiState,
     pub session_state: SessionState,
@@ -554,6 +573,7 @@ pub struct App {
     /// Registry of TUI-owned background tasks.  Tracked tasks can be
     /// counted, cancelled, and reaped on shutdown or dialog close.
     pub task_registry: crate::tui::task_lifecycle::TuiTaskRegistry,
+    pub render_panic_injection: RenderPanicInjection,
 }
 
 /// What to do at TUI startup with respect to session loading. The TUI
@@ -867,6 +887,7 @@ impl App {
                 .unwrap_or_default(),
             shell_handles: std::collections::HashMap::new(),
             task_registry: crate::tui::task_lifecycle::TuiTaskRegistry::new(),
+            render_panic_injection: RenderPanicInjection::all_false(),
         }
     }
 
@@ -1201,6 +1222,7 @@ impl App {
             shell_store: crate::shell::ShellOutputStore::new(),
             shell_handles: std::collections::HashMap::new(),
             task_registry: crate::tui::task_lifecycle::TuiTaskRegistry::new(),
+            render_panic_injection: RenderPanicInjection::all_false(),
         }
     }
 
@@ -1752,6 +1774,9 @@ impl App {
         // Viewport (messages) — highest-risk surface for render panics
         let viewport_result =
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<(), String> {
+                if self.render_panic_injection.messages {
+                    panic!("injected messages render panic");
+                }
                 self.render_viewport(frame, session_chunks[1]);
                 Ok(())
             }));
@@ -1773,6 +1798,9 @@ impl App {
             self.sidebar_area = Some(main_chunks[1]);
             let sidebar_result =
                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<(), String> {
+                    if self.render_panic_injection.sidebar {
+                        panic!("injected sidebar render panic");
+                    }
                     self.render_sidebar(frame, main_chunks[1]);
                     Ok(())
                 }));
@@ -1794,6 +1822,9 @@ impl App {
             self.dialog_area = Some(popup_area);
             let dialog_result =
                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<(), String> {
+                    if self.render_panic_injection.dialog {
+                        panic!("injected dialog render panic");
+                    }
                     self.render_dialog(frame, area);
                     Ok(())
                 }));
@@ -1824,6 +1855,9 @@ impl App {
             self.completion_area = Some(compl_area);
             let compl_result =
                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<(), String> {
+                    if self.render_panic_injection.completions {
+                        panic!("injected completions render panic");
+                    }
                     self.render_completions(frame, session_chunks[2]);
                     Ok(())
                 }));
@@ -1843,6 +1877,9 @@ impl App {
         if self.ui_state.timeline_visible {
             let tl_result =
                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<(), String> {
+                    if self.render_panic_injection.timeline {
+                        panic!("injected timeline render panic");
+                    }
                     self.render_timeline(frame, area);
                     Ok(())
                 }));

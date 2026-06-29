@@ -1236,7 +1236,7 @@ The Timeline is rendered as a side panel showing message timestamps and navigati
 
 ## TUI Render Regression Tests
 
-Headless render regression tests in `tests/tui_render.rs` (49 tests) exercise `App::render()` via `ratatui::backend::TestBackend` across five terminal sizes (40x12 through 160x40).
+Headless render regression tests in `tests/tui_render.rs` (80 tests) exercise `App::render()` via `ratatui::backend::TestBackend` across five terminal sizes (40x12 through 160x40). Includes component panic injection tests that verify fallback behavior for messages, sidebar, dialog, completions, and timeline surfaces.
 
 **Run:** `cargo test --test tui_render`
 

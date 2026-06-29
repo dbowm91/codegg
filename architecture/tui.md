@@ -713,7 +713,7 @@ The following Phase 8 items are defined in the plan but deferred for future work
 
 ## Testing
 
-TUI render regression tests live in `tests/tui_render.rs` (49 tests). They use `ratatui::backend::TestBackend` to exercise `App::render()` across multiple terminal sizes without requiring an interactive terminal.
+TUI render regression tests live in `tests/tui_render.rs` (80 tests). They use `ratatui::backend::TestBackend` to exercise `App::render()` across multiple terminal sizes without requiring an interactive terminal. Component-level panic injection tests verify fallback behavior for messages, sidebar, dialog, completions, and timeline surfaces.
 
 **Run all render regression tests:**
 
@@ -738,13 +738,17 @@ cargo test --test tui_render
 - Streaming state with active tokens
 - Tool calls (pending, completed, error)
 - Sidebar with file changes (pending, ready, skipped, error states)
-- Dialog variants (help, model, session, agent, tree, theme, etc.)
+- All 28 dialog variants (help, model, session, agent, tree, theme, mcp, keybind, cost, usage, stats, goto, plan, confirm, review, context, connect, template, share, import, question, permission, diff, research browser, security review, source preview, shell show)
 - Completion overlay at various sizes
 - Toast notifications
-- Pathological content (long lines, wide Unicode, ANSI escapes, malformed JSON)
+- Pathological content (long lines, wide Unicode, ANSI escapes, malformed JSON, combining marks)
+- Component panic injection (messages, sidebar, dialog, completions, timeline fallbacks)
 - Component fallback diagnostics tracking
 - Error dialog rendering
-- Combined states (sidebar + messages + toasts, dialog + sidebar, etc.)
+- Timeline visible state
+- Tool-only messages (no user messages)
+- Shell cells and reasoning content
+- Combined states (sidebar + messages + toasts, dialog + sidebar, streaming + dialog + sidebar + toasts, etc.)
 
 **Key patterns:**
 
