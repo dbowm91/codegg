@@ -7,7 +7,11 @@
 
 use codegg::session::message::ToolStatus;
 use codegg::tui::app::state::session::{ChangedFile, DiffStatsState};
+use codegg::tui::app::CompletionType;
 use codegg::tui::app::App;
+use codegg::tui::components::completion_overlay::{CompletionItem, CompletionItemKind};
+use codegg::tui::components::messages::SearchMatch;
+use codegg::tui::route::Route;
 use codegg::tui::Dialog;
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
@@ -1621,5 +1625,233 @@ fn render_many_messages_with_all_overlays() {
     assert!(
         !buffer_contains(&buf, "Rendering Error"),
         "unexpected render error with many messages and all overlays"
+    );
+}
+
+// ===========================================================================
+// File / agent completions
+// ===========================================================================
+
+fn app_with_file_completions() -> App {
+    let mut app = test_app();
+    app.prompt_state.show_completions = true;
+    app.prompt_state.completion_type = CompletionType::File;
+    app.prompt_state.completion_filter = "src/".into();
+    app.prompt_state.file_completions = vec![
+        CompletionItem {
+            label: "src/main.rs".into(),
+            description: Some("Main entry point".into()),
+            kind: CompletionItemKind::File,
+        },
+        CompletionItem {
+            label: "src/lib.rs".into(),
+            description: Some("Library root".into()),
+            kind: CompletionItemKind::File,
+        },
+        CompletionItem {
+            label: "src/utils/".into(),
+            description: None,
+            kind: CompletionItemKind::Directory,
+        },
+    ];
+    app
+}
+
+#[test]
+fn render_file_completions_all_sizes() {
+    for &(w, h) in SIZES {
+        let mut app = app_with_file_completions();
+        let buf = assert_render_ok(&mut app, w, h);
+        assert!(
+            !buffer_contains(&buf, "Rendering Error"),
+            "unexpected render error with file completions at {w}x{h}"
+        );
+    }
+}
+
+#[test]
+fn render_file_completions_tiny_terminal() {
+    let mut app = app_with_file_completions();
+    let buf = assert_render_ok(&mut app, 40, 12);
+    assert!(
+        !buffer_contains(&buf, "Rendering Error"),
+        "unexpected render error with file completions on tiny terminal"
+    );
+}
+
+fn app_with_agent_completions() -> App {
+    let mut app = test_app();
+    app.prompt_state.show_completions = true;
+    app.prompt_state.completion_type = CompletionType::Agent;
+    app.prompt_state.completion_filter = "@".into();
+    app.prompt_state.agent_completions = vec![
+        CompletionItem::new("research".into(), Some("Research agent".into())),
+        CompletionItem::new("review".into(), Some("Code review agent".into())),
+    ];
+    app
+}
+
+#[test]
+fn render_agent_completions_all_sizes() {
+    for &(w, h) in SIZES {
+        let mut app = app_with_agent_completions();
+        let buf = assert_render_ok(&mut app, w, h);
+        assert!(
+            !buffer_contains(&buf, "Rendering Error"),
+            "unexpected render error with agent completions at {w}x{h}"
+        );
+    }
+}
+
+#[test]
+fn render_long_completion_labels() {
+    let mut app = test_app();
+    app.prompt_state.show_completions = true;
+    app.prompt_state.completion_type = CompletionType::File;
+    app.prompt_state.completion_filter = "".into();
+    app.prompt_state.file_completions = vec![
+        CompletionItem {
+            label: "src/very/deeply/nested/module/path/to/a/long/file_name_that_exceeds_normal_width.rs".into(),
+            description: Some("A deeply nested file with a very long path".into()),
+            kind: CompletionItemKind::File,
+        },
+        CompletionItem {
+            label: "another_extremely_long_filename_with_repeated_characters_to_test_overflow.rs".into(),
+            description: Some("Long filename".into()),
+            kind: CompletionItemKind::File,
+        },
+    ];
+    let buf = assert_render_ok(&mut app, 100, 32);
+    assert!(
+        !buffer_contains(&buf, "Rendering Error"),
+        "unexpected render error with long completion labels"
+    );
+    // Also test at small size
+    let buf = assert_render_ok(&mut app, 60, 20);
+    assert!(
+        !buffer_contains(&buf, "Rendering Error"),
+        "unexpected render error with long completion labels at small size"
+    );
+}
+
+// ===========================================================================
+// Search visible with matches / no matches
+// ===========================================================================
+
+fn app_with_search_and_matches() -> App {
+    let mut app = test_app();
+    app.ui_state
+        .routes
+        .navigate_to(Route::Session("test".to_string()));
+    app.messages_state
+        .messages
+        .add_user_message("The quick brown fox jumps over the lazy dog".into(), None);
+    app.messages_state
+        .messages
+        .add_assistant_text("Here is a fox in a box on a dock with a lock and a sock".to_string());
+    app.messages_state.messages.search_visible = true;
+    app.messages_state.messages.search_query = Some("fox".into());
+    app.messages_state.messages.search_matches = vec![
+        SearchMatch { msg_idx: 0, part_idx: 0, line_in_msg: 0, start: 16, end: 19 },
+        SearchMatch { msg_idx: 1, part_idx: 0, line_in_msg: 0, start: 11, end: 14 },
+    ];
+    app.messages_state.messages.search_current = 0;
+    app
+}
+
+#[test]
+fn render_search_visible_with_matches_all_sizes() {
+    for &(w, h) in SIZES {
+        let mut app = app_with_search_and_matches();
+        let buf = assert_render_ok(&mut app, w, h);
+        assert!(
+            !buffer_contains(&buf, "Rendering Error"),
+            "unexpected render error with search and matches at {w}x{h}"
+        );
+    }
+}
+
+#[test]
+fn render_search_visible_with_matches_contains_text() {
+    let mut app = app_with_search_and_matches();
+    let buf = assert_render_ok(&mut app, 100, 32);
+    let text = text_in_buffer(&buf);
+    assert!(
+        text.contains("fox") || text.contains("SEARCH"),
+        "expected search-related text in buffer"
+    );
+}
+
+fn app_with_search_no_matches() -> App {
+    let mut app = test_app();
+    app.ui_state
+        .routes
+        .navigate_to(Route::Session("test".to_string()));
+    app.messages_state
+        .messages
+        .add_user_message("Hello world".into(), None);
+    app.messages_state.messages.search_visible = true;
+    app.messages_state.messages.search_query = Some("zzz_nonexistent".into());
+    app.messages_state.messages.search_matches = vec![];
+    app.messages_state.messages.search_current = 0;
+    app
+}
+
+#[test]
+fn render_search_visible_no_matches_all_sizes() {
+    for &(w, h) in SIZES {
+        let mut app = app_with_search_no_matches();
+        let buf = assert_render_ok(&mut app, w, h);
+        assert!(
+            !buffer_contains(&buf, "Rendering Error"),
+            "unexpected render error with search and no matches at {w}x{h}"
+        );
+    }
+}
+
+#[test]
+fn render_search_visible_no_matches_shows_no_matches() {
+    let mut app = app_with_search_no_matches();
+    let buf = assert_render_ok(&mut app, 100, 32);
+    let text = text_in_buffer(&buf);
+    assert!(
+        text.contains("no matches") || text.contains("SEARCH"),
+        "expected 'no matches' or search indicator in buffer"
+    );
+}
+
+// ===========================================================================
+// Multi-line diagnostics toast
+// ===========================================================================
+
+#[test]
+fn render_multiline_diagnostics_toast() {
+    let mut app = test_app();
+    app.messages_state.toasts.error(
+        "Diagnostics:\n  warning: unused variable `x`\n  error[E0308]: mismatched types\n    --> src/main.rs:10:5\n     |\n10   |     let x: i32 = \"hello\";",
+    );
+    app.messages_state.toasts.info("Build finished with errors");
+    let buf = assert_render_ok(&mut app, 100, 32);
+    assert!(
+        !buffer_contains(&buf, "Rendering Error"),
+        "unexpected render error with multi-line diagnostics toast"
+    );
+    let text = text_in_buffer(&buf);
+    assert!(
+        text.contains("Diagnostics") || text.contains("Build"),
+        "expected diagnostics or build text in buffer"
+    );
+}
+
+#[test]
+fn render_multiline_diagnostics_toast_tiny() {
+    let mut app = test_app();
+    app.messages_state.toasts.error(
+        "Diagnostics:\n  warning: unused variable `x`\n  error[E0308]: mismatched types",
+    );
+    let buf = assert_render_ok(&mut app, 40, 12);
+    assert!(
+        !buffer_contains(&buf, "Rendering Error"),
+        "unexpected render error with multi-line diagnostics toast on tiny terminal"
     );
 }
