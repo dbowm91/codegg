@@ -60,23 +60,21 @@ pub struct DialogState {
     pub pending_bulk_archive: Option<(usize, bool)>,
     pub pending_bulk_archive_ids: Option<Vec<String>>,
     pub pending_shell_command: Option<(String, bool)>,
-    /// Generation counter for import preview requests. Stale completions
+    /// Async request state for import preview/confirm operations.
+    pub import_request: crate::tui::app::state::AsyncUiRequestState,
+    /// Async request state for research browser operations (list, load run, load section).
+    pub research_request: crate::tui::app::state::AsyncUiRequestState,
+    /// Async request state for session reload operations.
+    pub session_reload_request: crate::tui::app::state::AsyncUiRequestState,
+    /// Async request state for task list operations.
+    pub task_list_request: crate::tui::app::state::AsyncUiRequestState,
+    /// Async request state for task delete operations.
+    pub task_delete_request: crate::tui::app::state::AsyncUiRequestState,
+    /// Async request state for worktree list operations.
+    pub worktree_list_request: crate::tui::app::state::AsyncUiRequestState,
+    /// Async request state for template creation operations.
+    pub template_create_request: crate::tui::app::state::AsyncUiRequestState,
+    /// Async request state for session mutation requests. Stale completions
     /// with a mismatched id are silently ignored.
-    pub import_preview_request_id: u64,
-    /// Generation counter for research browser operations.
-    pub research_request_id: u64,
-    /// True while a session reload is in flight. The completion handler
-    /// clears this on both success and failure.
-    pub session_reload_in_flight: bool,
-    /// True while a task list request is in flight.
-    pub task_list_in_flight: bool,
-    /// True while a task delete request is in flight.
-    pub task_delete_in_flight: bool,
-    /// True while a worktree list request is in flight.
-    pub worktree_list_in_flight: bool,
-    /// True while a template session creation is in flight.
-    pub template_create_in_flight: bool,
-    /// Generation counter for session mutation requests. Stale completions
-    /// with a mismatched id are silently ignored.
-    pub session_mutation_request_id: u64,
+    pub session_mutation_request: crate::tui::app::state::AsyncUiRequestState,
 }

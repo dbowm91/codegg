@@ -796,6 +796,22 @@ TuiCommand::SessionsReloaded { sessions, message_counts, error } => {
 **See also**: `src/tui/async_cmd.rs` for the `spawn_tui_task` helper, `plans/tui_phase_1_event_loop_responsiveness.md` for the design plan.
 - `src/tui/file_diff.rs` - Async diff-stats background pipeline for sidebar file changes
 
+### AsyncUiRequestState (Phase 10)
+
+`AsyncUiRequestState` (`src/tui/app/state/async_request.rs`) standardizes async dialog lifecycle, replacing ad-hoc generation counters and boolean in-flight flags.
+
+**Key fields:** `request_id: u64`, `loading: bool`, `cancelled: bool`, `last_error: Option<String>`.
+
+**Key methods:**
+- `begin() -> u64` — increment ID, set loading, clear cancelled/error
+- `cancel()` — set cancelled, clear loading, increment ID to invalidate in-flight work
+- `finish(id) -> bool` — apply result only if ID is current and not cancelled
+- `fail(id, error) -> bool` — store error only if ID is current and not cancelled
+
+**DialogState instances:** `import_request`, `research_request`, `session_reload_request`, `task_list_request`, `task_delete_request`, `worktree_list_request`, `template_create_request`, `session_mutation_request`.
+
+`close_dialog()` (`pub(crate)`) cancels async request states for Import and ResearchBrowser, preventing stale completions after dismissal.
+
 ## Background Task Lifecycle (Phase 7)
 
 TUI-owned background tasks are tracked via `TuiTaskRegistry` on `App`.

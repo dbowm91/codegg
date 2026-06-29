@@ -792,14 +792,14 @@ impl App {
                 pending_bulk_archive: None,
                 pending_bulk_archive_ids: None,
                 pending_shell_command: None,
-                import_preview_request_id: 0,
-                research_request_id: 0,
-                session_reload_in_flight: false,
-                task_list_in_flight: false,
-                task_delete_in_flight: false,
-                worktree_list_in_flight: false,
-                template_create_in_flight: false,
-                session_mutation_request_id: 0,
+                import_request: crate::tui::app::state::AsyncUiRequestState::new(),
+                research_request: crate::tui::app::state::AsyncUiRequestState::new(),
+                session_reload_request: crate::tui::app::state::AsyncUiRequestState::new(),
+                task_list_request: crate::tui::app::state::AsyncUiRequestState::new(),
+                task_delete_request: crate::tui::app::state::AsyncUiRequestState::new(),
+                worktree_list_request: crate::tui::app::state::AsyncUiRequestState::new(),
+                template_create_request: crate::tui::app::state::AsyncUiRequestState::new(),
+                session_mutation_request: crate::tui::app::state::AsyncUiRequestState::new(),
             },
             agent_state: AgentState {
                 agents,
@@ -1132,14 +1132,14 @@ impl App {
                 pending_bulk_archive: None,
                 pending_bulk_archive_ids: None,
                 pending_shell_command: None,
-                import_preview_request_id: 0,
-                research_request_id: 0,
-                session_reload_in_flight: false,
-                task_list_in_flight: false,
-                task_delete_in_flight: false,
-                worktree_list_in_flight: false,
-                template_create_in_flight: false,
-                session_mutation_request_id: 0,
+                import_request: crate::tui::app::state::AsyncUiRequestState::new(),
+                research_request: crate::tui::app::state::AsyncUiRequestState::new(),
+                session_reload_request: crate::tui::app::state::AsyncUiRequestState::new(),
+                task_list_request: crate::tui::app::state::AsyncUiRequestState::new(),
+                task_delete_request: crate::tui::app::state::AsyncUiRequestState::new(),
+                worktree_list_request: crate::tui::app::state::AsyncUiRequestState::new(),
+                template_create_request: crate::tui::app::state::AsyncUiRequestState::new(),
+                session_mutation_request: crate::tui::app::state::AsyncUiRequestState::new(),
             },
             agent_state: AgentState {
                 agents,
@@ -6532,7 +6532,7 @@ impl App {
         self.focus_manager.push(component);
     }
 
-    fn close_dialog(&mut self) {
+    pub(crate) fn close_dialog(&mut self) {
         // If the theme picker was live-previewing, revert to the
         // original theme before closing. Esc and Enter both fire
         // `ThemeRevert`/`ThemeCommit` and tear down the dialog
@@ -6552,7 +6552,9 @@ impl App {
             self.dialog_state.theme_picker = None;
         }
 
-        // Cancel background tasks scoped to the dialog being closed.
+        // Cancel background tasks and async request state scoped to
+        // the dialog being closed. This ensures stale completions
+        // from in-flight requests are ignored.
         use crate::tui::task_lifecycle::TuiTaskKind;
         match self.ui_state.dialog {
             Dialog::Tree => {
@@ -6560,9 +6562,11 @@ impl App {
             }
             Dialog::Import => {
                 self.task_registry.cancel_kind(TuiTaskKind::Command);
+                self.dialog_state.import_request.cancel();
             }
             Dialog::ResearchBrowser => {
                 self.task_registry.cancel_kind(TuiTaskKind::Research);
+                self.dialog_state.research_request.cancel();
             }
             _ => {}
         }

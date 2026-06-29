@@ -310,7 +310,7 @@ async fn reload_sessions(app: &mut app::App) {
 
 fn start_reload_sessions(app: &mut app::App) {
     app.dialog_state.session_dialog.set_loading(true);
-    app.dialog_state.session_reload_in_flight = true;
+    app.dialog_state.session_reload_request.begin();
 
     let core_client = app.core_client.clone();
     let project_id = app.session_state.project_dir.clone();
@@ -389,7 +389,7 @@ fn apply_sessions_reloaded(
     message_counts: std::collections::HashMap<String, usize>,
     error: Option<String>,
 ) {
-    app.dialog_state.session_reload_in_flight = false;
+    app.dialog_state.session_reload_request.clear_loading();
     app.dialog_state.session_dialog.set_loading(false);
 
     if let Some(err) = error {
@@ -408,7 +408,7 @@ fn apply_sessions_reloaded(
 }
 
 fn start_list_tasks(app: &mut app::App) {
-    app.dialog_state.task_list_in_flight = true;
+    app.dialog_state.task_list_request.begin();
     let core_client = app.core_client.clone();
     let tx = app.tui_cmd_tx.clone();
 
@@ -449,7 +449,7 @@ fn start_list_tasks(app: &mut app::App) {
 }
 
 fn apply_tasks_listed(app: &mut app::App, tasks: Vec<serde_json::Value>, error: Option<String>) {
-    app.dialog_state.task_list_in_flight = false;
+    app.dialog_state.task_list_request.clear_loading();
     if let Some(err) = error {
         app.messages_state.toasts.warning(&err);
         return;
@@ -479,7 +479,7 @@ fn apply_tasks_listed(app: &mut app::App, tasks: Vec<serde_json::Value>, error: 
 }
 
 fn start_delete_task(app: &mut app::App, id: String) {
-    app.dialog_state.task_delete_in_flight = true;
+    app.dialog_state.task_delete_request.begin();
     let core_client = app.core_client.clone();
     let tx = app.tui_cmd_tx.clone();
 
@@ -540,7 +540,7 @@ fn apply_task_operation_finished(
     task_id: Option<String>,
     error: Option<String>,
 ) {
-    app.dialog_state.task_delete_in_flight = false;
+    app.dialog_state.task_delete_request.clear_loading();
     if let Some(err) = error {
         app.messages_state.toasts.warning(&err);
         return;
@@ -567,8 +567,7 @@ fn apply_task_operation_finished(
 }
 
 fn next_session_mutation_id(app: &mut app::App) -> u64 {
-    app.dialog_state.session_mutation_request_id += 1;
-    app.dialog_state.session_mutation_request_id
+    app.dialog_state.session_mutation_request.begin()
 }
 
 fn apply_session_mutation_finished(
@@ -580,7 +579,7 @@ fn apply_session_mutation_finished(
     reload_after: bool,
     error: Option<String>,
 ) {
-    if request_id != app.dialog_state.session_mutation_request_id {
+    if !app.dialog_state.session_mutation_request.is_current(request_id) {
         return;
     }
     if let Some(err) = error {
@@ -1229,7 +1228,7 @@ fn start_task_schedule(app: &mut app::App, interval_secs: u64, message: String) 
 }
 
 fn start_worktree_list(app: &mut app::App) {
-    app.dialog_state.worktree_list_in_flight = true;
+    app.dialog_state.worktree_list_request.begin();
     let core_client = app.core_client.clone();
     let project_dir = app.session_state.project_dir.clone();
     let tx = app.tui_cmd_tx.clone();
@@ -1282,7 +1281,7 @@ fn start_worktree_list(app: &mut app::App) {
 }
 
 fn apply_worktree_listed(app: &mut app::App, worktrees: Vec<String>, error: Option<String>) {
-    app.dialog_state.worktree_list_in_flight = false;
+    app.dialog_state.worktree_list_request.clear_loading();
     if let Some(err) = error {
         app.messages_state.toasts.warning(&err);
         return;
@@ -1299,7 +1298,7 @@ fn start_create_from_template(
     _key: String,
     template: crate::config::schema::SessionTemplate,
 ) {
-    app.dialog_state.template_create_in_flight = true;
+    app.dialog_state.template_create_request.begin();
     let core_client = app.core_client.clone();
     let project_dir = app.session_state.project_dir.clone();
     let template_name = template.name.clone();
@@ -1366,7 +1365,7 @@ fn apply_template_session_created(
     template_name: String,
     error: Option<String>,
 ) {
-    app.dialog_state.template_create_in_flight = false;
+    app.dialog_state.template_create_request.clear_loading();
     if let Some(err) = error {
         app.messages_state
             .toasts
@@ -2478,8 +2477,7 @@ async fn handle_confirm_import(app: &mut app::App, source: ImportSource) {
 }
 
 fn start_preview_import(app: &mut app::App, source: ImportSource) {
-    app.dialog_state.import_preview_request_id += 1;
-    let request_id = app.dialog_state.import_preview_request_id;
+    let request_id = app.dialog_state.import_request.begin();
 
     if let Some(ref mut import) = app.dialog_state.import_dialog {
         import.set_error("Loading preview...".to_string());
@@ -2645,7 +2643,7 @@ fn apply_import_preview_loaded(
     msg_count: usize,
     error: Option<String>,
 ) {
-    if request_id != app.dialog_state.import_preview_request_id {
+    if !app.dialog_state.import_request.is_current(request_id) {
         return;
     }
     if let Some(ref mut import) = app.dialog_state.import_dialog {
@@ -2658,8 +2656,7 @@ fn apply_import_preview_loaded(
 }
 
 fn start_confirm_import(app: &mut app::App, source: ImportSource) {
-    app.dialog_state.import_preview_request_id += 1;
-    let request_id = app.dialog_state.import_preview_request_id;
+    let request_id = app.dialog_state.import_request.begin();
 
     if let Some(ref mut import) = app.dialog_state.import_dialog {
         import.set_error("Importing...".to_string());
@@ -2731,7 +2728,7 @@ fn apply_import_confirmed(
     session: Option<crate::session::Session>,
     error: Option<String>,
 ) {
-    if request_id != app.dialog_state.import_preview_request_id {
+    if !app.dialog_state.import_request.is_current(request_id) {
         return;
     }
     if let Some(ref mut import) = app.dialog_state.import_dialog {
@@ -5528,8 +5525,7 @@ async fn handle_research_load_section(app: &mut app::App, run_id: String, sectio
 }
 
 fn start_research_list_runs(app: &mut app::App) {
-    app.dialog_state.research_request_id += 1;
-    let request_id = app.dialog_state.research_request_id;
+    let request_id = app.dialog_state.research_request.begin();
 
     if let Some(ref mut browser) = app.dialog_state.research_browser {
         browser.loading = true;
@@ -5569,7 +5565,7 @@ fn apply_research_runs_loaded(
     runs: Vec<crate::research::service::ResearchRunSummary>,
     error: Option<String>,
 ) {
-    if request_id != app.dialog_state.research_request_id {
+    if !app.dialog_state.research_request.is_current(request_id) {
         return;
     }
     if let Some(ref mut browser) = app.dialog_state.research_browser {
@@ -5583,8 +5579,7 @@ fn apply_research_runs_loaded(
 }
 
 fn start_research_load_run(app: &mut app::App, run_id: String) {
-    app.dialog_state.research_request_id += 1;
-    let request_id = app.dialog_state.research_request_id;
+    let request_id = app.dialog_state.research_request.begin();
 
     if let Some(ref mut browser) = app.dialog_state.research_browser {
         browser.loading = true;
@@ -5627,7 +5622,7 @@ fn apply_research_run_loaded(
     bundle: Option<Box<crate::research::types::ResearchBundle>>,
     error: Option<String>,
 ) {
-    if request_id != app.dialog_state.research_request_id {
+    if !app.dialog_state.research_request.is_current(request_id) {
         return;
     }
     if let Some(ref mut browser) = app.dialog_state.research_browser {
@@ -5641,8 +5636,7 @@ fn apply_research_run_loaded(
 }
 
 fn start_research_load_section(app: &mut app::App, run_id: String, section: String) {
-    app.dialog_state.research_request_id += 1;
-    let request_id = app.dialog_state.research_request_id;
+    let request_id = app.dialog_state.research_request.begin();
 
     let project_dir = app.session_state.project_dir.clone();
     let tx = app.tui_cmd_tx.clone();
@@ -5788,7 +5782,7 @@ fn apply_research_section_loaded(
     )>,
     error: Option<String>,
 ) {
-    if request_id != app.dialog_state.research_request_id {
+    if !app.dialog_state.research_request.is_current(request_id) {
         return;
     }
     if let Some(ref mut browser) = app.dialog_state.research_browser {
@@ -7324,6 +7318,32 @@ mod async_cmd_tests {
         App::new_for_testing("/tmp".into())
     }
 
+    fn test_session() -> crate::session::Session {
+        crate::session::Session {
+            id: "test-session-1".into(),
+            project_id: "/tmp".into(),
+            workspace_id: None,
+            parent_id: None,
+            slug: "test".into(),
+            directory: "/tmp".into(),
+            title: "Test Session".into(),
+            version: "1".into(),
+            share_url: None,
+            summary_additions: None,
+            summary_deletions: None,
+            summary_files: None,
+            summary_diffs: None,
+            revert: None,
+            permission: None,
+            tags: Vec::new(),
+            time_created: 0,
+            time_updated: 0,
+            time_compacting: None,
+            time_archived: None,
+            time_deleted: None,
+        }
+    }
+
     #[test]
     fn apply_sessions_reloaded_with_error_shows_toast() {
         let mut app = make_test_app();
@@ -7348,9 +7368,9 @@ mod async_cmd_tests {
     #[test]
     fn apply_sessions_reloaded_clears_loading() {
         let mut app = make_test_app();
-        app.dialog_state.session_reload_in_flight = true;
+        app.dialog_state.session_reload_request.begin();
         apply_sessions_reloaded(&mut app, Vec::new(), HashMap::new(), None);
-        assert!(!app.dialog_state.session_reload_in_flight);
+        assert!(!app.dialog_state.session_reload_request.is_loading());
     }
 
     #[test]
@@ -7409,5 +7429,199 @@ mod async_cmd_tests {
             .map(|t| t.message.clone())
             .collect();
         assert!(toasts.iter().any(|t| t.contains("doctor: OK")));
+    }
+
+    #[test]
+    fn import_stale_preview_is_ignored() {
+        let mut app = make_test_app();
+        app.dialog_state.import_dialog =
+            Some(crate::tui::components::dialogs::import::ImportDialog::default());
+
+        // Start preview A
+        let id_a = app.dialog_state.import_request.begin();
+        // Start preview B (supersedes A)
+        let id_b = app.dialog_state.import_request.begin();
+
+        // Apply A's result -- should be ignored (stale)
+        apply_import_preview_loaded(&mut app, id_a, Some(test_session()), 10, None);
+        // Import dialog's preview should still be None (A was ignored, B hasn't arrived)
+        let import = app.dialog_state.import_dialog.as_ref().unwrap();
+        assert!(
+            import.preview_session.is_none(),
+            "preview A should be ignored, preview_session should still be None"
+        );
+
+        // Apply B's result -- should succeed
+        apply_import_preview_loaded(&mut app, id_b, Some(test_session()), 5, None);
+        let import = app.dialog_state.import_dialog.as_ref().unwrap();
+        assert!(
+            import.preview_session.is_some(),
+            "preview B should be applied"
+        );
+    }
+
+    #[test]
+    fn import_cancelled_result_is_ignored() {
+        let mut app = make_test_app();
+        app.dialog_state.import_dialog =
+            Some(crate::tui::components::dialogs::import::ImportDialog::default());
+
+        let id = app.dialog_state.import_request.begin();
+        app.dialog_state.import_request.cancel();
+
+        // Apply result after cancel -- should be ignored
+        apply_import_preview_loaded(&mut app, id, Some(test_session()), 5, None);
+        let import = app.dialog_state.import_dialog.as_ref().unwrap();
+        assert!(
+            import.preview_session.is_none(),
+            "result after cancel should be ignored"
+        );
+    }
+
+    #[test]
+    fn research_stale_run_is_ignored() {
+        let mut app = make_test_app();
+        app.dialog_state.research_browser = Some(
+            crate::tui::components::dialogs::research::ResearchBrowserDialog::new(Arc::new(
+                Theme::dark(),
+            )),
+        );
+
+        // Start load run A
+        let id_a = app.dialog_state.research_request.begin();
+        // Simulate A setting browser.loading = true
+        if let Some(ref mut b) = app.dialog_state.research_browser {
+            b.loading = true;
+        }
+        // Start load run B (supersedes A)
+        let id_b = app.dialog_state.research_request.begin();
+
+        // Apply A -- stale, should be ignored (loading stays true from B's perspective)
+        apply_research_run_loaded(&mut app, id_a, "run-a".into(), None, None);
+        assert!(
+            app.dialog_state
+                .research_browser
+                .as_ref()
+                .unwrap()
+                .loading,
+            "research should still be loading (A was stale)"
+        );
+
+        // Apply B -- should succeed and clear loading
+        apply_research_run_loaded(&mut app, id_b, "run-b".into(), None, None);
+        assert!(
+            !app
+                .dialog_state
+                .research_browser
+                .as_ref()
+                .unwrap()
+                .loading,
+            "research should not be loading after B applied"
+        );
+    }
+
+    #[test]
+    fn close_dialog_cancels_import_request() {
+        let mut app = make_test_app();
+        app.dialog_state.import_dialog =
+            Some(crate::tui::components::dialogs::import::ImportDialog::default());
+        app.ui_state.dialog = Dialog::Import;
+
+        let id = app.dialog_state.import_request.begin();
+        assert!(app.dialog_state.import_request.is_loading());
+
+        app.close_dialog();
+
+        assert!(!app.dialog_state.import_request.is_loading());
+        assert!(app.dialog_state.import_request.is_cancelled());
+        // Old request ID should be stale
+        assert!(!app.dialog_state.import_request.is_current(id));
+    }
+
+    #[test]
+    fn close_dialog_cancels_research_request() {
+        let mut app = make_test_app();
+        app.dialog_state.research_browser = Some(
+            crate::tui::components::dialogs::research::ResearchBrowserDialog::new(Arc::new(
+                Theme::dark(),
+            )),
+        );
+        app.ui_state.dialog = Dialog::ResearchBrowser;
+
+        let id = app.dialog_state.research_request.begin();
+        assert!(app.dialog_state.research_request.is_loading());
+
+        app.close_dialog();
+
+        assert!(!app.dialog_state.research_request.is_loading());
+        assert!(app.dialog_state.research_request.is_cancelled());
+        assert!(!app.dialog_state.research_request.is_current(id));
+    }
+
+    #[test]
+    fn session_messages_stale_result_ignored() {
+        let mut app = make_test_app();
+        // Load messages for session A
+        apply_session_messages_loaded(&mut app, "session-a".into(), Vec::new(), None);
+
+        // Load messages for session B (simulates user switching sessions)
+        apply_session_messages_loaded(&mut app, "session-b".into(), Vec::new(), None);
+
+        // Messages should be empty after switching to session B
+        assert_eq!(
+            app.messages_state.messages.message_count(),
+            0,
+            "messages should be empty after switching sessions"
+        );
+    }
+
+    #[test]
+    fn session_mutation_stale_is_ignored() {
+        let mut app = make_test_app();
+        let id1 = app.dialog_state.session_mutation_request.begin();
+        let id2 = app.dialog_state.session_mutation_request.begin();
+
+        // Apply mutation with stale id1 -- should be ignored
+        apply_session_mutation_finished(
+            &mut app,
+            id1,
+            SessionMutationOp::Delete,
+            vec!["session-1".into()],
+            "deleted".into(),
+            false,
+            None,
+        );
+        // No toast should appear for stale result
+        let toasts: Vec<String> = app
+            .messages_state
+            .toasts
+            .iter()
+            .map(|t| t.message.clone())
+            .collect();
+        assert!(
+            !toasts.iter().any(|t| t.contains("deleted")),
+            "stale mutation result should not show toast"
+        );
+
+        // Apply with current id2 -- should succeed
+        apply_session_mutation_finished(
+            &mut app,
+            id2,
+            SessionMutationOp::Delete,
+            vec!["session-2".into()],
+            "deleted".into(),
+            false,
+            None,
+        );
+        let toasts: Vec<String> = app
+            .messages_state
+            .toasts
+            .iter()
+            .map(|t| t.message.clone())
+            .collect();
+        assert!(
+            toasts.iter().any(|t| t.contains("deleted")),
+            "current mutation result should show toast"
+        );
     }
 }

@@ -43,6 +43,40 @@ This ensures keyboard input, resize handling, streaming redraws, spinner animati
 
 See `src/tui/async_cmd.rs` for the `spawn_tui_task` helper.
 
+### AsyncUiRequestState (Phase 10)
+
+`AsyncUiRequestState` (`src/tui/app/state/async_request.rs`) is a small reusable state machine that replaces ad-hoc generation counters and boolean in-flight flags for dialog async lifecycle.
+
+**Type:**
+```rust
+pub struct AsyncUiRequestState {
+    request_id: u64,        // Monotonically increasing generation counter
+    loading: bool,          // Whether a request is currently in flight
+    cancelled: bool,        // Whether the current request was cancelled
+    last_error: Option<String>, // Last error message from a failed request
+}
+```
+
+**Methods:**
+- `begin() -> u64` — increments request ID, sets loading, clears cancelled and previous error. Returns the new ID.
+- `cancel()` — sets cancelled, clears loading, increments request ID to invalidate in-flight work.
+- `finish(request_id) -> bool` — returns true (and clears loading) only if the ID is current and not cancelled. Stale completions return false.
+- `fail(request_id, error) -> bool` — same guard as `finish`, but stores the error message on success.
+- `is_current(request_id) -> bool` — checks if a request ID matches the current generation.
+- `clear_loading()` — clears loading without modifying the request ID (useful for dialog close cleanup).
+
+**DialogState fields using AsyncUiRequestState:**
+- `import_request` — import preview/confirm
+- `research_request` — research browser list/run/section loads
+- `session_reload_request` — session list reload
+- `task_list_request` — task listing
+- `task_delete_request` — task deletion
+- `worktree_list_request` — worktree listing
+- `template_create_request` — template creation
+- `session_mutation_request` — session delete/archive/fork/rename/share
+
+**Dialog close integration:** `close_dialog()` (`pub(crate)` for testability) cancels async request states for Import and ResearchBrowser dialogs, ensuring stale completions are ignored after dismissal.
+
 ### Background Task Lifecycle (Phase 7)
 
 TUI-owned background tasks are tracked via [`TuiTaskRegistry`](src/tui/task_lifecycle.rs) on `App`.

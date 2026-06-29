@@ -1,5 +1,9 @@
 # TUI Phase 10: Dialog Loading, Cancellation, and Stale Result Handling
 
+## Completed
+
+Implementation is done. `AsyncUiRequestState` is defined in `src/tui/app/state/async_request.rs` with 14 unit tests. `DialogState` fields migrated to `AsyncUiRequestState` instances. `close_dialog()` is `pub(crate)` and cancels async request states for Import and ResearchBrowser dialogs. 13 integration tests cover stale preview, stale run, cancelled result, close-dialog cancellation, session mutation stale, and session messages stale behavior.
+
 ## Objective
 
 Standardize async dialog behavior across the TUI. Dialogs that load data, preview files, query core, or perform background work should share consistent semantics for loading, cancellation, stale results, disabled actions, and error display.
