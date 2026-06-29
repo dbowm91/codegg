@@ -7903,4 +7903,50 @@ mod async_cmd_tests {
             "current mutation result should show toast"
         );
     }
+
+    #[tokio::test]
+    async fn prepare_shutdown_cancels_registered_tasks() {
+        use crate::tui::task_lifecycle::TuiTaskKind;
+        let mut app = make_test_app();
+
+        // Spawn a few tasks that would block forever
+        app.task_registry
+            .spawn(TuiTaskKind::Command, "cmd1", async {
+                tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+            });
+        app.task_registry
+            .spawn(TuiTaskKind::Research, "research1", async {
+                tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+            });
+        assert_eq!(app.task_registry.active_count(), 2);
+
+        app.prepare_shutdown();
+
+        // All registered tasks should be cancelled
+        assert_eq!(app.task_registry.cancelled_count(), 2);
+        assert_eq!(app.task_registry.active_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn prepare_shutdown_drains_shell_handles() {
+        let mut app = make_test_app();
+
+        // Insert a shell handle (aborts a task on kill)
+        let handle = tokio::spawn(async {
+            tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+        });
+        app.shell_handles.insert(
+            42,
+            crate::shell::runtime::ShellHandle::new_for_test(
+                crate::shell::types::ShellCommandId(42),
+                handle.abort_handle(),
+            ),
+        );
+        assert_eq!(app.shell_handles.len(), 1);
+
+        app.prepare_shutdown();
+
+        // Shell handles should be drained
+        assert!(app.shell_handles.is_empty());
+    }
 }
