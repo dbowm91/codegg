@@ -108,7 +108,7 @@ TUI-owned background tasks are tracked via [`TuiTaskRegistry`](src/tui/task_life
 ```
 tui/
 ├── app/                    # Main application state
-│   ├── mod.rs              # App struct (7071 lines), event loop, key handling
+│   ├── mod.rs              # App struct, event loop, key handling
 │   ├── types.rs            # Dialog, TuiMsg, TuiCommand, SessionStatus, etc.
 │   └── state/              # State domains
 │       ├── agent.rs        # AgentState (models, agents, selection)
@@ -119,6 +119,22 @@ tui/
 │       ├── prompt.rs       # PromptState (prompt, completions)
 │       ├── session.rs      # SessionState (session, history, git info)
 │       └── ui.rs           # UiState (theme, layout, routes, keybindings)
+├── commands/               # TUI command handlers (extracted from mod.rs)
+│   ├── mod.rs              # Re-exports
+│   ├── sessions.rs         # Session CRUD, archive, fork, bulk ops, rename, share, import
+│   ├── tasks.rs            # Task list, delete, schedule
+│   ├── goals.rs            # Goal set, pause, resume, clear, done, checkpoint, budget
+│   ├── memory.rs           # Memory summary, search, remember, forget
+│   ├── research.rs         # Research list runs, load run, load section
+│   ├── import.rs           # Import preview, confirm
+│   ├── shell.rs            # Shell list, include, rerun, kill
+│   ├── security.rs         # Security review dispatch
+│   └── diagnostics.rs      # Doctor, diagnostics commands
+├── runtime/                # Runtime logic (extracted from mod.rs)
+│   ├── mod.rs              # Re-exports
+│   ├── command_dispatch.rs # Main command dispatch match (TuiCommand routing)
+│   ├── app_events.rs       # Bus event handling (AppEvent subscription and dispatch)
+│   └── render_recovery.rs  # Render panic recovery (progressive fallback logic)
 ├── components/             # UI widgets and components
 │   ├── component/          # Component trait and FocusManager
 │   │   ├── component.rs    # Component trait, DialogType enum (NOT mod.rs)
@@ -164,12 +180,38 @@ tui/
 ├── layout.rs               # Layout calculations, TuiLayout
 ├── route.rs                # Route/RouteManager (Home, Session routes)
 ├── theme.rs                # Theme definitions (31 themes)
-├── file_diff.rs             # Async diff stats computation for sidebar file changes
+├── file_diff.rs            # Async diff stats computation for sidebar file changes
 ├── task_lifecycle.rs       # Task registry for lifecycle tracking (TuiTaskRegistry)
 ├── async_cmd.rs            # Async command spawn helpers (spawn_tui_task, spawn_registered_tui_task)
 ├── command.rs              # Slash command registry
-└── mod.rs                  # TUI entry point, event loop, GlobalEventBus
+└── mod.rs                  # TUI entry point, event loop (~1450 lines after decomposition)
 ```
+
+### Commands Directory (`commands/`)
+
+Command handlers extracted from the monolithic `mod.rs` into domain-specific submodules. Each submodule exports public handler functions that are called from `runtime/command_dispatch.rs`.
+
+| Module | Responsibility |
+|--------|---------------|
+| `sessions.rs` | Session CRUD: delete, archive, fork, bulk ops, rename, share/unshare, export, reload |
+| `tasks.rs` | Background task operations: list, delete, schedule |
+| `goals.rs` | Goal lifecycle: set, pause, resume, clear, done, checkpoint, budget |
+| `memory.rs` | Persistent memory: summary, search, remember, forget |
+| `research.rs` | Research browser: list runs, load run, load section |
+| `import.rs` | Session import: preview, confirm |
+| `shell.rs` | Human shell: list, include, rerun, kill |
+| `security.rs` | Security review dispatch |
+| `diagnostics.rs` | Diagnostics: doctor, context diagnostics |
+
+### Runtime Directory (`runtime/`)
+
+Runtime logic extracted from `mod.rs` to separate concerns:
+
+| Module | Responsibility |
+|--------|---------------|
+| `command_dispatch.rs` | The main `match cmd { ... }` dispatch that routes `TuiCommand` variants to handler functions in `commands/` |
+| `app_events.rs` | Bus event handling: `AppEvent` subscription, match, and dispatch to appropriate state mutations |
+| `render_recovery.rs` | Progressive render panic recovery logic (component fallbacks, root fallback, state reset) |
 
 ## State Domains
 

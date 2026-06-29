@@ -40,6 +40,22 @@ src/tui/
 │   │   ├── session.rs      # SessionState (session, history)
 │   │   └── ui.rs           # UiState (theme, layout, routes)
 │   └── types.rs        # Dialog, TuiMsg, TuiCommand, SessionStatus, etc.
+├── commands/               # TUI command handlers (extracted from mod.rs)
+│   ├── mod.rs              # Re-exports
+│   ├── sessions.rs         # Session CRUD, archive, fork, bulk ops, rename, share, import
+│   ├── tasks.rs            # Task list, delete, schedule
+│   ├── goals.rs            # Goal set, pause, resume, clear, done, checkpoint, budget
+│   ├── memory.rs           # Memory summary, search, remember, forget
+│   ├── research.rs         # Research list runs, load run, load section
+│   ├── import.rs           # Import preview, confirm
+│   ├── shell.rs            # Shell list, include, rerun, kill
+│   ├── security.rs         # Security review dispatch
+│   └── diagnostics.rs      # Doctor, diagnostics commands
+├── runtime/                # Runtime logic (extracted from mod.rs)
+│   ├── mod.rs              # Re-exports
+│   ├── command_dispatch.rs # Main command dispatch match (TuiCommand routing)
+│   ├── app_events.rs       # Bus event handling (AppEvent subscription and dispatch)
+│   └── render_recovery.rs  # Render panic recovery (progressive fallback logic)
 ├── components/
 │   ├── component/          # Component trait submodules
 │   │   ├── context.rs      # AppContext for overlay dialogs
@@ -82,8 +98,15 @@ src/tui/
 ├── terminal.rs         # TerminalGuard for terminal lifecycle management
 ├── theme.rs            # Theme definitions
 ├── command.rs          # Slash command registry
-└── mod.rs              # TUI entry point, event loop
+└── mod.rs              # TUI entry point, event loop (~1450 lines after Phase 11 decomposition)
 ```
+
+### Module Decomposition (Phase 11)
+
+The TUI entry point (`mod.rs`) was decomposed from ~7950 lines to ~1450 lines. Command handlers live in `commands/` (9 domain submodules), and runtime logic (command dispatch, bus event handling, render panic recovery) lives in `runtime/`.
+
+- **`commands/`** — Each submodule exports public handler functions. The main command dispatch in `runtime/command_dispatch.rs` routes `TuiCommand` variants to these handlers.
+- **`runtime/`** — Separates concerns: `command_dispatch.rs` is the match arm routing, `app_events.rs` handles `AppEvent` bus subscriptions, and `render_recovery.rs` contains progressive render panic recovery logic.
 
 ## Key Concepts
 

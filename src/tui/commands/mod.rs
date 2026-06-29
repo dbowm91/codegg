@@ -1,0 +1,9 @@
+pub(super) mod diagnostics;
+pub(super) mod goals;
+pub(super) mod import;
+pub(super) mod memory;
+pub(super) mod research;
+pub(super) mod security;
+pub(super) mod sessions;
+pub(super) mod shell;
+pub(super) mod tasks;

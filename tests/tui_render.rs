@@ -8,8 +8,8 @@
 use codegg::session::events::{AgentPlan, AgentPlanItem, PlanItemStatus};
 use codegg::session::message::ToolStatus;
 use codegg::tui::app::state::session::{ChangedFile, DiffStatsState};
-use codegg::tui::app::{CompletionType, TodoEntry};
 use codegg::tui::app::App;
+use codegg::tui::app::{CompletionType, TodoEntry};
 use codegg::tui::components::completion_overlay::{CompletionItem, CompletionItemKind};
 use codegg::tui::components::messages::SearchMatch;
 use codegg::tui::route::Route;
@@ -1273,7 +1273,10 @@ fn panic_injection_multiple_components_in_single_render() {
         "expected messages fallback text"
     );
     assert_eq!(app.ui_state.dialog, Dialog::None, "dialog should be closed");
-    assert!(!app.prompt_state.show_completions, "completions should be hidden");
+    assert!(
+        !app.prompt_state.show_completions,
+        "completions should be hidden"
+    );
     assert!(!app.ui_state.timeline_visible, "timeline should be hidden");
 }
 
@@ -1753,8 +1756,20 @@ fn app_with_search_and_matches() -> App {
     app.messages_state.messages.search_visible = true;
     app.messages_state.messages.search_query = Some("fox".into());
     app.messages_state.messages.search_matches = vec![
-        SearchMatch { msg_idx: 0, part_idx: 0, line_in_msg: 0, start: 16, end: 19 },
-        SearchMatch { msg_idx: 1, part_idx: 0, line_in_msg: 0, start: 11, end: 14 },
+        SearchMatch {
+            msg_idx: 0,
+            part_idx: 0,
+            line_in_msg: 0,
+            start: 16,
+            end: 19,
+        },
+        SearchMatch {
+            msg_idx: 1,
+            part_idx: 0,
+            line_in_msg: 0,
+            start: 11,
+            end: 14,
+        },
     ];
     app.messages_state.messages.search_current = 0;
     app
@@ -1847,9 +1862,9 @@ fn render_multiline_diagnostics_toast() {
 #[test]
 fn render_multiline_diagnostics_toast_tiny() {
     let mut app = test_app();
-    app.messages_state.toasts.error(
-        "Diagnostics:\n  warning: unused variable `x`\n  error[E0308]: mismatched types",
-    );
+    app.messages_state
+        .toasts
+        .error("Diagnostics:\n  warning: unused variable `x`\n  error[E0308]: mismatched types");
     let buf = assert_render_ok(&mut app, 40, 12);
     assert!(
         !buffer_contains(&buf, "Rendering Error"),
