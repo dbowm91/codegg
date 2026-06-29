@@ -573,8 +573,13 @@ impl Component for SessionDialog {
         let scroll = self.scroll.get();
 
         if sorted.is_empty() {
+            let label = if self.loading {
+                "  Reloading..."
+            } else {
+                "  (no sessions loaded)"
+            };
             lines.push(Line::from(Span::styled(
-                "  (no sessions loaded)",
+                label,
                 Style::default().fg(theme.muted),
             )));
         } else {
@@ -658,7 +663,7 @@ impl Component for SessionDialog {
             )));
         } else {
             lines.push(Line::from(Span::styled(
-                "↑/↓ navigate  Enter open  Esc cancel  b bulk mode",
+                "↑/↓ navigate  |  Enter open  |  Esc close  |  b bulk mode",
                 Style::default().fg(theme.muted),
             )));
             lines.push(Line::from(Span::styled(

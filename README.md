@@ -8,11 +8,11 @@ A lightweight, pure-Rust implementation of an AI coding agent.
 - **Multiple Providers** - Use Anthropic, OpenAI, Google, Azure, Bedrock, and more
 - **LSP Support** - Built-in bidirectional Language Server Protocol with code intelligence (semantic context, preview-only semantic checks), capability-gated operations, and supervision/restart lifecycle. Preview artifact registry with stale-base detection, list/detail inspection, and safe apply handoff (gated by `validate_preview_apply`). Model-tier-aware context policy with centralized policy resolver (`resolve_model_tier`) and workflow-specific defaults for all 12 recipe types. Stale evidence and unavailable server policies. Optional semantic memory cache (Phase 12) opt-in via `[lsp_semantic_cache]` mode = "memory", with conservative eviction on generation/hash/capability changes; `/lsp-cache-status` and `/lsp-cache-clear` for inspection. Tier 1 (rust-analyzer, basedpyright) and Tier 2 (gopls, typescript-language-server, clangd) server compatibility verified via CI; 39 servers configurable. Phase 13 `/lsp-doctor` (read-only, never starts servers) plus 10 Phase 14 workflow UX commands (`/lsp-repair-local`, `/lsp-repair-hunk`, `/lsp-review-file`, `/lsp-review-diff`, `/lsp-security-review`, `/lsp-impact`, `/lsp-test-repair`, `/lsp-interface`, `/lsp-cross-repair`, `/lsp-call-neighbors`) and Phase 15 `/lsp-context-diagnostics` (on-demand, no agent prompt bloat) all dispatch verified. **Phase 16 disk cache and Phase 17 manual lifecycle (`/lsp-start`, `/lsp-replay-docs`) are explicitly deferred** — memory-only cache and auto-start/restart remain the only active modes. See architecture/lsp.md and .opencode/skills/lsp/SKILL.md.
 - **Plugin System** - WASM-based plugin extensibility
-- **TUI Interface** - Terminal user interface with syntax highlighting
+- **TUI Interface** - Terminal user interface with syntax highlighting, scrollable dialogs for long output, unified status bar with activity indicators, and standardized dialog hints
 - **Server Mode** - Headless HTTP server for remote access
 - **Session Management** - Persistent conversations with SQLite storage
 - **Context System** - Artifact storage, tool-output projection, cache-aware context packing (observe/diagnostic), and hardened gated active context policy (first use: phase-scoped tool-palette reduction (base-derived, non-cumulative, backoff/starvation, Warn dry-run, threshold gate; still disabled by default); volatile-tail compaction for late-context token reduction of old tool results with recovery handles; see architecture/cache-aware-context.md and `[context_policy]` config)
-- **Human Shell** - Run shell commands with `!command` (ephemeral, hidden from model) or `!!command` (auto-promoted into context). Bounded output storage, safety policy blocking destructive commands, and TUI commands for listing, including, rerunning, and killing commands. See `architecture/human_shell.md`.
+- **Human Shell** - Run shell commands with `!command` (ephemeral, hidden from model) or `!!command` (auto-promoted into context). Bounded output storage, safety policy blocking destructive commands, and TUI commands for listing, viewing details, including, rerunning, and killing commands. Shell detail view shows full metadata with promoted state and truncation info. See `architecture/human_shell.md`.
 - **Security** - SSRF protection, path validation, Landlock sandboxing, and security review workflow (diff-based preset selection, risk-marker-to-prompt synthesis, read-only evidence gathering via `securityContext`)
 
 ## Installation
@@ -254,7 +254,9 @@ The TUI supports inline slash commands for quick actions.
 | `/tasks` | List background tasks |
 | `/task-del <id>` | Delete background task |
 | `/shell-list` | List recent shell commands with status |
+| `/shell-show <id>` | Show full details of a shell command in a scrollable dialog |
 | `/shell-include <id> [mode]` | Promote shell output into context (stdout/stderr/all) |
+| `/shell-ask <id>` | Ask the agent about a shell command's output |
 | `/shell-rerun <id>` | Rerun a previous shell command |
 | `/shell-kill <id>` | Kill a running shell command |
 | `/exit`, `/quit`, `/q` | Exit the application |

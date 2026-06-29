@@ -94,12 +94,9 @@ pub(crate) async fn handle_preview_import(app: &mut App, source: ImportSource) {
                                     import.set_error(format!("Import failed: {}", message));
                                 }
                             }
-                            Ok(other) => {
+                            Ok(_other) => {
                                 if let Some(ref mut import) = app.dialog_state.import_dialog {
-                                    import.set_error(format!(
-                                        "Unexpected import response: {:?}",
-                                        other
-                                    ));
+                                    import.set_error("Unexpected import response".to_string());
                                 }
                             }
                             Err(e) => {
@@ -126,7 +123,7 @@ pub(crate) async fn handle_preview_import(app: &mut App, source: ImportSource) {
     }
 
     if let Some(ref mut import) = app.dialog_state.import_dialog {
-        import.set_error("Core client not available".to_string());
+        import.set_error("Core unavailable — check daemon status with /doctor".to_string());
     }
 }
 
@@ -150,9 +147,9 @@ pub(crate) async fn handle_confirm_import(app: &mut App, source: ImportSource) {
                             import.set_error(format!("Import failed: {}", message));
                         }
                     }
-                    Ok(other) => {
+                    Ok(_other) => {
                         if let Some(ref mut import) = app.dialog_state.import_dialog {
-                            import.set_error(format!("Unexpected import response: {:?}", other));
+                            import.set_error("Unexpected import response".to_string());
                         }
                     }
                     Err(e) => {
@@ -172,7 +169,7 @@ pub(crate) async fn handle_confirm_import(app: &mut App, source: ImportSource) {
     }
 
     if let Some(ref mut import) = app.dialog_state.import_dialog {
-        import.set_error("Core client not available".to_string());
+        import.set_error("Core unavailable — check daemon status with /doctor".to_string());
     }
 }
 
@@ -197,7 +194,7 @@ pub(crate) fn start_preview_import(app: &mut App, source: ImportSource) {
                     request_id,
                     session: None,
                     msg_count: 0,
-                    error: Some("Core client not available".to_string()),
+                    error: Some("Core unavailable — check daemon status with /doctor".to_string()),
                 });
             };
 
@@ -299,14 +296,11 @@ pub(crate) fn start_preview_import(app: &mut App, source: ImportSource) {
                                             error: Some(format!("Import failed: {}", message)),
                                         })
                                     }
-                                    Ok(other) => Some(TuiCommand::ImportPreviewLoaded {
+                                    Ok(_other) => Some(TuiCommand::ImportPreviewLoaded {
                                         request_id,
                                         session: None,
                                         msg_count: 0,
-                                        error: Some(format!(
-                                            "Unexpected import response: {:?}",
-                                            other
-                                        )),
+                                        error: Some("Unexpected import response".to_string()),
                                     }),
                                     Err(e) => Some(TuiCommand::ImportPreviewLoaded {
                                         request_id,
@@ -375,7 +369,7 @@ pub(crate) fn start_confirm_import(app: &mut App, source: ImportSource) {
                 return Some(TuiCommand::ImportConfirmed {
                     request_id,
                     session: None,
-                    error: Some("Core client not available".to_string()),
+                    error: Some("Core unavailable — check daemon status with /doctor".to_string()),
                 });
             };
 
@@ -400,10 +394,10 @@ pub(crate) fn start_confirm_import(app: &mut App, source: ImportSource) {
                                 error: Some(format!("Import failed: {}", message)),
                             })
                         }
-                        Ok(other) => Some(TuiCommand::ImportConfirmed {
+                        Ok(_other) => Some(TuiCommand::ImportConfirmed {
                             request_id,
                             session: None,
-                            error: Some(format!("Unexpected import response: {:?}", other)),
+                            error: Some("Unexpected import response".to_string()),
                         }),
                         Err(e) => Some(TuiCommand::ImportConfirmed {
                             request_id,

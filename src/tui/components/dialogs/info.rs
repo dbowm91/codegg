@@ -15,6 +15,10 @@ pub enum InfoType {
     Cost,
     Usage,
     ShellShow,
+    Stats,
+    TaskList,
+    MemoryResults,
+    DoctorReport,
 }
 
 #[derive(Clone)]
@@ -51,6 +55,10 @@ impl InfoDialog {
             InfoType::Cost => " Cost ",
             InfoType::Usage => " Usage ",
             InfoType::ShellShow => " Shell Command ",
+            InfoType::Stats => " TUI Stats ",
+            InfoType::TaskList => " Tasks ",
+            InfoType::MemoryResults => " Memory ",
+            InfoType::DoctorReport => " Doctor ",
         }
     }
 
@@ -60,6 +68,10 @@ impl InfoDialog {
             InfoType::Cost => DialogType::Cost,
             InfoType::Usage => DialogType::Usage,
             InfoType::ShellShow => DialogType::ShellShow,
+            InfoType::Stats => DialogType::Stats,
+            InfoType::TaskList => DialogType::TaskList,
+            InfoType::MemoryResults => DialogType::MemoryResults,
+            InfoType::DoctorReport => DialogType::DoctorReport,
         }
     }
 

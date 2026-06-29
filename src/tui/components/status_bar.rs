@@ -6,6 +6,25 @@ use std::sync::Arc;
 
 use super::super::theme::Theme;
 
+#[derive(Debug, Clone)]
+pub struct TuiStatusSummary {
+    pub primary: String,
+    pub secondary: Option<String>,
+    pub activity: Vec<String>,
+    pub undo_message: Option<String>,
+}
+
+impl TuiStatusSummary {
+    pub fn idle() -> Self {
+        Self {
+            primary: "idle".to_string(),
+            secondary: None,
+            activity: Vec::new(),
+            undo_message: None,
+        }
+    }
+}
+
 pub struct StatusBarWidget {
     pub theme: Arc<Theme>,
     pub status: String,
@@ -86,6 +105,30 @@ impl StatusBarWidget {
     /// Set the compact LSP status line. `None` clears the indicator.
     pub fn set_lsp_status(&mut self, lsp_status: Option<String>) {
         self.lsp_status = lsp_status;
+    }
+
+    pub fn apply_summary(&mut self, summary: &TuiStatusSummary) {
+        self.status = summary.primary.clone();
+        self.subagent_count = 0;
+        self.goal_str = None;
+        self.undo_message = summary.undo_message.clone();
+        self.lsp_status = None;
+
+        if let Some(ref secondary) = summary.secondary {
+            self.token_str = secondary.clone();
+        }
+
+        for chip in &summary.activity {
+            if let Some(rest) = chip.strip_prefix("subagents:") {
+                if let Ok(n) = rest.parse::<usize>() {
+                    self.subagent_count = n;
+                }
+            } else if let Some(rest) = chip.strip_prefix("goal:") {
+                self.goal_str = Some(rest.to_string());
+            } else if let Some(rest) = chip.strip_prefix("lsp:") {
+                self.lsp_status = Some(rest.to_string());
+            }
+        }
     }
 }
 

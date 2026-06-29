@@ -258,7 +258,7 @@ impl Component for AgentDialog {
 
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
-            "↑/↓ navigate  Enter select  Esc cancel",
+            "↑/↓ navigate  |  Enter select  |  Esc close",
             Style::default().fg(theme.muted),
         )));
 

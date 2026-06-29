@@ -95,7 +95,7 @@ pub(crate) fn start_goal_show(app: &mut App, session_id: String) {
                     session_id,
                     op: "show".to_string(),
                     response: None,
-                    error: Some("Core client not available".to_string()),
+                    error: Some("Core unavailable — check daemon status with /doctor".to_string()),
                 });
             };
             let response = core_client
@@ -184,7 +184,7 @@ pub(crate) fn start_goal_checkpoint(app: &mut App, session_id: String, project_i
                     session_id,
                     op: "checkpoint".to_string(),
                     response: None,
-                    error: Some("Core client not available".to_string()),
+                    error: Some("Core unavailable — check daemon status with /doctor".to_string()),
                 });
             };
             let response = core_client
@@ -238,7 +238,7 @@ pub(crate) fn start_goal_budget_raise(
                     session_id,
                     op: "budget-raise".to_string(),
                     response: None,
-                    error: Some("Core client not available".to_string()),
+                    error: Some("Core unavailable — check daemon status with /doctor".to_string()),
                 });
             };
             let response = core_client
@@ -274,11 +274,11 @@ pub(crate) fn start_goal_budget_raise(
                         error: Some(format!("Budget update failed: {}", message)),
                     })
                 }
-                Ok(other) => Some(TuiCommand::GoalOperationFinished {
+                Ok(_other) => Some(TuiCommand::GoalOperationFinished {
                     session_id,
                     op: "budget-raise".to_string(),
                     response: None,
-                    error: Some(format!("Unexpected budget response: {:?}", other)),
+                    error: Some("Unexpected budget response".to_string()),
                 }),
                 Err(e) => Some(TuiCommand::GoalOperationFinished {
                     session_id,
@@ -305,7 +305,7 @@ pub(crate) fn start_refresh_session_state(app: &mut App, session_id: String) {
                 return Some(TuiCommand::SessionStateRefreshed {
                     todos: Vec::new(),
                     active_goal: None,
-                    error: Some("Core client not available".to_string()),
+                    error: Some("Core unavailable — check daemon status with /doctor".to_string()),
                 });
             };
             // Hydrate the todo list.

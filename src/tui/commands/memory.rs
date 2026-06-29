@@ -149,10 +149,10 @@ pub(crate) async fn handle_memory_search(app: &mut App, query: String) {
             .messages_state
             .toasts
             .warning(&format!("Memory search failed: {}", message)),
-        Ok(other) => app
+        Ok(_other) => app
             .messages_state
             .toasts
-            .warning(&format!("Unexpected memory search response: {:?}", other)),
+            .warning("Unexpected memory response"),
         Err(e) => app
             .messages_state
             .toasts
@@ -187,10 +187,10 @@ pub(crate) async fn handle_memory_remember(app: &mut App, text: String) {
             .messages_state
             .toasts
             .warning(&format!("Memory remember failed: {}", message)),
-        Ok(other) => app
+        Ok(_other) => app
             .messages_state
             .toasts
-            .warning(&format!("Unexpected memory remember response: {:?}", other)),
+            .warning("Unexpected memory response"),
         Err(e) => app
             .messages_state
             .toasts
@@ -232,10 +232,10 @@ pub(crate) async fn handle_memory_forget(app: &mut App, id: String) {
             .messages_state
             .toasts
             .warning(&format!("Memory forget failed: {}", message)),
-        Ok(other) => app
+        Ok(_other) => app
             .messages_state
             .toasts
-            .warning(&format!("Unexpected memory forget response: {:?}", other)),
+            .warning("Unexpected memory response"),
         Err(e) => app
             .messages_state
             .toasts
@@ -417,8 +417,8 @@ pub(crate) fn start_memory_search(app: &mut App, query: String) {
                     toast_message: format!("Memory search failed: {}", message),
                     is_error: true,
                 }),
-                Ok(other) => Some(TuiCommand::MemoryResult {
-                    toast_message: format!("Unexpected memory search response: {:?}", other),
+                Ok(_other) => Some(TuiCommand::MemoryResult {
+                    toast_message: "Unexpected memory response".to_string(),
                     is_error: true,
                 }),
                 Err(e) => Some(TuiCommand::MemoryResult {
@@ -472,8 +472,8 @@ pub(crate) fn start_memory_remember(app: &mut App, text: String) {
                     toast_message: format!("Memory remember failed: {}", message),
                     is_error: true,
                 }),
-                Ok(other) => Some(TuiCommand::MemoryResult {
-                    toast_message: format!("Unexpected memory remember response: {:?}", other),
+                Ok(_other) => Some(TuiCommand::MemoryResult {
+                    toast_message: "Unexpected memory response".to_string(),
                     is_error: true,
                 }),
                 Err(e) => Some(TuiCommand::MemoryResult {
@@ -535,8 +535,8 @@ pub(crate) fn start_memory_forget(app: &mut App, id: String) {
                     toast_message: format!("Memory forget failed: {}", message),
                     is_error: true,
                 }),
-                Ok(other) => Some(TuiCommand::MemoryResult {
-                    toast_message: format!("Unexpected memory forget response: {:?}", other),
+                Ok(_other) => Some(TuiCommand::MemoryResult {
+                    toast_message: "Unexpected memory response".to_string(),
                     is_error: true,
                 }),
                 Err(e) => Some(TuiCommand::MemoryResult {
@@ -552,6 +552,14 @@ pub(crate) fn apply_memory_result(app: &mut App, toast_message: String, is_error
     if is_error {
         app.messages_state.toasts.error(&toast_message);
     } else {
-        app.messages_state.toasts.info(&toast_message);
+        let lines: Vec<String> = toast_message.lines().map(|s| s.to_string()).collect();
+        if lines.len() > 3 {
+            app.open_info_dialog(
+                crate::tui::components::dialogs::info::InfoType::MemoryResults,
+                lines,
+            );
+        } else {
+            app.messages_state.toasts.info(&toast_message);
+        }
     }
 }

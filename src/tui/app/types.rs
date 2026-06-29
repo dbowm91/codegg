@@ -28,6 +28,9 @@ pub enum Dialog {
     SecurityReview,
     SourcePreview,
     ShellShow,
+    TaskList,
+    MemoryResults,
+    DoctorReport,
 }
 
 impl Dialog {
@@ -61,6 +64,9 @@ impl Dialog {
                 | Self::SecurityReview
                 | Self::SourcePreview
                 | Self::ShellShow
+                | Self::TaskList
+                | Self::MemoryResults
+                | Self::DoctorReport
         )
     }
 }
@@ -223,6 +229,19 @@ pub enum TuiMsg {
         path: PathBuf,
         line: Option<u32>,
         origin_label: Option<String>,
+    },
+    ShellInclude {
+        id: String,
+        mode: String,
+    },
+    ShellAsk {
+        id: String,
+    },
+    ShellRerun {
+        id: String,
+    },
+    ShellKill {
+        id: String,
     },
 }
 

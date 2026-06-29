@@ -345,7 +345,7 @@ impl ResearchBrowserDialog {
         frame.render_widget(list, inner);
 
         let footer = Line::from(Span::styled(
-            " Enter: details  r: refresh  Esc: close",
+            "Enter: details  |  r: refresh  |  Esc close",
             Style::default().fg(self.theme.muted),
         ));
         let footer_area = Rect::new(

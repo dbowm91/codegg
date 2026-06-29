@@ -163,7 +163,7 @@ impl DiffDialog {
             DiffMode::SideBySide => "Press 's' for Inline",
         };
 
-        let info = format!("Scroll: ↑↓ or j/k | Mode: {} | Close: Esc", mode_toggle);
+        let info = format!("↑/↓ scroll  |  {}  |  Esc close", mode_toggle);
 
         let footer = ratatui::widgets::Paragraph::new(Line::from(Span::styled(
             info,
@@ -267,7 +267,7 @@ impl Widget for &DiffDialog {
             DiffMode::SideBySide => "Press 's' for Inline",
         };
 
-        let info = format!("Scroll: ↑↓ or j/k | Mode: {} | Close: Esc", mode_toggle);
+        let info = format!("↑/↓ scroll  |  {}  |  Esc close", mode_toggle);
 
         let footer = ratatui::widgets::Paragraph::new(Line::from(Span::styled(
             info,
@@ -419,7 +419,7 @@ impl Component for DiffDialog {
             DiffMode::SideBySide => "Press 's' for Inline",
         };
 
-        let info = format!("Scroll: ↑↓ or j/k | Mode: {} | Close: Esc", mode_toggle);
+        let info = format!("↑/↓ scroll  |  {}  |  Esc close", mode_toggle);
 
         let footer = ratatui::widgets::Paragraph::new(Line::from(Span::styled(
             info,

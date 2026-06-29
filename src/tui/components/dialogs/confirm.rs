@@ -128,7 +128,7 @@ impl Component for ConfirmDialog {
         let options_para = Paragraph::new(options).block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(" (↑↓ select, Enter confirm, Esc cancel) ")
+                .title(" ↑↓ select  |  Enter confirm  |  Esc cancel ")
                 .border_style(Style::default().fg(theme.border)),
         );
         frame.render_widget(options_para, chunks[2]);

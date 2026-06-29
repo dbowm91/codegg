@@ -229,7 +229,7 @@ impl Widget for &TemplateDialog {
 
         lines.push(Line::from(""));
         lines.push(Line::from(vec![Span::styled(
-            "Enter: select, Esc: cancel",
+            "↑/↓ navigate  |  Enter select  |  Esc close",
             Style::default().fg(self.theme.muted),
         )]));
 
@@ -360,7 +360,7 @@ impl Component for TemplateDialog {
 
         lines.push(Line::from(""));
         lines.push(Line::from(vec![Span::styled(
-            "Enter: select, Esc: cancel",
+            "↑/↓ navigate  |  Enter select  |  Esc close",
             Style::default().fg(theme.muted),
         )]));
 

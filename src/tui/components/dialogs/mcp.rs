@@ -240,7 +240,7 @@ impl McpDialog {
 
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
-            "↑/↓ navigate  Enter actions  Esc back",
+            "↑/↓ navigate  |  Enter select  |  Esc close",
             Style::default().fg(self.theme.muted),
         )));
 
@@ -447,7 +447,7 @@ impl McpDialog {
 
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
-            "↑/↓ navigate  Enter select  Esc cancel",
+            "↑/↓ navigate  |  Enter select  |  Esc close",
             Style::default().fg(self.theme.muted),
         )));
 

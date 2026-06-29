@@ -378,7 +378,7 @@ impl Widget for &KeybindDialog {
                     )));
                 } else {
                     lines.push(Line::from(Span::styled(
-                        "Enter remap  R reset  E export  I import  Esc close",
+                        "Enter remap  |  R reset  |  Esc close",
                         Style::default().fg(self.theme.muted),
                     )));
                 }
@@ -594,7 +594,7 @@ impl Component for KeybindDialog {
                     )));
                 } else {
                     lines.push(Line::from(Span::styled(
-                        "Enter remap  R reset  E export  I import  Esc close",
+                        "Enter remap  |  R reset  |  Esc close",
                         Style::default().fg(theme.muted),
                     )));
                 }

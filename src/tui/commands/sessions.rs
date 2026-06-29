@@ -36,7 +36,7 @@ pub(crate) fn start_reload_sessions(app: &mut App) {
                     request_id,
                     sessions: Vec::new(),
                     message_counts: std::collections::HashMap::new(),
-                    error: Some("Core client not available".to_string()),
+                    error: Some("Core unavailable — check daemon status with /doctor".to_string()),
                 });
             };
 
@@ -58,12 +58,12 @@ pub(crate) fn start_reload_sessions(app: &mut App) {
                         error: Some(format!("Session list failed ({}): {}", code, message)),
                     });
                 }
-                Ok(other) => {
+                Ok(_other) => {
                     return Some(TuiCommand::SessionsReloaded {
                         request_id,
                         sessions: Vec::new(),
                         message_counts: std::collections::HashMap::new(),
-                        error: Some(format!("Unexpected response: {:?}", other)),
+                        error: Some("Unexpected core response".to_string()),
                     });
                 }
                 Err(e) => {
@@ -184,7 +184,7 @@ pub(crate) fn start_delete_session(app: &mut App, session_id: String) {
                     affected_ids: vec![session_id],
                     message: String::new(),
                     reload_after: false,
-                    error: Some("Core client not available".to_string()),
+                    error: Some("Core unavailable — check daemon status with /doctor".to_string()),
                 });
             };
             let request = crate::core::new_request(
@@ -213,13 +213,13 @@ pub(crate) fn start_delete_session(app: &mut App, session_id: String) {
                         error: Some(format!("Session delete failed ({}): {}", code, message)),
                     })
                 }
-                Ok(other) => Some(TuiCommand::SessionMutationFinished {
+                Ok(_other) => Some(TuiCommand::SessionMutationFinished {
                     request_id,
                     op: SessionMutationOp::Delete,
                     affected_ids: vec![session_id],
                     message: String::new(),
                     reload_after: false,
-                    error: Some(format!("Unexpected response: {:?}", other)),
+                    error: Some("Unexpected core response".to_string()),
                 }),
                 Err(e) => Some(TuiCommand::SessionMutationFinished {
                     request_id,
@@ -256,7 +256,7 @@ pub(crate) fn start_archive_session(app: &mut App, session_id: String, unarchive
                     affected_ids: vec![session_id],
                     message: String::new(),
                     reload_after: false,
-                    error: Some("Core client not available".to_string()),
+                    error: Some("Core unavailable — check daemon status with /doctor".to_string()),
                 });
             };
             let request = crate::core::new_request(
@@ -300,7 +300,7 @@ pub(crate) fn start_archive_session(app: &mut App, session_id: String, unarchive
                         error: Some(format!("Session archive failed ({}): {}", code, message)),
                     })
                 }
-                Ok(other) => Some(TuiCommand::SessionMutationFinished {
+                Ok(_other) => Some(TuiCommand::SessionMutationFinished {
                     request_id,
                     op: if unarchive {
                         SessionMutationOp::Unarchive
@@ -310,7 +310,7 @@ pub(crate) fn start_archive_session(app: &mut App, session_id: String, unarchive
                     affected_ids: vec![session_id],
                     message: String::new(),
                     reload_after: false,
-                    error: Some(format!("Unexpected response: {:?}", other)),
+                    error: Some("Unexpected core response".to_string()),
                 }),
                 Err(e) => Some(TuiCommand::SessionMutationFinished {
                     request_id,
@@ -347,7 +347,7 @@ pub(crate) fn start_fork_session(app: &mut App, session_id: String) {
                     affected_ids: vec![session_id],
                     message: String::new(),
                     reload_after: false,
-                    error: Some("Core client not available".to_string()),
+                    error: Some("Core unavailable — check daemon status with /doctor".to_string()),
                 });
             };
             let request = crate::core::new_request(
@@ -375,13 +375,13 @@ pub(crate) fn start_fork_session(app: &mut App, session_id: String) {
                         error: Some(format!("Session fork failed ({}): {}", code, message)),
                     })
                 }
-                Ok(other) => Some(TuiCommand::SessionMutationFinished {
+                Ok(_other) => Some(TuiCommand::SessionMutationFinished {
                     request_id,
                     op: SessionMutationOp::Fork,
                     affected_ids: vec![session_id],
                     message: String::new(),
                     reload_after: false,
-                    error: Some(format!("Unexpected response: {:?}", other)),
+                    error: Some("Unexpected core response".to_string()),
                 }),
                 Err(e) => Some(TuiCommand::SessionMutationFinished {
                     request_id,
@@ -415,7 +415,7 @@ pub(crate) fn start_bulk_delete(app: &mut App, session_ids: Vec<String>) {
                     affected_ids: session_ids,
                     message: String::new(),
                     reload_after: false,
-                    error: Some("Core client not available".to_string()),
+                    error: Some("Core unavailable — check daemon status with /doctor".to_string()),
                 });
             };
             let mut succeeded = 0usize;
@@ -502,7 +502,7 @@ pub(crate) fn start_bulk_archive(app: &mut App, session_ids: Vec<String>, unarch
                     affected_ids: session_ids,
                     message: String::new(),
                     reload_after: false,
-                    error: Some("Core client not available".to_string()),
+                    error: Some("Core unavailable — check daemon status with /doctor".to_string()),
                 });
             };
             let mut succeeded = 0usize;
@@ -589,7 +589,7 @@ pub(crate) fn start_bulk_export(app: &mut App, session_ids: Vec<String>) {
                     affected_ids: session_ids,
                     message: String::new(),
                     reload_after: false,
-                    error: Some("Core client not available".to_string()),
+                    error: Some("Core unavailable — check daemon status with /doctor".to_string()),
                 });
             };
             let mut succeeded = 0usize;
@@ -669,7 +669,7 @@ pub(crate) fn start_rename_session(app: &mut App, session_id: String, new_title:
                     affected_ids: vec![session_id],
                     message: String::new(),
                     reload_after: false,
-                    error: Some("Core client not available".to_string()),
+                    error: Some("Core unavailable — check daemon status with /doctor".to_string()),
                 });
             };
             let request = crate::core::new_request(
@@ -700,13 +700,13 @@ pub(crate) fn start_rename_session(app: &mut App, session_id: String, new_title:
                         error: Some(format!("Failed to rename: {}", message)),
                     })
                 }
-                Ok(other) => Some(TuiCommand::SessionMutationFinished {
+                Ok(_other) => Some(TuiCommand::SessionMutationFinished {
                     request_id,
                     op: SessionMutationOp::Rename,
                     affected_ids: vec![session_id],
                     message: String::new(),
                     reload_after: false,
-                    error: Some(format!("Unexpected rename response: {:?}", other)),
+                    error: Some("Unexpected rename response".to_string()),
                 }),
                 Err(e) => Some(TuiCommand::SessionMutationFinished {
                     request_id,
@@ -739,7 +739,7 @@ pub(crate) fn start_undo_delete(app: &mut App, session_id: String) {
                     affected_ids: vec![session_id],
                     message: String::new(),
                     reload_after: false,
-                    error: Some("Core client not available".to_string()),
+                    error: Some("Core unavailable — check daemon status with /doctor".to_string()),
                 });
             };
             let request = crate::core::new_request(
@@ -769,13 +769,13 @@ pub(crate) fn start_undo_delete(app: &mut App, session_id: String) {
                         error: Some(format!("Failed to restore session: {}", message)),
                     })
                 }
-                Ok(other) => Some(TuiCommand::SessionMutationFinished {
+                Ok(_other) => Some(TuiCommand::SessionMutationFinished {
                     request_id,
                     op: SessionMutationOp::UndoDelete,
                     affected_ids: vec![session_id],
                     message: String::new(),
                     reload_after: false,
-                    error: Some(format!("Unexpected session restore response: {:?}", other)),
+                    error: Some("Unexpected session restore response".to_string()),
                 }),
                 Err(e) => Some(TuiCommand::SessionMutationFinished {
                     request_id,
@@ -804,7 +804,7 @@ pub(crate) fn start_share_session(app: &mut App, session_id: String) {
                 return Some(TuiCommand::ShareSessionFinished {
                     session_id,
                     session: None,
-                    error: Some("Core client not available".to_string()),
+                    error: Some("Core unavailable — check daemon status with /doctor".to_string()),
                 });
             };
             let request = crate::core::new_request(
@@ -824,10 +824,10 @@ pub(crate) fn start_share_session(app: &mut App, session_id: String) {
                     session: None,
                     error: Some(format!("Failed to share: {}", message)),
                 }),
-                Ok(other) => Some(TuiCommand::ShareSessionFinished {
+                Ok(_other) => Some(TuiCommand::ShareSessionFinished {
                     session_id,
                     session: None,
-                    error: Some(format!("Unexpected share response: {:?}", other)),
+                    error: Some("Unexpected share response".to_string()),
                 }),
                 Err(e) => Some(TuiCommand::ShareSessionFinished {
                     session_id,
@@ -878,7 +878,7 @@ pub(crate) fn start_unshare_session(app: &mut App, session_id: String) {
                 return Some(TuiCommand::UnshareSessionFinished {
                     session_id,
                     session: None,
-                    error: Some("Core client not available".to_string()),
+                    error: Some("Core unavailable — check daemon status with /doctor".to_string()),
                 });
             };
             let request = crate::core::new_request(
@@ -900,10 +900,10 @@ pub(crate) fn start_unshare_session(app: &mut App, session_id: String) {
                         error: Some(format!("Failed to unshare: {}", message)),
                     })
                 }
-                Ok(other) => Some(TuiCommand::UnshareSessionFinished {
+                Ok(_other) => Some(TuiCommand::UnshareSessionFinished {
                     session_id,
                     session: None,
-                    error: Some(format!("Unexpected unshare response: {:?}", other)),
+                    error: Some("Unexpected unshare response".to_string()),
                 }),
                 Err(e) => Some(TuiCommand::UnshareSessionFinished {
                     session_id,
@@ -945,7 +945,7 @@ pub(crate) fn start_export_session(app: &mut App, session_id: String) {
                 return Some(TuiCommand::ExportSessionFinished {
                     session_id,
                     json: None,
-                    error: Some("Core client not available".to_string()),
+                    error: Some("Core unavailable — check daemon status with /doctor".to_string()),
                 });
             };
             let request = crate::core::new_request(
@@ -970,10 +970,10 @@ pub(crate) fn start_export_session(app: &mut App, session_id: String) {
                         error: Some(format!("Failed to export: {}", message)),
                     })
                 }
-                Ok(other) => Some(TuiCommand::ExportSessionFinished {
+                Ok(_other) => Some(TuiCommand::ExportSessionFinished {
                     session_id,
                     json: None,
-                    error: Some(format!("Unexpected export response: {:?}", other)),
+                    error: Some("Unexpected export response".to_string()),
                 }),
                 Err(e) => Some(TuiCommand::ExportSessionFinished {
                     session_id,
@@ -1017,7 +1017,9 @@ pub(crate) async fn handle_open_tree_dialog(app: &mut App) {
     use std::collections::HashMap;
 
     let Some(core_client) = app.core_client.clone() else {
-        app.messages_state.toasts.error("Core client not available");
+        app.messages_state
+            .toasts
+            .error("Core unavailable — check daemon status with /doctor");
         return;
     };
     let Some(current_session) = app.session_state.session.clone() else {
@@ -1041,10 +1043,8 @@ pub(crate) async fn handle_open_tree_dialog(app: &mut App) {
                 .error(&format!("Failed to load tree sessions: {}", message));
             return;
         }
-        Ok(other) => {
-            app.messages_state
-                .toasts
-                .error(&format!("Unexpected tree response: {:?}", other));
+        Ok(_other) => {
+            app.messages_state.toasts.error("Unexpected tree response");
             return;
         }
         Err(e) => {
@@ -1157,7 +1157,7 @@ pub(crate) fn start_open_tree_dialog(app: &mut App) {
                 return Some(TuiCommand::TreeDialogLoaded {
                     current_session_id: Some(current_session_id),
                     nodes: Vec::new(),
-                    error: Some("Core client not available".to_string()),
+                    error: Some("Core unavailable — check daemon status with /doctor".to_string()),
                 });
             };
 
@@ -1178,11 +1178,11 @@ pub(crate) fn start_open_tree_dialog(app: &mut App) {
                         error: Some(format!("Failed to load tree sessions: {}", message)),
                     });
                 }
-                Ok(other) => {
+                Ok(_other) => {
                     return Some(TuiCommand::TreeDialogLoaded {
                         current_session_id: Some(current_session_id),
                         nodes: Vec::new(),
-                        error: Some(format!("Unexpected tree response: {:?}", other)),
+                        error: Some("Unexpected tree response".to_string()),
                     });
                 }
                 Err(e) => {
@@ -1347,7 +1347,9 @@ pub(crate) async fn handle_load_session_messages(app: &mut App, session_id: Stri
             None => return,
         }
     } else {
-        app.messages_state.toasts.error("Core client not available");
+        app.messages_state
+            .toasts
+            .error("Core unavailable — check daemon status with /doctor");
         return;
     };
 
@@ -1443,7 +1445,7 @@ pub(crate) fn start_load_session_messages(app: &mut App, session_id: String) {
                     request_id,
                     session_id: sid,
                     messages: Vec::new(),
-                    error: Some("Core client not available".to_string()),
+                    error: Some("Core unavailable — check daemon status with /doctor".to_string()),
                 });
             };
 
@@ -1614,7 +1616,7 @@ pub(crate) fn start_create_from_template(
                     agent,
                     model,
                     template_name,
-                    error: Some("Core client not available".to_string()),
+                    error: Some("Core unavailable — check daemon status with /doctor".to_string()),
                 });
             };
             let request = crate::core::new_request(
@@ -1644,13 +1646,13 @@ pub(crate) fn start_create_from_template(
                         error: Some(message),
                     })
                 }
-                Ok(other) => Some(TuiCommand::TemplateSessionCreated {
+                Ok(_other) => Some(TuiCommand::TemplateSessionCreated {
                     request_id,
                     session: None,
                     agent,
                     model,
                     template_name,
-                    error: Some(format!("Unexpected response: {:?}", other)),
+                    error: Some("Unexpected core response".to_string()),
                 }),
                 Err(e) => Some(TuiCommand::TemplateSessionCreated {
                     request_id,
@@ -1741,11 +1743,11 @@ pub(crate) async fn handle_create_from_template(
         match core_client.request(request).await {
             Ok(CoreResponse::Session { session }) => Ok(session),
             Ok(CoreResponse::Error { message, .. }) => Err(message),
-            Ok(other) => Err(format!("Unexpected response: {:?}", other)),
+            Ok(_other) => Err("Unexpected core response".to_string()),
             Err(e) => Err(e.to_string()),
         }
     } else {
-        Err("Core client not available".to_string())
+        Err("Core unavailable — check daemon status with /doctor".to_string())
     };
     match created {
         Ok(session) => {
@@ -2135,10 +2137,10 @@ pub(crate) async fn handle_share_session(app: &mut App, session_id: String) {
                     .toasts
                     .error(&format!("Failed to share: {}", message));
             }
-            Ok(other) => {
+            Ok(_other) => {
                 app.messages_state
                     .toasts
-                    .error(&format!("Unexpected share response: {:?}", other));
+                    .error(&"Unexpected share response".to_string());
             }
             Err(e) => {
                 app.messages_state
@@ -2147,7 +2149,9 @@ pub(crate) async fn handle_share_session(app: &mut App, session_id: String) {
             }
         }
     } else {
-        app.messages_state.toasts.error("Core client not available");
+        app.messages_state
+            .toasts
+            .error("Core unavailable — check daemon status with /doctor");
     }
 }
 
@@ -2171,10 +2175,10 @@ pub(crate) async fn handle_unshare_session(app: &mut App, session_id: String) {
                     .toasts
                     .error(&format!("Failed to unshare: {}", message));
             }
-            Ok(other) => {
+            Ok(_other) => {
                 app.messages_state
                     .toasts
-                    .error(&format!("Unexpected unshare response: {:?}", other));
+                    .error(&"Unexpected unshare response".to_string());
             }
             Err(e) => {
                 app.messages_state
@@ -2183,7 +2187,9 @@ pub(crate) async fn handle_unshare_session(app: &mut App, session_id: String) {
             }
         }
     } else {
-        app.messages_state.toasts.error("Core client not available");
+        app.messages_state
+            .toasts
+            .error("Core unavailable — check daemon status with /doctor");
     }
 }
 
@@ -2217,10 +2223,10 @@ pub(crate) async fn handle_export_session(app: &mut App, session_id: String) {
                     .toasts
                     .error(&format!("Failed to export: {}", message));
             }
-            Ok(other) => {
+            Ok(_other) => {
                 app.messages_state
                     .toasts
-                    .error(&format!("Unexpected export response: {:?}", other));
+                    .error(&"Unexpected export response".to_string());
             }
             Err(e) => {
                 app.messages_state
@@ -2229,7 +2235,9 @@ pub(crate) async fn handle_export_session(app: &mut App, session_id: String) {
             }
         }
     } else {
-        app.messages_state.toasts.error("Core client not available");
+        app.messages_state
+            .toasts
+            .error("Core unavailable — check daemon status with /doctor");
     }
 }
 
@@ -2255,10 +2263,10 @@ pub(crate) async fn handle_rename_session(app: &mut App, session_id: String, new
                     .toasts
                     .error(&format!("Failed to rename: {}", message));
             }
-            Ok(other) => {
+            Ok(_other) => {
                 app.messages_state
                     .toasts
-                    .error(&format!("Unexpected rename response: {:?}", other));
+                    .error(&"Unexpected rename response".to_string());
             }
             Err(e) => {
                 app.messages_state
@@ -2267,7 +2275,9 @@ pub(crate) async fn handle_rename_session(app: &mut App, session_id: String, new
             }
         }
     } else {
-        app.messages_state.toasts.error("Core client not available");
+        app.messages_state
+            .toasts
+            .error("Core unavailable — check daemon status with /doctor");
     }
 }
 
@@ -2288,15 +2298,21 @@ pub(crate) async fn handle_undo_delete(app: &mut App, session_id: String) {
             }
             Ok(CoreResponse::Error { message, .. }) => {
                 tracing::error!("Failed to restore session: {}", message);
-                app.messages_state.toasts.error("Failed to restore session");
+                app.messages_state
+                    .toasts
+                    .error(&format!("Restore failed: {}", message));
             }
             Ok(other) => {
                 tracing::error!("Unexpected session restore response: {:?}", other);
-                app.messages_state.toasts.error("Failed to restore session");
+                app.messages_state
+                    .toasts
+                    .error("Restore failed: unexpected response");
             }
             Err(e) => {
                 tracing::error!("Failed to restore session: {}", e);
-                app.messages_state.toasts.error("Failed to restore session");
+                app.messages_state
+                    .toasts
+                    .error(&format!("Restore failed: {}", e));
             }
         }
     } else {

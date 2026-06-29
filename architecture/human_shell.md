@@ -195,7 +195,58 @@ Status labels vary by state:
 - `failed` — failed to start
 - `killed X.Xs` — aborted by user via `/shell-kill`
 
+The promoted state of each entry is visible in the detail view (`/shell-show`), where the `Promoted:` field shows `yes` or `no`.
+
 Example: `[1] done exit=0 1.2s $ cargo test`
+
+### `/shell-show` Display Format
+
+The `/shell-show <id>` command opens a scrollable `InfoDialog` with full command details:
+
+```
+ID:       1
+Command:  cargo test
+CWD:      /path/to/project
+Started:  1719650000
+Finished: 1719650001
+Elapsed:  1.2s
+Status:   done
+Exit:     0
+Promoted: no
+Capture:  StoreEphemeral
+
+── stdout ──
+  test result: ok. 5 passed; 0 failed
+
+── stderr ──
+  (empty)
+```
+
+### Shell Status Colors
+
+Shell status labels use theme-aware colors for visual distinction:
+
+| Status | Color |
+|--------|-------|
+| Running | Primary (active/highlighted) |
+| Exited | Muted (secondary/gray) |
+| Failed | Error (red) |
+| Killed | Warning (yellow/orange) |
+| TimedOut | Warning (yellow/orange) |
+| FailedToStart | Error (red) |
+
+### Shell Commands Reference
+
+| Command | Description |
+|---------|-------------|
+| `!command` | Run shell command (ephemeral, hidden from model) |
+| `!!command` | Run shell command and auto-promote output into context |
+| `/shell-list` | List recent shell commands with status |
+| `/shell-show <id>` | Show full details of a shell command in a scrollable dialog |
+| `/shell-include <id> [stdout\|stderr\|all]` | Promote a specific command's output into context |
+| `/shell-ask <id>` | Ask the agent about a command's output |
+| `/shell-rerun <id>` | Re-execute a previous command |
+| `/shell-kill <id>` | Abort a running command |
 
 ### `/shell-kill` Behavior
 

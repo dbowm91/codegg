@@ -106,7 +106,7 @@ impl PlanDialog {
         let options_para = Paragraph::new(options).block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(" Options (↑↓ select, Enter confirm) ")
+                .title(" Options (↑↓ select  |  Enter confirm) ")
                 .border_style(Style::default().fg(self.theme.border)),
         );
         frame.render_widget(options_para, chunks[2]);
@@ -173,7 +173,7 @@ impl ratatui::widgets::Widget for &PlanDialog {
         let options_para = Paragraph::new(options).block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(" Options (↑↓ select, Enter confirm) ")
+                .title(" Options (↑↓ select  |  Enter confirm) ")
                 .border_style(Style::default().fg(self.theme.border)),
         );
 
@@ -276,7 +276,7 @@ impl Component for PlanDialog {
         let options_para = Paragraph::new(options).block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(" Options (↑↓ select, Enter confirm) ")
+                .title(" Options (↑↓ select  |  Enter confirm) ")
                 .border_style(Style::default().fg(theme.border)),
         );
         frame.render_widget(options_para, chunks[2]);

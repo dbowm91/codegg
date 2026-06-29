@@ -1027,7 +1027,7 @@ impl Component for ModelDialog {
 
                 lines.push(Line::from(""));
                 lines.push(Line::from(Span::styled(
-                    "↑/↓/j/k navigate  Enter select  Backspace filter  Tab configure  Esc cancel",
+                    "↑/↓ navigate  |  Enter select  |  Backspace filter  |  Tab configure  |  Esc close",
                     Style::default().fg(theme.muted),
                 )));
             }

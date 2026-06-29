@@ -47,6 +47,9 @@ pub enum DialogType {
     SecurityReview,
     SourcePreview,
     ShellShow,
+    TaskList,
+    MemoryResults,
+    DoctorReport,
     None,
 }
 
@@ -86,6 +89,9 @@ impl From<DialogType> for Dialog {
             DialogType::SecurityReview => Dialog::SecurityReview,
             DialogType::SourcePreview => Dialog::SourcePreview,
             DialogType::ShellShow => Dialog::ShellShow,
+            DialogType::TaskList => Dialog::TaskList,
+            DialogType::MemoryResults => Dialog::MemoryResults,
+            DialogType::DoctorReport => Dialog::DoctorReport,
             DialogType::None => Dialog::None,
         }
     }

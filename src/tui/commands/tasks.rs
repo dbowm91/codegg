@@ -24,7 +24,7 @@ pub(crate) fn start_list_tasks(app: &mut App) {
                 return Some(TuiCommand::TasksListed {
                     request_id,
                     tasks: Vec::new(),
-                    error: Some("Core client not available".to_string()),
+                    error: Some("Core unavailable — check daemon status with /doctor".to_string()),
                 });
             };
             let request = crate::core::new_request(
@@ -49,10 +49,10 @@ pub(crate) fn start_list_tasks(app: &mut App) {
                     tasks: Vec::new(),
                     error: Some(format!("Failed to list tasks: {}", message)),
                 }),
-                Ok(other) => Some(TuiCommand::TasksListed {
+                Ok(_other) => Some(TuiCommand::TasksListed {
                     request_id,
                     tasks: Vec::new(),
-                    error: Some(format!("Unexpected task list response: {:?}", other)),
+                    error: Some("Unexpected task response".to_string()),
                 }),
                 Err(e) => Some(TuiCommand::TasksListed {
                     request_id,
@@ -98,7 +98,14 @@ pub(crate) fn apply_tasks_listed(
                 )
             })
             .collect();
-        app.messages_state.toasts.info(&list.join(" | "));
+        if list.len() > 5 {
+            app.open_info_dialog(
+                crate::tui::components::dialogs::info::InfoType::TaskList,
+                list,
+            );
+        } else {
+            app.messages_state.toasts.info(&list.join(" | "));
+        }
     }
 }
 
@@ -126,7 +133,7 @@ pub(crate) fn start_delete_task(app: &mut App, id: String) {
                     request_id,
                     op: "delete".to_string(),
                     task_id: None,
-                    error: Some("Core client not available".to_string()),
+                    error: Some("Core unavailable — check daemon status with /doctor".to_string()),
                 });
             };
             let request = crate::core::new_request(
@@ -156,11 +163,11 @@ pub(crate) fn start_delete_task(app: &mut App, id: String) {
                         error: Some(format!("Failed to delete task: {}", message)),
                     })
                 }
-                Ok(other) => Some(TuiCommand::TaskOperationFinished {
+                Ok(_other) => Some(TuiCommand::TaskOperationFinished {
                     request_id,
                     op: "delete".to_string(),
                     task_id: Some(parsed_id.to_string()),
-                    error: Some(format!("Unexpected task delete response: {:?}", other)),
+                    error: Some("Unexpected task response".to_string()),
                 }),
                 Err(e) => Some(TuiCommand::TaskOperationFinished {
                     request_id,
@@ -231,7 +238,7 @@ pub(crate) fn start_task_schedule(app: &mut App, interval_secs: u64, message: St
                     request_id,
                     op: "schedule".to_string(),
                     task_id: None,
-                    error: Some("Core client not available".to_string()),
+                    error: Some("Core unavailable — check daemon status with /doctor".to_string()),
                 });
             };
             let request = crate::core::new_request(
@@ -263,11 +270,11 @@ pub(crate) fn start_task_schedule(app: &mut App, interval_secs: u64, message: St
                         error: Some(format!("Failed to schedule task: {}", message)),
                     })
                 }
-                Ok(other) => Some(TuiCommand::TaskOperationFinished {
+                Ok(_other) => Some(TuiCommand::TaskOperationFinished {
                     request_id,
                     op: "schedule".to_string(),
                     task_id: None,
-                    error: Some(format!("Unexpected task schedule response: {:?}", other)),
+                    error: Some("Unexpected task response".to_string()),
                 }),
                 Err(e) => Some(TuiCommand::TaskOperationFinished {
                     request_id,
@@ -316,10 +323,10 @@ pub(crate) async fn handle_task_schedule(app: &mut App, interval_secs: u64, mess
             .messages_state
             .toasts
             .warning(&format!("Failed to schedule task: {}", message)),
-        Ok(other) => app
+        Ok(_other) => app
             .messages_state
             .toasts
-            .warning(&format!("Unexpected task schedule response: {:?}", other)),
+            .warning("Unexpected task response"),
         Err(e) => app
             .messages_state
             .toasts
@@ -370,10 +377,10 @@ pub(crate) async fn handle_list_tasks(app: &mut App) {
                     .toasts
                     .warning(&format!("Failed to list tasks: {}", message));
             }
-            Ok(other) => {
+            Ok(_other) => {
                 app.messages_state
                     .toasts
-                    .warning(&format!("Unexpected task list response: {:?}", other));
+                    .warning("Unexpected task response");
             }
             Err(e) => {
                 app.messages_state
@@ -408,10 +415,10 @@ pub(crate) async fn handle_delete_task(app: &mut App, id: String) {
                     .toasts
                     .warning(&format!("Failed to delete task: {}", message));
             }
-            Ok(other) => app
+            Ok(_other) => app
                 .messages_state
                 .toasts
-                .warning(&format!("Unexpected task delete response: {:?}", other)),
+                .warning("Unexpected task response"),
             Err(e) => app
                 .messages_state
                 .toasts
@@ -438,7 +445,7 @@ pub(crate) fn start_worktree_list(app: &mut App) {
                 return Some(TuiCommand::WorktreeListed {
                     request_id,
                     worktrees: Vec::new(),
-                    error: Some("Core client not available".to_string()),
+                    error: Some("Core unavailable — check daemon status with /doctor".to_string()),
                 });
             };
             let request = crate::core::new_request(
@@ -472,10 +479,10 @@ pub(crate) fn start_worktree_list(app: &mut App) {
                     worktrees: Vec::new(),
                     error: Some(format!("Failed to list worktrees: {}", message)),
                 }),
-                Ok(other) => Some(TuiCommand::WorktreeListed {
+                Ok(_other) => Some(TuiCommand::WorktreeListed {
                     request_id,
                     worktrees: Vec::new(),
-                    error: Some(format!("Unexpected worktree response: {:?}", other)),
+                    error: Some("Unexpected worktree response".to_string()),
                 }),
                 Err(e) => Some(TuiCommand::WorktreeListed {
                     request_id,
@@ -545,10 +552,10 @@ pub(crate) async fn handle_worktree_list(app: &mut App) {
             .messages_state
             .toasts
             .warning(&format!("Failed to list worktrees: {}", message)),
-        Ok(other) => app
+        Ok(_other) => app
             .messages_state
             .toasts
-            .warning(&format!("Unexpected worktree response: {:?}", other)),
+            .warning("Unexpected worktree response"),
         Err(e) => app
             .messages_state
             .toasts

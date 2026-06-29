@@ -255,7 +255,7 @@ impl Widget for &TreeDialog {
 
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
-            "↑/↓ navigate  Enter select  Esc cancel  e expand  f fork",
+            "↑/↓ navigate  |  Enter select  |  e expand  |  f fork  |  Esc close",
             Style::default().fg(self.theme.muted),
         )));
 
@@ -397,7 +397,7 @@ impl Component for TreeDialog {
 
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
-            "↑/↓ navigate  Enter select  Esc cancel  e expand  f fork",
+            "↑/↓ navigate  |  Enter select  |  e expand  |  f fork  |  Esc close",
             Style::default().fg(theme.muted),
         )));
 

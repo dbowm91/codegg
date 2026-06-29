@@ -23,7 +23,7 @@ use super::components::dialogs::tree::TreeDialog;
 use super::components::messages::{MessageRole, MessagesWidget, MsgPart};
 use super::components::prompt::PromptWidget;
 use super::components::sidebar::{clean_inline_text, SidebarWidget};
-use super::components::status_bar::StatusBarWidget;
+use super::components::status_bar::{StatusBarWidget, TuiStatusSummary};
 use super::components::toast::ToastManager;
 use super::input::{
     build_help_lines, handle_event, handle_event_with_bindings_moded, HelpMode, InputAction,
@@ -2276,11 +2276,8 @@ impl App {
     }
 
     fn render_footer(&mut self, frame: &mut Frame, area: Rect) {
-        let status_str = match &self.session_state.session_status {
-            SessionStatus::Idle => "idle",
-            SessionStatus::Working => "working",
-            SessionStatus::Error => "error",
-        };
+        let mut summary = self.build_status_summary();
+
         let token_str = format_token_line(
             self.session_state.token_in,
             self.session_state.token_out,
@@ -2288,15 +2285,11 @@ impl App {
             self.session_state.context_tokens as u64,
             self.session_state.context_limit as u64,
         );
-        self.status_bar.set_status(status_str.to_string());
-        self.status_bar.set_tokens(token_str);
-        self.status_bar.set_theme(&self.ui_state.theme);
-        self.status_bar
-            .set_subagent_count(self.session_state.subagent_count);
-        self.status_bar
-            .set_goal(self.active_goal.as_ref().map(format_goal_status_line));
+        summary.secondary = Some(token_str);
 
-        // Populate LSP status from the shared LspTool when available.
+        self.status_bar.set_theme(&self.ui_state.theme);
+        self.status_bar.apply_summary(&summary);
+
         if let Some(ref lsp_tool) = self.lsp_tool {
             let handle = tokio::runtime::Handle::current();
             let lsp_status = handle.block_on(lsp_tool.lsp_status_line());
@@ -2306,6 +2299,130 @@ impl App {
         }
 
         frame.render_widget(&self.status_bar, area);
+    }
+
+    pub fn build_status_summary(&self) -> TuiStatusSummary {
+        let mut primary = String::from("idle");
+        let mut activity: Vec<String> = Vec::new();
+
+        if let Some(ref err) = self.ui_state.last_render_error {
+            primary = format!("degraded: {err}");
+        } else if self.session_state.permission_pending {
+            primary = "permission pending".to_string();
+        } else if self.dialog_state.question_dialog.is_some() {
+            primary = "question pending".to_string();
+        } else if self.security_review_running.is_some() {
+            primary = "security review".to_string();
+        } else if self.session_state.session_status == SessionStatus::Working {
+            primary = "working".to_string();
+        } else if !self.shell_handles.is_empty() {
+            primary = "shell running".to_string();
+        } else if self.task_registry.active_count() > 0 {
+            primary = format!("bg:{}", self.task_registry.active_count());
+        } else if self.session_state.session_status == SessionStatus::Error {
+            primary = "error".to_string();
+        }
+
+        let undo_message = if self.undo_session_id.is_some() {
+            if let Some(until) = self.undo_until {
+                if Instant::now() < until {
+                    Some("Session deleted — press U to undo".to_string())
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        let agent_name = &self.agent_state.agents[self.agent_state.current_agent].name;
+        activity.push(format!("agent:{agent_name}"));
+
+        if self.session_state.subagent_count > 0 {
+            activity.push(format!("subagents:{}", self.session_state.subagent_count));
+        }
+
+        if self.dialog_state.session_reload_request.is_loading() {
+            activity.push("reloading".to_string());
+        }
+
+        if self.dialog_state.import_request.is_loading() {
+            activity.push("importing".to_string());
+        }
+
+        if self.dialog_state.research_request.is_loading() {
+            activity.push("research".to_string());
+        }
+
+        if self.dialog_state.session_messages_request.is_loading() {
+            activity.push("messages".to_string());
+        }
+
+        if self.dialog_state.session_mutation_request.is_loading() {
+            activity.push("mutating".to_string());
+        }
+
+        if self.dialog_state.task_list_request.is_loading() {
+            activity.push("tasks".to_string());
+        }
+
+        if self.dialog_state.worktree_list_request.is_loading() {
+            activity.push("worktrees".to_string());
+        }
+
+        if self.dialog_state.template_create_request.is_loading() {
+            activity.push("template".to_string());
+        }
+
+        let memory_tasks = self
+            .task_registry
+            .iter()
+            .filter(|(_, r)| r.kind == crate::tui::task_lifecycle::TuiTaskKind::Memory)
+            .count();
+        if memory_tasks > 0 {
+            activity.push(format!("mem:{memory_tasks}"));
+        }
+
+        let active_tasks = self.task_registry.active_count();
+        if active_tasks > 0 {
+            activity.push(format!("tasks:{active_tasks}"));
+        }
+
+        if !self.shell_handles.is_empty() {
+            activity.push(format!("shell:{}", self.shell_handles.len()));
+        }
+
+        let pending_diffs = self
+            .session_state
+            .changed_files
+            .iter()
+            .filter(|f| {
+                matches!(
+                    f.diff_state,
+                    crate::tui::app::state::session::DiffStatsState::Pending { .. }
+                )
+            })
+            .count();
+        if pending_diffs > 0 {
+            activity.push(format!("diff:{pending_diffs}"));
+        }
+
+        if self.security_review_running.is_some() {
+            activity.push("security".to_string());
+        }
+
+        if let Some(ref goal) = self.active_goal {
+            activity.push(format!("goal:{}", format_goal_status_line(goal)));
+        }
+
+        TuiStatusSummary {
+            primary,
+            secondary: None,
+            activity,
+            undo_message,
+        }
     }
 
     fn render_sidebar(&mut self, frame: &mut Frame, area: Rect) {
@@ -3058,6 +3175,36 @@ impl App {
                         .info(&format!("Jump: {text} (clipboard unavailable)")),
                 }
             }
+            TuiMsg::ShellInclude { id, mode } => {
+                if let Some(ref tx) = self.tui_cmd_tx {
+                    let _ = tx.try_send(TuiCommand::ShellInclude {
+                        id: id.parse().unwrap_or(0),
+                        mode,
+                        question: None,
+                    });
+                }
+            }
+            TuiMsg::ShellAsk { id } => {
+                self.prompt_state.prompt.clear();
+                self.prompt_state
+                    .prompt
+                    .set_text(format!("/shell-ask {}", id));
+                self.ui_state.command_mode = true;
+            }
+            TuiMsg::ShellRerun { id } => {
+                if let Some(ref tx) = self.tui_cmd_tx {
+                    let _ = tx.try_send(TuiCommand::ShellRerun {
+                        id: id.parse().unwrap_or(0),
+                    });
+                }
+            }
+            TuiMsg::ShellKill { id } => {
+                if let Some(ref tx) = self.tui_cmd_tx {
+                    let _ = tx.try_send(TuiCommand::ShellKill {
+                        id: id.parse().unwrap_or(0),
+                    });
+                }
+            }
             _ => {}
         }
     }
@@ -3290,7 +3437,14 @@ impl App {
                     }
                 } else if matches!(
                     self.ui_state.dialog,
-                    Dialog::Context | Dialog::Cost | Dialog::Usage | Dialog::ShellShow
+                    Dialog::Context
+                        | Dialog::Cost
+                        | Dialog::Usage
+                        | Dialog::ShellShow
+                        | Dialog::Stats
+                        | Dialog::TaskList
+                        | Dialog::MemoryResults
+                        | Dialog::DoctorReport
                 ) {
                     self.close_dialog();
                 } else {
@@ -3338,7 +3492,14 @@ impl App {
                             cd.cursor_up();
                         }
                     }
-                    Dialog::Context | Dialog::Cost | Dialog::Usage | Dialog::ShellShow => {}
+                    Dialog::Context
+                    | Dialog::Cost
+                    | Dialog::Usage
+                    | Dialog::ShellShow
+                    | Dialog::Stats
+                    | Dialog::TaskList
+                    | Dialog::MemoryResults
+                    | Dialog::DoctorReport => {}
                     _ => {}
                 }
             }
@@ -3382,6 +3543,14 @@ impl App {
                             cd.cursor_down();
                         }
                     }
+                    Dialog::Context
+                    | Dialog::Cost
+                    | Dialog::Usage
+                    | Dialog::ShellShow
+                    | Dialog::Stats
+                    | Dialog::TaskList
+                    | Dialog::MemoryResults
+                    | Dialog::DoctorReport => {}
                     _ => {}
                 }
             }
@@ -4118,7 +4287,11 @@ impl App {
                 if !self.shell_handles.is_empty() {
                     summary.push_str(&format!("\nShell handles: {}", self.shell_handles.len()));
                 }
-                self.messages_state.toasts.info(&summary);
+                let lines: Vec<String> = summary.lines().map(|s| s.to_string()).collect();
+                self.open_info_dialog(
+                    crate::tui::components::dialogs::info::InfoType::Stats,
+                    lines,
+                );
             }
             "/tts" => {
                 self.toggle_tts();
@@ -6671,6 +6844,28 @@ impl App {
     #[allow(dead_code)]
     fn active_dialog_type(&self) -> crate::tui::components::component::DialogType {
         self.focus_manager.active_dialog_type()
+    }
+
+    pub(crate) fn open_info_dialog(
+        &mut self,
+        info_type: crate::tui::components::dialogs::info::InfoType,
+        lines: Vec<String>,
+    ) {
+        use crate::tui::components::dialogs::info::InfoDialog;
+        if let Some(ref mut dialog) = self.dialog_state.info_dialog {
+            dialog.set_info_type(info_type);
+            dialog.set_content(lines);
+            dialog.set_theme(&self.ui_state.theme);
+        } else {
+            self.dialog_state.info_dialog = Some(InfoDialog::new(
+                Arc::clone(&self.ui_state.theme),
+                info_type,
+                lines,
+            ));
+        }
+        if let Some(ref info_dialog) = self.dialog_state.info_dialog {
+            self.focus_manager.push(Box::new(info_dialog.clone()));
+        }
     }
 
     pub fn open_dialog(&mut self, dialog: Dialog) {

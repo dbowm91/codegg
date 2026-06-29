@@ -1233,6 +1233,95 @@ impl SpinnerWidget {
 - **Footer Display**: Shown in footer area when session is active
 - **Event Loop**: `tick()` called every render frame (~60fps)
 
+## InfoDialog Pattern for Long Output
+
+`InfoDialog` (`src/tui/components/dialogs/info.rs`) is the standard scrollable surface for long structured output. It is used by:
+
+- `/tui-stats` diagnostics output
+- Task list (`/tasks`)
+- Worktree list (`/worktree`)
+- Memory search results (`/memory search`)
+- Doctor output (`/doctor`)
+- Shell list (`/shell-list`)
+- Shell detail view (`/shell-show`)
+
+The dialog supports keyboard scrolling (Up/Down/j/k) and shows a scroll indicator with line counts in the footer. It has an `InfoType` enum (`Context`, `Cost`, `Usage`, `ShellShow`) that determines the title and `DialogType`.
+
+**When adding new commands that produce long output**, use `InfoDialog` rather than truncating to toast messages. Create a new `InfoType` variant if the dialog type differs, or reuse an existing one.
+
+## Unified Status Bar (TuiStatusSummary)
+
+The status bar uses `TuiStatusSummary` and `build_status_summary()` for unified state composition. The summary is built once per render frame and applied via `StatusBarWidget::apply_summary()`.
+
+**Key fields of `TuiStatusSummary`:**
+- `primary: String` — main status label (idle, working, permission pending, etc.)
+- `secondary: Option<String>` — token/usage line
+- `activity: Vec<String>` — activity chips (agent, subagents, reloading, etc.)
+- `undo_message: Option<String>` — undo banner
+
+**Priority order** for primary status (first match wins):
+1. Render error → "degraded: <error>"
+2. Permission pending → "permission pending"
+3. Question pending → "question pending"
+4. Security review → "security review"
+5. Working → "working"
+6. Shell running → "shell running"
+7. Background tasks → "bg:<n>"
+8. Error → "error"
+9. Idle → "idle"
+
+**Activity chips** are string-prefixed tokens:
+- `agent:<name>`, `subagents:<n>`, `reloading`, `importing`, `research`, `messages`, `mutating`, `tasks:<n>`, `worktrees`, `template`, `mem:<n>`, `shell:<n>`, `diff:<n>`, `security`, `goal:<status>`, `lsp:<status>`
+
+The `StatusBarWidget::apply_summary()` method parses these prefixes to set widget fields (subagent_count, goal_str, lsp_status).
+
+## Dialog Footer Hint Standardization
+
+Dialog footers use a standardized format with consistent patterns:
+
+- Actions separated by ` | ` (pipe with spaces) for multiple actions
+- Close hint always present: `Esc close` or `Esc/Enter to close`
+- Key bindings shown as `key action` pairs
+- Scroll indicators: `(N/M lines)` or `Showing N-M of M`
+
+Examples:
+- `"j/k move | f filter (All) | Enter preview | Esc close"` — research browser
+- `"Enter copy to clipboard  Esc close"` — share dialog
+- `"Esc/Enter to close"` — info dialog
+- `"j/k scroll | PgUp/PgDn | Home/End | Esc close (N/M lines)"` — source preview
+
+When adding new dialogs, follow this pattern for footer hints.
+
+## Shell UX Improvements
+
+The shell detail view (`/shell-show`) opens an `InfoDialog` with `InfoType::ShellShow`. It displays:
+- Full metadata (ID, command, CWD, timestamps, elapsed, status, exit code, promoted state, capture policy)
+- stdout/stderr sections with head text
+- Scroll indicator with line counts
+
+Shell status colors in the list/detail views:
+- Running → primary color
+- Exited → muted/secondary
+- Failed/FailedToStart → error color
+- Killed/TimedOut → warning color
+
+Shell list (`/shell-list`) shows promoted state per entry in the detail view.
+
+## Error Message Conventions
+
+When core is unavailable (e.g., no daemon running), use the consistent pattern:
+
+```
+Core unavailable — check daemon status with /doctor
+```
+
+This appears in:
+- Toast notifications for synchronous failures
+- `error` field in completion TuiCommand variants
+- Import error states
+
+Avoid raw debug dumps (`{:?}` formatting) in user-facing error messages. Use human-readable text with actionable guidance.
+
 ## Timeline Feature
 
 The TUI supports a Timeline feature for navigating through message history.

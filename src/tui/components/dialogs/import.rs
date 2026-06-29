@@ -195,7 +195,7 @@ impl Widget for &ImportDialog {
                     )));
                 } else {
                     lines.push(Line::from(Span::styled(
-                        "Enter preview  Esc cancel",
+                        "Enter preview/import  |  Esc close",
                         Style::default().fg(self.theme.muted),
                     )));
                 }
@@ -237,7 +237,7 @@ impl Widget for &ImportDialog {
                     lines.push(Line::from(""));
 
                     lines.push(Line::from(Span::styled(
-                        "Enter import  Esc cancel",
+                        "Enter import  |  Esc close",
                         Style::default().fg(self.theme.muted),
                     )));
                 }
@@ -387,7 +387,7 @@ impl Component for ImportDialog {
                     )));
                 } else {
                     lines.push(Line::from(Span::styled(
-                        "Enter preview  Esc cancel",
+                        "Enter preview/import  |  Esc close",
                         Style::default().fg(theme.muted),
                     )));
                 }
@@ -426,7 +426,7 @@ impl Component for ImportDialog {
                     lines.push(Line::from(""));
 
                     lines.push(Line::from(Span::styled(
-                        "Enter import  Esc cancel",
+                        "Enter import  |  Esc close",
                         Style::default().fg(theme.muted),
                     )));
                 }

@@ -284,7 +284,7 @@ impl QuestionDialog {
 
         let hint = Paragraph::new(Line::from(Span::styled(
             format!(
-                "Question {}/{}  |  Enter: submit answers",
+                "Question {}/{}  |  Enter submit  |  Esc close",
                 self.selected_question + 1,
                 self.questions.len()
             ),
@@ -413,7 +413,7 @@ impl Component for QuestionDialog {
 
         let hint = Paragraph::new(Line::from(Span::styled(
             format!(
-                "Question {}/{}  |  Enter: submit answers",
+                "Question {}/{}  |  Enter submit  |  Esc close",
                 self.selected_question + 1,
                 self.questions.len()
             ),

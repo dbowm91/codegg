@@ -2107,11 +2107,12 @@ impl MessagesWidget {
                     let (icon, base_style) = match status.as_str() {
                         "running" => (
                             tool_spinner_frame(),
-                            Style::default().fg(self.theme.warning),
+                            Style::default().fg(self.theme.primary),
                         ),
                         "exited" => ("✓", Style::default().fg(self.theme.success)),
-                        "timed_out" => ("✗", Style::default().fg(self.theme.error)),
-                        "killed" => ("✗", Style::default().fg(self.theme.error)),
+                        "timed_out" => ("✗", Style::default().fg(self.theme.warning)),
+                        "killed" => ("✗", Style::default().fg(self.theme.warning)),
+                        "failed" => ("✗", Style::default().fg(self.theme.error)),
                         _ => ("○", Style::default().fg(self.theme.muted)),
                     };
                     let mut summary_parts: Vec<String> = Vec::new();

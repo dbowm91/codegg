@@ -747,6 +747,49 @@ pub fn default_help_entries() -> Vec<HelpEntry> {
             action: "Execute command",
             condition: None,
         },
+        // Shell commands
+        HelpEntry {
+            mode: HelpMode::Command,
+            key: "!cmd",
+            action: "Run shell command",
+            condition: None,
+        },
+        HelpEntry {
+            mode: HelpMode::Command,
+            key: "!!cmd",
+            action: "Run and promote output",
+            condition: None,
+        },
+        HelpEntry {
+            mode: HelpMode::Command,
+            key: "/shell-list",
+            action: "List recent shell commands",
+            condition: None,
+        },
+        HelpEntry {
+            mode: HelpMode::Command,
+            key: "/shell-show <id>",
+            action: "Show shell command details",
+            condition: None,
+        },
+        HelpEntry {
+            mode: HelpMode::Command,
+            key: "/shell-include <id>",
+            action: "Include output in context",
+            condition: None,
+        },
+        HelpEntry {
+            mode: HelpMode::Command,
+            key: "/shell-rerun <id>",
+            action: "Rerun shell command",
+            condition: None,
+        },
+        HelpEntry {
+            mode: HelpMode::Command,
+            key: "/shell-kill <id>",
+            action: "Kill running shell command",
+            condition: None,
+        },
         // Dialog mode (common across dialogs)
         HelpEntry {
             mode: HelpMode::Dialog,

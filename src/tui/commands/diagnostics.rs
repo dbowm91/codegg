@@ -99,6 +99,14 @@ pub(crate) fn apply_doctor_result(app: &mut App, summary: String, is_error: bool
     if is_error {
         app.messages_state.toasts.error(&summary);
     } else {
-        app.messages_state.toasts.info(&summary);
+        let lines: Vec<String> = summary.lines().map(|s| s.to_string()).collect();
+        if lines.len() > 2 {
+            app.open_info_dialog(
+                crate::tui::components::dialogs::info::InfoType::DoctorReport,
+                lines,
+            );
+        } else {
+            app.messages_state.toasts.info(&summary);
+        }
     }
 }

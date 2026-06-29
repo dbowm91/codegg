@@ -289,7 +289,7 @@ impl PermissionDialog {
         let options_para = Paragraph::new(options).block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(" Options (↑↓ select, Enter confirm) ")
+                .title(" Options (↑↓ select  |  Enter confirm) ")
                 .border_style(Style::default().fg(theme.border))
                 .style(Style::default().bg(theme.background)),
         );

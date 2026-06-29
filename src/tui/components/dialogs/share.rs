@@ -144,7 +144,7 @@ impl Widget for &ShareDialog {
 
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
-            "Enter copy to clipboard  Esc close",
+            "Enter copy  |  Esc close",
             Style::default().fg(self.theme.muted),
         )));
 
@@ -250,7 +250,7 @@ impl Component for ShareDialog {
 
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
-            "Enter copy to clipboard  Esc close",
+            "Enter copy  |  Esc close",
             Style::default().fg(theme.muted),
         )));
 

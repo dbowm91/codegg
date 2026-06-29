@@ -497,7 +497,14 @@ pub(crate) fn handle_shell_list(app: &mut app::App) {
             format!("[{}] {} $ {}", e.id.0, status_str, e.command)
         })
         .collect();
-    app.messages_state.toasts.info(&lines.join("\n"));
+    if lines.len() > 5 {
+        app.open_info_dialog(
+            crate::tui::components::dialogs::info::InfoType::ShellShow,
+            lines,
+        );
+    } else {
+        app.messages_state.toasts.info(&lines.join("\n"));
+    }
 }
 
 pub(crate) fn handle_shell_show(app: &mut app::App, id: u64) {
@@ -537,6 +544,8 @@ pub(crate) fn handle_shell_show(app: &mut app::App, id: u64) {
 
     let stdout = entry.stdout.head_str_lossy();
     let stderr = entry.stderr.head_str_lossy();
+    let stdout_omitted = entry.stdout.omitted_bytes;
+    let stderr_omitted = entry.stderr.omitted_bytes;
 
     if !stdout.is_empty() {
         lines.push(String::new());
@@ -544,12 +553,24 @@ pub(crate) fn handle_shell_show(app: &mut app::App, id: u64) {
         for line in stdout.lines() {
             lines.push(format!("  {}", line));
         }
+        if stdout_omitted > 0 {
+            lines.push(format!(
+                "... ({} bytes omitted from head+tail buffer)",
+                stdout_omitted
+            ));
+        }
     }
     if !stderr.is_empty() {
         lines.push(String::new());
         lines.push("── stderr ──".to_string());
         for line in stderr.lines() {
             lines.push(format!("  {}", line));
+        }
+        if stderr_omitted > 0 {
+            lines.push(format!(
+                "... ({} bytes omitted from head+tail buffer)",
+                stderr_omitted
+            ));
         }
     }
     if stdout.is_empty() && stderr.is_empty() {

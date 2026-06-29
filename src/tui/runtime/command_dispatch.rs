@@ -442,7 +442,79 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
             if !app.shell_handles.is_empty() {
                 summary.push_str(&format!("\nShell handles: {}", app.shell_handles.len()));
             }
-            app.messages_state.toasts.info(&summary);
+
+            summary.push_str("\n\nBackground Activity:");
+            let mut has_activity = false;
+
+            if app.dialog_state.session_reload_request.is_loading() {
+                summary.push_str("\n  Session reload: loading");
+                has_activity = true;
+            }
+            if app.dialog_state.import_request.is_loading() {
+                summary.push_str("\n  Import preview: loading");
+                has_activity = true;
+            }
+            if app.dialog_state.research_request.is_loading() {
+                summary.push_str("\n  Research browser: loading");
+                has_activity = true;
+            }
+            if app.dialog_state.session_messages_request.is_loading() {
+                summary.push_str("\n  Session messages: loading");
+                has_activity = true;
+            }
+            if app.dialog_state.session_mutation_request.is_loading() {
+                summary.push_str("\n  Session mutation: loading");
+                has_activity = true;
+            }
+            if app.dialog_state.task_list_request.is_loading() {
+                summary.push_str("\n  Task list: loading");
+                has_activity = true;
+            }
+            if app.dialog_state.worktree_list_request.is_loading() {
+                summary.push_str("\n  Worktree list: loading");
+                has_activity = true;
+            }
+            if app.dialog_state.template_create_request.is_loading() {
+                summary.push_str("\n  Template create: loading");
+                has_activity = true;
+            }
+            if app.security_review_running.is_some() {
+                summary.push_str("\n  Security review: running");
+                has_activity = true;
+            }
+            if !app.shell_handles.is_empty() {
+                summary.push_str(&format!(
+                    "\n  Shell commands: {} running",
+                    app.shell_handles.len()
+                ));
+                has_activity = true;
+            }
+
+            let pending_diffs = app
+                .session_state
+                .changed_files
+                .iter()
+                .filter(|f| {
+                    matches!(
+                        f.diff_state,
+                        crate::tui::app::state::session::DiffStatsState::Pending { .. }
+                    )
+                })
+                .count();
+            if pending_diffs > 0 {
+                summary.push_str(&format!("\n  Pending diffs: {pending_diffs}"));
+                has_activity = true;
+            }
+
+            if !has_activity {
+                summary.push_str("\n  (none)");
+            }
+
+            let lines: Vec<String> = summary.lines().map(|s| s.to_string()).collect();
+            app.open_info_dialog(
+                crate::tui::components::dialogs::info::InfoType::Stats,
+                lines,
+            );
         }
     }
 }

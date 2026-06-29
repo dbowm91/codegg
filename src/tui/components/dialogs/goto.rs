@@ -133,7 +133,7 @@ impl ratatui::widgets::Widget for &GotoDialog {
             Span::raw("")
         };
 
-        let help = Span::raw(" (number, +n/-n relative, Esc cancel, Enter go)");
+        let help = Span::raw(" Enter go  |  Esc close");
 
         let lines = vec![
             Line::from(input_display),
@@ -200,7 +200,7 @@ impl Component for GotoDialog {
             Span::raw("")
         };
 
-        let help = Span::raw(" (number, +n/-n relative, Esc cancel, Enter go)");
+        let help = Span::raw(" Enter go  |  Esc close");
 
         let lines = vec![
             Line::from(input_display),
