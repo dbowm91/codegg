@@ -30,13 +30,15 @@ src/tui/
 ├── app/
 │   ├── mod.rs          # Main App struct and event loop
 │   ├── state/
-│   │   ├── mod.rs      # Exports all state modules
-│   │   ├── agent.rs    # AgentState (models, agents, selection)
-│   │   ├── dialog.rs   # DialogState (dialog instances)
-│   │   ├── messages.rs # MessagesState (message history, toasts)
-│   │   ├── prompt.rs   # PromptState (prompt, completions)
-│   │   ├── session.rs  # SessionState (session, history)
-│   │   └── ui.rs       # UiState (theme, layout, routes)
+│   │   ├── mod.rs          # Exports all state modules
+│   │   ├── agent.rs        # AgentState (models, agents, selection)
+│   │   ├── async_request.rs # AsyncUiRequestState (shared async dialog lifecycle)
+│   │   ├── diagnostics.rs  # TuiDiagnostics (runtime counters)
+│   │   ├── dialog.rs       # DialogState (dialog instances)
+│   │   ├── messages.rs     # MessagesState (message history, toasts)
+│   │   ├── prompt.rs       # PromptState (prompt, completions)
+│   │   ├── session.rs      # SessionState (session, history)
+│   │   └── ui.rs           # UiState (theme, layout, routes)
 │   └── types.rs        # Dialog, TuiMsg, TuiCommand, SessionStatus, etc.
 ├── components/
 │   ├── component/          # Component trait submodules
@@ -810,9 +812,9 @@ TuiCommand::SessionsReloaded { sessions, message_counts, error } => {
 - `finish(id) -> bool` — apply result only if ID is current and not cancelled
 - `fail(id, error) -> bool` — store error only if ID is current and not cancelled
 
-**DialogState instances:** `import_request`, `research_request`, `session_reload_request`, `task_list_request`, `task_delete_request`, `worktree_list_request`, `template_create_request`, `session_mutation_request`.
+**DialogState instances:** `import_request`, `research_request`, `session_reload_request`, `task_list_request`, `task_delete_request`, `worktree_list_request`, `template_create_request`, `session_mutation_request`, `session_messages_request`.
 
-`close_dialog()` (`pub(crate)`) cancels async request states for Import and ResearchBrowser, preventing stale completions after dismissal.
+`close_dialog()` (`pub(crate)`) cancels async request states for Import, ResearchBrowser, and Session, preventing stale completions after dismissal.
 
 ## Background Task Lifecycle (Phase 7)
 

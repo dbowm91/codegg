@@ -74,8 +74,9 @@ pub struct AsyncUiRequestState {
 - `worktree_list_request` — worktree listing
 - `template_create_request` — template creation
 - `session_mutation_request` — session delete/archive/fork/rename/share
+- `session_messages_request` — session message loading
 
-**Dialog close integration:** `close_dialog()` (`pub(crate)` for testability) cancels async request states for Import and ResearchBrowser dialogs, ensuring stale completions are ignored after dismissal.
+**Dialog close integration:** `close_dialog()` (`pub(crate)` for testability) cancels async request states for Import, ResearchBrowser, and Session dialogs, ensuring stale completions are ignored after dismissal.
 
 ### Background Task Lifecycle (Phase 7)
 
@@ -111,6 +112,8 @@ tui/
 │   ├── types.rs            # Dialog, TuiMsg, TuiCommand, SessionStatus, etc.
 │   └── state/              # State domains
 │       ├── agent.rs        # AgentState (models, agents, selection)
+│       ├── async_request.rs # AsyncUiRequestState (shared async dialog lifecycle)
+│       ├── diagnostics.rs  # TuiDiagnostics (runtime counters)
 │       ├── dialog.rs       # DialogState (dialog instances, dialog visibility)
 │       ├── messages.rs     # MessagesState (message history, toasts, spinner)
 │       ├── prompt.rs       # PromptState (prompt, completions)
