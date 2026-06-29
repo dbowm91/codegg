@@ -117,7 +117,7 @@ pub(crate) fn start_goal_show(app: &mut App, session_id: String) {
                     session_id,
                     op: "show".to_string(),
                     response: None,
-                    error: Some(format!("Goal show error: {}", e)),
+                    error: Some(format!("Failed to show goal: {}", e)),
                 }),
             }
         },
@@ -142,7 +142,15 @@ pub(crate) fn apply_goal_operation_finished(
                 if data.get("active").and_then(|v| v.as_bool()) == Some(false) {
                     app.messages_state.toasts.info("No active goal");
                 } else if let Some(rendered) = data.get("rendered").and_then(|v| v.as_str()) {
-                    app.messages_state.toasts.info(rendered);
+                    let lines: Vec<String> = rendered.lines().map(|l| l.to_string()).collect();
+                    if lines.len() > 3 {
+                        app.open_info_dialog(
+                            crate::tui::components::dialogs::info::InfoType::GoalShow,
+                            lines,
+                        );
+                    } else {
+                        app.messages_state.toasts.info(rendered);
+                    }
                 }
             }
         }
@@ -207,7 +215,7 @@ pub(crate) fn start_goal_checkpoint(app: &mut App, session_id: String, project_i
                     session_id,
                     op: "checkpoint".to_string(),
                     response: None,
-                    error: Some(format!("Goal checkpoint error: {}", e)),
+                    error: Some(format!("Failed to create checkpoint: {}", e)),
                 }),
             }
         },
@@ -271,7 +279,7 @@ pub(crate) fn start_goal_budget_raise(
                         session_id,
                         op: "budget-raise".to_string(),
                         response: None,
-                        error: Some(format!("Budget update failed: {}", message)),
+                        error: Some(format!("Failed to update budget: {}", message)),
                     })
                 }
                 Ok(_other) => Some(TuiCommand::GoalOperationFinished {
@@ -412,7 +420,7 @@ pub(crate) async fn handle_goal_show(app: &mut App, session_id: String) {
         Err(e) => {
             app.messages_state
                 .toasts
-                .warning(&format!("Goal show error: {}", e));
+                .warning(&format!("Failed to show goal: {}", e));
         }
         _ => {}
     }

@@ -299,9 +299,9 @@ impl Widget for &ThemePickerDialog {
 
         lines.push(Line::from(""));
         let footer = if self.is_previewing() {
-            "↑/↓ preview  Enter commit  Esc revert"
+            "j/k/↑/↓ preview  |  Enter commit  |  Esc revert"
         } else {
-            "↑/↓ navigate  Enter apply  Esc cancel"
+            "j/k/↑/↓ navigate  |  Enter apply  |  Esc cancel"
         };
         lines.push(Line::from(Span::styled(
             footer,
@@ -415,9 +415,9 @@ impl Component for ThemePickerDialog {
 
         lines.push(Line::from(""));
         let footer = if self.is_previewing() {
-            "↑/↓ preview  Enter commit  Esc revert"
+            "j/k/↑/↓ preview  |  Enter commit  |  Esc revert"
         } else {
-            "↑/↓ navigate  Enter apply  Esc cancel"
+            "j/k/↑/↓ navigate  |  Enter apply  |  Esc cancel"
         };
         lines.push(Line::from(Span::styled(
             footer,

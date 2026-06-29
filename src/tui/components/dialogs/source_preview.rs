@@ -271,7 +271,7 @@ impl Component for SourcePreviewDialog {
         }
 
         let footer_text = format!(
-            "↑/↓ scroll  |  PgUp/PgDn  |  Home/End  |  Esc close ({}/{} lines)",
+            "j/k/↑/↓ scroll  |  PgUp/PgDn  |  Home/End  |  q/Esc close ({}/{} lines)",
             (self.scroll as usize + 1).min(self.lines.len()),
             self.lines.len(),
         );

@@ -277,14 +277,14 @@ impl QuestionDialog {
         let questions_para = Paragraph::new(lines).block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(" Questions (↑↓ navigate, type to answer, Enter submit) ")
+                .title(" Questions (↑↓ navigate  |  type answer  |  ←→ cursor  |  Enter submit) ")
                 .border_style(Style::default().fg(theme.border)),
         );
         frame.render_widget(questions_para, chunks[1]);
 
         let hint = Paragraph::new(Line::from(Span::styled(
             format!(
-                "Question {}/{}  |  Enter submit  |  Esc close",
+                "Question {}/{}  |  Backspace/Del edit  |  Enter submit  |  Esc close",
                 self.selected_question + 1,
                 self.questions.len()
             ),
@@ -406,14 +406,14 @@ impl Component for QuestionDialog {
         let questions_para = Paragraph::new(lines).block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(" Questions (↑↓ navigate, type to answer, Enter submit) ")
+                .title(" Questions (↑↓ navigate  |  type answer  |  ←→ cursor  |  Enter submit) ")
                 .border_style(Style::default().fg(theme.border)),
         );
         frame.render_widget(questions_para, chunks[1]);
 
         let hint = Paragraph::new(Line::from(Span::styled(
             format!(
-                "Question {}/{}  |  Enter submit  |  Esc close",
+                "Question {}/{}  |  Backspace/Del edit  |  Enter submit  |  Esc close",
                 self.selected_question + 1,
                 self.questions.len()
             ),

@@ -566,6 +566,11 @@ fn render_all_dialog_variants_small_and_normal() {
         Dialog::SecurityReview,
         Dialog::SourcePreview,
         Dialog::ShellShow,
+        Dialog::TaskList,
+        Dialog::WorktreeList,
+        Dialog::GoalShow,
+        Dialog::MemoryResults,
+        Dialog::DoctorReport,
     ];
     for dialog in &dialogs {
         for &(w, h) in &[(60, 20), (100, 32)] {
@@ -1429,6 +1434,11 @@ fn render_new_dialogs_at_small_size() {
         Dialog::SecurityReview,
         Dialog::SourcePreview,
         Dialog::ShellShow,
+        Dialog::TaskList,
+        Dialog::WorktreeList,
+        Dialog::GoalShow,
+        Dialog::MemoryResults,
+        Dialog::DoctorReport,
     ];
     for dialog in &new_dialogs {
         let mut app = test_app();

@@ -41,6 +41,8 @@ pub struct StatusBarWidget {
     /// Compact LSP status line (e.g. "LSP: ready | rust-analyzer gen=3").
     /// Cached string populated by the App before each render.
     pub lsp_status: Option<String>,
+    /// Activity chips to render in the status bar (e.g. "agent:build", "mem:2", "tasks:3").
+    pub activity_chips: Vec<String>,
 }
 
 impl StatusBarWidget {
@@ -57,6 +59,7 @@ impl StatusBarWidget {
             undo_message: None,
             goal_str: None,
             lsp_status: None,
+            activity_chips: Vec::new(),
         }
     }
 
@@ -113,6 +116,7 @@ impl StatusBarWidget {
         self.goal_str = None;
         self.undo_message = summary.undo_message.clone();
         self.lsp_status = None;
+        self.activity_chips.clear();
 
         if let Some(ref secondary) = summary.secondary {
             self.token_str = secondary.clone();
@@ -127,6 +131,8 @@ impl StatusBarWidget {
                 self.goal_str = Some(rest.to_string());
             } else if let Some(rest) = chip.strip_prefix("lsp:") {
                 self.lsp_status = Some(rest.to_string());
+            } else {
+                self.activity_chips.push(chip.clone());
             }
         }
     }
@@ -151,6 +157,12 @@ impl Widget for &StatusBarWidget {
         let (status_label, status_color) = match self.status.as_str() {
             "working" => ("● working", self.theme.warning),
             "error" => ("✗ error", self.theme.error),
+            "permission pending" => ("◈ permission", self.theme.warning),
+            "question pending" => ("? question", self.theme.warning),
+            "security review" => ("⛊ security", self.theme.error),
+            "shell running" => ("⚡ shell", self.theme.primary),
+            s if s.starts_with("bg:") => ("◉ background", self.theme.secondary),
+            s if s.starts_with("degraded:") => ("⚠ degraded", self.theme.error),
             // `idle` uses `theme.muted` (same color as the prompt
             // placeholder and the sidebar section titles) so the footer
             // shares one readable text color. `theme.primary` often
@@ -225,6 +237,14 @@ impl Widget for &StatusBarWidget {
             middle_spans.push(Span::styled(
                 lsp.clone(),
                 Style::default().fg(self.theme.secondary),
+            ));
+        }
+
+        for chip in &self.activity_chips {
+            middle_spans.push(Span::styled("  ", Style::default()));
+            middle_spans.push(Span::styled(
+                chip.clone(),
+                Style::default().fg(self.theme.muted),
             ));
         }
 

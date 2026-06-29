@@ -9,7 +9,9 @@ use crate::tui::task_lifecycle::TuiTaskKind;
 #[allow(dead_code)]
 pub(crate) async fn handle_memory_summary(app: &mut App) {
     let Some(core_client) = app.core_client.clone() else {
-        app.messages_state.toasts.warning("Core client unavailable");
+        app.messages_state
+            .toasts
+            .warning("Core unavailable — check daemon status with /doctor");
         return;
     };
     let project_hash = format!(
@@ -99,7 +101,9 @@ pub(crate) async fn handle_memory_search(app: &mut App, query: String) {
         return;
     }
     let Some(core_client) = app.core_client.clone() else {
-        app.messages_state.toasts.warning("Core client unavailable");
+        app.messages_state
+            .toasts
+            .warning("Core unavailable — check daemon status with /doctor");
         return;
     };
     let request = crate::core::new_request(
@@ -169,7 +173,9 @@ pub(crate) async fn handle_memory_remember(app: &mut App, text: String) {
         return;
     }
     let Some(core_client) = app.core_client.clone() else {
-        app.messages_state.toasts.warning("Core client unavailable");
+        app.messages_state
+            .toasts
+            .warning("Core unavailable — check daemon status with /doctor");
         return;
     };
     let request = crate::core::new_request(
@@ -207,7 +213,9 @@ pub(crate) async fn handle_memory_forget(app: &mut App, id: String) {
         return;
     }
     let Some(core_client) = app.core_client.clone() else {
-        app.messages_state.toasts.warning("Core client unavailable");
+        app.messages_state
+            .toasts
+            .warning("Core unavailable — check daemon status with /doctor");
         return;
     };
     let request = crate::core::new_request(
@@ -256,7 +264,8 @@ pub(crate) fn start_memory_summary(app: &mut App) {
         async move {
             let Some(core_client) = core_client else {
                 return Some(TuiCommand::MemoryResult {
-                    toast_message: "Core client unavailable".to_string(),
+                    toast_message: "Core unavailable — check daemon status with /doctor"
+                        .to_string(),
                     is_error: true,
                 });
             };
@@ -362,7 +371,8 @@ pub(crate) fn start_memory_search(app: &mut App, query: String) {
         async move {
             let Some(core_client) = core_client else {
                 return Some(TuiCommand::MemoryResult {
-                    toast_message: "Core client unavailable".to_string(),
+                    toast_message: "Core unavailable — check daemon status with /doctor"
+                        .to_string(),
                     is_error: true,
                 });
             };
@@ -449,7 +459,8 @@ pub(crate) fn start_memory_remember(app: &mut App, text: String) {
         async move {
             let Some(core_client) = core_client else {
                 return Some(TuiCommand::MemoryResult {
-                    toast_message: "Core client unavailable".to_string(),
+                    toast_message: "Core unavailable — check daemon status with /doctor"
+                        .to_string(),
                     is_error: true,
                 });
             };
@@ -504,7 +515,8 @@ pub(crate) fn start_memory_forget(app: &mut App, id: String) {
         async move {
             let Some(core_client) = core_client else {
                 return Some(TuiCommand::MemoryResult {
-                    toast_message: "Core client unavailable".to_string(),
+                    toast_message: "Core unavailable — check daemon status with /doctor"
+                        .to_string(),
                     is_error: true,
                 });
             };

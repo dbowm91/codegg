@@ -510,6 +510,12 @@ pub(crate) fn apply_worktree_listed(
     app.dialog_state.worktree_list_request.finish(request_id);
     if worktrees.is_empty() {
         app.messages_state.toasts.info("No worktrees found");
+    } else if worktrees.len() > 5 {
+        let lines: Vec<String> = worktrees.into_iter().map(|w| format!("  {}", w)).collect();
+        app.open_info_dialog(
+            crate::tui::components::dialogs::info::InfoType::WorktreeList,
+            lines,
+        );
     } else {
         app.messages_state.toasts.info(&worktrees.join(", "));
     }

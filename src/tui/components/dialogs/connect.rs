@@ -262,7 +262,7 @@ impl Widget for &ConnectDialog {
                 let footer_text = vec![
                     Line::from(""),
                     Line::from(Span::styled(
-                        " ↑/↓ select  |  Enter choose  |  Esc close",
+                        " j/k/↑/↓ select  |  Enter choose  |  Esc close ",
                         Style::default().fg(self.theme.muted),
                     )),
                 ];
@@ -352,7 +352,7 @@ impl Widget for &ConnectDialog {
                 let footer_text = vec![
                     Line::from(""),
                     Line::from(Span::styled(
-                        " Enter: Save | Esc: Back",
+                        " Enter: Save  |  Backspace: delete  |  Esc: Back ",
                         Style::default().fg(self.theme.muted),
                     )),
                 ];
@@ -522,7 +522,7 @@ impl Component for ConnectDialog {
                 let footer_text = vec![
                     Line::from(""),
                     Line::from(Span::styled(
-                        " ↑/↓ select  |  Enter choose  |  Esc close",
+                        " j/k/↑/↓ select  |  Enter choose  |  Esc close ",
                         Style::default().fg(theme.muted),
                     )),
                 ];
@@ -611,7 +611,7 @@ impl Component for ConnectDialog {
                 let footer_text = vec![
                     Line::from(""),
                     Line::from(Span::styled(
-                        " Enter: Save | Esc: Back",
+                        " Enter: Save  |  Backspace: delete  |  Esc: Back ",
                         Style::default().fg(theme.muted),
                     )),
                 ];

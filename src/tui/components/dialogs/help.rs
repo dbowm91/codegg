@@ -138,7 +138,7 @@ impl Component for HelpDialog {
         );
 
         let footer = Paragraph::new(Line::from(Span::styled(
-            "\u{2191}/\u{2193} scroll  |  Esc close",
+            "j/k/↑/↓ scroll  |  Esc close",
             Style::default().fg(theme.secondary),
         )))
         .block(

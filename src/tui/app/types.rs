@@ -29,6 +29,8 @@ pub enum Dialog {
     SourcePreview,
     ShellShow,
     TaskList,
+    WorktreeList,
+    GoalShow,
     MemoryResults,
     DoctorReport,
 }
@@ -65,6 +67,8 @@ impl Dialog {
                 | Self::SourcePreview
                 | Self::ShellShow
                 | Self::TaskList
+                | Self::WorktreeList
+                | Self::GoalShow
                 | Self::MemoryResults
                 | Self::DoctorReport
         )

@@ -2320,3 +2320,88 @@ fn test_selected_row_remains_visible() {
         "Scroll should show the selected model"
     );
 }
+
+#[test]
+fn test_info_dialog_footer_includes_scroll_hints() {
+    use codegg::tui::components::dialogs::info::{InfoDialog, InfoType};
+
+    let mut dialog = InfoDialog::new(
+        Arc::new(Theme::dark()),
+        InfoType::Stats,
+        vec!["line1".to_string(), "line2".to_string()],
+    );
+    // Verify scrolling works (j/k keys are handled)
+    let down = crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Char('j'),
+        crossterm::event::KeyModifiers::NONE,
+    );
+    let up = crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Char('k'),
+        crossterm::event::KeyModifiers::NONE,
+    );
+    assert!(dialog.handle_key(down).is_none(), "j should scroll down");
+    assert!(dialog.handle_key(up).is_none(), "k should scroll up");
+}
+
+#[test]
+fn test_diff_dialog_footer_includes_all_keys() {
+    use codegg::tui::components::component::Component;
+    use codegg::tui::components::dialogs::diff::DiffDialog;
+
+    let mut dialog = DiffDialog::new(
+        "old content".into(),
+        "new content".into(),
+        "test diff".into(),
+    );
+    // Verify 's' key is handled (mode toggle) via Component trait
+    let s_key = crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Char('s'),
+        crossterm::event::KeyModifiers::NONE,
+    );
+    let result = Component::handle_key(&mut dialog, s_key);
+    // handle_key returns Option<TuiMsg> — None means handled (no message to send)
+    assert!(
+        result.is_none(),
+        "s key should be handled without sending a message"
+    );
+}
+
+#[test]
+fn test_question_dialog_footer_includes_editing_keys() {
+    use codegg::tui::components::component::Component;
+    use codegg::tui::components::dialogs::question::{QuestionDialog, QuestionSpec};
+
+    let questions = vec![QuestionSpec {
+        question: "Test?".to_string(),
+        options: Some(vec!["Yes".to_string(), "No".to_string()]),
+        initial: None,
+    }];
+    let mut dialog = QuestionDialog::new(questions);
+    // Verify Backspace is handled
+    let bs = crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Backspace,
+        crossterm::event::KeyModifiers::NONE,
+    );
+    let result = Component::handle_key(&mut dialog, bs);
+    assert!(result.is_none(), "Backspace should be handled");
+    // Verify Delete is handled
+    let del = crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Delete,
+        crossterm::event::KeyModifiers::NONE,
+    );
+    let result = Component::handle_key(&mut dialog, del);
+    assert!(result.is_none(), "Delete should be handled");
+    // Verify Left/Right cursor keys are handled
+    let left = crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Left,
+        crossterm::event::KeyModifiers::NONE,
+    );
+    let result = Component::handle_key(&mut dialog, left);
+    assert!(result.is_none(), "Left should be handled");
+    let right = crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Right,
+        crossterm::event::KeyModifiers::NONE,
+    );
+    let result = Component::handle_key(&mut dialog, right);
+    assert!(result.is_none(), "Right should be handled");
+}

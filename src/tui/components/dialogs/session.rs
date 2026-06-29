@@ -658,7 +658,7 @@ impl Component for SessionDialog {
                 Style::default().fg(theme.muted),
             )));
             lines.push(Line::from(Span::styled(
-                "a archive  d delete  e export  A select all  D deselect all",
+                "a archive  d delete  A select all  D deselect all",
                 Style::default().fg(theme.muted),
             )));
         } else {

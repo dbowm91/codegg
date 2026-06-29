@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crossterm::event::KeyEvent;
-use ratatui::layout::Rect;
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::prelude::Widget;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -225,9 +225,17 @@ impl ReviewDialog {
                 ListItem::new(line)
             })
             .collect();
-
         let list = List::new(items);
-        frame.render_widget(list, inner);
+
+        let footer = Line::from(Span::styled(
+            "↑/↓ navigate  |  Enter diff  |  Esc close",
+            Style::default().fg(self.theme.muted),
+        ));
+
+        let chunks = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).split(area);
+
+        frame.render_widget(list, chunks[0]);
+        frame.render_widget(footer, chunks[1]);
     }
 
     fn render_diff_view(&self, frame: &mut Frame, area: Rect) {

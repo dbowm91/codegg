@@ -413,7 +413,7 @@ impl Component for SecurityReviewDialog {
         self.render_detail(frame, split[1]);
 
         let footer_text = format!(
-            "j/k move | f filter ({}) | ]/[ hunk nav | h jump hunk | H copy hunk | Enter preview | Esc close",
+            "j/k move | PgUp/PgDn page | f filter ({}) | ]/[ hunk nav | h jump hunk | H copy hunk | Enter preview | Esc close",
             self.filter.label(),
         );
         let footer = Paragraph::new(Line::from(Span::styled(

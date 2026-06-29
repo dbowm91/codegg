@@ -17,6 +17,8 @@ pub enum InfoType {
     ShellShow,
     Stats,
     TaskList,
+    WorktreeList,
+    GoalShow,
     MemoryResults,
     DoctorReport,
 }
@@ -57,6 +59,8 @@ impl InfoDialog {
             InfoType::ShellShow => " Shell Command ",
             InfoType::Stats => " TUI Stats ",
             InfoType::TaskList => " Tasks ",
+            InfoType::WorktreeList => " Worktrees ",
+            InfoType::GoalShow => " Goal ",
             InfoType::MemoryResults => " Memory ",
             InfoType::DoctorReport => " Doctor ",
         }
@@ -70,6 +74,8 @@ impl InfoDialog {
             InfoType::ShellShow => DialogType::ShellShow,
             InfoType::Stats => DialogType::Stats,
             InfoType::TaskList => DialogType::TaskList,
+            InfoType::WorktreeList => DialogType::WorktreeList,
+            InfoType::GoalShow => DialogType::GoalShow,
             InfoType::MemoryResults => DialogType::MemoryResults,
             InfoType::DoctorReport => DialogType::DoctorReport,
         }
@@ -148,9 +154,9 @@ impl Component for InfoDialog {
         };
 
         let footer_text = if scroll_indicator.is_empty() {
-            " Esc/Enter to close ".to_string()
+            " j/k scroll  |  Esc/Enter close ".to_string()
         } else {
-            format!(" {} | Esc/Enter to close ", scroll_indicator)
+            format!(" {}  |  j/k scroll  |  Esc/Enter close ", scroll_indicator)
         };
 
         let footer_block = Paragraph::new(Line::from(Span::styled(
