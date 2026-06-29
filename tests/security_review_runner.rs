@@ -143,13 +143,10 @@ async fn security_review_command_rejects_second_run_while_active() {
     init_git_repo(dir.path());
     let mut app = make_test_app(dir.path());
 
-    // Simulate an in-flight review owned by someone else by
-    // grabbing a real AbortHandle from a noop tokio task.
-    let join = tokio::spawn(async {});
     let active_id = "sr-fake-active".to_string();
     app.security_review_running = Some(codegg::security::workflow::SecurityReviewTaskState {
         id: active_id.clone(),
-        abort_handle: join.abort_handle(),
+        task_id: codegg::tui::task_lifecycle::TuiTaskId(1),
     });
 
     dispatch_security_review(&mut app, "/security-review");

@@ -72,6 +72,8 @@ src/tui/
 │   ├── tool_output.rs       # Tool call result display
 │   └── mod.rs
 ├── file_diff.rs         # Async diff stats computation for sidebar file changes
+├── task_lifecycle.rs    # Task registry for lifecycle tracking (TuiTaskRegistry)
+├── async_cmd.rs         # Async command spawn helpers (spawn_tui_task, spawn_registered_tui_task)
 ├── input.rs            # Key event handling, keybindings
 ├── layout.rs           # Layout calculations
 ├── route.rs            # Route/RouteManager (Home, Session routes)

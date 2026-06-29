@@ -285,6 +285,6 @@ mod tests {
         s.cancel();
         let id3 = s.begin();
         assert!(!s.finish(id2)); // stale
-        assert!(s.finish(id3));  // current
+        assert!(s.finish(id3)); // current
     }
 }

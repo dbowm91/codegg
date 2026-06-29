@@ -162,6 +162,8 @@ tui/
 ├── route.rs                # Route/RouteManager (Home, Session routes)
 ├── theme.rs                # Theme definitions (31 themes)
 ├── file_diff.rs             # Async diff stats computation for sidebar file changes
+├── task_lifecycle.rs       # Task registry for lifecycle tracking (TuiTaskRegistry)
+├── async_cmd.rs            # Async command spawn helpers (spawn_tui_task, spawn_registered_tui_task)
 ├── command.rs              # Slash command registry
 └── mod.rs                  # TUI entry point, event loop, GlobalEventBus
 ```

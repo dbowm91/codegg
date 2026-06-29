@@ -378,12 +378,8 @@ fn finding_location(file_path: &Path, line: Option<u32>) -> String {
 #[derive(Debug)]
 pub struct SecurityReviewTaskState {
     pub id: String,
-    pub abort_handle: tokio::task::AbortHandle,
+    pub task_id: crate::tui::task_lifecycle::TuiTaskId,
 }
-
-// `tokio::task::AbortHandle` does not implement `Clone`, but it is
-// `Send` and cheap to keep as a single field. `Debug` is fine because
-// `AbortHandle` itself implements `Debug`.
 
 // ---------------------------------------------------------------------------
 // Root-aware path resolution

@@ -415,12 +415,10 @@ fn security_review_cancel_without_active_run_warns() {
 async fn security_review_cancel_aborts_and_clears_guard() {
     let dir = tempfile::tempdir().expect("tempdir");
     let mut app = App::new_for_testing(dir.path().to_string_lossy().to_string());
-    // Install a real AbortHandle.
-    let join = tokio::spawn(async {});
     let active_id = "sr-active".to_string();
     app.security_review_running = Some(codegg::security::workflow::SecurityReviewTaskState {
         id: active_id.clone(),
-        abort_handle: join.abort_handle(),
+        task_id: codegg::tui::task_lifecycle::TuiTaskId(1),
     });
     let result = app.cancel_security_review();
     assert!(
@@ -437,11 +435,10 @@ async fn security_review_cancel_ignores_stale_completion() {
     // (the guard must not be cleared for a different run).
     let dir = tempfile::tempdir().expect("tempdir");
     let mut app = App::new_for_testing(dir.path().to_string_lossy().to_string());
-    let join = tokio::spawn(async {});
     let active_id = "sr-current".to_string();
     app.security_review_running = Some(codegg::security::workflow::SecurityReviewTaskState {
         id: active_id.clone(),
-        abort_handle: join.abort_handle(),
+        task_id: codegg::tui::task_lifecycle::TuiTaskId(2),
     });
 
     // Stale completion for an older run.

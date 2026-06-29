@@ -46,6 +46,7 @@ use crate::session::message::ToolStatus;
 use crate::session::{MessageStore, Session, SessionStore};
 use crate::tts::Tts;
 use crate::tui::components::toast::Toast;
+use crate::tui::task_lifecycle::TuiTaskKind;
 use crate::util::fuzzy::fuzzy_score;
 use crossterm::event::KeyEvent;
 use egglsp::{render_workflow_display, LspWorkflowInvocation, LspWorkflowRecipe};
@@ -1242,7 +1243,7 @@ impl App {
     /// ignored by the handler in `src/tui/mod.rs`.
     pub fn cancel_security_review(&mut self) -> bool {
         if let Some(state) = self.security_review_running.take() {
-            state.abort_handle.abort();
+            self.task_registry.cancel(state.task_id);
             self.messages_state
                 .toasts
                 .info("Security review cancelled.");
@@ -1298,11 +1299,12 @@ impl App {
     fn persist_theme_selection(&mut self, theme_id: &str) {
         if let Some(prefs) = self.preferences.clone() {
             let id = theme_id.to_string();
-            tokio::spawn(async move {
-                if let Err(e) = prefs.set(crate::storage::KEY_THEME_ACTIVE, &id).await {
-                    tracing::warn!("failed to persist theme to user_preferences: {}", e);
-                }
-            });
+            self.task_registry
+                .spawn(TuiTaskKind::Other, "persist-theme", async move {
+                    if let Err(e) = prefs.set(crate::storage::KEY_THEME_ACTIVE, &id).await {
+                        tracing::warn!("failed to persist theme to user_preferences: {}", e);
+                    }
+                });
         }
 
         // Mirror the value into config.toml so external tooling (and the
@@ -1331,14 +1333,15 @@ impl App {
     /// Save the user's most recently selected model. Mirrors the theme
     /// pattern: fire-and-forget DB write so the next launch can restore
     /// the model.
-    fn persist_model_selection(&self, model: &str) {
+    fn persist_model_selection(&mut self, model: &str) {
         if let Some(prefs) = self.preferences.clone() {
             let id = model.to_string();
-            tokio::spawn(async move {
-                if let Err(e) = prefs.set(crate::storage::KEY_MODEL_LAST_USED, &id).await {
-                    tracing::warn!("failed to persist model to user_preferences: {}", e);
-                }
-            });
+            self.task_registry
+                .spawn(TuiTaskKind::Other, "persist-model", async move {
+                    if let Err(e) = prefs.set(crate::storage::KEY_MODEL_LAST_USED, &id).await {
+                        tracing::warn!("failed to persist model to user_preferences: {}", e);
+                    }
+                });
         }
     }
 
@@ -5523,27 +5526,31 @@ impl App {
                 let tx = self.tui_cmd_tx.clone();
                 if let Some(tx) = tx {
                     let run_id = id.0.clone();
-                    let join = tokio::spawn(async move {
-                        let result = crate::security::workflow::run_security_review_background(
-                            root,
-                            parsed_args,
-                            lsp_tool,
-                        )
-                        .await;
-                        let (receipt, error) = match result {
-                            Ok(r) => (Some(Box::new(r)), None),
-                            Err(e) => (None, Some(e)),
-                        };
-                        let _ = tx.try_send(TuiCommand::SecurityReviewFinished {
-                            id: run_id,
-                            receipt,
-                            error,
-                        });
-                    });
+                    let task_id = self.task_registry.spawn(
+                        TuiTaskKind::SecurityReview,
+                        "security-review",
+                        async move {
+                            let result = crate::security::workflow::run_security_review_background(
+                                root,
+                                parsed_args,
+                                lsp_tool,
+                            )
+                            .await;
+                            let (receipt, error) = match result {
+                                Ok(r) => (Some(Box::new(r)), None),
+                                Err(e) => (None, Some(e)),
+                            };
+                            let _ = tx.try_send(TuiCommand::SecurityReviewFinished {
+                                id: run_id,
+                                receipt,
+                                error,
+                            });
+                        },
+                    );
                     self.security_review_running =
                         Some(crate::security::workflow::SecurityReviewTaskState {
                             id: id.0,
-                            abort_handle: join.abort_handle(),
+                            task_id,
                         });
                 } else {
                     // Fallback: no channel available (e.g. test fixture).
@@ -7130,22 +7137,27 @@ impl App {
                     if !text.is_empty() {
                         let tts = self.ui_state.tts.clone();
                         let text = text.clone();
-                        tokio::spawn(async move {
-                            if let Err(e) = tts.speak(&text).await {
-                                tracing::debug!("TTS speak error: {}", e);
-                            }
-                        });
+                        self.task_registry.spawn(
+                            TuiTaskKind::Notification,
+                            "tts-speak",
+                            async move {
+                                if let Err(e) = tts.speak(&text).await {
+                                    tracing::debug!("TTS speak error: {}", e);
+                                }
+                            },
+                        );
                     }
                 }
             }
             self.messages_state.toasts.info("TTS enabled");
         } else {
             let tts = self.ui_state.tts.clone();
-            tokio::spawn(async move {
-                if let Err(e) = tts.stop().await {
-                    tracing::debug!("TTS stop error: {}", e);
-                }
-            });
+            self.task_registry
+                .spawn(TuiTaskKind::Notification, "tts-stop", async move {
+                    if let Err(e) = tts.stop().await {
+                        tracing::debug!("TTS stop error: {}", e);
+                    }
+                });
             self.messages_state.toasts.info("TTS disabled");
         }
     }
@@ -7156,11 +7168,12 @@ impl App {
             return;
         }
         let tts = self.ui_state.tts.clone();
-        tokio::spawn(async move {
-            if let Err(e) = tts.stop().await {
-                tracing::debug!("TTS stop error: {}", e);
-            }
-        });
+        self.task_registry
+            .spawn(TuiTaskKind::Notification, "tts-stop", async move {
+                if let Err(e) = tts.stop().await {
+                    tracing::debug!("TTS stop error: {}", e);
+                }
+            });
         self.messages_state.toasts.info("TTS stopped");
     }
 
@@ -7562,36 +7575,37 @@ impl App {
                 self.messages_state
                     .toasts
                     .info("Consolidating session memories...");
-                tokio::spawn(async move {
-                    let messages =
-                        if let (Some(client), Some(sid)) = (core_client, session_id.clone()) {
-                            let request = crate::core::new_request(
-                                format!("session-messages-{}", uuid::Uuid::new_v4()),
-                                crate::protocol::core::CoreRequest::SessionMessagesLoad {
-                                    session_id: sid,
-                                },
-                            );
-                            match client.request(request).await {
-                                Ok(crate::protocol::core::CoreResponse::SessionMessages {
-                                    messages,
-                                    ..
-                                }) => crate::protocol_conversions::dtos_to_messages(messages),
-                                _ => Vec::new(),
-                            }
-                        } else if let (Some(sid), Some(store)) =
-                            (session_id.as_ref(), message_store.as_ref())
-                        {
-                            store.list(sid).await.unwrap_or_default()
-                        } else {
-                            Vec::new()
-                        };
-                    if messages.is_empty() {
-                        return;
-                    }
-                    let new_memories =
-                        mem_store_clone.consolidate_session(&messages, &project_hash_clone);
-                    tracing::info!("Manual consolidation: {} new memories", new_memories.len());
-                });
+                self.task_registry
+                    .spawn(TuiTaskKind::Memory, "memory-consolidate", async move {
+                        let messages =
+                            if let (Some(client), Some(sid)) = (core_client, session_id.clone()) {
+                                let request = crate::core::new_request(
+                                    format!("session-messages-{}", uuid::Uuid::new_v4()),
+                                    crate::protocol::core::CoreRequest::SessionMessagesLoad {
+                                        session_id: sid,
+                                    },
+                                );
+                                match client.request(request).await {
+                                    Ok(crate::protocol::core::CoreResponse::SessionMessages {
+                                        messages,
+                                        ..
+                                    }) => crate::protocol_conversions::dtos_to_messages(messages),
+                                    _ => Vec::new(),
+                                }
+                            } else if let (Some(sid), Some(store)) =
+                                (session_id.as_ref(), message_store.as_ref())
+                            {
+                                store.list(sid).await.unwrap_or_default()
+                            } else {
+                                Vec::new()
+                            };
+                        if messages.is_empty() {
+                            return;
+                        }
+                        let new_memories =
+                            mem_store_clone.consolidate_session(&messages, &project_hash_clone);
+                        tracing::info!("Manual consolidation: {} new memories", new_memories.len());
+                    });
             }
             Some((cmd, _)) => {
                 self.messages_state
@@ -7659,26 +7673,27 @@ impl App {
             .toasts
             .info(&format!("Starting research: {}", question));
 
-        tokio::spawn(async move {
-            let service = crate::research::service::ResearchService::new(std::path::PathBuf::from(
-                &project_dir,
-            ));
-            match service
-                .answer_for_agent(&question, parsed_mode, parsed_depth)
-                .await
-            {
-                Ok(answer) => {
-                    tracing::info!(
-                        "Research complete ({} chars). Artifacts at: {}",
-                        answer.len(),
-                        service.artifact_root().display()
-                    );
+        self.task_registry
+            .spawn(TuiTaskKind::Research, "research-answer", async move {
+                let service = crate::research::service::ResearchService::new(
+                    std::path::PathBuf::from(&project_dir),
+                );
+                match service
+                    .answer_for_agent(&question, parsed_mode, parsed_depth)
+                    .await
+                {
+                    Ok(answer) => {
+                        tracing::info!(
+                            "Research complete ({} chars). Artifacts at: {}",
+                            answer.len(),
+                            service.artifact_root().display()
+                        );
+                    }
+                    Err(e) => {
+                        tracing::error!("Research failed: {}", e);
+                    }
                 }
-                Err(e) => {
-                    tracing::error!("Research failed: {}", e);
-                }
-            }
-        });
+            });
     }
 
     fn handle_research_runs_command(&mut self) {
@@ -7759,7 +7774,8 @@ impl App {
         self.dialog_state
             .model_dialog
             .set_current(&self.agent_state.current_model);
-        self.persist_model_selection(&self.agent_state.current_model);
+        let model = self.agent_state.current_model.clone();
+        self.persist_model_selection(&model);
     }
 
     fn cycle_model_backward(&mut self) {
@@ -7776,7 +7792,8 @@ impl App {
         self.dialog_state
             .model_dialog
             .set_current(&self.agent_state.current_model);
-        self.persist_model_selection(&self.agent_state.current_model);
+        let model = self.agent_state.current_model.clone();
+        self.persist_model_selection(&model);
     }
 
     fn open_connect_dialog(&mut self) {
@@ -8705,35 +8722,36 @@ impl App {
         let core_client = self.core_client.clone();
         let cmd_tx = self.tui_cmd_tx.clone();
         if let (Some(core_client), Some(tx)) = (core_client, cmd_tx) {
-            tokio::spawn(async move {
-                let request = crate::core::new_request(
-                    format!("models-refresh-{}", uuid::Uuid::new_v4()),
-                    CoreRequest::ModelsRefresh,
-                );
-                match core_client.request(request).await {
-                    Ok(crate::protocol::core::CoreResponse::Json { data }) => {
-                        let models = data
-                            .get("models")
-                            .and_then(|v| v.as_array())
-                            .cloned()
-                            .unwrap_or_default();
-                        let model_ids: Vec<String> = models
-                            .iter()
-                            .filter_map(|m| m.as_str().map(ToOwned::to_owned))
-                            .collect();
-                        let _ = tx.send(TuiCommand::UpdateModels(model_ids)).await;
+            self.task_registry
+                .spawn(TuiTaskKind::Command, "refresh-models", async move {
+                    let request = crate::core::new_request(
+                        format!("models-refresh-{}", uuid::Uuid::new_v4()),
+                        CoreRequest::ModelsRefresh,
+                    );
+                    match core_client.request(request).await {
+                        Ok(crate::protocol::core::CoreResponse::Json { data }) => {
+                            let models = data
+                                .get("models")
+                                .and_then(|v| v.as_array())
+                                .cloned()
+                                .unwrap_or_default();
+                            let model_ids: Vec<String> = models
+                                .iter()
+                                .filter_map(|m| m.as_str().map(ToOwned::to_owned))
+                                .collect();
+                            let _ = tx.send(TuiCommand::UpdateModels(model_ids)).await;
+                        }
+                        Ok(crate::protocol::core::CoreResponse::Error { message, .. }) => {
+                            tracing::warn!("model refresh via core failed: {}", message);
+                        }
+                        Ok(other) => {
+                            tracing::warn!("unexpected models refresh response: {:?}", other);
+                        }
+                        Err(e) => {
+                            tracing::warn!("model refresh request failed: {}", e);
+                        }
                     }
-                    Ok(crate::protocol::core::CoreResponse::Error { message, .. }) => {
-                        tracing::warn!("model refresh via core failed: {}", message);
-                    }
-                    Ok(other) => {
-                        tracing::warn!("unexpected models refresh response: {:?}", other);
-                    }
-                    Err(e) => {
-                        tracing::warn!("model refresh request failed: {}", e);
-                    }
-                }
-            });
+                });
         } else {
             self.messages_state
                 .toasts
