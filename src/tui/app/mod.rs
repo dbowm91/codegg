@@ -218,12 +218,14 @@ pub enum TuiCommand {
     },
     /// Completion: sessions have been reloaded from core.
     SessionsReloaded {
+        request_id: u64,
         sessions: Vec<crate::protocol::dto::Session>,
         message_counts: std::collections::HashMap<String, usize>,
         error: Option<String>,
     },
     /// Completion: session messages have been loaded from core.
     SessionMessagesLoaded {
+        request_id: u64,
         session_id: String,
         messages: Vec<crate::session::message::Message>,
         error: Option<String>,
@@ -373,22 +375,26 @@ pub enum TuiCommand {
     },
     /// Completion: background task list has been fetched from core.
     TasksListed {
+        request_id: u64,
         tasks: Vec<serde_json::Value>,
         error: Option<String>,
     },
     /// Completion: a task operation (delete, schedule) has finished.
     TaskOperationFinished {
+        request_id: u64,
         op: String,
         task_id: Option<String>,
         error: Option<String>,
     },
     /// Completion: worktree list has been fetched from core.
     WorktreeListed {
+        request_id: u64,
         worktrees: Vec<String>,
         error: Option<String>,
     },
     /// Completion: a session has been created from a template.
     TemplateSessionCreated {
+        request_id: u64,
         session: Option<crate::protocol::dto::Session>,
         agent: Option<String>,
         model: Option<String>,
@@ -800,6 +806,7 @@ impl App {
                 worktree_list_request: crate::tui::app::state::AsyncUiRequestState::new(),
                 template_create_request: crate::tui::app::state::AsyncUiRequestState::new(),
                 session_mutation_request: crate::tui::app::state::AsyncUiRequestState::new(),
+                session_messages_request: crate::tui::app::state::AsyncUiRequestState::new(),
             },
             agent_state: AgentState {
                 agents,
@@ -1140,6 +1147,7 @@ impl App {
                 worktree_list_request: crate::tui::app::state::AsyncUiRequestState::new(),
                 template_create_request: crate::tui::app::state::AsyncUiRequestState::new(),
                 session_mutation_request: crate::tui::app::state::AsyncUiRequestState::new(),
+                session_messages_request: crate::tui::app::state::AsyncUiRequestState::new(),
             },
             agent_state: AgentState {
                 agents,
@@ -6568,6 +6576,10 @@ impl App {
                 self.task_registry.cancel_kind(TuiTaskKind::Research);
                 self.dialog_state.research_request.cancel();
             }
+            Dialog::Session => {
+                self.dialog_state.session_reload_request.cancel();
+                self.dialog_state.session_messages_request.cancel();
+            }
             _ => {}
         }
 
@@ -7938,6 +7950,7 @@ impl App {
                 let source = import.parse_input();
                 match source {
                     Some(src) => {
+                        import.set_preview_loading(true);
                         if let Some(ref tx) = self.tui_cmd_tx {
                             let _ = tx.try_send(TuiCommand::PreviewImport { source: src });
                         }

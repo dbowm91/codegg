@@ -29,6 +29,7 @@ pub struct ImportDialog {
     pub imported_session: Option<Session>,
     pub error: Option<String>,
     pub conflict_mode: bool,
+    pub preview_loading: bool,
 }
 
 impl ImportDialog {
@@ -42,6 +43,7 @@ impl ImportDialog {
             imported_session: None,
             error: None,
             conflict_mode: false,
+            preview_loading: false,
         }
     }
 
@@ -91,16 +93,22 @@ impl ImportDialog {
         None
     }
 
+    pub fn set_preview_loading(&mut self, loading: bool) {
+        self.preview_loading = loading;
+    }
+
     pub fn set_preview(&mut self, session: Session, msg_count: usize) {
         self.preview_session = Some(session);
         self.preview_msg_count = msg_count;
         self.state = ImportState::Preview;
         self.error = None;
+        self.preview_loading = false;
     }
 
     pub fn set_error(&mut self, err: String) {
         self.error = Some(err);
         self.state = ImportState::Error;
+        self.preview_loading = false;
     }
 
     pub fn set_importing(&mut self) {
@@ -178,10 +186,19 @@ impl Widget for &ImportDialog {
                 )]));
                 lines.push(Line::from(""));
 
-                lines.push(Line::from(Span::styled(
-                    "Enter preview  Esc cancel",
-                    Style::default().fg(self.theme.muted),
-                )));
+                if self.preview_loading {
+                    lines.push(Line::from(Span::styled(
+                        "  Previewing...",
+                        Style::default()
+                            .fg(self.theme.primary)
+                            .add_modifier(Modifier::BOLD),
+                    )));
+                } else {
+                    lines.push(Line::from(Span::styled(
+                        "Enter preview  Esc cancel",
+                        Style::default().fg(self.theme.muted),
+                    )));
+                }
             }
             ImportState::Preview => {
                 if let Some(ref session) = self.preview_session {
@@ -361,10 +378,19 @@ impl Component for ImportDialog {
                 )]));
                 lines.push(Line::from(""));
 
-                lines.push(Line::from(Span::styled(
-                    "Enter preview  Esc cancel",
-                    Style::default().fg(theme.muted),
-                )));
+                if self.preview_loading {
+                    lines.push(Line::from(Span::styled(
+                        "  Previewing...",
+                        Style::default()
+                            .fg(theme.primary)
+                            .add_modifier(Modifier::BOLD),
+                    )));
+                } else {
+                    lines.push(Line::from(Span::styled(
+                        "Enter preview  Esc cancel",
+                        Style::default().fg(theme.muted),
+                    )));
+                }
             }
             ImportState::Preview => {
                 if let Some(ref session) = self.preview_session {

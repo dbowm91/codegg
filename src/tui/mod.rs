@@ -310,7 +310,7 @@ async fn reload_sessions(app: &mut app::App) {
 
 fn start_reload_sessions(app: &mut app::App) {
     app.dialog_state.session_dialog.set_loading(true);
-    app.dialog_state.session_reload_request.begin();
+    let request_id = app.dialog_state.session_reload_request.begin();
 
     let core_client = app.core_client.clone();
     let project_id = app.session_state.project_dir.clone();
@@ -320,6 +320,7 @@ fn start_reload_sessions(app: &mut app::App) {
     spawn_tui_task(tx, "reload_sessions", async move {
         let Some(core_client) = core_client else {
             return Some(TuiCommand::SessionsReloaded {
+                request_id,
                 sessions: Vec::new(),
                 message_counts: std::collections::HashMap::new(),
                 error: Some("Core client not available".to_string()),
@@ -338,6 +339,7 @@ fn start_reload_sessions(app: &mut app::App) {
             Ok(CoreResponse::SessionList { sessions }) => sessions,
             Ok(CoreResponse::Error { code, message }) => {
                 return Some(TuiCommand::SessionsReloaded {
+                    request_id,
                     sessions: Vec::new(),
                     message_counts: std::collections::HashMap::new(),
                     error: Some(format!("Session list failed ({}): {}", code, message)),
@@ -345,6 +347,7 @@ fn start_reload_sessions(app: &mut app::App) {
             }
             Ok(other) => {
                 return Some(TuiCommand::SessionsReloaded {
+                    request_id,
                     sessions: Vec::new(),
                     message_counts: std::collections::HashMap::new(),
                     error: Some(format!("Unexpected response: {:?}", other)),
@@ -352,6 +355,7 @@ fn start_reload_sessions(app: &mut app::App) {
             }
             Err(e) => {
                 return Some(TuiCommand::SessionsReloaded {
+                    request_id,
                     sessions: Vec::new(),
                     message_counts: std::collections::HashMap::new(),
                     error: Some(format!("Session list error: {}", e)),
@@ -376,6 +380,7 @@ fn start_reload_sessions(app: &mut app::App) {
         };
 
         Some(TuiCommand::SessionsReloaded {
+            request_id,
             sessions,
             message_counts,
             error: None,
@@ -385,17 +390,23 @@ fn start_reload_sessions(app: &mut app::App) {
 
 fn apply_sessions_reloaded(
     app: &mut app::App,
+    request_id: u64,
     sessions: Vec<crate::protocol::dto::Session>,
     message_counts: std::collections::HashMap<String, usize>,
     error: Option<String>,
 ) {
-    app.dialog_state.session_reload_request.clear_loading();
-    app.dialog_state.session_dialog.set_loading(false);
-
     if let Some(err) = error {
+        app.dialog_state
+            .session_reload_request
+            .fail(request_id, err.clone());
+        app.dialog_state.session_dialog.set_loading(false);
         app.messages_state.toasts.error(&err);
         return;
     }
+    app.dialog_state
+        .session_reload_request
+        .finish(request_id);
+    app.dialog_state.session_dialog.set_loading(false);
 
     app.dialog_state
         .session_dialog
@@ -408,13 +419,14 @@ fn apply_sessions_reloaded(
 }
 
 fn start_list_tasks(app: &mut app::App) {
-    app.dialog_state.task_list_request.begin();
+    let request_id = app.dialog_state.task_list_request.begin();
     let core_client = app.core_client.clone();
     let tx = app.tui_cmd_tx.clone();
 
     spawn_tui_task(tx, "list_tasks", async move {
         let Some(core_client) = core_client else {
             return Some(TuiCommand::TasksListed {
+                request_id,
                 tasks: Vec::new(),
                 error: Some("Core client not available".to_string()),
             });
@@ -430,17 +442,24 @@ fn start_list_tasks(app: &mut app::App) {
                     .and_then(|v| v.as_array())
                     .cloned()
                     .unwrap_or_default();
-                Some(TuiCommand::TasksListed { tasks, error: None })
+                Some(TuiCommand::TasksListed {
+                    request_id,
+                    tasks,
+                    error: None,
+                })
             }
             Ok(CoreResponse::Error { message, .. }) => Some(TuiCommand::TasksListed {
+                request_id,
                 tasks: Vec::new(),
                 error: Some(format!("Failed to list tasks: {}", message)),
             }),
             Ok(other) => Some(TuiCommand::TasksListed {
+                request_id,
                 tasks: Vec::new(),
                 error: Some(format!("Unexpected task list response: {:?}", other)),
             }),
             Err(e) => Some(TuiCommand::TasksListed {
+                request_id,
                 tasks: Vec::new(),
                 error: Some(format!("Failed to list tasks: {}", e)),
             }),
@@ -448,12 +467,20 @@ fn start_list_tasks(app: &mut app::App) {
     });
 }
 
-fn apply_tasks_listed(app: &mut app::App, tasks: Vec<serde_json::Value>, error: Option<String>) {
-    app.dialog_state.task_list_request.clear_loading();
+fn apply_tasks_listed(
+    app: &mut app::App,
+    request_id: u64,
+    tasks: Vec<serde_json::Value>,
+    error: Option<String>,
+) {
     if let Some(err) = error {
+        app.dialog_state
+            .task_list_request
+            .fail(request_id, err.clone());
         app.messages_state.toasts.warning(&err);
         return;
     }
+    app.dialog_state.task_list_request.finish(request_id);
     if tasks.is_empty() {
         app.messages_state.toasts.info("No background tasks");
     } else {
@@ -479,13 +506,14 @@ fn apply_tasks_listed(app: &mut app::App, tasks: Vec<serde_json::Value>, error: 
 }
 
 fn start_delete_task(app: &mut app::App, id: String) {
-    app.dialog_state.task_delete_request.begin();
+    let request_id = app.dialog_state.task_delete_request.begin();
     let core_client = app.core_client.clone();
     let tx = app.tui_cmd_tx.clone();
 
     spawn_tui_task(tx, "delete_task", async move {
         let Ok(parsed_id) = id.parse::<u64>() else {
             return Some(TuiCommand::TaskOperationFinished {
+                request_id,
                 op: "delete".to_string(),
                 task_id: None,
                 error: Some("Task id must be numeric".to_string()),
@@ -493,6 +521,7 @@ fn start_delete_task(app: &mut app::App, id: String) {
         };
         let Some(core_client) = core_client else {
             return Some(TuiCommand::TaskOperationFinished {
+                request_id,
                 op: "delete".to_string(),
                 task_id: None,
                 error: Some("Core client not available".to_string()),
@@ -504,28 +533,33 @@ fn start_delete_task(app: &mut app::App, id: String) {
         );
         match core_client.request(request).await {
             Ok(CoreResponse::Ack) => Some(TuiCommand::TaskOperationFinished {
+                request_id,
                 op: "delete".to_string(),
                 task_id: Some(parsed_id.to_string()),
                 error: None,
             }),
             Ok(CoreResponse::Error { code, .. }) if code == "task_not_found" => {
                 Some(TuiCommand::TaskOperationFinished {
+                    request_id,
                     op: "delete".to_string(),
                     task_id: Some(parsed_id.to_string()),
                     error: Some("Task not found".to_string()),
                 })
             }
             Ok(CoreResponse::Error { message, .. }) => Some(TuiCommand::TaskOperationFinished {
+                request_id,
                 op: "delete".to_string(),
                 task_id: Some(parsed_id.to_string()),
                 error: Some(format!("Failed to delete task: {}", message)),
             }),
             Ok(other) => Some(TuiCommand::TaskOperationFinished {
+                request_id,
                 op: "delete".to_string(),
                 task_id: Some(parsed_id.to_string()),
                 error: Some(format!("Unexpected task delete response: {:?}", other)),
             }),
             Err(e) => Some(TuiCommand::TaskOperationFinished {
+                request_id,
                 op: "delete".to_string(),
                 task_id: Some(parsed_id.to_string()),
                 error: Some(format!("Failed to delete task: {}", e)),
@@ -536,15 +570,19 @@ fn start_delete_task(app: &mut app::App, id: String) {
 
 fn apply_task_operation_finished(
     app: &mut app::App,
+    request_id: u64,
     op: String,
     task_id: Option<String>,
     error: Option<String>,
 ) {
-    app.dialog_state.task_delete_request.clear_loading();
     if let Some(err) = error {
+        app.dialog_state
+            .task_delete_request
+            .fail(request_id, err.clone());
         app.messages_state.toasts.warning(&err);
         return;
     }
+    app.dialog_state.task_delete_request.finish(request_id);
     match op.as_str() {
         "delete" => {
             app.messages_state.toasts.info("Task deleted");
@@ -1171,6 +1209,7 @@ fn start_undo_delete(app: &mut app::App, session_id: String) {
 }
 
 fn start_task_schedule(app: &mut app::App, interval_secs: u64, message: String) {
+    let request_id = app.dialog_state.task_delete_request.begin();
     let core_client = app.core_client.clone();
     let session_id = app
         .session_state
@@ -1183,6 +1222,7 @@ fn start_task_schedule(app: &mut app::App, interval_secs: u64, message: String) 
     spawn_tui_task(tx, "task_schedule", async move {
         let Some(core_client) = core_client else {
             return Some(TuiCommand::TaskOperationFinished {
+                request_id,
                 op: "schedule".to_string(),
                 task_id: None,
                 error: Some("Core client not available".to_string()),
@@ -1203,22 +1243,26 @@ fn start_task_schedule(app: &mut app::App, interval_secs: u64, message: String) 
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string());
                 Some(TuiCommand::TaskOperationFinished {
+                    request_id,
                     op: "schedule".to_string(),
                     task_id,
                     error: None,
                 })
             }
             Ok(CoreResponse::Error { message, .. }) => Some(TuiCommand::TaskOperationFinished {
+                request_id,
                 op: "schedule".to_string(),
                 task_id: None,
                 error: Some(format!("Failed to schedule task: {}", message)),
             }),
             Ok(other) => Some(TuiCommand::TaskOperationFinished {
+                request_id,
                 op: "schedule".to_string(),
                 task_id: None,
                 error: Some(format!("Unexpected task schedule response: {:?}", other)),
             }),
             Err(e) => Some(TuiCommand::TaskOperationFinished {
+                request_id,
                 op: "schedule".to_string(),
                 task_id: None,
                 error: Some(format!("Failed to schedule task: {}", e)),
@@ -1228,7 +1272,7 @@ fn start_task_schedule(app: &mut app::App, interval_secs: u64, message: String) 
 }
 
 fn start_worktree_list(app: &mut app::App) {
-    app.dialog_state.worktree_list_request.begin();
+    let request_id = app.dialog_state.worktree_list_request.begin();
     let core_client = app.core_client.clone();
     let project_dir = app.session_state.project_dir.clone();
     let tx = app.tui_cmd_tx.clone();
@@ -1236,6 +1280,7 @@ fn start_worktree_list(app: &mut app::App) {
     spawn_tui_task(tx, "worktree_list", async move {
         let Some(core_client) = core_client else {
             return Some(TuiCommand::WorktreeListed {
+                request_id,
                 worktrees: Vec::new(),
                 error: Some("Core client not available".to_string()),
             });
@@ -1260,19 +1305,23 @@ fn start_worktree_list(app: &mut app::App) {
                     })
                     .collect();
                 Some(TuiCommand::WorktreeListed {
+                    request_id,
                     worktrees: names,
                     error: None,
                 })
             }
             Ok(CoreResponse::Error { message, .. }) => Some(TuiCommand::WorktreeListed {
+                request_id,
                 worktrees: Vec::new(),
                 error: Some(format!("Failed to list worktrees: {}", message)),
             }),
             Ok(other) => Some(TuiCommand::WorktreeListed {
+                request_id,
                 worktrees: Vec::new(),
                 error: Some(format!("Unexpected worktree response: {:?}", other)),
             }),
             Err(e) => Some(TuiCommand::WorktreeListed {
+                request_id,
                 worktrees: Vec::new(),
                 error: Some(format!("Failed to list worktrees: {}", e)),
             }),
@@ -1280,12 +1329,22 @@ fn start_worktree_list(app: &mut app::App) {
     });
 }
 
-fn apply_worktree_listed(app: &mut app::App, worktrees: Vec<String>, error: Option<String>) {
-    app.dialog_state.worktree_list_request.clear_loading();
+fn apply_worktree_listed(
+    app: &mut app::App,
+    request_id: u64,
+    worktrees: Vec<String>,
+    error: Option<String>,
+) {
     if let Some(err) = error {
+        app.dialog_state
+            .worktree_list_request
+            .fail(request_id, err.clone());
         app.messages_state.toasts.warning(&err);
         return;
     }
+    app.dialog_state
+        .worktree_list_request
+        .finish(request_id);
     if worktrees.is_empty() {
         app.messages_state.toasts.info("No worktrees found");
     } else {
@@ -1298,7 +1357,7 @@ fn start_create_from_template(
     _key: String,
     template: crate::config::schema::SessionTemplate,
 ) {
-    app.dialog_state.template_create_request.begin();
+    let request_id = app.dialog_state.template_create_request.begin();
     let core_client = app.core_client.clone();
     let project_dir = app.session_state.project_dir.clone();
     let template_name = template.name.clone();
@@ -1309,6 +1368,7 @@ fn start_create_from_template(
     spawn_tui_task(tx, "create_from_template", async move {
         let Some(core_client) = core_client else {
             return Some(TuiCommand::TemplateSessionCreated {
+                request_id,
                 session: None,
                 agent,
                 model,
@@ -1326,6 +1386,7 @@ fn start_create_from_template(
         );
         match core_client.request(request).await {
             Ok(CoreResponse::Session { session }) => Some(TuiCommand::TemplateSessionCreated {
+                request_id,
                 session: Some(session),
                 agent,
                 model,
@@ -1333,6 +1394,7 @@ fn start_create_from_template(
                 error: None,
             }),
             Ok(CoreResponse::Error { message, .. }) => Some(TuiCommand::TemplateSessionCreated {
+                request_id,
                 session: None,
                 agent,
                 model,
@@ -1340,6 +1402,7 @@ fn start_create_from_template(
                 error: Some(message),
             }),
             Ok(other) => Some(TuiCommand::TemplateSessionCreated {
+                request_id,
                 session: None,
                 agent,
                 model,
@@ -1347,6 +1410,7 @@ fn start_create_from_template(
                 error: Some(format!("Unexpected response: {:?}", other)),
             }),
             Err(e) => Some(TuiCommand::TemplateSessionCreated {
+                request_id,
                 session: None,
                 agent,
                 model,
@@ -1359,19 +1423,25 @@ fn start_create_from_template(
 
 fn apply_template_session_created(
     app: &mut app::App,
+    request_id: u64,
     session: Option<crate::protocol::dto::Session>,
     agent: Option<String>,
     model: Option<String>,
     template_name: String,
     error: Option<String>,
 ) {
-    app.dialog_state.template_create_request.clear_loading();
     if let Some(err) = error {
+        app.dialog_state
+            .template_create_request
+            .fail(request_id, err.clone());
         app.messages_state
             .toasts
             .error(&format!("Failed to create session from template: {}", err));
         return;
     }
+    app.dialog_state
+        .template_create_request
+        .finish(request_id);
     let Some(session) = session else {
         return;
     };
@@ -3006,6 +3076,7 @@ async fn handle_load_session_messages(app: &mut app::App, session_id: String) {
 
 fn start_load_session_messages(app: &mut app::App, session_id: String) {
     app.messages_state.toasts.info("Loading messages...");
+    let request_id = app.dialog_state.session_messages_request.begin();
 
     let core_client = app.core_client.clone();
     let tx = app.tui_cmd_tx.clone();
@@ -3019,6 +3090,7 @@ fn start_load_session_messages(app: &mut app::App, session_id: String) {
         async move {
             let Some(core_client) = core_client else {
                 return Some(TuiCommand::SessionMessagesLoaded {
+                    request_id,
                     session_id: sid,
                     messages: Vec::new(),
                     error: Some("Core client not available".to_string()),
@@ -3035,6 +3107,7 @@ fn start_load_session_messages(app: &mut app::App, session_id: String) {
                 Ok(CoreResponse::SessionMessages { messages, .. }) => {
                     let messages = crate::protocol_conversions::dtos_to_messages(messages);
                     Some(TuiCommand::SessionMessagesLoaded {
+                        request_id,
                         session_id: sid,
                         messages,
                         error: None,
@@ -3042,17 +3115,20 @@ fn start_load_session_messages(app: &mut app::App, session_id: String) {
                 }
                 Ok(CoreResponse::Error { message, .. }) => {
                     Some(TuiCommand::SessionMessagesLoaded {
+                        request_id,
                         session_id: sid,
                         messages: Vec::new(),
                         error: Some(format!("Failed to load messages: {}", message)),
                     })
                 }
                 Ok(_) => Some(TuiCommand::SessionMessagesLoaded {
+                    request_id,
                     session_id: sid,
                     messages: Vec::new(),
                     error: Some("Unexpected response".to_string()),
                 }),
                 Err(e) => Some(TuiCommand::SessionMessagesLoaded {
+                    request_id,
                     session_id: sid,
                     messages: Vec::new(),
                     error: Some(format!("Failed to load messages: {}", e)),
@@ -3064,14 +3140,36 @@ fn start_load_session_messages(app: &mut app::App, session_id: String) {
 
 fn apply_session_messages_loaded(
     app: &mut app::App,
-    _session_id: String,
+    request_id: u64,
+    session_id: String,
     messages: Vec<crate::session::message::Message>,
     error: Option<String>,
 ) {
     use crate::tui::components::messages::{MessageRole, MsgPart, UIMessage};
 
     if let Some(err) = error {
+        app.dialog_state
+            .session_messages_request
+            .fail(request_id, err.clone());
         app.messages_state.toasts.error(&err);
+        return;
+    }
+    if !app
+        .dialog_state
+        .session_messages_request
+        .finish(request_id)
+    {
+        return;
+    }
+
+    // Only update messages if this is still the active session
+    if app
+        .session_state
+        .session
+        .as_ref()
+        .map(|s| s.id.as_str())
+        != Some(&session_id)
+    {
         return;
     }
 
@@ -6638,11 +6736,11 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                     TuiCommand::SecurityReviewFinished { id, receipt, error } => {
                         handle_security_review_finished(app, id, receipt, error);
                     }
-                    TuiCommand::SessionsReloaded { sessions, message_counts, error } => {
-                        apply_sessions_reloaded(app, sessions, message_counts, error);
+                    TuiCommand::SessionsReloaded { request_id, sessions, message_counts, error } => {
+                        apply_sessions_reloaded(app, request_id, sessions, message_counts, error);
                     }
-                    TuiCommand::SessionMessagesLoaded { session_id, messages, error } => {
-                        apply_session_messages_loaded(app, session_id, messages, error);
+                    TuiCommand::SessionMessagesLoaded { request_id, session_id, messages, error } => {
+                        apply_session_messages_loaded(app, request_id, session_id, messages, error);
                     }
                     TuiCommand::TreeDialogLoaded { current_session_id, nodes, error } => {
                         apply_tree_dialog_loaded(app, current_session_id, nodes, error);
@@ -6695,23 +6793,24 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                     TuiCommand::SessionStateRefreshed { todos, active_goal, error } => {
                         apply_session_state_refreshed(app, todos, active_goal, error);
                     }
-                    TuiCommand::TasksListed { tasks, error } => {
-                        apply_tasks_listed(app, tasks, error);
+                    TuiCommand::TasksListed { request_id, tasks, error } => {
+                        apply_tasks_listed(app, request_id, tasks, error);
                     }
-                    TuiCommand::TaskOperationFinished { op, task_id, error } => {
-                        apply_task_operation_finished(app, op, task_id, error);
+                    TuiCommand::TaskOperationFinished { request_id, op, task_id, error } => {
+                        apply_task_operation_finished(app, request_id, op, task_id, error);
                     }
-                    TuiCommand::WorktreeListed { worktrees, error } => {
-                        apply_worktree_listed(app, worktrees, error);
+                    TuiCommand::WorktreeListed { request_id, worktrees, error } => {
+                        apply_worktree_listed(app, request_id, worktrees, error);
                     }
                     TuiCommand::TemplateSessionCreated {
+                        request_id,
                         session,
                         agent,
                         model,
                         template_name,
                         error,
                     } => {
-                        apply_template_session_created(app, session, agent, model, template_name, error);
+                        apply_template_session_created(app, request_id, session, agent, model, template_name, error);
                     }
                     TuiCommand::NotificationSent { error } => {
                         apply_notification_sent(app, error);
@@ -7347,8 +7446,10 @@ mod async_cmd_tests {
     #[test]
     fn apply_sessions_reloaded_with_error_shows_toast() {
         let mut app = make_test_app();
+        let request_id = app.dialog_state.session_reload_request.begin();
         apply_sessions_reloaded(
             &mut app,
+            request_id,
             Vec::new(),
             HashMap::new(),
             Some("test error".into()),
@@ -7368,19 +7469,21 @@ mod async_cmd_tests {
     #[test]
     fn apply_sessions_reloaded_clears_loading() {
         let mut app = make_test_app();
-        app.dialog_state.session_reload_request.begin();
-        apply_sessions_reloaded(&mut app, Vec::new(), HashMap::new(), None);
+        let request_id = app.dialog_state.session_reload_request.begin();
+        apply_sessions_reloaded(&mut app, request_id, Vec::new(), HashMap::new(), None);
         assert!(!app.dialog_state.session_reload_request.is_loading());
     }
 
     #[test]
     fn apply_session_messages_loaded_with_error_preserves_old_messages() {
         let mut app = make_test_app();
+        let request_id = app.dialog_state.session_messages_request.begin();
         app.messages_state
             .messages
             .add_user_message("old message".to_string(), None);
         apply_session_messages_loaded(
             &mut app,
+            request_id,
             "session-1".into(),
             Vec::new(),
             Some("load failed".into()),
@@ -7561,17 +7664,46 @@ mod async_cmd_tests {
     #[test]
     fn session_messages_stale_result_ignored() {
         let mut app = make_test_app();
-        // Load messages for session A
-        apply_session_messages_loaded(&mut app, "session-a".into(), Vec::new(), None);
+        // Begin a request for session A
+        let id_a = app.dialog_state.session_messages_request.begin();
 
-        // Load messages for session B (simulates user switching sessions)
-        apply_session_messages_loaded(&mut app, "session-b".into(), Vec::new(), None);
+        // Simulate user switching to session B (supersedes request A)
+        let id_b = app.dialog_state.session_messages_request.begin();
+        app.session_state.session = Some(crate::session::Session {
+            id: "session-b".into(),
+            project_id: String::new(),
+            workspace_id: None,
+            parent_id: None,
+            slug: String::new(),
+            directory: String::new(),
+            title: String::new(),
+            version: String::new(),
+            share_url: None,
+            summary_additions: None,
+            summary_deletions: None,
+            summary_files: None,
+            summary_diffs: None,
+            revert: None,
+            permission: None,
+            tags: Vec::new(),
+            time_created: 0,
+            time_updated: 0,
+            time_compacting: None,
+            time_archived: None,
+            time_deleted: None,
+        });
 
-        // Messages should be empty after switching to session B
+        // Apply stale result for session A (should be ignored by staleness guard)
+        apply_session_messages_loaded(&mut app, id_a, "session-a".into(), Vec::new(), None);
+
+        // Apply current result for session B (should succeed)
+        apply_session_messages_loaded(&mut app, id_b, "session-b".into(), Vec::new(), None);
+
+        // Messages should be empty (no messages provided)
         assert_eq!(
             app.messages_state.messages.message_count(),
             0,
-            "messages should be empty after switching sessions"
+            "stale result should not overwrite current session"
         );
     }
 

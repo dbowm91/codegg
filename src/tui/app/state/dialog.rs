@@ -77,4 +77,6 @@ pub struct DialogState {
     /// Async request state for session mutation requests. Stale completions
     /// with a mismatched id are silently ignored.
     pub session_mutation_request: crate::tui::app::state::AsyncUiRequestState,
+    /// Async request state for session message loading.
+    pub session_messages_request: crate::tui::app::state::AsyncUiRequestState,
 }
