@@ -53,6 +53,7 @@ src/tui/
 │   └── diagnostics.rs      # Doctor, diagnostics commands
 ├── runtime/                # Runtime logic (extracted from mod.rs)
 │   ├── mod.rs              # Re-exports
+│   ├── event_loop.rs       # Main event loop (select loop, render cadence, terminal setup)
 │   ├── command_dispatch.rs # Main command dispatch match (TuiCommand routing)
 │   ├── app_events.rs       # Bus event handling (AppEvent subscription and dispatch)
 │   └── render_recovery.rs  # Render panic recovery (progressive fallback logic)
@@ -95,7 +96,7 @@ src/tui/
 ├── input.rs            # Key event handling, keybindings
 ├── layout.rs           # Layout calculations
 ├── route.rs            # Route/RouteManager (Home, Session routes)
-├── terminal.rs         # TerminalGuard for terminal lifecycle management
+├── terminal.rs         # TerminalGuard lifecycle, AppTerminal type alias, create_terminal()
 ├── theme.rs            # Theme definitions
 ├── command.rs          # Slash command registry
 └── mod.rs              # TUI entry point, event loop (~1450 lines after Phase 11 decomposition)
@@ -103,10 +104,10 @@ src/tui/
 
 ### Module Decomposition (Phase 11)
 
-The TUI entry point (`mod.rs`) was decomposed from ~7950 lines to ~1450 lines. Command handlers live in `commands/` (9 domain submodules), and runtime logic (command dispatch, bus event handling, render panic recovery) lives in `runtime/`.
+The TUI entry point (`mod.rs`) was decomposed from ~7950 lines to ~1040 lines. Command handlers live in `commands/` (9 domain submodules), runtime logic (event loop, command dispatch, bus event handling, render panic recovery) lives in `runtime/`, and `terminal.rs` owns terminal lifecycle + `create_terminal()`.
 
 - **`commands/`** — Each submodule exports public handler functions. The main command dispatch in `runtime/command_dispatch.rs` routes `TuiCommand` variants to these handlers.
-- **`runtime/`** — Separates concerns: `command_dispatch.rs` is the match arm routing, `app_events.rs` handles `AppEvent` bus subscriptions, and `render_recovery.rs` contains progressive render panic recovery logic.
+- **`runtime/`** — Separates concerns: `event_loop.rs` owns the main `tokio::select!` loop and render cadence, `command_dispatch.rs` is the match arm routing, `app_events.rs` handles `AppEvent` bus subscriptions, and `render_recovery.rs` contains progressive render panic recovery logic.
 
 ## Key Concepts
 
@@ -757,7 +758,7 @@ fn handle_fork_session(&mut self) {
 
 ### Handling Commands in Event Loop
 
-In `src/tui/mod.rs` `run_event_loop`, async operations are performed:
+In `src/tui/runtime/event_loop.rs` `run_event_loop`, async operations are performed:
 
 ```rust
 Some(cmd) = cmd_rx.recv() => {
@@ -812,7 +813,7 @@ fn start_reload_sessions(app: &mut App) {
     });
 }
 
-// In run_event_loop command dispatch
+// In runtime/event_loop.rs command dispatch
 TuiCommand::SessionsReloaded { sessions, message_counts, error } => {
     apply_sessions_reloaded(app, sessions, message_counts, error);
 }
@@ -877,7 +878,7 @@ let id = spawn_registered_tui_task(
 
 ### Shutdown
 
-`App::prepare_shutdown()` cancels all registered tasks, kills shell handles, and is called before terminal restoration in `run_event_loop`.
+`App::prepare_shutdown()` cancels all registered tasks, kills shell handles, and is called before terminal restoration in `runtime/event_loop::run_event_loop`.
 
 ### Diagnostics
 
@@ -1118,7 +1119,7 @@ pub struct TerminalGuard {
 - `TerminalGuard::enter()` enables features in order: alt screen → raw mode → bracketed paste → mouse capture. If any step fails, all previously enabled features are rolled back.
 - `TerminalGuard::restore()` disables features in reverse order. Idempotent — safe to call multiple times.
 - `Drop` calls `restore()`.
-- `run_event_loop` creates a `TerminalGuard` and calls `restore()` before returning.
+- `runtime/event_loop::run_event_loop` creates a `TerminalGuard` and calls `restore()` before returning.
 
 ### Render Panic Recovery
 
@@ -1131,7 +1132,7 @@ pub struct TerminalGuard {
 
 Component-level panics are tracked in `TuiDiagnostics::component_render_panic_count` and `recent_component_render_panics`.
 
-Root render panic recovery in `run_event_loop` is progressive:
+Root render panic recovery in `runtime/event_loop::run_event_loop` is progressive:
 - First failure: log + render error screen
 - Repeated failures (≥1): hide optional overlays/dialogs
 - Final fallback (≥3 = `MAX_RENDER_PANICS`): reset minimal volatile UI state

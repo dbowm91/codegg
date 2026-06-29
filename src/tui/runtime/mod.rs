@@ -2,4 +2,5 @@
 
 pub(crate) mod app_events;
 pub(crate) mod command_dispatch;
+pub(crate) mod event_loop;
 pub(crate) mod render_recovery;

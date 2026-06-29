@@ -99,7 +99,7 @@ TUI-owned background tasks are tracked via [`TuiTaskRegistry`](src/tui/task_life
 - `spawn_tui_task()` -- unchanged, fire-and-forget (no tracking)
 - `spawn_registered_tui_task(tx, registry, kind, name, fut)` -- tracked variant, returns `Option<TuiTaskId>`
 
-**Shutdown:** `App::prepare_shutdown()` cancels all registered tasks and kills shell handles. Called before `terminal_guard.restore()` in `run_event_loop`.
+**Shutdown:** `App::prepare_shutdown()` cancels all registered tasks and kills shell handles. Called before `terminal_guard.restore()` in `runtime/event_loop::run_event_loop`.
 
 **Diagnostics:** `/tui-stats` now includes task registry stats (active counts by kind, oldest task, cancelled count) and shell handle count.
 
@@ -132,6 +132,7 @@ tui/
 │   └── diagnostics.rs      # Doctor, diagnostics commands
 ├── runtime/                # Runtime logic (extracted from mod.rs)
 │   ├── mod.rs              # Re-exports
+│   ├── event_loop.rs       # Main event loop (select loop, render cadence, terminal setup)
 │   ├── command_dispatch.rs # Main command dispatch match (TuiCommand routing)
 │   ├── app_events.rs       # Bus event handling (AppEvent subscription and dispatch)
 │   └── render_recovery.rs  # Render panic recovery (progressive fallback logic)
@@ -180,11 +181,12 @@ tui/
 ├── layout.rs               # Layout calculations, TuiLayout
 ├── route.rs                # Route/RouteManager (Home, Session routes)
 ├── theme.rs                # Theme definitions (31 themes)
+├── terminal.rs             # TerminalGuard lifecycle, AppTerminal type alias, create_terminal()
 ├── file_diff.rs            # Async diff stats computation for sidebar file changes
 ├── task_lifecycle.rs       # Task registry for lifecycle tracking (TuiTaskRegistry)
 ├── async_cmd.rs            # Async command spawn helpers (spawn_tui_task, spawn_registered_tui_task)
 ├── command.rs              # Slash command registry
-└── mod.rs                  # TUI entry point, event loop (~1450 lines after decomposition)
+└── mod.rs                  # TUI entry point, module declarations, re-exports (~1040 lines)
 ```
 
 ### Commands Directory (`commands/`)
@@ -564,7 +566,7 @@ Recent slow commands, slow renders, and component render panics are stored in bo
 ### Render Panic Recovery
 
 - **Component-level**: `App::render()` wraps risky surfaces (viewport, sidebar, dialog, completions, timeline) in `std::panic::catch_unwind`. A component panic renders a compact fallback in that region. `TuiDiagnostics` tracks `component_render_panic_count` and `recent_component_render_panics` for observability.
-- **Root-level**: `run_event_loop` wraps `terminal.draw()` in `catch_unwind`. Recovery is progressive:
+- **Root-level**: `runtime/event_loop::run_event_loop` wraps `terminal.draw()` in `catch_unwind`. Recovery is progressive:
   - First root failure: log + render error screen
   - Repeated failures (≥1): hide optional overlays/dialogs
   - Final fallback (≥3 = `MAX_RENDER_PANICS`): reset minimal volatile UI state
@@ -575,7 +577,7 @@ Recent slow commands, slow renders, and component render panics are stored in bo
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│                        run_event_loop()                       │
+│                  runtime/event_loop::run_event_loop()                │
 │                                                               │
 │  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐      │
 │  │ EventStream │───►│ on_key()    │───►│ process_msg()│      │

@@ -5,15 +5,27 @@
 //! shutdown. This prevents partial-setup leaks and removes the need for
 //! manual escape-sequence printing in teardown.
 
-use std::io::stdout;
+use std::io::{self, stdout};
 
 use crossterm::event::{
     DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
 };
 use crossterm::execute;
 use crossterm::terminal::{EnterAlternateScreen, LeaveAlternateScreen};
+use ratatui::backend::CrosstermBackend;
+use ratatui::Terminal;
 
 use crate::error::AppError;
+
+/// Type alias for the terminal backend used throughout the TUI.
+pub type AppTerminal = Terminal<CrosstermBackend<io::Stdout>>;
+
+/// Create a new ratatui terminal backed by stdout.
+pub fn create_terminal() -> Result<AppTerminal, AppError> {
+    let backend = CrosstermBackend::new(io::stdout());
+    let terminal = Terminal::new(backend)?;
+    Ok(terminal)
+}
 
 /// Guard that owns terminal lifecycle state.
 ///

@@ -110,7 +110,7 @@ src/
 │   └── util.rs          # validate_path(), canonicalize_path(), symlink checking
 ├── tui/                # Terminal user interface
 │   ├── app/              # Main TUI application
-│   │   ├── mod.rs         # App struct, TuiCommand enum (17 variants), run_event_loop()
+│   │   ├── mod.rs         # App struct, event handling, state management
 │   │   ├── handlers.rs    # Input handling (107KB, on_key, mouse, dialogs, @ mention completion)
 │   │   ├── types.rs       # CompletionType, Dialog, HistoryEntry, SessionStatus, TodoEntry
 │   │   └── state/         # UiState, SessionState, and other UI state management
