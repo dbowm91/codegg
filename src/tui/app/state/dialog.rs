@@ -60,6 +60,8 @@ pub struct DialogState {
     pub pending_bulk_archive: Option<(usize, bool)>,
     pub pending_bulk_archive_ids: Option<Vec<String>>,
     pub pending_shell_command: Option<(String, bool)>,
+    /// Currently viewed shell detail command ID (for shell detail dialog action shortcuts).
+    pub shell_detail_id: Option<u64>,
     /// Async request state for import preview/confirm operations.
     pub import_request: crate::tui::app::state::AsyncUiRequestState,
     /// Async request state for research browser operations (list, load run, load section).

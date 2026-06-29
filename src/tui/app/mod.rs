@@ -819,6 +819,7 @@ impl App {
                 pending_bulk_archive: None,
                 pending_bulk_archive_ids: None,
                 pending_shell_command: None,
+                shell_detail_id: None,
                 import_request: crate::tui::app::state::AsyncUiRequestState::new(),
                 research_request: crate::tui::app::state::AsyncUiRequestState::new(),
                 session_reload_request: crate::tui::app::state::AsyncUiRequestState::new(),
@@ -1161,6 +1162,7 @@ impl App {
                 pending_bulk_archive: None,
                 pending_bulk_archive_ids: None,
                 pending_shell_command: None,
+                shell_detail_id: None,
                 import_request: crate::tui::app::state::AsyncUiRequestState::new(),
                 research_request: crate::tui::app::state::AsyncUiRequestState::new(),
                 session_reload_request: crate::tui::app::state::AsyncUiRequestState::new(),
@@ -3399,6 +3401,47 @@ impl App {
             if key.code == crossterm::event::KeyCode::Tab {
                 self.dialog_state.model_dialog.next_tab();
                 return;
+            }
+        }
+        if let Dialog::ShellShow = &self.ui_state.dialog {
+            if let Some(id) = self.dialog_state.shell_detail_id {
+                match key.code {
+                    crossterm::event::KeyCode::Char('i') => {
+                        if let Some(ref tx) = self.tui_cmd_tx {
+                            let _ = tx.try_send(TuiCommand::ShellInclude {
+                                id,
+                                mode: "all".to_string(),
+                                question: None,
+                            });
+                        }
+                        self.close_dialog();
+                        return;
+                    }
+                    crossterm::event::KeyCode::Char('a') => {
+                        self.prompt_state.prompt.clear();
+                        self.prompt_state
+                            .prompt
+                            .set_text(format!("/shell-ask {}", id));
+                        self.ui_state.command_mode = true;
+                        self.close_dialog();
+                        return;
+                    }
+                    crossterm::event::KeyCode::Char('r') => {
+                        if let Some(ref tx) = self.tui_cmd_tx {
+                            let _ = tx.try_send(TuiCommand::ShellRerun { id });
+                        }
+                        self.close_dialog();
+                        return;
+                    }
+                    crossterm::event::KeyCode::Char('k') => {
+                        if let Some(ref tx) = self.tui_cmd_tx {
+                            let _ = tx.try_send(TuiCommand::ShellKill { id });
+                        }
+                        self.close_dialog();
+                        return;
+                    }
+                    _ => {}
+                }
             }
         }
         let action = handle_event_with_bindings_moded(
@@ -6817,6 +6860,9 @@ impl App {
             Dialog::Session => {
                 self.dialog_state.session_reload_request.cancel();
                 self.dialog_state.session_messages_request.cancel();
+            }
+            Dialog::ShellShow => {
+                self.dialog_state.shell_detail_id = None;
             }
             _ => {}
         }

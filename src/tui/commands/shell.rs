@@ -494,7 +494,11 @@ pub(crate) fn handle_shell_list(app: &mut app::App) {
                     }
                 }
             };
-            format!("[{}] {} $ {}", e.id.0, status_str, e.command)
+            let promoted_str = if e.promoted { " [promoted]" } else { "" };
+            format!(
+                "[{}] {}{} $ {}",
+                e.id.0, status_str, promoted_str, e.command
+            )
         })
         .collect();
     if lines.len() > 5 {
@@ -579,19 +583,24 @@ pub(crate) fn handle_shell_show(app: &mut app::App, id: u64) {
     }
 
     let info_type = crate::tui::components::dialogs::info::InfoType::ShellShow;
+    let shell_footer =
+        "i include  |  a ask  |  r rerun  |  k kill  |  j/k scroll  |  Esc close".to_string();
     if app.dialog_state.shell_detail_dialog.is_none() {
-        app.dialog_state.shell_detail_dialog =
-            Some(crate::tui::components::dialogs::info::InfoDialog::new(
-                std::sync::Arc::clone(&app.ui_state.theme),
-                info_type,
-                lines,
-            ));
+        let mut dialog = crate::tui::components::dialogs::info::InfoDialog::new(
+            std::sync::Arc::clone(&app.ui_state.theme),
+            info_type,
+            lines,
+        );
+        dialog.set_custom_footer(shell_footer);
+        app.dialog_state.shell_detail_dialog = Some(dialog);
     } else if let Some(ref mut dialog) = app.dialog_state.shell_detail_dialog {
         dialog.set_info_type(info_type);
         dialog.set_content(lines);
         dialog.set_theme(&app.ui_state.theme);
+        dialog.set_custom_footer(shell_footer);
     }
     if let Some(ref dialog) = app.dialog_state.shell_detail_dialog {
+        app.dialog_state.shell_detail_id = Some(id);
         app.focus_manager.push(Box::new(dialog.clone()));
         app.ui_state.dialog = crate::tui::Dialog::ShellShow;
     }

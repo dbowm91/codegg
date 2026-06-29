@@ -29,6 +29,7 @@ pub struct InfoDialog {
     lines: Vec<String>,
     theme: Arc<Theme>,
     scroll: usize,
+    custom_footer: Option<String>,
 }
 
 impl InfoDialog {
@@ -38,6 +39,7 @@ impl InfoDialog {
             lines,
             theme,
             scroll: 0,
+            custom_footer: None,
         }
     }
 
@@ -83,6 +85,10 @@ impl InfoDialog {
 
     pub fn set_theme(&mut self, theme: &Arc<Theme>) {
         self.theme = Arc::clone(theme);
+    }
+
+    pub fn set_custom_footer(&mut self, footer: String) {
+        self.custom_footer = Some(footer);
     }
 
     pub fn content_lines(&self) -> &[String] {
@@ -153,7 +159,13 @@ impl Component for InfoDialog {
             String::new()
         };
 
-        let footer_text = if scroll_indicator.is_empty() {
+        let footer_text = if let Some(ref custom) = self.custom_footer {
+            if scroll_indicator.is_empty() {
+                custom.clone()
+            } else {
+                format!(" {}  |  {}", scroll_indicator, custom)
+            }
+        } else if scroll_indicator.is_empty() {
             " j/k scroll  |  Esc/Enter close ".to_string()
         } else {
             format!(" {}  |  j/k scroll  |  Esc/Enter close ", scroll_indicator)
