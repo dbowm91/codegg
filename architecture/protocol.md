@@ -235,14 +235,34 @@ pub struct QuestionSpec {
 
 ```rust
 pub struct RemoteTuiStateSnapshot {
+    pub protocol_version: u32,
+    pub sequence: u64,
+    pub session_id: Option<String>,
     pub route: String,
     pub model: String,
     pub agent: String,
     pub status: String,
-    pub messages: Vec<MessagePreview>,
+    pub messages: Vec<RemoteMessageView>,
     pub prompt: String,
     pub dialog: Option<String>,
-    pub toasts: Vec<String>,
+    pub toasts: Vec<RemoteToastView>,
+}
+
+pub struct RemoteMessageView {
+    pub role: String,
+    pub content_preview: String,
+    pub tool_calls: Vec<RemoteToolCallView>,
+}
+
+pub struct RemoteToolCallView {
+    pub tool_id: String,
+    pub tool_name: String,
+    pub status: String,
+}
+
+pub struct RemoteToastView {
+    pub message: String,
+    pub level: String,
 }
 ```
 
