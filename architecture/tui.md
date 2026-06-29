@@ -668,6 +668,51 @@ If a `RenderFrame` payload is received, the handler returns an `Error` with:
 
 This replaces the previous silent log-and-ignore behavior.
 
+## Testing
+
+TUI render regression tests live in `tests/tui_render.rs` (49 tests). They use `ratatui::backend::TestBackend` to exercise `App::render()` across multiple terminal sizes without requiring an interactive terminal.
+
+**Run all render regression tests:**
+
+```bash
+cargo test --test tui_render
+```
+
+**Test matrix** (terminal sizes):
+
+| Size | Dimensions | Purpose |
+|------|-----------|---------|
+| tiny | 40x12 | Minimal viable terminal |
+| small | 60x20 | Compact terminal |
+| normal | 100x32 | Standard terminal |
+| wide | 160x40 | Ultra-wide terminal |
+| tall | 100x60 | Tall terminal |
+
+**Coverage areas:**
+
+- Empty/home state (sidebar visible/hidden)
+- Active session with messages
+- Streaming state with active tokens
+- Tool calls (pending, completed, error)
+- Sidebar with file changes (pending, ready, skipped, error states)
+- Dialog variants (help, model, session, agent, tree, theme, etc.)
+- Completion overlay at various sizes
+- Toast notifications
+- Pathological content (long lines, wide Unicode, ANSI escapes, malformed JSON)
+- Component fallback diagnostics tracking
+- Error dialog rendering
+- Combined states (sidebar + messages + toasts, dialog + sidebar, etc.)
+
+**Key patterns:**
+
+- `render_app_to_buffer(app, w, h)` — renders to `TestBackend`, returns `Buffer`
+- `assert_render_ok(app, w, h)` — asserts no panic, returns buffer
+- `text_in_buffer(buffer)` — extracts rendered text as string
+- `buffer_contains(buffer, needle)` — case-insensitive substring search
+- Tests avoid brittle full-screen snapshots; use semantic assertions instead
+
+**Bug fix included:** `PromptWidget::clamp_scroll` and `ensure_cursor_visible` now use `saturating_sub` for `visible_lines - 1` to prevent arithmetic overflow at very small terminal sizes.
+
 ## See Also
 
 - [agent.md](agent.md) - AgentLoop that processes TUI commands

@@ -875,7 +875,9 @@ impl App {
     }
 
     pub fn remote_snapshot(&self) -> crate::protocol::tui::RemoteTuiStateSnapshot {
-        use crate::protocol::tui::{RemoteMessageView, RemoteToolCallView, RemoteToastView, REMOTE_TUI_PROTOCOL_VERSION};
+        use crate::protocol::tui::{
+            RemoteMessageView, RemoteToastView, RemoteToolCallView, REMOTE_TUI_PROTOCOL_VERSION,
+        };
 
         let route = match self.ui_state.routes.current() {
             crate::tui::route::Route::Home => "home".to_string(),
@@ -906,7 +908,9 @@ impl App {
             .map(|msg| {
                 let role = match msg.role {
                     crate::tui::components::messages::MessageRole::User => "user".to_string(),
-                    crate::tui::components::messages::MessageRole::Assistant => "assistant".to_string(),
+                    crate::tui::components::messages::MessageRole::Assistant => {
+                        "assistant".to_string()
+                    }
                 };
                 let content_preview = msg.text_content();
                 let content_preview = if content_preview.len() > 200 {
@@ -926,9 +930,15 @@ impl App {
                         } = part
                         {
                             let status_str = match status {
-                                crate::session::message::ToolStatus::Pending => "pending".to_string(),
-                                crate::session::message::ToolStatus::Running => "running".to_string(),
-                                crate::session::message::ToolStatus::Completed => "completed".to_string(),
+                                crate::session::message::ToolStatus::Pending => {
+                                    "pending".to_string()
+                                }
+                                crate::session::message::ToolStatus::Running => {
+                                    "running".to_string()
+                                }
+                                crate::session::message::ToolStatus::Completed => {
+                                    "completed".to_string()
+                                }
                                 crate::session::message::ToolStatus::Error => "error".to_string(),
                             };
                             Some(RemoteToolCallView {
@@ -1614,10 +1624,7 @@ impl App {
                 );
             }
             Ok(RemoteTuiMessage::RequestSnapshot { reason }) => {
-                tracing::info!(
-                    "RequestSnapshot received: reason={:?}",
-                    reason
-                );
+                tracing::info!("RequestSnapshot received: reason={:?}", reason);
                 let snapshot = self.remote_snapshot();
                 let seq = snapshot.sequence;
                 self.send_remote_message(RemoteTuiMessage::StateSnapshot {

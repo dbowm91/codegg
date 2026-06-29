@@ -217,7 +217,7 @@ impl PromptWidget {
             if cursor_line < self.scroll {
                 self.scroll = cursor_line;
             } else if cursor_line >= self.scroll + visible_lines {
-                self.scroll = cursor_line.saturating_sub(visible_lines - 1);
+                self.scroll = cursor_line.saturating_sub(visible_lines.saturating_sub(1));
             }
             self.scroll = self.scroll.min(max_scroll);
         }
@@ -244,7 +244,7 @@ impl PromptWidget {
         if cursor_line < self.scroll {
             self.scroll = cursor_line;
         } else if cursor_line >= self.scroll + visible_lines {
-            self.scroll = cursor_line.saturating_sub(visible_lines - 1);
+            self.scroll = cursor_line.saturating_sub(visible_lines.saturating_sub(1));
         }
         self.scroll = self.scroll.min(max_scroll);
     }

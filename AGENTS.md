@@ -82,6 +82,12 @@ cargo test -p eggcontext
 cargo test -p egggit
 cargo test -p egglsp
 
+# TUI render regression tests (headless, no terminal needed)
+cargo test --test tui_render
+
+# TUI unit/integration tests
+cargo test --test tui
+
 # LSP integration (fake server, no network, needs lsp-test-support)
 cargo test -p egglsp --features lsp-test-support --test scenario_engine
 cargo test --features lsp-test-support --test lsp_composite_stdio

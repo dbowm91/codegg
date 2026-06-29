@@ -1216,6 +1216,20 @@ The Timeline is rendered as a side panel showing message timestamps and navigati
 - Timeline updates `timeline_selected` and scrolls the main viewport to that message
 - Useful for reviewing previous agent responses and tool executions
 
+## TUI Render Regression Tests
+
+Headless render regression tests in `tests/tui_render.rs` (49 tests) exercise `App::render()` via `ratatui::backend::TestBackend` across five terminal sizes (40x12 through 160x40).
+
+**Run:** `cargo test --test tui_render`
+
+**Coverage:** empty states, streaming, tool calls (pending/completed/error), sidebar with file change diff states (pending/ready/skipped/error), dialog variants (help, model, session, agent, tree, theme, mcp, keybind, etc.), completion overlay, toasts, pathological content (long lines, wide Unicode, combining marks, ANSI escapes, malformed JSON), component fallback diagnostics, and combined states.
+
+**Helpers:** `render_app_to_buffer()`, `assert_render_ok()`, `text_in_buffer()`, `buffer_contains()`. Tests use semantic assertions (no panic, buffer contains expected text) rather than brittle full-screen snapshots.
+
+**Bug fix:** `PromptWidget::clamp_scroll` and `ensure_cursor_visible` use `saturating_sub` for `visible_lines - 1` to prevent arithmetic overflow at tiny terminal sizes.
+
+**Plan:** `plans/tui_phase_9_layout_render_regression_tests.md`
+
 ## Related Skills
 
 - See `.skills/event-bus/SKILL.md` for GlobalEventBus and AppEvent documentation
