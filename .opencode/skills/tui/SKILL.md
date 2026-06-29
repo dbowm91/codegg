@@ -1236,11 +1236,11 @@ The Timeline is rendered as a side panel showing message timestamps and navigati
 
 ## TUI Render Regression Tests
 
-Headless render regression tests in `tests/tui_render.rs` (80 tests) exercise `App::render()` via `ratatui::backend::TestBackend` across five terminal sizes (40x12 through 160x40). Includes component panic injection tests that verify fallback behavior for messages, sidebar, dialog, completions, and timeline surfaces.
+Headless render regression tests in `tests/tui_render.rs` (95 tests) exercise `App::render()` via `ratatui::backend::TestBackend` across five terminal sizes (40x12 through 160x40). Includes component panic injection tests that verify fallback behavior for messages, sidebar, dialog, completions, and timeline surfaces.
 
 **Run:** `cargo test --test tui_render`
 
-**Coverage:** empty states, streaming, tool calls (pending/completed/error), sidebar with file change diff states (pending/ready/skipped/error), dialog variants (help, model, session, agent, tree, theme, mcp, keybind, etc.), completion overlay, toasts, pathological content (long lines, wide Unicode, combining marks, ANSI escapes, malformed JSON), component fallback diagnostics, and combined states.
+**Coverage:** empty states, streaming, tool calls (pending/completed/error), sidebar with file change diff states (pending/ready/skipped/error), sidebar goal/plan/todo snippets, dialog variants (help, model, session, agent, tree, theme, mcp, keybind, etc.), completion overlay (slash/file/agent), toasts (info/warning/error/multi-line diagnostics), search with matches/no matches, pathological content (long lines, wide Unicode, real combining marks, ANSI escapes in messages and tool output, malformed JSON), memory/doctor toast output, component fallback diagnostics, and combined states.
 
 **Helpers:** `render_app_to_buffer()`, `assert_render_ok()`, `text_in_buffer()`, `buffer_contains()`. Tests use semantic assertions (no panic, buffer contains expected text) rather than brittle full-screen snapshots.
 

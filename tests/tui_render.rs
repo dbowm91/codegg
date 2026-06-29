@@ -5,9 +5,10 @@
 //! terminal. Covers pathological content, dialog states, sidebar variants,
 //! completion overlays, toasts, and component-level panic fallbacks.
 
+use codegg::session::events::{AgentPlan, AgentPlanItem, PlanItemStatus};
 use codegg::session::message::ToolStatus;
 use codegg::tui::app::state::session::{ChangedFile, DiffStatsState};
-use codegg::tui::app::CompletionType;
+use codegg::tui::app::{CompletionType, TodoEntry};
 use codegg::tui::app::App;
 use codegg::tui::components::completion_overlay::{CompletionItem, CompletionItemKind};
 use codegg::tui::components::messages::SearchMatch;
@@ -1853,5 +1854,178 @@ fn render_multiline_diagnostics_toast_tiny() {
     assert!(
         !buffer_contains(&buf, "Rendering Error"),
         "unexpected render error with multi-line diagnostics toast on tiny terminal"
+    );
+}
+
+// ===========================================================================
+// Phase 9 gap-fill: sidebar goal/todo, combining marks, ANSI in tool output,
+//                   memory/doctor toast content
+// ===========================================================================
+
+/// Create a test app with sidebar goal, plan, and todos populated.
+fn app_with_sidebar_goals_todos() -> App {
+    let mut app = test_app();
+    app.ui_state.sidebar_visible = true;
+
+    // Goal
+    app.sidebar
+        .set_goal(Some("Implement the new auth module".into()));
+
+    // Plan with mixed statuses
+    app.sidebar.set_plan(Some(AgentPlan {
+        items: vec![
+            AgentPlanItem {
+                id: "p1".into(),
+                text: "Design API surface".into(),
+                status: PlanItemStatus::Done,
+                note: None,
+            },
+            AgentPlanItem {
+                id: "p2".into(),
+                text: "Implement token storage".into(),
+                status: PlanItemStatus::InProgress,
+                note: Some("Working on AES encryption".into()),
+            },
+            AgentPlanItem {
+                id: "p3".into(),
+                text: "Write integration tests".into(),
+                status: PlanItemStatus::Pending,
+                note: None,
+            },
+            AgentPlanItem {
+                id: "p4".into(),
+                text: "Deprecated migration path".into(),
+                status: PlanItemStatus::Skipped,
+                note: Some("No longer needed".into()),
+            },
+            AgentPlanItem {
+                id: "p5".into(),
+                text: "Blocked on upstream issue".into(),
+                status: PlanItemStatus::Blocked,
+                note: Some("Waiting for #1234".into()),
+            },
+        ],
+        updated_at: chrono::Utc::now(),
+    }));
+
+    // Todos with mixed statuses
+    app.set_todos(vec![
+        TodoEntry {
+            content: "Review error handling".into(),
+            status: "completed".into(),
+            priority: "high".into(),
+        },
+        TodoEntry {
+            content: "Add unit tests for crypto module".into(),
+            status: "in_progress".into(),
+            priority: "high".into(),
+        },
+        TodoEntry {
+            content: "Update documentation".into(),
+            status: "pending".into(),
+            priority: "medium".into(),
+        },
+    ]);
+
+    app
+}
+
+#[test]
+fn render_sidebar_goal_todo_plan_snippets() {
+    for &(w, h) in SIZES {
+        let mut app = app_with_sidebar_goals_todos();
+        let buf = assert_render_ok(&mut app, w, h);
+        assert!(
+            !buffer_contains(&buf, "Rendering Error"),
+            "unexpected render error with sidebar goal/plan/todos at {w}x{h}"
+        );
+    }
+}
+
+#[test]
+fn render_sidebar_goal_todo_plan_contains_text() {
+    let mut app = app_with_sidebar_goals_todos();
+    // Use a tall terminal so all sidebar sections are visible
+    let buf = assert_render_ok(&mut app, 160, 60);
+    let text = text_in_buffer(&buf);
+    // At a wide+tall size, goal and/or todo text should appear in the sidebar
+    assert!(
+        text.contains("auth")
+            || text.contains("Implement")
+            || text.contains("Review")
+            || text.contains("Todo")
+            || text.contains("Goal")
+            || text.contains("Plan"),
+        "expected goal, plan, or todo text in sidebar"
+    );
+}
+
+#[test]
+fn render_real_combining_marks() {
+    let mut app = test_app();
+    // Real Unicode combining mark sequences (not precomposed characters)
+    app.messages_state.messages.add_user_message(
+        "cafe\u{0301} naive\u{0308} resume\u{0301} Zos\u{0301}".into(),
+        None,
+    );
+    // Also test combining marks in assistant text
+    app.messages_state
+        .messages
+        .add_assistant_text("e\u{0301} i\u{0308} u\u{0308} overline\u{0305}".into());
+    let buf = assert_render_ok(&mut app, 80, 24);
+    assert!(
+        !buffer_contains(&buf, "Rendering Error"),
+        "unexpected render error with real Unicode combining marks"
+    );
+}
+
+#[test]
+fn render_ansi_escape_in_tool_output() {
+    let mut app = test_app();
+    // Add a tool call whose output contains ANSI escape sequences
+    app.messages_state.messages.add_tool_call(
+        "ansi_tc".into(),
+        "bash".into(),
+        serde_json::json!({"command": "cargo test"}),
+    );
+    app.messages_state.messages.update_tool_call(
+        "ansi_tc",
+        "running tests\n\x1b[32m  passed\x1b[0m test_auth\n\x1b[31m  FAILED\x1b[0m test_crypto\n\x1b[1;33mwarning:\x1b[0m unused import".into(),
+        ToolStatus::Completed,
+        Some(500),
+        Some(1),
+        Some(1),
+    );
+    let buf = assert_render_ok(&mut app, 100, 32);
+    assert!(
+        !buffer_contains(&buf, "Rendering Error"),
+        "unexpected render error with ANSI escape text in tool output"
+    );
+}
+
+#[test]
+fn render_memory_and_doctor_toasts() {
+    let mut app = test_app();
+    // Simulate memory summary result as toast (matches apply_memory_result path)
+    app.messages_state.toasts.info(
+        "Memory summary:\n  - rust error handling patterns\n  - tokio async patterns\n  - TUI component architecture",
+    );
+    // Simulate doctor result as toast (matches apply_doctor_result path)
+    app.messages_state
+        .toasts
+        .info("Doctor: LSP servers healthy\n  rust-analyzer: running\n  0 errors detected");
+    // Also test error variant
+    app.messages_state
+        .toasts
+        .error("Memory store unreachable: connection refused");
+    let buf = assert_render_ok(&mut app, 100, 32);
+    assert!(
+        !buffer_contains(&buf, "Rendering Error"),
+        "unexpected render error with memory/doctor toasts"
+    );
+    let text = text_in_buffer(&buf);
+    assert!(
+        text.contains("Memory") || text.contains("Doctor"),
+        "expected memory or doctor text in buffer"
     );
 }
