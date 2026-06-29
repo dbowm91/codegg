@@ -1643,6 +1643,27 @@ impl App {
                     snapshot,
                 });
             }
+            Ok(RemoteTuiMessage::StateSnapshot { snapshot, sequence }) => {
+                tracing::info!(
+                    "StateSnapshot received: seq={}, route={}, model={}, status={}",
+                    sequence,
+                    snapshot.route,
+                    snapshot.model,
+                    snapshot.status
+                );
+                self.agent_state.current_model = snapshot.model;
+                self.session_state.session_status = match snapshot.status.as_str() {
+                    "working" => SessionStatus::Working,
+                    "error" => SessionStatus::Error,
+                    _ => SessionStatus::Idle,
+                };
+                if self.session_state.session_status == SessionStatus::Working {
+                    self.status_bar
+                        .set_thinking(true, Some("Thinking...".to_string()));
+                } else {
+                    self.status_bar.set_thinking(false, None);
+                }
+            }
             _ => {
                 debug_log!("handle_remote_event: unhandled type={}", _event_type);
             }
@@ -11350,5 +11371,36 @@ mod remote_protocol_tests {
         };
         let json = serde_json::to_string(&snapshot).unwrap();
         assert!(json.contains("\"protocol_version\":1"));
+    }
+
+    #[test]
+    fn state_snapshot_applied_to_app() {
+        let mut app = App::new_for_testing("/tmp".into());
+        app.agent_state.current_model = "old-model".to_string();
+
+        let event = serde_json::json!({
+            "type": "StateSnapshot",
+            "sequence": 42,
+            "snapshot": {
+                "protocol_version": 1,
+                "sequence": 42,
+                "session_id": "sess-1",
+                "route": "session:abc",
+                "model": "new-model",
+                "agent": "test-agent",
+                "status": "working",
+                "messages": [],
+                "prompt": "",
+                "dialog": null,
+                "toasts": []
+            }
+        });
+        app.handle_remote_event(event);
+
+        assert_eq!(app.agent_state.current_model, "new-model");
+        assert!(matches!(
+            app.session_state.session_status,
+            SessionStatus::Working
+        ));
     }
 }

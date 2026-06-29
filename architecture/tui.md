@@ -693,16 +693,23 @@ The remote TUI protocol version is defined as `REMOTE_TUI_PROTOCOL_VERSION = 1` 
 
 ### Resync
 
-On reconnect or sequence gaps, the daemon sends a full `StateSnapshot`. Clients can also request a snapshot via `RequestSnapshot`. The `ResyncRequired` event is sent when the broadcast channel lags.
+On reconnect or sequence gaps, the server replays events from the EventLog and sends a `ResyncRequired` event. Clients can request a full resync via `RequestSnapshot` — the server responds by replaying all events from sequence 0 followed by `ResyncRequired`. When a client receives a `StateSnapshot`, it applies the snapshot fields (model, status) to local App state. The `ResyncRequired` event is also sent when the broadcast channel lags.
 
 ### Unsupported RenderFrame
 
-If a `RenderFrame` payload is received, the handler returns an `Error` with:
-- code: `unsupported_render_frame`
-- message: `Frame-driven remote rendering is not supported; request state snapshots instead`
-- recoverable: `true`
+If a `RenderFrame` payload is received, the handler returns a `TuiMessage::Error` with:
+- message: `Frame-driven remote rendering is not supported; request state snapshots instead (unsupported_render_frame)`
 
-This replaces the previous silent log-and-ignore behavior.
+The `unsupported_render_frame` identifier is embedded in the message string. This replaces the previous silent log-and-ignore behavior.
+
+### Deferred Items
+
+The following Phase 8 items are defined in the plan but deferred for future work:
+
+- **Hello/Ack handshake** — No protocol version negotiation on connect. Handshakes should reject incompatible major versions or degrade explicitly.
+- **Structured RemoteTuiError** — Plan specifies `{ code, message, recoverable }` fields. Current implementation uses `TuiMessage::Error { message: String }` with code embedded in the message string.
+- **Server-side input forwarding** — `Input`, `KeyDown`, `MouseClick`, `Resize` handlers in the server WebSocket are logging-only stubs. Remote user input should eventually convert into the same input/command paths as local input.
+- **State delta protocol** — `RemoteTuiStateDelta` is not implemented. Snapshot-only is acceptable per the plan.
 
 ## Testing
 

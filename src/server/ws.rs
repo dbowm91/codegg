@@ -731,6 +731,36 @@ async fn handle_tui_message(
                 format!("session:{}", id)
             };
         }
+        TuiMessage::RequestSnapshot { reason } => {
+            tracing::info!("RequestSnapshot from client: reason={:?}", reason);
+            if let Some(ref daemon) = _server_state.daemon {
+                let filter = crate::core::event_log::EventFilter {
+                    session_id: None,
+                    client_id: None,
+                    include_global: true,
+                };
+                let events = daemon.replay_from(0, &filter).await;
+                for event in events {
+                    if let Some(tui_msg) = convert_core_event_to_tui(event.payload) {
+                        let envelope = TuiMessage::EventEnvelope {
+                            event_seq: event.event_seq,
+                            payload: Box::new(tui_msg),
+                        };
+                        if let Ok(json) = serde_json::to_string(&envelope) {
+                            let _ = bus_tx.send(axum::extract::ws::Message::Text(json.into()));
+                        }
+                    }
+                }
+            }
+            let resync_msg = TuiMessage::ResyncRequired {
+                reason: Some("snapshot_requested".to_string()),
+                pending_permissions: crate::bus::PermissionRegistry::pending_permission_ids(),
+                pending_questions: crate::bus::QuestionRegistry::pending_question_ids(),
+            };
+            if let Ok(json) = serde_json::to_string(&resync_msg) {
+                let _ = bus_tx.send(axum::extract::ws::Message::Text(json.into()));
+            }
+        }
         _ => {}
     }
 }

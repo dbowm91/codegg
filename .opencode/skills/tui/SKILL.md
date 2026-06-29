@@ -1248,6 +1248,30 @@ Headless render regression tests in `tests/tui_render.rs` (49 tests) exercise `A
 
 **Plan:** `plans/tui_phase_9_layout_render_regression_tests.md`
 
+## Remote TUI Protocol (Phase 8)
+
+The remote TUI uses an **event/state-driven** protocol. Remote clients receive typed state snapshots and event deltas, render independently. Frame-driven rendering (`RenderFrame`) is explicitly **unsupported** — receiving it returns an `Error` with message containing `unsupported_render_frame`.
+
+### Protocol Version
+
+`REMOTE_TUI_PROTOCOL_VERSION = 1` in `crates/codegg-protocol/src/tui.rs`.
+
+### Key Types
+
+- `RemoteTuiStateSnapshot` — Frontend-neutral DTO with render-relevant state (route, model, agent, status, messages as previews, prompt, dialog, toasts)
+- `App::remote_snapshot()` — Pure, nonblocking builder that reads current App state into a snapshot
+- `handle_remote_event()` — Processes incoming `TuiMessage` events (TextDelta, ToolCallStarted, ToolResult, StateSnapshot, etc.)
+
+### Resync
+
+- Server replays events from EventLog on reconnect or `RequestSnapshot`
+- `ResyncRequired` event sent when broadcast channel lags or after full replay
+- Client applies `StateSnapshot` fields (model, status) to local state
+
+### Remote Mode
+
+`AppMode::RemoteCore` indicates the App is running in remote mode. In this mode, the App processes events from the server via `handle_remote_event()` and sends user actions back via `send_remote_message()`.
+
 ## Related Skills
 
 - See `.skills/event-bus/SKILL.md` for GlobalEventBus and AppEvent documentation
