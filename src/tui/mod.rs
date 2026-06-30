@@ -950,6 +950,37 @@ mod async_cmd_tests {
     }
 
     #[test]
+    fn apply_session_messages_loaded_stale_error_is_ignored() {
+        let mut app = make_test_app();
+        let id_a = app.dialog_state.session_messages_request.begin();
+        let id_b = app.dialog_state.session_messages_request.begin();
+
+        // Stale error with id_a should NOT show a toast.
+        apply_session_messages_loaded(
+            &mut app,
+            id_a,
+            "session-a".into(),
+            Vec::new(),
+            Some("stale messages error".into()),
+        );
+        let toasts: Vec<String> = app
+            .messages_state
+            .toasts
+            .iter()
+            .map(|t| t.message.clone())
+            .collect();
+        assert!(
+            !toasts.iter().any(|t| t.contains("stale messages error")),
+            "stale messages error should not surface, got {toasts:?}"
+        );
+        assert!(app.dialog_state.session_messages_request.is_loading());
+
+        // Current success with id_b.
+        apply_session_messages_loaded(&mut app, id_b, "session-b".into(), Vec::new(), None);
+        assert!(!app.dialog_state.session_messages_request.is_loading());
+    }
+
+    #[test]
     fn session_mutation_stale_is_ignored() {
         let mut app = make_test_app();
         let id1 = app.dialog_state.session_mutation_request.begin();

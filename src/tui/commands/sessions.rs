@@ -1510,9 +1510,13 @@ pub(crate) fn apply_session_messages_loaded(
     use crate::tui::components::messages::{MessageRole, MsgPart, UIMessage};
 
     if let Some(err) = error {
-        app.dialog_state
+        if !app
+            .dialog_state
             .session_messages_request
-            .fail(request_id, err.clone());
+            .fail(request_id, err.clone())
+        {
+            return;
+        }
         app.messages_state.toasts.error(&err);
         return;
     }
