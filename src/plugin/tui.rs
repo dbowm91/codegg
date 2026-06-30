@@ -1,3 +1,10 @@
+//! Legacy TUI plugin registry.
+//!
+//! **Deprecated:** This module contains the pre-Phase 5 TUI extension types.
+//! New plugin UI contributions should be declared via `PluginCapability::Panel`
+//! and `PluginCapability::StatusWidget` in the plugin manifest, and consumed
+//! through the protocol `UiEffect` system. Do not add new functionality here.
+
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;

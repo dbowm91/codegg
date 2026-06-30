@@ -44,28 +44,138 @@ src/plugin/
 
 ## Key Types
 
-### PluginManifest
+### PluginManifest (Canonical Form, Phase 5)
 
-Parsed from `manifest.toml` in each plugin directory:
+The canonical manifest declares runtime, capabilities, and permissions:
 
 ```rust
 pub struct PluginManifest {
     pub name: String,
     pub version: String,
+    pub api_version: u32,                        // manifest API version (e.g. 2)
+    pub runtime: PluginRuntimeSpec,               // Builtin, Process, or Wasm
+    pub capabilities: Vec<PluginCapability>,       // Command, Hook, Panel, etc.
+    pub permissions: PluginPermissionSet,          // Filesystem and other permissions
+
+    // Legacy fields (still accepted for backward compat)
+    pub hooks: Vec<LegacyHookSpec>,
+    pub config: HashMap<String, serde_json::Value>,
     pub description: Option<String>,
     pub author: Option<String>,
     pub homepage: Option<String>,
     pub license: Option<String>,
-    #[serde(default)]
-    pub hooks: Vec<HookSpec>,        // Hook specifications
-    #[serde(default)]
-    pub config: HashMap<String, serde_json::Value>,  // Plugin configuration
+}
+```
+
+**Legacy types (backward compat):**
+
+```rust
+pub struct LegacyHookSpec {
+    #[serde(rename = "type")]
+    pub hook_type: String,
+    pub priority: Option<i32>,
 }
 
-pub struct HookSpec {
-    #[serde(rename = "type")]
-    pub hook_type: String,           // e.g., "tool.execute.before"
-    pub priority: Option<i32>,        // Lower = earlier execution
+// LegacyManifest is an alias for the old flat form without api_version/runtime/capabilities.
+// Parsed when manifest.toml lacks api_version; promoted to canonical on load.
+pub type LegacyManifest = PluginManifest; // pre-Phase 5 shape
+```
+
+### PluginTrustClass
+
+Each plugin is assigned a trust class that governs capability access:
+
+```rust
+pub enum PluginTrustClass {
+    Builtin,         // Ships with Codegg, full access
+    LocalProcess,    // Local process-backed command, filesystem access allowed
+    SandboxedWasm,   // WASM plugin, restricted filesystem
+    TrustedLocal,    // User-installed, explicitly trusted
+}
+```
+
+### PluginRuntimeSpec
+
+Declares how a plugin executes:
+
+```rust
+pub enum PluginRuntimeSpec {
+    Builtin,                        // Native Rust handler
+    Process { command: String },     // Local process execution
+    Wasm { path: String },           // WASM module path
+}
+```
+
+### PluginCapability
+
+What a plugin can register:
+
+```rust
+pub enum PluginCapability {
+    Command(PluginCommandSpec),
+    Hook(HookSpec),
+    Panel { name: String, placement: PanelPlacement },
+    StatusWidget { name: String },
+    EventSubscription { patterns: Vec<String> },
+}
+
+pub struct PluginCommandSpec {
+    pub name: String,            // command name (leading `/` stripped)
+    pub description: Option<String>,
+    pub args: Option<String>,    // usage hint
+    pub output: PluginOutputSurface,
+}
+
+pub enum PluginOutputSurface {
+    Text,     // plain text to chat
+    Dialog,   // opens a dialog
+    Panel,    // renders in a side panel
+    Toast,    // one-shot notification
+}
+```
+
+### PluginPermissionSet / FilesystemPermission
+
+```rust
+pub struct PluginPermissionSet {
+    pub filesystem: Vec<FilesystemPermission>,
+    pub network: bool,
+    pub shell: bool,
+}
+
+pub enum FilesystemPermission {
+    Read(String),   // path glob
+    Write(String),  // path glob
+    None,
+}
+```
+
+### PluginSource
+
+Tracks where a plugin was installed from:
+
+```rust
+pub struct PluginSource {
+    pub kind: PluginSourceKind,    // Path, Url, Registry
+    pub resolved: PathBuf,         // canonical local path after install
+}
+```
+
+### PluginDiagnostic / PluginDiagnosticLevel
+
+Runtime diagnostics surfaced to users and the registry:
+
+```rust
+pub enum PluginDiagnosticLevel {
+    Info,
+    Warning,
+    Error,
+}
+
+pub struct PluginDiagnostic {
+    pub level: PluginDiagnosticLevel,
+    pub message: String,
+    pub plugin_id: String,
 }
 ```
 
@@ -206,7 +316,10 @@ impl PluginService {
     pub fn with_hook_timeout(mut self, timeout: Duration) -> Self;
     pub async fn load_and_register(&self, loaded: LoadedPlugin) -> Result<(), LoadError>;
     pub async fn dispatch_hook(&self, ctx: HookContext) -> HookResult;
-    
+
+    // Phase 5: command invocation
+    pub async fn invoke_command(&self, name: &str, args: serde_json::Value) -> Result<PluginResponse, PluginError>;
+
     // Individual dispatch methods
     pub async fn dispatch_auth(&self, input: serde_json::Value) -> HookResult;
     pub async fn dispatch_provider(&self, input: serde_json::Value) -> HookResult;
@@ -221,6 +334,29 @@ impl PluginService {
     pub async fn dispatch_text_complete(&self, input: serde_json::Value) -> HookResult;
     pub async fn dispatch_session_compacting(&self, input: serde_json::Value) -> HookResult;
     pub async fn dispatch_messages_transform(&self, input: serde_json::Value) -> HookResult;
+}
+```
+
+**PluginResponse (Phase 5):**
+
+```rust
+pub struct PluginResponse {
+    pub ok: bool,
+    pub data: Option<serde_json::Value>,
+    pub effects: Vec<UiEffect>,
+    pub diagnostics: Vec<PluginDiagnostic>,
+}
+```
+
+**PluginError (Phase 5):**
+
+```rust
+pub enum PluginError {
+    NotFound(String),           // command or plugin not found
+    ExecutionFailed(String),    // runtime error
+    PermissionDenied(String),   // trust/permission check failed
+    Timeout,
+    Disabled,
 }
 ```
 
@@ -242,21 +378,66 @@ impl PluginService {
 ```rust
 pub struct PluginInfo {
     pub id: String,              // "plugin:name" or "builtin:name"
-    pub manifest: PluginManifest,
+    pub manifest: PluginManifest,  // canonical form (Phase 5)
+    pub trust: PluginTrustClass,
     pub path: PathBuf,
     pub enabled: bool,
     pub error: Option<String>,
+    pub diagnostics: Vec<PluginDiagnostic>,
 }
 
 pub struct PluginRegistry {
     plugins: RwLock<HashMap<String, PluginInfo>>,
     hooks: RwLock<Vec<HookRegistration>>,
+    commands: RwLock<Vec<PluginCommandRegistration>>,
+    panels: RwLock<Vec<PluginPanelRegistration>>,
+    status_widgets: RwLock<Vec<PluginStatusRegistration>>,
+    event_subscribers: RwLock<Vec<PluginEventRegistration>>,
+}
+
+// Capability-based registration structs (Phase 5)
+pub struct PluginCommandRegistration {
+    pub plugin_id: String,
+    pub spec: PluginCommandSpec,
+    pub trust: PluginTrustClass,
 }
 
 pub struct HookRegistration {
     pub plugin_id: String,
     pub hook_type: HookType,
     pub priority: i32,
+}
+
+pub struct PluginPanelRegistration {
+    pub plugin_id: String,
+    pub name: String,
+    pub placement: PanelPlacement,
+}
+
+pub struct PluginStatusRegistration {
+    pub plugin_id: String,
+    pub name: String,
+}
+
+pub struct PluginEventRegistration {
+    pub plugin_id: String,
+    pub patterns: Vec<String>,
+    pub priority: i32,
+}
+```
+
+**Registry query methods (Phase 5):**
+
+```rust
+impl PluginRegistry {
+    pub fn command(&self, name: &str) -> Option<PluginCommandRegistration>;
+    pub fn commands(&self) -> Vec<PluginCommandRegistration>;
+    pub fn panels(&self) -> Vec<PluginPanelRegistration>;
+    pub fn status_widgets(&self) -> Vec<PluginStatusRegistration>;
+    pub fn event_subscribers(&self) -> Vec<PluginEventRegistration>;
+    // Existing
+    pub fn hooks_for(&self, hook_type: HookType) -> Vec<HookRegistration>;
+    pub fn plugins(&self) -> Vec<PluginInfo>;
 }
 ```
 
@@ -316,9 +497,9 @@ Archive extraction rejects symlinks to prevent:
 
 The check verifies `entry.file_type().is_symlink()` returns false for all archive entries.
 
-### tui.rs - TUI Extensions
+### tui.rs - TUI Extensions (Legacy/Deprecated)
 
-**Location**: `src/plugin/tui.rs`
+> **Note**: `tui.rs` is a legacy module. Panel and status widget registration is now handled through `PluginCapability` in the manifest and `PluginRegistry` methods (`panels()`, `status_widgets()`). This module is retained for backward compatibility but will be removed in a future phase.
 
 Allows plugins to register TUI routes and components:
 
@@ -438,6 +619,37 @@ via dirs::data_local_dir()
 
 ### manifest.toml Example
 
+**New canonical format (Phase 5):**
+
+```toml
+name = "my-plugin"
+version = "1.0.0"
+api_version = 2
+
+[runtime]
+type = "wasm"
+path = "plugin.wasm"
+
+[[capabilities.command]]
+name = "my-cmd"
+description = "Run my command"
+output = "dialog"
+
+[[capabilities.hook]]
+type = "tool.execute.before"
+priority = 0
+
+[permissions]
+network = false
+shell = false
+
+[[permissions.filesystem]]
+type = "read"
+path = "./config/**"
+```
+
+**Legacy format (still accepted):**
+
 ```toml
 name = "my-plugin"
 version = "1.0.0"
@@ -494,6 +706,14 @@ PluginService::dispatch_hook(ctx)
                                   ├─► Return unused fuel
                                   └─► Return HookResult
 ```
+
+## Duplicate and Priority Rules (Phase 5)
+
+- **Command name normalization**: Leading `/` is stripped and names are lowercased before lookup. `/MyCmd` and `mycmd` resolve to the same registration.
+- **Built-in/static commands win**: When a built-in or statically registered command shares a normalized name with a plugin command, the built-in takes precedence. The plugin registration is retained but not surfaced in command completion or dispatch.
+- **Duplicate plugin command registration is rejected**: If two plugins register the same normalized command name, the second registration returns an error diagnostic. The first successful registration wins.
+- **Hooks sorted by priority ascending**: Lower numeric priority executes first. Registrations with equal priority are ordered by plugin registration order (FIFO).
+- **Disabled plugins excluded**: Plugins with `enabled: false` are excluded from all capability queries (`commands()`, `panels()`, `status_widgets()`, `event_subscribers()`, `hooks_for()`). Re-enabling a plugin re-activates its registrations.
 
 ## Fuel Tracking Mechanism
 
@@ -639,7 +859,9 @@ impl ApiVersion {
 }
 ```
 
-## Protocol DTOs (Phase 1-4)
+## Protocol DTOs (Phase 1-5)
+
+Phase 5 introduces the canonical `PluginManifest` with `api_version`, `runtime`, `capabilities`, and `permissions` fields. The registry is restructured around capability-based registration structs (`PluginCommandRegistration`, `PluginPanelRegistration`, etc.) and the `PluginTrustClass` system. Legacy manifests without `api_version` are accepted and promoted on load.
 
 `crates/codegg-protocol/src/ui.rs` and `crates/codegg-protocol/src/plugin.rs` define frontend-neutral protocol types for plugin UI output and invocation. Phase 2 adds TUI-side consumption: `PluginUiState` (`src/tui/app/state/plugin_ui.rs`) stores plugin dialogs, panels, and status items. `PluginUiRenderer` (`src/tui/components/plugin_renderer.rs`) lowers `UiNode` trees into ratatui widgets and flat text lines. `App::apply_plugin_ui_effect()` centralizes effect routing. A single `Dialog::Plugin` variant handles all plugin dialogs without per-plugin enum entries. Phase 3 adds generic `TuiCommand` plugin variants (`PluginCommandRun`, `PluginCommandFinished`, `PluginUiEffect`) and `src/tui/commands/plugins.rs` with `start_plugin_command`, `apply_plugin_command_finished` (response application), and `apply_plugin_ui_effect` (direct effect dispatch). Phase 4 replaces the stub with real process execution: `start_plugin_command` accepts a `ProcessCommandSpec` and spawns a child process with timeout, output capping, and stdin piping.
 

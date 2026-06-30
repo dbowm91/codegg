@@ -4,7 +4,8 @@ use std::time::Duration;
 use crate::plugin::hooks::{HookContext, HookRegistration, HookResult, HookType};
 use crate::plugin::loader::LoadError;
 use crate::plugin::loader::LoadedPlugin;
-use crate::plugin::registry::{PluginInfo, PluginRegistry};
+use crate::plugin::manifest::{PluginManifest, PluginRuntimeSpec, PluginTrustClass};
+use crate::plugin::registry::{PluginInfo, PluginRegistry, PluginRegistryError};
 
 pub struct PluginService {
     registry: Arc<PluginRegistry>,
@@ -28,6 +29,7 @@ impl PluginService {
         &self.registry
     }
 
+    /// Load and register a plugin from a `LoadedPlugin` (backward compatible).
     pub async fn load_and_register(&self, loaded: LoadedPlugin) -> Result<(), LoadError> {
         let plugin_id = format!("plugin:{}", loaded.manifest.name);
 
@@ -47,19 +49,132 @@ impl PluginService {
         let info = PluginInfo {
             id: plugin_id.clone(),
             manifest: loaded.manifest.clone(),
-            path: loaded.plugin_dir.clone(),
             enabled: true,
-            error: None,
+            trust: PluginTrustClass::from_runtime_kind("wasm"),
+            diagnostics: Vec::new(),
         };
 
         let hook_count = hook_specs.len();
-        self.registry.register(info, hook_specs).await;
+        self.registry
+            .register_with_hooks(info, hook_specs)
+            .await
+            .map_err(|e| LoadError::Manifest(e.to_string()))?;
 
         tracing::info!(plugin = plugin_id, hooks = hook_count, "plugin registered");
 
         Ok(())
     }
 
+    /// Load and register a plugin from a legacy manifest (backward compatible).
+    pub async fn register_manifest(
+        &self,
+        plugin_id: &str,
+        manifest: PluginManifest,
+        _path: std::path::PathBuf,
+    ) -> Result<(), PluginRegistryError> {
+        let hook_specs: Vec<HookRegistration> = manifest
+            .hooks
+            .iter()
+            .filter_map(|hs| {
+                HookType::parse(&hs.hook_type).map(|ht| HookRegistration {
+                    plugin_id: plugin_id.to_string(),
+                    hook_type: ht,
+                    priority: hs.priority.unwrap_or(0),
+                })
+            })
+            .collect();
+
+        let info = PluginInfo {
+            id: plugin_id.to_string(),
+            manifest,
+            enabled: true,
+            trust: PluginTrustClass::Builtin,
+            diagnostics: Vec::new(),
+        };
+
+        self.registry
+            .register_with_hooks(info, hook_specs)
+            .await
+    }
+
+    /// Register a plugin with a canonical manifest (Phase 5).
+    pub async fn register_plugin(
+        &self,
+        info: PluginInfo,
+    ) -> Result<(), PluginRegistryError> {
+        self.registry.register(info).await
+    }
+
+    /// Invoke a plugin command by name.
+    ///
+    /// This is the Phase 5 entry point for command invocation. Actual runtime
+    /// dispatch (process/WASM) will be implemented in Phase 6. For now, this
+    /// returns an error for non-builtin plugins.
+    pub async fn invoke_command(
+        &self,
+        command_name: &str,
+        args: Vec<String>,
+        _input: serde_json::Value,
+    ) -> Result<PluginResponse, PluginError> {
+        let cmd = self
+            .registry
+            .command(command_name)
+            .await
+            .ok_or_else(|| PluginError::CommandNotFound(command_name.to_string()))?;
+
+        let plugin_id = &cmd.plugin_id;
+        let plugin_info = self
+            .registry
+            .get(plugin_id)
+            .await
+            .ok_or_else(|| PluginError::PluginNotFound(plugin_id.clone()))?;
+
+        if !plugin_info.enabled {
+            return Err(PluginError::PluginDisabled(plugin_id.clone()));
+        }
+
+        match &plugin_info.manifest.runtime {
+            PluginRuntimeSpec::Builtin { handler } => {
+                // For builtin plugins, we can't directly invoke commands yet
+                // (only hooks). This will be expanded in Phase 6.
+                Ok(PluginResponse {
+                    ok: true,
+                    data: serde_json::json!({
+                        "command": command_name,
+                        "args": args,
+                        "handler": handler,
+                    }),
+                    diagnostics: Vec::new(),
+                })
+            }
+            PluginRuntimeSpec::Process { .. } => {
+                // Process runtime dispatch will be implemented in Phase 6.
+                // For now, return a placeholder indicating the command exists
+                // but runtime execution is not yet wired.
+                Ok(PluginResponse {
+                    ok: true,
+                    data: serde_json::json!({
+                        "command": command_name,
+                        "status": "process_runtime_pending",
+                    }),
+                    diagnostics: Vec::new(),
+                })
+            }
+            PluginRuntimeSpec::Wasm { .. } => {
+                // WASM runtime dispatch will be implemented in Phase 7.
+                Ok(PluginResponse {
+                    ok: true,
+                    data: serde_json::json!({
+                        "command": command_name,
+                        "status": "wasm_runtime_pending",
+                    }),
+                    diagnostics: Vec::new(),
+                })
+            }
+        }
+    }
+
+    /// Dispatch a hook through the registry (Phase 5 name, same as existing).
     pub async fn dispatch_hook(&self, ctx: HookContext) -> HookResult {
         let hook_type = ctx.hook_type;
         let hooks = self.registry.hooks_for(hook_type).await;
@@ -71,10 +186,6 @@ impl PluginService {
         let mut current_input = ctx.input;
 
         for hook in hooks {
-            if !self.registry.is_enabled(&hook.plugin_id).await {
-                continue;
-            }
-
             let hook_ctx = HookContext {
                 hook_type,
                 input: current_input.clone(),
@@ -140,107 +251,132 @@ impl PluginService {
         .map_err(|_| "hook execution timed out".to_string())
     }
 
+    // --- Convenience dispatch methods (backward compatible) ---
+
     pub async fn dispatch_auth(&self, input: serde_json::Value) -> HookResult {
-        let ctx = HookContext {
+        self.dispatch_hook(HookContext {
             hook_type: HookType::Auth,
             input,
-        };
-        self.dispatch_hook(ctx).await
+        })
+        .await
     }
 
     pub async fn dispatch_tool_definition(&self, input: serde_json::Value) -> HookResult {
-        let ctx = HookContext {
+        self.dispatch_hook(HookContext {
             hook_type: HookType::ToolDefinition,
             input,
-        };
-        self.dispatch_hook(ctx).await
+        })
+        .await
     }
 
     pub async fn dispatch_tool_execute_before(&self, input: serde_json::Value) -> HookResult {
-        let ctx = HookContext {
+        self.dispatch_hook(HookContext {
             hook_type: HookType::ToolExecuteBefore,
             input,
-        };
-        self.dispatch_hook(ctx).await
+        })
+        .await
     }
 
     pub async fn dispatch_tool_execute_after(&self, input: serde_json::Value) -> HookResult {
-        let ctx = HookContext {
+        self.dispatch_hook(HookContext {
             hook_type: HookType::ToolExecuteAfter,
             input,
-        };
-        self.dispatch_hook(ctx).await
+        })
+        .await
     }
 
     pub async fn dispatch_chat_params(&self, input: serde_json::Value) -> HookResult {
-        let ctx = HookContext {
+        self.dispatch_hook(HookContext {
             hook_type: HookType::ChatParams,
             input,
-        };
-        self.dispatch_hook(ctx).await
+        })
+        .await
     }
 
     pub async fn dispatch_chat_headers(&self, input: serde_json::Value) -> HookResult {
-        let ctx = HookContext {
+        self.dispatch_hook(HookContext {
             hook_type: HookType::ChatHeaders,
             input,
-        };
-        self.dispatch_hook(ctx).await
+        })
+        .await
     }
 
     pub async fn dispatch_event(&self, input: serde_json::Value) -> HookResult {
-        let ctx = HookContext {
+        self.dispatch_hook(HookContext {
             hook_type: HookType::Event,
             input,
-        };
-        self.dispatch_hook(ctx).await
+        })
+        .await
     }
 
     pub async fn dispatch_config(&self, input: serde_json::Value) -> HookResult {
-        let ctx = HookContext {
+        self.dispatch_hook(HookContext {
             hook_type: HookType::Config,
             input,
-        };
-        self.dispatch_hook(ctx).await
+        })
+        .await
     }
 
     pub async fn dispatch_shell_env(&self, input: serde_json::Value) -> HookResult {
-        let ctx = HookContext {
+        self.dispatch_hook(HookContext {
             hook_type: HookType::ShellEnv,
             input,
-        };
-        self.dispatch_hook(ctx).await
+        })
+        .await
     }
 
     pub async fn dispatch_text_complete(&self, input: serde_json::Value) -> HookResult {
-        let ctx = HookContext {
+        self.dispatch_hook(HookContext {
             hook_type: HookType::TextComplete,
             input,
-        };
-        self.dispatch_hook(ctx).await
+        })
+        .await
     }
 
     pub async fn dispatch_session_compacting(&self, input: serde_json::Value) -> HookResult {
-        let ctx = HookContext {
+        self.dispatch_hook(HookContext {
             hook_type: HookType::SessionCompacting,
             input,
-        };
-        self.dispatch_hook(ctx).await
+        })
+        .await
     }
 
     pub async fn dispatch_messages_transform(&self, input: serde_json::Value) -> HookResult {
-        let ctx = HookContext {
+        self.dispatch_hook(HookContext {
             hook_type: HookType::MessagesTransform,
             input,
-        };
-        self.dispatch_hook(ctx).await
+        })
+        .await
     }
 
     pub async fn dispatch_provider(&self, input: serde_json::Value) -> HookResult {
-        let ctx = HookContext {
+        self.dispatch_hook(HookContext {
             hook_type: HookType::Provider,
             input,
-        };
-        self.dispatch_hook(ctx).await
+        })
+        .await
     }
+}
+
+/// Response from a plugin command invocation.
+#[derive(Debug, Clone)]
+pub struct PluginResponse {
+    pub ok: bool,
+    pub data: serde_json::Value,
+    pub diagnostics: Vec<crate::plugin::manifest::PluginDiagnostic>,
+}
+
+/// Error from plugin service operations.
+#[derive(Debug, thiserror::Error)]
+pub enum PluginError {
+    #[error("command not found: {0}")]
+    CommandNotFound(String),
+    #[error("plugin not found: {0}")]
+    PluginNotFound(String),
+    #[error("plugin disabled: {0}")]
+    PluginDisabled(String),
+    #[error("registry error: {0}")]
+    Registry(#[from] PluginRegistryError),
+    #[error("runtime error: {0}")]
+    Runtime(String),
 }

@@ -39,7 +39,7 @@ src/plugin/
 ├── service.rs       # PluginService implementation
 ├── install.rs       # Plugin installation from various sources
 ├── api.rs           # External API types (ApiVersion, Stability)
-├── tui.rs           # TUI plugin registry for routes/components
+├── tui.rs           # TUI plugin registry for routes/components (deprecated/legacy, superseded by Phase 5 capability-based registry)
 ├── event_bus.rs     # Event bus integration
 ├── marketplace.rs   # Local plugin discovery service
 └── builtin/         # Built-in plugins
@@ -102,7 +102,57 @@ impl HookResult {
 
 ## Plugin Manifest
 
-Plugins require `manifest.toml`:
+Plugins require `manifest.toml`. Phase 5 introduces a canonical capability-based format; the legacy `[[hooks]]` format is still supported for backward compatibility.
+
+### Canonical Format (Phase 5+)
+
+```toml
+name = "my-plugin"
+version = "1.0.0"
+description = "My plugin description"
+author = "Author Name"
+homepage = "https://example.com"
+license = "MIT"
+api_version = "1"
+
+[runtime]
+type = "wasm"  # "builtin", "process", or "wasm"
+
+[[capabilities]]
+type = "command"
+name = "my-command"
+
+[[capabilities]]
+type = "hook"
+hook_type = "tool.execute.before"
+priority = 0
+
+[[capabilities]]
+type = "hook"
+hook_type = "tool.execute.after"
+priority = 0
+
+[[capabilities]]
+type = "panel"
+name = "my-panel"
+route = "/my-plugin"
+
+[[capabilities]]
+type = "status_widget"
+name = "my-status"
+
+[[capabilities]]
+type = "event_subscription"
+event_type = "session.created"
+
+[permissions]
+filesystem = ["read", "write"]
+
+[config]
+some_setting = "value"
+```
+
+### Legacy Format (pre-Phase 5)
 
 ```toml
 name = "my-plugin"
@@ -134,7 +184,11 @@ pub struct PluginManifest {
     pub author: Option<String>,
     pub homepage: Option<String>,
     pub license: Option<String>,
-    pub hooks: Vec<HookSpec>,  // Hook specifications with priority
+    pub api_version: Option<String>,          // Phase 5: manifest schema version
+    pub runtime: Option<PluginRuntimeSpec>,    // Phase 5: how the plugin executes
+    pub capabilities: Vec<PluginCapability>,   // Phase 5: what the plugin provides
+    pub permissions: Option<PluginPermissionSet>, // Phase 5: declared permissions
+    pub hooks: Vec<HookSpec>,                 // Legacy: hook specifications (pre-Phase 5)
     pub config: HashMap<String, serde_json::Value>,
 }
 
@@ -439,6 +493,101 @@ pub async fn install(&self, source: &str) -> Result<PluginId, InstallError>
 pub fn register_hook(&self, plugin_id: &str, hook: HookType) -> Result<(), RegistryError>
 ```
 
+## Phase 5: Capability-Based Registry
+
+Phase 5 replaces the hook-only registry with a capability-based system that supports commands, hooks, panels, status widgets, and event subscriptions.
+
+### Runtime Spec
+
+```rust
+pub enum PluginRuntimeSpec {
+    Builtin,              // Native Rust, no WASM
+    Process {             // External process
+        command: String,
+        args: Vec<String>,
+        env: HashMap<String, String>,
+    },
+    Wasm {                // WASM module (default)
+        path: Option<String>,
+    },
+}
+```
+
+### Capability Types
+
+```rust
+pub enum PluginCapability {
+    Command(PluginCommandSpec),       // Invocable command
+    Hook {                            // Lifecycle hook
+        hook_type: HookType,
+        priority: Option<i32>,
+    },
+    Panel {                           // TUI panel
+        name: String,
+        route: String,
+    },
+    StatusWidget {                    // Status bar widget
+        name: String,
+    },
+    EventSubscription {               // Event listener
+        event_type: String,
+    },
+}
+
+pub struct PluginCommandSpec {
+    pub name: String,                 // Unique command name
+    pub description: Option<String>,
+    pub args: Vec<CommandArg>,        // Argument definitions
+}
+
+pub struct CommandArg {
+    pub name: String,
+    pub description: Option<String>,
+    pub required: bool,
+    pub default: Option<serde_json::Value>,
+}
+```
+
+### Trust Classes
+
+```rust
+pub enum PluginTrustClass {
+    Builtin,            // Built-in plugins (highest trust)
+    LocalProcess,       // Local process plugins
+    SandboxedWasm,      // Sandboxed WASM plugins
+    TrustedLocal,       // User-trusted local plugins
+}
+```
+
+### Registry Methods
+
+```rust
+impl PluginRegistry {
+    // Query capabilities
+    pub fn command(&self, name: &str) -> Option<&PluginCommandSpec>;
+    pub fn commands(&self) -> Vec<(&str, &PluginCommandSpec)>;
+    pub fn panels(&self) -> Vec<(&str, &str)>;       // (name, route)
+    pub fn status_widgets(&self) -> Vec<&str>;
+    pub fn event_subscribers(&self, event_type: &str) -> Vec<&str>;
+
+    // Registration
+    pub fn register_plugin(&self, plugin_id: &str, manifest: &PluginManifest, trust: PluginTrustClass) -> Result<(), RegistryError>;
+    pub fn register_manifest(&self, plugin_id: &str, manifest: &PluginManifest) -> Result<(), RegistryError>;
+
+    // Enable/disable affects capability queries
+    pub fn set_enabled(&self, plugin_id: &str, enabled: bool);
+    pub fn is_enabled(&self, plugin_id: &str) -> bool;
+}
+```
+
+### Duplicate Command Name Rejection
+
+When registering a plugin that declares a `Command` capability, the registry checks for name collisions with already-registered commands. If a duplicate name is found, registration fails with `RegistryError::DuplicateCommand(String)`.
+
+### Enable/Disable Semantics
+
+Disabling a plugin excludes its capabilities from all query methods (`command()`, `commands()`, `panels()`, `status_widgets()`, `event_subscribers()`). The plugin remains registered but its capabilities are invisible until re-enabled.
+
 ## Built-in Plugins
 
 Built-in plugins are native Rust implementations that don't require WASM. They are registered via `register_builtins()` and use a static handler map for dispatch.
@@ -496,6 +645,11 @@ impl PluginService {
 
     pub async fn load_and_register(&self, loaded: LoadedPlugin) -> Result<(), LoadError>;
     pub async fn dispatch_hook(&self, ctx: HookContext) -> HookResult;
+
+    // Phase 5: capability-based methods
+    pub async fn invoke_command(&self, name: &str, args: serde_json::Value) -> Result<PluginResponse, PluginError>;
+    pub fn register_plugin(&self, plugin_id: &str, manifest: &PluginManifest, trust: PluginTrustClass) -> Result<(), RegistryError>;
+    pub fn register_manifest(&self, plugin_id: &str, manifest: &PluginManifest) -> Result<(), RegistryError>;
 
     // Individual dispatch methods for each hook type:
     pub async fn dispatch_auth(&self, input: serde_json::Value) -> HookResult;
@@ -661,7 +815,7 @@ Plugins configured in `config.json`:
 }
 ```
 
-## Protocol DTOs (Phase 1-3)
+## Protocol DTOs (Phase 1-5)
 
 `codegg-protocol` now ships frontend-neutral plugin and UI protocol types in `crates/codegg-protocol/src/ui.rs` and `crates/codegg-protocol/src/plugin.rs`. These are available as `codegg_protocol::ui` and `codegg_protocol::plugin`.
 
@@ -673,4 +827,4 @@ Key types:
 - `PluginResponse` — Response with effects, data, and diagnostics
 - `PluginPermissionSet` / `FilesystemPermission` — Declared permissions
 
-These are protocol-only types. They do not execute plugins or render UI. Phase 2 (TUI Renderer Adapter) consumes them via `PluginUiState` and `PluginUiRenderer`. Phase 3 adds generic `TuiCommand` plugin variants and `src/tui/commands/plugins.rs` for response application. EmitChat routing is deferred to Phase 4.
+These are protocol-only types. They do not execute plugins or render UI. Phase 2 (TUI Renderer Adapter) consumes them via `PluginUiState` and `PluginUiRenderer`. Phase 3 adds generic `TuiCommand` plugin variants and `src/tui/commands/plugins.rs` for response application. Phase 5 redesigns the manifest and registry to be capability-based: `PluginManifestDto` now carries `runtime: PluginRuntimeSpec`, `capabilities: Vec<PluginCapability>`, and `permissions: Option<PluginPermissionSet>`, replacing the legacy hook-only model. The registry exposes capability queries (`commands()`, `panels()`, `status_widgets()`, `event_subscribers()`) and rejects duplicate command names at registration time.

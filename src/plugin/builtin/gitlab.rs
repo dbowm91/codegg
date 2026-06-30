@@ -7,13 +7,21 @@ pub fn plugin() -> crate::plugin::builtin::BuiltinPlugin {
         version: "0.1.0".into(),
         description: Some("GitLab authentication provider".into()),
         author: Some("codegg".into()),
-        homepage: None,
-        license: None,
-        hooks: vec![crate::plugin::manifest::HookSpec {
+        hooks: vec![crate::plugin::manifest::LegacyHookSpec {
             hook_type: "auth".into(),
             priority: Some(0),
         }],
-        config: Default::default(),
+        runtime: crate::plugin::manifest::PluginRuntimeSpec::Builtin {
+            handler: "gitlab_auth".into(),
+        },
+        capabilities: vec![crate::plugin::manifest::PluginCapability::Hook(
+            crate::plugin::manifest::PluginHookSpec {
+                hook_type: "auth".into(),
+                priority: 0,
+                handler: None,
+            },
+        )],
+        ..Default::default()
     };
 
     crate::plugin::builtin::BuiltinPlugin {

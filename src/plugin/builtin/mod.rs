@@ -6,10 +6,12 @@ pub mod gitlab;
 pub mod poe;
 
 use crate::plugin::hooks::{HookContext, HookResult, HookType};
-use crate::plugin::manifest::{HookSpec, PluginManifest};
+use crate::plugin::manifest::{
+    LegacyHookSpec, PluginCapability, PluginHookSpec, PluginManifest, PluginRuntimeSpec,
+};
 use crate::plugin::registry::PluginInfo;
+use crate::plugin::manifest::PluginTrustClass;
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::RwLock;
 
 pub struct BuiltinPlugin {
@@ -67,12 +69,15 @@ pub async fn register_builtins(registry: &crate::plugin::registry::PluginRegistr
         let info = PluginInfo {
             id: id.clone(),
             manifest: bp.manifest,
-            path: PathBuf::from("<builtin>"),
             enabled: true,
-            error: None,
+            trust: PluginTrustClass::Builtin,
+            diagnostics: Vec::new(),
         };
 
-        registry.register(info, hook_specs).await;
+        // Best-effort registration (ignore duplicate errors for builtins)
+        let _ = registry
+            .register_with_hooks(info, hook_specs)
+            .await;
         register_builtin_handler(&id, bp.handler);
     }
 }
@@ -101,9 +106,20 @@ pub fn make_builtin_info(
 ) -> (PluginInfo, Vec<crate::plugin::hooks::HookRegistration>) {
     let hook_specs: Vec<_> = hooks
         .iter()
-        .map(|(ht, pri)| HookSpec {
+        .map(|(ht, pri)| LegacyHookSpec {
             hook_type: ht.to_string(),
             priority: Some(*pri),
+        })
+        .collect();
+
+    let capabilities: Vec<PluginCapability> = hook_specs
+        .iter()
+        .map(|hs| {
+            PluginCapability::Hook(PluginHookSpec {
+                hook_type: hs.hook_type.clone(),
+                priority: hs.priority.unwrap_or(0),
+                handler: None,
+            })
         })
         .collect();
 
@@ -125,14 +141,19 @@ pub fn make_builtin_info(
         license: None,
         hooks: hook_specs,
         config: HashMap::new(),
+        runtime: PluginRuntimeSpec::Builtin {
+            handler: name.to_string(),
+        },
+        capabilities,
+        ..Default::default()
     };
 
     let info = PluginInfo {
         id: format!("builtin:{}", name),
         manifest,
-        path: PathBuf::from("<builtin>"),
         enabled: true,
-        error: None,
+        trust: PluginTrustClass::Builtin,
+        diagnostics: Vec::new(),
     };
 
     (info, registrations)

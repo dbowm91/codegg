@@ -14,7 +14,15 @@ pub use event_bus::{PluginEventBus, PluginEventSubscription};
 pub use hooks::{HookContext, HookResult, HookType};
 pub use install::{install_from_path, install_from_url, uninstall};
 pub use loader::{load_plugin, LoadedPlugin};
-pub use manifest::PluginManifest;
-pub use registry::{PluginInfo, PluginRegistry};
-pub use service::PluginService;
+pub use manifest::{
+    FilesystemPermission, LegacyHookSpec, LegacyManifest, PluginCapability, PluginCommandSpec,
+    PluginDiagnostic, PluginDiagnosticLevel, PluginEventSubscriptionSpec, PluginHookSpec,
+    PluginManifest, PluginOutputSurface, PluginPanelContribution, PluginPermissionSet,
+    PluginRuntimeSpec, PluginStatusContribution, PluginTrustClass,
+};
+pub use registry::{
+    normalize_command_name, PluginCommandRegistration, PluginEventRegistration, PluginHookRegistration,
+    PluginInfo, PluginPanelRegistration, PluginRegistry, PluginRegistryError, PluginStatusRegistration,
+};
+pub use service::{PluginError, PluginResponse, PluginService};
 pub use tui::{TuiComponent, TuiPluginRegistry, TuiRoute};
