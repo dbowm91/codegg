@@ -80,7 +80,14 @@ pub struct CommandRegistry {
 
 impl CommandRegistry {
     pub fn new() -> Self {
-        let mut commands = vec![
+        let mut commands = Self::built_in_commands();
+
+        Self::append_dynamic_commands(&mut commands);
+        Self { commands }
+    }
+
+    fn built_in_commands() -> Vec<Command> {
+        vec![
             Command::new("/connect", CommandCategory::System, None)
                 .with_description("Connect provider"),
             Command::new("/exit", CommandCategory::System, None)
@@ -288,10 +295,7 @@ impl CommandRegistry {
                 .with_description("Ask about shell output (args: <id|last> <question>)"),
             Command::new("/tui-stats", CommandCategory::System, None)
                 .with_description("Show TUI runtime diagnostics"),
-        ];
-
-        Self::append_dynamic_commands(&mut commands);
-        Self { commands }
+        ]
     }
 
     fn append_dynamic_commands(commands: &mut Vec<Command>) {
@@ -312,19 +316,7 @@ impl CommandRegistry {
                 let normalized = Self::normalize_name(&cmd.name);
                 if let std::collections::hash_map::Entry::Vacant(e) = seen.entry(normalized) {
                     e.insert(cmd.name.clone());
-                    new_commands.push(Command {
-                        name: Self::to_slash_name(&cmd.name),
-                        aliases: Vec::new(),
-                        description: cmd.description.unwrap_or_default(),
-                        category: CommandCategory::Agent,
-                        dialog: None,
-                        template: Some(cmd.template),
-                        agent: cmd.agent,
-                        model: cmd.model,
-                        #[allow(deprecated)]
-                        subtask: cmd.subtask,
-                        source: Some(cmd.source),
-                    });
+                    new_commands.push(Self::from_dynamic_command(cmd));
                 }
             }
         }
@@ -348,23 +340,27 @@ impl CommandRegistry {
         for (normalized, cmd) in dynamic_commands {
             if let std::collections::hash_map::Entry::Vacant(e) = seen.entry(normalized) {
                 e.insert(cmd.name.clone());
-                new_commands.push(Command {
-                    name: Self::to_slash_name(&cmd.name),
-                    aliases: Vec::new(),
-                    description: cmd.description.unwrap_or_default(),
-                    category: CommandCategory::Agent,
-                    dialog: None,
-                    template: Some(cmd.template),
-                    agent: cmd.agent,
-                    model: cmd.model,
-                    #[allow(deprecated)]
-                    subtask: cmd.subtask,
-                    source: Some(cmd.source),
-                });
+                new_commands.push(Self::from_dynamic_command(cmd));
             }
         }
 
         commands.append(&mut new_commands);
+    }
+
+    fn from_dynamic_command(cmd: crate::command::Command) -> Command {
+        Command {
+            name: Self::to_slash_name(&cmd.name),
+            aliases: Vec::new(),
+            description: cmd.description.unwrap_or_default(),
+            category: CommandCategory::Agent,
+            dialog: None,
+            template: Some(cmd.template),
+            agent: cmd.agent,
+            model: cmd.model,
+            #[allow(deprecated)]
+            subtask: cmd.subtask,
+            source: Some(cmd.source),
+        }
     }
 
     fn normalize_name(name: &str) -> String {
@@ -411,12 +407,6 @@ impl CommandRegistry {
                     if score > best_score {
                         best_score = score;
                     }
-                    for alias in &cmd.aliases {
-                        let score = fuzzy_score(query, alias);
-                        if score > best_score {
-                            best_score = score;
-                        }
-                    }
                 }
                 if best_score > 0 {
                     Some((cmd, best_score))
@@ -439,3 +429,49 @@ impl Default for CommandRegistry {
 }
 
 pub static COMMAND_REGISTRY: LazyLock<CommandRegistry> = LazyLock::new(CommandRegistry::new);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn built_in_command_count_matches_release_docs() {
+        assert_eq!(CommandRegistry::built_in_commands().len(), 96);
+    }
+
+    #[test]
+    fn filter_matches_aliases_once_through_all_names() {
+        let registry = CommandRegistry {
+            commands: CommandRegistry::built_in_commands(),
+        };
+
+        let results = registry.filter("preview-show");
+        assert_eq!(
+            results.first().map(|(cmd, _)| cmd.name.as_str()),
+            Some("/lsp-preview")
+        );
+    }
+
+    #[test]
+    fn dynamic_command_conversion_normalizes_name() {
+        let cmd = crate::command::Command {
+            name: "ship".to_string(),
+            description: Some("Ship it".to_string()),
+            template: "Release {args}".to_string(),
+            agent: Some("build".to_string()),
+            model: Some("model-a".to_string()),
+            #[allow(deprecated)]
+            subtask: None,
+            source: "test".to_string(),
+        };
+
+        let converted = CommandRegistry::from_dynamic_command(cmd);
+
+        assert_eq!(converted.name, "/ship");
+        assert_eq!(converted.description, "Ship it");
+        assert_eq!(converted.template.as_deref(), Some("Release {args}"));
+        assert_eq!(converted.agent.as_deref(), Some("build"));
+        assert_eq!(converted.model.as_deref(), Some("model-a"));
+        assert_eq!(converted.source.as_deref(), Some("test"));
+    }
+}

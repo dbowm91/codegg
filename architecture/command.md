@@ -48,7 +48,7 @@ pub struct CommandConfig {
 
 ### Sources (in priority order)
 
-1. **Built-in commands**: 56 hardcoded commands (highest priority)
+1. **Built-in commands**: 96 hardcoded commands (highest priority)
 2. **Config commands**: From `opencode.jsonc` `commands` section
 3. **File commands**: From `command/` or `commands/` directories in CWD
 
@@ -111,7 +111,14 @@ pub struct Command {
 }
 ```
 
-### Built-in Commands (56 total)
+### Built-in Commands (96 total)
+
+`src/tui/command.rs::CommandRegistry::built_in_commands()` is the
+source of truth for the complete list. The count is covered by
+`built_in_command_count_matches_release_docs` so documentation drift is
+caught in unit tests.
+
+Representative built-ins:
 
 | Command | Aliases | Description |
 |---------|---------|-------------|
@@ -161,6 +168,12 @@ pub struct Command {
 | `/checkpoint` | | Create a checkpoint of current session |
 | `/pr` | | GitHub pull requests |
 | `/issue` | `bugs`, `features` | GitHub issues |
+| `/lsp-servers` | `/lsp-detail` | List active LSP servers with status, root, generation |
+| `/lsp-preview` | `/preview-show` | Show LSP preview detail |
+| `/tool-backends` | `/tools`, `/backends` | Show resolved backend for each model-facing tool |
+| `/security-review` | | Security review of changed files |
+| `/shell-list` | | List recent shell commands |
+| `/tui-stats` | | Show TUI runtime diagnostics |
 
 ### Dynamic Commands
 

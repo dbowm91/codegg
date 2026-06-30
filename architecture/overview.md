@@ -160,11 +160,11 @@ hidden by default — see [MCP](mcp.md)).
 | Item | Count | Location |
 |------|-------|----------|
 | Tools (default registry) | 30 | `tool/mod.rs:231-406` |
-| LSP servers | 39 | `crates/egglsp/src/server.rs` |
+| LSP servers | 40 | `crates/egglsp/src/server.rs` |
 | Native tool crates | 4 | `crates/egglsp`, `crates/egggit`, `crates/eggsentry`, `crates/eggcontext` |
 | UiState fields | 27 | `tui/app/state/ui.rs:40-92` |
 | AppEvent variants | 41 | `bus/events.rs:61-258` |
-| Built-in commands | 56 | `tui/command.rs` |
+| Built-in commands | 96 | `tui/command.rs` |
 | Built-in agents | 7 | `agent/mod.rs:147-262` |
 
 ## Feature Gates

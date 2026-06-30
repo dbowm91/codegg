@@ -157,7 +157,7 @@ cargo test -p egglsp --features lsp-real-server-tests --test real_server_smoke
 ### LSP
 
 - **egglsp is authoritative**: `src/lsp/` is a thin shim. All real LSP logic lives in `crates/egglsp/`.
-- **39 LSP servers** configured in `crates/egglsp/src/server.rs`.
+- **40 LSP servers** configured in `crates/egglsp/src/server.rs`.
 - **Preview-only boundary**: `renamePreview`, `formatPreview`, `sourceActionPreview` never write to disk. `workspace/executeCommand` is never invoked.
 - **Capability-gated operations**: `semanticContext` and `securityContext` check `LspCapabilitySnapshot` before expensive LSP calls. Unsupported ops append notes, don't fail.
 - **LSP tests need `lsp-test-support` feature**: The fake server binary is `codegg-lsp-test-server`. Tests use polling loops (bounded waits), not fixed sleeps.
@@ -232,7 +232,7 @@ cargo test -p egglsp --features lsp-real-server-tests --test real_server_smoke
 | `architecture/human_shell.md` | Human shell execution, promotion model, safety policy | Central invariant: ! commands not in model context unless promoted |
 | `architecture/hooks.md` | Lifecycle hooks for agent events | |
 | `architecture/ide.md` | VS Code/JetBrains detection, diff viewing | |
-| `architecture/lsp.md` | LSP client, diagnostics, code operations, Phase 13 doctor/validation | egglsp is authoritative; 39 servers |
+| `architecture/lsp.md` | LSP client, diagnostics, code operations, Phase 13 doctor/validation | egglsp is authoritative; 40 servers |
 | `architecture/mcp.md` | MCP client (local/remote) | |
 | `architecture/memory.md` | Persistent memory across sessions | In `crates/codegg-core` |
 | `architecture/native_crates.md` | Workspace crates, backend contract | |
