@@ -121,8 +121,16 @@ impl PluginRegistry {
         let status_specs = self.extract_status_widgets(&id, &info.manifest).await;
         let event_specs = self.extract_event_subscribers(&id, &info.manifest).await;
 
-        // Check command duplicate rules
+        // Check command duplicate rules (before namespacing)
         self.check_command_duplicates(&command_specs).await?;
+
+        // Auto-namespace panel/widget IDs with plugin id prefix if not already namespaced
+        let panel_specs = self.namespaced_panels(&id, panel_specs);
+        let status_specs = self.namespaced_status_widgets(&id, status_specs);
+
+        // Check duplicate rules after namespacing
+        self.check_panel_duplicates(&panel_specs).await?;
+        self.check_status_widget_duplicates(&status_specs).await?;
 
         // Store plugin
         self.plugins.write().await.insert(id.clone(), info);
@@ -520,6 +528,89 @@ impl PluginRegistry {
         Ok(())
     }
 
+    /// Check for duplicate panel IDs across enabled plugins.
+    async fn check_panel_duplicates(
+        &self,
+        new_panels: &[PluginPanelRegistration],
+    ) -> Result<(), PluginRegistryError> {
+        let existing = self.panels.read().await;
+
+        for new_panel in new_panels {
+            let new_id = &new_panel.id;
+            for existing_panel in existing.iter().filter(|p| self.is_enabled_sync(&p.plugin_id))
+            {
+                if new_id == &existing_panel.id {
+                    return Err(PluginRegistryError::DuplicatePanel(
+                        new_id.clone(),
+                        existing_panel.plugin_id.clone(),
+                    ));
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Check for duplicate status widget IDs across enabled plugins.
+    async fn check_status_widget_duplicates(
+        &self,
+        new_widgets: &[PluginStatusRegistration],
+    ) -> Result<(), PluginRegistryError> {
+        let existing = self.status_widgets.read().await;
+
+        for new_widget in new_widgets {
+            let new_id = &new_widget.id;
+            for existing_widget in existing
+                .iter()
+                .filter(|s| self.is_enabled_sync(&s.plugin_id))
+            {
+                if new_id == &existing_widget.id {
+                    return Err(PluginRegistryError::DuplicateStatusWidget(
+                        new_id.clone(),
+                        existing_widget.plugin_id.clone(),
+                    ));
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Auto-namespace panel IDs with plugin id prefix if not already namespaced.
+    /// A panel ID is considered namespaced if it starts with the plugin id.
+    fn namespaced_panels(
+        &self,
+        plugin_id: &str,
+        panels: Vec<PluginPanelRegistration>,
+    ) -> Vec<PluginPanelRegistration> {
+        panels
+            .into_iter()
+            .map(|mut p| {
+                if !p.id.starts_with(plugin_id) {
+                    p.id = format!("{}:{}", plugin_id, p.id);
+                }
+                p
+            })
+            .collect()
+    }
+
+    /// Auto-namespace status widget IDs with plugin id prefix if not already namespaced.
+    fn namespaced_status_widgets(
+        &self,
+        plugin_id: &str,
+        widgets: Vec<PluginStatusRegistration>,
+    ) -> Vec<PluginStatusRegistration> {
+        widgets
+            .into_iter()
+            .map(|mut w| {
+                if !w.id.starts_with(plugin_id) {
+                    w.id = format!("{}:{}", plugin_id, w.id);
+                }
+                w
+            })
+            .collect()
+    }
+
     async fn sort_hooks(&self) {
         self.hooks.write().await.sort_by_key(|h| h.priority);
     }
@@ -539,6 +630,9 @@ impl Default for PluginRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::plugin::manifest::{
+        PluginHookSpec, PluginPanelContribution, PluginStatusContribution,
+    };
 
     fn make_plugin_info(id: &str, name: &str) -> PluginInfo {
         PluginInfo {
@@ -556,7 +650,7 @@ mod tests {
 
     #[tokio::test]
     async fn register_and_list() {
-        let mut registry = PluginRegistry::new();
+        let registry = PluginRegistry::new();
         let info = make_plugin_info("test:1", "test");
         registry.register(info).await.unwrap();
         let list = registry.list().await;
@@ -565,7 +659,7 @@ mod tests {
 
     #[tokio::test]
     async fn duplicate_registration_rejected() {
-        let mut registry = PluginRegistry::new();
+        let registry = PluginRegistry::new();
         let info1 = make_plugin_info("test:1", "test");
         let info2 = make_plugin_info("test:1", "test2");
         registry.register(info1).await.unwrap();
@@ -575,7 +669,7 @@ mod tests {
 
     #[tokio::test]
     async fn command_lookup_by_name() {
-        let mut registry = PluginRegistry::new();
+        let registry = PluginRegistry::new();
         let manifest = PluginManifest {
             name: "my-plugin".into(),
             capabilities: vec![PluginCapability::Command(
@@ -652,5 +746,451 @@ mod tests {
         assert_eq!(normalize_command_name("/Deploy"), "deploy");
         assert_eq!(normalize_command_name("DEPLOY"), "deploy");
         assert_eq!(normalize_command_name("/deploy"), "deploy");
+    }
+
+    #[tokio::test]
+    async fn alias_duplicate_detection_rejects_name_colliding_with_existing_alias() {
+        let registry = PluginRegistry::new();
+
+        // Plugin A registers command "deploy" with alias "d"
+        let manifest_a = PluginManifest {
+            name: "plugin-a".into(),
+            capabilities: vec![PluginCapability::Command(
+                crate::plugin::manifest::PluginCommandSpec {
+                    name: "deploy".into(),
+                    aliases: vec!["d".into()],
+                    description: None,
+                    handler: None,
+                    output: Vec::new(),
+                },
+            )],
+            ..Default::default()
+        };
+        let info_a = PluginInfo {
+            id: "a:1".into(),
+            manifest: manifest_a,
+            enabled: true,
+            trust: PluginTrustClass::Builtin,
+            diagnostics: Vec::new(),
+        };
+        registry.register(info_a).await.unwrap();
+
+        // Plugin B tries to register command "d" (collides with A's alias)
+        let manifest_b = PluginManifest {
+            name: "plugin-b".into(),
+            capabilities: vec![PluginCapability::Command(
+                crate::plugin::manifest::PluginCommandSpec {
+                    name: "d".into(),
+                    aliases: Vec::new(),
+                    description: None,
+                    handler: None,
+                    output: Vec::new(),
+                },
+            )],
+            ..Default::default()
+        };
+        let info_b = PluginInfo {
+            id: "b:1".into(),
+            manifest: manifest_b,
+            enabled: true,
+            trust: PluginTrustClass::Builtin,
+            diagnostics: Vec::new(),
+        };
+        let result = registry.register(info_b).await;
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            PluginRegistryError::DuplicateCommand(name, owner) => {
+                assert_eq!(name, "d");
+                assert_eq!(owner, "a:1");
+            }
+            other => panic!("expected DuplicateCommand, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn alias_duplicate_detection_rejects_alias_colliding_with_existing_name() {
+        let registry = PluginRegistry::new();
+
+        // Plugin A registers command "quota" (no aliases)
+        let manifest_a = PluginManifest {
+            name: "plugin-a".into(),
+            capabilities: vec![PluginCapability::Command(
+                crate::plugin::manifest::PluginCommandSpec {
+                    name: "quota".into(),
+                    aliases: Vec::new(),
+                    description: None,
+                    handler: None,
+                    output: Vec::new(),
+                },
+            )],
+            ..Default::default()
+        };
+        let info_a = PluginInfo {
+            id: "a:1".into(),
+            manifest: manifest_a,
+            enabled: true,
+            trust: PluginTrustClass::Builtin,
+            diagnostics: Vec::new(),
+        };
+        registry.register(info_a).await.unwrap();
+
+        // Plugin B tries to register command "show-quota" with alias "quota"
+        let manifest_b = PluginManifest {
+            name: "plugin-b".into(),
+            capabilities: vec![PluginCapability::Command(
+                crate::plugin::manifest::PluginCommandSpec {
+                    name: "show-quota".into(),
+                    aliases: vec!["quota".into()],
+                    description: None,
+                    handler: None,
+                    output: Vec::new(),
+                },
+            )],
+            ..Default::default()
+        };
+        let info_b = PluginInfo {
+            id: "b:1".into(),
+            manifest: manifest_b,
+            enabled: true,
+            trust: PluginTrustClass::Builtin,
+            diagnostics: Vec::new(),
+        };
+        let result = registry.register(info_b).await;
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            PluginRegistryError::DuplicateCommand(name, owner) => {
+                assert_eq!(name, "quota");
+                assert_eq!(owner, "a:1");
+            }
+            other => panic!("expected DuplicateCommand, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn panels_and_status_widgets_are_indexed_and_queried() {
+        let registry = PluginRegistry::new();
+        let manifest = PluginManifest {
+            name: "ui-plugin".into(),
+            capabilities: vec![
+                PluginCapability::Panel(PluginPanelContribution {
+                    id: "my-panel".into(),
+                    title: "My Panel".into(),
+                    placement: "sidebar".into(),
+                    handler: None,
+                }),
+                PluginCapability::StatusWidget(PluginStatusContribution {
+                    id: "my-widget".into(),
+                    label: Some("Status".into()),
+                    placement: "statusbar".into(),
+                    refresh_ms: Some(5000),
+                    handler: None,
+                }),
+            ],
+            ..Default::default()
+        };
+        let info = PluginInfo {
+            id: "ui:1".into(),
+            manifest,
+            enabled: true,
+            trust: PluginTrustClass::Builtin,
+            diagnostics: Vec::new(),
+        };
+        registry.register(info).await.unwrap();
+
+        // Panels are indexed and namespaced
+        let panels = registry.panels().await;
+        assert_eq!(panels.len(), 1);
+        assert_eq!(panels[0].id, "ui:1:my-panel");
+        assert_eq!(panels[0].title, "My Panel");
+
+        // Status widgets are indexed and namespaced
+        let widgets = registry.status_widgets().await;
+        assert_eq!(widgets.len(), 1);
+        assert_eq!(widgets[0].id, "ui:1:my-widget");
+        assert_eq!(widgets[0].label.as_deref(), Some("Status"));
+        assert_eq!(widgets[0].refresh_ms, Some(5000));
+    }
+
+    #[tokio::test]
+    async fn same_panel_id_auto_namespaced_not_rejected() {
+        let registry = PluginRegistry::new();
+
+        // Plugin A registers a panel "shared-panel"
+        let manifest_a = PluginManifest {
+            name: "plugin-a".into(),
+            capabilities: vec![PluginCapability::Panel(PluginPanelContribution {
+                id: "shared-panel".into(),
+                title: "Panel A".into(),
+                placement: "sidebar".into(),
+                handler: None,
+            })],
+            ..Default::default()
+        };
+        let info_a = PluginInfo {
+            id: "a:1".into(),
+            manifest: manifest_a,
+            enabled: true,
+            trust: PluginTrustClass::Builtin,
+            diagnostics: Vec::new(),
+        };
+        registry.register(info_a).await.unwrap();
+
+        // Plugin B registers same raw panel ID — auto-namespaced, not rejected
+        let manifest_b = PluginManifest {
+            name: "plugin-b".into(),
+            capabilities: vec![PluginCapability::Panel(PluginPanelContribution {
+                id: "shared-panel".into(),
+                title: "Panel B".into(),
+                placement: "sidebar".into(),
+                handler: None,
+            })],
+            ..Default::default()
+        };
+        let info_b = PluginInfo {
+            id: "b:1".into(),
+            manifest: manifest_b,
+            enabled: true,
+            trust: PluginTrustClass::Builtin,
+            diagnostics: Vec::new(),
+        };
+        registry.register(info_b).await.unwrap();
+
+        // Both panels exist with different namespaced IDs
+        let panels = registry.panels().await;
+        assert_eq!(panels.len(), 2);
+        let ids: Vec<&str> = panels.iter().map(|p| p.id.as_str()).collect();
+        assert!(ids.contains(&"a:1:shared-panel"));
+        assert!(ids.contains(&"b:1:shared-panel"));
+    }
+
+    #[tokio::test]
+    async fn same_status_widget_id_auto_namespaced_not_rejected() {
+        let registry = PluginRegistry::new();
+
+        // Plugin A registers a status widget "shared-widget"
+        let manifest_a = PluginManifest {
+            name: "plugin-a".into(),
+            capabilities: vec![PluginCapability::StatusWidget(
+                PluginStatusContribution {
+                    id: "shared-widget".into(),
+                    label: None,
+                    placement: "statusbar".into(),
+                    refresh_ms: None,
+                    handler: None,
+                },
+            )],
+            ..Default::default()
+        };
+        let info_a = PluginInfo {
+            id: "a:1".into(),
+            manifest: manifest_a,
+            enabled: true,
+            trust: PluginTrustClass::Builtin,
+            diagnostics: Vec::new(),
+        };
+        registry.register(info_a).await.unwrap();
+
+        // Plugin B registers same raw widget ID — auto-namespaced, not rejected
+        let manifest_b = PluginManifest {
+            name: "plugin-b".into(),
+            capabilities: vec![PluginCapability::StatusWidget(
+                PluginStatusContribution {
+                    id: "shared-widget".into(),
+                    label: None,
+                    placement: "statusbar".into(),
+                    refresh_ms: None,
+                    handler: None,
+                },
+            )],
+            ..Default::default()
+        };
+        let info_b = PluginInfo {
+            id: "b:1".into(),
+            manifest: manifest_b,
+            enabled: true,
+            trust: PluginTrustClass::Builtin,
+            diagnostics: Vec::new(),
+        };
+        registry.register(info_b).await.unwrap();
+
+        // Both widgets exist with different namespaced IDs
+        let widgets = registry.status_widgets().await;
+        assert_eq!(widgets.len(), 2);
+        let ids: Vec<&str> = widgets.iter().map(|w| w.id.as_str()).collect();
+        assert!(ids.contains(&"a:1:shared-widget"));
+        assert!(ids.contains(&"b:1:shared-widget"));
+    }
+
+    #[tokio::test]
+    async fn hook_priority_ordering_is_stable_and_ascending() {
+        let registry = PluginRegistry::new();
+
+        // Plugin with hooks at priorities 10, -5, 0
+        let manifest = PluginManifest {
+            name: "multi-hook".into(),
+            capabilities: vec![
+                PluginCapability::Hook(PluginHookSpec {
+                    hook_type: "tool.execute.before".into(),
+                    priority: 10,
+                    handler: None,
+                }),
+                PluginCapability::Hook(PluginHookSpec {
+                    hook_type: "tool.execute.before".into(),
+                    priority: -5,
+                    handler: None,
+                }),
+                PluginCapability::Hook(PluginHookSpec {
+                    hook_type: "tool.execute.before".into(),
+                    priority: 0,
+                    handler: None,
+                }),
+            ],
+            ..Default::default()
+        };
+        let info = PluginInfo {
+            id: "mh:1".into(),
+            manifest,
+            enabled: true,
+            trust: PluginTrustClass::Builtin,
+            diagnostics: Vec::new(),
+        };
+        registry.register(info).await.unwrap();
+
+        let hooks = registry
+            .hooks_for(HookType::ToolExecuteBefore)
+            .await;
+        assert_eq!(hooks.len(), 3);
+        // Should be sorted ascending by priority: -5, 0, 10
+        assert_eq!(hooks[0].priority, -5);
+        assert_eq!(hooks[1].priority, 0);
+        assert_eq!(hooks[2].priority, 10);
+    }
+
+    #[tokio::test]
+    async fn hook_priority_ordering_across_plugins() {
+        let registry = PluginRegistry::new();
+
+        // Plugin A with priority 5
+        let manifest_a = PluginManifest {
+            name: "plugin-a".into(),
+            capabilities: vec![PluginCapability::Hook(PluginHookSpec {
+                hook_type: "auth".into(),
+                priority: 5,
+                handler: None,
+            })],
+            ..Default::default()
+        };
+        let info_a = PluginInfo {
+            id: "a:1".into(),
+            manifest: manifest_a,
+            enabled: true,
+            trust: PluginTrustClass::Builtin,
+            diagnostics: Vec::new(),
+        };
+        registry.register(info_a).await.unwrap();
+
+        // Plugin B with priority -10
+        let manifest_b = PluginManifest {
+            name: "plugin-b".into(),
+            capabilities: vec![PluginCapability::Hook(PluginHookSpec {
+                hook_type: "auth".into(),
+                priority: -10,
+                handler: None,
+            })],
+            ..Default::default()
+        };
+        let info_b = PluginInfo {
+            id: "b:1".into(),
+            manifest: manifest_b,
+            enabled: true,
+            trust: PluginTrustClass::Builtin,
+            diagnostics: Vec::new(),
+        };
+        registry.register(info_b).await.unwrap();
+
+        // Plugin C with priority 0
+        let manifest_c = PluginManifest {
+            name: "plugin-c".into(),
+            capabilities: vec![PluginCapability::Hook(PluginHookSpec {
+                hook_type: "auth".into(),
+                priority: 0,
+                handler: None,
+            })],
+            ..Default::default()
+        };
+        let info_c = PluginInfo {
+            id: "c:1".into(),
+            manifest: manifest_c,
+            enabled: true,
+            trust: PluginTrustClass::Builtin,
+            diagnostics: Vec::new(),
+        };
+        registry.register(info_c).await.unwrap();
+
+        let hooks = registry.hooks_for(HookType::Auth).await;
+        assert_eq!(hooks.len(), 3);
+        // Sorted ascending: -10, 0, 5
+        assert_eq!(hooks[0].priority, -10);
+        assert_eq!(hooks[0].plugin_id, "b:1");
+        assert_eq!(hooks[1].priority, 0);
+        assert_eq!(hooks[1].plugin_id, "c:1");
+        assert_eq!(hooks[2].priority, 5);
+        assert_eq!(hooks[2].plugin_id, "a:1");
+    }
+
+    #[tokio::test]
+    async fn disabled_plugin_excluded_from_panel_queries() {
+        let mut registry = PluginRegistry::new();
+        let manifest = PluginManifest {
+            name: "panel-plugin".into(),
+            capabilities: vec![PluginCapability::Panel(PluginPanelContribution {
+                id: "test-panel".into(),
+                title: "Test".into(),
+                placement: "sidebar".into(),
+                handler: None,
+            })],
+            ..Default::default()
+        };
+        let info = PluginInfo {
+            id: "p:1".into(),
+            manifest,
+            enabled: true,
+            trust: PluginTrustClass::Builtin,
+            diagnostics: Vec::new(),
+        };
+        registry.register(info).await.unwrap();
+
+        assert_eq!(registry.panels().await.len(), 1);
+
+        registry.set_enabled("p:1", false).await.unwrap();
+
+        assert_eq!(registry.panels().await.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn panel_id_already_namespaced_is_not_double_namespaced() {
+        let registry = PluginRegistry::new();
+        let manifest = PluginManifest {
+            name: "ns-plugin".into(),
+            capabilities: vec![PluginCapability::Panel(PluginPanelContribution {
+                id: "ns-plugin:already-namespaced".into(),
+                title: "Test".into(),
+                placement: "sidebar".into(),
+                handler: None,
+            })],
+            ..Default::default()
+        };
+        let info = PluginInfo {
+            id: "ns-plugin".into(),
+            manifest,
+            enabled: true,
+            trust: PluginTrustClass::Builtin,
+            diagnostics: Vec::new(),
+        };
+        registry.register(info).await.unwrap();
+
+        let panels = registry.panels().await;
+        assert_eq!(panels.len(), 1);
+        assert_eq!(panels[0].id, "ns-plugin:already-namespaced");
     }
 }

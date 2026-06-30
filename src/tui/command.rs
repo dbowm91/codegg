@@ -1,3 +1,4 @@
+use crate::plugin::registry::{PluginCommandRegistration, PluginRegistry};
 use crate::tui::app::Dialog;
 use crate::util::fuzzy::fuzzy_score;
 use std::collections::HashMap;
@@ -385,6 +386,51 @@ impl CommandRegistry {
             name.to_string()
         } else {
             format!("/{}", name)
+        }
+    }
+
+    /// Append plugin-contributed commands to the registry.
+    ///
+    /// This is the integration seam for Phase 5. It converts plugin command
+    /// registrations into TUI `Command` entries and appends them, skipping
+    /// any that collide with existing command names (static or dynamic).
+    pub async fn append_plugin_commands(
+        commands: &mut Vec<Command>,
+        plugin_registry: &PluginRegistry,
+    ) {
+        let mut seen: HashMap<String, String> = HashMap::new();
+
+        for cmd in commands.iter() {
+            for name in cmd.all_names() {
+                let normalized = Self::normalize_name(name);
+                seen.insert(normalized, cmd.name.clone());
+            }
+        }
+
+        for reg in plugin_registry.commands().await {
+            let normalized = Self::normalize_name(&reg.name);
+            if let std::collections::hash_map::Entry::Vacant(e) = seen.entry(normalized) {
+                e.insert(reg.name.clone());
+                commands.push(Self::from_plugin_command(reg));
+            }
+        }
+    }
+
+    /// Convert a plugin command registration into a TUI `Command`.
+    fn from_plugin_command(reg: PluginCommandRegistration) -> Command {
+        let name = Self::to_slash_name(&reg.name);
+        Command {
+            name,
+            aliases: reg.aliases,
+            description: reg.description.unwrap_or_default(),
+            category: CommandCategory::Agent,
+            dialog: None,
+            template: None,
+            agent: None,
+            model: None,
+            subtask: None,
+            source: Some(format!("plugin:{}", reg.plugin_id)),
+            process: None,
         }
     }
 
