@@ -2,6 +2,7 @@ pub const REMOTE_TUI_PROTOCOL_VERSION: u32 = 1;
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
 #[serde(tag = "type")]
+#[allow(clippy::large_enum_variant)]
 pub enum TuiMessage {
     EventEnvelope {
         event_seq: u64,

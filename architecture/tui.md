@@ -78,7 +78,7 @@ pub struct AsyncUiRequestState {
 
 **Dialog close integration:** `close_dialog()` (`pub(crate)` for testability) cancels async request states for Import, ResearchBrowser, and Session dialogs, ensuring stale completions are ignored after dismissal.
 
-**Completion semantics:** All async apply handlers (`apply_import_*`, `apply_research_*`, `apply_session_mutation_finished`, etc.) follow a single canonical pattern:
+**Completion semantics:** All async apply handlers follow a single canonical pattern:
 
 ```rust
 if !app.dialog_state.<field>.finish(request_id) {
@@ -88,6 +88,18 @@ if !app.dialog_state.<field>.finish(request_id) {
 ```
 
 `finish(request_id)` returns `false` for stale or cancelled completions; the apply function returns immediately. `fail(request_id, error)` does the same guard but records the error. Never mix `is_current()` + manual mutation; always go through `finish`/`fail`.
+
+**Apply handlers guarded by `finish`/`fail` (12 total):**
+- Import: `apply_import_preview_loaded`, `apply_import_confirmed` (`src/tui/commands/import.rs`)
+- Research: `apply_research_runs_loaded`, `apply_research_run_loaded`, `apply_research_section_loaded` (`src/tui/commands/research.rs`)
+- Session reload: `apply_sessions_reloaded` (`src/tui/commands/sessions.rs`)
+- Session mutation: `apply_session_mutation_finished` (`src/tui/commands/sessions.rs`)
+- Session messages: `apply_session_messages_loaded` (`src/tui/commands/sessions.rs`)
+- Tasks: `apply_tasks_listed`, `apply_task_operation_finished` (`src/tui/commands/tasks.rs`)
+- Worktrees: `apply_worktree_listed` (`src/tui/commands/tasks.rs`)
+- Templates: `apply_template_session_created` (`src/tui/commands/sessions.rs`)
+
+Each handler has a stale-completion test under `src/tui/mod.rs::async_cmd_tests` proving that an older request ID is dropped before mutating dialog state or showing a toast.
 
 ### Background Task Lifecycle (Phase 7)
 

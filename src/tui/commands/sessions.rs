@@ -110,14 +110,20 @@ pub(crate) fn apply_sessions_reloaded(
     error: Option<String>,
 ) {
     if let Some(err) = error {
-        app.dialog_state
+        if !app
+            .dialog_state
             .session_reload_request
-            .fail(request_id, err.clone());
+            .fail(request_id, err.clone())
+        {
+            return;
+        }
         app.dialog_state.session_dialog.set_loading(false);
         app.messages_state.toasts.error(&err);
         return;
     }
-    app.dialog_state.session_reload_request.finish(request_id);
+    if !app.dialog_state.session_reload_request.finish(request_id) {
+        return;
+    }
     app.dialog_state.session_dialog.set_loading(false);
 
     app.dialog_state
@@ -1681,15 +1687,21 @@ pub(crate) fn apply_template_session_created(
     error: Option<String>,
 ) {
     if let Some(err) = error {
-        app.dialog_state
+        if !app
+            .dialog_state
             .template_create_request
-            .fail(request_id, err.clone());
+            .fail(request_id, err.clone())
+        {
+            return;
+        }
         app.messages_state
             .toasts
             .error(&format!("Failed to create session from template: {}", err));
         return;
     }
-    app.dialog_state.template_create_request.finish(request_id);
+    if !app.dialog_state.template_create_request.finish(request_id) {
+        return;
+    }
     let Some(session) = session else {
         return;
     };

@@ -71,13 +71,19 @@ pub(crate) fn apply_tasks_listed(
     error: Option<String>,
 ) {
     if let Some(err) = error {
-        app.dialog_state
+        if !app
+            .dialog_state
             .task_list_request
-            .fail(request_id, err.clone());
+            .fail(request_id, err.clone())
+        {
+            return;
+        }
         app.messages_state.toasts.warning(&err);
         return;
     }
-    app.dialog_state.task_list_request.finish(request_id);
+    if !app.dialog_state.task_list_request.finish(request_id) {
+        return;
+    }
     if tasks.is_empty() {
         app.messages_state.toasts.info("No background tasks");
     } else {
@@ -188,13 +194,19 @@ pub(crate) fn apply_task_operation_finished(
     error: Option<String>,
 ) {
     if let Some(err) = error {
-        app.dialog_state
+        if !app
+            .dialog_state
             .task_delete_request
-            .fail(request_id, err.clone());
+            .fail(request_id, err.clone())
+        {
+            return;
+        }
         app.messages_state.toasts.warning(&err);
         return;
     }
-    app.dialog_state.task_delete_request.finish(request_id);
+    if !app.dialog_state.task_delete_request.finish(request_id) {
+        return;
+    }
     match op.as_str() {
         "delete" => {
             app.messages_state.toasts.info("Task deleted");
@@ -501,13 +513,19 @@ pub(crate) fn apply_worktree_listed(
     error: Option<String>,
 ) {
     if let Some(err) = error {
-        app.dialog_state
+        if !app
+            .dialog_state
             .worktree_list_request
-            .fail(request_id, err.clone());
+            .fail(request_id, err.clone())
+        {
+            return;
+        }
         app.messages_state.toasts.warning(&err);
         return;
     }
-    app.dialog_state.worktree_list_request.finish(request_id);
+    if !app.dialog_state.worktree_list_request.finish(request_id) {
+        return;
+    }
     if worktrees.is_empty() {
         app.messages_state.toasts.info("No worktrees found");
     } else if worktrees.len() > 5 {

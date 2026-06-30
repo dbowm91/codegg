@@ -657,6 +657,10 @@ mod async_cmd_tests {
     use crate::tui::commands::research::apply_research_run_loaded;
     use crate::tui::commands::sessions::{
         apply_session_messages_loaded, apply_session_mutation_finished, apply_sessions_reloaded,
+        apply_template_session_created,
+    };
+    use crate::tui::commands::tasks::{
+        apply_task_operation_finished, apply_tasks_listed, apply_worktree_listed,
     };
     use std::collections::HashMap;
 
@@ -1039,5 +1043,359 @@ mod async_cmd_tests {
 
         // Shell handles should be drained
         assert!(app.shell_handles.is_empty());
+    }
+
+    // -- Stale-completion guards for the remaining five handlers --
+    // Each of these tests starts two requests, applies the stale
+    // completion first (with old id), then the current completion.
+    // The canonical finish/fail guard must drop the stale one.
+
+    fn empty_session_dto() -> crate::protocol::dto::Session {
+        crate::protocol::dto::Session {
+            id: String::new(),
+            project_id: String::new(),
+            workspace_id: None,
+            parent_id: None,
+            slug: String::new(),
+            directory: String::new(),
+            title: String::new(),
+            version: String::new(),
+            share_url: None,
+            summary_additions: None,
+            summary_deletions: None,
+            summary_files: None,
+            summary_diffs: None,
+            revert: None,
+            permission: None,
+            tags: Vec::new(),
+            time_created: 0,
+            time_updated: 0,
+            time_compacting: None,
+            time_archived: None,
+            time_deleted: None,
+        }
+    }
+
+    fn dummy_task_json(id: &str) -> serde_json::Value {
+        serde_json::json!({
+            "id": id,
+            "message": "background task",
+            "interval_secs": 60u64,
+        })
+    }
+
+    #[test]
+    fn apply_sessions_reloaded_stale_is_ignored() {
+        let mut app = make_test_app();
+        let id_a = app.dialog_state.session_reload_request.begin();
+        let id_b = app.dialog_state.session_reload_request.begin();
+
+        // Stale error result with id_a should NOT show a toast.
+        apply_sessions_reloaded(
+            &mut app,
+            id_a,
+            Vec::new(),
+            HashMap::new(),
+            Some("stale error".into()),
+        );
+        let toasts: Vec<String> = app
+            .messages_state
+            .toasts
+            .iter()
+            .map(|t| t.message.clone())
+            .collect();
+        assert!(
+            !toasts.iter().any(|t| t.contains("stale error")),
+            "stale error should not surface to user, got {toasts:?}"
+        );
+        // Current request is still loading because stale was dropped.
+        assert!(app.dialog_state.session_reload_request.is_loading());
+
+        // Current success with id_b clears loading.
+        apply_sessions_reloaded(&mut app, id_b, Vec::new(), HashMap::new(), None);
+        assert!(!app.dialog_state.session_reload_request.is_loading());
+    }
+
+    #[test]
+    fn apply_tasks_listed_stale_is_ignored() {
+        let mut app = make_test_app();
+        let id_a = app.dialog_state.task_list_request.begin();
+        let id_b = app.dialog_state.task_list_request.begin();
+
+        // Stale success with id_a should NOT show a toast.
+        apply_tasks_listed(&mut app, id_a, vec![dummy_task_json("a")], None);
+        let toasts: Vec<String> = app
+            .messages_state
+            .toasts
+            .iter()
+            .map(|t| t.message.clone())
+            .collect();
+        assert!(
+            toasts.is_empty(),
+            "stale task list should not surface to user, got {toasts:?}"
+        );
+        assert!(app.dialog_state.task_list_request.is_loading());
+
+        // Current success with id_b succeeds.
+        apply_tasks_listed(&mut app, id_b, vec![dummy_task_json("b")], None);
+        assert!(!app.dialog_state.task_list_request.is_loading());
+    }
+
+    #[test]
+    fn apply_tasks_listed_stale_error_is_ignored() {
+        let mut app = make_test_app();
+        let id_a = app.dialog_state.task_list_request.begin();
+        let id_b = app.dialog_state.task_list_request.begin();
+
+        // Stale error with id_a should NOT show a toast.
+        apply_tasks_listed(&mut app, id_a, Vec::new(), Some("stale err".into()));
+        let toasts: Vec<String> = app
+            .messages_state
+            .toasts
+            .iter()
+            .map(|t| t.message.clone())
+            .collect();
+        assert!(
+            !toasts.iter().any(|t| t.contains("stale err")),
+            "stale task error should not surface, got {toasts:?}"
+        );
+
+        // Current success with id_b clears loading.
+        apply_tasks_listed(&mut app, id_b, Vec::new(), None);
+        assert!(!app.dialog_state.task_list_request.is_loading());
+    }
+
+    #[test]
+    fn apply_task_operation_finished_stale_is_ignored() {
+        let mut app = make_test_app();
+        let id_a = app.dialog_state.task_delete_request.begin();
+        let id_b = app.dialog_state.task_delete_request.begin();
+
+        // Stale success with id_a should NOT show "Task deleted" toast.
+        apply_task_operation_finished(
+            &mut app,
+            id_a,
+            "delete".to_string(),
+            Some("42".to_string()),
+            None,
+        );
+        let toasts: Vec<String> = app
+            .messages_state
+            .toasts
+            .iter()
+            .map(|t| t.message.clone())
+            .collect();
+        assert!(
+            toasts.is_empty(),
+            "stale delete success should not surface, got {toasts:?}"
+        );
+        assert!(app.dialog_state.task_delete_request.is_loading());
+
+        // Current success with id_b.
+        apply_task_operation_finished(
+            &mut app,
+            id_b,
+            "delete".to_string(),
+            Some("43".to_string()),
+            None,
+        );
+        let toasts: Vec<String> = app
+            .messages_state
+            .toasts
+            .iter()
+            .map(|t| t.message.clone())
+            .collect();
+        assert!(
+            toasts.iter().any(|t| t.contains("Task deleted")),
+            "current delete success should surface, got {toasts:?}"
+        );
+    }
+
+    #[test]
+    fn apply_task_operation_finished_stale_error_is_ignored() {
+        let mut app = make_test_app();
+        let id_a = app.dialog_state.task_delete_request.begin();
+        let id_b = app.dialog_state.task_delete_request.begin();
+
+        // Stale error with id_a should NOT show a toast.
+        apply_task_operation_finished(
+            &mut app,
+            id_a,
+            "delete".to_string(),
+            Some("42".to_string()),
+            Some("stale delete error".into()),
+        );
+        let toasts: Vec<String> = app
+            .messages_state
+            .toasts
+            .iter()
+            .map(|t| t.message.clone())
+            .collect();
+        assert!(
+            !toasts.iter().any(|t| t.contains("stale delete error")),
+            "stale delete error should not surface, got {toasts:?}"
+        );
+
+        // Current success with id_b.
+        apply_task_operation_finished(
+            &mut app,
+            id_b,
+            "delete".to_string(),
+            Some("43".to_string()),
+            None,
+        );
+        assert!(!app.dialog_state.task_delete_request.is_loading());
+    }
+
+    #[test]
+    fn apply_worktree_listed_stale_is_ignored() {
+        let mut app = make_test_app();
+        let id_a = app.dialog_state.worktree_list_request.begin();
+        let id_b = app.dialog_state.worktree_list_request.begin();
+
+        // Stale success with id_a should NOT show a toast.
+        apply_worktree_listed(&mut app, id_a, vec!["wt-a".into()], None);
+        let toasts: Vec<String> = app
+            .messages_state
+            .toasts
+            .iter()
+            .map(|t| t.message.clone())
+            .collect();
+        assert!(
+            toasts.is_empty(),
+            "stale worktree list should not surface, got {toasts:?}"
+        );
+        assert!(app.dialog_state.worktree_list_request.is_loading());
+
+        // Current success with id_b.
+        apply_worktree_listed(&mut app, id_b, vec!["wt-b".into()], None);
+        assert!(!app.dialog_state.worktree_list_request.is_loading());
+    }
+
+    #[test]
+    fn apply_worktree_listed_stale_error_is_ignored() {
+        let mut app = make_test_app();
+        let id_a = app.dialog_state.worktree_list_request.begin();
+        let id_b = app.dialog_state.worktree_list_request.begin();
+
+        // Stale error with id_a should NOT show a toast.
+        apply_worktree_listed(&mut app, id_a, Vec::new(), Some("stale err".into()));
+        let toasts: Vec<String> = app
+            .messages_state
+            .toasts
+            .iter()
+            .map(|t| t.message.clone())
+            .collect();
+        assert!(
+            !toasts.iter().any(|t| t.contains("stale err")),
+            "stale worktree error should not surface, got {toasts:?}"
+        );
+
+        // Current success with id_b.
+        apply_worktree_listed(&mut app, id_b, Vec::new(), None);
+        assert!(!app.dialog_state.worktree_list_request.is_loading());
+    }
+
+    #[test]
+    fn apply_template_session_created_stale_is_ignored() {
+        let mut app = make_test_app();
+        let id_a = app.dialog_state.template_create_request.begin();
+        let id_b = app.dialog_state.template_create_request.begin();
+
+        // Stale success with id_a should NOT navigate to a session route.
+        let mut session_a = empty_session_dto();
+        session_a.id = "session-a".into();
+        apply_template_session_created(
+            &mut app,
+            id_a,
+            Some(session_a),
+            None,
+            None,
+            "tpl-a".to_string(),
+            None,
+        );
+        // Stale guard: route stays at Home, no toast, request still loading.
+        assert_eq!(
+            app.ui_state.routes.current(),
+            &crate::tui::Route::Home,
+            "stale template create must not navigate"
+        );
+        let toasts: Vec<String> = app
+            .messages_state
+            .toasts
+            .iter()
+            .map(|t| t.message.clone())
+            .collect();
+        assert!(
+            toasts.is_empty(),
+            "stale template success should not toast, got {toasts:?}"
+        );
+        assert!(app.dialog_state.template_create_request.is_loading());
+
+        // Current success with id_b should navigate and toast.
+        let mut session_b = empty_session_dto();
+        session_b.id = "session-b".into();
+        apply_template_session_created(
+            &mut app,
+            id_b,
+            Some(session_b),
+            None,
+            None,
+            "tpl-b".to_string(),
+            None,
+        );
+        assert!(!app.dialog_state.template_create_request.is_loading());
+        let toasts: Vec<String> = app
+            .messages_state
+            .toasts
+            .iter()
+            .map(|t| t.message.clone())
+            .collect();
+        assert!(
+            toasts.iter().any(|t| t.contains("tpl-b")),
+            "current template create should toast, got {toasts:?}"
+        );
+    }
+
+    #[test]
+    fn apply_template_session_created_stale_error_is_ignored() {
+        let mut app = make_test_app();
+        let id_a = app.dialog_state.template_create_request.begin();
+        let id_b = app.dialog_state.template_create_request.begin();
+
+        // Stale error with id_a should NOT show an error toast.
+        apply_template_session_created(
+            &mut app,
+            id_a,
+            None,
+            None,
+            None,
+            "tpl-a".to_string(),
+            Some("stale template err".into()),
+        );
+        let toasts: Vec<String> = app
+            .messages_state
+            .toasts
+            .iter()
+            .map(|t| t.message.clone())
+            .collect();
+        assert!(
+            !toasts.iter().any(|t| t.contains("stale template err")),
+            "stale template error should not surface, got {toasts:?}"
+        );
+
+        // Current success with id_b clears loading.
+        let mut session_b = empty_session_dto();
+        session_b.id = "session-b".into();
+        apply_template_session_created(
+            &mut app,
+            id_b,
+            Some(session_b),
+            None,
+            None,
+            "tpl-b".to_string(),
+            None,
+        );
+        assert!(!app.dialog_state.template_create_request.is_loading());
     }
 }
