@@ -660,3 +660,17 @@ Plugins configured in `config.json`:
   }
 }
 ```
+
+## Protocol DTOs (Phase 1)
+
+`codegg-protocol` now ships frontend-neutral plugin and UI protocol types in `crates/codegg-protocol/src/ui.rs` and `crates/codegg-protocol/src/plugin.rs`. These are available as `codegg_protocol::ui` and `codegg_protocol::plugin`.
+
+Key types:
+- `UiNode` — Display tree nodes (Text, Markdown, Code, Table, KeyValue, Progress, Container, Empty, Unsupported)
+- `UiEffect` — Plugin side effects (EmitChat, ShowToast, OpenDialog/CloseDialog, OpenPanel/UpdatePanel/ClosePanel, AddStatusItem/UpdateStatusItem/RemoveStatusItem)
+- `PluginManifestDto` — Plugin metadata with runtime, capabilities, permissions
+- `PluginInvocation` — Request to invoke a plugin capability
+- `PluginResponse` — Response with effects, data, and diagnostics
+- `PluginPermissionSet` / `FilesystemPermission` — Declared permissions
+
+These are protocol-only types. They do not execute plugins or render UI. Phase 2+ consumes them.

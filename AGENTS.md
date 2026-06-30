@@ -31,7 +31,7 @@ cargo cksplit      # check protocol + config + providers + root
 |-------|---------|
 | `codegg-core` | Domain types: bus, error, goal, memory, session, storage, snapshot, worktree, task_state, model_profile, resilience, protocol_conversions |
 | `codegg-config` | Config schema, paths, loading, validation, file watching |
-| `codegg-protocol` | CoreRequest, CoreResponse, CoreEvent, TuiMessage (re-exported as `codegg::protocol`) |
+| `codegg-protocol` | CoreRequest, CoreResponse, CoreEvent, TuiMessage, UiNode, UiEffect, PluginManifestDto, PluginInvocation, PluginResponse (re-exported as `codegg::protocol`) |
 | `codegg-providers` | LLM provider implementations, auth types, CircuitBreaker (re-exported as `codegg::provider`) |
 | `egglsp` | LSP client/service/operations (authoritative implementation) |
 | `egggit` | Read-only git facts (status, diff, changed files) |
@@ -100,6 +100,8 @@ cargo test -p egglsp --features lsp-real-server-tests --test real_server_smoke
 ```
 
 ## Critical Gotchas
+
+- **Plugin protocol is phase 1 only**: `codegg_protocol::ui` and `codegg_protocol::plugin` are protocol DTOs only. They do not execute plugins, modify command dispatch, or add rendering. Phase 2+ consumes these types.
 
 ### Sync vs Async
 

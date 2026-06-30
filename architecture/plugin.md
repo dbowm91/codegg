@@ -639,6 +639,33 @@ impl ApiVersion {
 }
 ```
 
+## Protocol DTOs (Phase 1)
+
+`crates/codegg-protocol/src/ui.rs` and `crates/codegg-protocol/src/plugin.rs` define frontend-neutral protocol types for plugin UI output and invocation. These are serialization-only DTOs — they do not execute plugins or render UI.
+
+### UI Types (`codegg_protocol::ui`)
+
+- `UiNode` — Tree of display content: `Text`, `Markdown`, `Code`, `Table`, `KeyValue`, `Progress`, `Container`, `Empty`, `Unsupported`
+- `UiEffect` — Side effects plugins can request: `EmitChat`, `ShowToast`, `OpenDialog`, `CloseDialog`, `OpenPanel`, `UpdatePanel`, `ClosePanel`, `AddStatusItem`, `UpdateStatusItem`, `RemoveStatusItem`
+- Supporting types: `DialogSpec`, `PanelSpec`, `StatusItemSpec`, `ChatBlock`, `ToastSpec`, `PanelPlacement`, `StatusPlacement`
+
+### Plugin Types (`codegg_protocol::plugin`)
+
+- `PluginManifestDto` — Plugin metadata with runtime spec, capabilities, and permissions
+- `PluginRuntimeSpec` — `Builtin`, `Process`, or `Wasm` runtime declaration
+- `PluginCapability` — `Command`, `Hook`, `Panel`, `StatusWidget`, `EventSubscription`
+- `PluginInvocation` — Request envelope for invoking a plugin capability
+- `PluginResponse` — Response with `ok` flag, `effects: Vec<UiEffect>`, `data`, and `diagnostics`
+- `PluginPermissionSet` / `FilesystemPermission` — Declared permission requirements
+- `PluginDiagnostic` / `PluginDiagnosticLevel` — Diagnostic reporting
+
+### Key Design Decisions
+
+- Hook types are strings (not enums) in the protocol DTO; root crate maps to internal `HookType` enum
+- `Unsupported` variant provides forward-compatible fallback for unknown UI node types
+- `FilesystemPermission::None` is the default
+- `PLUGIN_PROTOCOL_VERSION = 1` for versioning
+
 ## See Also
 
 - [hooks.md](hooks.md) - External hooks system
