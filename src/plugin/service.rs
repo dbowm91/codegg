@@ -6,6 +6,12 @@ use crate::plugin::loader::LoadError;
 use crate::plugin::loader::LoadedPlugin;
 use crate::plugin::manifest::{PluginManifest, PluginRuntimeSpec, PluginTrustClass};
 use crate::plugin::registry::{PluginInfo, PluginRegistry, PluginRegistryError};
+use crate::plugin::runtime::process::{ProcessRuntime, ProcessRuntimeSpec};
+use crate::plugin::runtime::{PluginRuntime, RuntimeLimits};
+use crate::protocol::plugin::{
+    PluginCapabilityInvocation, PluginContext, PluginInvocation, PluginResponse,
+    PLUGIN_PROTOCOL_VERSION,
+};
 
 pub struct PluginService {
     registry: Arc<PluginRegistry>,
@@ -92,29 +98,24 @@ impl PluginService {
             diagnostics: Vec::new(),
         };
 
-        self.registry
-            .register_with_hooks(info, hook_specs)
-            .await
+        self.registry.register_with_hooks(info, hook_specs).await
     }
 
     /// Register a plugin with a canonical manifest (Phase 5).
-    pub async fn register_plugin(
-        &self,
-        info: PluginInfo,
-    ) -> Result<(), PluginRegistryError> {
+    pub async fn register_plugin(&self, info: PluginInfo) -> Result<(), PluginRegistryError> {
         self.registry.register(info).await
     }
 
     /// Invoke a plugin command by name.
     ///
-    /// This is the Phase 5 entry point for command invocation. Actual runtime
-    /// dispatch (process/WASM) will be implemented in Phase 6. For now, this
-    /// returns an error for non-builtin plugins.
+    /// This is the Phase 6 entry point for command invocation. Dispatches
+    /// to the appropriate runtime (process, builtin, WASM) based on the
+    /// plugin's manifest runtime spec.
     pub async fn invoke_command(
         &self,
         command_name: &str,
         args: Vec<String>,
-        _input: serde_json::Value,
+        input: serde_json::Value,
     ) -> Result<PluginResponse, PluginError> {
         let cmd = self
             .registry
@@ -133,44 +134,56 @@ impl PluginService {
             return Err(PluginError::PluginDisabled(plugin_id.clone()));
         }
 
+        let invocation = PluginInvocation {
+            protocol_version: PLUGIN_PROTOCOL_VERSION,
+            invocation_id: uuid::Uuid::new_v4().to_string(),
+            plugin_id: plugin_id.clone(),
+            capability: PluginCapabilityInvocation::Command {
+                name: command_name.to_string(),
+            },
+            args,
+            input,
+            context: PluginContext {
+                project_dir: std::env::current_dir()
+                    .ok()
+                    .map(|p| p.to_string_lossy().to_string()),
+                ..PluginContext::default()
+            },
+        };
+
         match &plugin_info.manifest.runtime {
-            PluginRuntimeSpec::Builtin { handler } => {
-                // For builtin plugins, we can't directly invoke commands yet
-                // (only hooks). This will be expanded in Phase 6.
-                Ok(PluginResponse {
-                    ok: true,
-                    data: serde_json::json!({
-                        "command": command_name,
-                        "args": args,
-                        "handler": handler,
-                    }),
-                    diagnostics: Vec::new(),
-                })
-            }
+            PluginRuntimeSpec::Builtin { handler } => Ok(PluginResponse {
+                ok: true,
+                effects: Vec::new(),
+                data: serde_json::json!({
+                    "command": command_name,
+                    "handler": handler,
+                }),
+                diagnostics: Vec::new(),
+            }),
             PluginRuntimeSpec::Process { .. } => {
-                // Process runtime dispatch will be implemented in Phase 6.
-                // For now, return a placeholder indicating the command exists
-                // but runtime execution is not yet wired.
-                Ok(PluginResponse {
-                    ok: true,
-                    data: serde_json::json!({
-                        "command": command_name,
-                        "status": "process_runtime_pending",
-                    }),
-                    diagnostics: Vec::new(),
-                })
+                let spec: Option<ProcessRuntimeSpec> = (&plugin_info.manifest.runtime).into();
+                let spec = spec.ok_or_else(|| {
+                    PluginError::Runtime("failed to extract process runtime spec".to_string())
+                })?;
+                let runtime = ProcessRuntime::new(spec, RuntimeLimits::default());
+                runtime
+                    .invoke(invocation)
+                    .await
+                    .map_err(|e| PluginError::Runtime(e.to_string()))
             }
-            PluginRuntimeSpec::Wasm { .. } => {
-                // WASM runtime dispatch will be implemented in Phase 7.
-                Ok(PluginResponse {
-                    ok: true,
-                    data: serde_json::json!({
-                        "command": command_name,
-                        "status": "wasm_runtime_pending",
-                    }),
-                    diagnostics: Vec::new(),
-                })
-            }
+            PluginRuntimeSpec::Wasm { .. } => Ok(PluginResponse {
+                ok: false,
+                effects: Vec::new(),
+                data: serde_json::json!({
+                    "command": command_name,
+                    "status": "wasm_runtime_pending",
+                }),
+                diagnostics: vec![crate::protocol::plugin::PluginDiagnostic {
+                    level: crate::protocol::plugin::PluginDiagnosticLevel::Info,
+                    message: "WASM runtime not yet implemented (Phase 7)".to_string(),
+                }],
+            }),
         }
     }
 
@@ -356,14 +369,6 @@ impl PluginService {
         })
         .await
     }
-}
-
-/// Response from a plugin command invocation.
-#[derive(Debug, Clone)]
-pub struct PluginResponse {
-    pub ok: bool,
-    pub data: serde_json::Value,
-    pub diagnostics: Vec<crate::plugin::manifest::PluginDiagnostic>,
 }
 
 /// Error from plugin service operations.

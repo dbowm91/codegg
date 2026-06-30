@@ -6,11 +6,11 @@ pub mod gitlab;
 pub mod poe;
 
 use crate::plugin::hooks::{HookContext, HookResult, HookType};
+use crate::plugin::manifest::PluginTrustClass;
 use crate::plugin::manifest::{
     LegacyHookSpec, PluginCapability, PluginHookSpec, PluginManifest, PluginRuntimeSpec,
 };
 use crate::plugin::registry::PluginInfo;
-use crate::plugin::manifest::PluginTrustClass;
 use std::collections::HashMap;
 use std::sync::RwLock;
 
@@ -75,9 +75,7 @@ pub async fn register_builtins(registry: &crate::plugin::registry::PluginRegistr
         };
 
         // Best-effort registration (ignore duplicate errors for builtins)
-        let _ = registry
-            .register_with_hooks(info, hook_specs)
-            .await;
+        let _ = registry.register_with_hooks(info, hook_specs).await;
         register_builtin_handler(&id, bp.handler);
     }
 }

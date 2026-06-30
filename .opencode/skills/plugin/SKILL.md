@@ -42,6 +42,9 @@ src/plugin/
 ├── tui.rs           # TUI plugin registry for routes/components (deprecated/legacy, superseded by Phase 5 capability-based registry)
 ├── event_bus.rs     # Event bus integration
 ├── marketplace.rs   # Local plugin discovery service
+├── runtime/         # Plugin runtime abstraction (Phase 6)
+│   ├── mod.rs       # PluginRuntime trait, RuntimeError, RuntimeLimits
+│   └── process.rs   # ProcessRuntime implementation
 └── builtin/         # Built-in plugins
     ├── mod.rs       # Plugin registry and builtin handler map
     ├── copilot.rs   # GitHub Copilot integration
@@ -673,6 +676,39 @@ impl PluginService {
 - Built-in plugins: `builtin:{name}` (e.g., `builtin:copilot`)
 
 **Note:** `PluginService` no longer holds a loader or event bus directly. Loading is done via `loader::load_plugin()`, and events use the global `PluginEventBus`.
+
+## Runtime Abstraction (Phase 6)
+
+Phase 6 extracts process execution into a runtime-neutral abstraction. The `src/plugin/runtime/` module defines:
+
+### `PluginRuntime` Trait (`src/plugin/runtime/mod.rs`)
+
+```rust
+#[async_trait]
+pub trait PluginRuntime: Send + Sync {
+    async fn invoke(&self, invocation: PluginInvocation) -> Result<PluginResponse, RuntimeError>;
+}
+```
+
+### `RuntimeError` Enum
+
+- `Unsupported(String)` — runtime type not supported
+- `Spawn(String)` — failed to spawn process
+- `Timeout { timeout_ms: u64 }` — execution timed out
+- `NonZeroExit { code: i32, stdout: String, stderr: String }` — process exited with error
+- `InvalidJson(String)` — response JSON parse failure
+- `Io(String)` — I/O error
+
+### `ProcessRuntime` (`src/plugin/runtime/process.rs`)
+
+- Takes `ProcessRuntimeSpec` (command, args, stdin mode, stdout mode, timeout, cwd, env)
+- Converts from `ProcessCommandSpec` and `PluginRuntimeSpec::Process`
+- Handles spawning, stdin piping, timeout, output capping, stdout mode parsing
+- Returns `PluginResponse` for all successful paths
+
+### Response Type Unification
+
+`codegg_protocol::plugin::PluginResponse` is the single canonical type (re-exported from `plugin/mod.rs`). The local `PluginResponse` in `service.rs` is removed. `PluginDiagnostic` is also unified via re-export from protocol.
 
 ## Built-in Plugin Struct
 

@@ -6,9 +6,11 @@ pub mod install;
 pub mod loader;
 pub mod manifest;
 pub mod registry;
+pub mod runtime;
 pub mod service;
 pub mod tui;
 
+pub use crate::protocol::plugin::PluginResponse;
 pub use api::{ApiVersion, Stability, API_VERSION};
 pub use event_bus::{PluginEventBus, PluginEventSubscription};
 pub use hooks::{HookContext, HookResult, HookType};
@@ -21,8 +23,9 @@ pub use manifest::{
     PluginRuntimeSpec, PluginStatusContribution, PluginTrustClass,
 };
 pub use registry::{
-    normalize_command_name, PluginCommandRegistration, PluginEventRegistration, PluginHookRegistration,
-    PluginInfo, PluginPanelRegistration, PluginRegistry, PluginRegistryError, PluginStatusRegistration,
+    normalize_command_name, PluginCommandRegistration, PluginEventRegistration,
+    PluginHookRegistration, PluginInfo, PluginPanelRegistration, PluginRegistry,
+    PluginRegistryError, PluginStatusRegistration,
 };
-pub use service::{PluginError, PluginResponse, PluginService};
+pub use service::{PluginError, PluginService};
 pub use tui::{TuiComponent, TuiPluginRegistry, TuiRoute};

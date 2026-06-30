@@ -2,7 +2,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
 
-use crate::config::schema::{CommandConfig, CommandRuntimeKind, CommandStdinMode, CommandStdoutMode};
+use crate::config::schema::{
+    CommandConfig, CommandRuntimeKind, CommandStdinMode, CommandStdoutMode,
+};
 use tracing::{debug, warn};
 
 /// Process execution specification for a command with `runtime: process`.

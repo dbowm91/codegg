@@ -566,7 +566,10 @@ mod tests {
 
         assert_eq!(converted.name, "/quota");
         assert!(converted.template.is_none());
-        let proc = converted.process.as_ref().expect("should have process spec");
+        let proc = converted
+            .process
+            .as_ref()
+            .expect("should have process spec");
         assert_eq!(proc.command, "python3");
         assert_eq!(proc.args, vec!["scripts/quota.py"]);
         assert!(converted.is_process());

@@ -38,20 +38,9 @@ pub struct PluginSource {
 }
 
 /// Diagnostic message from a plugin.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct PluginDiagnostic {
-    pub level: PluginDiagnosticLevel,
-    pub message: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "snake_case")]
-pub enum PluginDiagnosticLevel {
-    Debug,
-    Info,
-    Warning,
-    Error,
-}
+///
+/// Re-exported from `codegg_protocol::plugin` for canonical type identity.
+pub use crate::protocol::plugin::{PluginDiagnostic, PluginDiagnosticLevel};
 
 /// Runtime specification for a plugin.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -307,7 +296,10 @@ impl PluginManifest {
         }
 
         // If no runtime is declared, infer from legacy hooks presence
-        if manifest.runtime == (PluginRuntimeSpec::Builtin { handler: String::new() })
+        if manifest.runtime
+            == (PluginRuntimeSpec::Builtin {
+                handler: String::new(),
+            })
             && !manifest.hooks.is_empty()
         {
             // Legacy hook-only manifest — treat as builtin with no specific handler

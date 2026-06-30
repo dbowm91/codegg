@@ -34,6 +34,9 @@ src/plugin/
 ├── tui.rs              # TuiPluginRegistry, TuiRoute, TuiComponent
 ├── event_bus.rs        # PluginEventBus, PluginEventSubscription
 ├── marketplace.rs      # Plugin marketplace integration
+├── runtime/            # Plugin runtime abstraction (Phase 6)
+│   ├── mod.rs          # PluginRuntime trait, RuntimeError, RuntimeLimits
+│   └── process.rs      # ProcessRuntime implementation
 └── builtin/            # Built-in native Rust plugins
     ├── mod.rs          # BuiltinPlugin, handler registry, dispatch
     ├── copilot.rs      # GitHub Copilot auth provider
@@ -926,12 +929,11 @@ All process fields are optional. `command` is required when `runtime: process`.
 
 ### Execution (`src/tui/commands/plugins.rs`)
 
-`start_plugin_command(spec, args)` spawns a child process via `tokio::process::Command`:
-- Timeout: `spec.timeout_ms` (default 5000ms)
-- stdout cap: 1 MiB; stderr cap: 256 KiB
-- No shell expansion by default
-- Stdin piping: when `stdin: json`, writes a `PluginInvocation` envelope to stdin
-- Output parsing: `text` returns raw stdout, `json` parses as `PluginResponse`, `auto` tries JSON then falls back to text
+`start_plugin_command(spec, args)` delegates to `ProcessRuntime` via `execute_via_runtime()`:
+- Converts `ProcessCommandSpec` to `ProcessRuntimeSpec`
+- Creates a `ProcessRuntime` with default limits
+- Builds a `PluginInvocation` and calls `runtime.invoke()`
+- Posts `TuiCommand::PluginCommandFinished` with the structured `PluginResponse`
 
 ### TUI Integration (`src/tui/app/mod.rs`)
 
@@ -940,6 +942,61 @@ All process fields are optional. `command` is required when `runtime: process`.
 ### Security
 
 Process-backed commands are local executable code. Minimal safety controls: no shell execution unless explicitly configured, timeout, output caps, cwd control, explicit env variables. They are not sandboxed.
+
+## Plugin Runtime Abstraction (Phase 6)
+
+Phase 6 extracts process execution into a runtime-neutral abstraction layer. Process execution is no longer owned by `src/tui/commands/plugins.rs`. The TUI starts plugin commands, but execution is delegated to a runtime implementation that can later be used by TUI, core daemon, socket/stdio mode, tests, and installed plugin manifests.
+
+### Runtime Module (`src/plugin/runtime/`)
+
+- **`mod.rs`**: Defines `PluginRuntime` trait, `RuntimeError` enum, `RuntimeLimits` struct
+- **`process.rs`**: `ProcessRuntime` implementation with `ProcessRuntimeSpec`
+
+### `PluginRuntime` Trait
+
+```rust
+#[async_trait]
+pub trait PluginRuntime: Send + Sync {
+    async fn invoke(&self, invocation: PluginInvocation) -> Result<PluginResponse, RuntimeError>;
+}
+```
+
+Implementations handle the actual execution of plugin commands (process, WASM, builtin) and return protocol-level responses. WASM will implement this trait in Phase 7.
+
+### `RuntimeError`
+
+Covers: `Unsupported`, `Spawn`, `Timeout`, `NonZeroExit { code, stdout, stderr }`, `InvalidJson`, `Io`.
+
+### `RuntimeLimits`
+
+Default limits: timeout 5s, max stdout 1 MiB, max stderr 256 KiB.
+
+### `ProcessRuntime`
+
+- Takes `ProcessRuntimeSpec` (command, args, stdin mode, stdout mode, timeout, cwd, env)
+- Converts from both `ProcessCommandSpec` and `PluginRuntimeSpec::Process`
+- Handles child process spawning, stdin piping, timeout, output capping
+- Parses stdout according to mode: `Text` → EmitChat effect, `Json` → structured response, `Auto` → try JSON then text
+- Returns `PluginResponse` for all successful paths
+- Non-zero exit returns `RuntimeError::NonZeroExit`
+
+### Response Type Unification
+
+The local `PluginResponse` in `service.rs` is removed. `codegg_protocol::plugin::PluginResponse` (with `effects: Vec<UiEffect>`) is the single canonical type, re-exported from `plugin/mod.rs`. `PluginDiagnostic` is also unified via re-export from protocol.
+
+### Registry Hardening
+
+- `PluginRegistry::unregister()` now returns `Option<PluginInfo>` (previously returned `None`)
+- Duplicate command/panel/status checking is global (all registered plugins, not just enabled)
+- `set_enabled(true)` validates that enabling won't create duplicate commands/panels/status widgets
+- `is_enabled_sync` defaults to `false` on lock failure (previously defaulted to `true`)
+
+### Service Dispatch
+
+`PluginService::invoke_command()` dispatches to the appropriate runtime:
+- **Builtin**: Returns structured response with handler info (command invocation not yet wired)
+- **Process**: Creates `ProcessRuntime`, invokes, returns `PluginResponse`
+- **Wasm**: Returns error response with "WASM runtime not yet implemented" diagnostic
 
 ## See Also
 

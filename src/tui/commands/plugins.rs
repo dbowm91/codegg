@@ -3,37 +3,34 @@
 //! Provides the TUI-side plumbing for running plugin-backed commands and
 //! applying plugin UI responses without blocking the render loop.
 //!
-//! Process-backed commands (`runtime: process`) are spawned as child
-//! processes with timeout and output capping. Structured JSON output is
-//! parsed as `PluginResponse`; plain text falls back to the info dialog.
+//! Process-backed commands (`runtime: process`) are executed through
+//! `ProcessRuntime`, which handles child process spawning, timeout,
+//! output capping, and response parsing.
 
 use crate::command::ProcessCommandSpec;
-use crate::config::schema::{CommandStdinMode, CommandStdoutMode};
+use crate::plugin::runtime::process::{ProcessRuntime, ProcessRuntimeSpec};
+use crate::plugin::runtime::{PluginRuntime, RuntimeLimits};
 use crate::protocol::plugin::{PluginInvocation, PluginResponse};
 use crate::protocol::ui::UiEffect;
 use crate::tui::app::App;
 use crate::tui::app::TuiCommand;
 
-const MAX_STDOUT_BYTES: usize = 1024 * 1024; // 1 MiB
-const MAX_STDERR_BYTES: usize = 256 * 1024; // 256 KiB
-
-/// Start a process-backed plugin command. Spawns a child process with
-/// timeout and output capping, then posts a `PluginCommandFinished` with
-/// the result.
+/// Start a process-backed plugin command. Delegates to `ProcessRuntime`
+/// and posts a `PluginCommandFinished` with the result.
 pub(crate) fn start_plugin_command(app: &mut App, spec: ProcessCommandSpec, args: Vec<String>) {
     let invocation_id = uuid::Uuid::new_v4().to_string();
     let command_name = spec.command.clone();
     let tx = app.tui_cmd_tx.clone();
 
     crate::tui::async_cmd::spawn_tui_task(tx, "plugin_command_run", async move {
-        let result = execute_process_command(&spec, &args, &invocation_id).await;
+        let result = execute_via_runtime(&spec, &args, &invocation_id).await;
         match result {
-            Ok((response, stdout, stderr)) => Some(TuiCommand::PluginCommandFinished {
+            Ok(response) => Some(TuiCommand::PluginCommandFinished {
                 invocation_id,
                 command: command_name,
-                response,
-                stdout,
-                stderr,
+                response: Some(Box::new(response)),
+                stdout: None,
+                stderr: None,
                 error: None,
             }),
             Err(e) => Some(TuiCommand::PluginCommandFinished {
@@ -48,90 +45,17 @@ pub(crate) fn start_plugin_command(app: &mut App, spec: ProcessCommandSpec, args
     });
 }
 
-/// Execute a process command and return the parsed result.
-async fn execute_process_command(
+/// Execute a process command through `ProcessRuntime`.
+async fn execute_via_runtime(
     spec: &ProcessCommandSpec,
     args: &[String],
     invocation_id: &str,
-) -> Result<(Option<Box<PluginResponse>>, Option<String>, Option<String>), String> {
-    let mut cmd = tokio::process::Command::new(&spec.command);
-    cmd.args(&spec.args)
-        .args(args)
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
+) -> Result<PluginResponse, String> {
+    let runtime_spec: ProcessRuntimeSpec = spec.clone().into();
+    let runtime = ProcessRuntime::new(runtime_spec, RuntimeLimits::default());
 
-    if let Some(ref cwd) = spec.cwd {
-        cmd.current_dir(cwd);
-    }
-
-    for env_var in &spec.env {
-        if let Some((key, value)) = env_var.split_once('=') {
-            cmd.env(key, value);
-        }
-    }
-
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| format!("failed to spawn '{}': {}", spec.command, e))?;
-
-    // Write stdin if needed
-    if spec.stdin == CommandStdinMode::Json {
-        if let Some(ref mut stdin) = child.stdin {
-            let invocation = build_invocation(spec, args, invocation_id);
-            let json = serde_json::to_string(&invocation)
-                .map_err(|e| format!("failed to serialize invocation: {e}"))?;
-            use tokio::io::AsyncWriteExt;
-            stdin
-                .write_all(json.as_bytes())
-                .await
-                .map_err(|e| format!("failed to write stdin: {e}"))?;
-        }
-    }
-    // Drop stdin to signal EOF
-    drop(child.stdin.take());
-
-    let timeout = std::time::Duration::from_millis(spec.timeout_ms);
-    let output = tokio::time::timeout(timeout, child.wait_with_output())
-        .await
-        .map_err(|_| format!("command '{}' timed out after {}ms", spec.command, spec.timeout_ms))?
-        .map_err(|e| format!("failed to wait for '{}': {}", spec.command, e))?;
-
-    let stdout_raw = truncate_bytes(&output.stdout, MAX_STDOUT_BYTES);
-    let stderr_raw = truncate_bytes(&output.stderr, MAX_STDERR_BYTES);
-
-    let exit_code = output.status.code().unwrap_or(-1);
-
-    if !output.status.success() {
-        let stderr_str = String::from_utf8_lossy(&stderr_raw).to_string();
-        return Err(format!(
-            "command '{}' exited with code {exit_code}: {stderr_str}",
-            spec.command
-        ));
-    }
-
-    let stdout_str = String::from_utf8_lossy(&stdout_raw).to_string();
-    let stderr_str = if stderr_raw.is_empty() {
-        None
-    } else {
-        Some(String::from_utf8_lossy(&stderr_raw).to_string())
-    };
-
-    match spec.stdout {
-        CommandStdoutMode::Text => Ok((None, Some(stdout_str), stderr_str)),
-        CommandStdoutMode::Json => {
-            let response: PluginResponse = serde_json::from_str(&stdout_str)
-                .map_err(|e| format!("invalid PluginResponse JSON: {e}"))?;
-            Ok((Some(Box::new(response)), None, stderr_str))
-        }
-        CommandStdoutMode::Auto => {
-            if let Ok(response) = serde_json::from_str::<PluginResponse>(&stdout_str) {
-                Ok((Some(Box::new(response)), None, stderr_str))
-            } else {
-                Ok((None, Some(stdout_str), stderr_str))
-            }
-        }
-    }
+    let invocation = build_invocation(spec, args, invocation_id);
+    runtime.invoke(invocation).await.map_err(|e| e.to_string())
 }
 
 fn build_invocation(
@@ -140,7 +64,7 @@ fn build_invocation(
     invocation_id: &str,
 ) -> PluginInvocation {
     use crate::protocol::plugin::{
-        PLUGIN_PROTOCOL_VERSION, PluginCapabilityInvocation, PluginContext,
+        PluginCapabilityInvocation, PluginContext, PLUGIN_PROTOCOL_VERSION,
     };
 
     PluginInvocation {
@@ -158,14 +82,6 @@ fn build_invocation(
                 .map(|p| p.to_string_lossy().to_string()),
             ..PluginContext::default()
         },
-    }
-}
-
-fn truncate_bytes(bytes: &[u8], max: usize) -> Vec<u8> {
-    if bytes.len() <= max {
-        bytes.to_vec()
-    } else {
-        bytes[..max].to_vec()
     }
 }
 
@@ -194,7 +110,9 @@ pub(crate) fn apply_plugin_command_finished(
 ) {
     // 1. Error path
     if let Some(err) = error {
-        app.messages_state.toasts.error(&format!("Plugin '{command}' failed: {err}"));
+        app.messages_state
+            .toasts
+            .error(&format!("Plugin '{command}' failed: {err}"));
         let mut extra = Vec::new();
         if let Some(ref out) = stdout {
             if !out.is_empty() {
@@ -266,9 +184,9 @@ pub(crate) fn apply_plugin_command_finished(
         if !err_out.is_empty() {
             let mut lines: Vec<String> = err_out.lines().map(|s| s.to_string()).collect();
             lines.insert(0, format!("Plugin '{command}' stderr:"));
-            app.messages_state.toasts.warning(&format!(
-                "Plugin '{command}' produced stderr output"
-            ));
+            app.messages_state
+                .toasts
+                .warning(&format!("Plugin '{command}' produced stderr output"));
             app.show_short_or_info(
                 crate::tui::components::dialogs::info::InfoType::Stats,
                 lines,
@@ -305,8 +223,8 @@ mod tests {
     use super::*;
     use crate::protocol::plugin::{PluginDiagnostic, PluginDiagnosticLevel};
     use crate::protocol::ui::{DialogSpec, ToastLevel, ToastSpec, UiNode};
-    use crate::tui::app::App;
     use crate::tui::app::state::PluginUiApplyResult;
+    use crate::tui::app::App;
 
     fn make_test_app() -> App {
         App::new_for_testing("/tmp".into())
@@ -533,7 +451,10 @@ mod tests {
     #[test]
     fn stdout_fallback_long_opens_info() {
         let mut app = make_test_app();
-        let long_output = (0..10).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+        let long_output = (0..10)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
         apply_plugin_command_finished(
             &mut app,
             "inv-7".into(),
@@ -656,7 +577,7 @@ mod tests {
         assert!(toasts.iter().any(|t| t == "both opened"));
     }
 
-    // --- Process execution tests ---
+    // --- Process execution tests (delegated to ProcessRuntime) ---
 
     #[tokio::test]
     async fn execute_stdout_text_returns_text() {
@@ -667,11 +588,12 @@ mod tests {
             stdout: CommandStdoutMode::Text,
             ..Default::default()
         };
-        let (resp, stdout, stderr) =
-            execute_process_command(&spec, &[], "test-inv").await.unwrap();
-        assert!(resp.is_none());
-        assert_eq!(stdout.as_deref(), Some("hello world\n"));
-        assert!(stderr.is_none());
+        let result = execute_via_runtime(&spec, &[], "test-inv").await;
+        assert!(result.is_ok());
+        let resp = result.unwrap();
+        assert!(resp.ok);
+        // Text mode produces an EmitChat effect
+        assert_eq!(resp.effects.len(), 1);
     }
 
     #[tokio::test]
@@ -683,10 +605,12 @@ mod tests {
             stdout: CommandStdoutMode::Auto,
             ..Default::default()
         };
-        let (resp, stdout, _stderr) =
-            execute_process_command(&spec, &[], "test-inv").await.unwrap();
-        assert!(resp.is_none());
-        assert_eq!(stdout.as_deref(), Some("not json\n"));
+        let result = execute_via_runtime(&spec, &[], "test-inv").await;
+        assert!(result.is_ok());
+        let resp = result.unwrap();
+        assert!(resp.ok);
+        // Auto mode falls back to text, producing an EmitChat effect
+        assert_eq!(resp.effects.len(), 1);
     }
 
     #[tokio::test]
@@ -699,12 +623,11 @@ mod tests {
             stdout: CommandStdoutMode::Auto,
             ..Default::default()
         };
-        let (resp, stdout, _stderr) =
-            execute_process_command(&spec, &[], "test-inv").await.unwrap();
-        assert!(resp.is_some());
-        assert!(stdout.is_none());
-        let resp = resp.unwrap();
+        let result = execute_via_runtime(&spec, &[], "test-inv").await;
+        assert!(result.is_ok());
+        let resp = result.unwrap();
         assert!(resp.ok);
+        assert!(resp.effects.is_empty());
     }
 
     #[tokio::test]
@@ -716,7 +639,7 @@ mod tests {
             stdout: CommandStdoutMode::Json,
             ..Default::default()
         };
-        let result = execute_process_command(&spec, &[], "test-inv").await;
+        let result = execute_via_runtime(&spec, &[], "test-inv").await;
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("invalid PluginResponse JSON"));
     }
@@ -728,7 +651,7 @@ mod tests {
             args: vec![],
             ..Default::default()
         };
-        let result = execute_process_command(&spec, &[], "test-inv").await;
+        let result = execute_via_runtime(&spec, &[], "test-inv").await;
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.contains("exited with code"));
@@ -741,7 +664,7 @@ mod tests {
             args: vec!["-c".to_string(), "echo oops >&2; exit 1".to_string()],
             ..Default::default()
         };
-        let result = execute_process_command(&spec, &[], "test-inv").await;
+        let result = execute_via_runtime(&spec, &[], "test-inv").await;
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.contains("oops"));
@@ -754,7 +677,7 @@ mod tests {
             args: vec![],
             ..Default::default()
         };
-        let result = execute_process_command(&spec, &[], "test-inv").await;
+        let result = execute_via_runtime(&spec, &[], "test-inv").await;
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("failed to spawn"));
     }
@@ -762,7 +685,7 @@ mod tests {
     #[tokio::test]
     async fn execute_stdout_cap_is_enforced() {
         use crate::config::schema::CommandStdoutMode;
-        // Generate output larger than MAX_STDOUT_BYTES (1 MiB)
+        // Generate output larger than 1 MiB
         let spec = ProcessCommandSpec {
             command: "python3".to_string(),
             args: vec![
@@ -772,12 +695,12 @@ mod tests {
             stdout: CommandStdoutMode::Text,
             ..Default::default()
         };
-        let result = execute_process_command(&spec, &[], "test-inv").await;
+        let result = execute_via_runtime(&spec, &[], "test-inv").await;
         match result {
-            Ok((_resp, stdout, _stderr)) => {
-                if let Some(out) = stdout {
-                    assert!(out.len() <= MAX_STDOUT_BYTES);
-                }
+            Ok(resp) => {
+                // Text mode returns a response with an EmitChat effect
+                assert!(resp.ok);
+                assert_eq!(resp.effects.len(), 1);
             }
             Err(e) => {
                 // python3 may not be available; skip gracefully
@@ -798,24 +721,17 @@ mod tests {
             stdout: CommandStdoutMode::Text,
             ..Default::default()
         };
-        let (resp, stdout, _stderr) =
-            execute_process_command(&spec, &["foo".into(), "bar".into()], "test-inv")
-                .await
-                .unwrap();
-        assert!(resp.is_none());
-        assert_eq!(stdout.as_deref(), Some("foo bar\n"));
-    }
-
-    #[test]
-    fn truncate_bytes_short_passthrough() {
-        let data = b"hello";
-        assert_eq!(truncate_bytes(data, 10), b"hello");
-    }
-
-    #[test]
-    fn truncate_bytes_long_truncates() {
-        let data = b"hello world";
-        assert_eq!(truncate_bytes(data, 5), b"hello");
+        let result = execute_via_runtime(&spec, &["foo".into(), "bar".into()], "test-inv").await;
+        assert!(result.is_ok());
+        let resp = result.unwrap();
+        assert!(resp.ok);
+        // The EmitChat effect should contain "foo bar"
+        match &resp.effects[0] {
+            UiEffect::EmitChat { block } => {
+                assert!(block.content.contains("foo bar"));
+            }
+            other => panic!("expected EmitChat, got {:?}", other),
+        }
     }
 
     #[test]

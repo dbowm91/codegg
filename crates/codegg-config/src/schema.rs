@@ -2017,7 +2017,9 @@ mod tests {
         let result = cfg.validate();
         if let Err(errs) = result {
             assert!(
-                !errs.iter().any(|e| e.contains("quota") && e.contains("command")),
+                !errs
+                    .iter()
+                    .any(|e| e.contains("quota") && e.contains("command")),
                 "process command with command field should pass: {errs:?}"
             );
         }

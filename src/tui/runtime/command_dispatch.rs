@@ -16,13 +16,13 @@ use super::super::commands::memory::{
     start_memory_summary,
 };
 #[allow(unused_imports)]
+use super::super::commands::plugins::{
+    apply_plugin_command_finished, apply_plugin_ui_effect, start_plugin_command,
+};
+#[allow(unused_imports)]
 use super::super::commands::research::{
     apply_research_run_loaded, apply_research_runs_loaded, apply_research_section_loaded,
     start_research_list_runs, start_research_load_run, start_research_load_section,
-};
-#[allow(unused_imports)]
-use super::super::commands::plugins::{
-    apply_plugin_command_finished, apply_plugin_ui_effect, start_plugin_command,
 };
 #[allow(unused_imports)]
 use super::super::commands::security::{
@@ -551,7 +551,15 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
             stderr,
             error,
         } => {
-            apply_plugin_command_finished(app, invocation_id, command, response, stdout, stderr, error);
+            apply_plugin_command_finished(
+                app,
+                invocation_id,
+                command,
+                response,
+                stdout,
+                stderr,
+                error,
+            );
         }
         TuiCommand::PluginUiEffect { effect } => {
             apply_plugin_ui_effect(app, effect);
