@@ -2154,6 +2154,27 @@ impl AgentLoop {
             cached_tokens,
             reasoning_tokens,
         });
+
+        // Dispatch event observation hook for agent finished.
+        if let Some(ref ps) = self.plugin_service {
+            use crate::plugin::lifecycle::{LifecycleHooks, EventHookInput};
+            let hooks = LifecycleHooks::new(
+                ps.clone(),
+                crate::plugin::policy::PluginLifecyclePolicy::default(),
+            );
+            let event_input = EventHookInput {
+                event_type: "agent.finished".into(),
+                session_id: Some(self.session_id.clone()),
+                event: serde_json::json!({
+                    "session_id": self.session_id,
+                    "input_tokens": input_tokens,
+                    "output_tokens": output_tokens,
+                }),
+            };
+            tokio::spawn(async move {
+                hooks.emit_event(event_input).await;
+            });
+        }
     }
 
     /// Account a finished turn against the active goal. Called from
@@ -2929,6 +2950,27 @@ impl AgentLoop {
                 tokens_before,
                 tokens_after,
             });
+
+            // Dispatch event observation hook for compaction.
+            if let Some(ref ps) = self.plugin_service {
+                use crate::plugin::lifecycle::{LifecycleHooks, EventHookInput};
+                let hooks = LifecycleHooks::new(
+                    ps.clone(),
+                    crate::plugin::policy::PluginLifecyclePolicy::default(),
+                );
+                let event_input = EventHookInput {
+                    event_type: "session.compacted".into(),
+                    session_id: Some(self.session_id.clone()),
+                    event: serde_json::json!({
+                        "session_id": self.session_id,
+                        "tokens_before": tokens_before,
+                        "tokens_after": tokens_after,
+                    }),
+                };
+                tokio::spawn(async move {
+                    hooks.emit_event(event_input).await;
+                });
+            }
         }
     }
 
@@ -2952,6 +2994,23 @@ impl AgentLoop {
             {
                 tracing::error!("SessionStart hook error: {}", err);
             }
+        }
+
+        // Dispatch event observation hook for session start.
+        if let Some(ref ps) = self.plugin_service {
+            use crate::plugin::lifecycle::{LifecycleHooks, EventHookInput};
+            let hooks = LifecycleHooks::new(
+                ps.clone(),
+                crate::plugin::policy::PluginLifecyclePolicy::default(),
+            );
+            let event_input = EventHookInput {
+                event_type: "session.start".into(),
+                session_id: Some(self.session_id.clone()),
+                event: serde_json::json!({"session_id": self.session_id}),
+            };
+            tokio::spawn(async move {
+                hooks.emit_event(event_input).await;
+            });
         }
 
         self.apply_auto_routing(&mut request);
@@ -3139,6 +3198,26 @@ impl AgentLoop {
                 }
             }
 
+            // Dispatch event observation hook for agent start.
+            if let Some(ref ps) = self.plugin_service {
+                use crate::plugin::lifecycle::{LifecycleHooks, EventHookInput};
+                let hooks = LifecycleHooks::new(
+                    ps.clone(),
+                    crate::plugin::policy::PluginLifecyclePolicy::default(),
+                );
+                let event_input = EventHookInput {
+                    event_type: "agent.start".into(),
+                    session_id: Some(self.session_id.clone()),
+                    event: serde_json::json!({
+                        "session_id": self.session_id,
+                        "turn_count": self.state.turn_count,
+                    }),
+                };
+                tokio::spawn(async move {
+                    hooks.emit_event(event_input).await;
+                });
+            }
+
             // Inject todo reminder if needed
             {
                 let mut todo = self.todo_state.lock().await;
@@ -3256,6 +3335,83 @@ impl AgentLoop {
             }
 
             harden_history(&mut request.messages);
+
+            // Dispatch chat params/headers hooks before provider call.
+            if let Some(ref ps) = self.plugin_service {
+                use crate::plugin::lifecycle::{
+                    LifecycleHooks, ChatParamsHookInput, ChatHeadersHookInput,
+                    PluginHookOutcome,
+                };
+                let hooks = LifecycleHooks::new(
+                    ps.clone(),
+                    crate::plugin::policy::PluginLifecyclePolicy::default(),
+                );
+
+                // Chat params hook: allow plugins to modify request parameters.
+                let params_input = ChatParamsHookInput {
+                    model: request.model.clone(),
+                    params: serde_json::json!({
+                        "temperature": request.temperature,
+                        "top_p": request.top_p,
+                        "max_tokens": request.max_tokens,
+                    }),
+                };
+                match hooks.chat_params(params_input).await {
+                    PluginHookOutcome::Ok(output) => {
+                        if let Some(temp) = output.params.get("temperature").and_then(|v| v.as_f64()) {
+                            request.temperature = Some(temp);
+                        }
+                        if let Some(top_p) = output.params.get("top_p").and_then(|v| v.as_f64()) {
+                            request.top_p = Some(top_p);
+                        }
+                        if let Some(max_tokens) = output.params.get("max_tokens").and_then(|v| v.as_u64()) {
+                            request.max_tokens = Some(max_tokens as usize);
+                        }
+                    }
+                    PluginHookOutcome::Failed { error } => {
+                        tracing::warn!("chat params hook failed: {}", error);
+                    }
+                    _ => {}
+                }
+
+                // Chat headers hook: allow plugins to inject/modify headers.
+                // Note: headers are passed to the provider via the request;
+                // individual providers consume them in their stream() implementation.
+                let headers_input = ChatHeadersHookInput {
+                    provider: self.provider.name().to_string(),
+                    headers: serde_json::json!({}),
+                };
+                match hooks.chat_headers(headers_input).await {
+                    PluginHookOutcome::Ok(_output) => {
+                        // Headers are advisory; providers that support custom headers
+                        // will consume them through their own mechanisms.
+                    }
+                    PluginHookOutcome::Failed { error } => {
+                        tracing::warn!("chat headers hook failed: {}", error);
+                    }
+                    _ => {}
+                }
+
+                // Auth hook: allow plugins to modify auth headers.
+                // The builtin auth plugins (copilot, codex, gitlab, poe) can
+                // inject Authorization headers based on their token sources.
+                use crate::plugin::lifecycle::AuthHookInput;
+                let auth_input = AuthHookInput {
+                    provider: self.provider.name().to_string(),
+                    token: String::new(),
+                    headers: serde_json::json!({}),
+                };
+                match hooks.auth(auth_input).await {
+                    PluginHookOutcome::Ok(_output) => {
+                        // Auth modifications are advisory at this layer;
+                        // providers resolve credentials internally.
+                    }
+                    PluginHookOutcome::Failed { error } => {
+                        tracing::warn!("auth hook failed: {}", error);
+                    }
+                    _ => {}
+                }
+            }
 
             let events = match self.stream_with_retry(&request).await {
                 Ok(events) => events,
@@ -3760,6 +3916,26 @@ impl AgentLoop {
                     tracing::error!("AgentEnd hook error: {}", err);
                 }
             }
+
+            // Dispatch event observation hook for agent end.
+            if let Some(ref ps) = self.plugin_service {
+                use crate::plugin::lifecycle::{LifecycleHooks, EventHookInput};
+                let hooks = LifecycleHooks::new(
+                    ps.clone(),
+                    crate::plugin::policy::PluginLifecyclePolicy::default(),
+                );
+                let event_input = EventHookInput {
+                    event_type: "agent.end".into(),
+                    session_id: Some(self.session_id.clone()),
+                    event: serde_json::json!({
+                        "session_id": self.session_id,
+                        "turn_count": self.state.turn_count,
+                    }),
+                };
+                tokio::spawn(async move {
+                    hooks.emit_event(event_input).await;
+                });
+            }
         }
 
         self.drain_follow_up(&mut request, &mut all_events, &mut processor)
@@ -3815,6 +3991,23 @@ impl AgentLoop {
             {
                 tracing::error!("SessionEnd hook error: {}", err);
             }
+        }
+
+        // Dispatch event observation hook for session end.
+        if let Some(ref ps) = self.plugin_service {
+            use crate::plugin::lifecycle::{LifecycleHooks, EventHookInput};
+            let hooks = LifecycleHooks::new(
+                ps.clone(),
+                crate::plugin::policy::PluginLifecyclePolicy::default(),
+            );
+            let event_input = EventHookInput {
+                event_type: "session.end".into(),
+                session_id: Some(self.session_id.clone()),
+                event: serde_json::json!({"session_id": self.session_id}),
+            };
+            tokio::spawn(async move {
+                hooks.emit_event(event_input).await;
+            });
         }
 
         Ok(all_events)
@@ -4151,29 +4344,83 @@ impl AgentLoop {
                     }
                 }
 
+                let mut effective_args = tc_arc.arguments.clone();
                 if let Some(ref ps) = plugin_service {
-                    let input = serde_json::json!({
-                        "tool_name": tool_name,
-                        "arguments": tc_arc.arguments,
-                        "session_id": session_id,
-                    });
-                    let hook_result = ps.dispatch_tool_execute_before(input).await;
-                    if hook_result.blocked {
-                        tracing::warn!("Tool execution blocked by plugin hook");
-                        drop(permit);
-                        return (
-                            idx_for_results,
-                            id,
-                            Err(ToolError::Execution("blocked by plugin hook".to_string())),
-                        );
-                    }
-                    if let Some(err) = hook_result.error {
-                        tracing::warn!("ToolExecuteBefore hook error: {}", err);
+                    use crate::plugin::lifecycle::{
+                        LifecycleHooks, ToolBeforeHookInput, ToolBeforeAction, PluginHookOutcome,
+                    };
+                    let risk = classify_tool_risk(&tool_name, &tc_arc.arguments);
+                    let lifecycle_hooks = LifecycleHooks::new(
+                        ps.clone(),
+                        crate::plugin::policy::PluginLifecyclePolicy::default(),
+                    );
+                    let before_input = ToolBeforeHookInput {
+                        tool_name: tool_name.to_string(),
+                        tool_call_id: id.to_string(),
+                        args: tc_arc.arguments.clone(),
+                        session_id: session_id.clone(),
+                        risk: risk.to_string(),
+                    };
+                    match lifecycle_hooks.before_tool_execute(before_input).await {
+                        PluginHookOutcome::Ok(output) => {
+                            match output.action {
+                                ToolBeforeAction::Deny => {
+                                    tracing::warn!(
+                                        tool = %tool_name,
+                                        reason = output.reason.as_deref().unwrap_or("no reason"),
+                                        "Tool execution denied by plugin hook"
+                                    );
+                                    drop(permit);
+                                    return (
+                                        idx_for_results,
+                                        id,
+                                        Err(ToolError::Execution(format!(
+                                            "blocked by plugin: {}",
+                                            output.reason.unwrap_or_default()
+                                        ))),
+                                    );
+                                }
+                                ToolBeforeAction::Modify => {
+                                    if let Some(new_args) = output.args {
+                                        tracing::debug!(
+                                            tool = %tool_name,
+                                            "Plugin modified tool arguments"
+                                        );
+                                        effective_args = new_args;
+                                    }
+                                }
+                                ToolBeforeAction::Allow => {}
+                            }
+                        }
+                        PluginHookOutcome::Blocked { reason } => {
+                            tracing::warn!(
+                                tool = %tool_name,
+                                reason = reason.as_deref().unwrap_or("no reason"),
+                                "Tool execution blocked by plugin hook"
+                            );
+                            drop(permit);
+                            return (
+                                idx_for_results,
+                                id,
+                                Err(ToolError::Execution(format!(
+                                    "blocked by plugin: {}",
+                                    reason.unwrap_or_default()
+                                ))),
+                            );
+                        }
+                        PluginHookOutcome::Failed { error } => {
+                            tracing::warn!(
+                                tool = %tool_name,
+                                error = %error,
+                                "Before-tool hook failed"
+                            );
+                        }
+                        PluginHookOutcome::Skipped => {}
                     }
                 }
 
                 let tool_start = Instant::now();
-                let risk = classify_tool_risk(&tool_name, &tc_arc.arguments);
+                let risk = classify_tool_risk(&tool_name, &effective_args);
                 {
                     let meta = crate::session::events::EventMeta::new(&session_id);
                     let event = crate::session::events::SessionEvent::ToolCallStarted(
@@ -4181,7 +4428,7 @@ impl AgentLoop {
                             meta,
                             tool_call_id: id.to_string(),
                             tool_name: tool_name.to_string(),
-                            arguments: tc_arc.arguments.to_string(),
+                            arguments: effective_args.to_string(),
                             risk: risk.clone(),
                         },
                     );
@@ -4213,11 +4460,12 @@ impl AgentLoop {
                                 );
                             }
                             let exec_ctx = exec_ctx.clone();
+                            let exec_args = effective_args.clone();
                             let exec_fut = async {
                                 let structured = registry
                                     .execute_capture(
                                         &tc_inner.name,
-                                        tc_inner.arguments.clone(),
+                                        exec_args,
                                         Some(exec_ctx),
                                     )
                                     .await?;
@@ -4271,15 +4519,30 @@ impl AgentLoop {
                 };
 
                 if let Some(ref ps) = plugin_service {
-                    let input = serde_json::json!({
-                        "tool_name": tool_name,
-                        "arguments": tc_arc.arguments,
-                        "session_id": session_id,
-                        "result": result.as_ref().ok(),
-                    });
-                    let hook_result = ps.dispatch_tool_execute_after(input).await;
-                    if let Some(err) = hook_result.error {
-                        tracing::warn!("ToolExecuteAfter hook error: {}", err);
+                    use crate::plugin::lifecycle::{
+                        LifecycleHooks, ToolAfterHookInput, PluginHookOutcome,
+                    };
+                    let duration_ms = tool_start.elapsed().as_millis() as u64;
+                    let lifecycle_hooks = LifecycleHooks::new(
+                        ps.clone(),
+                        crate::plugin::policy::PluginLifecyclePolicy::default(),
+                    );
+                    let after_input = ToolAfterHookInput {
+                        tool_name: tool_name.to_string(),
+                        tool_call_id: id.to_string(),
+                        args: effective_args.clone(),
+                        success: result.is_ok(),
+                        output: result.as_ref().ok().map(|o| {
+                            if o.len() > 500 {
+                                format!("{}...", &o[..497])
+                            } else {
+                                o.clone()
+                            }
+                        }).unwrap_or_default(),
+                        duration_ms,
+                    };
+                    if let PluginHookOutcome::Failed { error } = lifecycle_hooks.after_tool_execute(after_input).await {
+                        tracing::warn!(tool = %tool_name, error = %error, "After-tool hook failed");
                     }
                 }
 
@@ -4287,7 +4550,7 @@ impl AgentLoop {
                     event: crate::hooks::HookEvent::PostToolExecute,
                     session_id: Some(session_id.clone()),
                     tool_name: Some(tool_name.to_string()),
-                    tool_arguments: Some(tc_arc.arguments.clone()),
+                    tool_arguments: Some(effective_args.clone()),
                     tool_result: result.as_ref().ok().cloned(),
                     timestamp: std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)

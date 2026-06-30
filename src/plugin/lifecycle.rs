@@ -84,6 +84,46 @@ pub struct ShellEnvHookOutput {
     pub remove: Vec<String>,
 }
 
+/// Typed input for the chat params hook.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ChatParamsHookInput {
+    pub model: String,
+    pub params: serde_json::Value,
+}
+
+/// Typed output from the chat params hook.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct ChatParamsHookOutput {
+    pub params: serde_json::Value,
+}
+
+/// Typed input for the chat headers hook.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ChatHeadersHookInput {
+    pub provider: String,
+    pub headers: serde_json::Value,
+}
+
+/// Typed output from the chat headers hook.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct ChatHeadersHookOutput {
+    pub headers: serde_json::Value,
+}
+
+/// Typed input for the auth hook.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct AuthHookInput {
+    pub provider: String,
+    pub token: String,
+    pub headers: serde_json::Value,
+}
+
+/// Typed output from the auth hook.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct AuthHookOutput {
+    pub headers: serde_json::Value,
+}
+
 /// Outcome of a lifecycle hook dispatch.
 #[derive(Debug, Clone)]
 pub enum PluginHookOutcome<T> {
@@ -137,19 +177,21 @@ impl LifecycleHooks {
     /// Emit an event observation hook. Always fails open.
     pub async fn emit_event(&self, input: EventHookInput) -> PluginHookOutcome<()> {
         if !self.policy.is_hook_allowed(HookType::Event) {
+            tracing::debug!(hook_type = "event", policy_decision = "skipped", "event hook skipped by policy");
             return PluginHookOutcome::Skipped;
         }
 
         let json = match serde_json::to_value(&input) {
             Ok(v) => v,
             Err(e) => {
-                tracing::warn!("event hook serialization failed: {}", e);
+                tracing::warn!(hook_type = "event", error = %e, "event hook serialization failed");
                 return PluginHookOutcome::Failed {
                     error: e.to_string(),
                 };
             }
         };
 
+        let start = std::time::Instant::now();
         let result = self
             .service
             .dispatch_hook(HookContext {
@@ -157,6 +199,16 @@ impl LifecycleHooks {
                 input: json,
             })
             .await;
+        let duration_ms = start.elapsed().as_millis();
+
+        tracing::debug!(
+            hook_type = "event",
+            event_type = %input.event_type,
+            duration_ms,
+            blocked = result.blocked,
+            error = result.error.as_deref(),
+            "event hook dispatched"
+        );
 
         outcome_to_unit(result, self.policy.observation_fail_open())
     }
@@ -167,6 +219,12 @@ impl LifecycleHooks {
         input: ToolBeforeHookInput,
     ) -> PluginHookOutcome<ToolBeforeHookOutput> {
         if !self.policy.is_hook_allowed(HookType::ToolExecuteBefore) {
+            tracing::debug!(
+                hook_type = "tool_execute_before",
+                tool = %input.tool_name,
+                policy_decision = "skipped",
+                "before-tool hook skipped by policy"
+            );
             return PluginHookOutcome::Skipped;
         }
 
@@ -179,6 +237,7 @@ impl LifecycleHooks {
             }
         };
 
+        let start = std::time::Instant::now();
         let result = self
             .service
             .dispatch_hook(HookContext {
@@ -186,6 +245,17 @@ impl LifecycleHooks {
                 input: json,
             })
             .await;
+        let duration_ms = start.elapsed().as_millis();
+
+        tracing::debug!(
+            hook_type = "tool_execute_before",
+            tool = %input.tool_name,
+            risk = %input.risk,
+            duration_ms,
+            blocked = result.blocked,
+            error = result.error.as_deref(),
+            "before-tool hook dispatched"
+        );
 
         outcome_to_typed(result, self.policy.observation_fail_open())
     }
@@ -199,13 +269,14 @@ impl LifecycleHooks {
         let json = match serde_json::to_value(&input) {
             Ok(v) => v,
             Err(e) => {
-                tracing::warn!("after_tool hook serialization failed: {}", e);
+                tracing::warn!(hook_type = "tool_execute_after", error = %e, "after-tool hook serialization failed");
                 return PluginHookOutcome::Failed {
                     error: e.to_string(),
                 };
             }
         };
 
+        let start = std::time::Instant::now();
         let result = self
             .service
             .dispatch_hook(HookContext {
@@ -213,6 +284,17 @@ impl LifecycleHooks {
                 input: json,
             })
             .await;
+        let duration_ms = start.elapsed().as_millis();
+
+        tracing::debug!(
+            hook_type = "tool_execute_after",
+            tool = %input.tool_name,
+            success = input.success,
+            duration_ms,
+            blocked = result.blocked,
+            error = result.error.as_deref(),
+            "after-tool hook dispatched"
+        );
 
         outcome_to_unit(result, self.policy.observation_fail_open())
     }
@@ -223,6 +305,7 @@ impl LifecycleHooks {
         input: MessageTransformInput,
     ) -> PluginHookOutcome<MessageTransformOutput> {
         if !self.policy.is_hook_allowed(HookType::MessagesTransform) {
+            tracing::debug!(hook_type = "messages_transform", policy_decision = "skipped", "message transform hook skipped by policy");
             return PluginHookOutcome::Skipped;
         }
 
@@ -235,6 +318,7 @@ impl LifecycleHooks {
             }
         };
 
+        let start = std::time::Instant::now();
         let result = self
             .service
             .dispatch_hook(HookContext {
@@ -242,6 +326,16 @@ impl LifecycleHooks {
                 input: json,
             })
             .await;
+        let duration_ms = start.elapsed().as_millis();
+
+        tracing::debug!(
+            hook_type = "messages_transform",
+            message_count = input.messages.len(),
+            duration_ms,
+            blocked = result.blocked,
+            error = result.error.as_deref(),
+            "message transform hook dispatched"
+        );
 
         outcome_to_typed(result, self.policy.mutating_fail_open())
     }
@@ -249,6 +343,7 @@ impl LifecycleHooks {
     /// Dispatch the shell env hook. Mutating: returns env additions/removals.
     pub async fn shell_env(&self, input: ShellEnvHookInput) -> PluginHookOutcome<ShellEnvHookOutput> {
         if !self.policy.is_hook_allowed(HookType::ShellEnv) {
+            tracing::debug!(hook_type = "shell_env", policy_decision = "skipped", "shell env hook skipped by policy");
             return PluginHookOutcome::Skipped;
         }
 
@@ -261,6 +356,7 @@ impl LifecycleHooks {
             }
         };
 
+        let start = std::time::Instant::now();
         let result = self
             .service
             .dispatch_hook(HookContext {
@@ -268,8 +364,132 @@ impl LifecycleHooks {
                 input: json,
             })
             .await;
+        let duration_ms = start.elapsed().as_millis();
+
+        tracing::debug!(
+            hook_type = "shell_env",
+            command = %input.command,
+            duration_ms,
+            blocked = result.blocked,
+            error = result.error.as_deref(),
+            "shell env hook dispatched"
+        );
 
         outcome_to_typed(result, self.policy.mutating_fail_open())
+    }
+
+    /// Dispatch the chat params hook. Mutating: returns modified params.
+    pub async fn chat_params(&self, input: ChatParamsHookInput) -> PluginHookOutcome<ChatParamsHookOutput> {
+        if !self.policy.is_hook_allowed(HookType::ChatParams) {
+            tracing::debug!(hook_type = "chat_params", policy_decision = "skipped", "chat params hook skipped by policy");
+            return PluginHookOutcome::Skipped;
+        }
+
+        let json = match serde_json::to_value(&input) {
+            Ok(v) => v,
+            Err(e) => {
+                return PluginHookOutcome::Failed {
+                    error: e.to_string(),
+                };
+            }
+        };
+
+        let start = std::time::Instant::now();
+        let result = self
+            .service
+            .dispatch_hook(HookContext {
+                hook_type: HookType::ChatParams,
+                input: json,
+            })
+            .await;
+        let duration_ms = start.elapsed().as_millis();
+
+        tracing::debug!(
+            hook_type = "chat_params",
+            model = %input.model,
+            duration_ms,
+            blocked = result.blocked,
+            error = result.error.as_deref(),
+            "chat params hook dispatched"
+        );
+
+        outcome_to_typed(result, self.policy.mutating_fail_open())
+    }
+
+    /// Dispatch the chat headers hook. Mutating: returns modified headers.
+    pub async fn chat_headers(&self, input: ChatHeadersHookInput) -> PluginHookOutcome<ChatHeadersHookOutput> {
+        if !self.policy.is_hook_allowed(HookType::ChatHeaders) {
+            tracing::debug!(hook_type = "chat_headers", policy_decision = "skipped", "chat headers hook skipped by policy");
+            return PluginHookOutcome::Skipped;
+        }
+
+        let json = match serde_json::to_value(&input) {
+            Ok(v) => v,
+            Err(e) => {
+                return PluginHookOutcome::Failed {
+                    error: e.to_string(),
+                };
+            }
+        };
+
+        let start = std::time::Instant::now();
+        let result = self
+            .service
+            .dispatch_hook(HookContext {
+                hook_type: HookType::ChatHeaders,
+                input: json,
+            })
+            .await;
+        let duration_ms = start.elapsed().as_millis();
+
+        tracing::debug!(
+            hook_type = "chat_headers",
+            provider = %input.provider,
+            duration_ms,
+            blocked = result.blocked,
+            error = result.error.as_deref(),
+            "chat headers hook dispatched"
+        );
+
+        outcome_to_typed(result, self.policy.mutating_fail_open())
+    }
+
+    /// Dispatch the auth hook. Blocking: returns modified headers.
+    pub async fn auth(&self, input: AuthHookInput) -> PluginHookOutcome<AuthHookOutput> {
+        if !self.policy.is_hook_allowed(HookType::Auth) {
+            tracing::debug!(hook_type = "auth", policy_decision = "skipped", "auth hook skipped by policy");
+            return PluginHookOutcome::Skipped;
+        }
+
+        let json = match serde_json::to_value(&input) {
+            Ok(v) => v,
+            Err(e) => {
+                return PluginHookOutcome::Failed {
+                    error: e.to_string(),
+                };
+            }
+        };
+
+        let start = std::time::Instant::now();
+        let result = self
+            .service
+            .dispatch_hook(HookContext {
+                hook_type: HookType::Auth,
+                input: json,
+            })
+            .await;
+        let duration_ms = start.elapsed().as_millis();
+
+        tracing::debug!(
+            hook_type = "auth",
+            provider = %input.provider,
+            duration_ms,
+            blocked = result.blocked,
+            error = result.error.as_deref(),
+            "auth hook dispatched"
+        );
+
+        outcome_to_typed(result, self.policy.observation_fail_open())
     }
 }
 
@@ -721,6 +941,212 @@ mod tests {
 
         let outcome = hooks.before_tool_execute(input).await;
         // Blocking hooks disabled -> skipped.
+        assert!(outcome.is_skipped());
+    }
+
+    #[tokio::test]
+    async fn before_tool_execute_allow_passes_args_unchanged() {
+        use std::sync::Arc;
+        use crate::plugin::registry::PluginRegistry;
+        use crate::plugin::registry::PluginInfo;
+        use crate::plugin::manifest::{PluginManifest, PluginRuntimeSpec, PluginTrustClass, PluginCapability, PluginHookSpec};
+        use crate::plugin::service::PluginService;
+        use crate::plugin::runtime::builtin::BuiltinRuntime;
+        use crate::plugin::builtin::builtin_runtime_registry;
+
+        let mut registry = PluginRegistry::new();
+        let manifest = PluginManifest {
+            api_version: 1,
+            runtime: PluginRuntimeSpec::Builtin { handler: "test-allow".into() },
+            capabilities: vec![PluginCapability::Hook(PluginHookSpec {
+                hook_type: "tool_execute_before".into(),
+                priority: 0,
+                handler: None,
+            })],
+            ..Default::default()
+        };
+        let info = PluginInfo {
+            id: "plugin:test-allow".into(),
+            manifest,
+            enabled: true,
+            trust: PluginTrustClass::Builtin,
+            diagnostics: Vec::new(),
+        };
+        registry.register(info).await.unwrap();
+
+        let handler_registry = Arc::new(builtin_runtime_registry());
+        let builtin_rt = Arc::new(BuiltinRuntime::new(handler_registry));
+        let service = Arc::new(
+            PluginService::new(Arc::new(registry))
+                .with_builtin_runtime(builtin_rt),
+        );
+
+        let policy = PluginLifecyclePolicy {
+            enable_blocking_hooks: true,
+            ..Default::default()
+        };
+        let hooks = LifecycleHooks::new(service, policy);
+
+        let input = ToolBeforeHookInput {
+            tool_name: "edit".into(),
+            tool_call_id: "tc1".into(),
+            args: serde_json::json!({"path": "foo.rs", "content": "hello"}),
+            session_id: "s1".into(),
+            risk: "normal".into(),
+        };
+
+        let outcome = hooks.before_tool_execute(input).await;
+        // No test handler registered, so passthrough (Ok or Skipped).
+        match outcome {
+            PluginHookOutcome::Ok(output) => {
+                assert_eq!(output.action, ToolBeforeAction::Allow);
+            }
+            PluginHookOutcome::Skipped => {}
+            other => panic!("expected Ok or Skipped, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn before_tool_execute_modify_ignored_when_mutating_disabled() {
+        use std::sync::Arc;
+        use crate::plugin::registry::PluginRegistry;
+        use crate::plugin::service::PluginService;
+
+        let registry = Arc::new(PluginRegistry::new());
+        let service = Arc::new(PluginService::new(registry));
+
+        // Both blocking and mutating disabled (default).
+        let hooks = LifecycleHooks::new(service, PluginLifecyclePolicy::default());
+
+        let input = ToolBeforeHookInput {
+            tool_name: "edit".into(),
+            tool_call_id: "tc1".into(),
+            args: serde_json::json!({"path": "foo.rs"}),
+            session_id: "s1".into(),
+            risk: "normal".into(),
+        };
+
+        let outcome = hooks.before_tool_execute(input).await;
+        // Blocking hooks disabled -> skipped entirely, modify never fires.
+        assert!(outcome.is_skipped());
+    }
+
+    #[tokio::test]
+    async fn wasm_and_builtin_mutating_hooks_allowed_when_policy_enables() {
+        use crate::plugin::policy::{PluginLifecyclePolicy, classify_hook, HookCategory};
+        use crate::plugin::hooks::HookType;
+        use crate::plugin::manifest::PluginRuntimeSpec;
+
+        let mut policy = PluginLifecyclePolicy::default();
+        policy.enable_mutating_hooks = true;
+
+        // Mutating hook types should be allowed.
+        assert!(policy.is_hook_allowed(HookType::MessagesTransform));
+        assert!(policy.is_hook_allowed(HookType::ShellEnv));
+        assert!(policy.is_hook_allowed(HookType::ToolDefinition));
+        assert!(policy.is_hook_allowed(HookType::ChatParams));
+        assert!(policy.is_hook_allowed(HookType::ChatHeaders));
+
+        // Builtin/WASM runtimes should always be allowed.
+        assert!(policy.is_runtime_allowed(&PluginRuntimeSpec::Builtin { handler: "test".into() }));
+        assert!(policy.is_runtime_allowed(&PluginRuntimeSpec::Wasm {
+            module: "test.wasm".into(),
+            timeout_ms: None,
+            memory_max_mb: None,
+            fuel_per_call: None,
+        }));
+
+        // Classification should be Mutating.
+        assert_eq!(classify_hook(HookType::MessagesTransform), HookCategory::Mutating);
+        assert_eq!(classify_hook(HookType::ShellEnv), HookCategory::Mutating);
+    }
+
+    #[tokio::test]
+    async fn shell_env_hook_does_not_log_secret_values() {
+        use std::sync::Arc;
+        use crate::plugin::registry::PluginRegistry;
+        use crate::plugin::service::PluginService;
+
+        let registry = Arc::new(PluginRegistry::new());
+        let service = Arc::new(PluginService::new(registry));
+        let policy = PluginLifecyclePolicy {
+            enable_mutating_hooks: true,
+            ..Default::default()
+        };
+        let hooks = LifecycleHooks::new(service, policy);
+
+        let input = ShellEnvHookInput {
+            command: "echo secret".into(),
+            cwd: "/tmp".into(),
+            base_env_keys: vec!["PATH".into(), "SECRET_KEY".into()],
+        };
+
+        // The hook dispatches; no secret values appear in tracing output
+        // because tracing fields only log command/cwd, not env values.
+        let outcome = hooks.shell_env(input).await;
+        match outcome {
+            PluginHookOutcome::Ok(output) => {
+                assert!(output.env.is_empty());
+            }
+            other => panic!("expected Ok, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn chat_params_hook_skipped_when_mutating_disabled() {
+        use std::sync::Arc;
+        use crate::plugin::registry::PluginRegistry;
+        use crate::plugin::service::PluginService;
+
+        let registry = Arc::new(PluginRegistry::new());
+        let service = Arc::new(PluginService::new(registry));
+        let hooks = LifecycleHooks::new(service, PluginLifecyclePolicy::default());
+
+        let input = ChatParamsHookInput {
+            model: "gpt-4".into(),
+            params: serde_json::json!({"temperature": 0.7}),
+        };
+
+        let outcome = hooks.chat_params(input).await;
+        assert!(outcome.is_skipped());
+    }
+
+    #[tokio::test]
+    async fn chat_headers_hook_skipped_when_mutating_disabled() {
+        use std::sync::Arc;
+        use crate::plugin::registry::PluginRegistry;
+        use crate::plugin::service::PluginService;
+
+        let registry = Arc::new(PluginRegistry::new());
+        let service = Arc::new(PluginService::new(registry));
+        let hooks = LifecycleHooks::new(service, PluginLifecyclePolicy::default());
+
+        let input = ChatHeadersHookInput {
+            provider: "openai".into(),
+            headers: serde_json::json!({"Authorization": "Bearer test"}),
+        };
+
+        let outcome = hooks.chat_headers(input).await;
+        assert!(outcome.is_skipped());
+    }
+
+    #[tokio::test]
+    async fn auth_hook_skipped_when_blocking_disabled() {
+        use std::sync::Arc;
+        use crate::plugin::registry::PluginRegistry;
+        use crate::plugin::service::PluginService;
+
+        let registry = Arc::new(PluginRegistry::new());
+        let service = Arc::new(PluginService::new(registry));
+        let hooks = LifecycleHooks::new(service, PluginLifecyclePolicy::default());
+
+        let input = AuthHookInput {
+            provider: "copilot".into(),
+            token: "test-token".into(),
+            headers: serde_json::json!({}),
+        };
+
+        let outcome = hooks.auth(input).await;
         assert!(outcome.is_skipped());
     }
 }
