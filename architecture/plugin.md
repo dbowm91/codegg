@@ -1080,6 +1080,66 @@ The local `PluginResponse` in `service.rs` is removed. `codegg_protocol::plugin:
 - **Process**: Creates `ProcessRuntime`, invokes via `PluginRuntime` trait, returns `PluginResponse`
 - **Wasm**: Creates `WasmRuntime`, invokes via `PluginRuntime` trait, returns `PluginResponse`
 
+## Builtin Runtime (Phase 8)
+
+Phase 8 promotes built-in plugins from the legacy `BUILTIN_HANDLERS` static to a first-class `BuiltinRuntime` that implements the `PluginRuntime` trait alongside `ProcessRuntime` and `WasmRuntime`.
+
+### BuiltinRuntime and BuiltinHandlerRegistry
+
+`BuiltinRuntime` (`src/plugin/runtime/builtin.rs`) implements `PluginRuntime` and dispatches `PluginInvocation` through a `BuiltinHandlerRegistry`. The registry maps handler IDs (e.g., `"copilot"`, `"gitlab"`) to native Rust `fn(HookContext) -> HookResult` functions.
+
+```rust
+pub type BuiltinHookHandler = fn(HookContext) -> HookResult;
+
+pub struct BuiltinHandlerRegistry {
+    handlers: HashMap<String, BuiltinHookHandler>,
+}
+
+pub struct BuiltinRuntime {
+    handlers: Arc<BuiltinHandlerRegistry>,
+}
+
+impl PluginRuntime for BuiltinRuntime {
+    async fn invoke(&self, invocation: PluginInvocation) -> Result<PluginResponse, RuntimeError>;
+}
+```
+
+### Adapter Functions
+
+Two adapter functions bridge the hook handler model with the runtime model:
+
+- **`invocation_to_hook_context()`**: Converts a `PluginInvocation` (with `PluginCapabilityInvocation::Hook` or `Command`) into a `HookContext`, extracting the `HookType` from the capability string.
+- **`hook_result_to_plugin_response()`**: Converts a `HookResult` into a `PluginResponse`, mapping errors to diagnostics and blocked state to `ok: false`.
+
+### Canonical Sources
+
+- **`builtin_plugin_manifests()`**: Returns `Vec<PluginManifest>` for all four builtins. Each manifest declares `runtime: PluginRuntimeSpec::Builtin { handler }` and hook capabilities. This is the canonical source for builtin metadata.
+- **`builtin_runtime_registry()`**: Builds a `BuiltinHandlerRegistry` populated with all four handlers. The returned registry can be wrapped in `Arc` and passed to `BuiltinRuntime::new()`.
+
+### Individual Builtin Modules
+
+Each builtin module (`copilot.rs`, `gitlab.rs`, `codex.rs`, `poe.rs`) exports:
+
+- `PLUGIN_ID: &str` — e.g., `"builtin:copilot"`
+- `HANDLER_ID: &str` — e.g., `"copilot"`
+- `manifest() -> PluginManifest` — canonical manifest with `runtime: Builtin { handler }`
+- `handle_hook(HookContext) -> HookResult` — the actual handler
+
+### Service Integration
+
+`PluginService` accepts an optional `Arc<BuiltinRuntime>` via `with_builtin_runtime()`. When a builtin runtime is present, `invoke_command()` dispatches builtin plugin invocations through `BuiltinRuntime::invoke()` instead of falling back to the legacy `builtin_hook_handler()` lookup.
+
+### Tests
+
+- `builtin_plugin_manifests_declare_builtin_runtime`: All manifests use `PluginRuntimeSpec::Builtin` and `PluginTrustClass::Builtin`.
+- `builtin_runtime_registry_contains_all_handlers`: Registry has entries for all four builtins.
+- `builtin_runtime_registry_handlers_work`: Handlers produce correct `HookResult` output.
+- Unit tests in `runtime/builtin.rs` verify dispatch, unknown handler errors, non-`builtin:` prefix rejection, and adapter function correctness.
+
+### Acceptance
+
+Builtins now register through the unified plugin registry with `runtime = Builtin` and dispatch through `BuiltinRuntime` (or fallback to direct `builtin_hook_handler()` lookup when no runtime is provided).
+
 ## See Also
 
 - [hooks.md](hooks.md) - External hooks system

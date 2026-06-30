@@ -1,8 +1,15 @@
 use crate::plugin::builtin::make_builtin_info;
 use crate::plugin::hooks::{HookContext, HookResult};
+use crate::plugin::manifest::{
+    PluginCapability, PluginHookSpec, PluginManifest, PluginRuntimeSpec,
+};
 
-pub fn plugin() -> crate::plugin::builtin::BuiltinPlugin {
-    let manifest = crate::plugin::manifest::PluginManifest {
+pub const PLUGIN_ID: &str = "builtin:gitlab";
+pub const HANDLER_ID: &str = "gitlab";
+
+/// Return the canonical manifest for the GitLab builtin plugin.
+pub fn manifest() -> PluginManifest {
+    PluginManifest {
         name: "gitlab".into(),
         version: "0.1.0".into(),
         description: Some("GitLab authentication provider".into()),
@@ -11,21 +18,21 @@ pub fn plugin() -> crate::plugin::builtin::BuiltinPlugin {
             hook_type: "auth".into(),
             priority: Some(0),
         }],
-        runtime: crate::plugin::manifest::PluginRuntimeSpec::Builtin {
-            handler: "gitlab_auth".into(),
+        runtime: PluginRuntimeSpec::Builtin {
+            handler: HANDLER_ID.into(),
         },
-        capabilities: vec![crate::plugin::manifest::PluginCapability::Hook(
-            crate::plugin::manifest::PluginHookSpec {
-                hook_type: "auth".into(),
-                priority: 0,
-                handler: None,
-            },
-        )],
+        capabilities: vec![PluginCapability::Hook(PluginHookSpec {
+            hook_type: "auth".into(),
+            priority: 0,
+            handler: None,
+        })],
         ..Default::default()
-    };
+    }
+}
 
+pub fn plugin() -> crate::plugin::builtin::BuiltinPlugin {
     crate::plugin::builtin::BuiltinPlugin {
-        manifest,
+        manifest: manifest(),
         handler: handle_hook,
     }
 }

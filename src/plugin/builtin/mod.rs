@@ -11,6 +11,7 @@ use crate::plugin::manifest::{
     LegacyHookSpec, PluginCapability, PluginHookSpec, PluginManifest, PluginRuntimeSpec,
 };
 use crate::plugin::registry::PluginInfo;
+use crate::plugin::runtime::builtin::{BuiltinHandlerRegistry, BuiltinHookHandler};
 use std::collections::HashMap;
 use std::sync::RwLock;
 
@@ -41,6 +42,43 @@ static BUILTIN_HANDLERS: std::sync::LazyLock<
     );
     RwLock::new(handlers)
 });
+
+/// Return manifests for all known builtin plugins.
+///
+/// Each manifest declares `runtime = Builtin { handler }` and the appropriate
+/// hook capabilities. This is the canonical source for builtin plugin metadata.
+pub fn builtin_plugin_manifests() -> Vec<PluginManifest> {
+    vec![
+        copilot::manifest(),
+        gitlab::manifest(),
+        codex::manifest(),
+        poe::manifest(),
+    ]
+}
+
+/// Build a `BuiltinHandlerRegistry` populated with all builtin plugin handlers.
+///
+/// The returned registry can be wrapped in `Arc` and passed to `BuiltinRuntime::new()`.
+pub fn builtin_runtime_registry() -> BuiltinHandlerRegistry {
+    let mut registry = BuiltinHandlerRegistry::new();
+    registry.register(
+        "copilot".to_string(),
+        copilot::handle_hook as BuiltinHookHandler,
+    );
+    registry.register(
+        "gitlab".to_string(),
+        gitlab::handle_hook as BuiltinHookHandler,
+    );
+    registry.register(
+        "codex".to_string(),
+        codex::handle_hook as BuiltinHookHandler,
+    );
+    registry.register(
+        "poe".to_string(),
+        poe::handle_hook as BuiltinHookHandler,
+    );
+    registry
+}
 
 pub fn get_builtin_plugins() -> Vec<BuiltinPlugin> {
     vec![
@@ -155,4 +193,76 @@ pub fn make_builtin_info(
     };
 
     (info, registrations)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn builtin_plugin_manifests_returns_all_builtins() {
+        let manifests = builtin_plugin_manifests();
+        assert_eq!(manifests.len(), 4);
+
+        let names: Vec<&str> = manifests.iter().map(|m| m.name.as_str()).collect();
+        assert!(names.contains(&"copilot"));
+        assert!(names.contains(&"codex"));
+        assert!(names.contains(&"gitlab"));
+        assert!(names.contains(&"poe"));
+    }
+
+    #[test]
+    fn builtin_plugin_manifests_declare_builtin_runtime() {
+        let manifests = builtin_plugin_manifests();
+        for m in &manifests {
+            assert_eq!(m.runtime_kind(), "builtin");
+            assert_eq!(m.trust_class(), PluginTrustClass::Builtin);
+            match &m.runtime {
+                PluginRuntimeSpec::Builtin { handler } => {
+                    assert!(!handler.is_empty());
+                }
+                _ => panic!("expected Builtin runtime spec for {}", m.name),
+            }
+        }
+    }
+
+    #[test]
+    fn builtin_plugin_manifests_declare_hook_capabilities() {
+        let manifests = builtin_plugin_manifests();
+        for m in &manifests {
+            let hooks: Vec<_> = m.hooks_capabilities().collect();
+            assert!(
+                !hooks.is_empty(),
+                "builtin {} should declare hook capabilities",
+                m.name
+            );
+        }
+    }
+
+    #[test]
+    fn builtin_runtime_registry_contains_all_handlers() {
+        let registry = builtin_runtime_registry();
+        assert_eq!(registry.len(), 4);
+        assert!(registry.contains("copilot"));
+        assert!(registry.contains("codex"));
+        assert!(registry.contains("gitlab"));
+        assert!(registry.contains("poe"));
+    }
+
+    #[test]
+    fn builtin_runtime_registry_handlers_work() {
+        let registry = builtin_runtime_registry();
+        let handler = registry.get("copilot").unwrap();
+        let ctx = HookContext {
+            hook_type: HookType::Auth,
+            input: serde_json::json!({"provider": "copilot", "token": "test", "headers": {}}),
+        };
+        let result = handler(ctx);
+        assert!(!result.blocked);
+        assert!(result.error.is_none());
+        assert_eq!(
+            result.output,
+            serde_json::json!({"provider": "copilot", "token": "test", "headers": {"Authorization": "Bearer test"}})
+        );
+    }
 }

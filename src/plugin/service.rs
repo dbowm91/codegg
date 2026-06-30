@@ -6,6 +6,7 @@ use crate::plugin::loader::LoadError;
 use crate::plugin::loader::LoadedPlugin;
 use crate::plugin::manifest::{PluginManifest, PluginRuntimeSpec, PluginTrustClass};
 use crate::plugin::registry::{PluginInfo, PluginRegistry, PluginRegistryError};
+use crate::plugin::runtime::builtin::BuiltinRuntime;
 use crate::plugin::runtime::process::{ProcessRuntime, ProcessRuntimeSpec};
 #[cfg(feature = "plugins")]
 use crate::plugin::runtime::wasm::{WasmRuntime, WasmRuntimeSpec};
@@ -18,6 +19,7 @@ use crate::protocol::plugin::{
 pub struct PluginService {
     registry: Arc<PluginRegistry>,
     hook_timeout: Duration,
+    builtin_runtime: Option<Arc<BuiltinRuntime>>,
 }
 
 impl PluginService {
@@ -25,11 +27,18 @@ impl PluginService {
         Self {
             registry,
             hook_timeout: Duration::from_secs(5),
+            builtin_runtime: None,
         }
     }
 
     pub fn with_hook_timeout(mut self, timeout: Duration) -> Self {
         self.hook_timeout = timeout;
+        self
+    }
+
+    /// Set the builtin runtime for dispatching builtin plugin invocations.
+    pub fn with_builtin_runtime(mut self, runtime: Arc<BuiltinRuntime>) -> Self {
+        self.builtin_runtime = Some(runtime);
         self
     }
 
@@ -154,15 +163,26 @@ impl PluginService {
         };
 
         match &plugin_info.manifest.runtime {
-            PluginRuntimeSpec::Builtin { handler } => Ok(PluginResponse {
-                ok: true,
-                effects: Vec::new(),
-                data: serde_json::json!({
-                    "command": command_name,
-                    "handler": handler,
-                }),
-                diagnostics: Vec::new(),
-            }),
+            PluginRuntimeSpec::Builtin { handler } => {
+                // Dispatch through BuiltinRuntime if available, otherwise return
+                // a placeholder response for backward compatibility.
+                if let Some(ref builtin_rt) = self.builtin_runtime {
+                    builtin_rt
+                        .invoke(invocation)
+                        .await
+                        .map_err(|e| PluginError::Runtime(e.to_string()))
+                } else {
+                    Ok(PluginResponse {
+                        ok: true,
+                        effects: Vec::new(),
+                        data: serde_json::json!({
+                            "command": command_name,
+                            "handler": handler,
+                        }),
+                        diagnostics: Vec::new(),
+                    })
+                }
+            }
             PluginRuntimeSpec::Process { .. } => {
                 let spec: Option<ProcessRuntimeSpec> = (&plugin_info.manifest.runtime).into();
                 let spec = spec.ok_or_else(|| {
@@ -277,22 +297,52 @@ impl PluginService {
 
         tokio::time::timeout(timeout, async move {
             if plugin_id.starts_with("builtin:") {
-                let name = plugin_id.strip_prefix("builtin:").unwrap_or(plugin_id);
-                crate::plugin::builtin::builtin_hook_handler(name, ctx)
+                // Dispatch through BuiltinRuntime if available
+                if let Some(ref builtin_rt) = self.builtin_runtime {
+                    use crate::protocol::plugin::{
+                        PluginCapabilityInvocation, PLUGIN_PROTOCOL_VERSION,
+                    };
+
+                    let invocation = PluginInvocation {
+                        protocol_version: PLUGIN_PROTOCOL_VERSION,
+                        invocation_id: uuid::Uuid::new_v4().to_string(),
+                        plugin_id: plugin_id.to_string(),
+                        capability: PluginCapabilityInvocation::Hook {
+                            hook_type: ctx.hook_type.as_str().to_string(),
+                        },
+                        args: Vec::new(),
+                        input: ctx.input.clone(),
+                        context: PluginContext::default(),
+                    };
+
+                    match builtin_rt.invoke(invocation).await {
+                        Ok(response) => {
+                            Ok(HookResult::from_plugin_response(response, ctx.input))
+                        }
+                        Err(e) => Ok(HookResult::error(format!(
+                            "builtin hook failed: {}",
+                            e
+                        ))),
+                    }
+                } else {
+                    // Fallback to direct handler lookup
+                    let name = plugin_id.strip_prefix("builtin:").unwrap_or(plugin_id);
+                    Ok(crate::plugin::builtin::builtin_hook_handler(name, ctx))
+                }
             } else {
                 #[cfg(feature = "plugins")]
                 {
-                    crate::plugin::loader::execute_wasm_hook(plugin_id, ctx).await
+                    Ok(crate::plugin::loader::execute_wasm_hook(plugin_id, ctx).await)
                 }
                 #[cfg(not(feature = "plugins"))]
                 {
                     let _ = plugin_id;
-                    HookResult::ok(ctx.input)
+                    Ok(HookResult::ok(ctx.input))
                 }
             }
         })
         .await
-        .map_err(|_| "hook execution timed out".to_string())
+        .map_err(|_| "hook execution timed out".to_string())?
     }
 
     // --- Convenience dispatch methods (backward compatible) ---

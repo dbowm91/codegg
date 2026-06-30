@@ -42,9 +42,12 @@ src/plugin/
 ├── tui.rs           # TUI plugin registry for routes/components (deprecated/legacy, superseded by Phase 5 capability-based registry)
 ├── event_bus.rs     # Event bus integration
 ├── marketplace.rs   # Local plugin discovery service
-├── runtime/         # Plugin runtime abstraction (Phase 6)
+├── runtime/         # Plugin runtime abstraction (Phase 6+8)
 │   ├── mod.rs       # PluginRuntime trait, RuntimeError, RuntimeLimits
-│   └── process.rs   # ProcessRuntime implementation
+│   ├── builtin.rs   # BuiltinRuntime for native Rust handlers (Phase 8)
+│   ├── process.rs   # ProcessRuntime implementation
+│   ├── wasm.rs      # WasmRuntime for WASM plugins (feature-gated)
+│   └── wasm_cache.rs # WASM module caching with fuel budgets
 └── builtin/         # Built-in plugins
     ├── mod.rs       # Plugin registry and builtin handler map
     ├── copilot.rs   # GitHub Copilot integration
@@ -705,6 +708,20 @@ pub trait PluginRuntime: Send + Sync {
 - Converts from `ProcessCommandSpec` and `PluginRuntimeSpec::Process`
 - Handles spawning, stdin piping, timeout, output capping, stdout mode parsing
 - Returns `PluginResponse` for all successful paths
+
+### `BuiltinRuntime` (`src/plugin/runtime/builtin.rs`) — Phase 8
+
+First-class runtime for native Rust builtin plugins, alongside `ProcessRuntime` and `WasmRuntime`.
+
+- `BuiltinHandlerRegistry` maps handler IDs to `fn(HookContext) -> HookResult` functions
+- `BuiltinRuntime` implements `PluginRuntime` trait; dispatches `PluginInvocation` through registered handlers
+- Adapter functions bridge the hook handler model with the runtime model:
+  - `invocation_to_hook_context()` converts `PluginInvocation` → `HookContext`
+  - `hook_result_to_plugin_response()` converts `HookResult` → `PluginResponse`
+- Plugin ID format: `builtin:<name>` (e.g., `builtin:copilot`)
+- Individual builtin modules expose `PLUGIN_ID`, `HANDLER_ID`, and `manifest()` functions
+- `builtin_plugin_manifests()` and `builtin_runtime_registry()` provide canonical metadata sources
+- `PluginService::with_builtin_runtime()` accepts an `Arc<BuiltinRuntime>` for runtime dispatch
 
 ### Response Type Unification
 

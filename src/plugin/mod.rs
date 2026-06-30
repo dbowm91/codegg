@@ -27,6 +27,7 @@ pub use registry::{
     PluginHookRegistration, PluginInfo, PluginPanelRegistration, PluginRegistry,
     PluginRegistryError, PluginStatusRegistration,
 };
+pub use runtime::builtin::{BuiltinHandlerRegistry, BuiltinRuntime};
 pub use runtime::wasm_cache::WasmModuleCache;
 pub use service::{PluginError, PluginService};
 pub use tui::{TuiComponent, TuiPluginRegistry, TuiRoute};

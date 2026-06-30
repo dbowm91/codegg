@@ -189,3 +189,5 @@ The `builtin/` directory contains:
 - `gitlab.rs` - GitLab integration
 - `copilot.rs` - GitHub Copilot integration
 - `codex.rs` - OpenAI Codex integration
+
+Built-in plugins now use `BuiltinRuntime` as a first-class runtime (Phase 8). They register through the unified plugin registry with `runtime = "builtin"` and dispatch through `BuiltinRuntime`, sharing the same invocation path as process and WASM plugins.
