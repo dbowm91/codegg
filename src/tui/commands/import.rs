@@ -337,15 +337,25 @@ pub(crate) fn apply_import_preview_loaded(
     msg_count: usize,
     error: Option<String>,
 ) {
-    if !app.dialog_state.import_request.is_current(request_id) {
+    if let Some(err) = error {
+        if !app
+            .dialog_state
+            .import_request
+            .fail(request_id, err.clone())
+        {
+            return;
+        }
+        if let Some(ref mut import) = app.dialog_state.import_dialog {
+            import.set_error(err);
+        }
         return;
     }
-    if let Some(ref mut import) = app.dialog_state.import_dialog {
-        if let Some(err) = error {
-            import.set_error(err);
-        } else if let Some(session) = session {
-            import.set_preview(session, msg_count);
-        }
+
+    if !app.dialog_state.import_request.finish(request_id) {
+        return;
+    }
+    if let (Some(ref mut import), Some(session)) = (&mut app.dialog_state.import_dialog, session) {
+        import.set_preview(session, msg_count);
     }
 }
 
@@ -422,14 +432,24 @@ pub(crate) fn apply_import_confirmed(
     session: Option<crate::session::Session>,
     error: Option<String>,
 ) {
-    if !app.dialog_state.import_request.is_current(request_id) {
+    if let Some(err) = error {
+        if !app
+            .dialog_state
+            .import_request
+            .fail(request_id, err.clone())
+        {
+            return;
+        }
+        if let Some(ref mut import) = app.dialog_state.import_dialog {
+            import.set_error(err);
+        }
         return;
     }
-    if let Some(ref mut import) = app.dialog_state.import_dialog {
-        if let Some(err) = error {
-            import.set_error(err);
-        } else if let Some(session) = session {
-            import.set_done(session);
-        }
+
+    if !app.dialog_state.import_request.finish(request_id) {
+        return;
+    }
+    if let (Some(ref mut import), Some(session)) = (&mut app.dialog_state.import_dialog, session) {
+        import.set_done(session);
     }
 }

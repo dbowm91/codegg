@@ -78,30 +78,93 @@ pub struct AsyncUiRequestState {
 
 **Dialog close integration:** `close_dialog()` (`pub(crate)` for testability) cancels async request states for Import, ResearchBrowser, and Session dialogs, ensuring stale completions are ignored after dismissal.
 
+**Completion semantics:** All async apply handlers (`apply_import_*`, `apply_research_*`, `apply_session_mutation_finished`, etc.) follow a single canonical pattern:
+
+```rust
+if !app.dialog_state.<field>.finish(request_id) {
+    return;  // stale or cancelled, ignore
+}
+// ... apply changes ...
+```
+
+`finish(request_id)` returns `false` for stale or cancelled completions; the apply function returns immediately. `fail(request_id, error)` does the same guard but records the error. Never mix `is_current()` + manual mutation; always go through `finish`/`fail`.
+
 ### Background Task Lifecycle (Phase 7)
 
 TUI-owned background tasks are tracked via [`TuiTaskRegistry`](src/tui/task_lifecycle.rs) on `App`.
 
 **Key types:**
 - `TuiTaskId(u64)` -- monotonically increasing task identifier
-- `TuiTaskKind` -- category enum: `Command`, `FileDiff`, `Shell`, `Research`, `Memory`, `Notification`, `SecurityReview`, `Indexer`, `Other`
-- `TuiTaskRecord` -- stores name, kind, started_at, abort_handle
+- `TuiTaskKind` -- category enum: `Command`, `FileDiff`, `Shell`, `Research`, `Memory`, `Notification`, `SecurityReview`, `Indexer`, `GitStatus`, `Other`
+- `TuiTaskRecord` -- stores name, kind, started_at, abort_handle, completion flag
 
 **Registry operations:**
 - `spawn(kind, name, future)` -- register and spawn a tracked task, returns `TuiTaskId`
 - `cancel(id)` -- abort a specific task
 - `cancel_kind(kind)` -- abort all tasks of a given kind
 - `cancel_all()` -- abort all registered tasks
-- `reap_finished()` -- remove completed tasks from the registry
+- `reap_finished()` -- remove completed tasks from the registry, incrementing `completed_count`
+- `is_finished(id)` -- true once the task has either completed naturally or been aborted (the `is_finished` rename reflects that `AbortHandle::is_finished` is true for both outcomes)
 - `active_count()` / `summary()` -- diagnostics
+
+**Outcome accounting:**
+- `completed_count` increments on `reap_finished` only (natural completion).
+- `cancelled_count` increments inside `cancel_kind` / `cancel` (abort).
+- `panicked_count` is reserved; with the abort-handle-only design (no `JoinHandle`), it cannot be observed and stays at 0. When/if the registry upgrades to `JoinHandle`, this counter is the seam.
 
 **Integration with spawn_tui_task:**
 - `spawn_tui_task()` -- unchanged, fire-and-forget (no tracking)
 - `spawn_registered_tui_task(tx, registry, kind, name, fut)` -- tracked variant, returns `Option<TuiTaskId>`
 
+**Periodic reaping:** The event loop wakes periodically (resize-debounce cadence) and calls `app.task_registry.reap_finished()` to keep the registry bounded and the counters accurate.
+
 **Shutdown:** `App::prepare_shutdown()` cancels all registered tasks and kills shell handles. Called before `terminal_guard.restore()` in `runtime/event_loop::run_event_loop`.
 
-**Diagnostics:** `/tui-stats` now includes task registry stats (active counts by kind, oldest task, cancelled count) and shell handle count.
+**Diagnostics:** `/tui-stats` now includes task registry stats (active counts by kind, oldest task, completed count, cancelled count) and shell handle count.
+
+### Cached Git Sidebar State
+
+Sidebar git metadata (branch, dirty) is computed in the background rather than on every render frame, so a slow or hung git process cannot stall the event loop.
+
+**Storage:** `GitSidebarState` (in `src/tui/app/state/session.rs`) holds `root`, `branch`, `dirty`, `last_refreshed`, `loading`, `error`, and a `generation: u64` counter. The struct is `Default`-derived and lives as `session_state.git_sidebar`.
+
+**Refresh pipeline:**
+1. `start_refresh_git_sidebar(app)` (`src/tui/commands/git_sidebar.rs`) bumps the generation via `git_sidebar.begin_refresh()`, sets `loading = true`, and spawns a registered task (`TuiTaskKind::GitStatus`).
+2. The probe runs `egggit::status::repo_status` inside `tokio::time::timeout` (`GIT_REFRESH_TIMEOUT = 3s`) so a wedged git invocation cannot block forever.
+3. The probe posts `TuiCommand::GitSidebarRefreshFinished { generation, root, branch, dirty, error }`.
+4. `apply_git_sidebar_refresh` calls `git_sidebar.apply_refresh(...)` or `apply_refresh_error(...)`. Both return `false` for stale generations, so a slow probe arriving after the user switched sessions is dropped silently.
+
+**Triggers:** Refresh is kicked on `TuiMsg::SelectSession`, on `App::set_session`, and when the session reload completes. The render path (`render_sidebar`) only reads from `session_state.git_sidebar`; it never shells out to git.
+
+**Remote TUI:** `RemoteTuiStateSnapshot.git: Option<RemoteGitInfo>` (`crates/codegg-protocol/src/tui.rs`) carries the cached sidebar state to remote clients. `loading` and `error` are exposed so a remote client can render the same spinner / error affordance as the local TUI.
+
+### Long Output → Info Dialog
+
+Multi-line command results no longer get joined into a single toast. Toasts are a short-feedback channel; collapsing a 30-line shell list or memory summary into one toast eats the toast column and pushes other toasts out before they can be read.
+
+`App::show_short_or_info(info_type, lines)` (`src/tui/app/mod.rs`) routes output to either a short toast (≤3 lines) or the scrollable `InfoDialog`. The dialog is reused if already open — re-opening it pushes focus only once, not per command. Empty input returns an "Usage:" warning toast. Use this helper for any handler that may emit a non-trivial number of lines; reserve raw `toasts.info(joined)` for genuinely single-line responses (`/status`, `/cost`).
+
+### Remote TUI Snapshot Sequencing
+
+`App::remote_sequence: u64` is a monotonically increasing counter on `App` (initialised at 0).
+
+- `App::remote_snapshot()` — non-mutating, returns the most recent committed snapshot.
+- `App::next_remote_snapshot()` — mutating, increments the counter and returns the new snapshot. Used by `RequestSnapshot` and `Resume` handlers when they reply to a remote client.
+- `App::build_remote_snapshot(sequence)` — builder used by both, with `sequence` parameterised so callers can compose snapshots at any position.
+
+**Resume semantics** (`Ok(RemoteTuiMessage::Resume { from_event_seq })` arm of `handle_remote_event`):
+- `from_event_seq == 0` — invalid resume, toasts a warning and sends `ResyncRequired { reason: "invalid_resume_sequence" }`.
+- `from_event_seq > remote_sequence` — client is ahead of server, toasts a warning and sends `ResyncRequired { reason: "requested_sequence_ahead_of_current" }`.
+- `from_event_seq <= remote_sequence` — client is behind or current; replies with a fresh `StateSnapshot` whose `sequence` is the next monotonic value (the server does not currently maintain a per-event replay log, so the client adopts the new snapshot directly).
+
+### Synchronous Command Dispatch
+
+Command dispatch arms in `src/tui/runtime/command_dispatch.rs` are all `fn (non-async)`. Handlers that need to do real async work either:
+1. Fire-and-forget via `tokio::spawn` and post a `TuiCommand` completion variant back on the channel (e.g. `handle_goal_*`, `handle_compact_session`).
+2. Use `spawn_registered_tui_task` for lifecycle-tracked work (e.g. `handle_spawn_subagent` → `SubagentSpawnFinished`, `start_refresh_git_sidebar` → `GitSidebarRefreshFinished`).
+3. Await synchronously only if the work is genuinely fast (single quick DB read, no network).
+
+The dispatch `match` contains no `.await` points. Any handler that needs awaiting must be converted to one of the patterns above.
 
 ## Directory Structure
 

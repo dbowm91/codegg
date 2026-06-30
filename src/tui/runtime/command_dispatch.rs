@@ -41,10 +41,11 @@ use super::super::commands::shell::{
 };
 #[allow(unused_imports)]
 use super::super::commands::tasks::{
-    apply_notification_sent, apply_task_operation_finished, apply_tasks_listed,
-    apply_worktree_listed, handle_compact_session, handle_file_diff_stats_ready,
-    handle_open_diff_dialog, handle_spawn_subagent, start_delete_task, start_list_tasks,
-    start_send_notification, start_task_schedule, start_worktree_list,
+    apply_notification_sent, apply_subagent_spawn_finished, apply_task_operation_finished,
+    apply_tasks_listed, apply_worktree_listed, handle_compact_session,
+    handle_file_diff_stats_ready, handle_open_diff_dialog, handle_spawn_subagent,
+    start_delete_task, start_list_tasks, start_send_notification, start_task_schedule,
+    start_worktree_list,
 };
 
 use crate::protocol::core::CoreRequest;
@@ -113,7 +114,7 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
             start_refresh_session_state(app, session_id);
         }
         TuiCommand::SpawnSubagent { agent_name, prompt } => {
-            handle_spawn_subagent(app, agent_name, prompt).await;
+            handle_spawn_subagent(app, agent_name, prompt);
         }
         TuiCommand::UndoDelete { session_id } => {
             start_undo_delete(app, session_id);
@@ -152,14 +153,14 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
             start_memory_forget(app, id);
         }
         TuiCommand::CompactSession => {
-            handle_compact_session(app).await;
+            handle_compact_session(app);
         }
         TuiCommand::OpenDiffDialog {
             old_content,
             new_content,
             title,
         } => {
-            handle_open_diff_dialog(app, old_content, new_content, title).await;
+            handle_open_diff_dialog(app, old_content, new_content, title);
         }
         TuiCommand::SendNotification {
             notification_type,
@@ -172,29 +173,29 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
             project_id,
             objective,
         } => {
-            handle_goal_set(app, session_id, project_id, objective).await;
+            handle_goal_set(app, session_id, project_id, objective);
         }
         TuiCommand::GoalFromFile {
             session_id,
             project_id,
             path,
         } => {
-            handle_goal_from_file(app, session_id, project_id, path).await;
+            handle_goal_from_file(app, session_id, project_id, path);
         }
         TuiCommand::GoalShow { session_id } => {
             start_goal_show(app, session_id);
         }
         TuiCommand::GoalPause { session_id } => {
-            handle_goal_simple(app, CoreRequest::GoalPause { session_id }, "pause").await;
+            handle_goal_simple(app, CoreRequest::GoalPause { session_id }, "pause");
         }
         TuiCommand::GoalResume { session_id } => {
-            handle_goal_simple(app, CoreRequest::GoalResume { session_id }, "resume").await;
+            handle_goal_simple(app, CoreRequest::GoalResume { session_id }, "resume");
         }
         TuiCommand::GoalClear { session_id } => {
-            handle_goal_simple(app, CoreRequest::GoalClear { session_id }, "clear").await;
+            handle_goal_simple(app, CoreRequest::GoalClear { session_id }, "clear");
         }
         TuiCommand::GoalDone { session_id } => {
-            handle_goal_simple(app, CoreRequest::GoalDone { session_id }, "done").await;
+            handle_goal_simple(app, CoreRequest::GoalDone { session_id }, "done");
         }
         TuiCommand::GoalCheckpoint {
             session_id,
@@ -206,7 +207,7 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
             session_id,
             subcommand,
         } => {
-            handle_goal_budget(app, session_id, subcommand).await;
+            handle_goal_budget(app, session_id, subcommand);
         }
         TuiCommand::ResearchListRuns => {
             start_research_list_runs(app);
@@ -226,10 +227,29 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
             args,
             lsp_tool,
         } => {
-            handle_security_review_run(app, id, root, args, lsp_tool).await;
+            handle_security_review_run(app, id, root, args, lsp_tool);
         }
         TuiCommand::SecurityReviewFinished { id, receipt, error } => {
             handle_security_review_finished(app, id, receipt, error);
+        }
+        TuiCommand::SubagentSpawnFinished {
+            agent_name,
+            task_id,
+            prompt,
+            error,
+        } => {
+            apply_subagent_spawn_finished(app, agent_name, task_id, prompt, error);
+        }
+        TuiCommand::GitSidebarRefreshFinished {
+            generation,
+            root,
+            branch,
+            dirty,
+            error,
+        } => {
+            super::super::commands::git_sidebar::apply_git_sidebar_refresh(
+                app, generation, root, branch, dirty, error,
+            );
         }
         TuiCommand::SessionsReloaded {
             request_id,

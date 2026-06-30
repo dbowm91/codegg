@@ -1,4 +1,5 @@
 pub(super) mod diagnostics;
+pub(super) mod git_sidebar;
 pub(super) mod goals;
 pub(super) mod import;
 pub(super) mod memory;

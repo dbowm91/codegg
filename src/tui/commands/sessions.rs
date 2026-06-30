@@ -143,15 +143,19 @@ pub(crate) fn apply_session_mutation_finished(
     reload_after: bool,
     error: Option<String>,
 ) {
-    if !app
-        .dialog_state
-        .session_mutation_request
-        .is_current(request_id)
-    {
+    if let Some(err) = error {
+        if !app
+            .dialog_state
+            .session_mutation_request
+            .fail(request_id, err.clone())
+        {
+            return;
+        }
+        app.messages_state.toasts.error(&err);
         return;
     }
-    if let Some(err) = error {
-        app.messages_state.toasts.error(&err);
+
+    if !app.dialog_state.session_mutation_request.finish(request_id) {
         return;
     }
     if !message.is_empty() {

@@ -103,6 +103,19 @@ pub struct RemoteTuiStateSnapshot {
     pub prompt: String,
     pub dialog: Option<String>,
     pub toasts: Vec<RemoteToastView>,
+    /// Cached git sidebar state (root, branch, dirty). Refreshed
+    /// asynchronously on the server; the value here is the most
+    /// recent successful refresh.
+    pub git: Option<RemoteGitInfo>,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
+pub struct RemoteGitInfo {
+    pub root: Option<String>,
+    pub branch: Option<String>,
+    pub dirty: bool,
+    pub loading: bool,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]

@@ -3,6 +3,25 @@
 //! Centralizes ownership and shutdown semantics for TUI-side background tasks.
 //! Tracks spawned tasks so they can be counted, cancelled, and reaped on
 //! shutdown or dialog close. See `plans/tui_phase_7_background_task_lifecycle.md`.
+//!
+//! ## Cancellation semantics
+//!
+//! Cancellation is **abort-based**, not cooperative. When a task is cancelled
+//! via [`cancel`], [`cancel_kind`], or [`cancel_all`], the registry calls
+//! `tokio::task::AbortHandle::abort` on the underlying task. Tasks must not
+//! assume a cancellation token is plumbed through; long-running work should
+//! still periodically check `tokio::task::yield_now().is_cancelled()` or use
+//! `tokio::select!` if they want soft cancellation.
+//!
+//! ## Outcome accounting
+//!
+//! The registry tracks three lifetime counters:
+//! - [`completed_count`]: tasks that finished naturally before being reaped
+//! - [`cancelled_count`]: tasks aborted via the registry's cancellation API
+//! - [`panicked_count`]: tasks whose result was `Err(JoinError::Panic)` when
+//!   last observed. Note: detecting panics requires awaiting the JoinHandle;
+//!   the abort-handle-only design cannot observe them, so this counter stays
+//!   at zero unless the registry is later upgraded to store JoinHandles.
 
 use std::collections::HashMap;
 use std::time::Instant;
@@ -33,6 +52,8 @@ pub enum TuiTaskKind {
     Indexer,
     /// Catch-all for miscellaneous background work.
     Other,
+    /// Git sidebar background refresh.
+    GitStatus,
 }
 
 impl std::fmt::Display for TuiTaskKind {
@@ -47,6 +68,7 @@ impl std::fmt::Display for TuiTaskKind {
             Self::SecurityReview => write!(f, "SecurityReview"),
             Self::Indexer => write!(f, "Indexer"),
             Self::Other => write!(f, "Other"),
+            Self::GitStatus => write!(f, "GitStatus"),
         }
     }
 }
@@ -69,8 +91,10 @@ impl TuiTaskRecord {
         self.abort_handle.abort();
     }
 
-    /// Returns `true` if the task has been aborted.
-    pub fn is_aborted(&self) -> bool {
+    /// Returns `true` if the task has finished (either naturally or
+    /// because it was aborted). Use [`reap_finished`](TuiTaskRegistry::reap_finished)
+    /// to drop finished tasks from the registry.
+    pub fn is_finished(&self) -> bool {
         self.abort_handle.is_finished()
     }
 }
@@ -86,6 +110,15 @@ pub struct TuiTaskRegistry {
     /// Cumulative count of tasks cancelled via [`cancel`] / [`cancel_kind`] /
     /// [`cancel_all`].
     cancelled_count: u64,
+    /// Cumulative count of tasks that finished naturally before being
+    /// reaped. Bumped by [`reap_finished`] when a finished task is removed
+    /// from the active map.
+    completed_count: u64,
+    /// Cumulative count of tasks observed to have panicked. The
+    /// abort-handle-only design cannot observe panics; this counter is
+    /// reserved for a future JoinHandle upgrade and stays at 0 in the
+    /// current implementation.
+    panicked_count: u64,
 }
 
 impl Default for TuiTaskRegistry {
@@ -100,6 +133,8 @@ impl TuiTaskRegistry {
             next_id: 0,
             tasks: HashMap::new(),
             cancelled_count: 0,
+            completed_count: 0,
+            panicked_count: 0,
         }
     }
 
@@ -164,9 +199,15 @@ impl TuiTaskRegistry {
         }
     }
 
-    /// Remove finished tasks from the registry.
+    /// Remove finished tasks from the registry and bump the completed
+    /// counter for each one that finished naturally (i.e. was not
+    /// previously cancelled). Calling this periodically keeps the
+    /// active count from drifting upward across long sessions.
     pub fn reap_finished(&mut self) {
-        self.tasks.retain(|_, record| !record.is_aborted());
+        let before = self.tasks.len();
+        self.tasks.retain(|_, record| !record.is_finished());
+        let removed = before.saturating_sub(self.tasks.len());
+        self.completed_count = self.completed_count.saturating_add(removed as u64);
     }
 
     /// Number of currently active (non-reaped) tasks.
@@ -179,10 +220,29 @@ impl TuiTaskRegistry {
         self.cancelled_count
     }
 
+    /// Number of tasks that finished naturally before being reaped.
+    pub fn completed_count(&self) -> u64 {
+        self.completed_count
+    }
+
+    /// Number of tasks observed to have panicked. Reserved for a
+    /// future JoinHandle upgrade; always 0 in the current design.
+    pub fn panicked_count(&self) -> u64 {
+        self.panicked_count
+    }
+
     /// Human-readable summary for diagnostics.
     pub fn summary(&self) -> String {
+        let mut lines = vec![format!(
+            "Active tasks: {} (completed: {}, cancelled: {}, panicked: {})",
+            self.tasks.len(),
+            self.completed_count,
+            self.cancelled_count,
+            self.panicked_count,
+        )];
+
         if self.tasks.is_empty() {
-            return format!("Active tasks: 0 ({} cancelled)", self.cancelled_count);
+            return lines.join("\n");
         }
 
         // Count by kind
@@ -198,7 +258,6 @@ impl TuiTaskRegistry {
             }
         }
 
-        let mut lines = vec![format!("Active tasks: {}", self.tasks.len())];
         for (kind, count) in &kind_counts {
             lines.push(format!("  {}: {}", kind, count));
         }
@@ -207,9 +266,6 @@ impl TuiTaskRegistry {
             oldest_name,
             oldest_age.elapsed()
         ));
-        if self.cancelled_count > 0 {
-            lines.push(format!("Cancelled: {}", self.cancelled_count));
-        }
         lines.join("\n")
     }
 
@@ -332,6 +388,79 @@ mod tests {
         assert_eq!(reg.active_count(), 0);
         // Cancelling a reaped (nonexistent) task returns false
         assert!(!reg.cancel(id));
+    }
+
+    #[tokio::test]
+    async fn completed_count_increments_on_reap() {
+        let mut reg = TuiTaskRegistry::new();
+        reg.spawn(TuiTaskKind::Command, "fast1", async {});
+        reg.spawn(TuiTaskKind::Command, "fast2", async {});
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        assert_eq!(reg.active_count(), 2);
+        assert_eq!(reg.completed_count(), 0);
+        reg.reap_finished();
+        assert_eq!(reg.active_count(), 0);
+        assert_eq!(reg.completed_count(), 2);
+    }
+
+    #[tokio::test]
+    async fn reap_skips_still_running_tasks() {
+        let mut reg = TuiTaskRegistry::new();
+        let _id = reg.spawn(TuiTaskKind::Command, "slow", async {
+            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+        });
+        reg.reap_finished();
+        // Task is still running, must not be reaped
+        assert_eq!(reg.active_count(), 1);
+        assert_eq!(reg.completed_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn cancelled_tasks_bump_cancelled_not_completed() {
+        let mut reg = TuiTaskRegistry::new();
+        let id = reg.spawn(TuiTaskKind::Command, "to_cancel", async {
+            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+        });
+        reg.cancel(id);
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        reg.reap_finished();
+        assert_eq!(reg.active_count(), 0);
+        assert_eq!(reg.cancelled_count(), 1);
+        assert_eq!(reg.completed_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn panicked_count_stays_zero_in_abort_handle_design() {
+        let mut reg = TuiTaskRegistry::new();
+        reg.spawn(TuiTaskKind::Command, "panic", async {
+            // Panic — but with abort-handle-only design we cannot observe.
+            panic!("intentional test panic");
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        reg.reap_finished();
+        // The task panicked but the registry cannot detect that yet.
+        assert_eq!(reg.panicked_count(), 0);
+    }
+
+    #[test]
+    fn summary_includes_all_counters() {
+        let reg = TuiTaskRegistry::new();
+        let s = reg.summary();
+        assert!(s.contains("Active tasks: 0"));
+        assert!(s.contains("completed: 0"));
+        assert!(s.contains("cancelled: 0"));
+        assert!(s.contains("panicked: 0"));
+    }
+
+    #[tokio::test]
+    async fn summary_after_completion_shows_completed_count() {
+        let mut reg = TuiTaskRegistry::new();
+        reg.spawn(TuiTaskKind::Command, "fast", async {});
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        reg.reap_finished();
+        let s = reg.summary();
+        assert!(s.contains("completed: 1"));
+        assert!(s.contains("cancelled: 0"));
     }
 
     #[test]

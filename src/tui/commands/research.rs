@@ -228,16 +228,27 @@ pub(crate) fn apply_research_runs_loaded(
     runs: Vec<crate::research::service::ResearchRunSummary>,
     error: Option<String>,
 ) {
-    if !app.dialog_state.research_request.is_current(request_id) {
+    if let Some(err) = error {
+        if !app
+            .dialog_state
+            .research_request
+            .fail(request_id, err.clone())
+        {
+            return;
+        }
+        app.messages_state.toasts.error(&err);
+        if let Some(ref mut browser) = app.dialog_state.research_browser {
+            browser.loading = false;
+        }
+        return;
+    }
+
+    if !app.dialog_state.research_request.finish(request_id) {
         return;
     }
     if let Some(ref mut browser) = app.dialog_state.research_browser {
         browser.loading = false;
-        if let Some(err) = error {
-            app.messages_state.toasts.error(&err);
-        } else {
-            browser.set_runs(runs);
-        }
+        browser.set_runs(runs);
     }
 }
 
@@ -285,14 +296,27 @@ pub(crate) fn apply_research_run_loaded(
     bundle: Option<Box<crate::research::types::ResearchBundle>>,
     error: Option<String>,
 ) {
-    if !app.dialog_state.research_request.is_current(request_id) {
+    if let Some(err) = error {
+        if !app
+            .dialog_state
+            .research_request
+            .fail(request_id, err.clone())
+        {
+            return;
+        }
+        app.messages_state.toasts.error(&err);
+        if let Some(ref mut browser) = app.dialog_state.research_browser {
+            browser.loading = false;
+        }
+        return;
+    }
+
+    if !app.dialog_state.research_request.finish(request_id) {
         return;
     }
     if let Some(ref mut browser) = app.dialog_state.research_browser {
         browser.loading = false;
-        if let Some(err) = error {
-            app.messages_state.toasts.error(&err);
-        } else if let Some(bundle) = bundle {
+        if let Some(bundle) = bundle {
             browser.set_bundle(*bundle);
         }
     }
@@ -445,13 +469,27 @@ pub(crate) fn apply_research_section_loaded(
     )>,
     error: Option<String>,
 ) {
-    if !app.dialog_state.research_request.is_current(request_id) {
+    if let Some(err) = error {
+        if !app
+            .dialog_state
+            .research_request
+            .fail(request_id, err.clone())
+        {
+            return;
+        }
+        if let Some(ref mut browser) = app.dialog_state.research_browser {
+            browser.loading = false;
+        }
+        app.messages_state.toasts.warning(&err);
+        return;
+    }
+
+    if !app.dialog_state.research_request.finish(request_id) {
         return;
     }
     if let Some(ref mut browser) = app.dialog_state.research_browser {
-        if let Some(err) = error {
-            app.messages_state.toasts.warning(&err);
-        } else if let Some((section_type, content)) = content {
+        browser.loading = false;
+        if let Some((section_type, content)) = content {
             browser.set_report_content(section_type, content);
         } else {
             app.messages_state

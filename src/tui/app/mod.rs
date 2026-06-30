@@ -314,6 +314,25 @@ pub enum TuiCommand {
         receipt: Option<Box<crate::security::workflow::SecurityReviewReceipt>>,
         error: Option<String>,
     },
+    /// Notification that a background subagent spawn attempt finished.
+    /// Spawned from `handle_spawn_subagent` so the TUI dispatch loop
+    /// never awaits the subagent pool directly.
+    SubagentSpawnFinished {
+        agent_name: String,
+        task_id: u64,
+        prompt: String,
+        error: Option<String>,
+    },
+    /// Notification that a background git sidebar refresh finished.
+    /// The generation counter guards against stale completions
+    /// overwriting newer session/project state.
+    GitSidebarRefreshFinished {
+        generation: u64,
+        root: Option<String>,
+        branch: Option<String>,
+        dirty: bool,
+        error: Option<String>,
+    },
     RunHumanShell {
         command: String,
         promote_after: bool,
@@ -574,6 +593,12 @@ pub struct App {
     /// counted, cancelled, and reaped on shutdown or dialog close.
     pub task_registry: crate::tui::task_lifecycle::TuiTaskRegistry,
     pub render_panic_injection: RenderPanicInjection,
+    /// Monotonic sequence number for remote TUI snapshots. Each
+    /// `next_remote_snapshot` call increments this and includes the
+    /// new value in the snapshot so remote clients can detect drops
+    /// or skipped frames. Starts at 0 and never resets during a
+    /// single app lifetime.
+    pub remote_sequence: u64,
 }
 
 /// What to do at TUI startup with respect to session loading. The TUI
@@ -767,6 +792,7 @@ impl App {
                 tpm_remaining: None,
                 permission_pending: false,
                 subagent_count: 0,
+                git_sidebar: crate::tui::app::state::session::GitSidebarState::default(),
             },
             prompt_state: PromptState {
                 prompt: PromptWidget::new(Arc::clone(&theme)),
@@ -886,6 +912,7 @@ impl App {
                 .and_then(|c| c.human_shell.as_ref())
                 .map(crate::shell::ShellOutputStore::from_config)
                 .unwrap_or_default(),
+            remote_sequence: 0,
             shell_handles: std::collections::HashMap::new(),
             task_registry: crate::tui::task_lifecycle::TuiTaskRegistry::new(),
             render_panic_injection: RenderPanicInjection::all_false(),
@@ -905,6 +932,17 @@ impl App {
     }
 
     pub fn remote_snapshot(&self) -> crate::protocol::tui::RemoteTuiStateSnapshot {
+        self.build_remote_snapshot(self.remote_sequence)
+    }
+
+    /// Build a snapshot with the given sequence number. Use
+    /// `next_remote_snapshot` to allocate a fresh monotonic sequence
+    /// from the app, or pass a specific sequence when replaying state
+    /// to a remote client that supplied `Resume { from_event_seq }`.
+    pub fn build_remote_snapshot(
+        &self,
+        sequence: u64,
+    ) -> crate::protocol::tui::RemoteTuiStateSnapshot {
         use crate::protocol::tui::{
             RemoteMessageView, RemoteToastView, RemoteToolCallView, REMOTE_TUI_PROTOCOL_VERSION,
         };
@@ -1009,7 +1047,7 @@ impl App {
 
         crate::protocol::tui::RemoteTuiStateSnapshot {
             protocol_version: REMOTE_TUI_PROTOCOL_VERSION,
-            sequence: 0,
+            sequence,
             session_id,
             route,
             model,
@@ -1019,7 +1057,23 @@ impl App {
             prompt,
             dialog,
             toasts,
+            git: Some(crate::protocol::tui::RemoteGitInfo {
+                root: self.session_state.git_sidebar.root.clone(),
+                branch: self.session_state.git_sidebar.branch.clone(),
+                dirty: self.session_state.git_sidebar.dirty,
+                loading: self.session_state.git_sidebar.loading,
+                error: self.session_state.git_sidebar.error.clone(),
+            }),
         }
+    }
+
+    /// Increment the remote snapshot sequence and return a fresh
+    /// snapshot. Used by remote protocol handlers when responding to
+    /// `RequestSnapshot` so the client sees a strictly increasing
+    /// sequence.
+    pub fn next_remote_snapshot(&mut self) -> crate::protocol::tui::RemoteTuiStateSnapshot {
+        self.remote_sequence = self.remote_sequence.saturating_add(1);
+        self.build_remote_snapshot(self.remote_sequence)
     }
 
     /// Create a minimal App instance for testing.
@@ -1110,6 +1164,7 @@ impl App {
                 tpm_remaining: None,
                 permission_pending: false,
                 subagent_count: 0,
+                git_sidebar: crate::tui::app::state::session::GitSidebarState::default(),
             },
             prompt_state: PromptState {
                 prompt: PromptWidget::new(Arc::clone(&theme)),
@@ -1225,6 +1280,7 @@ impl App {
             shell_handles: std::collections::HashMap::new(),
             task_registry: crate::tui::task_lifecycle::TuiTaskRegistry::new(),
             render_panic_injection: RenderPanicInjection::all_false(),
+            remote_sequence: 0,
         }
     }
 
@@ -1658,9 +1714,40 @@ impl App {
                     pending_questions
                 );
             }
+            Ok(RemoteTuiMessage::Resume { from_event_seq }) => {
+                let requested = from_event_seq;
+                tracing::info!("Resume received: from_event_seq={}", requested);
+                if requested == 0 {
+                    self.messages_state
+                        .toasts
+                        .add(Toast::warning("Cannot resume from sequence 0"));
+                    self.send_remote_message(RemoteTuiMessage::ResyncRequired {
+                        reason: Some("invalid_resume_sequence".to_string()),
+                        pending_permissions: Vec::new(),
+                        pending_questions: Vec::new(),
+                    });
+                } else if requested > self.remote_sequence {
+                    self.messages_state.toasts.add(Toast::warning(&format!(
+                        "Resume seq {} ahead of current {}; resyncing",
+                        requested, self.remote_sequence
+                    )));
+                    self.send_remote_message(RemoteTuiMessage::ResyncRequired {
+                        reason: Some("requested_sequence_ahead_of_current".to_string()),
+                        pending_permissions: Vec::new(),
+                        pending_questions: Vec::new(),
+                    });
+                } else {
+                    let snapshot = self.next_remote_snapshot();
+                    let seq = snapshot.sequence;
+                    self.send_remote_message(RemoteTuiMessage::StateSnapshot {
+                        sequence: seq,
+                        snapshot,
+                    });
+                }
+            }
             Ok(RemoteTuiMessage::RequestSnapshot { reason }) => {
                 tracing::info!("RequestSnapshot received: reason={:?}", reason);
-                let snapshot = self.remote_snapshot();
+                let snapshot = self.next_remote_snapshot();
                 let seq = snapshot.sequence;
                 self.send_remote_message(RemoteTuiMessage::StateSnapshot {
                     sequence: seq,
@@ -2459,19 +2546,13 @@ impl App {
         );
 
         if let Some(ref sess) = self.session_state.session {
-            let project_dir = std::path::Path::new(&sess.project_id);
-            if let Some(git_root) = crate::worktree::find_git_root(project_dir) {
-                let branch = get_git_branch(&git_root);
-                let dirty = check_git_dirty(&git_root);
-                self.sidebar.set_git_info(
-                    branch,
-                    dirty,
-                    Some(git_root.to_string_lossy().into_owned()),
-                );
-            } else {
-                self.sidebar
-                    .set_git_info(None, false, Some(sess.project_id.clone()));
-            }
+            let cached = &self.session_state.git_sidebar;
+            let display_root = cached
+                .root
+                .clone()
+                .or_else(|| Some(sess.project_id.clone()));
+            self.sidebar
+                .set_git_info(cached.branch.clone(), cached.dirty, display_root);
         } else {
             self.sidebar.set_git_info(None, false, None);
         }
@@ -2686,8 +2767,11 @@ impl App {
                 use crate::tui::task_lifecycle::TuiTaskKind;
                 self.task_registry.cancel_kind(TuiTaskKind::Research);
                 self.task_registry.cancel_kind(TuiTaskKind::Memory);
+                self.task_registry.cancel_kind(TuiTaskKind::GitStatus);
                 self.set_session(*session);
                 self.close_dialog();
+                // Refresh sidebar git status for the new project.
+                crate::tui::commands::git_sidebar::start_refresh_git_sidebar(self);
             }
             TuiMsg::SubmitConnect => {
                 self.handle_connect_send();
@@ -4812,11 +4896,13 @@ impl App {
                                         format!("{} {} {}", i, icon, item.text)
                                     })
                                     .collect();
-                                self.messages_state.toasts.info(&format!(
-                                    "Plan ({} items):\n{}",
-                                    plan.items.len(),
-                                    items.join("\n")
-                                ));
+                                let mut plan_lines =
+                                    vec![format!("Plan ({} items):", plan.items.len())];
+                                plan_lines.extend(items);
+                                self.show_short_or_info(
+                                    crate::tui::components::dialogs::info::InfoType::Stats,
+                                    plan_lines,
+                                );
                             }
                         } else {
                             self.messages_state.toasts.info("No active plan");
@@ -4866,7 +4952,10 @@ impl App {
                         * 100.0) as u64
                 ));
 
-                self.messages_state.toasts.info(&lines.join(" | "));
+                self.show_short_or_info(
+                    crate::tui::components::dialogs::info::InfoType::Stats,
+                    lines,
+                );
             }
             "/search" => {
                 let query = self.dialog_state.command_palette.query.trim().to_string();
@@ -6858,8 +6947,14 @@ impl App {
                 self.dialog_state.research_request.cancel();
             }
             Dialog::Session => {
+                self.task_registry.cancel_kind(TuiTaskKind::Command);
                 self.dialog_state.session_reload_request.cancel();
                 self.dialog_state.session_messages_request.cancel();
+                self.dialog_state.session_mutation_request.cancel();
+                self.dialog_state.task_list_request.cancel();
+                self.dialog_state.task_delete_request.cancel();
+                self.dialog_state.worktree_list_request.cancel();
+                self.dialog_state.template_create_request.cancel();
             }
             Dialog::ShellShow => {
                 self.dialog_state.shell_detail_id = None;
@@ -6899,6 +6994,8 @@ impl App {
     ) {
         use crate::tui::components::dialogs::info::InfoDialog;
         if let Some(ref mut dialog) = self.dialog_state.info_dialog {
+            // Reuse the existing dialog to avoid double-pushing the
+            // focus stack. set_info_type resets scroll position.
             dialog.set_info_type(info_type);
             dialog.set_content(lines);
             dialog.set_theme(&self.ui_state.theme);
@@ -6908,9 +7005,27 @@ impl App {
                 info_type,
                 lines,
             ));
+            if let Some(ref info_dialog) = self.dialog_state.info_dialog {
+                self.focus_manager.push(Box::new(info_dialog.clone()));
+            }
         }
-        if let Some(ref info_dialog) = self.dialog_state.info_dialog {
-            self.focus_manager.push(Box::new(info_dialog.clone()));
+    }
+
+    /// Show short text as a toast, or open a scrollable info dialog
+    /// when the content is multi-line. Use this for command outputs
+    /// whose length is data-dependent (lists, reports, structured
+    /// results) to keep the toast column readable.
+    pub(crate) fn show_short_or_info(
+        &mut self,
+        info_type: crate::tui::components::dialogs::info::InfoType,
+        lines: Vec<String>,
+    ) {
+        const MAX_TOAST_LINES: usize = 3;
+        if lines.len() <= MAX_TOAST_LINES {
+            let joined = lines.join("\n");
+            self.messages_state.toasts.info(&joined);
+        } else {
+            self.open_info_dialog(info_type, lines);
         }
     }
 
@@ -6960,7 +7075,8 @@ impl App {
                     _ => crate::tui::components::dialogs::info::InfoType::Context,
                 };
                 let lines = self.get_info_dialog_lines();
-                if self.dialog_state.info_dialog.is_none() {
+                let focus_was_empty = self.dialog_state.info_dialog.is_none();
+                if focus_was_empty {
                     self.dialog_state.info_dialog =
                         Some(crate::tui::components::dialogs::info::InfoDialog::new(
                             Arc::clone(&self.ui_state.theme),
@@ -6972,8 +7088,12 @@ impl App {
                     info_dialog.set_content(lines);
                     info_dialog.set_theme(&self.ui_state.theme);
                 }
-                if let Some(ref info_dialog) = self.dialog_state.info_dialog {
-                    self.focus_manager.push(Box::new(info_dialog.clone()));
+                // Only push the focus entry on first creation; reusing
+                // an open info dialog must not double-push the stack.
+                if focus_was_empty {
+                    if let Some(ref info_dialog) = self.dialog_state.info_dialog {
+                        self.focus_manager.push(Box::new(info_dialog.clone()));
+                    }
                 }
             }
             Dialog::Tree => {
@@ -8653,6 +8773,9 @@ impl App {
                 session_id: sess_id,
             });
         }
+        // Refresh sidebar git status for the new project so render
+        // never blocks on git probing.
+        crate::tui::commands::git_sidebar::start_refresh_git_sidebar(self);
     }
 
     pub fn set_session_store(&mut self, store: Arc<SessionStore>) {
@@ -10102,28 +10225,6 @@ fn estimate_cost(input_tokens: &u64, output_tokens: &u64, model: &str) -> String
     } else {
         format!("${:.4}", total)
     }
-}
-
-fn get_git_branch(git_root: &std::path::Path) -> Option<String> {
-    // Use the `egggit` crate for branch lookup. This is a sync
-    // call (the helper is sync), so we run the async status
-    // fetch on the current-thread runtime.
-    let root = git_root.to_path_buf();
-    let result =
-        futures::executor::block_on(async move { egggit::status::repo_status(&root).await.ok() });
-    let status = result?;
-    if status.branch.is_empty() {
-        Some("detached".to_string())
-    } else {
-        Some(status.branch)
-    }
-}
-
-fn check_git_dirty(git_root: &std::path::Path) -> bool {
-    let root = git_root.to_path_buf();
-    let result =
-        futures::executor::block_on(async move { egggit::status::repo_status(&root).await.ok() });
-    result.is_some_and(|s| s.is_dirty)
 }
 
 fn format_token_short(tokens: u64) -> String {
@@ -11633,6 +11734,112 @@ mod remote_protocol_tests {
     }
 
     #[test]
+    fn next_remote_snapshot_increments_sequence_monotonically() {
+        let mut app = App::new_for_testing("/tmp".into());
+        assert_eq!(app.remote_sequence, 0);
+        let s1 = app.next_remote_snapshot();
+        assert_eq!(s1.sequence, 1);
+        let s2 = app.next_remote_snapshot();
+        assert_eq!(s2.sequence, 2);
+        let s3 = app.next_remote_snapshot();
+        assert_eq!(s3.sequence, 3);
+        // remote_snapshot (non-mutating) returns the most recent committed seq.
+        assert_eq!(app.remote_snapshot().sequence, 3);
+    }
+
+    #[test]
+    fn request_snapshot_via_remote_event_advances_sequence() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new_for_testing("/tmp".into());
+        app.remote_send_tx = Some(tx);
+
+        let event = serde_json::json!({
+            "type": "RequestSnapshot",
+            "reason": "test"
+        });
+        app.handle_remote_event(event);
+
+        let msg = rx.try_recv().unwrap();
+        match msg {
+            RemoteTuiMessage::StateSnapshot { sequence, .. } => {
+                assert_eq!(sequence, 1);
+            }
+            other => panic!("expected StateSnapshot, got: {other:?}"),
+        }
+        assert_eq!(app.remote_sequence, 1);
+    }
+
+    #[test]
+    fn resume_from_seq_zero_requests_resync() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new_for_testing("/tmp".into());
+        app.remote_send_tx = Some(tx);
+
+        let event = serde_json::json!({
+            "type": "Resume",
+            "from_event_seq": 0,
+            "reason": "test"
+        });
+        app.handle_remote_event(event);
+
+        let msg = rx.try_recv().unwrap();
+        match msg {
+            RemoteTuiMessage::ResyncRequired { reason, .. } => {
+                assert!(reason.unwrap().contains("invalid"));
+            }
+            other => panic!("expected ResyncRequired, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resume_from_seq_ahead_requests_resync() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new_for_testing("/tmp".into());
+        app.remote_send_tx = Some(tx);
+        app.remote_sequence = 5;
+
+        let event = serde_json::json!({
+            "type": "Resume",
+            "from_event_seq": 100,
+            "reason": "ahead"
+        });
+        app.handle_remote_event(event);
+
+        let msg = rx.try_recv().unwrap();
+        match msg {
+            RemoteTuiMessage::ResyncRequired { reason, .. } => {
+                assert!(reason.unwrap().contains("ahead"));
+            }
+            other => panic!("expected ResyncRequired, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resume_from_seq_behind_sends_fresh_snapshot() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new_for_testing("/tmp".into());
+        app.remote_send_tx = Some(tx);
+        app.remote_sequence = 10;
+
+        let event = serde_json::json!({
+            "type": "Resume",
+            "from_event_seq": 3,
+            "reason": "replay"
+        });
+        app.handle_remote_event(event);
+
+        let msg = rx.try_recv().unwrap();
+        match msg {
+            RemoteTuiMessage::StateSnapshot { sequence, .. } => {
+                // Resume from behind bumps the sequence forward and
+                // hands back a fresh snapshot for the client to adopt.
+                assert!(sequence > 10);
+            }
+            other => panic!("expected StateSnapshot, got: {other:?}"),
+        }
+    }
+
+    #[test]
     fn remote_tui_state_snapshot_serializes() {
         let snapshot = crate::protocol::tui::RemoteTuiStateSnapshot {
             protocol_version: 1,
@@ -11646,6 +11853,7 @@ mod remote_protocol_tests {
             prompt: String::new(),
             dialog: None,
             toasts: vec![],
+            git: None,
         };
         let json = serde_json::to_string(&snapshot).unwrap();
         assert!(json.contains("\"protocol_version\":1"));

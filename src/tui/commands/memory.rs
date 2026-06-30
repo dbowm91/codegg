@@ -89,7 +89,13 @@ pub(crate) async fn handle_memory_summary(app: &mut App) {
             lines.push(format!("    - [{}] {}", id, title));
         }
     }
-    app.messages_state.toasts.info(&lines.join("\n"));
+    // Multi-line summaries belong in the scrollable info surface; a
+    // joined toast of 5+ rows eats the toast column and pushes other
+    // toasts out before they can be read.
+    app.show_short_or_info(
+        crate::tui::components::dialogs::info::InfoType::MemoryResults,
+        lines,
+    );
 }
 
 #[allow(dead_code)]
@@ -142,11 +148,12 @@ pub(crate) async fn handle_memory_search(app: &mut App, query: String) {
                         format!("- [{}] {}", id, title)
                     })
                     .collect();
-                app.messages_state.toasts.info(&format!(
-                    "Found {} memories:\n{}",
-                    results.len(),
-                    lines.join("\n")
-                ));
+                let mut result_lines = vec![format!("Found {} memories:", results.len())];
+                result_lines.extend(lines);
+                app.show_short_or_info(
+                    crate::tui::components::dialogs::info::InfoType::MemoryResults,
+                    result_lines,
+                );
             }
         }
         Ok(CoreResponse::Error { message, .. }) => app

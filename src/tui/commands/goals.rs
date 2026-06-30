@@ -8,7 +8,7 @@ use crate::tui::app::TuiCommand;
 use crate::tui::async_cmd::spawn_registered_tui_task;
 use crate::tui::task_lifecycle::TuiTaskKind;
 
-pub(crate) async fn handle_goal_set(
+pub(crate) fn handle_goal_set(
     app: &mut App,
     session_id: String,
     project_id: String,
@@ -44,7 +44,7 @@ pub(crate) async fn handle_goal_set(
     });
 }
 
-pub(crate) async fn handle_goal_from_file(
+pub(crate) fn handle_goal_from_file(
     app: &mut App,
     session_id: String,
     project_id: String,
@@ -426,7 +426,7 @@ pub(crate) async fn handle_goal_show(app: &mut App, session_id: String) {
     }
 }
 
-pub(crate) async fn handle_goal_simple(app: &mut App, request: CoreRequest, label: &str) {
+pub(crate) fn handle_goal_simple(app: &mut App, request: CoreRequest, label: &str) {
     let Some(core_client) = app.core_client.clone() else {
         app.messages_state.toasts.warning("Core client unavailable");
         return;
@@ -545,7 +545,7 @@ pub(crate) async fn handle_goal_checkpoint(app: &mut App, session_id: String, pr
 ///     a toast (sidebar already shows live status).
 ///   * `raise <axis> <n>` — bump a single axis of the active goal's
 ///     budget. Valid axes: `tokens`, `turns`, `tool-calls`, `wallclock`.
-pub(crate) async fn handle_goal_budget(app: &mut App, session_id: String, subcommand: String) {
+pub(crate) fn handle_goal_budget(app: &mut App, session_id: String, subcommand: String) {
     let trimmed = subcommand.trim();
     let mut parts = trimmed.splitn(3, ' ');
     let head = parts.next().unwrap_or("").to_string();

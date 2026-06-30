@@ -2,29 +2,45 @@
 
 use crate::tui::app::App;
 
-pub(crate) async fn handle_security_review_run(
+/// Legacy/back-compat security review dispatch. The slash command
+/// path (`App::execute_command`'s `/security-review` branch) already
+/// runs the review in a background task and posts the result via
+/// `TuiCommand::SecurityReviewFinished`, so production never reaches
+/// this handler. Convert it to fire-and-forget so any legacy caller
+/// cannot block the TUI dispatch loop on a long-running security
+/// review.
+pub(crate) fn handle_security_review_run(
     app: &mut App,
     id: String,
     root: std::path::PathBuf,
     args: crate::security::workflow::SecurityReviewCommandArgs,
     lsp_tool: Option<std::sync::Arc<crate::tool::lsp::LspTool>>,
 ) {
-    let result =
-        crate::security::workflow::run_security_review_background(root, args, lsp_tool).await;
+    use crate::tui::app::TuiCommand;
+    use crate::tui::async_cmd::spawn_tui_task;
 
-    // Always clear the reentrancy guard, even on failure.
-    if app.security_review_run_id() == Some(id.as_str()) {
-        app.security_review_running = None;
+    if app.core_client.is_none() {
+        app.messages_state.toasts.warning("Core client unavailable");
+        return;
     }
 
-    match result {
-        Ok(receipt) => apply_security_review_receipt(app, receipt),
-        Err(e) => {
-            app.messages_state
-                .toasts
-                .error(&format!("Security review failed: {e}"));
+    let tx = app.tui_cmd_tx.clone();
+    spawn_tui_task(tx, "security_review_legacy", async move {
+        let result =
+            crate::security::workflow::run_security_review_background(root, args, lsp_tool).await;
+        match result {
+            Ok(receipt) => Some(TuiCommand::SecurityReviewFinished {
+                id,
+                receipt: Some(Box::new(receipt)),
+                error: None,
+            }),
+            Err(e) => Some(TuiCommand::SecurityReviewFinished {
+                id,
+                receipt: None,
+                error: Some(format!("Security review failed: {e}")),
+            }),
         }
-    }
+    });
 }
 
 /// Apply a completed security review to the App: store the latest

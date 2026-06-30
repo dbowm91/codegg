@@ -617,7 +617,7 @@ pub(crate) async fn handle_send_notification(
     }
 }
 
-pub(crate) async fn handle_compact_session(app: &mut App) {
+pub(crate) fn handle_compact_session(app: &mut App) {
     if app.session_state.session_status == SessionStatus::Working {
         app.messages_state
             .toasts
@@ -629,7 +629,7 @@ pub(crate) async fn handle_compact_session(app: &mut App) {
     }
 }
 
-pub(crate) async fn handle_open_diff_dialog(
+pub(crate) fn handle_open_diff_dialog(
     app: &mut App,
     old_content: Box<str>,
     new_content: Box<str>,
@@ -642,8 +642,10 @@ pub(crate) async fn handle_open_diff_dialog(
     app.open_dialog(Dialog::Diff);
 }
 
-pub(crate) async fn handle_spawn_subagent(app: &mut App, agent_name: String, prompt: String) {
+pub(crate) fn handle_spawn_subagent(app: &mut App, agent_name: String, prompt: String) {
     use crate::agent::worker::SubAgentRequest;
+    use crate::tui::async_cmd::spawn_registered_tui_task;
+    use crate::tui::task_lifecycle::TuiTaskKind;
 
     if prompt.trim().is_empty() {
         app.messages_state
@@ -652,14 +654,11 @@ pub(crate) async fn handle_spawn_subagent(app: &mut App, agent_name: String, pro
         return;
     }
 
-    let pool = match &app.subagent_pool {
-        Some(p) => Arc::clone(p),
-        None => {
-            app.messages_state
-                .toasts
-                .error("Subagent pool not initialized");
-            return;
-        }
+    let Some(pool) = app.subagent_pool.as_ref().map(Arc::clone) else {
+        app.messages_state
+            .toasts
+            .error("Subagent pool not initialized");
+        return;
     };
 
     let session_id = app
@@ -687,22 +686,51 @@ pub(crate) async fn handle_spawn_subagent(app: &mut App, agent_name: String, pro
         max_tool_calls: None,
     };
 
-    let spawner = pool.spawner();
-    if let Err(e) = spawner.send(request).await {
-        app.messages_state
-            .toasts
-            .error(&format!("Failed to spawn subagent: {}", e));
+    app.messages_state
+        .messages
+        .add_user_message(format!("@{} {}", agent_name, prompt), None);
+
+    let tx = app.tui_cmd_tx.clone();
+    spawn_registered_tui_task(
+        tx,
+        &mut app.task_registry,
+        TuiTaskKind::Command,
+        "spawn_subagent",
+        async move {
+            let spawner = pool.spawner();
+            if let Err(e) = spawner.send(request).await {
+                return Some(crate::tui::app::TuiCommand::SubagentSpawnFinished {
+                    agent_name,
+                    task_id,
+                    prompt,
+                    error: Some(format!("Failed to spawn subagent: {}", e)),
+                });
+            }
+            Some(crate::tui::app::TuiCommand::SubagentSpawnFinished {
+                agent_name,
+                task_id,
+                prompt,
+                error: None,
+            })
+        },
+    );
+}
+
+pub(crate) fn apply_subagent_spawn_finished(
+    app: &mut App,
+    agent_name: String,
+    task_id: u64,
+    _prompt: String,
+    error: Option<String>,
+) {
+    if let Some(err) = error {
+        app.messages_state.toasts.error(&err);
         return;
     }
-
     app.messages_state.toasts.info(&format!(
         "Spawned subagent '{}' with task #{}",
         agent_name, task_id
     ));
-
-    app.messages_state
-        .messages
-        .add_user_message(format!("@{} {}", agent_name, prompt), None);
 }
 
 pub(crate) fn handle_file_diff_stats_ready(

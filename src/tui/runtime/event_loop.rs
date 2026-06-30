@@ -355,6 +355,11 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), crate::error::AppE
                     futures::future::pending::<()>().await;
                 }
             } => {
+                // Periodic reaping: cheap (atomic is_finished checks) and
+                // keeps the active task count from drifting upward across
+                // long sessions.
+                app.task_registry.reap_finished();
+
                 if let Some(debounce_start) = app.ui_state.resize_debounce {
                     if debounce_start.elapsed() >= RESIZE_DEBOUNCE {
                         app.ui_state.resize_debounce = None;
