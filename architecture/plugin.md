@@ -639,15 +639,16 @@ impl ApiVersion {
 }
 ```
 
-## Protocol DTOs (Phase 1)
+## Protocol DTOs (Phase 1-2)
 
-`crates/codegg-protocol/src/ui.rs` and `crates/codegg-protocol/src/plugin.rs` define frontend-neutral protocol types for plugin UI output and invocation. These are serialization-only DTOs — they do not execute plugins or render UI.
+`crates/codegg-protocol/src/ui.rs` and `crates/codegg-protocol/src/plugin.rs` define frontend-neutral protocol types for plugin UI output and invocation. Phase 2 adds TUI-side consumption: `PluginUiState` (`src/tui/app/state/plugin_ui.rs`) stores plugin dialogs, panels, and status items. `PluginUiRenderer` (`src/tui/components/plugin_renderer.rs`) lowers `UiNode` trees into ratatui widgets and flat text lines. `App::apply_plugin_ui_effect()` centralizes effect routing. A single `Dialog::Plugin` variant handles all plugin dialogs without per-plugin enum entries.
 
 ### UI Types (`codegg_protocol::ui`)
 
 - `UiNode` — Tree of display content: `Text`, `Markdown`, `Code`, `Table`, `KeyValue`, `Progress`, `Container`, `Empty`, `Unsupported`
 - `UiEffect` — Side effects plugins can request: `EmitChat`, `ShowToast`, `OpenDialog`, `CloseDialog`, `OpenPanel`, `UpdatePanel`, `ClosePanel`, `AddStatusItem`, `UpdateStatusItem`, `RemoveStatusItem`
 - Supporting types: `DialogSpec`, `PanelSpec`, `StatusItemSpec`, `ChatBlock`, `ToastSpec`, `PanelPlacement`, `StatusPlacement`
+- TUI consumption (Phase 2): `PluginUiState` stores open/update/close effects; `PluginUiRenderer` renders `UiNode` to ratatui; `App::apply_plugin_ui_effect()` routes `ShowToast`/`EmitChat`/`OpenDialog`/`CloseDialog`. Panels and status items stored but not visually rendered yet.
 
 ### Plugin Types (`codegg_protocol::plugin`)
 

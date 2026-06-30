@@ -592,6 +592,10 @@ pub struct App {
     /// Registry of TUI-owned background tasks.  Tracked tasks can be
     /// counted, cancelled, and reaped on shutdown or dialog close.
     pub task_registry: crate::tui::task_lifecycle::TuiTaskRegistry,
+    /// Plugin-owned UI surfaces: dialogs, panels, and status items.
+    /// Consumed by `apply_plugin_ui_effect` and rendered by
+    /// `PluginUiRenderer`.
+    pub plugin_ui_state: crate::tui::app::state::PluginUiState,
     pub render_panic_injection: RenderPanicInjection,
     /// Monotonic sequence number for remote TUI snapshots. Each
     /// `next_remote_snapshot` call increments this and includes the
@@ -914,6 +918,7 @@ impl App {
                 .unwrap_or_default(),
             remote_sequence: 0,
             shell_handles: std::collections::HashMap::new(),
+            plugin_ui_state: crate::tui::app::state::PluginUiState::default(),
             task_registry: crate::tui::task_lifecycle::TuiTaskRegistry::new(),
             render_panic_injection: RenderPanicInjection::all_false(),
         }
@@ -1278,6 +1283,7 @@ impl App {
             latest_security_review: None,
             shell_store: crate::shell::ShellOutputStore::new(),
             shell_handles: std::collections::HashMap::new(),
+            plugin_ui_state: crate::tui::app::state::PluginUiState::default(),
             task_registry: crate::tui::task_lifecycle::TuiTaskRegistry::new(),
             render_panic_injection: RenderPanicInjection::all_false(),
             remote_sequence: 0,
@@ -6971,6 +6977,71 @@ impl App {
         }
     }
 
+    /// Apply a protocol-level [`UiEffect`] from a plugin response to
+    /// the TUI state. Returns a high-level result so the caller can
+    /// decide whether to emit additional toasts or chat messages.
+    pub fn apply_plugin_ui_effect(
+        &mut self,
+        effect: crate::protocol::ui::UiEffect,
+    ) -> crate::tui::app::state::PluginUiApplyResult {
+        use crate::protocol::ui::UiEffect;
+        use crate::tui::app::state::PluginUiApplyResult;
+
+        match &effect {
+            UiEffect::ShowToast { toast } => {
+                match toast.level {
+                    crate::protocol::ui::ToastLevel::Info => {
+                        self.messages_state.toasts.info(&toast.message);
+                    }
+                    crate::protocol::ui::ToastLevel::Success => {
+                        self.messages_state.toasts.success(&toast.message);
+                    }
+                    crate::protocol::ui::ToastLevel::Warning => {
+                        self.messages_state.toasts.warning(&toast.message);
+                    }
+                    crate::protocol::ui::ToastLevel::Error => {
+                        self.messages_state.toasts.error(&toast.message);
+                    }
+                };
+                return PluginUiApplyResult::ToastRequested;
+            }
+            UiEffect::EmitChat { .. } => {
+                // EmitChat routing is deferred to Phase 3 when agent
+                // integration provides a chat seam.
+                return PluginUiApplyResult::ChatRequested;
+            }
+            _ => {}
+        }
+
+        let result = self.plugin_ui_state.apply_effect(effect);
+
+        // If a plugin dialog was just opened and no first-party modal
+        // is active, open it in the FocusManager.
+        if matches!(result, PluginUiApplyResult::Applied) {
+            if let Some(spec) = self.plugin_ui_state.dialogs.values().last() {
+                if !matches!(
+                    self.ui_state.dialog,
+                    Dialog::Permission | Dialog::Question | Dialog::SecurityReview
+                ) {
+                    let lines =
+                        crate::tui::components::plugin_renderer::PluginUiRenderer::node_to_lines(
+                            &spec.body,
+                        );
+                    let dialog = crate::tui::components::dialogs::plugin::PluginDialog::new(
+                        spec.id.clone(),
+                        spec.title.clone(),
+                        lines,
+                        Arc::clone(&self.ui_state.theme),
+                    );
+                    self.focus_manager.push(Box::new(dialog));
+                    self.ui_state.dialog = Dialog::Plugin;
+                }
+            }
+        }
+
+        result
+    }
+
     #[allow(dead_code)]
     fn replace_dialog(
         &mut self,
@@ -7304,6 +7375,21 @@ impl App {
                 if let Some(ref mut dialog) = self.dialog_state.source_preview_dialog {
                     dialog.set_theme(&self.ui_state.theme);
                     self.focus_manager.push(Box::new(dialog.clone()));
+                }
+            }
+            Dialog::Plugin => {
+                if let Some(spec) = self.plugin_ui_state.get_dialog("active") {
+                    let lines =
+                        crate::tui::components::plugin_renderer::PluginUiRenderer::node_to_lines(
+                            &spec.body,
+                        );
+                    let dialog = crate::tui::components::dialogs::plugin::PluginDialog::new(
+                        spec.id.clone(),
+                        spec.title.clone(),
+                        lines,
+                        Arc::clone(&self.ui_state.theme),
+                    );
+                    self.focus_manager.push(Box::new(dialog));
                 }
             }
             _ => {}

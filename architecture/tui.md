@@ -191,6 +191,7 @@ tui/
 │       ├── diagnostics.rs  # TuiDiagnostics (runtime counters)
 │       ├── dialog.rs       # DialogState (dialog instances, dialog visibility)
 │       ├── messages.rs     # MessagesState (message history, toasts, spinner)
+│       ├── plugin_ui.rs   # PluginUiState (plugin dialog/panel/status storage)
 │       ├── prompt.rs       # PromptState (prompt, completions)
 │       ├── session.rs      # SessionState (session, history, git info)
 │       └── ui.rs           # UiState (theme, layout, routes, keybindings)
@@ -231,6 +232,7 @@ tui/
 │   │   ├── model.rs        # ModelDialog (model selection)
 │   │   ├── permission.rs   # PermissionDialog
 │   │   ├── plan.rs         # PlanDialog
+│   │   ├── plugin.rs       # PluginDialog (plugin UI content dialog)
 │   │   ├── question.rs     # QuestionDialog
 │   │   ├── research.rs     # ResearchBrowserDialog (research runs browser)
 │   │   ├── review.rs       # ReviewDialog (diff review)
@@ -245,6 +247,7 @@ tui/
 │   ├── image.rs            # ImageViewer (image rendering via ANSI)
 │   ├── messages.rs         # MessagesWidget (message display, streaming)
 │   ├── notification.rs     # NotificationManager (desktop notifications)
+│   ├── plugin_renderer.rs  # PluginUiRenderer (UiNode to ratatui adapter)
 │   ├── prompt.rs           # PromptWidget (input prompt)
 │   ├── scroll.rs           # CenteredScroll (reusable scrolling)
 │   ├── sidebar.rs          # SidebarWidget (side panel, git info, file changes with diff stats)
@@ -382,6 +385,8 @@ Contains all dialog instances, including optional dialogs:
 - Always instantiated: `model_dialog`, `agent_dialog`, `session_dialog`, `tree_dialog`, `command_palette`
 - On-demand (modal dialogs): `theme_picker`, `question_dialog`, `permission_dialog`, `keybind_dialog`, `mcp_dialog`, `share_dialog`, `import_dialog`, `template_dialog`, `connect_dialog`, `goto_dialog`, `plan_dialog`, `diff_dialog`, `help_dialog`, `info_dialog`, `review_dialog`, `research_browser`
 
+Plugin dialogs are stored in `PluginUiState` (`app/state/plugin_ui.rs`), not `DialogState`. A single `Dialog::Plugin` variant handles all plugin dialogs.
+
 **Pending fields** (for tracking pending permission/question responses):
 - `permission_perm_id: Option<String>` - permission ID when permission dialog is pending
 - `question_session_id: Option<String>` - session ID when question dialog is pending
@@ -408,6 +413,7 @@ pub enum Dialog {
     Context, Cost, Usage, Stats, Goto, Plan, Diff, Confirm,
     Review,              // Diff review dialog
     ResearchBrowser,     // Research browser for web research
+    Plugin,              // Generic plugin UI content dialog (Phase 2)
 }
 ```
 
@@ -539,6 +545,10 @@ pub trait Component: Send + Any {
 }
 ```
 
+### Plugin UI Renderer (Phase 2)
+
+`PluginUiRenderer` (`src/tui/components/plugin_renderer.rs`) converts protocol `UiNode` trees into ratatui widgets and flat text lines. Supported nodes: Text, Markdown (as wrapped text), Code, Table, KeyValue, Progress, Container, Empty, Unsupported. `App::apply_plugin_ui_effect()` routes `UiEffect` variants to state mutations and toast/chat emission.
+
 ### DialogType
 
 ```rust
@@ -548,6 +558,7 @@ pub enum DialogType {
     Context, Cost, Usage, Stats, Goto, Plan, Confirm,
     Review,           // Diff review dialog
     ResearchBrowser,  // Research browser dialog
+    Plugin,           // Plugin UI content dialog (Phase 2)
     None,
 }
 ```

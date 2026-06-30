@@ -172,7 +172,7 @@ pub enum PluginDiagnosticLevel {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::{ChatBlock, ChatFormat, DialogSpec, UiNode, TextNode};
+    use crate::ui::{ChatBlock, ChatFormat, DialogSpec, TextNode, UiNode};
 
     #[test]
     fn plugin_invocation_command_round_trip() {
@@ -320,15 +320,13 @@ mod tests {
             runtime: PluginRuntimeSpec::Builtin {
                 handler: "test".into(),
             },
-            capabilities: vec![
-                PluginCapability::Command(PluginCommandSpec {
-                    name: "test-cmd".into(),
-                    aliases: vec![],
-                    description: None,
-                    handler: None,
-                    output: vec![],
-                }),
-            ],
+            capabilities: vec![PluginCapability::Command(PluginCommandSpec {
+                name: "test-cmd".into(),
+                aliases: vec![],
+                description: None,
+                handler: None,
+                output: vec![],
+            })],
             permissions: PluginPermissionSet::default(),
         };
         let json = serde_json::to_string(&manifest).unwrap();

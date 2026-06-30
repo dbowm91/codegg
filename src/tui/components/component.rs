@@ -52,6 +52,7 @@ pub enum DialogType {
     GoalShow,
     MemoryResults,
     DoctorReport,
+    Plugin,
     None,
 }
 
@@ -96,6 +97,7 @@ impl From<DialogType> for Dialog {
             DialogType::GoalShow => Dialog::GoalShow,
             DialogType::MemoryResults => Dialog::MemoryResults,
             DialogType::DoctorReport => Dialog::DoctorReport,
+            DialogType::Plugin => Dialog::Plugin,
             DialogType::None => Dialog::None,
         }
     }

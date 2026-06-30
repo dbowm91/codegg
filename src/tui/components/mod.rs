@@ -60,6 +60,7 @@ pub mod diff;
 pub mod image;
 pub mod messages;
 pub mod notification;
+pub mod plugin_renderer;
 pub mod prompt;
 pub mod scroll;
 pub mod sidebar;

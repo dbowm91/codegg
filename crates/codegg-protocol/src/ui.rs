@@ -66,38 +66,16 @@ pub struct ContainerNode {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum UiEffect {
-    EmitChat {
-        block: ChatBlock,
-    },
-    ShowToast {
-        toast: ToastSpec,
-    },
-    OpenDialog {
-        dialog: DialogSpec,
-    },
-    CloseDialog {
-        id: String,
-    },
-    OpenPanel {
-        panel: PanelSpec,
-    },
-    UpdatePanel {
-        id: String,
-        body: UiNode,
-    },
-    ClosePanel {
-        id: String,
-    },
-    AddStatusItem {
-        item: StatusItemSpec,
-    },
-    UpdateStatusItem {
-        id: String,
-        body: UiNode,
-    },
-    RemoveStatusItem {
-        id: String,
-    },
+    EmitChat { block: ChatBlock },
+    ShowToast { toast: ToastSpec },
+    OpenDialog { dialog: DialogSpec },
+    CloseDialog { id: String },
+    OpenPanel { panel: PanelSpec },
+    UpdatePanel { id: String, body: UiNode },
+    ClosePanel { id: String },
+    AddStatusItem { item: StatusItemSpec },
+    UpdateStatusItem { id: String, body: UiNode },
+    RemoveStatusItem { id: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -250,8 +228,14 @@ mod tests {
     fn key_value_node_round_trip() {
         let node = UiNode::KeyValue(KeyValueNode {
             entries: vec![
-                KeyValueEntry { key: "k1".into(), value: "v1".into() },
-                KeyValueEntry { key: "k2".into(), value: "v2".into() },
+                KeyValueEntry {
+                    key: "k1".into(),
+                    value: "v1".into(),
+                },
+                KeyValueEntry {
+                    key: "k2".into(),
+                    value: "v2".into(),
+                },
             ],
         });
         let json = serde_json::to_string(&node).unwrap();
@@ -296,9 +280,7 @@ mod tests {
 
     #[test]
     fn effect_close_dialog_round_trip() {
-        let effect = UiEffect::CloseDialog {
-            id: "dlg-1".into(),
-        };
+        let effect = UiEffect::CloseDialog { id: "dlg-1".into() };
         let json = serde_json::to_string(&effect).unwrap();
         let back: UiEffect = serde_json::from_str(&json).unwrap();
         assert_eq!(back, effect);

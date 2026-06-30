@@ -33,6 +33,7 @@ pub enum Dialog {
     GoalShow,
     MemoryResults,
     DoctorReport,
+    Plugin,
 }
 
 impl Dialog {
@@ -71,6 +72,7 @@ impl Dialog {
                 | Self::GoalShow
                 | Self::MemoryResults
                 | Self::DoctorReport
+                | Self::Plugin
         )
     }
 }
