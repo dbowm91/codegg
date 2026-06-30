@@ -9,6 +9,24 @@ use crate::tui::async_cmd::spawn_registered_tui_task;
 use crate::tui::task_lifecycle::TuiTaskKind;
 use std::sync::Arc;
 
+fn worktree_label(tree: &serde_json::Value) -> Option<String> {
+    let path = tree.get("path").and_then(|v| v.as_str())?.trim();
+    if path.is_empty() {
+        return None;
+    }
+
+    let branch = tree
+        .get("branch")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .trim();
+    if branch.is_empty() {
+        Some(path.to_string())
+    } else {
+        Some(format!("{} ({})", path, branch))
+    }
+}
+
 pub(crate) fn start_list_tasks(app: &mut App) {
     let request_id = app.dialog_state.task_list_request.begin();
     let core_client = app.core_client.clone();
@@ -471,15 +489,7 @@ pub(crate) fn start_worktree_list(app: &mut App) {
                         .and_then(|v| v.as_array())
                         .cloned()
                         .unwrap_or_default();
-                    let names: Vec<String> = trees
-                        .iter()
-                        .map(|t| {
-                            let path = t.get("path").and_then(|v| v.as_str()).unwrap_or_default();
-                            let branch =
-                                t.get("branch").and_then(|v| v.as_str()).unwrap_or_default();
-                            format!("{} ({})", path, branch)
-                        })
-                        .collect();
+                    let names: Vec<String> = trees.iter().filter_map(worktree_label).collect();
                     Some(TuiCommand::WorktreeListed {
                         request_id,
                         worktrees: names,
@@ -536,54 +546,6 @@ pub(crate) fn apply_worktree_listed(
         );
     } else {
         app.messages_state.toasts.info(&worktrees.join(", "));
-    }
-}
-
-#[allow(dead_code)]
-pub(crate) async fn handle_worktree_list(app: &mut App) {
-    let Some(core_client) = app.core_client.clone() else {
-        app.messages_state.toasts.warning("Core client unavailable");
-        return;
-    };
-    let request = crate::core::new_request(
-        format!("worktree-list-{}", uuid::Uuid::new_v4()),
-        CoreRequest::WorktreeList {
-            project_dir: app.session_state.project_dir.clone(),
-        },
-    );
-    match core_client.request(request).await {
-        Ok(CoreResponse::Json { data }) => {
-            let trees = data
-                .get("worktrees")
-                .and_then(|v| v.as_array())
-                .cloned()
-                .unwrap_or_default();
-            if trees.is_empty() {
-                app.messages_state.toasts.info("No worktrees found");
-            } else {
-                let names: Vec<String> = trees
-                    .iter()
-                    .map(|t| {
-                        let path = t.get("path").and_then(|v| v.as_str()).unwrap_or_default();
-                        let branch = t.get("branch").and_then(|v| v.as_str()).unwrap_or_default();
-                        format!("{} ({})", path, branch)
-                    })
-                    .collect();
-                app.messages_state.toasts.info(&names.join(", "));
-            }
-        }
-        Ok(CoreResponse::Error { message, .. }) => app
-            .messages_state
-            .toasts
-            .warning(&format!("Failed to list worktrees: {}", message)),
-        Ok(_other) => app
-            .messages_state
-            .toasts
-            .warning("Unexpected worktree response"),
-        Err(e) => app
-            .messages_state
-            .toasts
-            .warning(&format!("Failed to list worktrees: {}", e)),
     }
 }
 
@@ -788,4 +750,42 @@ pub(crate) fn handle_file_diff_stats_ready(
         })
         .collect();
     app.sidebar.set_file_changes(changes);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::worktree_label;
+    use serde_json::json;
+
+    #[test]
+    fn worktree_label_uses_path_and_branch() {
+        let tree = json!({
+            "path": "/repo/wt",
+            "branch": "feature/release-polish"
+        });
+
+        assert_eq!(
+            worktree_label(&tree).as_deref(),
+            Some("/repo/wt (feature/release-polish)")
+        );
+    }
+
+    #[test]
+    fn worktree_label_omits_empty_branch() {
+        let tree = json!({
+            "path": "/repo/detached",
+            "branch": ""
+        });
+
+        assert_eq!(worktree_label(&tree).as_deref(), Some("/repo/detached"));
+    }
+
+    #[test]
+    fn worktree_label_skips_missing_path() {
+        let tree = json!({
+            "branch": "main"
+        });
+
+        assert_eq!(worktree_label(&tree), None);
+    }
 }

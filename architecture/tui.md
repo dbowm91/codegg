@@ -27,13 +27,13 @@ Local transport selection is handled by `--core-transport` or `CODEGG_CORE_TRANS
 
 High-latency `TuiCommand` handlers are converted to a spawn-and-complete pattern to keep the event loop responsive. The pattern:
 
-1. **Start**: `start_*` function performs immediate UI mutation (sets loading state, adds toast), clones needed inputs, and spawns a Tokio task via `spawn_tui_task`.
+1. **Start**: `start_*` function performs immediate UI mutation (sets loading state, adds toast), clones needed inputs, and spawns a Tokio task. Lifecycle-tracked command work should use `spawn_registered_tui_task`; `spawn_tui_task` remains for fire-and-forget work.
 2. **Complete**: The spawned task sends a typed completion `TuiCommand` (e.g., `SessionsReloaded`, `SessionMessagesLoaded`) back through the command channel.
 3. **Apply**: The event loop receives the completion and applies results to UI state synchronously.
 
 This ensures keyboard input, resize handling, streaming redraws, spinner animation, and toast expiry continue even while core requests are slow.
 
-**Stale protection**: Operations that can be repeated rapidly (import preview, research loading) use a `request_id` / generation counter. Completions with a mismatched id are silently ignored.
+**Stale protection**: Operations that can be repeated rapidly use `AsyncUiRequestState` request IDs. Completions with a stale or cancelled id are silently ignored before they mutate state or show toasts.
 
 **Converted handlers**: `ReloadSessions`, `LoadSessionMessages`, `OpenTreeDialog`, `PreviewImport`, `ConfirmImport`, `ResearchListRuns`, `ResearchLoadRun`, `ResearchLoadSection`, `MemorySummary`, `MemorySearch`, `MemoryRemember`, `MemoryForget`, `RunDoctor`, all session mutations (delete, archive, fork, bulk delete/archive/export, rename, undo delete, share, unshare, export), goal operations (show, checkpoint, budget, refresh session state), task operations (list, delete, schedule), worktree list, template create, and notification send.
 
@@ -41,7 +41,7 @@ This ensures keyboard input, resize handling, streaming redraws, spinner animati
 
 **Not converted** (remain synchronous in command dispatch): shell commands, security review, and other already-fast or already-spawned handlers.
 
-See `src/tui/async_cmd.rs` for the `spawn_tui_task` helper.
+See `src/tui/async_cmd.rs` for `spawn_tui_task` and `spawn_registered_tui_task`.
 
 ### AsyncUiRequestState (Phase 10)
 
@@ -197,7 +197,7 @@ tui/
 ├── commands/               # TUI command handlers (extracted from mod.rs)
 │   ├── mod.rs              # Re-exports
 │   ├── sessions.rs         # Session CRUD, archive, fork, bulk ops, rename, share, import
-│   ├── tasks.rs            # Task list, delete, schedule
+│   ├── tasks.rs            # Tasks, worktrees, templates, notifications, file-diff completions
 │   ├── goals.rs            # Goal set, pause, resume, clear, done, checkpoint, budget
 │   ├── memory.rs           # Memory summary, search, remember, forget
 │   ├── research.rs         # Research list runs, load run, load section
@@ -271,7 +271,7 @@ Command handlers extracted from the monolithic `mod.rs` into domain-specific sub
 | Module | Responsibility |
 |--------|---------------|
 | `sessions.rs` | Session CRUD: delete, archive, fork, bulk ops, rename, share/unshare, export, reload |
-| `tasks.rs` | Background task operations: list, delete, schedule |
+| `tasks.rs` | Background task operations plus related command completions: task list/delete/schedule, worktree list, template creation, notifications, subagent spawn, file-diff stats |
 | `goals.rs` | Goal lifecycle: set, pause, resume, clear, done, checkpoint, budget |
 | `memory.rs` | Persistent memory: summary, search, remember, forget |
 | `research.rs` | Research browser: list runs, load run, load section |

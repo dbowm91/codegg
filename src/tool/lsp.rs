@@ -208,7 +208,7 @@ struct SemanticContextPacket {
     limits: SemanticContextLimits,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 struct SemanticContextTarget {
     line: u32,
     column: u32,
@@ -458,6 +458,21 @@ struct LspInput {
     trigger_kind: Option<i32>,
     #[serde(default)]
     trigger_char: Option<String>,
+}
+
+impl LspInput {
+    fn semantic_position(
+        &self,
+        operation: &str,
+    ) -> Result<Option<SemanticContextTarget>, ToolError> {
+        match (self.line, self.column) {
+            (Some(line), Some(column)) => Ok(Some(SemanticContextTarget { line, column })),
+            (None, None) => Ok(None),
+            _ => Err(ToolError::Execution(format!(
+                "{operation} requires both line and column when either is supplied"
+            ))),
+        }
+    }
 }
 
 pub fn to_lsp_position(line: u32, column: u32) -> crate::lsp::lsp_types::Position {
@@ -2930,23 +2945,10 @@ impl Tool for LspTool {
                     .radius
                     .unwrap_or(DEFAULT_SEMANTIC_CONTEXT_RADIUS)
                     .min(MAX_SEMANTIC_CONTEXT_RADIUS);
-                let has_position = parsed.line.is_some() && parsed.column.is_some();
+                let target = parsed.semantic_position("semanticContext")?;
+                let has_position = target.is_some();
                 let has_proposed = parsed.content.is_some() || parsed.patch.is_some();
                 let want_overlay = parsed.include_overlay.unwrap_or(has_proposed);
-
-                let target = if has_position {
-                    Some(SemanticContextTarget {
-                        line: parsed.line.unwrap(),
-                        column: parsed.column.unwrap(),
-                    })
-                } else if parsed.line.is_some() || parsed.column.is_some() {
-                    return Err(ToolError::Execution(
-                        "semanticContext requires both line and column when either is supplied"
-                            .to_string(),
-                    ));
-                } else {
-                    None
-                };
 
                 // Hierarchy flags require a full position
                 let include_call_hierarchy = parsed.include_call_hierarchy.unwrap_or(false);
@@ -2966,8 +2968,8 @@ impl Tool for LspTool {
                     egglsp::semantic_context::SemanticContextIntent::Explain,
                 )
                 .with_excerpt_radius(radius);
-                if has_position {
-                    request = request.with_position(parsed.line.unwrap(), parsed.column.unwrap());
+                if let Some(target) = &target {
+                    request = request.with_position(target.line, target.column);
                 }
                 request.include_overlay = false;
                 request.include_source_actions = false;
@@ -3165,24 +3167,11 @@ impl Tool for LspTool {
                 }
 
                 let file_str = file.to_string_lossy().to_string();
-                let has_position = parsed.line.is_some() && parsed.column.is_some();
+                let target = parsed.semantic_position("securityContext")?;
+                let has_position = target.is_some();
                 let has_proposed = parsed.content.is_some() || parsed.patch.is_some();
 
                 let settings = Self::resolve_security_context_settings(&parsed, has_position)?;
-
-                let target = if has_position {
-                    Some(SemanticContextTarget {
-                        line: parsed.line.unwrap(),
-                        column: parsed.column.unwrap(),
-                    })
-                } else if parsed.line.is_some() || parsed.column.is_some() {
-                    return Err(ToolError::Execution(
-                        "securityContext requires both line and column when either is supplied"
-                            .to_string(),
-                    ));
-                } else {
-                    None
-                };
 
                 if settings.include_call_hierarchy && !has_position {
                     return Err(ToolError::Execution(
@@ -3207,8 +3196,8 @@ impl Tool for LspTool {
                     egglsp::semantic_context::SemanticContextIntent::SecurityReview,
                 )
                 .with_excerpt_radius(settings.radius);
-                if has_position {
-                    request = request.with_position(parsed.line.unwrap(), parsed.column.unwrap());
+                if let Some(target) = &target {
+                    request = request.with_position(target.line, target.column);
                 }
                 request.include_overlay = false;
                 request.include_source_actions = false;
@@ -3323,7 +3312,7 @@ impl Tool for LspTool {
 
                 let semantic_packet = SemanticContextPacket::from_semantic_response(
                     response,
-                    target,
+                    target.clone(),
                     overlay,
                     Vec::new(),
                     overlay_diagnostics_truncated,
@@ -3407,18 +3396,24 @@ impl Tool for LspTool {
                     None
                 };
 
-                let call_expansion = if settings.call_depth > 0 && has_position {
+                let call_expansion = if settings.call_depth > 0 {
                     let supported = caps_snapshot
                         .as_ref()
                         .map(|c| c.supports(egglsp::LspSemanticOperation::CallHierarchy))
                         .unwrap_or(true);
                     if supported {
+                        let Some(target) = target.as_ref() else {
+                            return Err(ToolError::Execution(
+                                "securityContext call_depth requires both line and column"
+                                    .to_string(),
+                            ));
+                        };
                         Some(
                             self.build_call_expansion_summary(
                                 &ops,
                                 &file,
-                                parsed.line.unwrap(),
-                                parsed.column.unwrap(),
+                                target.line,
+                                target.column,
                                 settings.call_direction,
                                 settings.call_depth,
                                 settings.max_call_nodes,
