@@ -36,6 +36,7 @@ src/tui/
 │   │   ├── diagnostics.rs  # TuiDiagnostics (runtime counters)
 │   │   ├── dialog.rs       # DialogState (dialog instances)
 │   │   ├── messages.rs     # MessagesState (message history, toasts)
+│   │   ├── plugin_ui.rs    # PluginUiState (plugin dialog/panel/status storage, Phase 2)
 │   │   ├── prompt.rs       # PromptState (prompt, completions)
 │   │   ├── session.rs      # SessionState (session, history)
 │   │   └── ui.rs           # UiState (theme, layout, routes)
@@ -71,6 +72,7 @@ src/tui/
 │   │   ├── mcp.rs         # McpDialog (MCP server management)
 │   │   ├── model.rs       # ModelDialog (model selection)
 │   │   ├── permission.rs  # PermissionDialog
+│   │   ├── plugin.rs      # PluginDialog (plugin UI dialogs, Phase 2)
 │   │   ├── question.rs    # QuestionDialog
 │   │   ├── session.rs     # SessionDialog
 │   │   ├── share.rs       # ShareDialog (share sessions)
@@ -82,6 +84,7 @@ src/tui/
 │   ├── image.rs            # ImageViewer (image rendering)
 │   ├── messages.rs         # MessagesWidget (message display)
 │   ├── notification.rs     # NotificationManager (desktop notifications)
+│   ├── plugin_renderer.rs  # PluginUiRenderer (UiNode→ratatui, Phase 2)
 │   ├── prompt.rs           # PromptWidget (input prompt)
 │   ├── scroll.rs            # CenteredScroll (reusable scrolling)
 │   ├── sidebar.rs          # SidebarWidget (side panel)
@@ -199,11 +202,12 @@ pub enum DialogType {
     Context, Cost, Usage, Stats, Goto, Plan, Confirm,
     Review,           // Diff review dialog
     ResearchBrowser,  // Research browser dialog
+    Plugin,           // Plugin UI dialog (Phase 2)
     None,
 }
 ```
 
-**Note**: 25 variants total (includes `Review`, `ResearchBrowser`, and `None`).
+**Note**: 26 variants total (includes `Review`, `ResearchBrowser`, `Plugin`, and `None`).
 
 ### Migrating a Dialog to Component
 

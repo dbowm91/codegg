@@ -673,4 +673,4 @@ Key types:
 - `PluginResponse` — Response with effects, data, and diagnostics
 - `PluginPermissionSet` / `FilesystemPermission` — Declared permissions
 
-These are protocol-only types. They do not execute plugins or render UI. Phase 2+ consumes them.
+These are protocol-only types. They do not execute plugins or render UI. Phase 2 (TUI Renderer Adapter) consumes them via `PluginUiState` and `PluginUiRenderer`.
