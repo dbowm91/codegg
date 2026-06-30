@@ -101,7 +101,7 @@ cargo test -p egglsp --features lsp-real-server-tests --test real_server_smoke
 
 ## Critical Gotchas
 
-- **Plugin UI protocol (Phase 2)**: `codegg_protocol::ui` defines portable UI types (`UiNode`, `UiEffect`). Phase 2 adds TUI-side consumption: `PluginUiState` in `src/tui/app/state/plugin_ui.rs` stores dialogs/panels/status items; `PluginUiRenderer` in `src/tui/components/plugin_renderer.rs` lowers `UiNode` to ratatui. `App::apply_plugin_ui_effect()` routes effects. `Dialog::Plugin` and `DialogType::Plugin` are the generic plugin dialog variants. Panels and status items are stored but not visually rendered in Phase 2. EmitChat is deferred to Phase 3.
+- **Plugin UI protocol (Phase 3)**: `codegg_protocol::ui` defines portable UI types (`UiNode`, `UiEffect`). Phase 2 adds TUI-side consumption: `PluginUiState` in `src/tui/app/state/plugin_ui.rs` stores dialogs/panels/status items; `PluginUiRenderer` in `src/tui/components/plugin_renderer.rs` lowers `UiNode` to ratatui. `App::apply_plugin_ui_effect()` routes effects. `Dialog::Plugin` and `DialogType::Plugin` are the generic plugin dialog variants. Panels and status items are stored but not visually rendered in Phase 2. Phase 3 adds generic `TuiCommand` plugin variants (`PluginCommandRun`, `PluginCommandFinished`, `PluginUiEffect`) and `src/tui/commands/plugins.rs` with `start_plugin_command` (stub), `apply_plugin_command_finished` (response application), and `apply_plugin_ui_effect` (direct effect dispatch). EmitChat is deferred to Phase 4.
 
 ### Sync vs Async
 

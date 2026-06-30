@@ -21,6 +21,10 @@ use super::super::commands::research::{
     start_research_list_runs, start_research_load_run, start_research_load_section,
 };
 #[allow(unused_imports)]
+use super::super::commands::plugins::{
+    apply_plugin_command_finished, apply_plugin_ui_effect, start_plugin_command,
+};
+#[allow(unused_imports)]
 use super::super::commands::security::{
     handle_security_review_finished, handle_security_review_run,
 };
@@ -535,6 +539,22 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
                 crate::tui::components::dialogs::info::InfoType::Stats,
                 lines,
             );
+        }
+        TuiCommand::PluginCommandRun { command, args } => {
+            start_plugin_command(app, command, args);
+        }
+        TuiCommand::PluginCommandFinished {
+            invocation_id,
+            command,
+            response,
+            stdout,
+            stderr,
+            error,
+        } => {
+            apply_plugin_command_finished(app, invocation_id, command, response, stdout, stderr, error);
+        }
+        TuiCommand::PluginUiEffect { effect } => {
+            apply_plugin_ui_effect(app, effect);
         }
     }
 }

@@ -661,7 +661,7 @@ Plugins configured in `config.json`:
 }
 ```
 
-## Protocol DTOs (Phase 1)
+## Protocol DTOs (Phase 1-3)
 
 `codegg-protocol` now ships frontend-neutral plugin and UI protocol types in `crates/codegg-protocol/src/ui.rs` and `crates/codegg-protocol/src/plugin.rs`. These are available as `codegg_protocol::ui` and `codegg_protocol::plugin`.
 
@@ -673,4 +673,4 @@ Key types:
 - `PluginResponse` — Response with effects, data, and diagnostics
 - `PluginPermissionSet` / `FilesystemPermission` — Declared permissions
 
-These are protocol-only types. They do not execute plugins or render UI. Phase 2 (TUI Renderer Adapter) consumes them via `PluginUiState` and `PluginUiRenderer`.
+These are protocol-only types. They do not execute plugins or render UI. Phase 2 (TUI Renderer Adapter) consumes them via `PluginUiState` and `PluginUiRenderer`. Phase 3 adds generic `TuiCommand` plugin variants and `src/tui/commands/plugins.rs` for response application. EmitChat routing is deferred to Phase 4.

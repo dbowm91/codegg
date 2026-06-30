@@ -436,6 +436,24 @@ pub enum TuiCommand {
         reload_after: bool,
         error: Option<String>,
     },
+    /// Request to run a plugin-backed command.
+    PluginCommandRun {
+        command: String,
+        args: Vec<String>,
+    },
+    /// Completion: a plugin command has finished executing.
+    PluginCommandFinished {
+        invocation_id: String,
+        command: String,
+        response: Option<Box<crate::protocol::plugin::PluginResponse>>,
+        stdout: Option<String>,
+        stderr: Option<String>,
+        error: Option<String>,
+    },
+    /// Apply a single plugin UI effect directly (without going through a command response).
+    PluginUiEffect {
+        effect: crate::protocol::ui::UiEffect,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

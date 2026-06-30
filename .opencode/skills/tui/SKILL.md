@@ -51,7 +51,8 @@ src/tui/
 │   ├── import.rs           # Import preview, confirm
 │   ├── shell.rs            # Shell list, include, rerun, kill
 │   ├── security.rs         # Security review dispatch
-│   └── diagnostics.rs      # Doctor, diagnostics commands
+│   ├── diagnostics.rs      # Doctor, diagnostics commands
+│   └── plugins.rs          # Plugin command run/finished, UI effect dispatch (Phase 3)
 ├── runtime/                # Runtime logic (extracted from mod.rs)
 │   ├── mod.rs              # Re-exports
 │   ├── event_loop.rs       # Main event loop (select loop, render cadence, terminal setup)

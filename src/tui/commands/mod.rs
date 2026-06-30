@@ -3,6 +3,7 @@ pub(super) mod git_sidebar;
 pub(super) mod goals;
 pub(super) mod import;
 pub(super) mod memory;
+pub(super) mod plugins;
 pub(super) mod research;
 pub(super) mod security;
 pub(super) mod sessions;
