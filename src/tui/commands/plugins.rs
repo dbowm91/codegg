@@ -17,13 +17,19 @@ use crate::tui::app::TuiCommand;
 
 /// Start a process-backed plugin command. Delegates to `ProcessRuntime`
 /// and posts a `PluginCommandFinished` with the result.
-pub(crate) fn start_plugin_command(app: &mut App, spec: ProcessCommandSpec, args: Vec<String>) {
+pub(crate) fn start_plugin_command(
+    app: &mut App,
+    spec: ProcessCommandSpec,
+    args: Vec<String>,
+    session_id: Option<String>,
+    model: Option<String>,
+) {
     let invocation_id = uuid::Uuid::new_v4().to_string();
     let command_name = spec.command.clone();
     let tx = app.tui_cmd_tx.clone();
 
     crate::tui::async_cmd::spawn_tui_task(tx, "plugin_command_run", async move {
-        let result = execute_via_runtime(&spec, &args, &invocation_id).await;
+        let result = execute_via_runtime(&spec, &args, &invocation_id, session_id, model).await;
         match result {
             Ok(response) => Some(TuiCommand::PluginCommandFinished {
                 invocation_id,
@@ -50,11 +56,13 @@ async fn execute_via_runtime(
     spec: &ProcessCommandSpec,
     args: &[String],
     invocation_id: &str,
+    session_id: Option<String>,
+    model: Option<String>,
 ) -> Result<PluginResponse, String> {
     let runtime_spec: ProcessRuntimeSpec = spec.clone().into();
     let runtime = ProcessRuntime::new(runtime_spec, RuntimeLimits::default());
 
-    let invocation = build_invocation(spec, args, invocation_id);
+    let invocation = build_invocation(spec, args, invocation_id, session_id, model);
     runtime.invoke(invocation).await.map_err(|e| e.to_string())
 }
 
@@ -62,24 +70,45 @@ fn build_invocation(
     spec: &ProcessCommandSpec,
     args: &[String],
     invocation_id: &str,
+    session_id: Option<String>,
+    model: Option<String>,
 ) -> PluginInvocation {
     use crate::protocol::plugin::{
         PluginCapabilityInvocation, PluginContext, PLUGIN_PROTOCOL_VERSION,
     };
 
+    let mut metadata = std::collections::BTreeMap::new();
+    metadata.insert(
+        "slash_command_name".to_string(),
+        serde_json::Value::String(spec.command.clone()),
+    );
+    metadata.insert(
+        "executable".to_string(),
+        serde_json::Value::String(spec.command.clone()),
+    );
+    metadata.insert(
+        "raw_args".to_string(),
+        serde_json::to_string(args)
+            .map(serde_json::Value::String)
+            .unwrap_or(serde_json::Value::Null),
+    );
+
     PluginInvocation {
         protocol_version: PLUGIN_PROTOCOL_VERSION,
         invocation_id: invocation_id.to_string(),
-        plugin_id: format!("cmd:{}", spec.command),
+        plugin_id: format!("command:local:{}", spec.command),
         capability: PluginCapabilityInvocation::Command {
             name: spec.command.clone(),
         },
         args: args.to_vec(),
         input: serde_json::Value::Null,
         context: PluginContext {
+            session_id,
             project_dir: std::env::current_dir()
                 .ok()
                 .map(|p| p.to_string_lossy().to_string()),
+            model,
+            metadata,
             ..PluginContext::default()
         },
     }
@@ -588,7 +617,7 @@ mod tests {
             stdout: CommandStdoutMode::Text,
             ..Default::default()
         };
-        let result = execute_via_runtime(&spec, &[], "test-inv").await;
+        let result = execute_via_runtime(&spec, &[], "test-inv", None, None).await;
         assert!(result.is_ok());
         let resp = result.unwrap();
         assert!(resp.ok);
@@ -605,7 +634,7 @@ mod tests {
             stdout: CommandStdoutMode::Auto,
             ..Default::default()
         };
-        let result = execute_via_runtime(&spec, &[], "test-inv").await;
+        let result = execute_via_runtime(&spec, &[], "test-inv", None, None).await;
         assert!(result.is_ok());
         let resp = result.unwrap();
         assert!(resp.ok);
@@ -623,7 +652,7 @@ mod tests {
             stdout: CommandStdoutMode::Auto,
             ..Default::default()
         };
-        let result = execute_via_runtime(&spec, &[], "test-inv").await;
+        let result = execute_via_runtime(&spec, &[], "test-inv", None, None).await;
         assert!(result.is_ok());
         let resp = result.unwrap();
         assert!(resp.ok);
@@ -639,7 +668,7 @@ mod tests {
             stdout: CommandStdoutMode::Json,
             ..Default::default()
         };
-        let result = execute_via_runtime(&spec, &[], "test-inv").await;
+        let result = execute_via_runtime(&spec, &[], "test-inv", None, None).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("invalid PluginResponse JSON"));
     }
@@ -651,7 +680,7 @@ mod tests {
             args: vec![],
             ..Default::default()
         };
-        let result = execute_via_runtime(&spec, &[], "test-inv").await;
+        let result = execute_via_runtime(&spec, &[], "test-inv", None, None).await;
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.contains("exited with code"));
@@ -664,7 +693,7 @@ mod tests {
             args: vec!["-c".to_string(), "echo oops >&2; exit 1".to_string()],
             ..Default::default()
         };
-        let result = execute_via_runtime(&spec, &[], "test-inv").await;
+        let result = execute_via_runtime(&spec, &[], "test-inv", None, None).await;
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.contains("oops"));
@@ -677,7 +706,7 @@ mod tests {
             args: vec![],
             ..Default::default()
         };
-        let result = execute_via_runtime(&spec, &[], "test-inv").await;
+        let result = execute_via_runtime(&spec, &[], "test-inv", None, None).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("failed to spawn"));
     }
@@ -695,7 +724,7 @@ mod tests {
             stdout: CommandStdoutMode::Text,
             ..Default::default()
         };
-        let result = execute_via_runtime(&spec, &[], "test-inv").await;
+        let result = execute_via_runtime(&spec, &[], "test-inv", None, None).await;
         match result {
             Ok(resp) => {
                 // Text mode returns a response with an EmitChat effect
@@ -721,7 +750,8 @@ mod tests {
             stdout: CommandStdoutMode::Text,
             ..Default::default()
         };
-        let result = execute_via_runtime(&spec, &["foo".into(), "bar".into()], "test-inv").await;
+        let result =
+            execute_via_runtime(&spec, &["foo".into(), "bar".into()], "test-inv", None, None).await;
         assert!(result.is_ok());
         let resp = result.unwrap();
         assert!(resp.ok);
@@ -734,6 +764,73 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn execute_cwd_override_is_applied() {
+        use crate::config::schema::CommandStdoutMode;
+        let spec = ProcessCommandSpec {
+            command: "pwd".to_string(),
+            args: vec![],
+            stdout: CommandStdoutMode::Text,
+            cwd: Some("/tmp".to_string()),
+            ..Default::default()
+        };
+        let result = execute_via_runtime(&spec, &[], "test-inv", None, None).await;
+        assert!(result.is_ok());
+        let resp = result.unwrap();
+        match &resp.effects[0] {
+            UiEffect::EmitChat { block } => {
+                assert!(
+                    block.content.trim().ends_with("/tmp"),
+                    "expected /tmp in output, got: {}",
+                    block.content
+                );
+            }
+            other => panic!("expected EmitChat, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn execute_env_vars_are_passed() {
+        use crate::config::schema::CommandStdoutMode;
+        let spec = ProcessCommandSpec {
+            command: "sh".to_string(),
+            args: vec!["-c".to_string(), "echo $MY_TEST_VAR".to_string()],
+            stdout: CommandStdoutMode::Text,
+            env: vec!["MY_TEST_VAR=hello_from_env".to_string()],
+            ..Default::default()
+        };
+        let result = execute_via_runtime(&spec, &[], "test-inv", None, None).await;
+        assert!(result.is_ok());
+        let resp = result.unwrap();
+        match &resp.effects[0] {
+            UiEffect::EmitChat { block } => {
+                assert_eq!(block.content.trim(), "hello_from_env");
+            }
+            other => panic!("expected EmitChat, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn execute_no_shell_expansion_by_default() {
+        use crate::config::schema::CommandStdoutMode;
+        // An unquoted dollar sign should NOT be expanded by a shell
+        let spec = ProcessCommandSpec {
+            command: "echo".to_string(),
+            args: vec!["$HOME".to_string()],
+            stdout: CommandStdoutMode::Text,
+            ..Default::default()
+        };
+        let result = execute_via_runtime(&spec, &[], "test-inv", None, None).await;
+        assert!(result.is_ok());
+        let resp = result.unwrap();
+        match &resp.effects[0] {
+            UiEffect::EmitChat { block } => {
+                assert_eq!(block.content.trim(), "$HOME");
+            }
+            other => panic!("expected EmitChat, got {:?}", other),
+        }
+    }
+
     #[test]
     fn build_invocation_has_correct_fields() {
         let spec = ProcessCommandSpec {
@@ -741,10 +838,38 @@ mod tests {
             args: vec!["--flag".to_string()],
             ..Default::default()
         };
-        let inv = build_invocation(&spec, &["extra".into()], "inv-42");
+        let inv = build_invocation(
+            &spec,
+            &["extra".into()],
+            "inv-42",
+            Some("sess-1".to_string()),
+            Some("test-model".to_string()),
+        );
         assert_eq!(inv.protocol_version, 1);
         assert_eq!(inv.invocation_id, "inv-42");
-        assert_eq!(inv.plugin_id, "cmd:my-script");
+        assert_eq!(inv.plugin_id, "command:local:my-script");
         assert_eq!(inv.args, vec!["extra"]);
+        assert_eq!(inv.context.session_id.as_deref(), Some("sess-1"));
+        assert_eq!(inv.context.model.as_deref(), Some("test-model"));
+        assert_eq!(
+            inv.context.metadata.get("slash_command_name"),
+            Some(&serde_json::json!("my-script"))
+        );
+        assert_eq!(
+            inv.context.metadata.get("executable"),
+            Some(&serde_json::json!("my-script"))
+        );
+    }
+
+    #[test]
+    fn build_invocation_default_context_without_session() {
+        let spec = ProcessCommandSpec {
+            command: "test".to_string(),
+            ..Default::default()
+        };
+        let inv = build_invocation(&spec, &[], "inv-1", None, None);
+        assert!(inv.context.session_id.is_none());
+        assert!(inv.context.model.is_none());
+        assert!(inv.context.project_dir.is_some());
     }
 }

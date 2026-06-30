@@ -440,6 +440,8 @@ pub enum TuiCommand {
     PluginCommandRun {
         spec: crate::command::ProcessCommandSpec,
         args: Vec<String>,
+        session_id: Option<String>,
+        model: Option<String>,
     },
     /// Completion: a plugin command has finished executing.
     PluginCommandFinished {
@@ -4351,9 +4353,13 @@ impl App {
                 args.split_whitespace().map(String::from).collect()
             };
             if let Some(ref tx) = self.tui_cmd_tx {
+                let session_id = self.session_state.session.as_ref().map(|s| s.id.clone());
+                let model = Some(self.agent_state.current_model.clone());
                 let _ = tx.try_send(TuiCommand::PluginCommandRun {
                     spec: spec.clone(),
                     args: arg_list,
+                    session_id,
+                    model,
                 });
             }
             self.ui_state.command_mode = false;
