@@ -436,9 +436,9 @@ pub enum TuiCommand {
         reload_after: bool,
         error: Option<String>,
     },
-    /// Request to run a plugin-backed command.
+    /// Request to run a process-backed plugin command.
     PluginCommandRun {
-        command: String,
+        spec: crate::command::ProcessCommandSpec,
         args: Vec<String>,
     },
     /// Completion: a plugin command has finished executing.
@@ -4332,6 +4332,33 @@ impl App {
         if let Some(dialog) = &cmd.dialog {
             self.ui_state.command_mode = false;
             self.open_dialog(dialog.clone());
+            return;
+        }
+        if let Some(ref spec) = cmd.process {
+            if self.prompt_state.pending_send {
+                self.messages_state
+                    .toasts
+                    .warning("Still waiting for previous prompt to finish");
+                return;
+            }
+            let args = raw_input
+                .and_then(|input| input.trim().split_once(' ').map(|(_, rest)| rest.trim()))
+                .unwrap_or_default()
+                .to_string();
+            let arg_list: Vec<String> = if args.is_empty() {
+                Vec::new()
+            } else {
+                args.split_whitespace().map(String::from).collect()
+            };
+            if let Some(ref tx) = self.tui_cmd_tx {
+                let _ = tx.try_send(TuiCommand::PluginCommandRun {
+                    spec: spec.clone(),
+                    args: arg_list,
+                });
+            }
+            self.ui_state.command_mode = false;
+            self.prompt_state.prompt.clear();
+            self.prompt_state.show_completions = false;
             return;
         }
         if let Some(template) = &cmd.template {

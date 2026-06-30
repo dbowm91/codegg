@@ -540,8 +540,8 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
                 lines,
             );
         }
-        TuiCommand::PluginCommandRun { command, args } => {
-            start_plugin_command(app, command, args);
+        TuiCommand::PluginCommandRun { spec, args } => {
+            start_plugin_command(app, spec, args);
         }
         TuiCommand::PluginCommandFinished {
             invocation_id,

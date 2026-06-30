@@ -873,6 +873,49 @@ pub struct CommandConfig {
     pub agent: Option<String>,
     pub model: Option<String>,
     pub subtask: Option<bool>,
+    /// Execution runtime. `None` or `Template` uses the template path.
+    pub runtime: Option<CommandRuntimeKind>,
+    /// Process command executable (required when runtime = "process").
+    pub command: Option<String>,
+    /// Arguments for process-backed commands.
+    pub args: Option<Vec<String>>,
+    /// Stdin mode for process commands.
+    pub stdin: Option<CommandStdinMode>,
+    /// Stdout parsing mode for process commands.
+    pub stdout: Option<CommandStdoutMode>,
+    /// Timeout in milliseconds for process commands (default 5000).
+    pub timeout_ms: Option<u64>,
+    /// Working directory override for process commands.
+    pub cwd: Option<String>,
+    /// Extra environment variables (`KEY=VALUE`) for process commands.
+    pub env: Option<Vec<String>>,
+    /// Output surfaces for process command responses.
+    pub output: Option<Vec<String>>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CommandRuntimeKind {
+    #[default]
+    Template,
+    Process,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CommandStdinMode {
+    #[default]
+    None,
+    Json,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CommandStdoutMode {
+    Text,
+    Json,
+    #[default]
+    Auto,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq)]
@@ -1271,7 +1314,15 @@ impl Config {
 
         if let Some(ref commands) = self.commands {
             for (name, cmd) in commands {
-                if cmd.template.is_empty() {
+                let is_process = cmd.runtime == Some(CommandRuntimeKind::Process);
+                if is_process {
+                    if cmd.command.is_none() {
+                        errors.push(format!(
+                            "command '{}' has runtime 'process' but no 'command' field",
+                            name
+                        ));
+                    }
+                } else if cmd.template.is_empty() {
                     errors.push(format!("command '{}' has an empty template", name));
                 }
             }
@@ -1925,5 +1976,75 @@ mod tests {
         };
         let errs = cfg.validate().unwrap_err();
         assert!(errs.len() >= 4);
+    }
+
+    #[test]
+    fn command_config_process_without_command_fails_validation() {
+        let mut commands = std::collections::HashMap::new();
+        commands.insert(
+            "bad-cmd".to_string(),
+            CommandConfig {
+                template: String::new(),
+                runtime: Some(CommandRuntimeKind::Process),
+                command: None,
+                ..Default::default()
+            },
+        );
+        let cfg = Config {
+            commands: Some(commands),
+            ..Default::default()
+        };
+        let errs = cfg.validate().unwrap_err();
+        assert!(errs.iter().any(|e| e.contains("no 'command' field")));
+    }
+
+    #[test]
+    fn command_config_process_with_command_passes_validation() {
+        let mut commands = std::collections::HashMap::new();
+        commands.insert(
+            "quota".to_string(),
+            CommandConfig {
+                template: String::new(),
+                runtime: Some(CommandRuntimeKind::Process),
+                command: Some("python3".to_string()),
+                ..Default::default()
+            },
+        );
+        let cfg = Config {
+            commands: Some(commands),
+            ..Default::default()
+        };
+        let result = cfg.validate();
+        if let Err(errs) = result {
+            assert!(
+                !errs.iter().any(|e| e.contains("quota") && e.contains("command")),
+                "process command with command field should pass: {errs:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn command_config_template_empty_fails_validation() {
+        let mut commands = std::collections::HashMap::new();
+        commands.insert(
+            "empty".to_string(),
+            CommandConfig {
+                template: String::new(),
+                ..Default::default()
+            },
+        );
+        let cfg = Config {
+            commands: Some(commands),
+            ..Default::default()
+        };
+        let errs = cfg.validate().unwrap_err();
+        assert!(errs.iter().any(|e| e.contains("empty template")));
+    }
+
+    #[test]
+    fn command_config_runtime_defaults_to_template() {
+        let cfg = CommandConfig::default();
+        assert_eq!(cfg.runtime, None);
+        assert_eq!(cfg.command, None);
     }
 }

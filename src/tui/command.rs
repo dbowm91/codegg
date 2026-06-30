@@ -34,6 +34,8 @@ pub struct Command {
     pub model: Option<String>,
     pub subtask: Option<bool>,
     pub source: Option<String>,
+    /// Process execution spec for `runtime: process` commands.
+    pub process: Option<crate::command::ProcessCommandSpec>,
 }
 
 impl Command {
@@ -49,6 +51,7 @@ impl Command {
             model: None,
             subtask: None,
             source: None,
+            process: None,
         }
     }
 
@@ -71,6 +74,11 @@ impl Command {
         let mut names = vec![self.name.as_str()];
         names.extend(self.aliases.iter().map(|s| s.as_str()));
         names
+    }
+
+    /// Returns true if this is a process-backed command.
+    pub fn is_process(&self) -> bool {
+        self.process.is_some()
     }
 }
 
@@ -354,12 +362,17 @@ impl CommandRegistry {
             description: cmd.description.unwrap_or_default(),
             category: CommandCategory::Agent,
             dialog: None,
-            template: Some(cmd.template),
+            template: if cmd.process.is_some() {
+                None
+            } else {
+                Some(cmd.template)
+            },
             agent: cmd.agent,
             model: cmd.model,
             #[allow(deprecated)]
             subtask: cmd.subtask,
             source: Some(cmd.source),
+            process: cmd.process,
         }
     }
 
@@ -463,6 +476,7 @@ mod tests {
             #[allow(deprecated)]
             subtask: None,
             source: "test".to_string(),
+            process: None,
         };
 
         let converted = CommandRegistry::from_dynamic_command(cmd);
@@ -473,5 +487,65 @@ mod tests {
         assert_eq!(converted.agent.as_deref(), Some("build"));
         assert_eq!(converted.model.as_deref(), Some("model-a"));
         assert_eq!(converted.source.as_deref(), Some("test"));
+        assert!(converted.process.is_none());
+    }
+
+    #[test]
+    fn process_command_conversion_carries_spec() {
+        use crate::command::ProcessCommandSpec;
+        use crate::config::schema::{CommandStdinMode, CommandStdoutMode};
+
+        let cmd = crate::command::Command {
+            name: "quota".to_string(),
+            description: Some("Show quota".to_string()),
+            template: String::new(),
+            agent: None,
+            model: None,
+            #[allow(deprecated)]
+            subtask: None,
+            source: "test".to_string(),
+            process: Some(ProcessCommandSpec {
+                command: "python3".to_string(),
+                args: vec!["scripts/quota.py".to_string()],
+                stdin: CommandStdinMode::None,
+                stdout: CommandStdoutMode::Text,
+                timeout_ms: 5000,
+                cwd: None,
+                env: Vec::new(),
+                output: Vec::new(),
+            }),
+        };
+
+        let converted = CommandRegistry::from_dynamic_command(cmd);
+
+        assert_eq!(converted.name, "/quota");
+        assert!(converted.template.is_none());
+        let proc = converted.process.as_ref().expect("should have process spec");
+        assert_eq!(proc.command, "python3");
+        assert_eq!(proc.args, vec!["scripts/quota.py"]);
+        assert!(converted.is_process());
+    }
+
+    #[test]
+    fn process_command_not_template() {
+        let cmd = crate::command::Command {
+            name: "tool".to_string(),
+            description: None,
+            template: String::new(),
+            agent: None,
+            model: None,
+            #[allow(deprecated)]
+            subtask: None,
+            source: "test".to_string(),
+            process: Some(crate::command::ProcessCommandSpec {
+                command: "echo".to_string(),
+                ..Default::default()
+            }),
+        };
+
+        let converted = CommandRegistry::from_dynamic_command(cmd);
+        assert!(converted.is_process());
+        assert!(converted.process.is_some());
+        assert!(converted.template.is_none());
     }
 }

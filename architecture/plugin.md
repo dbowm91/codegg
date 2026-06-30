@@ -639,9 +639,9 @@ impl ApiVersion {
 }
 ```
 
-## Protocol DTOs (Phase 1-3)
+## Protocol DTOs (Phase 1-4)
 
-`crates/codegg-protocol/src/ui.rs` and `crates/codegg-protocol/src/plugin.rs` define frontend-neutral protocol types for plugin UI output and invocation. Phase 2 adds TUI-side consumption: `PluginUiState` (`src/tui/app/state/plugin_ui.rs`) stores plugin dialogs, panels, and status items. `PluginUiRenderer` (`src/tui/components/plugin_renderer.rs`) lowers `UiNode` trees into ratatui widgets and flat text lines. `App::apply_plugin_ui_effect()` centralizes effect routing. A single `Dialog::Plugin` variant handles all plugin dialogs without per-plugin enum entries. Phase 3 adds generic `TuiCommand` plugin variants (`PluginCommandRun`, `PluginCommandFinished`, `PluginUiEffect`) and `src/tui/commands/plugins.rs` with `start_plugin_command` (stub), `apply_plugin_command_finished` (response application), and `apply_plugin_ui_effect` (direct effect dispatch). EmitChat routing is deferred to Phase 4.
+`crates/codegg-protocol/src/ui.rs` and `crates/codegg-protocol/src/plugin.rs` define frontend-neutral protocol types for plugin UI output and invocation. Phase 2 adds TUI-side consumption: `PluginUiState` (`src/tui/app/state/plugin_ui.rs`) stores plugin dialogs, panels, and status items. `PluginUiRenderer` (`src/tui/components/plugin_renderer.rs`) lowers `UiNode` trees into ratatui widgets and flat text lines. `App::apply_plugin_ui_effect()` centralizes effect routing. A single `Dialog::Plugin` variant handles all plugin dialogs without per-plugin enum entries. Phase 3 adds generic `TuiCommand` plugin variants (`PluginCommandRun`, `PluginCommandFinished`, `PluginUiEffect`) and `src/tui/commands/plugins.rs` with `start_plugin_command`, `apply_plugin_command_finished` (response application), and `apply_plugin_ui_effect` (direct effect dispatch). Phase 4 replaces the stub with real process execution: `start_plugin_command` accepts a `ProcessCommandSpec` and spawns a child process with timeout, output capping, and stdin piping.
 
 ### UI Types (`codegg_protocol::ui`)
 
@@ -666,6 +666,58 @@ impl ApiVersion {
 - `Unsupported` variant provides forward-compatible fallback for unknown UI node types
 - `FilesystemPermission::None` is the default
 - `PLUGIN_PROTOCOL_VERSION = 1` for versioning
+
+## Process-Backed Commands (Phase 4)
+
+Dynamic slash commands can declare `runtime: process` in their YAML frontmatter to execute a local process instead of rendering a template. This is the first plugin execution path: a developer can add a project-local `/quota`-style command that runs Python, shell, or another executable without recompiling Codegg.
+
+### Frontmatter Schema
+
+```yaml
+---
+description: Show quota
+runtime: process
+command: python3
+args: ["scripts/quota.py"]
+stdin: none        # none | json
+stdout: auto       # text | json | auto
+timeout_ms: 5000
+cwd: /path/to/dir
+env: ["KEY=VALUE"]
+output: ["chat", "dialog"]
+---
+```
+
+All process fields are optional. `command` is required when `runtime: process`.
+
+### Config Types (`crates/codegg-config/src/schema.rs`)
+
+- `CommandRuntimeKind` — `Template` (default) | `Process`
+- `CommandStdinMode` — `None` (default) | `Json`
+- `CommandStdoutMode` — `Text` | `Json` | `Auto` (default, tries JSON then falls back to text)
+- `CommandConfig` gains: `runtime`, `command`, `args`, `stdin`, `stdout`, `timeout_ms`, `cwd`, `env`, `output`
+
+### Internal Types (`src/command/mod.rs`)
+
+- `ProcessCommandSpec` — Runtime execution spec: `command`, `args`, `stdin`, `stdout`, `timeout_ms`, `cwd`, `env`, `output`
+- `Command.process: Option<ProcessCommandSpec>` — Set when `runtime: process`
+
+### Execution (`src/tui/commands/plugins.rs`)
+
+`start_plugin_command(spec, args)` spawns a child process via `tokio::process::Command`:
+- Timeout: `spec.timeout_ms` (default 5000ms)
+- stdout cap: 1 MiB; stderr cap: 256 KiB
+- No shell expansion by default
+- Stdin piping: when `stdin: json`, writes a `PluginInvocation` envelope to stdin
+- Output parsing: `text` returns raw stdout, `json` parses as `PluginResponse`, `auto` tries JSON then falls back to text
+
+### TUI Integration (`src/tui/app/mod.rs`)
+
+`execute_command` checks `cmd.process` before `cmd.template`. Process commands send `TuiCommand::PluginCommandRun { spec, args }` through the command channel. The dispatch handler calls `start_plugin_command`. Completion arrives as `TuiCommand::PluginCommandFinished` and is handled by `apply_plugin_command_finished`.
+
+### Security
+
+Process-backed commands are local executable code. Minimal safety controls: no shell execution unless explicitly configured, timeout, output caps, cwd control, explicit env variables. They are not sandboxed.
 
 ## See Also
 

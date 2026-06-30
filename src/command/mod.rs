@@ -2,8 +2,36 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
 
-use crate::config::schema::CommandConfig;
+use crate::config::schema::{CommandConfig, CommandRuntimeKind, CommandStdinMode, CommandStdoutMode};
 use tracing::{debug, warn};
+
+/// Process execution specification for a command with `runtime: process`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProcessCommandSpec {
+    pub command: String,
+    pub args: Vec<String>,
+    pub stdin: CommandStdinMode,
+    pub stdout: CommandStdoutMode,
+    pub timeout_ms: u64,
+    pub cwd: Option<String>,
+    pub env: Vec<String>,
+    pub output: Vec<String>,
+}
+
+impl Default for ProcessCommandSpec {
+    fn default() -> Self {
+        Self {
+            command: String::new(),
+            args: Vec::new(),
+            stdin: CommandStdinMode::None,
+            stdout: CommandStdoutMode::Auto,
+            timeout_ms: 5000,
+            cwd: None,
+            env: Vec::new(),
+            output: Vec::new(),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Command {
@@ -15,6 +43,8 @@ pub struct Command {
     #[deprecated(since = "0.1.0", note = "subtask field is not yet implemented")]
     pub subtask: Option<bool>,
     pub source: String,
+    /// Process execution spec (only when `runtime: process`).
+    pub process: Option<ProcessCommandSpec>,
 }
 
 pub async fn find_command_files(base: &Path) -> Vec<Command> {
@@ -98,48 +128,151 @@ fn parse_command_content(path: &Path, content: &str) -> Result<Command, String> 
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_default();
 
-    let (description, template, agent, model, _subtask) =
-        if let Ok(cfg) = serde_yaml::from_str::<CommandConfig>(&frontmatter) {
-            (
-                cfg.description,
-                if cfg.template.is_empty() {
-                    None
-                } else {
-                    Some(cfg.template)
-                },
-                cfg.agent,
-                cfg.model,
-                cfg.subtask,
-            )
-        } else if let Ok(cfg) = serde_yaml::from_str::<serde_yaml::Value>(&frontmatter) {
-            (
-                cfg.get("description")
-                    .and_then(|v| v.as_str())
-                    .map(String::from),
-                cfg.get("template")
-                    .and_then(|v| v.as_str())
-                    .filter(|s| !s.is_empty())
-                    .map(String::from),
-                cfg.get("agent").and_then(|v| v.as_str()).map(String::from),
-                cfg.get("model").and_then(|v| v.as_str()).map(String::from),
-                cfg.get("subtask").and_then(|v| v.as_bool()),
-            )
+    if let Ok(cfg) = serde_yaml::from_str::<CommandConfig>(&frontmatter) {
+        let is_process = cfg.runtime == Some(CommandRuntimeKind::Process);
+        let process = if is_process {
+            let command = cfg.command.ok_or_else(|| {
+                format!("command '{name}' has runtime 'process' but no 'command' field")
+            })?;
+            Some(ProcessCommandSpec {
+                command,
+                args: cfg.args.unwrap_or_default(),
+                stdin: cfg.stdin.unwrap_or_default(),
+                stdout: cfg.stdout.unwrap_or_default(),
+                timeout_ms: cfg.timeout_ms.unwrap_or(5000),
+                cwd: cfg.cwd,
+                env: cfg.env.unwrap_or_default(),
+                output: cfg.output.unwrap_or_default(),
+            })
         } else {
-            return Err("failed to parse frontmatter".to_string());
+            None
         };
 
-    let template = template.unwrap_or_else(|| body.trim().to_string());
+        let template = if cfg.template.is_empty() {
+            if is_process {
+                String::new()
+            } else {
+                body.trim().to_string()
+            }
+        } else {
+            cfg.template
+        };
 
-    #[allow(deprecated)]
-    Ok(Command {
-        name,
-        description,
-        template,
-        agent,
-        model,
-        subtask: _subtask,
-        source: path.to_string_lossy().to_string(),
-    })
+        #[allow(deprecated)]
+        return Ok(Command {
+            name,
+            description: cfg.description,
+            template,
+            agent: cfg.agent,
+            model: cfg.model,
+            subtask: cfg.subtask,
+            source: path.to_string_lossy().to_string(),
+            process,
+        });
+    }
+
+    if let Ok(cfg) = serde_yaml::from_str::<serde_yaml::Value>(&frontmatter) {
+        let runtime = cfg
+            .get("runtime")
+            .and_then(|v| v.as_str())
+            .unwrap_or("template");
+        let is_process = runtime == "process";
+
+        let process = if is_process {
+            let command = cfg
+                .get("command")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| {
+                    format!("command '{name}' has runtime 'process' but no 'command' field")
+                })?
+                .to_string();
+            Some(ProcessCommandSpec {
+                command,
+                args: cfg
+                    .get("args")
+                    .and_then(|v| v.as_sequence())
+                    .map(|seq| {
+                        seq.iter()
+                            .filter_map(|v| v.as_str().map(String::from))
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+                stdin: cfg
+                    .get("stdin")
+                    .and_then(|v| v.as_str())
+                    .map(|s| match s {
+                        "json" => CommandStdinMode::Json,
+                        _ => CommandStdinMode::None,
+                    })
+                    .unwrap_or_default(),
+                stdout: cfg
+                    .get("stdout")
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| match s {
+                        "text" => Some(CommandStdoutMode::Text),
+                        "json" => Some(CommandStdoutMode::Json),
+                        "auto" => Some(CommandStdoutMode::Auto),
+                        _ => None,
+                    })
+                    .unwrap_or_default(),
+                timeout_ms: cfg
+                    .get("timeout_ms")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(5000),
+                cwd: cfg.get("cwd").and_then(|v| v.as_str()).map(String::from),
+                env: cfg
+                    .get("env")
+                    .and_then(|v| v.as_sequence())
+                    .map(|seq| {
+                        seq.iter()
+                            .filter_map(|v| v.as_str().map(String::from))
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+                output: cfg
+                    .get("output")
+                    .and_then(|v| v.as_sequence())
+                    .map(|seq| {
+                        seq.iter()
+                            .filter_map(|v| v.as_str().map(String::from))
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+            })
+        } else {
+            None
+        };
+
+        let template = cfg
+            .get("template")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(String::from)
+            .unwrap_or_else(|| {
+                if is_process {
+                    String::new()
+                } else {
+                    body.trim().to_string()
+                }
+            });
+
+        #[allow(deprecated)]
+        return Ok(Command {
+            name,
+            description: cfg
+                .get("description")
+                .and_then(|v| v.as_str())
+                .map(String::from),
+            template,
+            agent: cfg.get("agent").and_then(|v| v.as_str()).map(String::from),
+            model: cfg.get("model").and_then(|v| v.as_str()).map(String::from),
+            subtask: cfg.get("subtask").and_then(|v| v.as_bool()),
+            source: path.to_string_lossy().to_string(),
+            process,
+        });
+    }
+
+    Err("failed to parse frontmatter".to_string())
 }
 
 pub fn resolve_commands_from_config(
@@ -147,15 +280,33 @@ pub fn resolve_commands_from_config(
 ) -> Vec<Command> {
     config_commands
         .iter()
-        .map(|(name, cfg)| Command {
-            name: name.clone(),
-            description: cfg.description.clone(),
-            template: cfg.template.clone(),
-            agent: cfg.agent.clone(),
-            model: cfg.model.clone(),
+        .map(|(name, cfg)| {
+            let is_process = cfg.runtime == Some(CommandRuntimeKind::Process);
+            let process = if is_process {
+                cfg.command.as_ref().map(|cmd| ProcessCommandSpec {
+                    command: cmd.clone(),
+                    args: cfg.args.clone().unwrap_or_default(),
+                    stdin: cfg.stdin.unwrap_or_default(),
+                    stdout: cfg.stdout.unwrap_or_default(),
+                    timeout_ms: cfg.timeout_ms.unwrap_or(5000),
+                    cwd: cfg.cwd.clone(),
+                    env: cfg.env.clone().unwrap_or_default(),
+                    output: cfg.output.clone().unwrap_or_default(),
+                })
+            } else {
+                None
+            };
             #[allow(deprecated)]
-            subtask: cfg.subtask,
-            source: "config".to_string(),
+            Command {
+                name: name.clone(),
+                description: cfg.description.clone(),
+                template: cfg.template.clone(),
+                agent: cfg.agent.clone(),
+                model: cfg.model.clone(),
+                subtask: cfg.subtask,
+                source: "config".to_string(),
+                process,
+            }
         })
         .collect()
 }
@@ -240,6 +391,7 @@ mod tests {
         assert_eq!(cmd.description, Some("A test command".to_string()));
         assert_eq!(cmd.agent, Some("build".to_string()));
         assert_eq!(cmd.template, "Review the file: {file}");
+        assert!(cmd.process.is_none());
     }
 
     #[tokio::test]
@@ -286,5 +438,124 @@ mod tests {
         assert!(load_command_from_file(&tmp.path().join("nocfm.md"))
             .await
             .is_err());
+    }
+
+    #[tokio::test]
+    async fn test_process_command_yaml_frontmatter() {
+        let tmp = tempfile::tempdir().unwrap();
+        let content = "---\ndescription: Show quota\nruntime: process\ncommand: python3\nargs: [\"scripts/quota.py\"]\nstdout: text\ntimeout_ms: 5000\n---\n";
+        tokio::fs::write(tmp.path().join("quota.md"), content)
+            .await
+            .unwrap();
+        let cmd = load_command_from_file(&tmp.path().join("quota.md"))
+            .await
+            .unwrap();
+        assert_eq!(cmd.name, "quota");
+        assert_eq!(cmd.description, Some("Show quota".to_string()));
+        assert!(cmd.template.is_empty());
+        let proc = cmd.process.expect("should have process spec");
+        assert_eq!(proc.command, "python3");
+        assert_eq!(proc.args, vec!["scripts/quota.py"]);
+        assert_eq!(proc.stdout, CommandStdoutMode::Text);
+        assert_eq!(proc.timeout_ms, 5000);
+    }
+
+    #[tokio::test]
+    async fn test_process_command_json_output() {
+        let tmp = tempfile::tempdir().unwrap();
+        let content = "---\ndescription: Show quota as dialog\nruntime: process\ncommand: python3\nargs: [\"scripts/quota.py\", \"--json\"]\nstdin: json\nstdout: json\ntimeout_ms: 5000\noutput: [\"chat\", \"dialog\"]\n---\n";
+        tokio::fs::write(tmp.path().join("quota_json.md"), content)
+            .await
+            .unwrap();
+        let cmd = load_command_from_file(&tmp.path().join("quota_json.md"))
+            .await
+            .unwrap();
+        let proc = cmd.process.expect("should have process spec");
+        assert_eq!(proc.stdin, CommandStdinMode::Json);
+        assert_eq!(proc.stdout, CommandStdoutMode::Json);
+        assert_eq!(proc.output, vec!["chat", "dialog"]);
+    }
+
+    #[tokio::test]
+    async fn test_process_command_auto_stdout_default() {
+        let tmp = tempfile::tempdir().unwrap();
+        let content = "---\ndescription: Auto detect\nruntime: process\ncommand: echo\n---\n";
+        tokio::fs::write(tmp.path().join("auto.md"), content)
+            .await
+            .unwrap();
+        let cmd = load_command_from_file(&tmp.path().join("auto.md"))
+            .await
+            .unwrap();
+        let proc = cmd.process.expect("should have process spec");
+        assert_eq!(proc.stdout, CommandStdoutMode::Auto);
+        assert_eq!(proc.timeout_ms, 5000); // default
+        assert_eq!(proc.stdin, CommandStdinMode::None); // default
+    }
+
+    #[tokio::test]
+    async fn test_process_command_without_command_field_fails() {
+        let tmp = tempfile::tempdir().unwrap();
+        let content = "---\ndescription: Bad command\nruntime: process\n---\n";
+        tokio::fs::write(tmp.path().join("bad.md"), content)
+            .await
+            .unwrap();
+        let result = load_command_from_file(&tmp.path().join("bad.md")).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("no 'command' field"));
+    }
+
+    #[tokio::test]
+    async fn test_process_command_env_and_cwd() {
+        let tmp = tempfile::tempdir().unwrap();
+        let content = "---\ndescription: With env\ncwd: /tmp\nenv: [\"FOO=bar\", \"BAZ=qux\"]\nruntime: process\ncommand: env\n---\n";
+        tokio::fs::write(tmp.path().join("envcmd.md"), content)
+            .await
+            .unwrap();
+        let cmd = load_command_from_file(&tmp.path().join("envcmd.md"))
+            .await
+            .unwrap();
+        let proc = cmd.process.expect("should have process spec");
+        assert_eq!(proc.cwd, Some("/tmp".to_string()));
+        assert_eq!(proc.env, vec!["FOO=bar", "BAZ=qux"]);
+    }
+
+    #[tokio::test]
+    async fn test_template_command_still_works() {
+        let tmp = tempfile::tempdir().unwrap();
+        let content = "---\ndescription: A template\ntemplate: \"Review {args}\"\n---\n";
+        tokio::fs::write(tmp.path().join("review.md"), content)
+            .await
+            .unwrap();
+        let cmd = load_command_from_file(&tmp.path().join("review.md"))
+            .await
+            .unwrap();
+        assert!(cmd.process.is_none());
+        assert_eq!(cmd.template, "Review {args}");
+    }
+
+    #[test]
+    fn test_resolve_commands_process_from_config() {
+        use crate::config::schema::CommandConfig;
+        let mut commands = HashMap::new();
+        commands.insert(
+            "quota".to_string(),
+            CommandConfig {
+                template: String::new(),
+                description: Some("Show quota".to_string()),
+                runtime: Some(CommandRuntimeKind::Process),
+                command: Some("python3".to_string()),
+                args: Some(vec!["scripts/quota.py".to_string()]),
+                stdout: Some(CommandStdoutMode::Text),
+                timeout_ms: Some(3000),
+                ..Default::default()
+            },
+        );
+        let resolved = resolve_commands_from_config(&commands);
+        assert_eq!(resolved.len(), 1);
+        let cmd = &resolved[0];
+        assert_eq!(cmd.name, "quota");
+        let proc = cmd.process.as_ref().expect("should have process spec");
+        assert_eq!(proc.command, "python3");
+        assert_eq!(proc.timeout_ms, 3000);
     }
 }

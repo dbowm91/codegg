@@ -27,6 +27,18 @@ pub struct Command {
     #[deprecated(since = "2026-05-22", note = "subtask field is not yet implemented")]
     pub subtask: Option<bool>,
     pub source: String,
+    pub process: Option<ProcessCommandSpec>,
+}
+
+pub struct ProcessCommandSpec {
+    pub command: String,
+    pub args: Vec<String>,
+    pub stdin: CommandStdinMode,
+    pub stdout: CommandStdoutMode,
+    pub timeout_ms: u64,
+    pub cwd: Option<String>,
+    pub env: Vec<String>,
+    pub output: Vec<String>,
 }
 ```
 
@@ -41,6 +53,15 @@ pub struct CommandConfig {
     pub agent: Option<String>,
     pub model: Option<String>,
     pub subtask: Option<bool>,
+    pub runtime: Option<CommandRuntimeKind>,
+    pub command: Option<String>,
+    pub args: Option<Vec<String>>,
+    pub stdin: Option<CommandStdinMode>,
+    pub stdout: Option<CommandStdoutMode>,
+    pub timeout_ms: Option<u64>,
+    pub cwd: Option<String>,
+    pub env: Option<Vec<String>>,
+    pub output: Option<Vec<String>>,
 }
 ```
 
@@ -54,6 +75,7 @@ pub struct CommandConfig {
 
 ### File Format (Markdown with YAML Frontmatter)
 
+**Template command** (existing behavior):
 ```markdown
 ---
 description: A test command
@@ -63,7 +85,19 @@ template: "Review the file: {file}"
 Fallback body template if template not specified in frontmatter
 ```
 
-**Note**: If `template:` is empty or missing in frontmatter, the markdown body is used as the template.
+**Process-backed command** (Phase 4):
+```markdown
+---
+description: Show quota
+runtime: process
+command: python3
+args: ["scripts/quota.py"]
+stdout: text
+timeout_ms: 5000
+---
+```
+
+If `runtime` is absent, existing template behavior is preserved. When `runtime: process`, the command field `command` is required.
 
 ### Validation Rules
 
@@ -108,6 +142,7 @@ pub struct Command {
     pub model: Option<String>,
     pub subtask: Option<bool>,
     pub source: Option<String>,
+    pub process: Option<ProcessCommandSpec>,
 }
 ```
 
@@ -197,10 +232,15 @@ pub enum PluginCommand {
 
 ### Command Execution (src/tui/app/mod.rs)
 
-When a command with a template is executed:
+When a command is executed:
 
 1. If command has `dialog` set → open that dialog
-2. If command has `template`:
+2. If command has `process` set (process-backed):
+   - Extract args from user input after command name
+   - Send `TuiCommand::PluginCommandRun { spec, args }` through command channel
+   - Process spawns as child with timeout, output capping
+   - Completion arrives as `PluginCommandFinished`
+3. If command has `template`:
    - Extract `args` from user input after command name
    - Render template with `{args}` variable
    - Add rendered text as user message
