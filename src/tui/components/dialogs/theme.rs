@@ -118,10 +118,6 @@ impl ThemePickerDialog {
         let mut themes_shown = 0;
 
         for (i, _theme) in self.themes.iter().enumerate().skip(start_idx) {
-            if i < start_idx {
-                continue;
-            }
-
             let theme_lines = 2 + if i == self.selected { 1 } else { 0 };
             if lines_used + theme_lines > max_lines {
                 break;
@@ -239,6 +235,33 @@ fn render_color_swatch(color: Color, theme: &Theme) -> Span<'static> {
     )
 }
 
+fn push_theme_row<'a>(lines: &mut Vec<Line<'a>>, theme: &'a Theme, chrome: &Theme, selected: bool) {
+    let style = if selected {
+        Style::default()
+            .fg(chrome.primary)
+            .bg(chrome.selection)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(chrome.foreground)
+    };
+    let marker = if selected { "▸ " } else { "  " };
+
+    lines.push(Line::from(vec![
+        Span::styled(marker.to_string(), Style::default().fg(chrome.muted)),
+        Span::styled(theme.name.as_str(), style),
+        Span::raw("  "),
+    ]));
+    lines.push(Line::from(vec![
+        Span::raw("     "),
+        Span::raw(" "),
+        render_color_swatch(theme.primary, chrome),
+        render_color_swatch(theme.secondary, chrome),
+        render_color_swatch(theme.success, chrome),
+        render_color_swatch(theme.warning, chrome),
+        render_color_swatch(theme.error, chrome),
+    ]));
+}
+
 impl Widget for &ThemePickerDialog {
     fn render(self, area: Rect, buf: &mut ratatui::prelude::Buffer) {
         let mut lines: Vec<Line> = Vec::new();
@@ -259,42 +282,14 @@ impl Widget for &ThemePickerDialog {
         let max_lines = (area.height as usize).saturating_sub(6);
         let scroll = self.scroll.get();
         let visible_themes = self.count_visible_themes_in(scroll, max_lines);
-        for (i, theme) in self.themes.iter().enumerate() {
-            if i < scroll {
-                continue;
-            }
-            if i >= scroll + visible_themes {
-                break;
-            }
-
-            let is_selected = i == self.selected;
-            let style = if is_selected {
-                Style::default()
-                    .fg(self.theme.primary)
-                    .bg(self.theme.selection)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(self.theme.foreground)
-            };
-
-            let swatches = vec![
-                render_color_swatch(theme.primary, &self.theme),
-                render_color_swatch(theme.secondary, &self.theme),
-                render_color_swatch(theme.success, &self.theme),
-                render_color_swatch(theme.warning, &self.theme),
-                render_color_swatch(theme.error, &self.theme),
-            ];
-
-            let marker = if is_selected { "▸ " } else { "  " };
-            lines.push(Line::from(vec![
-                Span::styled(marker.to_string(), Style::default().fg(self.theme.muted)),
-                Span::styled(&theme.name, style),
-                Span::raw("  "),
-            ]));
-            lines.push(Line::from(vec![Span::raw("     "), Span::raw(" ")]));
-            for swatch in &swatches {
-                lines.last_mut().unwrap().spans.push(swatch.clone());
-            }
+        for (i, theme) in self
+            .themes
+            .iter()
+            .enumerate()
+            .skip(scroll)
+            .take(visible_themes)
+        {
+            push_theme_row(&mut lines, theme, &self.theme, i == self.selected);
         }
 
         lines.push(Line::from(""));
@@ -375,42 +370,14 @@ impl Component for ThemePickerDialog {
         let max_lines = (area.height as usize).saturating_sub(6);
         let scroll = self.scroll.get();
         let visible_themes = self.count_visible_themes_in(scroll, max_lines);
-        for (i, thm) in self.themes.iter().enumerate() {
-            if i < scroll {
-                continue;
-            }
-            if i >= scroll + visible_themes {
-                break;
-            }
-
-            let is_selected = i == self.selected;
-            let style = if is_selected {
-                Style::default()
-                    .fg(theme.primary)
-                    .bg(theme.selection)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(theme.foreground)
-            };
-
-            let swatches = vec![
-                render_color_swatch(thm.primary, theme),
-                render_color_swatch(thm.secondary, theme),
-                render_color_swatch(thm.success, theme),
-                render_color_swatch(thm.warning, theme),
-                render_color_swatch(thm.error, theme),
-            ];
-
-            let marker = if is_selected { "▸ " } else { "  " };
-            lines.push(Line::from(vec![
-                Span::styled(marker.to_string(), Style::default().fg(theme.muted)),
-                Span::styled(&thm.name, style),
-                Span::raw("  "),
-            ]));
-            lines.push(Line::from(vec![Span::raw("     "), Span::raw(" ")]));
-            for swatch in &swatches {
-                lines.last_mut().unwrap().spans.push(swatch.clone());
-            }
+        for (i, thm) in self
+            .themes
+            .iter()
+            .enumerate()
+            .skip(scroll)
+            .take(visible_themes)
+        {
+            push_theme_row(&mut lines, thm, theme, i == self.selected);
         }
 
         lines.push(Line::from(""));

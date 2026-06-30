@@ -50,7 +50,7 @@ impl SemanticContextCollector {
     ) -> Result<SemanticContextResponse, String> {
         let file = resolve_file(&request.file_path, &self.allowed_root)?;
         let file_str = file.to_string_lossy().to_string();
-        let has_position = request.line.is_some() && request.column.is_some();
+        let position = request.line.zip(request.column);
 
         let mut response = SemanticContextResponse::new(&file_str);
         let mut limits = egglsp::semantic_context::SemanticContextLimits::default();
@@ -66,8 +66,8 @@ impl SemanticContextCollector {
         }
 
         // Phase 1: source excerpt
-        let (excerpt, excerpt_truncated) = if has_position {
-            build_source_excerpt(&file, request.line, request.excerpt_radius)?
+        let (excerpt, excerpt_truncated) = if let Some((line, _column)) = position {
+            build_source_excerpt(&file, Some(line), request.excerpt_radius)?
         } else {
             build_source_excerpt(&file, None, request.excerpt_radius)?
         };
@@ -162,9 +162,7 @@ impl SemanticContextCollector {
         let caps_snapshot = self.capability_snapshot_for_file(&file).await;
 
         // Phase 5: definitions + references (capability-gated)
-        if has_position {
-            let line = request.line.unwrap();
-            let column = request.column.unwrap();
+        if let Some((line, column)) = position {
             let pos = to_lsp_position(line, column);
 
             // Definitions
@@ -338,9 +336,7 @@ impl SemanticContextCollector {
 
         // Phase 7: call/type hierarchy (opt-in, capability-gated)
         if request.include_call_hierarchy {
-            if has_position {
-                let line = request.line.unwrap();
-                let column = request.column.unwrap();
+            if let Some((line, column)) = position {
                 let ch_supported = caps_snapshot
                     .as_ref()
                     .map(|c| c.supports(LspSemanticOperation::CallHierarchy))
@@ -371,9 +367,7 @@ impl SemanticContextCollector {
         }
 
         if request.include_type_hierarchy {
-            if has_position {
-                let line = request.line.unwrap();
-                let column = request.column.unwrap();
+            if let Some((line, column)) = position {
                 let th_supported = caps_snapshot
                     .as_ref()
                     .map(|c| c.supports(LspSemanticOperation::TypeHierarchy))

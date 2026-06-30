@@ -38,10 +38,10 @@ impl FocusManager {
             .iter()
             .position(|c| c.dialog_type() == dialog_type);
         if let Some(idx) = pos {
-            if idx < self.stack.len() {
-                let removed = self.stack.remove(idx).unwrap();
-                return Some(removed);
+            if idx <= self.focus_index && self.focus_index > 0 {
+                self.focus_index -= 1;
             }
+            return self.stack.remove(idx);
         }
         None
     }
@@ -127,5 +127,65 @@ impl FocusManager {
 impl Default for FocusManager {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::KeyEvent;
+
+    struct StubComponent {
+        dialog_type: DialogType,
+    }
+
+    impl Component for StubComponent {
+        fn handle_key(&mut self, _key: KeyEvent) -> Option<TuiMsg> {
+            None
+        }
+
+        fn update(&mut self, _msg: TuiMsg) -> Option<TuiMsg> {
+            None
+        }
+
+        fn render(&mut self, _frame: &mut Frame, _area: Rect, _theme: &Arc<Theme>) {}
+
+        fn dialog_type(&self) -> DialogType {
+            self.dialog_type.clone()
+        }
+
+        fn focusable_count(&self) -> usize {
+            3
+        }
+    }
+
+    fn stub(dialog_type: DialogType) -> Box<dyn Component> {
+        Box::new(StubComponent { dialog_type })
+    }
+
+    #[test]
+    fn pop_dialog_removes_match_and_preserves_valid_focus_index() {
+        let mut focus = FocusManager::new();
+        focus.push(stub(DialogType::Help));
+        focus.push(stub(DialogType::Theme));
+        focus.push(stub(DialogType::Model));
+        focus.focus_index = 2;
+
+        let removed = focus.pop_dialog(DialogType::Theme);
+
+        assert!(removed.is_some());
+        assert_eq!(focus.len(), 2);
+        assert_eq!(focus.active_dialog_type(), DialogType::Model);
+        assert_eq!(focus.focus_index, 1);
+    }
+
+    #[test]
+    fn pop_dialog_returns_none_when_missing() {
+        let mut focus = FocusManager::new();
+        focus.push(stub(DialogType::Help));
+
+        assert!(focus.pop_dialog(DialogType::Theme).is_none());
+        assert_eq!(focus.len(), 1);
+        assert_eq!(focus.focus_index, 0);
     }
 }
