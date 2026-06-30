@@ -475,28 +475,34 @@ impl PluginRegistry {
         manifest: &PluginManifest,
     ) -> Result<Vec<HookRegistration>, PluginRegistryError> {
         let mut hooks = Vec::new();
+        let mut seen = std::collections::HashSet::new();
 
         // From capability declarations
         for cap in &manifest.capabilities {
             if let PluginCapability::Hook(spec) = cap {
                 if let Some(hook_type) = HookType::parse(&spec.hook_type) {
-                    hooks.push(HookRegistration {
-                        plugin_id: plugin_id.to_string(),
-                        hook_type,
-                        priority: spec.priority,
-                    });
+                    if seen.insert((hook_type, spec.priority)) {
+                        hooks.push(HookRegistration {
+                            plugin_id: plugin_id.to_string(),
+                            hook_type,
+                            priority: spec.priority,
+                        });
+                    }
                 }
             }
         }
 
-        // Also from legacy hooks field
+        // Also from legacy hooks field (skip duplicates already seen from capabilities)
         for legacy_hook in &manifest.hooks {
             if let Some(hook_type) = HookType::parse(&legacy_hook.hook_type) {
-                hooks.push(HookRegistration {
-                    plugin_id: plugin_id.to_string(),
-                    hook_type,
-                    priority: legacy_hook.priority.unwrap_or(0),
-                });
+                let priority = legacy_hook.priority.unwrap_or(0);
+                if seen.insert((hook_type, priority)) {
+                    hooks.push(HookRegistration {
+                        plugin_id: plugin_id.to_string(),
+                        hook_type,
+                        priority,
+                    });
+                }
             }
         }
 

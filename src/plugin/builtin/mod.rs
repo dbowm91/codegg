@@ -93,16 +93,6 @@ pub async fn register_builtins(registry: &crate::plugin::registry::PluginRegistr
     let plugins = get_builtin_plugins();
     for bp in plugins {
         let id = format!("builtin:{}", bp.manifest.name);
-        let hook_specs: Vec<_> = bp
-            .manifest
-            .hooks
-            .iter()
-            .map(|hs| crate::plugin::hooks::HookRegistration {
-                plugin_id: id.clone(),
-                hook_type: HookType::parse(&hs.hook_type).unwrap_or(HookType::Auth),
-                priority: hs.priority.unwrap_or(0),
-            })
-            .collect();
 
         let info = PluginInfo {
             id: id.clone(),
@@ -112,8 +102,9 @@ pub async fn register_builtins(registry: &crate::plugin::registry::PluginRegistr
             diagnostics: Vec::new(),
         };
 
-        // Best-effort registration (ignore duplicate errors for builtins)
-        let _ = registry.register_with_hooks(info, hook_specs).await;
+        // register() extracts hooks from both capabilities and legacy hooks fields.
+        // No need to pass explicit hook_specs — they would be double-counted.
+        let _ = registry.register(info).await;
         register_builtin_handler(&id, bp.handler);
     }
 }
@@ -198,6 +189,8 @@ pub fn make_builtin_info(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::plugin::runtime::builtin::BuiltinRuntime;
+    use std::sync::Arc;
 
     #[test]
     fn builtin_plugin_manifests_returns_all_builtins() {
@@ -263,6 +256,63 @@ mod tests {
         assert_eq!(
             result.output,
             serde_json::json!({"provider": "copilot", "token": "test", "headers": {"Authorization": "Bearer test"}})
+        );
+    }
+
+    #[tokio::test]
+    async fn register_builtins_populates_registry_hook_indexes() {
+        let registry = crate::plugin::registry::PluginRegistry::new();
+        register_builtins(&registry).await;
+
+        let auth_hooks = registry.hooks_for(HookType::Auth).await;
+        assert_eq!(auth_hooks.len(), 4, "should have 4 builtin auth hooks");
+
+        let plugin_ids: Vec<&str> = auth_hooks.iter().map(|h| h.plugin_id.as_str()).collect();
+        assert!(plugin_ids.contains(&"builtin:copilot"));
+        assert!(plugin_ids.contains(&"builtin:codex"));
+        assert!(plugin_ids.contains(&"builtin:gitlab"));
+        assert!(plugin_ids.contains(&"builtin:poe"));
+    }
+
+    #[tokio::test]
+    async fn disabling_builtin_excludes_its_capabilities_from_queries() {
+        let mut registry = crate::plugin::registry::PluginRegistry::new();
+        register_builtins(&registry).await;
+
+        let auth_hooks_before = registry.hooks_for(HookType::Auth).await;
+        assert_eq!(auth_hooks_before.len(), 4);
+
+        registry.set_enabled("builtin:copilot", false).await.unwrap();
+
+        let auth_hooks_after = registry.hooks_for(HookType::Auth).await;
+        assert_eq!(auth_hooks_after.len(), 3, "copilot should be excluded");
+
+        let plugin_ids: Vec<&str> = auth_hooks_after.iter().map(|h| h.plugin_id.as_str()).collect();
+        assert!(!plugin_ids.contains(&"builtin:copilot"));
+        assert!(plugin_ids.contains(&"builtin:codex"));
+        assert!(plugin_ids.contains(&"builtin:gitlab"));
+        assert!(plugin_ids.contains(&"builtin:poe"));
+    }
+
+    #[tokio::test]
+    async fn invoking_builtin_through_plugin_service_reaches_builtin_runtime() {
+        let registry = Arc::new(crate::plugin::registry::PluginRegistry::new());
+        register_builtins(&registry).await;
+
+        let handler_registry = Arc::new(builtin_runtime_registry());
+        let builtin_rt = Arc::new(BuiltinRuntime::new(handler_registry));
+
+        let service = crate::plugin::service::PluginService::new(registry)
+            .with_builtin_runtime(builtin_rt);
+
+        let result = service
+            .dispatch_auth(serde_json::json!({"provider": "copilot", "token": "t", "headers": {}}))
+            .await;
+        assert!(!result.blocked, "builtin auth hook should not block");
+        assert!(result.error.is_none(), "builtin auth hook should not error");
+        assert!(
+            result.output.get("headers").is_some(),
+            "response should contain transformed headers"
         );
     }
 }
