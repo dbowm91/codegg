@@ -7,6 +7,8 @@ use crate::plugin::loader::LoadedPlugin;
 use crate::plugin::manifest::{PluginManifest, PluginRuntimeSpec, PluginTrustClass};
 use crate::plugin::registry::{PluginInfo, PluginRegistry, PluginRegistryError};
 use crate::plugin::runtime::process::{ProcessRuntime, ProcessRuntimeSpec};
+#[cfg(feature = "plugins")]
+use crate::plugin::runtime::wasm::{WasmRuntime, WasmRuntimeSpec};
 use crate::plugin::runtime::{PluginRuntime, RuntimeLimits};
 use crate::protocol::plugin::{
     PluginCapabilityInvocation, PluginContext, PluginInvocation, PluginResponse,
@@ -172,18 +174,47 @@ impl PluginService {
                     .await
                     .map_err(|e| PluginError::Runtime(e.to_string()))
             }
-            PluginRuntimeSpec::Wasm { .. } => Ok(PluginResponse {
-                ok: false,
-                effects: Vec::new(),
-                data: serde_json::json!({
-                    "command": command_name,
-                    "status": "wasm_runtime_pending",
-                }),
-                diagnostics: vec![crate::protocol::plugin::PluginDiagnostic {
-                    level: crate::protocol::plugin::PluginDiagnosticLevel::Info,
-                    message: "WASM runtime not yet implemented (Phase 7)".to_string(),
-                }],
-            }),
+            PluginRuntimeSpec::Wasm {
+                module,
+                timeout_ms,
+                memory_max_mb,
+                fuel_per_call,
+            } => {
+                #[cfg(feature = "plugins")]
+                {
+                    let plugin_dir = crate::plugin::install::plugins_dir()
+                        .join(plugin_id.strip_prefix("plugin:").unwrap_or(plugin_id));
+                    let spec = WasmRuntimeSpec::from_manifest(
+                        module,
+                        &plugin_dir,
+                        *timeout_ms,
+                        *memory_max_mb,
+                        *fuel_per_call,
+                    );
+                    let runtime = WasmRuntime::with_defaults(spec);
+                    runtime
+                        .invoke(invocation)
+                        .await
+                        .map_err(|e| PluginError::Runtime(e.to_string()))
+                }
+                #[cfg(not(feature = "plugins"))]
+                {
+                    let _ = (module, timeout_ms, memory_max_mb, fuel_per_call);
+                    let _ = invocation;
+                    Ok(PluginResponse {
+                        ok: false,
+                        effects: Vec::new(),
+                        data: serde_json::json!({
+                            "command": command_name,
+                            "status": "wasm_runtime_disabled",
+                        }),
+                        diagnostics: vec![crate::protocol::plugin::PluginDiagnostic {
+                            level: crate::protocol::plugin::PluginDiagnosticLevel::Info,
+                            message: "WASM runtime requires the 'plugins' feature".to_string(),
+                        }],
+                    })
+                }
+            }
         }
     }
 

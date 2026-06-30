@@ -36,7 +36,9 @@ src/plugin/
 ├── marketplace.rs      # Plugin marketplace integration
 ├── runtime/            # Plugin runtime abstraction (Phase 6)
 │   ├── mod.rs          # PluginRuntime trait, RuntimeError, RuntimeLimits
-│   └── process.rs      # ProcessRuntime implementation
+│   ├── process.rs      # ProcessRuntime implementation
+│   ├── wasm.rs         # WasmRuntime implementation (Phase 7)
+│   └── wasm_cache.rs   # WasmModuleCache for compiled module caching
 └── builtin/            # Built-in native Rust plugins
     ├── mod.rs          # BuiltinPlugin, handler registry, dispatch
     ├── copilot.rs      # GitHub Copilot auth provider
@@ -237,11 +239,11 @@ impl HookResult {
 
 ## Components
 
-### loader.rs - WASM Loading and Fuel Tracking
+### loader.rs - WASM Loading and Fuel Tracking (Legacy Shim)
 
 **Location**: `src/plugin/loader.rs`
 
-The loader handles WASM plugin execution with module caching and fuel tracking.
+The loader is now a compatibility shim. `execute_wasm_hook` delegates to `WasmRuntime` (Phase 7). Historical WASM loading, execution, module caching, and fuel tracking logic has moved to `runtime/wasm.rs` and `runtime/wasm_cache.rs`.
 
 **Key Functions:**
 
@@ -698,16 +700,19 @@ PluginService::dispatch_hook(ctx)
                   │        └─► Returns HookResult directly (no fuel tracking)
                   │
                   └─► Else (WASM plugin):
-                          └─► execute_wasm_hook(plugin_id, ctx)
+                          └─► WasmRuntime::invoke(PluginInvocation)
                                   │
                                   ├─► Check fuel budget (exhausted → early return)
                                   ├─► Reserve fuel from per-plugin budget
-                                  ├─► Get/compile WASM module from cache
+                                  ├─► Get/compile WASM module from WasmModuleCache
+                                  ├─► Try modern ABI: codegg_plugin_invoke(ptr, len) -> i64
+                                  │   (packed response: high 32 = ptr, low 32 = len)
+                                  │   Falls back to legacy per-hook export if absent
                                   ├─► Allocate memory, write input JSON
-                                  ├─► Call hook function (30s timeout)
+                                  ├─► Call hook function (configurable timeout)
                                   ├─► Read output JSON
                                   ├─► Return unused fuel
-                                  └─► Return HookResult
+                                  └─► Return PluginResponse
 ```
 
 ## Duplicate and Priority Rules (Phase 5)
@@ -777,10 +782,10 @@ Requires `plugins` feature in `Cargo.toml`:
 
 ```toml
 [features]
-plugins = ["dep:wasmtime", "dep:wasmtime-cache", "dep:wasmtime-wasi"]
+plugins = ["dep:wasmtime", "dep:wasmtime-wasi"]
 ```
 
-When the `plugins` feature is disabled, `execute_wasm_hook` is a no-op stub that returns `HookResult::ok(ctx.input)` (loader.rs:521-524).
+When the `plugins` feature is disabled, `WasmRuntime::invoke` returns `RuntimeError::Unsupported`. The legacy `execute_wasm_hook` is a no-op stub that returns `HookResult::ok(ctx.input)`.
 
 ## WASM Plugin Contract
 
@@ -791,9 +796,27 @@ Plugins must export these functions:
 | `memory` | Memory | Yes | Wasmtime memory |
 | `allocate` | `(i32) -> i32` | Yes | Allocate `len` bytes, return pointer |
 | `deallocate` | `(i32, i32)` | No | Free memory |
-| Hook functions | See below | At least one | Handle specific hook types |
+| `codegg_plugin_invoke` | `(i32, i32) -> i64` | Recommended | Modern ABI entrypoint |
+| Hook functions | See below | Legacy fallback | Per-hook exports |
 
-**Hook Function Naming Convention:**
+Both ABIs use `allocate`/`deallocate` for memory management.
+
+### Modern ABI (`codegg_plugin_invoke`)
+
+Single entrypoint for all plugin invocations:
+
+```
+Input: (ptr: i32, len: i32) — pointer to serialized PluginInvocation JSON
+Output: i64 — packed (high 32 bits = response pointer, low 32 bits = response length)
+```
+
+The host writes a `PluginInvocation` (from `codegg_protocol::plugin`) to WASM linear memory at `ptr`/`len`, then calls `codegg_plugin_invoke`. The plugin reads the invocation, performs its work, allocates response memory via `allocate`, writes a `PluginResponse` JSON, and returns the packed pointer/length.
+
+If the module does not export `codegg_plugin_invoke`, the runtime falls back to the legacy per-hook ABI.
+
+### Legacy ABI (per-hook exports)
+
+Each hook type has its own export function:
 
 | HookType | Function Name |
 |----------|---------------|
@@ -811,7 +834,7 @@ Plugins must export these functions:
 | SessionCompacting | `on_session_compacting` |
 | MessagesTransform | `on_messages_transform` |
 
-**Hook Function Signature:**
+**Legacy Hook Function Signature:**
 ```rust
 // Input: (input_ptr: i32, input_len: i32) - pointer to JSON input
 // Output: result_ptr i32 - pointer to serialized WasmHookResponse
@@ -824,7 +847,7 @@ struct WasmHookResponse {
 }
 ```
 
-**Memory Layout for Return Value:**
+**Memory Layout for Legacy Return Value:**
 ```
 Offset 0: pointer to response (at offset 4)
 Offset 4: length of response JSON (u32 le)
@@ -832,6 +855,17 @@ Offset 8: response JSON bytes
 ```
 
 If result_ptr is 0, the original input is passed through unchanged.
+
+## Runtime Limits
+
+| Limit | Value | Notes |
+|-------|-------|-------|
+| Module size | 10 MiB | Maximum WASM module size (`MAX_WASM_SIZE`) |
+| Output size | 1 MiB | Maximum output from a single WASM call |
+| Fuel per call | 1,000,000 | Configurable via `WasmRuntimeSpec::fuel_per_call` |
+| Memory max | 256 MiB | Configurable via `WasmRuntimeSpec::memory_max_mb`; not enforced on Config in wasmtime 36 |
+| Fuel budget (global) | 10,000,000 | Per-plugin fuel budget (`MAX_PLUGIN_FUEL_BUDGET`) |
+| Per-call timeout | 5s default | Configurable via `RuntimeLimits::timeout_ms` or `WasmRuntimeSpec::timeout_ms` |
 
 ## API Version
 
@@ -961,7 +995,7 @@ pub trait PluginRuntime: Send + Sync {
 }
 ```
 
-Implementations handle the actual execution of plugin commands (process, WASM, builtin) and return protocol-level responses. WASM will implement this trait in Phase 7.
+Implementations handle the actual execution of plugin commands (process, WASM, builtin) and return protocol-level responses. WASM implements this trait via `WasmRuntime` (Phase 7).
 
 ### `RuntimeError`
 
@@ -980,6 +1014,54 @@ Default limits: timeout 5s, max stdout 1 MiB, max stderr 256 KiB.
 - Returns `PluginResponse` for all successful paths
 - Non-zero exit returns `RuntimeError::NonZeroExit`
 
+### WASM Runtime (Phase 7)
+
+Phase 7 modernizes WASM execution by routing it through the same `PluginRuntime` trait used by `ProcessRuntime`. The legacy `loader.rs` `execute_wasm_hook` function is now a compatibility shim that delegates to `WasmRuntime`.
+
+**`WasmRuntime`** implements the same `PluginRuntime` trait as `ProcessRuntime`:
+
+```rust
+pub struct WasmRuntime {
+    spec: WasmRuntimeSpec,
+    limits: RuntimeLimits,
+}
+```
+
+**`WasmRuntimeSpec` Configuration:**
+
+```rust
+pub struct WasmRuntimeSpec {
+    pub module_path: PathBuf,     // path to .wasm file
+    pub timeout_ms: u64,          // per-call timeout
+    pub memory_max_mb: u32,       // max memory in MB (configurable, not enforced on Config in wasmtime 36)
+    pub fuel_per_call: u64,       // fuel per invocation (default 1,000,000)
+    pub entrypoint: Option<String>, // entrypoint function name (default: "codegg_plugin_invoke")
+}
+```
+
+**Dual ABI Support:**
+
+- **Modern ABI** (`codegg_plugin_invoke`): Single entrypoint receives `PluginInvocation` JSON, returns `PluginResponse` JSON. Signature: `codegg_plugin_invoke(ptr: i32, len: i32) -> i64` where the returned i64 is packed (high 32 bits = response pointer, low 32 bits = response length).
+- **Legacy ABI** (per-hook exports): Individual exports like `on_auth(ptr, len) -> i32`, `on_tool_execute_before(ptr, len) -> i32`, etc. Each receives `WasmHookResponse` JSON and returns a pointer to the legacy response format.
+- Falls back to legacy ABI automatically when `codegg_plugin_invoke` is absent from the WASM module exports.
+
+**`WasmModuleCache`** (`wasm_cache.rs`):
+
+Provides mtime-based compiled module caching and per-plugin fuel budgets. Similar to the legacy `module_cache` in `loader.rs` but managed as a separate concern:
+
+- Caches compiled `wasmtime::Module` keyed by file path and modification time
+- Tracks per-plugin fuel budgets (`DashMap<String, AtomicU64>`)
+- Provides `reserve_fuel` / `return_fuel` for budget management
+- Hit/miss counters for observability
+
+**Feature-gating:**
+
+Requires the `plugins` feature for Wasmtime execution. Without it, `WasmRuntime::invoke` returns `RuntimeError::Unsupported`.
+
+**`loader.rs` compatibility:**
+
+`loader.rs` is now a compatibility shim. `execute_wasm_hook` delegates to `WasmRuntime` internally, preserving the existing hook-based calling convention while routing through the unified runtime abstraction.
+
 ### Response Type Unification
 
 The local `PluginResponse` in `service.rs` is removed. `codegg_protocol::plugin::PluginResponse` (with `effects: Vec<UiEffect>`) is the single canonical type, re-exported from `plugin/mod.rs`. `PluginDiagnostic` is also unified via re-export from protocol.
@@ -995,8 +1077,8 @@ The local `PluginResponse` in `service.rs` is removed. `codegg_protocol::plugin:
 
 `PluginService::invoke_command()` dispatches to the appropriate runtime:
 - **Builtin**: Returns structured response with handler info (command invocation not yet wired)
-- **Process**: Creates `ProcessRuntime`, invokes, returns `PluginResponse`
-- **Wasm**: Returns error response with "WASM runtime not yet implemented" diagnostic
+- **Process**: Creates `ProcessRuntime`, invokes via `PluginRuntime` trait, returns `PluginResponse`
+- **Wasm**: Creates `WasmRuntime`, invokes via `PluginRuntime` trait, returns `PluginResponse`
 
 ## See Also
 

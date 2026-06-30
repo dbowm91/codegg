@@ -135,6 +135,16 @@ pub enum PluginCapabilityInvocation {
     Event { event_type: String },
 }
 
+impl PluginCapabilityInvocation {
+    /// Get the hook type string if this is a Hook invocation, or a debug description.
+    pub fn hook_type_string(&self) -> String {
+        match self {
+            Self::Hook { hook_type } => hook_type.clone(),
+            other => format!("{other:?}"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct PluginContext {
     pub session_id: Option<String>,

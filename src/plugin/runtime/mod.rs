@@ -1,4 +1,7 @@
 pub mod process;
+#[cfg(feature = "plugins")]
+pub mod wasm;
+pub mod wasm_cache;
 
 use async_trait::async_trait;
 
