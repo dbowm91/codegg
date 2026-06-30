@@ -6149,13 +6149,24 @@ mod tests {
             blocking_factory(state.clone()),
         ));
 
-        // Create temporary directories so test_stub's cwd lookup succeeds.
+        // Create isolated project roots so root discovery yields N
+        // distinct keys and single-flight deduplication cannot collapse
+        // the requests into one initialization.
         let n = 8;
+        let mut tempdirs = Vec::new();
         let mut roots = Vec::new();
         for i in 0..n {
-            let dir = PathBuf::from(format!("/tmp/root_{}/src", i));
-            std::fs::create_dir_all(&dir).unwrap();
-            roots.push(dir);
+            let tempdir = tempfile::tempdir().expect("tempdir");
+            let project_root = tempdir.path().join(format!("root_{i}"));
+            let src_dir = project_root.join("src");
+            std::fs::create_dir_all(&src_dir).unwrap();
+            std::fs::write(
+                project_root.join("Cargo.toml"),
+                "[package]\nname = \"test\"\n",
+            )
+            .unwrap();
+            roots.push(src_dir);
+            tempdirs.push(tempdir);
         }
 
         // Launch N independent tasks with different file paths.

@@ -2131,7 +2131,6 @@ pub(crate) async fn handle_bulk_export(app: &mut App, session_ids: Vec<String>) 
 }
 
 #[cfg(test)]
-#[cfg(test)]
 #[allow(dead_code)]
 pub(crate) async fn handle_share_session(app: &mut App, session_id: String) {
     if let Some(core_client) = app.core_client.clone() {
@@ -2158,9 +2157,7 @@ pub(crate) async fn handle_share_session(app: &mut App, session_id: String) {
                     .error(&format!("Failed to share: {}", message));
             }
             Ok(_other) => {
-                app.messages_state
-                    .toasts
-                    .error(&"Unexpected share response".to_string());
+                app.messages_state.toasts.error("Unexpected share response");
             }
             Err(e) => {
                 app.messages_state
@@ -2175,7 +2172,6 @@ pub(crate) async fn handle_share_session(app: &mut App, session_id: String) {
     }
 }
 
-#[cfg(test)]
 #[cfg(test)]
 #[allow(dead_code)]
 pub(crate) async fn handle_unshare_session(app: &mut App, session_id: String) {
@@ -2198,7 +2194,7 @@ pub(crate) async fn handle_unshare_session(app: &mut App, session_id: String) {
             Ok(_other) => {
                 app.messages_state
                     .toasts
-                    .error(&"Unexpected unshare response".to_string());
+                    .error("Unexpected unshare response");
             }
             Err(e) => {
                 app.messages_state
@@ -2213,7 +2209,6 @@ pub(crate) async fn handle_unshare_session(app: &mut App, session_id: String) {
     }
 }
 
-#[cfg(test)]
 #[cfg(test)]
 #[allow(dead_code)]
 pub(crate) async fn handle_export_session(app: &mut App, session_id: String) {
@@ -2246,7 +2241,7 @@ pub(crate) async fn handle_export_session(app: &mut App, session_id: String) {
             Ok(_other) => {
                 app.messages_state
                     .toasts
-                    .error(&"Unexpected export response".to_string());
+                    .error("Unexpected export response");
             }
             Err(e) => {
                 app.messages_state
@@ -2286,7 +2281,7 @@ pub(crate) async fn handle_rename_session(app: &mut App, session_id: String, new
             Ok(_other) => {
                 app.messages_state
                     .toasts
-                    .error(&"Unexpected rename response".to_string());
+                    .error("Unexpected rename response");
             }
             Err(e) => {
                 app.messages_state

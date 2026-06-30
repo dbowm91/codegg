@@ -3089,7 +3089,9 @@ fn build_report(
 /// expected paths is a suffix of the returned path. This avoids
 /// platform-specific absolute-path comparisons and tolerates the
 /// `file://` URI prefix that `egglsp` adds when converting back
-/// from a server `Location`.
+/// from a server `Location`. Existing absolute paths are also
+/// canonicalized so macOS `/var` and `/private/var` spellings compare
+/// equal.
 fn matches_expected_file(returned: &str, expected: &Path) -> bool {
     if returned.is_empty() {
         return false;
@@ -3098,8 +3100,20 @@ fn matches_expected_file(returned: &str, expected: &Path) -> bool {
         .strip_prefix("file://")
         .or_else(|| returned.strip_prefix("file:"))
         .unwrap_or(returned);
-    let returned_path = std::path::Path::new(stripped);
-    returned_path.ends_with(expected) || expected.ends_with(returned_path)
+    let returned_path = PathBuf::from(stripped);
+
+    if returned_path.ends_with(expected) || expected.ends_with(&returned_path) {
+        return true;
+    }
+
+    match (returned_path.canonicalize(), expected.canonicalize()) {
+        (Ok(returned_canonical), Ok(expected_canonical)) => {
+            returned_canonical == expected_canonical
+                || returned_canonical.ends_with(&expected_canonical)
+                || expected_canonical.ends_with(&returned_canonical)
+        }
+        _ => false,
+    }
 }
 
 /// Pass 8 — Compute the LSP character range of the
@@ -7301,6 +7315,22 @@ fn matches_expected_file_handles_file_uri_prefix() {
     ));
     // Empty string returns false.
     assert!(!matches_expected_file("", &exp));
+}
+
+#[cfg(unix)]
+#[test]
+fn matches_expected_file_canonicalizes_symlinked_absolute_paths() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let real_root = tempdir.path().join("real");
+    let alias_root = tempdir.path().join("alias");
+    let real_file = real_root.join("src/lib.rs");
+    std::fs::create_dir_all(real_file.parent().expect("parent")).expect("create src");
+    std::fs::write(&real_file, "fn main() {}\n").expect("write source");
+    std::os::unix::fs::symlink(&real_root, &alias_root).expect("symlink");
+
+    let expected = alias_root.join("src/lib.rs");
+    let returned = format!("file://{}", real_file.display());
+    assert!(matches_expected_file(&returned, &expected));
 }
 
 #[test]

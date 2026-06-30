@@ -1,5 +1,13 @@
 # TUI Phase 7: Background Task Lifecycle Cleanup
 
+## Implementation Status
+
+Implemented in `src/tui/task_lifecycle.rs`. The production registry stores
+`AbortHandle`s, not `JoinHandle`s or cancellation tokens, so cancellation is
+abort-based. This keeps shutdown and dialog-close behavior simple and bounded,
+but it also means the registry cannot currently distinguish panics from aborts;
+`panicked_count` is reserved for a future JoinHandle-backed design.
+
 ## Objective
 
 Centralize ownership and shutdown semantics for TUI-side background tasks. The TUI now uses spawned tasks for async command work, sidebar diffing, shell execution, notifications, research loading, and other nonblocking paths. That is the right responsiveness model, but the next step is making those tasks visible, cancellable, and bounded so future daemon/multi-session work does not accumulate orphaned work.
@@ -25,7 +33,7 @@ Some of this is intentionally fire-and-forget. Some should be cancelled when a d
 1. Keep UI mutation on the TUI event loop.
 2. Track TUI-owned background tasks in one place.
 3. Abort or invalidate tasks on app shutdown.
-4. Prefer cancellation tokens for cooperative cancellation where tasks do filesystem/core work.
+4. Keep cancellation semantics explicit: the current registry aborts tasks; any future cooperative cancellation must be layered intentionally.
 5. Keep bounded concurrency for expensive classes of work.
 6. Do not over-engineer a full task runtime; this phase should provide practical lifecycle hygiene.
 
@@ -46,8 +54,7 @@ pub struct TuiTaskRecord {
     pub name: &'static str,
     pub kind: TuiTaskKind,
     pub started_at: std::time::Instant,
-    pub cancel: tokio_util::sync::CancellationToken,
-    pub handle: tokio::task::JoinHandle<()>,
+    pub abort_handle: tokio::task::AbortHandle,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,7 +71,8 @@ pub enum TuiTaskKind {
 }
 ```
 
-If `tokio-util` is not already a dependency and adding it is undesirable, use `tokio::sync::watch` or an `Arc<AtomicBool>` for cancellation. `CancellationToken` is cleaner if dependency policy allows it.
+The implemented registry uses `AbortHandle` only. A JoinHandle-backed design
+would be needed before panic accounting can become meaningful.
 
 ## Implementation Steps
 

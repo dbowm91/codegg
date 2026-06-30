@@ -9,9 +9,9 @@
 //! Cancellation is **abort-based**, not cooperative. When a task is cancelled
 //! via [`cancel`], [`cancel_kind`], or [`cancel_all`], the registry calls
 //! `tokio::task::AbortHandle::abort` on the underlying task. Tasks must not
-//! assume a cancellation token is plumbed through; long-running work should
-//! still periodically check `tokio::task::yield_now().is_cancelled()` or use
-//! `tokio::select!` if they want soft cancellation.
+//! assume a cancellation token is plumbed through. Long-running work that owns
+//! external resources should put cleanup in `Drop` guards or use cancellation-
+//! aware inner operations before registering with this abort-based registry.
 //!
 //! ## Outcome accounting
 //!
@@ -81,7 +81,7 @@ pub struct TuiTaskRecord {
     pub kind: TuiTaskKind,
     /// When the task was spawned.
     pub started_at: Instant,
-    /// Abort handle for cooperative cancellation.
+    /// Abort handle used for registry-owned cancellation.
     abort_handle: tokio::task::AbortHandle,
 }
 
@@ -367,16 +367,37 @@ mod tests {
 
     #[tokio::test]
     async fn cancellation_token_cancellation_is_observed() {
+        use std::sync::{
+            atomic::{AtomicBool, Ordering},
+            Arc,
+        };
+
+        struct DropFlag(Arc<AtomicBool>);
+
+        impl Drop for DropFlag {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+
         let mut reg = TuiTaskRegistry::new();
-        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+        let dropped = Arc::new(AtomicBool::new(false));
+        let dropped_in_task = Arc::clone(&dropped);
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel::<()>();
         let id = reg.spawn(TuiTaskKind::Command, "cancellable", async move {
-            let _ = rx.await;
+            let _drop_flag = DropFlag(dropped_in_task);
+            let _ = started_tx.send(());
+            std::future::pending::<()>().await;
         });
-        // Cancel immediately
+
+        started_rx.await.expect("task should start");
         reg.cancel(id);
-        // The task should have been aborted; the oneshot sender dropped
-        // without sending means the task didn't complete normally.
-        assert!(tx.send(()).is_err() || true); // oneshot receiver was dropped
+
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        assert!(
+            dropped.load(Ordering::SeqCst),
+            "aborting a registered task should drop its future"
+        );
     }
 
     #[tokio::test]
