@@ -246,6 +246,7 @@ pub(crate) fn core_event_metadata(
         | CoreEvent::SubagentProgress { session_id, .. }
         | CoreEvent::SubagentCompleted { session_id, .. }
         | CoreEvent::SubagentFailed { session_id, .. } => (Some(session_id.clone()), None),
+        CoreEvent::PluginUiEffect { session_id, .. } => (session_id.clone(), None),
         _ => (None, None),
     }
 }
@@ -481,6 +482,17 @@ pub(crate) fn map_app_event_to_core_event(
             task_id,
             agent,
             error,
+        }),
+        crate::bus::events::AppEvent::PluginUiEffect {
+            session_id,
+            plugin_id,
+            invocation_id,
+            effect,
+        } => Some(CoreEvent::PluginUiEffect {
+            session_id,
+            plugin_id,
+            invocation_id,
+            effect,
         }),
         crate::bus::events::AppEvent::SessionCreated { id, .. } => {
             Some(CoreEvent::SessionUpdated { session_id: id })

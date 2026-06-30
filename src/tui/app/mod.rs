@@ -1801,6 +1801,26 @@ impl App {
                     self.status_bar.set_thinking(false, None);
                 }
             }
+            Ok(RemoteTuiMessage::PluginUiEffect {
+                session_id,
+                plugin_id: _,
+                invocation_id: _,
+                effect,
+            }) => {
+                let current_session = self
+                    .session_state
+                    .session
+                    .as_ref()
+                    .map(|s| s.id.as_str())
+                    .unwrap_or_default();
+                let matches_session = session_id
+                    .as_deref()
+                    .map(|sid| sid == current_session)
+                    .unwrap_or(true);
+                if matches_session {
+                    self.apply_plugin_ui_effect(effect);
+                }
+            }
             _ => {
                 debug_log!("handle_remote_event: unhandled type={}", _event_type);
             }
@@ -12025,5 +12045,82 @@ mod remote_protocol_tests {
             app.session_state.session_status,
             SessionStatus::Working
         ));
+    }
+
+    #[test]
+    fn remote_plugin_ui_effect_applies_to_plugin_ui_state() {
+        let mut app = App::new_for_testing("/tmp".into());
+        let event = serde_json::json!({
+            "type": "PluginUiEffect",
+            "session_id": null,
+            "plugin_id": "test-plugin",
+            "invocation_id": "inv-1",
+            "effect": {
+                "type": "open_dialog",
+                "dialog": {
+                    "id": "test-dlg",
+                    "title": "Test Dialog",
+                    "body": {"kind": "text", "text": "hello"},
+                    "modal": true
+                }
+            }
+        });
+        app.handle_remote_event(event);
+        assert!(
+            app.plugin_ui_state.get_dialog("test-dlg").is_some(),
+            "dialog should be in plugin_ui_state after applying remote PluginUiEffect"
+        );
+    }
+
+    #[test]
+    fn remote_plugin_ui_effect_filters_by_session_id() {
+        let mut app = App::new_for_testing("/tmp".into());
+        let event = serde_json::json!({
+            "type": "PluginUiEffect",
+            "session_id": "other-session",
+            "plugin_id": "test-plugin",
+            "invocation_id": null,
+            "effect": {
+                "type": "open_dialog",
+                "dialog": {
+                    "id": "wrong-session-dlg",
+                    "title": "Wrong",
+                    "body": {"kind": "text", "text": "nope"},
+                    "modal": false
+                }
+            }
+        });
+        app.handle_remote_event(event);
+        assert!(
+            app.plugin_ui_state
+                .get_dialog("wrong-session-dlg")
+                .is_none(),
+            "dialog for non-current session should not be applied"
+        );
+    }
+
+    #[test]
+    fn remote_plugin_ui_effect_no_session_matches_any() {
+        let mut app = App::new_for_testing("/tmp".into());
+        let event = serde_json::json!({
+            "type": "PluginUiEffect",
+            "session_id": null,
+            "plugin_id": "test-plugin",
+            "invocation_id": null,
+            "effect": {
+                "type": "open_dialog",
+                "dialog": {
+                    "id": "any-session-dlg",
+                    "title": "Any",
+                    "body": {"kind": "text", "text": "applies"},
+                    "modal": true
+                }
+            }
+        });
+        app.handle_remote_event(event);
+        assert!(
+            app.plugin_ui_state.get_dialog("any-session-dlg").is_some(),
+            "effect with no session filter should apply to any session"
+        );
     }
 }

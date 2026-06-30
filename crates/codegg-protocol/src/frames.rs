@@ -26,6 +26,37 @@ pub struct ClientCapabilities {
     pub audio: bool,
     pub tts: bool,
     pub multi_session_view: bool,
+    #[serde(default)]
+    pub plugin_ui_dialog: bool,
+    #[serde(default)]
+    pub plugin_ui_toast: bool,
+    #[serde(default)]
+    pub plugin_ui_panel: bool,
+    #[serde(default)]
+    pub plugin_ui_status_item: bool,
+    #[serde(default)]
+    pub plugin_ui_table: bool,
+    #[serde(default)]
+    pub plugin_ui_markdown: bool,
+    #[serde(default)]
+    pub plugin_ui_code: bool,
+    #[serde(default)]
+    pub plugin_ui_progress: bool,
+}
+
+impl ClientCapabilities {
+    pub fn plugin_ui_capabilities(&self) -> crate::ui::PluginUiCapabilities {
+        crate::ui::PluginUiCapabilities {
+            dialog: self.plugin_ui_dialog,
+            toast: self.plugin_ui_toast,
+            panel: self.plugin_ui_panel,
+            status_item: self.plugin_ui_status_item,
+            table: self.plugin_ui_table,
+            markdown: self.plugin_ui_markdown,
+            code: self.plugin_ui_code,
+            progress: self.plugin_ui_progress,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

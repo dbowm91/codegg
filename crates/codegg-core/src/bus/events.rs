@@ -221,6 +221,13 @@ pub enum AppEvent {
         action: String,
         old_content: Option<String>,
     },
+    /// A plugin produced a UI effect through a lifecycle hook or command.
+    PluginUiEffect {
+        session_id: Option<String>,
+        plugin_id: String,
+        invocation_id: Option<String>,
+        effect: codegg_protocol::ui::UiEffect,
+    },
     /// A subagent started.
     SubagentStarted {
         session_id: String,
@@ -296,6 +303,7 @@ impl AppEvent {
             AppEvent::ToolCallStarted { .. } => "tool_call:started",
             AppEvent::AgentFinished { .. } => "agent:finished",
             AppEvent::FileChanged { .. } => "file:changed",
+            AppEvent::PluginUiEffect { .. } => "plugin:ui_effect",
             AppEvent::SubagentStarted { .. } => "subagent:started",
             AppEvent::SubagentProgress { .. } => "subagent:progress",
             AppEvent::SubagentCompleted { .. } => "subagent:completed",

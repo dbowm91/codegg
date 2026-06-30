@@ -73,10 +73,7 @@ pub fn builtin_runtime_registry() -> BuiltinHandlerRegistry {
         "codex".to_string(),
         codex::handle_hook as BuiltinHookHandler,
     );
-    registry.register(
-        "poe".to_string(),
-        poe::handle_hook as BuiltinHookHandler,
-    );
+    registry.register("poe".to_string(), poe::handle_hook as BuiltinHookHandler);
     registry
 }
 
@@ -282,12 +279,18 @@ mod tests {
         let auth_hooks_before = registry.hooks_for(HookType::Auth).await;
         assert_eq!(auth_hooks_before.len(), 4);
 
-        registry.set_enabled("builtin:copilot", false).await.unwrap();
+        registry
+            .set_enabled("builtin:copilot", false)
+            .await
+            .unwrap();
 
         let auth_hooks_after = registry.hooks_for(HookType::Auth).await;
         assert_eq!(auth_hooks_after.len(), 3, "copilot should be excluded");
 
-        let plugin_ids: Vec<&str> = auth_hooks_after.iter().map(|h| h.plugin_id.as_str()).collect();
+        let plugin_ids: Vec<&str> = auth_hooks_after
+            .iter()
+            .map(|h| h.plugin_id.as_str())
+            .collect();
         assert!(!plugin_ids.contains(&"builtin:copilot"));
         assert!(plugin_ids.contains(&"builtin:codex"));
         assert!(plugin_ids.contains(&"builtin:gitlab"));
@@ -302,8 +305,8 @@ mod tests {
         let handler_registry = Arc::new(builtin_runtime_registry());
         let builtin_rt = Arc::new(BuiltinRuntime::new(handler_registry));
 
-        let service = crate::plugin::service::PluginService::new(registry)
-            .with_builtin_runtime(builtin_rt);
+        let service =
+            crate::plugin::service::PluginService::new(registry).with_builtin_runtime(builtin_rt);
 
         let result = service
             .dispatch_auth(serde_json::json!({"provider": "copilot", "token": "t", "headers": {}}))

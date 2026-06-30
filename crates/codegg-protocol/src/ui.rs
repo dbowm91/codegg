@@ -146,6 +146,128 @@ pub enum StatusPlacement {
     Right,
 }
 
+/// Envelope wrapping a [`UiEffect`] with session-scoped metadata for
+/// transport through the core event stream or remote TUI protocol.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct UiEffectEnvelope {
+    /// Optional session this effect belongs to.
+    pub session_id: Option<String>,
+    /// Where the effect originated.
+    pub source: UiEffectSource,
+    /// Optional invocation that produced this effect.
+    pub invocation_id: Option<String>,
+    /// The effect payload.
+    pub effect: UiEffect,
+}
+
+/// Identifies the origin of a [`UiEffect`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum UiEffectSource {
+    Plugin { plugin_id: String },
+    Core,
+    Tui,
+}
+
+/// Capability flags that a client advertises for plugin UI rendering.
+///
+/// Clients that do not support a given surface type should degrade
+/// deterministically or omit the surface entirely.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct PluginUiCapabilities {
+    #[serde(default)]
+    pub dialog: bool,
+    #[serde(default)]
+    pub toast: bool,
+    #[serde(default)]
+    pub panel: bool,
+    #[serde(default)]
+    pub status_item: bool,
+    #[serde(default)]
+    pub table: bool,
+    #[serde(default)]
+    pub markdown: bool,
+    #[serde(default)]
+    pub code: bool,
+    #[serde(default)]
+    pub progress: bool,
+}
+
+impl PluginUiCapabilities {
+    /// Returns true if the client supports the surface type required by
+    /// the given effect. Unknown effects are treated as unsupported.
+    pub fn supports_effect(&self, effect: &UiEffect) -> bool {
+        match effect {
+            UiEffect::EmitChat { .. } | UiEffect::ShowToast { .. } => self.toast,
+            UiEffect::OpenDialog { .. } | UiEffect::CloseDialog { .. } => self.dialog,
+            UiEffect::OpenPanel { .. }
+            | UiEffect::UpdatePanel { .. }
+            | UiEffect::ClosePanel { .. } => self.panel,
+            UiEffect::AddStatusItem { .. }
+            | UiEffect::UpdateStatusItem { .. }
+            | UiEffect::RemoveStatusItem { .. } => self.status_item,
+        }
+    }
+}
+
+/// Degrade a [`UiNode`] to plain text lines when the client does not
+/// support the specific node type.
+pub fn degrade_node_to_text(node: &UiNode) -> Vec<String> {
+    match node {
+        UiNode::Text(t) => vec![t.text.clone()],
+        UiNode::Markdown(m) => vec![m.markdown.clone()],
+        UiNode::Code(c) => {
+            let mut lines = vec![];
+            if let Some(lang) = &c.language {
+                lines.push(format!("[{}]", lang));
+            }
+            lines.extend(c.code.lines().map(|l| l.to_string()));
+            lines
+        }
+        UiNode::Table(t) => {
+            let mut lines = vec![];
+            lines.push(t.columns.join(" | "));
+            lines.push(
+                t.columns
+                    .iter()
+                    .map(|_| "---")
+                    .collect::<Vec<_>>()
+                    .join(" | "),
+            );
+            for row in &t.rows {
+                lines.push(row.join(" | "));
+            }
+            lines
+        }
+        UiNode::KeyValue(kv) => kv
+            .entries
+            .iter()
+            .map(|e| format!("{}: {}", e.key, e.value))
+            .collect(),
+        UiNode::Progress(p) => {
+            let label = p.label.as_deref().unwrap_or("progress");
+            match p.total {
+                Some(total) => vec![format!("{} {}/{}", label, p.current, total)],
+                None => vec![format!("{} {}", label, p.current)],
+            }
+        }
+        UiNode::Container(c) => {
+            let mut lines = vec![];
+            if let Some(title) = &c.title {
+                lines.push(format!("--- {} ---", title));
+            }
+            for child in &c.children {
+                lines.extend(degrade_node_to_text(child));
+            }
+            lines
+        }
+        UiNode::Empty => vec![],
+        UiNode::Unsupported { unknown_kind, .. } => {
+            vec![format!("[unsupported: {}]", unknown_kind)]
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -298,5 +420,145 @@ mod tests {
         let t = ToastLevel::Error;
         let json = serde_json::to_string(&t).unwrap();
         assert_eq!(json, "\"error\"");
+    }
+
+    #[test]
+    fn ui_effect_envelope_round_trip() {
+        let env = UiEffectEnvelope {
+            session_id: Some("s1".into()),
+            source: UiEffectSource::Plugin {
+                plugin_id: "my-plugin".into(),
+            },
+            invocation_id: Some("inv-1".into()),
+            effect: UiEffect::ShowToast {
+                toast: ToastSpec {
+                    level: ToastLevel::Info,
+                    message: "hello".into(),
+                },
+            },
+        };
+        let json = serde_json::to_string(&env).unwrap();
+        assert!(json.contains("plugin"));
+        assert!(json.contains("my-plugin"));
+        let back: UiEffectEnvelope = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, env);
+    }
+
+    #[test]
+    fn ui_effect_source_plugin_serializes() {
+        let src = UiEffectSource::Plugin {
+            plugin_id: "p1".into(),
+        };
+        let json = serde_json::to_string(&src).unwrap();
+        assert!(json.contains("plugin"));
+        assert!(json.contains("p1"));
+        let back: UiEffectSource = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, src);
+    }
+
+    #[test]
+    fn ui_effect_source_core_serializes() {
+        let src = UiEffectSource::Core;
+        let json = serde_json::to_string(&src).unwrap();
+        assert!(json.contains("core"));
+        let back: UiEffectSource = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, src);
+    }
+
+    #[test]
+    fn plugin_ui_capabilities_default_all_false() {
+        let caps = PluginUiCapabilities::default();
+        assert!(!caps.dialog);
+        assert!(!caps.toast);
+        assert!(!caps.panel);
+        assert!(!caps.status_item);
+        assert!(!caps.table);
+        assert!(!caps.markdown);
+        assert!(!caps.code);
+        assert!(!caps.progress);
+    }
+
+    #[test]
+    fn plugin_ui_capabilities_supports_effect() {
+        let caps = PluginUiCapabilities {
+            dialog: true,
+            toast: true,
+            ..Default::default()
+        };
+        assert!(caps.supports_effect(&UiEffect::OpenDialog {
+            dialog: DialogSpec {
+                id: "d".into(),
+                title: "t".into(),
+                body: UiNode::Empty,
+                modal: true,
+            }
+        }));
+        assert!(caps.supports_effect(&UiEffect::ShowToast {
+            toast: ToastSpec {
+                level: ToastLevel::Info,
+                message: "m".into()
+            }
+        }));
+        assert!(!caps.supports_effect(&UiEffect::OpenPanel {
+            panel: PanelSpec {
+                id: "p".into(),
+                title: "t".into(),
+                placement: PanelPlacement::Left,
+                body: UiNode::Empty,
+            }
+        }));
+    }
+
+    #[test]
+    fn degrade_text_node() {
+        let lines = degrade_node_to_text(&UiNode::Text(TextNode {
+            text: "hello".into(),
+        }));
+        assert_eq!(lines, vec!["hello"]);
+    }
+
+    #[test]
+    fn degrade_code_node_with_language() {
+        let lines = degrade_node_to_text(&UiNode::Code(CodeNode {
+            language: Some("rust".into()),
+            code: "fn main() {}".into(),
+        }));
+        assert_eq!(lines, vec!["[rust]", "fn main() {}"]);
+    }
+
+    #[test]
+    fn degrade_table_node() {
+        let lines = degrade_node_to_text(&UiNode::Table(TableNode {
+            columns: vec!["a".into(), "b".into()],
+            rows: vec![vec!["1".into(), "2".into()]],
+        }));
+        assert_eq!(lines, vec!["a | b", "--- | ---", "1 | 2"]);
+    }
+
+    #[test]
+    fn degrade_key_value_node() {
+        let lines = degrade_node_to_text(&UiNode::KeyValue(KeyValueNode {
+            entries: vec![KeyValueEntry {
+                key: "k".into(),
+                value: "v".into(),
+            }],
+        }));
+        assert_eq!(lines, vec!["k: v"]);
+    }
+
+    #[test]
+    fn degrade_progress_node_with_total() {
+        let lines = degrade_node_to_text(&UiNode::Progress(ProgressNode {
+            label: Some("loading".into()),
+            current: 50,
+            total: Some(100),
+        }));
+        assert_eq!(lines, vec!["loading 50/100"]);
+    }
+
+    #[test]
+    fn degrade_empty_node() {
+        let lines = degrade_node_to_text(&UiNode::Empty);
+        assert!(lines.is_empty());
     }
 }

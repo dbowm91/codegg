@@ -22,7 +22,10 @@ impl ShellRuntime {
     }
 
     /// Attach a plugin service for shell env lifecycle hooks.
-    pub fn with_plugin_service(mut self, service: Arc<crate::plugin::service::PluginService>) -> Self {
+    pub fn with_plugin_service(
+        mut self,
+        service: Arc<crate::plugin::service::PluginService>,
+    ) -> Self {
         self.plugin_service = Some(service);
         self
     }
@@ -75,7 +78,7 @@ impl ShellRuntime {
             .shell_env(env_input)
             .await
             {
-                crate::plugin::lifecycle::PluginHookOutcome::Ok(output) => {
+                crate::plugin::lifecycle::PluginHookOutcome::Ok(output, _effects) => {
                     extra_env = output.env;
                     remove_env = output.remove;
                 }

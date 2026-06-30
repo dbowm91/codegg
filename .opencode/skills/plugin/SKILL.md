@@ -906,16 +906,27 @@ Plugins configured in `config.json`:
 }
 ```
 
-## Protocol DTOs (Phase 1-5)
+## Protocol DTOs (Phase 1-10)
 
 `codegg-protocol` now ships frontend-neutral plugin and UI protocol types in `crates/codegg-protocol/src/ui.rs` and `crates/codegg-protocol/src/plugin.rs`. These are available as `codegg_protocol::ui` and `codegg_protocol::plugin`.
 
 Key types:
 - `UiNode` — Display tree nodes (Text, Markdown, Code, Table, KeyValue, Progress, Container, Empty, Unsupported)
 - `UiEffect` — Plugin side effects (EmitChat, ShowToast, OpenDialog/CloseDialog, OpenPanel/UpdatePanel/ClosePanel, AddStatusItem/UpdateStatusItem/RemoveStatusItem)
+- `UiEffectEnvelope` / `UiEffectSource` — Typed transport wrappers for frontend-neutral effect delivery
 - `PluginManifestDto` — Plugin metadata with runtime, capabilities, permissions
 - `PluginInvocation` — Request to invoke a plugin capability
 - `PluginResponse` — Response with effects, data, and diagnostics
 - `PluginPermissionSet` / `FilesystemPermission` — Declared permissions
 
 These are protocol-only types. They do not execute plugins or render UI. Phase 2 (TUI Renderer Adapter) consumes them via `PluginUiState` and `PluginUiRenderer`. Phase 3 adds generic `TuiCommand` plugin variants and `src/tui/commands/plugins.rs` for response application. Phase 5 redesigns the manifest and registry to be capability-based: `PluginManifestDto` now carries `runtime: PluginRuntimeSpec`, `capabilities: Vec<PluginCapability>`, and `permissions: Option<PluginPermissionSet>`, replacing the legacy hook-only model. The registry exposes capability queries (`commands()`, `panels()`, `status_widgets()`, `event_subscribers()`) and rejects duplicate command names at registration time.
+
+### Phase 10: Frontend-Neutral UI Events
+
+Phase 10 adds protocol-level transport for plugin UI effects so they can be delivered to any frontend without TUI-specific coupling.
+
+- **`UiEffectEnvelope`** / **`UiEffectSource`** in `codegg_protocol::ui` wrap `UiEffect` with session and plugin metadata for typed transport.
+- **`CoreEvent::PluginUiEffect`** and **`TuiMessage::PluginUiEffect`** carry the envelope through the event bus and command channel respectively.
+- **`HookResult.effects`** and **`PluginHookOutcome::Ok(T, Vec<UiEffect>)`** allow hooks to return UI effects alongside their normal result.
+- **`ClientCapabilities`** includes `plugin_ui_dialogs`, `plugin_ui_panels`, and `plugin_ui_status_widgets` flags for frontend capability negotiation.
+- **`degrade_node_to_text()`** converts unsupported `UiNode` variants to plain text for frontends that lack full rendering support.

@@ -169,6 +169,15 @@ Multi-line command results no longer get joined into a single toast. Toasts are 
 - `from_event_seq > remote_sequence` — client is ahead of server, toasts a warning and sends `ResyncRequired { reason: "requested_sequence_ahead_of_current" }`.
 - `from_event_seq <= remote_sequence` — client is behind or current; replies with a fresh `StateSnapshot` whose `sequence` is the next monotonic value (the server does not currently maintain a per-event replay log, so the client adopts the new snapshot directly).
 
+### Remote Plugin UI Effects
+
+Plugin UI effects reach the TUI through two independent routes, both applying the same session-filtering and dialog-priority logic:
+
+1. **Remote protocol route**: `RemoteTuiMessage::PluginUiEffect` arrives via WebSocket in `handle_remote_event`. The handler compares `session_id` against the current session and calls `App::apply_plugin_ui_effect()` only when the session matches (or is `None`).
+2. **Bus event route**: `AppEvent::PluginUiEffect` arrives on the `GlobalEventBus` in `runtime/app_events.rs`. It applies identical session filtering before delegating to the same `apply_plugin_ui_effect()` method.
+
+`App::apply_plugin_ui_effect()` mutates `PluginUiState` (storing dialog/panel/status data), then opens a `Dialog::Plugin` in the `FocusManager` — but only when no higher-priority modal is active. Permission, Question, and SecurityReview dialogs retain modal precedence; plugin dialogs are deferred until those close.
+
 ### Synchronous Command Dispatch
 
 Command dispatch arms in `src/tui/runtime/command_dispatch.rs` are all `fn (non-async)`. Handlers that need to do real async work either:

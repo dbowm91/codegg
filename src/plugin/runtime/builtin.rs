@@ -141,7 +141,7 @@ pub fn hook_result_to_plugin_response(result: HookResult) -> PluginResponse {
 
     PluginResponse {
         ok: !result.blocked && result.error.is_none(),
-        effects: Vec::new(),
+        effects: result.effects,
         data: result.output,
         diagnostics,
     }

@@ -73,6 +73,14 @@ async fn handshake_and_subscribe(
             audio: false,
             tts: false,
             multi_session_view: false,
+            plugin_ui_dialog: false,
+            plugin_ui_toast: false,
+            plugin_ui_panel: false,
+            plugin_ui_status_item: false,
+            plugin_ui_table: false,
+            plugin_ui_markdown: false,
+            plugin_ui_code: false,
+            plugin_ui_progress: false,
         },
     });
     let json = serde_json::to_string(&hello).expect("serialize ClientHello");
@@ -376,6 +384,14 @@ async fn resume_replay_uses_same_filter_as_live_forwarding() {
             audio: false,
             tts: false,
             multi_session_view: false,
+            plugin_ui_dialog: false,
+            plugin_ui_toast: false,
+            plugin_ui_panel: false,
+            plugin_ui_status_item: false,
+            plugin_ui_table: false,
+            plugin_ui_markdown: false,
+            plugin_ui_code: false,
+            plugin_ui_progress: false,
         },
     });
     write_half

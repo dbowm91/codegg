@@ -127,8 +127,8 @@ pub struct AuthHookOutput {
 /// Outcome of a lifecycle hook dispatch.
 #[derive(Debug, Clone)]
 pub enum PluginHookOutcome<T> {
-    /// Hook produced a value.
-    Ok(T),
+    /// Hook produced a value, along with any plugin UI effects.
+    Ok(T, Vec<codegg_protocol::ui::UiEffect>),
     /// Hook was skipped due to policy or no registered hooks.
     Skipped,
     /// Hook blocked the operation.
@@ -139,7 +139,7 @@ pub enum PluginHookOutcome<T> {
 
 impl<T> PluginHookOutcome<T> {
     pub fn is_ok(&self) -> bool {
-        matches!(self, PluginHookOutcome::Ok(_))
+        matches!(self, PluginHookOutcome::Ok(_, _))
     }
     pub fn is_blocked(&self) -> bool {
         matches!(self, PluginHookOutcome::Blocked { .. })
@@ -177,7 +177,11 @@ impl LifecycleHooks {
     /// Emit an event observation hook. Always fails open.
     pub async fn emit_event(&self, input: EventHookInput) -> PluginHookOutcome<()> {
         if !self.policy.is_hook_allowed(HookType::Event) {
-            tracing::debug!(hook_type = "event", policy_decision = "skipped", "event hook skipped by policy");
+            tracing::debug!(
+                hook_type = "event",
+                policy_decision = "skipped",
+                "event hook skipped by policy"
+            );
             return PluginHookOutcome::Skipped;
         }
 
@@ -305,7 +309,11 @@ impl LifecycleHooks {
         input: MessageTransformInput,
     ) -> PluginHookOutcome<MessageTransformOutput> {
         if !self.policy.is_hook_allowed(HookType::MessagesTransform) {
-            tracing::debug!(hook_type = "messages_transform", policy_decision = "skipped", "message transform hook skipped by policy");
+            tracing::debug!(
+                hook_type = "messages_transform",
+                policy_decision = "skipped",
+                "message transform hook skipped by policy"
+            );
             return PluginHookOutcome::Skipped;
         }
 
@@ -341,9 +349,16 @@ impl LifecycleHooks {
     }
 
     /// Dispatch the shell env hook. Mutating: returns env additions/removals.
-    pub async fn shell_env(&self, input: ShellEnvHookInput) -> PluginHookOutcome<ShellEnvHookOutput> {
+    pub async fn shell_env(
+        &self,
+        input: ShellEnvHookInput,
+    ) -> PluginHookOutcome<ShellEnvHookOutput> {
         if !self.policy.is_hook_allowed(HookType::ShellEnv) {
-            tracing::debug!(hook_type = "shell_env", policy_decision = "skipped", "shell env hook skipped by policy");
+            tracing::debug!(
+                hook_type = "shell_env",
+                policy_decision = "skipped",
+                "shell env hook skipped by policy"
+            );
             return PluginHookOutcome::Skipped;
         }
 
@@ -379,9 +394,16 @@ impl LifecycleHooks {
     }
 
     /// Dispatch the chat params hook. Mutating: returns modified params.
-    pub async fn chat_params(&self, input: ChatParamsHookInput) -> PluginHookOutcome<ChatParamsHookOutput> {
+    pub async fn chat_params(
+        &self,
+        input: ChatParamsHookInput,
+    ) -> PluginHookOutcome<ChatParamsHookOutput> {
         if !self.policy.is_hook_allowed(HookType::ChatParams) {
-            tracing::debug!(hook_type = "chat_params", policy_decision = "skipped", "chat params hook skipped by policy");
+            tracing::debug!(
+                hook_type = "chat_params",
+                policy_decision = "skipped",
+                "chat params hook skipped by policy"
+            );
             return PluginHookOutcome::Skipped;
         }
 
@@ -417,9 +439,16 @@ impl LifecycleHooks {
     }
 
     /// Dispatch the chat headers hook. Mutating: returns modified headers.
-    pub async fn chat_headers(&self, input: ChatHeadersHookInput) -> PluginHookOutcome<ChatHeadersHookOutput> {
+    pub async fn chat_headers(
+        &self,
+        input: ChatHeadersHookInput,
+    ) -> PluginHookOutcome<ChatHeadersHookOutput> {
         if !self.policy.is_hook_allowed(HookType::ChatHeaders) {
-            tracing::debug!(hook_type = "chat_headers", policy_decision = "skipped", "chat headers hook skipped by policy");
+            tracing::debug!(
+                hook_type = "chat_headers",
+                policy_decision = "skipped",
+                "chat headers hook skipped by policy"
+            );
             return PluginHookOutcome::Skipped;
         }
 
@@ -457,7 +486,11 @@ impl LifecycleHooks {
     /// Dispatch the auth hook. Blocking: returns modified headers.
     pub async fn auth(&self, input: AuthHookInput) -> PluginHookOutcome<AuthHookOutput> {
         if !self.policy.is_hook_allowed(HookType::Auth) {
-            tracing::debug!(hook_type = "auth", policy_decision = "skipped", "auth hook skipped by policy");
+            tracing::debug!(
+                hook_type = "auth",
+                policy_decision = "skipped",
+                "auth hook skipped by policy"
+            );
             return PluginHookOutcome::Skipped;
         }
 
@@ -506,7 +539,7 @@ fn outcome_to_unit(result: HookResult, fail_open: bool) -> PluginHookOutcome<()>
         }
         return PluginHookOutcome::Failed { error: err };
     }
-    PluginHookOutcome::Ok(())
+    PluginHookOutcome::Ok((), result.effects)
 }
 
 fn outcome_to_typed<T: for<'de> serde::Deserialize<'de>>(
@@ -526,7 +559,7 @@ fn outcome_to_typed<T: for<'de> serde::Deserialize<'de>>(
         return PluginHookOutcome::Failed { error: err };
     }
     match serde_json::from_value::<T>(result.output) {
-        Ok(val) => PluginHookOutcome::Ok(val),
+        Ok(val) => PluginHookOutcome::Ok(val, result.effects),
         Err(e) => {
             if fail_open {
                 tracing::debug!("hook output deserialization failed (fail-open): {}", e);
@@ -546,7 +579,7 @@ mod tests {
 
     #[test]
     fn hook_outcome_predicates() {
-        let ok: PluginHookOutcome<()> = PluginHookOutcome::Ok(());
+        let ok: PluginHookOutcome<()> = PluginHookOutcome::Ok((), Vec::new());
         assert!(ok.is_ok());
         assert!(!ok.is_blocked());
         assert!(!ok.is_failed());
@@ -669,9 +702,9 @@ mod tests {
 
     #[tokio::test]
     async fn event_hook_observes_with_real_service() {
-        use std::sync::Arc;
         use crate::plugin::registry::PluginRegistry;
         use crate::plugin::service::PluginService;
+        use std::sync::Arc;
 
         let registry = Arc::new(PluginRegistry::new());
         let service = Arc::new(PluginService::new(registry));
@@ -690,9 +723,9 @@ mod tests {
 
     #[tokio::test]
     async fn before_tool_execute_skipped_when_blocking_disabled() {
-        use std::sync::Arc;
         use crate::plugin::registry::PluginRegistry;
         use crate::plugin::service::PluginService;
+        use std::sync::Arc;
 
         let registry = Arc::new(PluginRegistry::new());
         let service = Arc::new(PluginService::new(registry));
@@ -716,9 +749,9 @@ mod tests {
 
     #[tokio::test]
     async fn before_tool_execute_allowed_when_blocking_enabled() {
-        use std::sync::Arc;
         use crate::plugin::registry::PluginRegistry;
         use crate::plugin::service::PluginService;
+        use std::sync::Arc;
 
         let registry = Arc::new(PluginRegistry::new());
         let service = Arc::new(PluginService::new(registry));
@@ -743,9 +776,9 @@ mod tests {
 
     #[tokio::test]
     async fn after_tool_execute_observes_with_real_service() {
-        use std::sync::Arc;
         use crate::plugin::registry::PluginRegistry;
         use crate::plugin::service::PluginService;
+        use std::sync::Arc;
 
         let registry = Arc::new(PluginRegistry::new());
         let service = Arc::new(PluginService::new(registry));
@@ -766,9 +799,9 @@ mod tests {
 
     #[tokio::test]
     async fn shell_env_hook_with_real_service() {
-        use std::sync::Arc;
         use crate::plugin::registry::PluginRegistry;
         use crate::plugin::service::PluginService;
+        use std::sync::Arc;
 
         let registry = Arc::new(PluginRegistry::new());
         let service = Arc::new(PluginService::new(registry));
@@ -787,7 +820,7 @@ mod tests {
         let outcome = hooks.shell_env(input).await;
         // No hooks registered, should get empty output.
         match outcome {
-            PluginHookOutcome::Ok(output) => {
+            PluginHookOutcome::Ok(output, _) => {
                 assert!(output.env.is_empty());
                 assert!(output.remove.is_empty());
             }
@@ -797,9 +830,9 @@ mod tests {
 
     #[tokio::test]
     async fn message_transform_skipped_when_mutating_disabled() {
-        use std::sync::Arc;
         use crate::plugin::registry::PluginRegistry;
         use crate::plugin::service::PluginService;
+        use std::sync::Arc;
 
         let registry = Arc::new(PluginRegistry::new());
         let service = Arc::new(PluginService::new(registry));
@@ -810,7 +843,9 @@ mod tests {
         let hooks = LifecycleHooks::new(service, policy);
 
         let input = MessageTransformInput {
-            messages: vec![serde_json::json!({"role": "user", "content": [{"type": "text", "text": "hello"}]})],
+            messages: vec![
+                serde_json::json!({"role": "user", "content": [{"type": "text", "text": "hello"}]}),
+            ],
             session_id: None,
             model: None,
             agent: None,
@@ -822,18 +857,22 @@ mod tests {
 
     #[tokio::test]
     async fn disabled_plugin_does_not_receive_hooks() {
-        use std::sync::Arc;
-        use crate::plugin::registry::PluginRegistry;
-        use crate::plugin::manifest::{PluginManifest, PluginRuntimeSpec, PluginTrustClass, PluginCapability, PluginHookSpec};
+        use crate::plugin::manifest::{
+            PluginCapability, PluginHookSpec, PluginManifest, PluginRuntimeSpec, PluginTrustClass,
+        };
         use crate::plugin::registry::PluginInfo;
+        use crate::plugin::registry::PluginRegistry;
         use crate::plugin::service::PluginService;
+        use std::sync::Arc;
 
         let mut registry = PluginRegistry::new();
 
         // Register a plugin with an event hook, then disable it.
         let manifest = PluginManifest {
             api_version: 1,
-            runtime: PluginRuntimeSpec::Builtin { handler: "test".into() },
+            runtime: PluginRuntimeSpec::Builtin {
+                handler: "test".into(),
+            },
             capabilities: vec![PluginCapability::Hook(PluginHookSpec {
                 hook_type: "event".into(),
                 priority: 0,
@@ -869,11 +908,11 @@ mod tests {
 
     #[tokio::test]
     async fn builtin_auth_hook_dispatches_through_service() {
-        use std::sync::Arc;
+        use crate::plugin::builtin::{builtin_runtime_registry, register_builtins};
         use crate::plugin::registry::PluginRegistry;
-        use crate::plugin::service::PluginService;
-        use crate::plugin::builtin::{register_builtins, builtin_runtime_registry};
         use crate::plugin::runtime::builtin::BuiltinRuntime;
+        use crate::plugin::service::PluginService;
+        use std::sync::Arc;
 
         let registry = Arc::new(PluginRegistry::new());
         register_builtins(&registry).await;
@@ -881,10 +920,7 @@ mod tests {
         let handler_registry = Arc::new(builtin_runtime_registry());
         let builtin_rt = Arc::new(BuiltinRuntime::new(handler_registry));
 
-        let service = Arc::new(
-            PluginService::new(registry)
-                .with_builtin_runtime(builtin_rt),
-        );
+        let service = Arc::new(PluginService::new(registry).with_builtin_runtime(builtin_rt));
 
         // Dispatch an auth hook for copilot.
         let result = service
@@ -921,9 +957,9 @@ mod tests {
 
     #[tokio::test]
     async fn lifecycle_hooks_policy_prevents_tool_before_when_disabled() {
-        use std::sync::Arc;
         use crate::plugin::registry::PluginRegistry;
         use crate::plugin::service::PluginService;
+        use std::sync::Arc;
 
         let registry = Arc::new(PluginRegistry::new());
         let service = Arc::new(PluginService::new(registry));
@@ -946,18 +982,22 @@ mod tests {
 
     #[tokio::test]
     async fn before_tool_execute_allow_passes_args_unchanged() {
-        use std::sync::Arc;
-        use crate::plugin::registry::PluginRegistry;
-        use crate::plugin::registry::PluginInfo;
-        use crate::plugin::manifest::{PluginManifest, PluginRuntimeSpec, PluginTrustClass, PluginCapability, PluginHookSpec};
-        use crate::plugin::service::PluginService;
-        use crate::plugin::runtime::builtin::BuiltinRuntime;
         use crate::plugin::builtin::builtin_runtime_registry;
+        use crate::plugin::manifest::{
+            PluginCapability, PluginHookSpec, PluginManifest, PluginRuntimeSpec, PluginTrustClass,
+        };
+        use crate::plugin::registry::PluginInfo;
+        use crate::plugin::registry::PluginRegistry;
+        use crate::plugin::runtime::builtin::BuiltinRuntime;
+        use crate::plugin::service::PluginService;
+        use std::sync::Arc;
 
         let mut registry = PluginRegistry::new();
         let manifest = PluginManifest {
             api_version: 1,
-            runtime: PluginRuntimeSpec::Builtin { handler: "test-allow".into() },
+            runtime: PluginRuntimeSpec::Builtin {
+                handler: "test-allow".into(),
+            },
             capabilities: vec![PluginCapability::Hook(PluginHookSpec {
                 hook_type: "tool_execute_before".into(),
                 priority: 0,
@@ -976,10 +1016,8 @@ mod tests {
 
         let handler_registry = Arc::new(builtin_runtime_registry());
         let builtin_rt = Arc::new(BuiltinRuntime::new(handler_registry));
-        let service = Arc::new(
-            PluginService::new(Arc::new(registry))
-                .with_builtin_runtime(builtin_rt),
-        );
+        let service =
+            Arc::new(PluginService::new(Arc::new(registry)).with_builtin_runtime(builtin_rt));
 
         let policy = PluginLifecyclePolicy {
             enable_blocking_hooks: true,
@@ -998,7 +1036,7 @@ mod tests {
         let outcome = hooks.before_tool_execute(input).await;
         // No test handler registered, so passthrough (Ok or Skipped).
         match outcome {
-            PluginHookOutcome::Ok(output) => {
+            PluginHookOutcome::Ok(output, _) => {
                 assert_eq!(output.action, ToolBeforeAction::Allow);
             }
             PluginHookOutcome::Skipped => {}
@@ -1008,9 +1046,9 @@ mod tests {
 
     #[tokio::test]
     async fn before_tool_execute_modify_ignored_when_mutating_disabled() {
-        use std::sync::Arc;
         use crate::plugin::registry::PluginRegistry;
         use crate::plugin::service::PluginService;
+        use std::sync::Arc;
 
         let registry = Arc::new(PluginRegistry::new());
         let service = Arc::new(PluginService::new(registry));
@@ -1033,9 +1071,9 @@ mod tests {
 
     #[tokio::test]
     async fn wasm_and_builtin_mutating_hooks_allowed_when_policy_enables() {
-        use crate::plugin::policy::{PluginLifecyclePolicy, classify_hook, HookCategory};
         use crate::plugin::hooks::HookType;
         use crate::plugin::manifest::PluginRuntimeSpec;
+        use crate::plugin::policy::{classify_hook, HookCategory, PluginLifecyclePolicy};
 
         let mut policy = PluginLifecyclePolicy::default();
         policy.enable_mutating_hooks = true;
@@ -1048,7 +1086,9 @@ mod tests {
         assert!(policy.is_hook_allowed(HookType::ChatHeaders));
 
         // Builtin/WASM runtimes should always be allowed.
-        assert!(policy.is_runtime_allowed(&PluginRuntimeSpec::Builtin { handler: "test".into() }));
+        assert!(policy.is_runtime_allowed(&PluginRuntimeSpec::Builtin {
+            handler: "test".into()
+        }));
         assert!(policy.is_runtime_allowed(&PluginRuntimeSpec::Wasm {
             module: "test.wasm".into(),
             timeout_ms: None,
@@ -1057,15 +1097,18 @@ mod tests {
         }));
 
         // Classification should be Mutating.
-        assert_eq!(classify_hook(HookType::MessagesTransform), HookCategory::Mutating);
+        assert_eq!(
+            classify_hook(HookType::MessagesTransform),
+            HookCategory::Mutating
+        );
         assert_eq!(classify_hook(HookType::ShellEnv), HookCategory::Mutating);
     }
 
     #[tokio::test]
     async fn shell_env_hook_does_not_log_secret_values() {
-        use std::sync::Arc;
         use crate::plugin::registry::PluginRegistry;
         use crate::plugin::service::PluginService;
+        use std::sync::Arc;
 
         let registry = Arc::new(PluginRegistry::new());
         let service = Arc::new(PluginService::new(registry));
@@ -1085,7 +1128,7 @@ mod tests {
         // because tracing fields only log command/cwd, not env values.
         let outcome = hooks.shell_env(input).await;
         match outcome {
-            PluginHookOutcome::Ok(output) => {
+            PluginHookOutcome::Ok(output, _) => {
                 assert!(output.env.is_empty());
             }
             other => panic!("expected Ok, got {:?}", other),
@@ -1094,9 +1137,9 @@ mod tests {
 
     #[tokio::test]
     async fn chat_params_hook_skipped_when_mutating_disabled() {
-        use std::sync::Arc;
         use crate::plugin::registry::PluginRegistry;
         use crate::plugin::service::PluginService;
+        use std::sync::Arc;
 
         let registry = Arc::new(PluginRegistry::new());
         let service = Arc::new(PluginService::new(registry));
@@ -1113,9 +1156,9 @@ mod tests {
 
     #[tokio::test]
     async fn chat_headers_hook_skipped_when_mutating_disabled() {
-        use std::sync::Arc;
         use crate::plugin::registry::PluginRegistry;
         use crate::plugin::service::PluginService;
+        use std::sync::Arc;
 
         let registry = Arc::new(PluginRegistry::new());
         let service = Arc::new(PluginService::new(registry));
@@ -1132,9 +1175,9 @@ mod tests {
 
     #[tokio::test]
     async fn auth_hook_skipped_when_blocking_disabled() {
-        use std::sync::Arc;
         use crate::plugin::registry::PluginRegistry;
         use crate::plugin::service::PluginService;
+        use std::sync::Arc;
 
         let registry = Arc::new(PluginRegistry::new());
         let service = Arc::new(PluginService::new(registry));

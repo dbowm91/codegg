@@ -964,6 +964,18 @@ Phase 5 introduces the canonical `PluginManifest` with `api_version`, `runtime`,
 - Supporting types: `DialogSpec`, `PanelSpec`, `StatusItemSpec`, `ChatBlock`, `ToastSpec`, `PanelPlacement`, `StatusPlacement`
 - TUI consumption (Phase 2): `PluginUiState` stores open/update/close effects; `PluginUiRenderer` renders `UiNode` to ratatui; `App::apply_plugin_ui_effect()` routes `ShowToast`/`EmitChat`/`OpenDialog`/`CloseDialog`. Panels and status items stored but not visually rendered yet.
 
+### UI Effect Event Flow (Phase 10)
+
+**Frontend-neutral transport**: Plugin UI effects travel through two channels — `CoreEvent::PluginUiEffect` (core event stream for remote TUI clients) and `TuiCommand::PluginUiEffect` (local TUI command channel). Both carry an `UiEffectEnvelope` wrapping the `UiEffect` with session, plugin, and invocation metadata.
+
+**Event flow**: Lifecycle hooks produce `PluginResponse.effects` → converted to `HookResult.effects` → wrapped in `PluginHookOutcome::Ok(value, effects)` → agent loop emits `AppEvent::PluginUiEffect` → event bridge maps to `CoreEvent::PluginUiEffect` → remote clients receive via event log subscription. Local TUI routes through `TuiCommand::PluginUiEffect` to `App::apply_plugin_ui_effect()`.
+
+**Capability negotiation**: `ClientCapabilities` carries `plugin_ui_*` boolean flags per surface type. `PluginUiCapabilities::supports_effect()` checks whether a client can render a given effect. `degrade_node_to_text()` provides deterministic fallback when a surface is unsupported.
+
+**Degradation rules**: dialog→chat block, panel→chat block, table→markdown table, status item→omit, toast→always supported. Effects for unsupported surfaces are silently downgraded rather than dropped.
+
+**TUI consumption**: Both local `TuiCommand::PluginUiEffect` and remote `CoreEvent::PluginUiEffect` route through `App::apply_plugin_ui_effect()`, which checks client capabilities before dispatching.
+
 ### Plugin Types (`codegg_protocol::plugin`)
 
 - `PluginManifestDto` — Plugin metadata with runtime spec, capabilities, and permissions

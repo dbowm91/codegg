@@ -407,6 +407,14 @@ pub enum CoreEvent {
         agent: String,
         error: String,
     },
+    /// A plugin produced a UI effect (dialog, toast, panel, status item,
+    /// etc.) through a lifecycle hook or session-scoped command.
+    PluginUiEffect {
+        session_id: Option<String>,
+        plugin_id: String,
+        invocation_id: Option<String>,
+        effect: crate::ui::UiEffect,
+    },
     Error {
         code: String,
         message: String,
@@ -416,6 +424,7 @@ pub enum CoreEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ui::UiEffect;
 
     #[test]
     fn protocol_version_is_set() {
@@ -538,5 +547,45 @@ mod tests {
         let frame = CoreFrame::Ping;
         let json = serde_json::to_string(&frame).unwrap();
         assert!(json.contains("ping"));
+    }
+
+    #[test]
+    fn core_event_plugin_ui_effect_round_trip() {
+        let effect = crate::ui::UiEffect::ShowToast {
+            toast: crate::ui::ToastSpec {
+                level: crate::ui::ToastLevel::Info,
+                message: "plugin says hi".into(),
+            },
+        };
+        let env = EventEnvelope {
+            protocol_version: 1,
+            event_seq: 10,
+            timestamp_ms: 100,
+            session_id: Some("s1".into()),
+            turn_id: None,
+            payload: CoreEvent::PluginUiEffect {
+                session_id: Some("s1".into()),
+                plugin_id: "my-plugin".into(),
+                invocation_id: Some("inv-1".into()),
+                effect,
+            },
+        };
+        let json = serde_json::to_string(&env).unwrap();
+        assert!(json.contains("plugin_ui_effect"));
+        assert!(json.contains("my-plugin"));
+        let back: EventEnvelope<CoreEvent> = serde_json::from_str(&json).unwrap();
+        match back.payload {
+            CoreEvent::PluginUiEffect {
+                plugin_id,
+                invocation_id,
+                effect,
+                ..
+            } => {
+                assert_eq!(plugin_id, "my-plugin");
+                assert_eq!(invocation_id.as_deref(), Some("inv-1"));
+                assert!(matches!(effect, UiEffect::ShowToast { .. }));
+            }
+            other => panic!("expected PluginUiEffect, got {:?}", other),
+        }
     }
 }

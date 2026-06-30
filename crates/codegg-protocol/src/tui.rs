@@ -66,6 +66,14 @@ pub enum TuiMessage {
         output: String,
         success: bool,
     },
+    /// A plugin produced a UI effect. Consumed by the TUI to apply
+    /// through the same `apply_plugin_ui_effect` path as local effects.
+    PluginUiEffect {
+        session_id: Option<String>,
+        plugin_id: String,
+        invocation_id: Option<String>,
+        effect: crate::ui::UiEffect,
+    },
     Error {
         message: String,
     },
@@ -137,4 +145,42 @@ pub struct RemoteToolCallView {
 pub struct RemoteToastView {
     pub message: String,
     pub level: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tui_message_plugin_ui_effect_round_trip() {
+        let effect = crate::ui::UiEffect::OpenDialog {
+            dialog: crate::ui::DialogSpec {
+                id: "test-dlg".into(),
+                title: "Test".into(),
+                body: crate::ui::UiNode::Text(crate::ui::TextNode { text: "hi".into() }),
+                modal: true,
+            },
+        };
+        let msg = TuiMessage::PluginUiEffect {
+            session_id: Some("s1".into()),
+            plugin_id: "p1".into(),
+            invocation_id: Some("inv-1".into()),
+            effect,
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("PluginUiEffect"));
+        assert!(json.contains("p1"));
+        let back: TuiMessage = serde_json::from_str(&json).unwrap();
+        match back {
+            TuiMessage::PluginUiEffect {
+                plugin_id,
+                invocation_id,
+                ..
+            } => {
+                assert_eq!(plugin_id, "p1");
+                assert_eq!(invocation_id.as_deref(), Some("inv-1"));
+            }
+            other => panic!("expected PluginUiEffect, got {:?}", other),
+        }
+    }
 }

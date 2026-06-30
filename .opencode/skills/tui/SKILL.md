@@ -845,6 +845,14 @@ TuiCommand::SessionsReloaded { sessions, message_counts, error } => {
 
 `close_dialog()` (`pub(crate)`) cancels async request states for Import, ResearchBrowser, and Session, preventing stale completions after dismissal.
 
+### Remote Plugin UI Handling (Phase 10)
+
+Plugin UI effects are routed through two paths depending on source:
+- **`TuiMessage::PluginUiEffect`** — handled in the remote event handler with session filtering (only effects matching the active session are applied).
+- **`AppEvent::PluginUiEffect`** — handled in the bus event handler; routes through `App::apply_plugin_ui_effect()`.
+- Both paths converge on `App::apply_plugin_ui_effect()`, which dispatches to `PluginUiState` for dialog/panel/status updates.
+- Plugin dialogs have **lower priority** than permission, question, and security dialogs — they are only shown when no higher-priority dialog is active.
+
 ## Background Task Lifecycle (Phase 7)
 
 TUI-owned background tasks are tracked via `TuiTaskRegistry` on `App`.

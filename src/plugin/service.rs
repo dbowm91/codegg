@@ -248,6 +248,7 @@ impl PluginService {
         }
 
         let mut current_input = ctx.input;
+        let mut all_effects = Vec::new();
 
         for hook in hooks {
             let hook_ctx = HookContext {
@@ -261,8 +262,12 @@ impl PluginService {
 
             match result {
                 Ok(res) => {
+                    all_effects.extend(res.effects);
                     if res.blocked {
-                        return res;
+                        return HookResult {
+                            effects: all_effects,
+                            ..res
+                        };
                     }
                     if let Some(err) = &res.error {
                         tracing::warn!(
@@ -270,7 +275,10 @@ impl PluginService {
                             error = err,
                             "hook execution error"
                         );
-                        return res;
+                        return HookResult {
+                            effects: all_effects,
+                            ..res
+                        };
                     }
                     current_input = res.output;
                 }
@@ -280,12 +288,17 @@ impl PluginService {
                         error = err,
                         "hook execution failed"
                     );
-                    return HookResult::error(format!("{}: hook timeout: {}", hook.plugin_id, err));
+                    let mut err_result =
+                        HookResult::error(format!("{}: hook timeout: {}", hook.plugin_id, err));
+                    err_result.effects = all_effects;
+                    return err_result;
                 }
             }
         }
 
-        HookResult::ok(current_input)
+        let mut final_result = HookResult::ok(current_input);
+        final_result.effects = all_effects;
+        final_result
     }
 
     async fn execute_hook_with_timeout(
@@ -316,13 +329,8 @@ impl PluginService {
                     };
 
                     match builtin_rt.invoke(invocation).await {
-                        Ok(response) => {
-                            Ok(HookResult::from_plugin_response(response, ctx.input))
-                        }
-                        Err(e) => Ok(HookResult::error(format!(
-                            "builtin hook failed: {}",
-                            e
-                        ))),
+                        Ok(response) => Ok(HookResult::from_plugin_response(response, ctx.input)),
+                        Err(e) => Ok(HookResult::error(format!("builtin hook failed: {}", e))),
                     }
                 } else {
                     // Fallback to direct handler lookup

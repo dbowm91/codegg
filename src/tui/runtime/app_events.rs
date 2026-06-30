@@ -525,6 +525,27 @@ fn handle_single_event(app: &mut App, event: AppEvent) -> bool {
             }
             true
         }
+        AppEvent::PluginUiEffect {
+            session_id,
+            plugin_id: _,
+            invocation_id: _,
+            effect,
+        } => {
+            let current_session = app
+                .session_state
+                .session
+                .as_ref()
+                .map(|s| s.id.as_str())
+                .unwrap_or_default();
+            let matches_session = session_id
+                .as_deref()
+                .map(|sid| sid == current_session)
+                .unwrap_or(true);
+            if matches_session {
+                app.apply_plugin_ui_effect(effect);
+            }
+            true
+        }
         _ => {
             tracing::debug!(target: "codegg::tui::events", "unhandled bus event");
             false

@@ -2157,7 +2157,7 @@ impl AgentLoop {
 
         // Dispatch event observation hook for agent finished.
         if let Some(ref ps) = self.plugin_service {
-            use crate::plugin::lifecycle::{LifecycleHooks, EventHookInput};
+            use crate::plugin::lifecycle::{EventHookInput, LifecycleHooks};
             let hooks = LifecycleHooks::new(
                 ps.clone(),
                 crate::plugin::policy::PluginLifecyclePolicy::default(),
@@ -2953,7 +2953,7 @@ impl AgentLoop {
 
             // Dispatch event observation hook for compaction.
             if let Some(ref ps) = self.plugin_service {
-                use crate::plugin::lifecycle::{LifecycleHooks, EventHookInput};
+                use crate::plugin::lifecycle::{EventHookInput, LifecycleHooks};
                 let hooks = LifecycleHooks::new(
                     ps.clone(),
                     crate::plugin::policy::PluginLifecyclePolicy::default(),
@@ -2998,7 +2998,7 @@ impl AgentLoop {
 
         // Dispatch event observation hook for session start.
         if let Some(ref ps) = self.plugin_service {
-            use crate::plugin::lifecycle::{LifecycleHooks, EventHookInput};
+            use crate::plugin::lifecycle::{EventHookInput, LifecycleHooks};
             let hooks = LifecycleHooks::new(
                 ps.clone(),
                 crate::plugin::policy::PluginLifecyclePolicy::default(),
@@ -3200,7 +3200,7 @@ impl AgentLoop {
 
             // Dispatch event observation hook for agent start.
             if let Some(ref ps) = self.plugin_service {
-                use crate::plugin::lifecycle::{LifecycleHooks, EventHookInput};
+                use crate::plugin::lifecycle::{EventHookInput, LifecycleHooks};
                 let hooks = LifecycleHooks::new(
                     ps.clone(),
                     crate::plugin::policy::PluginLifecyclePolicy::default(),
@@ -3315,7 +3315,7 @@ impl AgentLoop {
                     crate::plugin::policy::PluginLifecyclePolicy::default(),
                 );
                 match hooks.transform_messages(transform_input).await {
-                    PluginHookOutcome::Ok(output) => {
+                    PluginHookOutcome::Ok(output, effects) => {
                         // Only apply if the hook returned messages.
                         if !output.messages.is_empty() {
                             let transformed =
@@ -3325,6 +3325,16 @@ impl AgentLoop {
                             if !transformed.is_empty() {
                                 request.messages = transformed;
                             }
+                        }
+                        for effect in effects {
+                            crate::bus::global::GlobalEventBus::publish(
+                                crate::bus::events::AppEvent::PluginUiEffect {
+                                    session_id: Some(self.session_id.clone()),
+                                    plugin_id: "lifecycle".into(),
+                                    invocation_id: None,
+                                    effect,
+                                },
+                            );
                         }
                     }
                     PluginHookOutcome::Failed { error } => {
@@ -3339,8 +3349,7 @@ impl AgentLoop {
             // Dispatch chat params/headers hooks before provider call.
             if let Some(ref ps) = self.plugin_service {
                 use crate::plugin::lifecycle::{
-                    LifecycleHooks, ChatParamsHookInput, ChatHeadersHookInput,
-                    PluginHookOutcome,
+                    ChatHeadersHookInput, ChatParamsHookInput, LifecycleHooks, PluginHookOutcome,
                 };
                 let hooks = LifecycleHooks::new(
                     ps.clone(),
@@ -3357,15 +3366,29 @@ impl AgentLoop {
                     }),
                 };
                 match hooks.chat_params(params_input).await {
-                    PluginHookOutcome::Ok(output) => {
-                        if let Some(temp) = output.params.get("temperature").and_then(|v| v.as_f64()) {
+                    PluginHookOutcome::Ok(output, effects) => {
+                        if let Some(temp) =
+                            output.params.get("temperature").and_then(|v| v.as_f64())
+                        {
                             request.temperature = Some(temp);
                         }
                         if let Some(top_p) = output.params.get("top_p").and_then(|v| v.as_f64()) {
                             request.top_p = Some(top_p);
                         }
-                        if let Some(max_tokens) = output.params.get("max_tokens").and_then(|v| v.as_u64()) {
+                        if let Some(max_tokens) =
+                            output.params.get("max_tokens").and_then(|v| v.as_u64())
+                        {
                             request.max_tokens = Some(max_tokens as usize);
+                        }
+                        for effect in effects {
+                            crate::bus::global::GlobalEventBus::publish(
+                                crate::bus::events::AppEvent::PluginUiEffect {
+                                    session_id: Some(self.session_id.clone()),
+                                    plugin_id: "lifecycle".into(),
+                                    invocation_id: None,
+                                    effect,
+                                },
+                            );
                         }
                     }
                     PluginHookOutcome::Failed { error } => {
@@ -3382,9 +3405,19 @@ impl AgentLoop {
                     headers: serde_json::json!({}),
                 };
                 match hooks.chat_headers(headers_input).await {
-                    PluginHookOutcome::Ok(_output) => {
+                    PluginHookOutcome::Ok(_output, effects) => {
                         // Headers are advisory; providers that support custom headers
                         // will consume them through their own mechanisms.
+                        for effect in effects {
+                            crate::bus::global::GlobalEventBus::publish(
+                                crate::bus::events::AppEvent::PluginUiEffect {
+                                    session_id: Some(self.session_id.clone()),
+                                    plugin_id: "lifecycle".into(),
+                                    invocation_id: None,
+                                    effect,
+                                },
+                            );
+                        }
                     }
                     PluginHookOutcome::Failed { error } => {
                         tracing::warn!("chat headers hook failed: {}", error);
@@ -3402,9 +3435,19 @@ impl AgentLoop {
                     headers: serde_json::json!({}),
                 };
                 match hooks.auth(auth_input).await {
-                    PluginHookOutcome::Ok(_output) => {
+                    PluginHookOutcome::Ok(_output, effects) => {
                         // Auth modifications are advisory at this layer;
                         // providers resolve credentials internally.
+                        for effect in effects {
+                            crate::bus::global::GlobalEventBus::publish(
+                                crate::bus::events::AppEvent::PluginUiEffect {
+                                    session_id: Some(self.session_id.clone()),
+                                    plugin_id: "lifecycle".into(),
+                                    invocation_id: None,
+                                    effect,
+                                },
+                            );
+                        }
                     }
                     PluginHookOutcome::Failed { error } => {
                         tracing::warn!("auth hook failed: {}", error);
@@ -3919,7 +3962,7 @@ impl AgentLoop {
 
             // Dispatch event observation hook for agent end.
             if let Some(ref ps) = self.plugin_service {
-                use crate::plugin::lifecycle::{LifecycleHooks, EventHookInput};
+                use crate::plugin::lifecycle::{EventHookInput, LifecycleHooks};
                 let hooks = LifecycleHooks::new(
                     ps.clone(),
                     crate::plugin::policy::PluginLifecyclePolicy::default(),
@@ -3995,7 +4038,7 @@ impl AgentLoop {
 
         // Dispatch event observation hook for session end.
         if let Some(ref ps) = self.plugin_service {
-            use crate::plugin::lifecycle::{LifecycleHooks, EventHookInput};
+            use crate::plugin::lifecycle::{EventHookInput, LifecycleHooks};
             let hooks = LifecycleHooks::new(
                 ps.clone(),
                 crate::plugin::policy::PluginLifecyclePolicy::default(),
@@ -4347,7 +4390,7 @@ impl AgentLoop {
                 let mut effective_args = tc_arc.arguments.clone();
                 if let Some(ref ps) = plugin_service {
                     use crate::plugin::lifecycle::{
-                        LifecycleHooks, ToolBeforeHookInput, ToolBeforeAction, PluginHookOutcome,
+                        LifecycleHooks, PluginHookOutcome, ToolBeforeAction, ToolBeforeHookInput,
                     };
                     let risk = classify_tool_risk(&tool_name, &tc_arc.arguments);
                     let lifecycle_hooks = LifecycleHooks::new(
@@ -4362,7 +4405,7 @@ impl AgentLoop {
                         risk: risk.to_string(),
                     };
                     match lifecycle_hooks.before_tool_execute(before_input).await {
-                        PluginHookOutcome::Ok(output) => {
+                        PluginHookOutcome::Ok(output, effects) => {
                             match output.action {
                                 ToolBeforeAction::Deny => {
                                     tracing::warn!(
@@ -4390,6 +4433,16 @@ impl AgentLoop {
                                     }
                                 }
                                 ToolBeforeAction::Allow => {}
+                            }
+                            for effect in effects {
+                                crate::bus::global::GlobalEventBus::publish(
+                                    crate::bus::events::AppEvent::PluginUiEffect {
+                                        session_id: Some(session_id.clone()),
+                                        plugin_id: "lifecycle".into(),
+                                        invocation_id: None,
+                                        effect,
+                                    },
+                                );
                             }
                         }
                         PluginHookOutcome::Blocked { reason } => {
@@ -4463,11 +4516,7 @@ impl AgentLoop {
                             let exec_args = effective_args.clone();
                             let exec_fut = async {
                                 let structured = registry
-                                    .execute_capture(
-                                        &tc_inner.name,
-                                        exec_args,
-                                        Some(exec_ctx),
-                                    )
+                                    .execute_capture(&tc_inner.name, exec_args, Some(exec_ctx))
                                     .await?;
                                 if let Some(ref p) = structured.provenance {
                                     tracing::debug!(
@@ -4520,7 +4569,7 @@ impl AgentLoop {
 
                 if let Some(ref ps) = plugin_service {
                     use crate::plugin::lifecycle::{
-                        LifecycleHooks, ToolAfterHookInput, PluginHookOutcome,
+                        LifecycleHooks, PluginHookOutcome, ToolAfterHookInput,
                     };
                     let duration_ms = tool_start.elapsed().as_millis() as u64;
                     let lifecycle_hooks = LifecycleHooks::new(
@@ -4532,16 +4581,22 @@ impl AgentLoop {
                         tool_call_id: id.to_string(),
                         args: effective_args.clone(),
                         success: result.is_ok(),
-                        output: result.as_ref().ok().map(|o| {
-                            if o.len() > 500 {
-                                format!("{}...", &o[..497])
-                            } else {
-                                o.clone()
-                            }
-                        }).unwrap_or_default(),
+                        output: result
+                            .as_ref()
+                            .ok()
+                            .map(|o| {
+                                if o.len() > 500 {
+                                    format!("{}...", &o[..497])
+                                } else {
+                                    o.clone()
+                                }
+                            })
+                            .unwrap_or_default(),
                         duration_ms,
                     };
-                    if let PluginHookOutcome::Failed { error } = lifecycle_hooks.after_tool_execute(after_input).await {
+                    if let PluginHookOutcome::Failed { error } =
+                        lifecycle_hooks.after_tool_execute(after_input).await
+                    {
                         tracing::warn!(tool = %tool_name, error = %error, "After-tool hook failed");
                     }
                 }

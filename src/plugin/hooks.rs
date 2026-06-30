@@ -94,6 +94,7 @@ pub struct HookResult {
     pub output: serde_json::Value,
     pub blocked: bool,
     pub error: Option<String>,
+    pub effects: Vec<crate::protocol::ui::UiEffect>,
 }
 
 impl HookResult {
@@ -102,6 +103,7 @@ impl HookResult {
             output,
             blocked: false,
             error: None,
+            effects: Vec::new(),
         }
     }
 
@@ -110,6 +112,7 @@ impl HookResult {
             output: serde_json::Value::Null,
             blocked: true,
             error: None,
+            effects: Vec::new(),
         }
     }
 
@@ -118,6 +121,7 @@ impl HookResult {
             output: serde_json::Value::Null,
             blocked: false,
             error: Some(msg.into()),
+            effects: Vec::new(),
         }
     }
 
@@ -151,6 +155,7 @@ impl HookResult {
                 output: serde_json::Value::Null,
                 blocked: false,
                 error: Some(error_msg),
+                effects: response.effects,
             };
         }
 
@@ -158,6 +163,7 @@ impl HookResult {
             output,
             blocked: false,
             error: None,
+            effects: response.effects,
         }
     }
 }
