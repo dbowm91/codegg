@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -8,12 +9,22 @@ use super::types::{ShellCommandId, ShellEvent, ShellRequest, DEFAULT_TIMEOUT_SEC
 
 pub struct ShellRuntime {
     shell: String,
+    plugin_service: Option<Arc<crate::plugin::service::PluginService>>,
 }
 
 impl ShellRuntime {
     pub fn new() -> Self {
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "sh".to_string());
-        Self { shell }
+        Self {
+            shell,
+            plugin_service: None,
+        }
+    }
+
+    /// Attach a plugin service for shell env lifecycle hooks.
+    pub fn with_plugin_service(mut self, service: Arc<crate::plugin::service::PluginService>) -> Self {
+        self.plugin_service = Some(service);
+        self
     }
 
     #[cfg(test)]
@@ -21,6 +32,7 @@ impl ShellRuntime {
     fn with_shell(shell: &str) -> Self {
         Self {
             shell: shell.to_string(),
+            plugin_service: None,
         }
     }
 
@@ -46,12 +58,48 @@ impl ShellRuntime {
             })
             .await;
 
+        // Dispatch shell env hook if plugin service is available.
+        let mut extra_env: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        let mut remove_env: Vec<String> = Vec::new();
+        if let Some(ref plugin_svc) = self.plugin_service {
+            let env_input = crate::plugin::lifecycle::ShellEnvHookInput {
+                command: command.clone(),
+                cwd: cwd.to_string_lossy().to_string(),
+                base_env_keys: Vec::new(),
+            };
+            match crate::plugin::lifecycle::LifecycleHooks::new(
+                plugin_svc.clone(),
+                crate::plugin::policy::PluginLifecyclePolicy::default(),
+            )
+            .shell_env(env_input)
+            .await
+            {
+                crate::plugin::lifecycle::PluginHookOutcome::Ok(output) => {
+                    extra_env = output.env;
+                    remove_env = output.remove;
+                }
+                crate::plugin::lifecycle::PluginHookOutcome::Failed { error } => {
+                    tracing::warn!("shell env hook failed: {}", error);
+                }
+                _ => {}
+            }
+        }
+
         let mut cmd = Command::new(&self.shell);
         cmd.arg("-lc").arg(&command);
         cmd.current_dir(&cwd);
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
         cmd.kill_on_drop(true);
+
+        // Apply environment overrides from plugin hooks.
+        for key in &remove_env {
+            cmd.env_remove(key);
+        }
+        for (key, value) in &extra_env {
+            cmd.env(key, value);
+        }
 
         let mut child = match cmd.spawn() {
             Ok(c) => c,

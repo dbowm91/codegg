@@ -24,7 +24,9 @@ Plugin System
 ├── PluginService (management APIs)
 ├── BuiltinPlugins (copilot, gitlab, codex, poe)
 ├── MarketplaceService (local plugin discovery)
-└── PluginEventBus (event subscriptions)
+├── PluginEventBus (event subscriptions)
+├── LifecycleHooks (policy-aware hook dispatch, Phase 9)
+└── PluginLifecyclePolicy (hook type/runtime gating, Phase 9)
 ```
 
 ## Project Structure
@@ -42,6 +44,8 @@ src/plugin/
 ├── tui.rs           # TUI plugin registry for routes/components (deprecated/legacy, superseded by Phase 5 capability-based registry)
 ├── event_bus.rs     # Event bus integration
 ├── marketplace.rs   # Local plugin discovery service
+├── lifecycle.rs  # LifecycleHooks, typed hook I/O contracts (Phase 9)
+├── policy.rs     # PluginLifecyclePolicy, hook gating (Phase 9)
 ├── runtime/         # Plugin runtime abstraction (Phase 6+8)
 │   ├── mod.rs       # PluginRuntime trait, RuntimeError, RuntimeLimits
 │   ├── builtin.rs   # BuiltinRuntime for native Rust handlers (Phase 8)
@@ -726,6 +730,40 @@ First-class runtime for native Rust builtin plugins, alongside `ProcessRuntime` 
 ### Response Type Unification
 
 `codegg_protocol::plugin::PluginResponse` is the single canonical type (re-exported from `plugin/mod.rs`). The local `PluginResponse` in `service.rs` is removed. `PluginDiagnostic` is also unified via re-export from protocol.
+
+## Lifecycle Hooks (Phase 9)
+
+Phase 9 wires plugin lifecycle hooks into core execution paths via a policy-aware dispatcher.
+
+### LifecycleHooks (`src/plugin/lifecycle.rs`)
+
+High-level dispatcher wrapping `PluginService` with policy evaluation. Provides typed methods:
+- `emit_event(EventHookInput)` - observation hook, always fails open
+- `before_tool_execute(ToolBeforeHookInput)` - may block/modify, policy-gated
+- `after_tool_execute(ToolAfterHookInput)` - observation, fails open
+- `transform_messages(MessageTransformInput)` - mutating, returns transformed messages
+- `shell_env(ShellEnvHookInput)` - mutating, returns env additions/removals
+
+### PluginLifecyclePolicy (`src/plugin/policy.rs`)
+
+Controls which hook types and runtimes are allowed:
+- `enable_observation_hooks` (default: true) - Event, After, Config, TextComplete, Compacting
+- `enable_mutating_hooks` (default: false) - MessagesTransform, ShellEnv, ChatParams, etc.
+- `enable_blocking_hooks` (default: false) - ToolExecuteBefore, Auth
+- `allow_process_lifecycle_hooks` (default: false) - Process runtime
+
+### PluginHookOutcome<T>
+
+Typed outcome enum: `Ok(T)`, `Skipped`, `Blocked{reason}`, `Failed{error}`.
+Fail-open/fail-closed behavior is controlled by the policy.
+
+### Integration Points
+
+- `PluginService` is created in `CoreDaemon` and passed via `TurnRunInput`
+- `AgentLoop::set_plugin_service()` wires it into the agent loop
+- Shell env hooks dispatch before process spawn in `ShellRuntime::spawn()`
+- Message transform hooks run before provider calls in `AgentLoop::run()`
+- Pre/post tool hooks and compaction hooks run in `execute_tool_calls()`
 
 ## Built-in Plugin Struct
 

@@ -3183,6 +3183,78 @@ impl AgentLoop {
                 &model_profile,
                 ContextPackObservationPhase::BeforeProviderCall,
             );
+
+            // Dispatch message transform hook before provider call.
+            if let Some(ref plugin_svc) = self.plugin_service {
+                use crate::plugin::lifecycle::{
+                    LifecycleHooks, MessageTransformInput, PluginHookOutcome,
+                };
+                let transform_input = MessageTransformInput {
+                    messages: request
+                        .messages
+                        .iter()
+                        .map(|m| {
+                            match m {
+                                Message::System { content } => serde_json::json!({"role": "system", "content": content}),
+                                Message::User { content } => serde_json::json!({"role": "user", "content": content.iter().map(|p| match p {
+                                    ContentPart::Text { text } => serde_json::json!({"type": "text", "text": text}),
+                                    _ => serde_json::json!({"type": "unknown"}),
+                                }).collect::<Vec<_>>()}),
+                                Message::Assistant { content, tool_calls } => {
+                                    let mut json = serde_json::json!({
+                                        "role": "assistant",
+                                        "content": content.iter().map(|p| match p {
+                                            ContentPart::Text { text } => serde_json::json!({"type": "text", "text": text}),
+                                            _ => serde_json::json!({"type": "unknown"}),
+                                        }).collect::<Vec<_>>()
+                                    });
+                                    if !tool_calls.is_empty() {
+                                        json["tool_calls"] = serde_json::json!(tool_calls.iter().map(|tc| {
+                                            serde_json::json!({
+                                                "id": tc.id,
+                                                "name": tc.name,
+                                                "arguments": tc.arguments
+                                            })
+                                        }).collect::<Vec<_>>());
+                                    }
+                                    json
+                                },
+                                Message::Tool { tool_call_id, content } => serde_json::json!({
+                                    "role": "tool",
+                                    "tool_call_id": tool_call_id,
+                                    "content": content
+                                }),
+                            }
+                        })
+                        .collect(),
+                    session_id: Some(self.session_id.clone()),
+                    model: Some(request.model.clone()),
+                    agent: None,
+                };
+                let hooks = LifecycleHooks::new(
+                    plugin_svc.clone(),
+                    crate::plugin::policy::PluginLifecyclePolicy::default(),
+                );
+                match hooks.transform_messages(transform_input).await {
+                    PluginHookOutcome::Ok(output) => {
+                        // Only apply if the hook returned messages.
+                        if !output.messages.is_empty() {
+                            let transformed =
+                                crate::protocol_conversions::dtos_to_provider_messages(
+                                    output.messages,
+                                );
+                            if !transformed.is_empty() {
+                                request.messages = transformed;
+                            }
+                        }
+                    }
+                    PluginHookOutcome::Failed { error } => {
+                        tracing::warn!("message transform hook failed: {}", error);
+                    }
+                    _ => {}
+                }
+            }
+
             harden_history(&mut request.messages);
 
             let events = match self.stream_with_retry(&request).await {

@@ -34,6 +34,8 @@ src/plugin/
 ├── tui.rs              # TuiPluginRegistry, TuiRoute, TuiComponent
 ├── event_bus.rs        # PluginEventBus, PluginEventSubscription
 ├── marketplace.rs      # Plugin marketplace integration
+├── lifecycle.rs        # LifecycleHooks, typed hook I/O contracts (Phase 9)
+├── policy.rs           # PluginLifecyclePolicy, hook gating and fail-open/fail-closed (Phase 9)
 ├── runtime/            # Plugin runtime abstraction (Phase 6)
 │   ├── mod.rs          # PluginRuntime trait, RuntimeError, RuntimeLimits
 │   ├── process.rs      # ProcessRuntime implementation
@@ -237,6 +239,57 @@ impl HookResult {
 }
 ```
 
+### PluginLifecyclePolicy (Phase 9)
+
+Controls which hook types are allowed, which runtimes are allowed, and fail-open/fail-closed behavior:
+
+```rust
+pub struct PluginLifecyclePolicy {
+    pub enable_observation_hooks: bool,     // Event, After, Config, TextComplete, Compacting
+    pub enable_mutating_hooks: bool,        // MessagesTransform, ShellEnv, ChatParams, ChatHeaders, Provider, ToolDefinition
+    pub enable_blocking_hooks: bool,        // ToolExecuteBefore, Auth
+    pub allow_process_lifecycle_hooks: bool, // Allow process runtime for lifecycle hooks
+    pub fail_open: bool,                    // true = skip failed hooks, false = fail the operation
+}
+```
+
+Default is conservative: observation enabled, mutating/blocking disabled, process disabled.
+
+### LifecycleHooks (Phase 9)
+
+High-level dispatcher that wraps `PluginService` with policy evaluation. Provides typed methods for each hook type:
+
+```rust
+pub struct LifecycleHooks {
+    service: Arc<PluginService>,
+    policy: PluginLifecyclePolicy,
+}
+
+impl LifecycleHooks {
+    pub fn new(service: Arc<PluginService>, policy: PluginLifecyclePolicy) -> Self;
+    pub async fn emit_event(&self, input: EventHookInput) -> PluginHookOutcome<()>;
+    pub async fn before_tool_execute(&self, input: ToolExecuteBeforeInput) -> PluginHookOutcome<ToolExecuteBeforeOutput>;
+    pub async fn after_tool_execute(&self, input: ToolExecuteAfterInput) -> PluginHookOutcome<()>;
+    pub async fn transform_messages(&self, input: MessagesTransformInput) -> PluginHookOutcome<MessagesTransformOutput>;
+    pub async fn shell_env(&self, input: ShellEnvInput) -> PluginHookOutcome<ShellEnvOutput>;
+}
+```
+
+Each method checks policy via `policy.is_hook_allowed(hook_type)`, serializes typed input to JSON, dispatches through `PluginService`, and converts `HookResult` to `PluginHookOutcome<T>`.
+
+### PluginHookOutcome<T> (Phase 9)
+
+Outcome enum for typed return values from lifecycle hooks:
+
+```rust
+pub enum PluginHookOutcome<T> {
+    Ok(T),              // Hook succeeded with transformed output
+    Skipped,            // Hook was skipped (policy denied or no hooks registered)
+    Blocked { reason: String },  // Hook blocked the operation
+    Failed { error: String },    // Hook execution failed (fail-open policy skips, fail-closed propagates)
+}
+```
+
 ## Components
 
 ### loader.rs - WASM Loading and Fuel Tracking (Legacy Shim)
@@ -341,6 +394,8 @@ impl PluginService {
     pub async fn dispatch_messages_transform(&self, input: serde_json::Value) -> HookResult;
 }
 ```
+
+> **Note**: Phase 9 adds `LifecycleHooks` in `lifecycle.rs` as a policy-aware wrapper around these dispatch methods. New code should prefer `LifecycleHooks` over calling `dispatch_*` directly.
 
 **PluginResponse (Phase 5):**
 
@@ -1139,6 +1194,38 @@ Each builtin module (`copilot.rs`, `gitlab.rs`, `codex.rs`, `poe.rs`) exports:
 ### Acceptance
 
 Builtins now register through the unified plugin registry with `runtime = Builtin` and dispatch through `BuiltinRuntime` (or fallback to direct `builtin_hook_handler()` lookup when no runtime is provided).
+
+## Lifecycle Hooks (Phase 9)
+
+Phase 9 wires plugin lifecycle hooks into the core execution paths where they matter: provider/auth resolution, tool execution before/after, chat params/headers, message transforms, session compaction, shell env, and event publication.
+
+### Key Additions
+
+- `lifecycle.rs`: `LifecycleHooks` dispatcher with typed I/O contracts for each hook type
+- `policy.rs`: `PluginLifecyclePolicy` for gating hook execution by type and runtime
+- `PluginService` is now created and wired into `AgentLoop` via `TurnRunInput`
+- Shell env hooks are dispatched before process spawn in `ShellRuntime`
+- Message transform hooks run before provider calls in the agent loop
+- Pre/post tool hooks and compaction hooks were already wired but now active
+
+### Policy Defaults
+
+| Hook Category | Default | Policy Field |
+|---------------|---------|--------------|
+| Observation (Event, After, Config, TextComplete, Compacting) | Enabled | `enable_observation_hooks` |
+| Mutating (MessagesTransform, ShellEnv, ChatParams, ChatHeaders, Provider, ToolDefinition) | Disabled | `enable_mutating_hooks` |
+| Blocking (ToolExecuteBefore, Auth) | Disabled | `enable_blocking_hooks` |
+| Process runtime | Disabled | `allow_process_lifecycle_hooks` |
+
+### Hook Pipeline
+
+1. Caller creates typed input (e.g., `EventHookInput`)
+2. `LifecycleHooks` checks `policy.is_hook_allowed(hook_type)` → returns `Skipped` if denied
+3. Input is serialized to JSON
+4. `PluginService::dispatch_hook()` iterates registered hooks by priority
+5. Each hook is dispatched through the appropriate runtime (Builtin, WASM, Process)
+6. Results are threaded through (pipeline pattern: each hook's output becomes next hook's input)
+7. Final `HookResult` is converted to `PluginHookOutcome<T>` using fail-open/fail-closed policy
 
 ## See Also
 

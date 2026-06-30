@@ -112,6 +112,9 @@ pub struct TurnRunInput {
     /// When present, the runtime collects an `LspContextPacket`
     /// using the production evidence adapter and renders it.
     pub lsp_context_input: Option<LspAgentContextInput>,
+    /// Shared plugin service for lifecycle hook dispatch.
+    /// `None` when plugin system is disabled.
+    pub plugin_service: Option<Arc<crate::plugin::service::PluginService>>,
 }
 
 /// Minimal output from a turn execution.
@@ -167,6 +170,7 @@ impl TurnRuntime for DefaultTurnRuntime {
             turn_id,
             lsp_service,
             lsp_context_input,
+            plugin_service,
         } = input;
 
         // ── Provider resolution ──────────────────────────────────────
@@ -295,6 +299,11 @@ impl TurnRuntime for DefaultTurnRuntime {
         let runtime_provider = crate::agent::agent_loop_factory::DefaultAgentLoopFactory;
         let mut agent_loop = runtime_provider.build_agent_loop(agent_loop_input);
         agent_loop.load_persisted_todos().await;
+
+        // ── Plugin service ────────────────────────────────────────────
+        if let Some(plugin_svc) = plugin_service {
+            agent_loop.set_plugin_service(plugin_svc);
+        }
 
         // ── Chat request ─────────────────────────────────────────────
         let request = ChatRequest {

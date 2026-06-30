@@ -550,6 +550,7 @@ impl CoreDaemon {
 
                 // Delegate to the injected turn runtime which handles tool
                 // registry, agent loop construction, and background spawning.
+                let plugin_service = crate::plugin::create_default_plugin_service().await;
                 let turn_input = crate::agent::turn_runtime::TurnRunInput {
                     session_id: session_id.clone(),
                     agents_dto: agents,
@@ -565,6 +566,7 @@ impl CoreDaemon {
                     turn_id: turn_id.clone(),
                     lsp_service: self.deps.lsp_service.clone(),
                     lsp_context_input: None,
+                    plugin_service,
                 };
                 let turn_output = self.deps.turn_runtime.run_turn(turn_input).await?;
 
