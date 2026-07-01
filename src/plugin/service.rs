@@ -215,7 +215,10 @@ impl PluginService {
                 let spec = spec.ok_or_else(|| {
                     PluginError::Runtime("failed to extract process runtime spec".to_string())
                 })?;
-                let runtime = ProcessRuntime::new(spec, RuntimeLimits::default());
+                let mut runtime = ProcessRuntime::new(spec, RuntimeLimits::default());
+                if let Some(ref policy) = self.policy {
+                    runtime = runtime.with_env_policy(policy.permissions.clone());
+                }
                 runtime
                     .invoke(invocation)
                     .await
@@ -238,6 +241,18 @@ impl PluginService {
                         *memory_max_mb,
                         *fuel_per_call,
                     );
+                    if let Some(ref policy) = self.policy {
+                        if let Err(e) = crate::plugin::install::validate_wasm_module_path(
+                            &spec.module_path,
+                            &plugin_dir,
+                            &policy.install,
+                        ) {
+                            return Err(PluginError::Runtime(format!(
+                                "WASM module path policy violation: {}",
+                                e
+                            )));
+                        }
+                    }
                     let runtime = WasmRuntime::with_defaults(spec);
                     runtime
                         .invoke(invocation)
