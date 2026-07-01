@@ -569,5 +569,72 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
         TuiCommand::PluginUiEffect { effect } => {
             apply_plugin_ui_effect(app, effect);
         }
+        TuiCommand::PluginList => {
+            crate::tui::commands::plugin_management::show_plugins(app);
+        }
+        TuiCommand::PluginInfo { selector } => {
+            crate::tui::commands::plugin_management::show_plugin_info(app, &selector);
+        }
+        TuiCommand::PluginEnable { selector } => {
+            crate::tui::commands::plugin_management::enable_plugin(app, &selector);
+        }
+        TuiCommand::PluginDisable { selector } => {
+            crate::tui::commands::plugin_management::disable_plugin(app, &selector);
+        }
+        TuiCommand::PluginDoctor { selector } => {
+            crate::tui::commands::plugin_management::doctor_plugin(
+                app,
+                selector.as_deref(),
+            );
+        }
+        TuiCommand::PluginRemove { selector } => {
+            crate::tui::commands::plugin_management::remove_plugin(app, &selector);
+        }
+        TuiCommand::PluginInstall { path } => {
+            crate::tui::commands::plugin_management::install_plugin(app, &path);
+        }
+        TuiCommand::PluginListFinished { lines, error } => {
+            crate::tui::commands::plugin_management::apply_plugin_list_finished(
+                app, lines, error,
+            );
+        }
+        TuiCommand::PluginInfoFinished {
+            plugin_id,
+            lines,
+            error,
+        } => {
+            crate::tui::commands::plugin_management::apply_plugin_info_finished(
+                app, plugin_id, lines, error,
+            );
+        }
+        TuiCommand::PluginEnableFinished { plugin_id, error } => {
+            crate::tui::commands::plugin_management::apply_plugin_enable_finished(
+                app, plugin_id, error,
+            );
+        }
+        TuiCommand::PluginDisableFinished { plugin_id, error } => {
+            crate::tui::commands::plugin_management::apply_plugin_disable_finished(
+                app, plugin_id, error,
+            );
+        }
+        TuiCommand::PluginDoctorFinished { lines, error } => {
+            crate::tui::commands::plugin_management::apply_plugin_doctor_finished(
+                app, lines, error,
+            );
+        }
+        TuiCommand::PluginRemoveFinished { plugin_id, error } => {
+            crate::tui::commands::plugin_management::apply_plugin_remove_finished(
+                app, plugin_id, error,
+            );
+        }
+        TuiCommand::PluginInstallFinished {
+            source,
+            lines,
+            error,
+        } => {
+            crate::tui::commands::plugin_management::apply_plugin_install_finished(
+                app, source, lines, error,
+            );
+        }
     }
 }

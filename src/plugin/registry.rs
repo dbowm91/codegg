@@ -203,6 +203,69 @@ impl PluginRegistry {
         self.plugins.read().await.get(id).cloned()
     }
 
+    /// Resolve a plugin selector (id, name, or prefix) to a PluginInfo.
+    ///
+    /// Resolution order:
+    /// 1. Exact plugin id match
+    /// 2. Exact manifest name match
+    /// 3. Unique prefix match on id (case-insensitive)
+    /// 4. Unique prefix match on name (case-insensitive)
+    /// 5. Error on none or ambiguous
+    pub async fn resolve_plugin_selector(
+        &self,
+        selector: &str,
+    ) -> Result<PluginInfo, PluginRegistryError> {
+        let plugins = self.plugins.read().await;
+        let selector_lower = selector.to_lowercase();
+
+        // 1. Exact id match
+        if let Some(info) = plugins.get(selector) {
+            return Ok(info.clone());
+        }
+
+        // 2. Exact name match
+        for info in plugins.values() {
+            if info.manifest.name.eq_ignore_ascii_case(selector) {
+                return Ok(info.clone());
+            }
+        }
+
+        // 3. Unique prefix match on id
+        let id_matches: Vec<&PluginInfo> = plugins
+            .values()
+            .filter(|p| p.id.to_lowercase().starts_with(&selector_lower))
+            .collect();
+        if id_matches.len() == 1 {
+            return Ok(id_matches[0].clone());
+        }
+        if id_matches.len() > 1 {
+            return Err(PluginRegistryError::NotFound(format!(
+                "ambiguous selector '{}': matches {} plugins",
+                selector,
+                id_matches.len()
+            )));
+        }
+
+        // 4. Unique prefix match on name
+        let name_matches: Vec<&PluginInfo> = plugins
+            .values()
+            .filter(|p| p.manifest.name.to_lowercase().starts_with(&selector_lower))
+            .collect();
+        if name_matches.len() == 1 {
+            return Ok(name_matches[0].clone());
+        }
+        if name_matches.len() > 1 {
+            return Err(PluginRegistryError::NotFound(format!(
+                "ambiguous selector '{}': matches {} plugins",
+                selector,
+                name_matches.len()
+            )));
+        }
+
+        // 5. No match
+        Err(PluginRegistryError::NotFound(selector.to_string()))
+    }
+
     pub async fn list(&self) -> Vec<PluginInfo> {
         self.plugins.read().await.values().cloned().collect()
     }
@@ -227,7 +290,7 @@ impl PluginRegistry {
     }
 
     pub async fn set_enabled(
-        &mut self,
+        &self,
         id: &str,
         enabled: bool,
     ) -> Result<(), PluginRegistryError> {

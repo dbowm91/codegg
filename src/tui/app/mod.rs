@@ -456,6 +456,69 @@ pub enum TuiCommand {
     PluginUiEffect {
         effect: crate::protocol::ui::UiEffect,
     },
+    /// List all registered plugins.
+    PluginList,
+    /// Show detailed info for a single plugin.
+    PluginInfo {
+        selector: String,
+    },
+    /// Enable a plugin by selector.
+    PluginEnable {
+        selector: String,
+    },
+    /// Disable a plugin by selector.
+    PluginDisable {
+        selector: String,
+    },
+    /// Run diagnostic checks on a plugin (or all plugins).
+    PluginDoctor {
+        selector: Option<String>,
+    },
+    /// Remove (uninstall) a local plugin by selector.
+    PluginRemove {
+        selector: String,
+    },
+    /// Install a plugin from a local path.
+    PluginInstall {
+        path: String,
+    },
+    /// Completion: plugin list has been fetched from the marketplace.
+    PluginListFinished {
+        lines: Vec<String>,
+        error: Option<String>,
+    },
+    /// Completion: plugin info has been fetched.
+    PluginInfoFinished {
+        plugin_id: String,
+        lines: Vec<String>,
+        error: Option<String>,
+    },
+    /// Completion: a plugin enable operation has finished.
+    PluginEnableFinished {
+        plugin_id: String,
+        error: Option<String>,
+    },
+    /// Completion: a plugin disable operation has finished.
+    PluginDisableFinished {
+        plugin_id: String,
+        error: Option<String>,
+    },
+    /// Completion: plugin diagnostics have finished.
+    PluginDoctorFinished {
+        lines: Vec<String>,
+        error: Option<String>,
+    },
+    /// Completion: a plugin remove operation has finished.
+    PluginRemoveFinished {
+        plugin_id: String,
+        error: Option<String>,
+    },
+    /// Completion: a plugin install operation has finished.
+    PluginInstallFinished {
+        source: String,
+        lines: Vec<String>,
+        error: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -6166,6 +6229,94 @@ impl App {
                             .toasts
                             .warning("Usage: /shell-show <id|last>");
                     }
+                }
+            }
+            "/plugins" | "/plugin-list" | "/plugin-ls" => {
+                crate::tui::commands::plugin_management::show_plugins(self);
+            }
+            "/plugin-info" => {
+                let query = self.dialog_state.command_palette.query.clone();
+                let args = query
+                    .split_once(' ')
+                    .map(|x| x.1)
+                    .unwrap_or("")
+                    .trim();
+                if args.is_empty() {
+                    self.messages_state
+                        .toasts
+                        .warning("Usage: /plugin-info <plugin-id-or-name>");
+                } else {
+                    crate::tui::commands::plugin_management::show_plugin_info(self, args);
+                }
+            }
+            "/plugin-enable" => {
+                let query = self.dialog_state.command_palette.query.clone();
+                let args = query
+                    .split_once(' ')
+                    .map(|x| x.1)
+                    .unwrap_or("")
+                    .trim();
+                if args.is_empty() {
+                    self.messages_state
+                        .toasts
+                        .warning("Usage: /plugin-enable <plugin-id-or-name>");
+                } else {
+                    crate::tui::commands::plugin_management::enable_plugin(self, args);
+                }
+            }
+            "/plugin-disable" => {
+                let query = self.dialog_state.command_palette.query.clone();
+                let args = query
+                    .split_once(' ')
+                    .map(|x| x.1)
+                    .unwrap_or("")
+                    .trim();
+                if args.is_empty() {
+                    self.messages_state
+                        .toasts
+                        .warning("Usage: /plugin-disable <plugin-id-or-name>");
+                } else {
+                    crate::tui::commands::plugin_management::disable_plugin(self, args);
+                }
+            }
+            "/plugin-doctor" => {
+                let query = self.dialog_state.command_palette.query.clone();
+                let args = query
+                    .split_once(' ')
+                    .map(|x| x.1)
+                    .unwrap_or("")
+                    .trim();
+                let query_opt = if args.is_empty() { None } else { Some(args) };
+                crate::tui::commands::plugin_management::doctor_plugin(self, query_opt);
+            }
+            "/plugin-remove" => {
+                let query = self.dialog_state.command_palette.query.clone();
+                let args = query
+                    .split_once(' ')
+                    .map(|x| x.1)
+                    .unwrap_or("")
+                    .trim();
+                if args.is_empty() {
+                    self.messages_state
+                        .toasts
+                        .warning("Usage: /plugin-remove <plugin-id-or-name>");
+                } else {
+                    crate::tui::commands::plugin_management::remove_plugin(self, args);
+                }
+            }
+            "/plugin-install" => {
+                let query = self.dialog_state.command_palette.query.clone();
+                let args = query
+                    .split_once(' ')
+                    .map(|x| x.1)
+                    .unwrap_or("")
+                    .trim();
+                if args.is_empty() {
+                    self.messages_state
+                        .toasts
+                        .warning("Usage: /plugin-install <path>");
+                } else {
+                    crate::tui::commands::plugin_management::install_plugin(self, args);
                 }
             }
             _ => {}

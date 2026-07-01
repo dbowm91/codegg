@@ -304,6 +304,21 @@ impl CommandRegistry {
                 .with_description("Ask about shell output (args: <id|last> <question>)"),
             Command::new("/tui-stats", CommandCategory::System, None)
                 .with_description("Show TUI runtime diagnostics"),
+            Command::new("/plugins", CommandCategory::System, None)
+                .with_aliases(&["/plugin-list", "/plugin-ls"])
+                .with_description("List installed and built-in plugins"),
+            Command::new("/plugin-info", CommandCategory::System, None)
+                .with_description("Show plugin runtime, capabilities, trust, and diagnostics (args: <plugin-id-or-name>)"),
+            Command::new("/plugin-enable", CommandCategory::System, None)
+                .with_description("Enable a plugin (args: <plugin-id-or-name>)"),
+            Command::new("/plugin-disable", CommandCategory::System, None)
+                .with_description("Disable a plugin (args: <plugin-id-or-name>)"),
+            Command::new("/plugin-doctor", CommandCategory::System, None)
+                .with_description("Diagnose plugin configuration and runtime health (args: [plugin-id-or-name])"),
+            Command::new("/plugin-remove", CommandCategory::System, None)
+                .with_description("Remove a local installed plugin (args: <plugin-id-or-name>)"),
+            Command::new("/plugin-install", CommandCategory::System, None)
+                .with_description("Install a plugin from a local path (args: <path>)"),
         ]
     }
 
@@ -495,7 +510,7 @@ mod tests {
 
     #[test]
     fn built_in_command_count_matches_release_docs() {
-        assert_eq!(CommandRegistry::built_in_commands().len(), 96);
+        assert_eq!(CommandRegistry::built_in_commands().len(), 103);
     }
 
     #[test]

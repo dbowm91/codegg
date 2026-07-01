@@ -990,3 +990,37 @@ Four correctness fixes close gaps in the plugin UI/runtime integration:
    `registry_does_not_use_try_read_as_code` prevents the bug from
    being reintroduced.
 - **`degrade_node_to_text()`** converts unsupported `UiNode` variants to plain text for frontends that lack full rendering support.
+
+### Phase 12: Plugin Management UX
+
+First-class slash commands for local plugin management and observability.
+
+**Files added:**
+- `src/plugin/management.rs` — `PluginManager`, `PluginManagementView`, `PluginDoctorReport`, `resolve_plugin_selector()`
+- `src/plugin/management_ui.rs` — `plugins_table()`, `plugin_info_node()`, `doctor_report_node()` returning `UiNode`
+- `src/tui/commands/plugin_management.rs` — TUI command handlers
+
+**Commands:**
+| Command | Description |
+|---------|-------------|
+| `/plugins` (aliases `/plugin-list`, `/plugin-ls`) | List installed and built-in plugins |
+| `/plugin-info <id>` | Show plugin runtime, capabilities, trust, diagnostics |
+| `/plugin-enable <id>` | Enable a plugin |
+| `/plugin-disable <id>` | Disable a plugin |
+| `/plugin-doctor [id]` | Diagnose plugin configuration and runtime health |
+| `/plugin-remove <id>` | Remove a local installed plugin |
+| `/plugin-install <path>` | Install a plugin from a local path |
+
+**Selector resolution order:**
+1. Exact plugin id
+2. Exact manifest name
+3. Unique prefix match on id (case-insensitive)
+4. Unique prefix match on name (case-insensitive)
+
+**Safety semantics:**
+- Enable/disable persists to `disabled_plugins.json` in the plugins directory
+- Remove only deletes from the canonical plugin install directory
+- Install validates manifests before copying and refuses to overwrite existing plugins
+- Doctor checks are read-only and never execute plugin code
+
+**Key types:** `PluginManager`, `PluginManagementView`, `PluginDoctorReport`

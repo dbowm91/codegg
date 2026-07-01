@@ -1284,6 +1284,51 @@ Phase 9 wires plugin lifecycle hooks into the core execution paths where they ma
 6. Results are threaded through (pipeline pattern: each hook's output becomes next hook's input)
 7. Final `HookResult` is converted to `PluginHookOutcome<T>` using fail-open/fail-closed policy
 
+## Phase 12: Plugin Management UX
+
+First-class plugin management commands and UI surfaces for local observability and controlled management.
+
+### Files
+
+- `src/plugin/management.rs` — `PluginManager`, `PluginManagementView`, `PluginDoctorReport`, `resolve_plugin_selector()`
+- `src/plugin/management_ui.rs` — `plugins_table()`, `plugin_info_node()`, `doctor_report_node()` returning `UiNode`
+- `src/tui/commands/plugin_management.rs` — TUI command handlers
+
+### Commands
+
+| Command | Description |
+|---------|-------------|
+| `/plugins` | List installed and built-in plugins |
+| `/plugin-info <id>` | Show plugin runtime, capabilities, trust, diagnostics |
+| `/plugin-enable <id>` | Enable a plugin |
+| `/plugin-disable <id>` | Disable a plugin |
+| `/plugin-doctor [id]` | Diagnose plugin configuration and runtime health |
+| `/plugin-remove <id>` | Remove a local installed plugin |
+| `/plugin-install <path>` | Install a plugin from a local path |
+
+### Selector Resolution
+
+Plugins can be referenced by:
+1. Exact plugin id
+2. Exact manifest name
+3. Unique prefix match on id (case-insensitive)
+4. Unique prefix match on name (case-insensitive)
+
+Ambiguous or missing selectors produce clear error messages.
+
+### Safety
+
+- Enable/disable persists to `disabled_plugins.json` in the plugins directory
+- Remove only deletes from the canonical plugin install directory
+- Install validates manifests before copying and refuses to overwrite existing plugins
+- Doctor checks are read-only and never execute plugin code
+
+### Tests
+
+- 19 management tests (selector resolution, view construction, doctor checks)
+- 6 management_ui tests (table rendering, key-value, doctor reports)
+- 16 TUI plugin management tests (format helpers, resolve, persistence)
+
 ## See Also
 
 - [hooks.md](hooks.md) - External hooks system

@@ -254,3 +254,26 @@ Builtin plugins that declare a command capability but do not provide a
 runtime command handler will fail at `PluginService::invoke_command` with
 a `PluginError::Runtime` rather than silently returning a success
 placeholder.
+
+## Plugin Management Commands
+
+First-class slash commands for local plugin management:
+
+- `/plugins` — List all installed and built-in plugins with status and capability summary
+- `/plugin-info <id>` — Show detailed plugin info (runtime, capabilities, trust, permissions, diagnostics)
+- `/plugin-enable <id>` — Enable a plugin (persisted to disabled_plugins.json)
+- `/plugin-disable <id>` — Disable a plugin (persisted to disabled_plugins.json)
+- `/plugin-doctor [id]` — Run diagnostic checks on plugin configuration and health
+- `/plugin-remove <id>` — Remove a locally installed plugin (safe: only from plugin install dir)
+- `/plugin-install <path>` — Install a plugin from a local directory path
+
+### Selector Resolution
+
+Plugin selectors resolve in order: exact id → exact name → unique id prefix → unique name prefix. Ambiguous matches produce clear error messages.
+
+### Safety
+
+- Enable/disable state persists across sessions
+- Remove only deletes from the canonical plugin directory (`~/.local/share/codegg/plugins/`)
+- Install validates manifest.toml before copying and rejects invalid manifests
+- Doctor checks are read-only and never execute plugin code by default

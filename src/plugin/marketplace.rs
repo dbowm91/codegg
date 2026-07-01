@@ -47,37 +47,34 @@ impl MarketplaceService {
 
     pub async fn list_local_plugins(&self) -> Vec<MarketplacePlugin> {
         let mut plugins = Vec::new();
-        let read_dir = match tokio::fs::read_dir(&self.plugins_dir).await {
+        let mut read_dir = match tokio::fs::read_dir(&self.plugins_dir).await {
             Ok(d) => d,
             Err(_) => return plugins,
         };
 
-        let mut entries = tokio_stream::StreamExt::buffered(read_dir, 16);
-        while let Some(entry_result) = tokio_stream::StreamExt::next(&mut entries).await {
-            if let Ok(entry) = entry_result {
-                let path = entry.path();
-                if path.is_dir() {
-                    let manifest_path = path.join("manifest.toml");
-                    if manifest_path.exists() {
-                        if let Ok(content) = tokio::fs::read_to_string(&manifest_path).await {
-                            if let Ok(manifest) =
-                                toml::from_str::<crate::plugin::manifest::PluginManifest>(&content)
-                            {
-                                plugins.push(MarketplacePlugin {
-                                    id: manifest.name.clone(),
-                                    name: manifest.name,
-                                    version: manifest.version,
-                                    description: manifest.description,
-                                    author: manifest.author,
-                                    homepage: manifest.homepage,
-                                    tier: PluginTier::Personal,
-                                    hooks: manifest
-                                        .hooks
-                                        .iter()
-                                        .map(|h| h.hook_type.clone())
-                                        .collect(),
-                                });
-                            }
+        while let Some(entry_result) = read_dir.next_entry().await.unwrap_or(None) {
+            let path = entry_result.path();
+            if path.is_dir() {
+                let manifest_path = path.join("manifest.toml");
+                if manifest_path.exists() {
+                    if let Ok(content) = tokio::fs::read_to_string(&manifest_path).await {
+                        if let Ok(manifest) =
+                            toml::from_str::<crate::plugin::manifest::PluginManifest>(&content)
+                        {
+                            plugins.push(MarketplacePlugin {
+                                id: manifest.name.clone(),
+                                name: manifest.name,
+                                version: manifest.version,
+                                description: manifest.description,
+                                author: manifest.author,
+                                homepage: manifest.homepage,
+                                tier: PluginTier::Personal,
+                                hooks: manifest
+                                    .hooks
+                                    .iter()
+                                    .map(|h| h.hook_type.clone())
+                                    .collect(),
+                            });
                         }
                     }
                 }
