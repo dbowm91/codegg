@@ -1844,15 +1844,11 @@ impl App {
                     .map(|sid| sid == current_session)
                     .unwrap_or(true);
                 if matches_session {
-                    let result =
-                        self.apply_plugin_ui_effect(effect, Some(&plugin_id));
-                    if let crate::tui::app::state::PluginUiApplyResult::ChatRequested = result {
-                        tracing::debug!(
-                            target: "codegg::tui::events",
-                            plugin_id,
-                            "EmitChat effect received (deferred to Phase 3)"
-                        );
-                    }
+                    // EmitChat is now rendered visibly by the App-level
+                    // effect handler (toast / info dialog). We discard
+                    // the return value because callers do not need to
+                    // take further action.
+                    let _ = self.apply_plugin_ui_effect(effect, Some(&plugin_id));
                 }
             }
             _ => {
@@ -7136,10 +7132,24 @@ impl App {
                 };
                 return PluginUiApplyResult::ToastRequested;
             }
-            UiEffect::EmitChat { .. } => {
-                // EmitChat routing is deferred to Phase 3 when agent
-                // integration provides a chat seam.
-                return PluginUiApplyResult::ChatRequested;
+            UiEffect::EmitChat { block } => {
+                // EmitChat is now rendered visibly in the TUI. Both
+                // ChatFormat::Plain and ChatFormat::Markdown are lowered to
+                // line-based text so they never execute embedded escape
+                // sequences or markdown links. Output is shown via the
+                // toast/info-dialog surface: short blocks toast, long
+                // blocks open the scrollable info dialog. This output is
+                // NOT added to the model-visible chat transcript — it is a
+                // user-facing display surface only.
+                let lines: Vec<String> = block.content.lines().map(|s| s.to_string()).collect();
+                if lines.is_empty() {
+                    return PluginUiApplyResult::Ignored;
+                }
+                self.show_short_or_info(
+                    crate::tui::components::dialogs::info::InfoType::Stats,
+                    lines,
+                );
+                return PluginUiApplyResult::ChatApplied;
             }
             _ => {}
         }
@@ -11949,8 +11959,8 @@ mod remote_protocol_tests {
     use super::*;
     use crate::protocol::tui::{TuiMessage as RemoteTuiMessage, REMOTE_TUI_PROTOCOL_VERSION};
     use crate::protocol::ui::{
-        DialogSpec, PanelPlacement, PanelSpec, StatusItemSpec, StatusPlacement, UiEffect, UiNode,
-        TextNode,
+        DialogSpec, PanelPlacement, PanelSpec, StatusItemSpec, StatusPlacement, TextNode, UiEffect,
+        UiNode,
     };
 
     #[test]
@@ -12232,7 +12242,9 @@ mod remote_protocol_tests {
         });
         app.handle_remote_event(event);
         assert!(
-            app.plugin_ui_state.get_dialog("test-plugin:test-dlg").is_some(),
+            app.plugin_ui_state
+                .get_dialog("test-plugin:test-dlg")
+                .is_some(),
             "dialog should be in plugin_ui_state after applying remote PluginUiEffect"
         );
     }
@@ -12284,7 +12296,9 @@ mod remote_protocol_tests {
         });
         app.handle_remote_event(event);
         assert!(
-            app.plugin_ui_state.get_dialog("test-plugin:any-session-dlg").is_some(),
+            app.plugin_ui_state
+                .get_dialog("test-plugin:any-session-dlg")
+                .is_some(),
             "effect with no session filter should apply to any session"
         );
     }
@@ -12340,13 +12354,18 @@ mod remote_protocol_tests {
                     id: "my-plugin:status-1".into(),
                     label: Some("Build".into()),
                     placement: StatusPlacement::Right,
-                    body: UiNode::Text(TextNode { text: "passing".into() }),
+                    body: UiNode::Text(TextNode {
+                        text: "passing".into(),
+                    }),
                 },
             },
             Some("my-plugin"),
         );
         assert_eq!(result, PluginUiApplyResult::Applied);
-        assert!(app.plugin_ui_state.status_items.contains_key("my-plugin:status-1"));
+        assert!(app
+            .plugin_ui_state
+            .status_items
+            .contains_key("my-plugin:status-1"));
     }
 
     #[test]
@@ -12386,18 +12405,19 @@ mod remote_protocol_tests {
     fn unsupported_effect_degrades_to_toast() {
         use crate::tui::app::state::PluginUiApplyResult;
         let mut app = App::new_for_testing("/tmp".into());
-        app.ui_state.plugin_ui_caps =
-            crate::protocol::ui::PluginUiCapabilities {
-                dialog: false,
-                toast: true,
-                ..Default::default()
-            };
+        app.ui_state.plugin_ui_caps = crate::protocol::ui::PluginUiCapabilities {
+            dialog: false,
+            toast: true,
+            ..Default::default()
+        };
         let result = app.apply_plugin_ui_effect(
             UiEffect::OpenDialog {
                 dialog: DialogSpec {
                     id: "my-plugin:dlg".into(),
                     title: "Test Dialog".into(),
-                    body: UiNode::Text(TextNode { text: "content".into() }),
+                    body: UiNode::Text(TextNode {
+                        text: "content".into(),
+                    }),
                     modal: true,
                 },
             },

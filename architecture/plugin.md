@@ -337,17 +337,22 @@ const WASM_HOOK_TIMEOUT: Duration = Duration::from_secs(30);  // 30s timeout for
 const MAX_PLUGIN_FUEL_BUDGET: u64 = 10_000_000;        // 10M initial budget per plugin
 ```
 
-**Fuel Flow** (`loader.rs:222-519`):
+**Fuel Flow** (`src/plugin/runtime/wasm.rs`):
 
-1. **Reserve Fuel** (line 244): `module_cache::CACHE.reserve_fuel(plugin_id, fuel_for_this_call)`
-2. **Execute WASM** with `store.set_fuel(fuel_reserved)`
+1. **Reserve Fuel**: `module_cache::CACHE.reserve_fuel(plugin_id, fuel_for_this_call)`
+   subtracts the full reserved amount from the plugin's budget atomically.
+2. **Execute WASM** with `store.set_fuel(fuel_reserved)`.
 3. **Return Fuel** on:
-   - Normal completion: consumed fuel (reserved - remaining)
-   - Early returns (lines 258, 270, 286, 329, 338, 353, 371, 386, 406, 431): full `fuel_reserved`
-   - Timeout: full `fuel_reserved` (line 510)
-   - WASM execution error: full `fuel_reserved` (line 505)
+   - Normal completion: **unused fuel** (the `remaining` value from
+     `store.get_fuel()`, capped by `fuel_reserved`). The per-plugin budget
+     therefore decreases by exactly the consumed amount.
+   - Error / timeout: full `fuel_reserved` (failed invocations do not burn
+     fuel).
 
-All early error returns at lines 255-285 correctly return fuel before exiting.
+The `return_unused_fuel()` helper centralises the unused-fuel accounting
+and caps the refund at `fuel_reserved` so buggy instrumentation cannot
+over-credit the budget. Tests in `src/plugin/runtime/wasm.rs` and
+`wasm_cache.rs` guard the contract.
 
 ### service.rs - Plugin Service and Hook Dispatch
 
@@ -799,10 +804,14 @@ PluginService::dispatch_hook(ctx)
 2. **During Execution** (`loader.rs:292-293`):
    - Set store fuel: `store.set_fuel(fuel_reserved).ok()`
 
-3. **After Execution** (`loader.rs:496-518`):
-   - On success: `consumed = fuel_reserved - remaining; return_fuel(plugin_id, consumed)`
-   - On error: `return_fuel(plugin_id, fuel_reserved)` (full amount)
-   - On timeout: `return_fuel(plugin_id, fuel_reserved)` (full amount)
+3. **After Execution** (`src/plugin/runtime/wasm.rs`, `return_unused_fuel()`):
+   - On success: **unused fuel** is credited back. The helper computes
+     `unused = remaining.min(reserved)` and calls
+     `cache.return_fuel(plugin_id, unused)`. The per-plugin budget
+     decreases by exactly `reserved - unused` (the consumed amount).
+   - On error: `cache.return_fuel(plugin_id, fuel_reserved)` (full amount)
+     so failed invocations do not burn fuel.
+   - On timeout: `cache.return_fuel(plugin_id, fuel_reserved)` (full amount).
 
 **All Early Return Paths with Fuel Return:**
 - Line 258: metadata read failure
@@ -956,6 +965,18 @@ impl ApiVersion {
 Phase 5 introduces the canonical `PluginManifest` with `api_version`, `runtime`, `capabilities`, and `permissions` fields. The registry is restructured around capability-based registration structs (`PluginCommandRegistration`, `PluginPanelRegistration`, etc.) and the `PluginTrustClass` system. Legacy manifests without `api_version` are accepted and promoted on load.
 
 `crates/codegg-protocol/src/ui.rs` and `crates/codegg-protocol/src/plugin.rs` define frontend-neutral protocol types for plugin UI output and invocation. Phase 2 adds TUI-side consumption: `PluginUiState` (`src/tui/app/state/plugin_ui.rs`) stores plugin dialogs, panels, and status items. `PluginUiRenderer` (`src/tui/components/plugin_renderer.rs`) lowers `UiNode` trees into ratatui widgets and flat text lines. `App::apply_plugin_ui_effect()` centralizes effect routing. A single `Dialog::Plugin` variant handles all plugin dialogs without per-plugin enum entries. Phase 3 adds generic `TuiCommand` plugin variants (`PluginCommandRun`, `PluginCommandFinished`, `PluginUiEffect`) and `src/tui/commands/plugins.rs` with `start_plugin_command`, `apply_plugin_command_finished` (response application), and `apply_plugin_ui_effect` (direct effect dispatch). Phase 4 replaces the stub with real process execution: `start_plugin_command` accepts a `ProcessCommandSpec` and spawns a child process with timeout, output capping, and stdin piping.
+
+**EmitChat visibility (Phase 11):** `App::apply_plugin_ui_effect()`
+handles `UiEffect::EmitChat` directly rather than deferring it. The
+content is rendered to the user via `show_short_or_info()`: short
+blocks (≤3 lines) toast, longer blocks open the scrollable info dialog.
+Both `ChatFormat::Plain` and `ChatFormat::Markdown` are lowered to
+line-based text — markdown links and embedded escape sequences are not
+executed. Output is **not** added to the model-visible chat transcript.
+The lower-level `PluginUiState::apply_effect()` still returns
+`PluginUiApplyResult::ChatRequested` for callers that route effects
+without going through `App`. `PluginUiApplyResult::ChatApplied` is the
+new variant returned by the App-level path.
 
 ### UI Types (`codegg_protocol::ui`)
 
@@ -1138,7 +1159,15 @@ The local `PluginResponse` in `service.rs` is removed. `codegg_protocol::plugin:
 - `PluginRegistry::unregister()` now returns `Option<PluginInfo>` (previously returned `None`)
 - Duplicate command/panel/status checking is global (all registered plugins, not just enabled)
 - `set_enabled(true)` validates that enabling won't create duplicate commands/panels/status widgets
-- `is_enabled_sync` defaults to `false` on lock failure (previously defaulted to `true`)
+- **`enabled_plugin_ids()` snapshot (Phase 11):** Capability queries
+  (`hooks_for`, `command`, `commands`, `panels`, `status_widgets`,
+  `event_subscribers`) and the duplicate checks in `set_enabled()` no
+  longer use `try_read()`. They acquire a single read guard on
+  `plugins` via `enabled_plugin_ids()` to snapshot the set of enabled
+  plugin ids, then filter against that snapshot. Visibility now depends
+  only on actual enabled state, not on lock contention. A structural
+  regression test (`registry_does_not_use_try_read_as_code`) prevents
+  the `try_read()` pattern from being reintroduced.
 
 ### Service Dispatch
 
@@ -1175,13 +1204,25 @@ impl PluginRuntime for BuiltinRuntime {
 
 Two adapter functions bridge the hook handler model with the runtime model:
 
-- **`invocation_to_hook_context()`**: Converts a `PluginInvocation` (with `PluginCapabilityInvocation::Hook` or `Command`) into a `HookContext`, extracting the `HookType` from the capability string.
+- **`invocation_to_hook_context()`**: Converts a `PluginInvocation` (with
+  `PluginCapabilityInvocation::Hook`) into a `HookContext`, extracting the
+  `HookType` from the capability string. **Phase 11 strictness:**
+  rejects `PluginCapabilityInvocation::Command`, `Panel`, `StatusWidget`,
+  `Event`, and unknown hook type strings with `RuntimeError::Unsupported`.
+  The previous `unwrap_or(HookType::Auth)` fallback has been removed.
 - **`hook_result_to_plugin_response()`**: Converts a `HookResult` into a `PluginResponse`, mapping errors to diagnostics and blocked state to `ok: false`.
+
+**Hook-only scope:** `BuiltinRuntime` dispatches only hook invocations.
+There is no builtin command handler registry; builtin plugin
+capabilities must be `PluginCapability::Hook`, not `PluginCapability::Command`.
 
 ### Canonical Sources
 
 - **`builtin_plugin_manifests()`**: Returns `Vec<PluginManifest>` for all four builtins. Each manifest declares `runtime: PluginRuntimeSpec::Builtin { handler }` and hook capabilities. This is the canonical source for builtin metadata.
 - **`builtin_runtime_registry()`**: Builds a `BuiltinHandlerRegistry` populated with all four handlers. The returned registry can be wrapped in `Arc` and passed to `BuiltinRuntime::new()`.
+- **`make_builtin_info()`**: Returns `(PluginInfo, Vec<HookRegistration>)`.
+  **Phase 11:** unknown hook type strings are skipped via `filter_map`
+  rather than silently falling back to `HookType::Auth`.
 
 ### Individual Builtin Modules
 
@@ -1189,23 +1230,27 @@ Each builtin module (`copilot.rs`, `gitlab.rs`, `codex.rs`, `poe.rs`) exports:
 
 - `PLUGIN_ID: &str` — e.g., `"builtin:copilot"`
 - `HANDLER_ID: &str` — e.g., `"copilot"`
-- `manifest() -> PluginManifest` — canonical manifest with `runtime: Builtin { handler }`
+- `manifest() -> PluginManifest` — canonical manifest with `runtime: Builtin { handler }` and `PluginCapability::Hook` (no command capabilities)
 - `handle_hook(HookContext) -> HookResult` — the actual handler
 
 ### Service Integration
 
-`PluginService` accepts an optional `Arc<BuiltinRuntime>` via `with_builtin_runtime()`. When a builtin runtime is present, `invoke_command()` dispatches builtin plugin invocations through `BuiltinRuntime::invoke()` instead of falling back to the legacy `builtin_hook_handler()` lookup.
+`PluginService` accepts an optional `Arc<BuiltinRuntime>` via `with_builtin_runtime()`. When a builtin runtime is present, `invoke_command()` dispatches builtin plugin invocations through `BuiltinRuntime::invoke()`. **Phase 11:** if no builtin runtime is registered, `invoke_command()` for a builtin plugin returns `PluginError::Runtime` instead of a success placeholder. Builtin plugins that declare a command capability but have no command runtime handler will therefore fail loudly rather than silently succeed.
 
 ### Tests
 
 - `builtin_plugin_manifests_declare_builtin_runtime`: All manifests use `PluginRuntimeSpec::Builtin` and `PluginTrustClass::Builtin`.
 - `builtin_runtime_registry_contains_all_handlers`: Registry has entries for all four builtins.
 - `builtin_runtime_registry_handlers_work`: Handlers produce correct `HookResult` output.
+- `builtin_runtime_rejects_command_invocation` (Phase 11): command invocations on the builtin runtime return `RuntimeError::Unsupported`.
+- `builtin_runtime_rejects_unknown_hook_type` (Phase 11): unknown hook type strings are rejected (no Auth fallback).
+- `invocation_to_hook_context_unknown_hook_type_is_rejected` (Phase 11): same guarantee at the adapter layer.
+- `builtin_command_invocation_is_rejected_by_service` (Phase 11): service-level rejection of builtin commands.
 - Unit tests in `runtime/builtin.rs` verify dispatch, unknown handler errors, non-`builtin:` prefix rejection, and adapter function correctness.
 
 ### Acceptance
 
-Builtins now register through the unified plugin registry with `runtime = Builtin` and dispatch through `BuiltinRuntime` (or fallback to direct `builtin_hook_handler()` lookup when no runtime is provided).
+Builtins now register through the unified plugin registry with `runtime = Builtin` and dispatch through `BuiltinRuntime` (or fallback to direct `builtin_hook_handler()` lookup when no runtime is provided). The runtime is hook-only; command invocation against builtin plugins is rejected.
 
 ## Lifecycle Hooks (Phase 9)
 

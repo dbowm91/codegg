@@ -149,10 +149,12 @@ pub fn make_builtin_info(
 
     let registrations: Vec<_> = hook_specs
         .iter()
-        .map(|hs| crate::plugin::hooks::HookRegistration {
-            plugin_id: format!("builtin:{}", name),
-            hook_type: HookType::parse(&hs.hook_type).unwrap_or(HookType::Auth),
-            priority: hs.priority.unwrap_or(0),
+        .filter_map(|hs| {
+            HookType::parse(&hs.hook_type).map(|ht| crate::plugin::hooks::HookRegistration {
+                plugin_id: format!("builtin:{}", name),
+                hook_type: ht,
+                priority: hs.priority.unwrap_or(0),
+            })
         })
         .collect();
 
@@ -317,5 +319,41 @@ mod tests {
             result.output.get("headers").is_some(),
             "response should contain transformed headers"
         );
+    }
+
+    /// `PluginService::invoke_command` for a builtin plugin must reject with
+    /// a runtime error (no builtin command handler exists). This guards
+    /// against the old placeholder-success behavior.
+    #[tokio::test]
+    async fn builtin_command_invocation_is_rejected_by_service() {
+        use crate::plugin::runtime::builtin::{BuiltinHandlerRegistry, BuiltinRuntime};
+        let registry = Arc::new(crate::plugin::registry::PluginRegistry::new());
+        register_builtins(&registry).await;
+
+        let handler_registry = Arc::new(BuiltinHandlerRegistry::new());
+        let builtin_rt = Arc::new(BuiltinRuntime::new(handler_registry));
+
+        let service =
+            crate::plugin::service::PluginService::new(registry).with_builtin_runtime(builtin_rt);
+
+        let result = service
+            .invoke_command("fake-builtin-cmd", vec![], serde_json::json!({}))
+            .await;
+        // Builtins don't currently register any commands, so this should be
+        // CommandNotFound at the registry layer. Either CommandNotFound or
+        // PluginError::Runtime is acceptable; the key invariant is that we
+        // do NOT return a successful placeholder response for builtin commands.
+        match result {
+            Err(crate::plugin::service::PluginError::CommandNotFound(_))
+            | Err(crate::plugin::service::PluginError::Runtime(_)) => {}
+            Ok(resp) => panic!(
+                "builtin command invocation must not silently succeed, got: {:?}",
+                resp
+            ),
+            Err(other) => panic!(
+                "expected CommandNotFound or Runtime error, got: {:?}",
+                other
+            ),
+        }
     }
 }

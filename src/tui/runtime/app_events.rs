@@ -542,15 +542,9 @@ fn handle_single_event(app: &mut App, event: AppEvent) -> bool {
                 .map(|sid| sid == current_session)
                 .unwrap_or(true);
             if matches_session {
-                let result =
-                    app.apply_plugin_ui_effect(effect, Some(&plugin_id));
-                if let crate::tui::app::state::PluginUiApplyResult::ChatRequested = result {
-                    tracing::debug!(
-                        target: "codegg::tui::events",
-                        plugin_id,
-                        "EmitChat effect received (deferred to Phase 3)"
-                    );
-                }
+                // EmitChat is now rendered visibly by the App-level
+                // effect handler. No deferred handling needed.
+                let _ = app.apply_plugin_ui_effect(effect, Some(&plugin_id));
             }
             true
         }

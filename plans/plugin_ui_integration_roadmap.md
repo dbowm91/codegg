@@ -112,7 +112,21 @@ Start with observation and post-action hooks before allowing blocking/mutating h
 
 Extend core or TUI protocol events to carry `UiEffect` payloads so plugin UI can work over socket/stdio/remote frontend paths. Prefer core events for session-scoped plugin UI that should be visible to all subscribed clients.
 
-### Phase 11: Plugin management UX
+### Phase 11: Corrective hardening
+
+Close correctness gaps in the plugin UI/runtime integration before
+expanding into plugin management UX, SDKs, or broader lifecycle-hook
+coverage. See `plans/plugin_ui_corrective_hardening_pass.md` for full
+scope. The four target fixes are:
+
+1. WASM fuel accounting returns unused fuel (not consumed fuel)
+2. `BuiltinRuntime` strictly rejects unsupported invocation types and
+   unknown hook type strings (no Auth fallback)
+3. `EmitChat` effects render visibly in the TUI (toast / info dialog)
+4. `PluginRegistry` capability queries filter against a snapshot of
+   enabled plugin ids; no more `try_read()` fallbacks
+
+### Phase 12: Plugin management UX
 
 Add `/plugins`, `/plugin-install`, `/plugin-enable`, `/plugin-disable`, `/plugin-info`, `/plugin-remove`, and `/plugin-doctor`. Render plugin management through the same `UiNode` renderer.
 

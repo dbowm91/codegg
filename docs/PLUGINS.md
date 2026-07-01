@@ -97,9 +97,13 @@ const FUEL_RESET_INTERVAL_SECS: u64 = 60;         // Reset every 60s
 ```
 
 Fuel is:
-1. Reserved before hook execution
+1. Reserved before hook execution (full amount subtracted from budget)
 2. Consumed during execution (Wasmtime tracks actual fuel usage)
-3. Returned for unused portion after completion
+3. **Unused portion returned to the budget** after completion — never the consumed amount
+
+The fuel budget decreases by exactly the consumed amount per invocation.
+On error, the full reserved amount is returned to the budget so failed
+invocations do not burn fuel.
 
 ### Module Cache
 
@@ -192,7 +196,14 @@ Plugins can emit UI effects through lifecycle hooks and process command response
 | **Dialog** | Modal dialog with title and body | `dialog` |
 | **Panel** | Persistent side panel (Left/Right) | `panel` |
 | **Status Item** | Status bar indicator | `status_item` |
-| **Chat Block** | Inline chat message | `toast` (shares flag) |
+| **Chat Block** | Inline chat message rendered to user (toast for short blocks, info dialog for long blocks) | `toast` (shares flag) |
+
+**Chat Block visibility semantics:** EmitChat effects are rendered visibly
+to the user via the toast / info-dialog surface. They are **not** added to
+the model-visible chat transcript unless a downstream integration
+explicitly promotes them. Both `ChatFormat::Plain` and `ChatFormat::Markdown`
+are lowered to line-based text — markdown links and embedded escape
+sequences are not executed.
 
 Surface IDs are namespaced by plugin ID: `plugin:<plugin-name>:<surface-id>`. Cross-plugin surface ID usage is rejected at apply time.
 
@@ -228,3 +239,18 @@ The `builtin/` directory contains:
 - `codex.rs` - OpenAI Codex integration
 
 Built-in plugins now use `BuiltinRuntime` as a first-class runtime (Phase 8). They register through the unified plugin registry with `runtime = "builtin"` and dispatch through `BuiltinRuntime`, sharing the same invocation path as process and WASM plugins.
+
+**Builtin runtime scope:** `BuiltinRuntime` is **hook-only**. It dispatches
+`PluginCapabilityInvocation::Hook` invocations only. The following are
+explicitly rejected with `RuntimeError::Unsupported`:
+
+- `PluginCapabilityInvocation::Command` (no builtin command handler exists)
+- `PluginCapabilityInvocation::Panel`, `StatusWidget`, `Event`
+- Unknown hook type strings (e.g. `"command"`) — they no longer silently
+  fall back to `HookType::Auth`
+- Plugin IDs that do not start with the `builtin:` prefix
+
+Builtin plugins that declare a command capability but do not provide a
+runtime command handler will fail at `PluginService::invoke_command` with
+a `PluginError::Runtime` rather than silently returning a success
+placeholder.

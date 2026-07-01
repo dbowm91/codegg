@@ -1,7 +1,7 @@
 ---
 name: plugin
-description: Plugin system, WASM execution, hooks, fuel tracking
-version: 1.2.0
+description: Plugin system, WASM execution, hooks, fuel tracking, capability-based registry, runtime abstraction (Process/Wasm/Builtin), EmitChat UI rendering, Phase 11 corrective hardening
+version: 1.3.0
 tags:
   - plugin
   - wasm
@@ -288,13 +288,14 @@ pub async fn execute_wasm_hook(plugin_id: &str, ctx: HookContext) -> HookResult 
         // ...
     }).await;
 
-    // Handle result and return fuel
+    // Handle result and return fuel.
+    //
+    // On success: return UNUSED fuel (`remaining`) — not consumed fuel.
+    // The helper `return_unused_fuel()` caps the refund at `fuel_reserved`
+    // so the budget can never be over-credited past what was reserved.
     match hook_result {
         Ok(Ok((result, remaining))) => {
-            let consumed = fuel_reserved.saturating_sub(remaining);
-            if consumed > 0 {
-                module_cache::CACHE.return_fuel(plugin_id, consumed);
-            }
+            return_unused_fuel(&module_cache::CACHE, plugin_id, fuel_reserved, remaining);
             result
         }
         Ok(Err(e)) => {
@@ -316,6 +317,14 @@ pub async fn execute_wasm_hook(plugin_id: &str, ctx: HookContext) -> HookResult 
 - Hook function names: `on_auth`, `on_provider`, `on_tool_execute_before`, etc.
 - Hook returns JSON: `{"output": {...}, "blocked": false, "error": null}`
 
+**Fuel Accounting (Phase 11):**
+- On successful execution, return the **unused** fuel (`remaining`),
+  capped by the reserved amount. The per-plugin budget therefore
+  decreases by exactly the consumed amount. The `return_unused_fuel()`
+  helper in `src/plugin/runtime/wasm.rs` centralises this.
+- On error / timeout, return the full `fuel_reserved` so failed
+  invocations do not burn fuel.
+
 **Fuel Leak Prevention**:
 The `execute_wasm_hook()` function returns fuel on ALL early exits after `fuel_reserved` is set:
 1. Hook function not found → return fuel before returning HookResult::ok
@@ -326,7 +335,10 @@ The `execute_wasm_hook()` function returns fuel on ALL early exits after `fuel_r
 6. Timeout → return fuel in the Err(_) match arm
 7. Execution error → return fuel in the Ok(Err(e)) match arm
 
-**Known Issue**: There are fuel leaks at `loader.rs:255-285` in `load_plugin()` where early returns (metadata read failure, size check failure, compilation failure) do NOT call `return_fuel()`. This causes permanent fuel loss from plugin budgets.
+The previous "consumed-fuel" return behavior (Phase 10 and earlier) has
+been corrected in Phase 11. The contract is now: per-plugin fuel
+budgets decrease by exactly the fuel consumed by successful
+invocations.
 
 ## Fuel Tracking
 
@@ -727,6 +739,23 @@ First-class runtime for native Rust builtin plugins, alongside `ProcessRuntime` 
 - `builtin_plugin_manifests()` and `builtin_runtime_registry()` provide canonical metadata sources
 - `PluginService::with_builtin_runtime()` accepts an `Arc<BuiltinRuntime>` for runtime dispatch
 
+**Hook-only scope (Phase 11):** `BuiltinRuntime` dispatches only
+`PluginCapabilityInvocation::Hook` invocations. The following are
+rejected with `RuntimeError::Unsupported`:
+
+- `PluginCapabilityInvocation::Command` (no builtin command handler exists)
+- `PluginCapabilityInvocation::Panel`, `StatusWidget`, `Event`
+- Unknown hook type strings (e.g. `"command"`) — they no longer
+  silently fall back to `HookType::Auth`
+- Plugin IDs that do not start with the `builtin:` prefix
+
+`make_builtin_info()` in `src/plugin/builtin/mod.rs` skips unknown hook
+types via `filter_map` rather than falling back to `HookType::Auth`.
+
+`PluginService::invoke_command()` for a builtin plugin returns
+`PluginError::Runtime` if no command runtime handler is registered
+(instead of the previous success placeholder).
+
 ### Response Type Unification
 
 `codegg_protocol::plugin::PluginResponse` is the single canonical type (re-exported from `plugin/mod.rs`). The local `PluginResponse` in `service.rs` is removed. `PluginDiagnostic` is also unified via re-export from protocol.
@@ -929,4 +958,35 @@ Phase 10 adds protocol-level transport for plugin UI effects so they can be deli
 - **`CoreEvent::PluginUiEffect`** and **`TuiMessage::PluginUiEffect`** carry the envelope through the event bus and command channel respectively.
 - **`HookResult.effects`** and **`PluginHookOutcome::Ok(T, Vec<UiEffect>)`** allow hooks to return UI effects alongside their normal result.
 - **`ClientCapabilities`** includes `plugin_ui_dialogs`, `plugin_ui_panels`, and `plugin_ui_status_widgets` flags for frontend capability negotiation.
+
+### Phase 11: Corrective Hardening
+
+Four correctness fixes close gaps in the plugin UI/runtime integration:
+
+1. **WASM fuel accounting** — `return_unused_fuel()` returns the unused
+   portion of the reservation, not the consumed amount. Per-plugin
+   budgets decrease by exactly the consumed fuel. On error, the full
+   reserved amount is returned.
+2. **Builtin runtime strictness** — `BuiltinRuntime` rejects
+   `PluginCapabilityInvocation::Command` and unknown hook type strings
+   with `RuntimeError::Unsupported`. `make_builtin_info()` skips unknown
+   hook types instead of falling back to `HookType::Auth`.
+   `PluginService::invoke_command()` for a builtin plugin returns
+   `PluginError::Runtime` if no command runtime handler is registered.
+3. **EmitChat visibility** — `App::apply_plugin_ui_effect()` renders
+   `UiEffect::EmitChat` to the toast / info-dialog surface directly.
+   Short blocks toast, long blocks open the scrollable info dialog.
+   Both `ChatFormat::Plain` and `ChatFormat::Markdown` are lowered to
+   line-based text — markdown links and embedded escape sequences are
+   not executed. Output is **not** added to the model-visible chat
+   transcript.
+4. **Registry snapshot filtering** — `PluginRegistry::enabled_plugin_ids()`
+   acquires a single read guard on `plugins` to snapshot the set of
+   enabled plugin ids. Capability queries (`hooks_for`, `command`,
+   `commands`, `panels`, `status_widgets`, `event_subscribers`) and the
+   duplicate checks in `set_enabled()` filter against this snapshot
+   instead of using `try_read()`. Visibility depends only on actual
+   enabled state, not lock contention. The regression test
+   `registry_does_not_use_try_read_as_code` prevents the bug from
+   being reintroduced.
 - **`degrade_node_to_text()`** converts unsupported `UiNode` variants to plain text for frontends that lack full rendering support.

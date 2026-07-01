@@ -609,9 +609,7 @@ mod tests {
                 modal: true,
             }
         }));
-        assert!(caps.supports_effect(&UiEffect::CloseDialog {
-            id: "d".into(),
-        }));
+        assert!(caps.supports_effect(&UiEffect::CloseDialog { id: "d".into() }));
         assert!(caps.supports_effect(&UiEffect::OpenPanel {
             panel: PanelSpec {
                 id: "p".into(),
@@ -624,9 +622,7 @@ mod tests {
             id: "p".into(),
             body: UiNode::Empty,
         }));
-        assert!(caps.supports_effect(&UiEffect::ClosePanel {
-            id: "p".into(),
-        }));
+        assert!(caps.supports_effect(&UiEffect::ClosePanel { id: "p".into() }));
         assert!(caps.supports_effect(&UiEffect::AddStatusItem {
             item: StatusItemSpec {
                 id: "s".into(),
@@ -639,8 +635,6 @@ mod tests {
             id: "s".into(),
             body: UiNode::Empty,
         }));
-        assert!(caps.supports_effect(&UiEffect::RemoveStatusItem {
-            id: "s".into(),
-        }));
+        assert!(caps.supports_effect(&UiEffect::RemoveStatusItem { id: "s".into() }));
     }
 }

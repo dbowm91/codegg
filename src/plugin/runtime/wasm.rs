@@ -8,8 +8,24 @@ use async_trait::async_trait;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use super::wasm_cache::WasmModuleCache;
 use super::{PluginRuntime, RuntimeError, RuntimeLimits};
 use crate::protocol::plugin::{PluginInvocation, PluginResponse};
+
+/// Return the unused portion of a reserved fuel allotment back to the
+/// plugin's fuel budget.
+///
+/// `reserve_fuel` already subtracts the full reserved amount from the
+/// plugin's budget. After a successful invocation we must credit back the
+/// amount that was *not* consumed — never the consumed amount. Capping the
+/// returned fuel by `reserved` prevents a buggy `remaining` value from
+/// over-refunding the budget.
+fn return_unused_fuel(cache: &WasmModuleCache, plugin_id: &str, reserved: u64, remaining: u64) {
+    let unused = remaining.min(reserved);
+    if unused > 0 {
+        cache.return_fuel(plugin_id, unused);
+    }
+}
 
 /// Maximum WASM module size (10 MiB).
 const MAX_WASM_SIZE: usize = 10 * 1024 * 1024;
@@ -324,12 +340,11 @@ fn invoke_modern(
             );
         }
 
-        // Return consumed fuel to budget
+        // Return unused fuel to budget. reserve_fuel already subtracted the
+        // full reserved amount, so we credit back whatever the store did not
+        // consume.
         let remaining = store.get_fuel().unwrap_or(0);
-        let consumed = fuel.saturating_sub(remaining);
-        if consumed > 0 {
-            cache.return_fuel(plugin_id, consumed);
-        }
+        return_unused_fuel(cache, plugin_id, fuel, remaining);
 
         // Parse response
         let response: PluginResponse = serde_json::from_slice(&output)
@@ -341,6 +356,9 @@ fn invoke_modern(
     match result {
         Ok(resp) => Ok(resp),
         Err(e) => {
+            // On error the store may or may not have consumed fuel. Returning
+            // the full reserved amount keeps the budget non-strict: a failed
+            // invocation does not burn fuel.
             cache.return_fuel(plugin_id, fuel);
             Err(e)
         }
@@ -457,12 +475,11 @@ fn invoke_legacy(
             .i32()
             .ok_or_else(|| RuntimeError::Spawn("hook returned non-i32".into()))?;
 
-        // Return consumed fuel
+        // Return unused fuel to budget. reserve_fuel already subtracted the
+        // full reserved amount, so we credit back whatever the store did not
+        // consume.
         let remaining = store.get_fuel().unwrap_or(0);
-        let consumed = fuel.saturating_sub(remaining);
-        if consumed > 0 {
-            cache.return_fuel(plugin_id, consumed);
-        }
+        return_unused_fuel(cache, plugin_id, fuel, remaining);
 
         if result_ptr == 0 {
             // Null result = pass-through input
@@ -543,6 +560,7 @@ fn invoke_legacy(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::plugin::runtime::wasm_cache;
 
     #[test]
     fn wasm_spec_from_manifest_relative_path() {
@@ -618,5 +636,84 @@ mod tests {
         };
         let rt = WasmRuntime::with_cache(spec, RuntimeLimits::default(), cache.clone());
         assert_eq!(rt.cache.stats(), (0, 0));
+    }
+
+    /// `return_unused_fuel` must credit back the unused portion of the
+    /// reservation, not the consumed portion. Bug regression guard.
+    #[test]
+    fn return_unused_fuel_credits_unused_not_consumed() {
+        let cache = WasmModuleCache::new();
+        let reserved = 1000u64;
+
+        // Reserve 1000 from the budget.
+        let got = cache.reserve_fuel("plugin-a", reserved).unwrap();
+        assert_eq!(got, reserved);
+        let after_reserve = cache.get_plugin_fuel("plugin-a");
+        assert_eq!(
+            after_reserve,
+            super::super::wasm_cache::MAX_PLUGIN_FUEL_BUDGET - reserved
+        );
+
+        // Pretend the store executed and 700 fuel is remaining (i.e. 300 consumed).
+        let remaining = 700u64;
+        return_unused_fuel(&cache, "plugin-a", reserved, remaining);
+
+        let final_budget = cache.get_plugin_fuel("plugin-a");
+        // Budget must reflect only 300 fuel consumed, not 700.
+        assert_eq!(
+            final_budget,
+            super::super::wasm_cache::MAX_PLUGIN_FUEL_BUDGET - (reserved - remaining),
+            "remaining fuel must come back to budget, not consumed fuel"
+        );
+    }
+
+    /// Returning zero unused fuel is a no-op (the helper guards on `unused > 0`).
+    #[test]
+    fn return_unused_fuel_zero_remaining_is_noop() {
+        let cache = WasmModuleCache::new();
+        let reserved = 1000u64;
+        cache.reserve_fuel("plugin-b", reserved).unwrap();
+        let after_reserve = cache.get_plugin_fuel("plugin-b");
+
+        return_unused_fuel(&cache, "plugin-b", reserved, 0);
+        let after_zero_return = cache.get_plugin_fuel("plugin-b");
+        assert_eq!(
+            after_zero_return, after_reserve,
+            "zero unused fuel must not return anything"
+        );
+    }
+
+    /// If `remaining > reserved` for any reason (buggy instrumentation), the
+    /// helper must cap the refund at `reserved` so the budget can never be
+    /// over-credited past what was reserved.
+    #[test]
+    fn return_unused_fuel_caps_remaining_at_reserved() {
+        let cache = WasmModuleCache::new();
+        let reserved = 1000u64;
+        cache.reserve_fuel("plugin-c", reserved).unwrap();
+
+        // Buggy case: store claims more remaining than was reserved.
+        return_unused_fuel(&cache, "plugin-c", reserved, 5_000_000);
+
+        // Budget must recover fully (i.e. back to MAX), but not exceed MAX.
+        let after = cache.get_plugin_fuel("plugin-c");
+        assert_eq!(
+            after,
+            super::super::wasm_cache::MAX_PLUGIN_FUEL_BUDGET,
+            "refund must cap at reserved amount"
+        );
+    }
+
+    /// Full reservation returned: budget must be fully restored.
+    #[test]
+    fn return_unused_fuel_full_remaining_restores_budget() {
+        let cache = WasmModuleCache::new();
+        let reserved = 1000u64;
+        cache.reserve_fuel("plugin-d", reserved).unwrap();
+        return_unused_fuel(&cache, "plugin-d", reserved, reserved);
+        assert_eq!(
+            cache.get_plugin_fuel("plugin-d"),
+            super::super::wasm_cache::MAX_PLUGIN_FUEL_BUDGET
+        );
     }
 }

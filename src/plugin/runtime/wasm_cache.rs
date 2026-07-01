@@ -237,4 +237,35 @@ mod tests {
         let remaining = cache.get_plugin_fuel("contested");
         assert!(remaining < MAX_PLUGIN_FUEL_BUDGET);
     }
+
+    /// After reserving `reserved` fuel, the correct amount to return to the
+    /// budget is `reserved - consumed` (i.e. the unused remainder). This
+    /// test documents the contract used by the runtime: returning the
+    /// consumed amount would inflate the budget by `2 * consumed`.
+    #[test]
+    fn fuel_budget_accounting_used_by_wasm_runtime() {
+        let cache = WasmModuleCache::new();
+        let reserved = 1000u64;
+        cache.reserve_fuel("wasm-plugin", reserved).unwrap();
+
+        // Simulate consumed = 300, so unused = 700. The runtime must return 700.
+        let consumed = 300u64;
+        let unused = reserved - consumed;
+        cache.return_fuel("wasm-plugin", unused);
+
+        let after = cache.get_plugin_fuel("wasm-plugin");
+        assert_eq!(after, MAX_PLUGIN_FUEL_BUDGET - consumed);
+    }
+
+    /// Returning zero (no leftover fuel) leaves the budget at MAX - reserved.
+    #[test]
+    fn fuel_budget_zero_unused_full_consumed() {
+        let cache = WasmModuleCache::new();
+        cache.reserve_fuel("wasm-plugin", 1000).unwrap();
+        cache.return_fuel("wasm-plugin", 0);
+        assert_eq!(
+            cache.get_plugin_fuel("wasm-plugin"),
+            MAX_PLUGIN_FUEL_BUDGET - 1000
+        );
+    }
 }

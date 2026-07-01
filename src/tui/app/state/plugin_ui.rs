@@ -13,6 +13,12 @@ pub struct PluginUiState {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PluginUiApplyResult {
     Applied,
+    /// `EmitChat` rendered visibly by the App-level effect handler
+    /// (toast / info dialog). Not added to model-visible chat transcript.
+    ChatApplied,
+    /// `EmitChat` returned by the lower-level `PluginUiState::apply_effect`
+    /// without going through the App-level chat renderer. Callers can
+    /// treat this as "rendering is the responsibility of the caller".
     ChatRequested,
     ToastRequested,
     Ignored,

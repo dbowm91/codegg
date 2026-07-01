@@ -101,7 +101,12 @@ impl PluginRuntime for BuiltinRuntime {
 
 /// Convert a `PluginInvocation` into a `HookContext` for builtin dispatch.
 ///
-/// This adapter bridges the runtime invocation model with the hook handler model.
+/// This adapter bridges the runtime invocation model with the hook handler
+/// model. Builtin runtime only handles hook invocations; command, panel,
+/// status-widget, and event invocations are rejected because no builtin
+/// command handler registry exists yet. Unknown hook type strings are also
+/// rejected — previously they silently fell back to `HookType::Auth`, which
+/// is unsafe at a runtime trust boundary.
 pub fn invocation_to_hook_context(
     invocation: &PluginInvocation,
 ) -> Result<HookContext, RuntimeError> {
@@ -109,7 +114,13 @@ pub fn invocation_to_hook_context(
 
     let hook_type_str = match &invocation.capability {
         PluginCapabilityInvocation::Hook { hook_type } => hook_type.as_str(),
-        PluginCapabilityInvocation::Command { .. } => "command",
+        PluginCapabilityInvocation::Command { name } => {
+            return Err(RuntimeError::Unsupported(format!(
+                "builtin runtime does not support command invocations: '{}' \
+                 (builtin runtime is hook-only)",
+                name
+            )));
+        }
         _ => {
             return Err(RuntimeError::Unsupported(format!(
                 "builtin runtime does not support capability type: {:?}",
@@ -118,7 +129,9 @@ pub fn invocation_to_hook_context(
         }
     };
 
-    let hook_type = HookType::parse(hook_type_str).unwrap_or(HookType::Auth);
+    let hook_type = HookType::parse(hook_type_str).ok_or_else(|| {
+        RuntimeError::Unsupported(format!("unsupported builtin hook type: {hook_type_str}"))
+    })?;
 
     Ok(HookContext {
         hook_type,
@@ -179,10 +192,12 @@ mod tests {
         |_ctx: HookContext| HookResult::error("test error")
     }
 
+    #[allow(dead_code)]
     fn make_block_handler() -> BuiltinHookHandler {
         |_ctx: HookContext| HookResult::blocked()
     }
 
+    #[allow(dead_code)]
     fn make_transform_handler() -> BuiltinHookHandler {
         |ctx: HookContext| {
             let mut output = ctx.input.clone();
@@ -191,6 +206,68 @@ mod tests {
             }
             HookResult::ok(output)
         }
+    }
+
+    #[tokio::test]
+    async fn builtin_runtime_rejects_command_invocation() {
+        let mut registry = BuiltinHandlerRegistry::new();
+        registry.register("test_handler".into(), make_test_handler());
+        let runtime = BuiltinRuntime::new(Arc::new(registry));
+
+        let invocation = PluginInvocation {
+            protocol_version: PLUGIN_PROTOCOL_VERSION,
+            invocation_id: "inv-cmd".into(),
+            plugin_id: "builtin:test_handler".into(),
+            capability: PluginCapabilityInvocation::Command {
+                name: "do_thing".into(),
+            },
+            args: Vec::new(),
+            input: serde_json::json!({}),
+            context: Default::default(),
+        };
+
+        let err = runtime.invoke(invocation).await.unwrap_err();
+        assert!(
+            matches!(err, RuntimeError::Unsupported(_)),
+            "command invocation must be rejected, got: {err:?}"
+        );
+        let msg = err.to_string();
+        assert!(
+            msg.contains("do_thing"),
+            "error should include command name, got: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn builtin_runtime_rejects_unknown_hook_type() {
+        let mut registry = BuiltinHandlerRegistry::new();
+        registry.register("test_handler".into(), make_test_handler());
+        let runtime = BuiltinRuntime::new(Arc::new(registry));
+
+        let invocation = PluginInvocation {
+            protocol_version: PLUGIN_PROTOCOL_VERSION,
+            invocation_id: "inv-unknown-hook".into(),
+            plugin_id: "builtin:test_handler".into(),
+            capability: PluginCapabilityInvocation::Hook {
+                hook_type: "no.such.hook".into(),
+            },
+            args: Vec::new(),
+            input: serde_json::json!({}),
+            context: Default::default(),
+        };
+
+        let err = runtime.invoke(invocation).await.unwrap_err();
+        assert!(matches!(err, RuntimeError::Unsupported(_)));
+        let msg = err.to_string();
+        assert!(
+            msg.contains("no.such.hook"),
+            "error should include the unknown hook type, got: {msg}"
+        );
+        // Critical regression guard: must NOT silently treat it as Auth.
+        assert!(
+            !msg.contains("Auth"),
+            "error must not mention Auth fallback, got: {msg}"
+        );
     }
 
     #[tokio::test]
@@ -304,7 +381,7 @@ mod tests {
     }
 
     #[test]
-    fn invocation_to_hook_context_command_capability_uses_command_hook_type() {
+    fn invocation_to_hook_context_command_capability_is_rejected() {
         let invocation = PluginInvocation {
             protocol_version: PLUGIN_PROTOCOL_VERSION,
             invocation_id: "inv-5".into(),
@@ -317,8 +394,38 @@ mod tests {
             context: Default::default(),
         };
 
-        let ctx = invocation_to_hook_context(&invocation).unwrap();
-        assert_eq!(ctx.hook_type, HookType::Auth); // fallback for command
+        // Command invocations must NOT be silently mapped onto a hook handler.
+        let err = invocation_to_hook_context(&invocation).unwrap_err();
+        assert!(matches!(err, RuntimeError::Unsupported(_)));
+        let msg = err.to_string();
+        assert!(
+            msg.contains("command"),
+            "error should mention command, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn invocation_to_hook_context_unknown_hook_type_is_rejected() {
+        let invocation = PluginInvocation {
+            protocol_version: PLUGIN_PROTOCOL_VERSION,
+            invocation_id: "inv-7".into(),
+            plugin_id: "builtin:test".into(),
+            capability: PluginCapabilityInvocation::Hook {
+                hook_type: "totally.unknown.hook".into(),
+            },
+            args: Vec::new(),
+            input: serde_json::json!({}),
+            context: Default::default(),
+        };
+
+        // Unknown hook type strings must NOT fall back to Auth.
+        let err = invocation_to_hook_context(&invocation).unwrap_err();
+        assert!(matches!(err, RuntimeError::Unsupported(_)));
+        let msg = err.to_string();
+        assert!(
+            msg.contains("totally.unknown.hook"),
+            "error should mention the unknown hook type, got: {msg}"
+        );
     }
 
     #[test]

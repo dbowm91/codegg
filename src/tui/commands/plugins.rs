@@ -166,26 +166,16 @@ pub(crate) fn apply_plugin_command_finished(
     // 2. Structured response path
     if let Some(resp) = response {
         if resp.ok {
-            // Apply each effect in order
+            // Apply each effect in order. App::apply_plugin_ui_effect now
+            // renders EmitChat visibly (toast / info dialog), so we do not
+            // need any deferred handling here.
             for effect in resp.effects {
-                let result = app.apply_plugin_ui_effect(effect, None);
-                if let crate::tui::app::state::PluginUiApplyResult::ChatRequested = result {
-                    tracing::debug!(
-                        target: "codegg::tui::plugins",
-                        "EmitChat effect received from plugin response (deferred to Phase 3)"
-                    );
-                }
+                let _ = app.apply_plugin_ui_effect(effect, None);
             }
         } else {
             // Apply diagnostic effects but show error toast
             for effect in &resp.effects {
-                let result = app.apply_plugin_ui_effect(effect.clone(), None);
-                if let crate::tui::app::state::PluginUiApplyResult::ChatRequested = result {
-                    tracing::debug!(
-                        target: "codegg::tui::plugins",
-                        "EmitChat effect received from plugin error response (deferred to Phase 3)"
-                    );
-                }
+                let _ = app.apply_plugin_ui_effect(effect.clone(), None);
             }
             let diag_msgs: Vec<String> = resp
                 .diagnostics
@@ -244,15 +234,10 @@ pub(crate) fn apply_plugin_command_finished(
 
 /// Apply a single plugin UI effect directly (without going through a
 /// command response). This is the same as `App::apply_plugin_ui_effect`
-/// but callable from the command dispatch path.
+/// but callable from the command dispatch path. EmitChat effects are
+/// rendered visibly (toast / info dialog) by the App-level handler.
 pub(crate) fn apply_plugin_ui_effect(app: &mut App, effect: UiEffect) {
-    let result = app.apply_plugin_ui_effect(effect, None);
-    if let crate::tui::app::state::PluginUiApplyResult::ChatRequested = result {
-        tracing::debug!(
-            target: "codegg::tui::plugins",
-            "EmitChat effect received from local TUI path (deferred to Phase 3)"
-        );
-    }
+    let _ = app.apply_plugin_ui_effect(effect, None);
 }
 
 fn level_label(level: crate::protocol::plugin::PluginDiagnosticLevel) -> &'static str {
@@ -269,9 +254,7 @@ fn level_label(level: crate::protocol::plugin::PluginDiagnosticLevel) -> &'stati
 mod tests {
     use super::*;
     use crate::protocol::plugin::{PluginDiagnostic, PluginDiagnosticLevel};
-    use crate::protocol::ui::{
-        DialogSpec, PanelPlacement, PanelSpec, ToastLevel, ToastSpec, UiEffect, UiNode,
-    };
+    use crate::protocol::ui::{DialogSpec, ToastLevel, ToastSpec, UiEffect, UiNode};
     use crate::tui::app::state::PluginUiApplyResult;
     use crate::tui::app::App;
 
@@ -287,26 +270,32 @@ mod tests {
     #[test]
     fn apply_plugin_ui_effect_delegates_to_app() {
         let mut app = make_test_app();
-        let result = app.apply_plugin_ui_effect(UiEffect::ShowToast {
-            toast: ToastSpec {
-                level: ToastLevel::Info,
-                message: "direct effect".into(),
+        let result = app.apply_plugin_ui_effect(
+            UiEffect::ShowToast {
+                toast: ToastSpec {
+                    level: ToastLevel::Info,
+                    message: "direct effect".into(),
+                },
             },
-        }, None);
+            None,
+        );
         assert_eq!(result, PluginUiApplyResult::ToastRequested);
     }
 
     #[test]
     fn apply_plugin_ui_effect_dialog_opens() {
         let mut app = make_test_app();
-        let result = app.apply_plugin_ui_effect(UiEffect::OpenDialog {
-            dialog: DialogSpec {
-                id: "test-dlg".into(),
-                title: "Test".into(),
-                body: text_node("hello"),
-                modal: true,
+        let result = app.apply_plugin_ui_effect(
+            UiEffect::OpenDialog {
+                dialog: DialogSpec {
+                    id: "test-dlg".into(),
+                    title: "Test".into(),
+                    body: text_node("hello"),
+                    modal: true,
+                },
             },
-        }, None);
+            None,
+        );
         assert_eq!(result, PluginUiApplyResult::Applied);
         assert!(app.plugin_ui_state.get_dialog("test-dlg").is_some());
     }
@@ -1163,6 +1152,207 @@ mod tests {
             app.messages_state.toasts.len(),
             toasts_before,
             "empty status items should be silently omitted"
+        );
+    }
+
+    // --- EmitChat rendering tests ---
+
+    /// A short EmitChat block must toast (≤3 lines) so the user sees plugin
+    /// stdout immediately.
+    #[test]
+    fn emit_chat_short_block_toasts() {
+        let mut app = make_test_app();
+        let result = app.apply_plugin_ui_effect(
+            UiEffect::EmitChat {
+                block: crate::protocol::ui::ChatBlock {
+                    format: crate::protocol::ui::ChatFormat::Plain,
+                    content: "line one\nline two".into(),
+                },
+            },
+            None,
+        );
+        assert_eq!(result, PluginUiApplyResult::ChatApplied);
+        let toast_msgs: Vec<String> = app
+            .messages_state
+            .toasts
+            .iter()
+            .map(|t| t.message.clone())
+            .collect();
+        assert!(
+            toast_msgs.iter().any(|m| m.contains("line one")),
+            "EmitChat content should appear in toast, got: {toast_msgs:?}"
+        );
+    }
+
+    /// A long EmitChat block must open the info dialog so the user can scroll.
+    #[test]
+    fn emit_chat_long_block_opens_info_dialog() {
+        let mut app = make_test_app();
+        let long = (0..10)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let result = app.apply_plugin_ui_effect(
+            UiEffect::EmitChat {
+                block: crate::protocol::ui::ChatBlock {
+                    format: crate::protocol::ui::ChatFormat::Markdown,
+                    content: long.clone(),
+                },
+            },
+            None,
+        );
+        assert_eq!(result, PluginUiApplyResult::ChatApplied);
+        // Long output opens the info dialog.
+        let info = app
+            .dialog_state
+            .info_dialog
+            .as_ref()
+            .expect("long EmitChat should open the info dialog");
+        // The dialog content should include the plugin output.
+        let content_lines = info.content_lines();
+        assert!(
+            content_lines.iter().any(|l| l.contains("line 0"))
+                || content_lines.iter().any(|l| l.contains("line 9")),
+            "info dialog should contain EmitChat content, got: {:?}",
+            content_lines
+        );
+    }
+
+    /// An empty EmitChat block must be ignored without producing a toast or
+    /// opening a dialog.
+    #[test]
+    fn emit_chat_empty_block_is_ignored() {
+        let mut app = make_test_app();
+        let toasts_before = app.messages_state.toasts.len();
+        let result = app.apply_plugin_ui_effect(
+            UiEffect::EmitChat {
+                block: crate::protocol::ui::ChatBlock {
+                    format: crate::protocol::ui::ChatFormat::Plain,
+                    content: String::new(),
+                },
+            },
+            None,
+        );
+        assert_eq!(result, PluginUiApplyResult::Ignored);
+        assert_eq!(
+            app.messages_state.toasts.len(),
+            toasts_before,
+            "empty EmitChat must not produce a toast"
+        );
+        assert!(
+            app.dialog_state.info_dialog.is_none(),
+            "empty EmitChat must not open info dialog"
+        );
+    }
+
+    /// A `PluginResponse` with an `EmitChat` effect (e.g. from a process
+    /// command's text stdout) must visibly render. This is the regression
+    /// test for the "EmitChat disappears into debug logs" bug.
+    #[test]
+    fn structured_response_with_emit_chat_renders_visibly() {
+        let mut app = make_test_app();
+        let resp = Box::new(PluginResponse {
+            ok: true,
+            effects: vec![UiEffect::EmitChat {
+                block: crate::protocol::ui::ChatBlock {
+                    format: crate::protocol::ui::ChatFormat::Plain,
+                    content: "from /quota command".into(),
+                },
+            }],
+            data: serde_json::Value::Null,
+            diagnostics: Vec::new(),
+        });
+        apply_plugin_command_finished(
+            &mut app,
+            "inv-emit".into(),
+            "quota".into(),
+            Some(resp),
+            None,
+            None,
+            None,
+        );
+        // The chat content must surface somewhere — toast or info dialog.
+        let toast_msgs: Vec<String> = app
+            .messages_state
+            .toasts
+            .iter()
+            .map(|t| t.message.clone())
+            .collect();
+        let in_toast = toast_msgs.iter().any(|m| m.contains("from /quota command"));
+        let in_info = app
+            .dialog_state
+            .info_dialog
+            .as_ref()
+            .map(|d| {
+                d.content_lines()
+                    .iter()
+                    .any(|l| l.contains("from /quota command"))
+            })
+            .unwrap_or(false);
+        assert!(
+            in_toast || in_info,
+            "EmitChat from PluginResponse must render visibly (toast or info dialog), \
+             got toasts: {toast_msgs:?}, info_dialog opened: {}",
+            app.dialog_state.info_dialog.is_some()
+        );
+    }
+
+    /// Process commands executed via `execute_via_runtime` produce a
+    /// structured response whose only effect is `EmitChat`. After applying
+    /// that response via `apply_plugin_command_finished`, the content must
+    /// appear visibly. This is the end-to-end regression test.
+    #[tokio::test]
+    async fn process_runtime_text_output_becomes_visible_in_tui() {
+        use crate::config::schema::CommandStdoutMode;
+        let mut app = make_test_app();
+        let spec = ProcessCommandSpec {
+            command: "echo".to_string(),
+            args: vec!["hello-from-process".to_string()],
+            stdout: CommandStdoutMode::Text,
+            ..Default::default()
+        };
+        let resp = execute_via_runtime(&spec, &[], "inv-proc", None, None)
+            .await
+            .unwrap();
+        assert!(resp.ok);
+        assert_eq!(resp.effects.len(), 1);
+        // Confirm the response has an EmitChat effect.
+        match &resp.effects[0] {
+            UiEffect::EmitChat { block } => {
+                assert!(block.content.contains("hello-from-process"));
+            }
+            other => panic!("expected EmitChat, got: {other:?}"),
+        }
+
+        // Apply through the TUI completion handler.
+        apply_plugin_command_finished(
+            &mut app,
+            "inv-proc".into(),
+            "echo".into(),
+            Some(Box::new(resp)),
+            None,
+            None,
+            None,
+        );
+        let toast_msgs: Vec<String> = app
+            .messages_state
+            .toasts
+            .iter()
+            .map(|t| t.message.clone())
+            .collect();
+        let info_lines = app
+            .dialog_state
+            .info_dialog
+            .as_ref()
+            .map(|d| d.content_lines().to_vec());
+        let surfaced = toast_msgs.iter().any(|m| m.contains("hello-from-process"))
+            || info_lines
+                .as_ref()
+                .map(|lines| lines.iter().any(|l| l.contains("hello-from-process")))
+                .unwrap_or(false);
+        assert!(
+            surfaced,
+            "process stdout must surface via EmitChat, got toasts: {toast_msgs:?}, info lines: {info_lines:?}"
         );
     }
 }

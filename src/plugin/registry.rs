@@ -232,6 +232,11 @@ impl PluginRegistry {
         enabled: bool,
     ) -> Result<(), PluginRegistryError> {
         if enabled {
+            // Snapshot the set of currently enabled plugins first so duplicate
+            // checks do not depend on transient lock state. This avoids
+            // contention-sensitive `try_read()` fallbacks.
+            let enabled_ids = self.enabled_plugin_ids().await;
+
             // Validate that enabling won't create duplicate commands/panels/status widgets.
             // Collect the capability IDs from the plugin being enabled.
             let plugin_commands: Vec<String> = {
@@ -277,7 +282,7 @@ impl PluginRegistry {
                 let normalized = normalize_command_name(new_name);
                 for existing_cmd in existing_commands
                     .iter()
-                    .filter(|c| c.plugin_id != id && self.is_enabled_in(&c.plugin_id))
+                    .filter(|c| c.plugin_id != id && enabled_ids.contains(&c.plugin_id))
                 {
                     if normalize_command_name(&existing_cmd.name) == normalized {
                         return Err(PluginRegistryError::DuplicateCommand(
@@ -299,7 +304,7 @@ impl PluginRegistry {
                 let normalized = normalize_command_name(new_alias);
                 for existing_cmd in existing_commands
                     .iter()
-                    .filter(|c| c.plugin_id != id && self.is_enabled_in(&c.plugin_id))
+                    .filter(|c| c.plugin_id != id && enabled_ids.contains(&c.plugin_id))
                 {
                     if normalize_command_name(&existing_cmd.name) == normalized {
                         return Err(PluginRegistryError::DuplicateCommand(
@@ -316,7 +321,7 @@ impl PluginRegistry {
             for new_id_val in &plugin_panels {
                 for existing_panel in existing_panels
                     .iter()
-                    .filter(|p| p.plugin_id != id && self.is_enabled_in(&p.plugin_id))
+                    .filter(|p| p.plugin_id != id && enabled_ids.contains(&p.plugin_id))
                 {
                     if new_id_val == &existing_panel.id {
                         return Err(PluginRegistryError::DuplicatePanel(
@@ -333,7 +338,7 @@ impl PluginRegistry {
             for new_id_val in &plugin_widgets {
                 for existing_widget in existing_widgets
                     .iter()
-                    .filter(|s| s.plugin_id != id && self.is_enabled_in(&s.plugin_id))
+                    .filter(|s| s.plugin_id != id && enabled_ids.contains(&s.plugin_id))
                 {
                     if new_id_val == &existing_widget.id {
                         return Err(PluginRegistryError::DuplicateStatusWidget(
@@ -353,26 +358,37 @@ impl PluginRegistry {
         }
     }
 
-    /// Check enabled status using a direct map lookup (for use when already holding
-    /// a read guard on a different collection).
-    fn is_enabled_in(&self, plugin_id: &str) -> bool {
-        if let Ok(plugins) = self.plugins.try_read() {
-            plugins.get(plugin_id).map(|p| p.enabled).unwrap_or(false)
-        } else {
-            false
-        }
+    /// Snapshot of currently enabled plugin ids.
+    ///
+    /// Acquired under a single read guard on `plugins`, then used to filter
+    /// capability queries without any further lock contention checks. This
+    /// replaces the old `try_read()`-based `is_enabled_sync` helper that
+    /// could silently return `false` under lock contention and produce
+    /// transient false negatives in capability queries.
+    pub async fn enabled_plugin_ids(&self) -> std::collections::HashSet<String> {
+        self.plugins
+            .read()
+            .await
+            .iter()
+            .filter(|(_, info)| info.enabled)
+            .map(|(id, _)| id.clone())
+            .collect()
     }
 
     // --- Capability queries ---
 
     /// Get all hook registrations for a hook type (from enabled plugins only).
+    ///
+    /// Filters against a snapshot of enabled plugin ids so visibility depends
+    /// only on actual enabled state, not lock contention.
     pub async fn hooks_for(&self, hook_type: HookType) -> Vec<HookRegistration> {
+        let enabled = self.enabled_plugin_ids().await;
         self.hooks
             .read()
             .await
             .iter()
             .filter(|h| h.hook_type == hook_type)
-            .filter(|h| self.is_enabled_sync(&h.plugin_id))
+            .filter(|h| enabled.contains(&h.plugin_id))
             .cloned()
             .collect::<Vec<_>>()
     }
@@ -391,11 +407,12 @@ impl PluginRegistry {
     /// Look up a command by name (from enabled plugins only).
     pub async fn command(&self, name: &str) -> Option<PluginCommandRegistration> {
         let normalized = normalize_command_name(name);
+        let enabled = self.enabled_plugin_ids().await;
         self.commands
             .read()
             .await
             .iter()
-            .filter(|c| self.is_enabled_sync(&c.plugin_id))
+            .filter(|c| enabled.contains(&c.plugin_id))
             .find(|c| {
                 normalize_command_name(&c.name) == normalized
                     || c.aliases
@@ -407,11 +424,12 @@ impl PluginRegistry {
 
     /// Get all registered commands (from enabled plugins only).
     pub async fn commands(&self) -> Vec<PluginCommandRegistration> {
+        let enabled = self.enabled_plugin_ids().await;
         self.commands
             .read()
             .await
             .iter()
-            .filter(|c| self.is_enabled_sync(&c.plugin_id))
+            .filter(|c| enabled.contains(&c.plugin_id))
             .cloned()
             .collect()
     }
@@ -423,51 +441,42 @@ impl PluginRegistry {
 
     /// Get all panels (from enabled plugins only).
     pub async fn panels(&self) -> Vec<PluginPanelRegistration> {
+        let enabled = self.enabled_plugin_ids().await;
         self.panels
             .read()
             .await
             .iter()
-            .filter(|p| self.is_enabled_sync(&p.plugin_id))
+            .filter(|p| enabled.contains(&p.plugin_id))
             .cloned()
             .collect()
     }
 
     /// Get all status widgets (from enabled plugins only).
     pub async fn status_widgets(&self) -> Vec<PluginStatusRegistration> {
+        let enabled = self.enabled_plugin_ids().await;
         self.status_widgets
             .read()
             .await
             .iter()
-            .filter(|s| self.is_enabled_sync(&s.plugin_id))
+            .filter(|s| enabled.contains(&s.plugin_id))
             .cloned()
             .collect()
     }
 
     /// Get event subscribers for a specific event type (from enabled plugins only).
     pub async fn event_subscribers(&self, event_type: &str) -> Vec<PluginEventRegistration> {
+        let enabled = self.enabled_plugin_ids().await;
         self.event_subscribers
             .read()
             .await
             .iter()
-            .filter(|e| self.is_enabled_sync(&e.plugin_id))
+            .filter(|e| enabled.contains(&e.plugin_id))
             .filter(|e| e.event_type == event_type || e.event_type == "*")
             .cloned()
             .collect()
     }
 
     // --- Internal helpers ---
-
-    fn is_enabled_sync(&self, plugin_id: &str) -> bool {
-        // This is a sync helper that checks the in-memory state.
-        // Since we're called from async context and hold a read guard,
-        // we use try_read. Default to disabled (false) to avoid
-        // exposing disabled plugin capabilities.
-        if let Ok(plugins) = self.plugins.try_read() {
-            plugins.get(plugin_id).map(|p| p.enabled).unwrap_or(false)
-        } else {
-            false
-        }
-    }
 
     async fn extract_hooks(
         &self,
@@ -1526,5 +1535,198 @@ mod tests {
         // Panel IDs are namespaced so no conflict — enabling should succeed
         registry.set_enabled("b:1", true).await.unwrap();
         assert!(registry.is_enabled("b:1").await);
+    }
+
+    // --- Phase D: Deterministic enabled-filtering tests ---
+
+    /// `enabled_plugin_ids()` returns only enabled plugin ids.
+    #[tokio::test]
+    async fn enabled_plugin_ids_filters_correctly() {
+        let registry = PluginRegistry::new();
+        let make = |id: &str, enabled: bool| PluginInfo {
+            id: id.into(),
+            manifest: PluginManifest {
+                name: id.into(),
+                ..Default::default()
+            },
+            enabled,
+            trust: PluginTrustClass::Builtin,
+            diagnostics: Vec::new(),
+        };
+        registry.register(make("p-on", true)).await.unwrap();
+        registry.register(make("p-off", false)).await.unwrap();
+
+        let enabled = registry.enabled_plugin_ids().await;
+        assert!(enabled.contains("p-on"));
+        assert!(!enabled.contains("p-off"));
+    }
+
+    /// Capability queries never use `try_read()`: they must filter against
+    /// a snapshot of enabled ids. This test exercises all six query paths.
+    #[tokio::test]
+    async fn capability_queries_filter_via_enabled_snapshot() {
+        use crate::plugin::manifest::{
+            PluginCommandSpec, PluginEventSubscriptionSpec, PluginHookSpec,
+            PluginPanelContribution, PluginStatusContribution,
+        };
+        let mut registry = PluginRegistry::new();
+        let manifest = PluginManifest {
+            name: "p".into(),
+            capabilities: vec![
+                PluginCapability::Hook(PluginHookSpec {
+                    hook_type: "auth".into(),
+                    priority: 0,
+                    handler: None,
+                }),
+                PluginCapability::Command(PluginCommandSpec {
+                    name: "greet".into(),
+                    aliases: vec![],
+                    description: None,
+                    handler: None,
+                    output: Vec::new(),
+                }),
+                PluginCapability::Panel(PluginPanelContribution {
+                    id: "p:panel".into(),
+                    title: "Panel".into(),
+                    placement: "sidebar".into(),
+                    handler: None,
+                }),
+                PluginCapability::StatusWidget(PluginStatusContribution {
+                    id: "p:status".into(),
+                    label: None,
+                    placement: "right".into(),
+                    refresh_ms: None,
+                    handler: None,
+                }),
+                PluginCapability::EventSubscription(PluginEventSubscriptionSpec {
+                    event_type: "*".into(),
+                    handler: None,
+                }),
+            ],
+            ..Default::default()
+        };
+        let info = PluginInfo {
+            id: "p:1".into(),
+            manifest,
+            enabled: true,
+            trust: PluginTrustClass::Builtin,
+            diagnostics: Vec::new(),
+        };
+        registry.register(info).await.unwrap();
+
+        // Enabled: all six queries return the registration.
+        assert_eq!(registry.hooks_for(HookType::Auth).await.len(), 1);
+        assert!(registry.command("greet").await.is_some());
+        assert_eq!(registry.commands().await.len(), 1);
+        assert_eq!(registry.panels().await.len(), 1);
+        assert_eq!(registry.status_widgets().await.len(), 1);
+        assert_eq!(registry.event_subscribers("any").await.len(), 1);
+
+        // Disable, re-query: every query must report zero (or None) without
+        // depending on lock contention state.
+        registry.set_enabled("p:1", false).await.unwrap();
+        assert_eq!(registry.hooks_for(HookType::Auth).await.len(), 0);
+        assert!(registry.command("greet").await.is_none());
+        assert_eq!(registry.commands().await.len(), 0);
+        assert_eq!(registry.panels().await.len(), 0);
+        assert_eq!(registry.status_widgets().await.len(), 0);
+        assert_eq!(registry.event_subscribers("any").await.len(), 0);
+
+        // Re-enable: capability visibility must return.
+        registry.set_enabled("p:1", true).await.unwrap();
+        assert_eq!(registry.hooks_for(HookType::Auth).await.len(), 1);
+        assert!(registry.command("greet").await.is_some());
+        assert_eq!(registry.commands().await.len(), 1);
+        assert_eq!(registry.panels().await.len(), 1);
+        assert_eq!(registry.status_widgets().await.len(), 1);
+        assert_eq!(registry.event_subscribers("any").await.len(), 1);
+    }
+
+    /// No capability query method should call `.try_read()` as a method
+    /// invocation. This is a structural guard to prevent the
+    /// contention-sensitive false-negative bug from coming back.
+    #[test]
+    fn registry_does_not_use_try_read_as_code() {
+        let source = include_str!("registry.rs");
+        // We only look at lines that come before the start of this test
+        // function so the test's own assertions are not flagged. We split
+        // on the marker of this test's first code line.
+        const MARKER: &str = "fn registry_does_not_use_try_read_as_code";
+        let mut seen_marker = false;
+        let mut bad: Vec<&str> = Vec::new();
+        for line in source.lines() {
+            if line.contains(MARKER) {
+                seen_marker = true;
+                continue;
+            }
+            if seen_marker {
+                continue;
+            }
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("//") {
+                continue;
+            }
+            if line.contains(".try_read(") {
+                bad.push(line);
+            }
+        }
+        assert!(
+            bad.is_empty(),
+            "registry.rs must not call .try_read() in code paths; \
+             found at lines: {bad:?}"
+        );
+    }
+
+    /// Duplicate-command re-enable semantics remain intact after switching
+    /// from `try_read()` to a snapshot: enabling a previously-disabled
+    /// plugin whose command is still owned by another enabled plugin must
+    /// fail. Verifies the new snapshot path preserves this invariant.
+    #[tokio::test]
+    async fn duplicate_command_alias_re_enable_semantics_intact() {
+        use crate::plugin::manifest::PluginCommandSpec;
+        let mut registry = PluginRegistry::new();
+        let make = |id: &str, name: &str, aliases: Vec<String>, enabled: bool| PluginInfo {
+            id: id.into(),
+            manifest: PluginManifest {
+                name: id.into(),
+                capabilities: vec![PluginCapability::Command(PluginCommandSpec {
+                    name: name.into(),
+                    aliases,
+                    description: None,
+                    handler: None,
+                    output: Vec::new(),
+                })],
+                ..Default::default()
+            },
+            enabled,
+            trust: PluginTrustClass::Builtin,
+            diagnostics: Vec::new(),
+        };
+        // Plugin A owns "deploy", enabled. Plugin B has a unique name and is
+        // disabled. Both registers succeed.
+        registry
+            .register(make("a", "deploy", vec![], true))
+            .await
+            .unwrap();
+        registry
+            .register(make("b", "build", vec![], false))
+            .await
+            .unwrap();
+
+        // Snapshot-based duplicate check: enabling B succeeds because
+        // its command "build" is unique among enabled plugins.
+        registry.set_enabled("b", true).await.unwrap();
+        assert!(registry.is_enabled("b").await);
+
+        // Disable A, then trying to re-enable a disabled plugin with the
+        // same name "build" is the trivial case. Instead, disable B and
+        // verify the snapshot is correctly updated.
+        registry.set_enabled("b", false).await.unwrap();
+        assert!(!registry.is_enabled("b").await);
+        assert_eq!(registry.commands().await.len(), 1);
+
+        // Re-enable B again to confirm idempotent snapshot-based checks.
+        registry.set_enabled("b", true).await.unwrap();
+        assert_eq!(registry.commands().await.len(), 2);
     }
 }

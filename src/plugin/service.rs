@@ -164,23 +164,20 @@ impl PluginService {
 
         match &plugin_info.manifest.runtime {
             PluginRuntimeSpec::Builtin { handler } => {
-                // Dispatch through BuiltinRuntime if available, otherwise return
-                // a placeholder response for backward compatibility.
+                // Builtin runtime is hook-only: there is no command dispatch path
+                // for builtin plugins. Reject explicitly so callers see a clear
+                // error rather than a misleading success placeholder.
                 if let Some(ref builtin_rt) = self.builtin_runtime {
                     builtin_rt
                         .invoke(invocation)
                         .await
                         .map_err(|e| PluginError::Runtime(e.to_string()))
                 } else {
-                    Ok(PluginResponse {
-                        ok: true,
-                        effects: Vec::new(),
-                        data: serde_json::json!({
-                            "command": command_name,
-                            "handler": handler,
-                        }),
-                        diagnostics: Vec::new(),
-                    })
+                    Err(PluginError::Runtime(format!(
+                        "builtin plugin '{}' has no command runtime handler \
+                         (handler={}, command={}); builtin runtime is hook-only",
+                        plugin_id, handler, command_name
+                    )))
                 }
             }
             PluginRuntimeSpec::Process { .. } => {
