@@ -11,6 +11,7 @@ pub mod management;
 pub mod management_ui;
 pub mod manifest;
 pub mod marketplace;
+pub mod permission;
 pub mod policy;
 pub mod registry;
 pub mod runtime;
@@ -34,7 +35,14 @@ pub use manifest::{
     PluginManifest, PluginOutputSurface, PluginPanelContribution, PluginPermissionSet,
     PluginRuntimeSpec, PluginStatusContribution, PluginTrustClass,
 };
-pub use policy::{classify_hook, HookCategory, PluginLifecyclePolicy};
+pub use permission::{
+    check_invocation_allowed, check_lifecycle_hook_allowed, check_secret_access_allowed,
+    check_ui_effect_allowed, PolicyDecision,
+};
+pub use policy::{
+    classify_hook, HookCategory, PluginInstallPolicy, PluginLifecyclePolicy, PluginPermissionPolicy,
+    PluginPolicy, PluginRuntimePolicy, PluginUiPolicy,
+};
 pub use registry::{
     normalize_command_name, PluginCommandRegistration, PluginEventRegistration,
     PluginHookRegistration, PluginInfo, PluginPanelRegistration, PluginRegistry,

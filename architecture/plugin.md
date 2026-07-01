@@ -1318,16 +1318,61 @@ Ambiguous or missing selectors produce clear error messages.
 
 ### Safety
 
-- Enable/disable persists to `disabled_plugins.json` in the plugins directory
+- Enable/disable persists to `disabled_plugins.toml` in the plugins directory
 - Remove only deletes from the canonical plugin install directory
 - Install validates manifests before copying and refuses to overwrite existing plugins
 - Doctor checks are read-only and never execute plugin code
 
 ### Tests
 
-- 19 management tests (selector resolution, view construction, doctor checks)
-- 6 management_ui tests (table rendering, key-value, doctor reports)
-- 16 TUI plugin management tests (format helpers, resolve, persistence)
+- 30 management tests (selector resolution, view construction, doctor checks, last_error)
+- 16 management_ui tests (table rendering, key-value, doctor reports, last_error display)
+- 31 TUI plugin management tests (format helpers, resolve, persistence, apply handler routing)
+
+## Security Policy (Phase 12)
+
+`PluginPolicy` in `src/plugin/policy.rs` is a composite policy that gates plugin invocations against manifest declarations and trust requirements.
+
+### Sub-Policies
+
+| Sub-Policy | Default | What It Controls |
+|------------|---------|-----------------|
+| `PluginLifecyclePolicy` | Observation hooks allowed; mutating/blocking/process denied | Hook type + runtime gating |
+| `PluginUiPolicy` | Dialog and toast allowed; panel/status denied | UI effect surface gating |
+| `PluginPermissionPolicy` | All capabilities denied unless declared | Command/hook invocation declarations |
+| `PluginInstallPolicy` | Env passthrough denied | Environment variable access from plugins |
+| `PluginRuntimePolicy` | Secrets denied; auth-hook requires high trust | Secret access and high-trust gating |
+
+All sub-policies default to conservative. A plugin must explicitly declare capabilities and permissions in its manifest to pass policy checks.
+
+### PolicyDecision
+
+```rust
+pub enum PolicyDecision {
+    Allow,
+    Deny { reason: String },
+    Degrade { reason: String },
+}
+```
+
+Four check functions validate invocations against policy:
+
+- **`check_invocation_allowed(manifest, invocation, trust, policy)`** — validates that a command or hook invocation matches a declared capability in the manifest.
+- **`check_ui_effect_allowed(manifest, effect, policy)`** — gates UI effects by output surface declarations (e.g., panel requires `PluginCapability::Panel`).
+- **`check_lifecycle_hook_allowed(hook_type, trust, policy)`** — validates hook type and trust class; auth hooks require high trust.
+- **`check_secret_access_allowed(manifest, secret_name, policy)`** — validates secret access against declared permissions.
+
+### Integration
+
+`PluginService` accepts an optional `Arc<PluginPolicy>` via `with_policy()`. When set:
+- `invoke_command()` rejects undeclared commands with a policy error
+- `dispatch_hook()` checks hook type, trust class, and auth-hook high-trust requirement before dispatch; denied hooks are skipped with logging
+
+When policy is absent, all checks pass (backward compatible).
+
+### Safety Note
+
+Process plugins are local executable code. They are not sandboxed. They are suitable for explicit user-invoked local commands, not silent lifecycle interception by default.
 
 ## See Also
 

@@ -1018,9 +1018,29 @@ First-class slash commands for local plugin management and observability.
 4. Unique prefix match on name (case-insensitive)
 
 **Safety semantics:**
-- Enable/disable persists to `disabled_plugins.json` in the plugins directory
+- Enable/disable persists to `disabled_plugins.toml` in the plugins directory
 - Remove only deletes from the canonical plugin install directory
 - Install validates manifests before copying and refuses to overwrite existing plugins
 - Doctor checks are read-only and never execute plugin code
 
 **Key types:** `PluginManager`, `PluginManagementView`, `PluginDoctorReport`
+
+### Security Policy (Phase 12)
+
+`PluginPolicy` in `src/plugin/policy.rs` is a composite policy combining five sub-policies with conservative defaults:
+
+- `PluginLifecyclePolicy` — observation hooks allowed; mutating/blocking/process hooks denied
+- `PluginUiPolicy` — dialog/toast allowed; panel/status effects denied
+- `PluginPermissionPolicy` — undeclared capabilities denied
+- `PluginInstallPolicy` — env passthrough denied
+- `PluginRuntimePolicy` — secrets denied; auth-hook requires high trust
+
+`PluginService` accepts `Option<Arc<PluginPolicy>>` via `with_policy()`. When set, `invoke_command()` checks command declarations and `dispatch_hook()` checks hook type + trust class before dispatch. Policy is opt-in: when absent, all checks pass (backward compatible).
+
+`src/plugin/permission.rs` provides `PolicyDecision` (Allow/Deny/Degrade) with four check functions:
+- `check_invocation_allowed` — validates command/hook invocations against manifest declarations
+- `check_ui_effect_allowed` — gates UI effects by output surface declarations
+- `check_lifecycle_hook_allowed` — validates hook type, trust class, auth-hook high-trust requirement
+- `check_secret_access_allowed` — validates secret access against declared permissions
+
+Process plugins are local executable code. They are not sandboxed. They are suitable for explicit user-invoked local commands, not silent lifecycle interception by default.

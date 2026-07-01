@@ -261,8 +261,8 @@ First-class slash commands for local plugin management:
 
 - `/plugins` — List all installed and built-in plugins with status and capability summary
 - `/plugin-info <id>` — Show detailed plugin info (runtime, capabilities, trust, permissions, diagnostics)
-- `/plugin-enable <id>` — Enable a plugin (persisted to disabled_plugins.json)
-- `/plugin-disable <id>` — Disable a plugin (persisted to disabled_plugins.json)
+- `/plugin-enable <id>` — Enable a plugin (persisted to disabled_plugins.toml)
+- `/plugin-disable <id>` — Disable a plugin (persisted to disabled_plugins.toml)
 - `/plugin-doctor [id]` — Run diagnostic checks on plugin configuration and health
 - `/plugin-remove <id>` — Remove a locally installed plugin (safe: only from plugin install dir)
 - `/plugin-install <path>` — Install a plugin from a local directory path
@@ -277,3 +277,43 @@ Plugin selectors resolve in order: exact id → exact name → unique id prefix 
 - Remove only deletes from the canonical plugin directory (`~/.local/share/codegg/plugins/`)
 - Install validates manifest.toml before copying and rejects invalid manifests
 - Doctor checks are read-only and never execute plugin code by default
+
+## Security Policy (Phase 12)
+
+`PluginPolicy` (`src/plugin/policy.rs`) is an opt-in composite policy that gates plugin invocations against manifest declarations and trust requirements.
+
+### Sub-Policy Defaults
+
+| Sub-Policy | Default | Controls |
+|------------|---------|----------|
+| `PluginLifecyclePolicy` | Observation hooks allowed; mutating/blocking/process denied | Hook type + runtime gating |
+| `PluginUiPolicy` | Dialog/toast allowed; panel/status denied | UI effect surfaces |
+| `PluginPermissionPolicy` | All capabilities denied unless declared | Command/hook declarations |
+| `PluginInstallPolicy` | Env passthrough denied | Environment variable access |
+| `PluginRuntimePolicy` | Secrets denied; auth-hook requires high trust | Secret access, high-trust gating |
+
+### PolicyDecision
+
+```rust
+pub enum PolicyDecision {
+    Allow,
+    Deny { reason: String },
+    Degrade { reason: String },
+}
+```
+
+Four check functions validate invocations:
+- `check_invocation_allowed` — command/hook must match a declared capability
+- `check_ui_effect_allowed` — UI effects gated by output surface declarations
+- `check_lifecycle_hook_allowed` — hook type and trust class validated; auth hooks require high trust
+- `check_secret_access_allowed` — secret access must match declared permissions
+
+### Integration
+
+`PluginService::with_policy(Arc<PluginPolicy>)` enables policy enforcement. When set:
+- `invoke_command()` rejects undeclared commands
+- `dispatch_hook()` checks hook type, trust class, and auth-hook high-trust requirement; denied hooks are skipped with logging
+
+When policy is absent, all checks pass (backward compatible).
+
+> **Process plugins are local executable code. They are not sandboxed.** They are suitable for explicit user-invoked local commands, not silent lifecycle interception by default.

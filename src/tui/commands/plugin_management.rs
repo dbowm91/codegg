@@ -966,4 +966,30 @@ mod tests {
         let dialog_open = app.dialog_state.info_dialog.is_some();
         assert!(!toasts.is_empty() || dialog_open);
     }
+
+    #[test]
+    fn apply_plugin_disable_finished_success_shows_builtin_name() {
+        let mut app = make_test_app();
+        // Simulate /plugin-disable on a builtin plugin — success path
+        apply_plugin_disable_finished(&mut app, "builtin:codex".into(), None);
+        let toasts: Vec<_> = app.messages_state.toasts.iter().collect();
+        assert_eq!(toasts.len(), 1);
+        assert!(toasts[0].message.contains("builtin:codex"));
+        assert!(toasts[0].message.contains("disabled"));
+    }
+
+    #[test]
+    fn apply_plugin_enable_finished_error_surfaces_conflict() {
+        let mut app = make_test_app();
+        // Simulate /plugin-enable with a duplicate command conflict error
+        apply_plugin_enable_finished(
+            &mut app,
+            "plugin-a".into(),
+            Some("duplicate command 'deploy' already registered by plugin-b".into()),
+        );
+        let toasts: Vec<_> = app.messages_state.toasts.iter().collect();
+        assert_eq!(toasts.len(), 1);
+        assert!(toasts[0].message.contains("Enable failed"));
+        assert!(toasts[0].message.contains("duplicate command"));
+    }
 }

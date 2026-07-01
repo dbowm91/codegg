@@ -5,6 +5,7 @@ use crate::plugin::hooks::{HookContext, HookRegistration, HookResult, HookType};
 use crate::plugin::loader::LoadError;
 use crate::plugin::loader::LoadedPlugin;
 use crate::plugin::manifest::{PluginManifest, PluginRuntimeSpec, PluginTrustClass};
+use crate::plugin::policy::PluginPolicy;
 use crate::plugin::registry::{PluginInfo, PluginRegistry, PluginRegistryError};
 use crate::plugin::runtime::builtin::BuiltinRuntime;
 use crate::plugin::runtime::process::{ProcessRuntime, ProcessRuntimeSpec};
@@ -20,6 +21,7 @@ pub struct PluginService {
     registry: Arc<PluginRegistry>,
     hook_timeout: Duration,
     builtin_runtime: Option<Arc<BuiltinRuntime>>,
+    policy: Option<Arc<PluginPolicy>>,
 }
 
 impl PluginService {
@@ -28,6 +30,7 @@ impl PluginService {
             registry,
             hook_timeout: Duration::from_secs(5),
             builtin_runtime: None,
+            policy: None,
         }
     }
 
@@ -40,6 +43,17 @@ impl PluginService {
     pub fn with_builtin_runtime(mut self, runtime: Arc<BuiltinRuntime>) -> Self {
         self.builtin_runtime = Some(runtime);
         self
+    }
+
+    /// Set the composite plugin policy for invocation and hook gating.
+    pub fn with_policy(mut self, policy: Arc<PluginPolicy>) -> Self {
+        self.policy = Some(policy);
+        self
+    }
+
+    /// Get a reference to the current policy, if set.
+    pub fn policy(&self) -> Option<&Arc<PluginPolicy>> {
+        self.policy.as_ref()
     }
 
     pub fn registry(&self) -> &Arc<PluginRegistry> {
@@ -162,6 +176,22 @@ impl PluginService {
             },
         };
 
+        // Policy check: invocation allowed
+        if let Some(ref policy) = self.policy {
+            let decision = crate::plugin::permission::check_invocation_allowed(
+                &plugin_info.manifest,
+                &invocation.capability,
+                &plugin_info.trust,
+                policy,
+            );
+            if !decision.is_allowed() {
+                return Err(PluginError::Runtime(format!(
+                    "policy denied invocation: {}",
+                    decision.reason().unwrap_or("unknown reason")
+                )));
+            }
+        }
+
         match &plugin_info.manifest.runtime {
             PluginRuntimeSpec::Builtin { handler } => {
                 // Builtin runtime is hook-only: there is no command dispatch path
@@ -248,6 +278,27 @@ impl PluginService {
         let mut all_effects = Vec::new();
 
         for hook in hooks {
+            // Policy check: hook allowed
+            if let Some(ref policy) = self.policy {
+                let plugin_info = self.registry.get(&hook.plugin_id).await;
+                if let Some(info) = &plugin_info {
+                    let decision = crate::plugin::permission::check_lifecycle_hook_allowed(
+                        hook_type,
+                        &info.trust,
+                        policy,
+                    );
+                    if !decision.is_allowed() {
+                        tracing::warn!(
+                            plugin = hook.plugin_id,
+                            hook_type = hook_type.as_str(),
+                            reason = decision.reason().unwrap_or("unknown"),
+                            "hook denied by policy"
+                        );
+                        continue;
+                    }
+                }
+            }
+
             let hook_ctx = HookContext {
                 hook_type,
                 input: current_input.clone(),

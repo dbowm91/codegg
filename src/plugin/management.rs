@@ -24,6 +24,8 @@ pub struct PluginManagementView {
     pub permissions_summary: String,
     pub diagnostic_count: usize,
     pub description: Option<String>,
+    /// The message from the most recent error-level diagnostic, if any.
+    pub last_error: Option<String>,
 }
 
 impl PluginManagementView {
@@ -31,6 +33,12 @@ impl PluginManagementView {
     pub fn from_info(info: &PluginInfo) -> Self {
         let manifest = &info.manifest;
         let permissions_summary = summarize_permissions(manifest);
+
+        let last_error = info
+            .diagnostics
+            .iter()
+            .rfind(|d| d.level == crate::plugin::PluginDiagnosticLevel::Error)
+            .map(|d| d.message.clone());
 
         Self {
             id: info.id.clone(),
@@ -49,6 +57,7 @@ impl PluginManagementView {
             permissions_summary,
             diagnostic_count: info.diagnostics.len(),
             description: manifest.description.clone(),
+            last_error,
         }
     }
 
@@ -72,6 +81,7 @@ impl PluginManagementView {
             permissions_summary: "n/a (marketplace listing)".to_string(),
             diagnostic_count: 0,
             description: plugin.description.clone(),
+            last_error: None,
         }
     }
 }
@@ -1170,5 +1180,52 @@ mod tests {
     #[test]
     fn command_exists_rejects_missing() {
         assert!(!command_exists("definitely-not-a-real-binary-zzz"));
+    }
+
+    #[test]
+    fn view_from_info_populates_last_error_from_diagnostics() {
+        let mut manifest = make_manifest("test", Vec::new());
+        manifest.api_version = SUPPORTED_API_VERSION;
+        let info = PluginInfo {
+            id: "test:1".into(),
+            manifest,
+            enabled: true,
+            trust: PluginTrustClass::Builtin,
+            diagnostics: vec![
+                crate::plugin::PluginDiagnostic {
+                    level: crate::plugin::PluginDiagnosticLevel::Warning,
+                    message: "just a warning".to_string(),
+                },
+                crate::plugin::PluginDiagnostic {
+                    level: crate::plugin::PluginDiagnosticLevel::Error,
+                    message: "something broke".to_string(),
+                },
+            ],
+        };
+        let view = PluginManagementView::from_info(&info);
+        assert_eq!(view.last_error.as_deref(), Some("something broke"));
+    }
+
+    #[test]
+    fn view_from_info_last_error_none_when_no_errors() {
+        let info = make_info("test:1", "test", true);
+        let view = PluginManagementView::from_info(&info);
+        assert!(view.last_error.is_none());
+    }
+
+    #[test]
+    fn view_from_marketplace_last_error_is_none() {
+        let plugin = MarketplacePlugin {
+            id: "test".into(),
+            name: "Test".into(),
+            version: "1.0.0".into(),
+            description: None,
+            author: None,
+            homepage: None,
+            tier: crate::plugin::marketplace::PluginTier::Personal,
+            hooks: Vec::new(),
+        };
+        let view = PluginManagementView::from_marketplace(&plugin, true);
+        assert!(view.last_error.is_none());
     }
 }

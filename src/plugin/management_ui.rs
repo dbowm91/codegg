@@ -132,6 +132,12 @@ pub fn plugin_info_node(plugin: &PluginManagementView) -> UiNode {
         key: "Diagnostics".to_string(),
         value: plugin.diagnostic_count.to_string(),
     });
+    if let Some(ref err) = plugin.last_error {
+        entries.push(KeyValueEntry {
+            key: "Last Error".to_string(),
+            value: err.clone(),
+        });
+    }
 
     UiNode::Container(ContainerNode {
         title: Some(format!("Plugin: {}", plugin.name)),
@@ -283,6 +289,7 @@ mod tests {
             permissions_summary: "none".to_string(),
             diagnostic_count: 0,
             description: Some("A test plugin".to_string()),
+            last_error: None,
         }
     }
 
@@ -378,6 +385,40 @@ mod tests {
                 UiNode::KeyValue(kv) => {
                     let desc = kv.entries.iter().find(|e| e.key == "Description").unwrap();
                     assert_eq!(desc.value, "(none)");
+                }
+                other => panic!("expected KeyValue, got {:?}", other),
+            },
+            other => panic!("expected Container, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn plugin_info_node_shows_last_error_when_present() {
+        let mut view = sample_view("test:1", "TestPlugin");
+        view.last_error = Some("Something went wrong".to_string());
+        let node = plugin_info_node(&view);
+        match &node {
+            UiNode::Container(c) => match &c.children[0] {
+                UiNode::KeyValue(kv) => {
+                    let last_err = kv.entries.iter().find(|e| e.key == "Last Error");
+                    assert!(last_err.is_some());
+                    assert_eq!(last_err.unwrap().value, "Something went wrong");
+                }
+                other => panic!("expected KeyValue, got {:?}", other),
+            },
+            other => panic!("expected Container, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn plugin_info_node_omits_last_error_when_none() {
+        let view = sample_view("test:1", "TestPlugin");
+        let node = plugin_info_node(&view);
+        match &node {
+            UiNode::Container(c) => match &c.children[0] {
+                UiNode::KeyValue(kv) => {
+                    let last_err = kv.entries.iter().find(|e| e.key == "Last Error");
+                    assert!(last_err.is_none());
                 }
                 other => panic!("expected KeyValue, got {:?}", other),
             },

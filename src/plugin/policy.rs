@@ -120,6 +120,130 @@ pub fn classify_hook(hook_type: HookType) -> HookCategory {
     }
 }
 
+/// Output surfaces that a plugin is allowed to emit UI effects to.
+#[derive(Debug, Clone)]
+pub struct PluginUiPolicy {
+    /// Allow EmitChat effects. Default: true for commands, false for hooks.
+    pub allow_chat: bool,
+    /// Allow ShowToast effects. Default: true.
+    pub allow_toast: bool,
+    /// Allow OpenDialog/CloseDialog effects. Default: true.
+    pub allow_dialog: bool,
+    /// Allow OpenPanel/UpdatePanel/ClosePanel effects. Default: false.
+    pub allow_panel: bool,
+    /// Allow AddStatusItem/UpdateStatusItem/RemoveStatusItem effects. Default: false.
+    pub allow_status: bool,
+}
+
+impl Default for PluginUiPolicy {
+    fn default() -> Self {
+        Self {
+            allow_chat: true,
+            allow_toast: true,
+            allow_dialog: true,
+            allow_panel: false,
+            allow_status: false,
+        }
+    }
+}
+
+/// Controls plugin permission evaluation.
+#[derive(Debug, Clone)]
+pub struct PluginPermissionPolicy {
+    /// Deny all secret access by default. Plugins must explicitly declare
+    /// and be granted secret access.
+    pub deny_secrets_by_default: bool,
+    /// Deny environment variable passthrough by default. Process plugins
+    /// only receive explicitly configured env entries.
+    pub deny_env_passthrough_by_default: bool,
+    /// Require explicit high-trust setting for auth/provider hooks.
+    pub require_high_trust_for_auth_hooks: bool,
+}
+
+impl Default for PluginPermissionPolicy {
+    fn default() -> Self {
+        Self {
+            deny_secrets_by_default: true,
+            deny_env_passthrough_by_default: true,
+            require_high_trust_for_auth_hooks: true,
+        }
+    }
+}
+
+/// Controls plugin installation and removal safety.
+#[derive(Debug, Clone)]
+pub struct PluginInstallPolicy {
+    /// Reject path traversal in install sources. Default: true.
+    pub reject_path_traversal: bool,
+    /// Refuse to remove paths outside the plugin install dir. Default: true.
+    pub refuse_outside_install_dir: bool,
+    /// Warn when WASM module path is outside the plugin install dir. Default: true.
+    pub warn_wasm_outside_plugin_dir: bool,
+}
+
+impl Default for PluginInstallPolicy {
+    fn default() -> Self {
+        Self {
+            reject_path_traversal: true,
+            refuse_outside_install_dir: true,
+            warn_wasm_outside_plugin_dir: true,
+        }
+    }
+}
+
+/// Controls runtime-specific enforcement.
+#[derive(Debug, Clone)]
+pub struct PluginRuntimePolicy {
+    /// Deny process lifecycle hooks unless explicitly allowed. Default: true.
+    pub deny_process_lifecycle_hooks: bool,
+    /// Deny undeclared capabilities. Default: true.
+    pub deny_undeclared_capabilities: bool,
+    /// Deny unknown output surfaces (degrade instead). Default: true.
+    pub deny_unknown_surfaces: bool,
+}
+
+impl Default for PluginRuntimePolicy {
+    fn default() -> Self {
+        Self {
+            deny_process_lifecycle_hooks: true,
+            deny_undeclared_capabilities: true,
+            deny_unknown_surfaces: true,
+        }
+    }
+}
+
+/// Composite plugin policy combining all sub-policies.
+///
+/// Defaults are conservative: observation hooks allowed, mutating/blocking
+/// hooks denied, process lifecycle hooks denied, secrets denied, env
+/// passthrough denied, undeclared capabilities denied, and UI effects
+/// filtered by declared output surfaces.
+#[derive(Debug, Clone, Default)]
+pub struct PluginPolicy {
+    pub lifecycle: PluginLifecyclePolicy,
+    pub ui: PluginUiPolicy,
+    pub permissions: PluginPermissionPolicy,
+    pub install: PluginInstallPolicy,
+    pub runtime: PluginRuntimePolicy,
+}
+
+impl PluginPolicy {
+    /// Check whether a specific hook type is allowed (delegates to lifecycle policy).
+    pub fn is_hook_allowed(&self, hook_type: HookType) -> bool {
+        self.lifecycle.is_hook_allowed(hook_type)
+    }
+
+    /// Check whether a runtime is allowed for lifecycle hooks.
+    pub fn is_runtime_allowed(&self, runtime: &PluginRuntimeSpec) -> bool {
+        self.lifecycle.is_runtime_allowed(runtime)
+    }
+
+    /// Check whether a trust class is allowed for lifecycle hooks.
+    pub fn is_trust_allowed(&self, trust: &PluginTrustClass) -> bool {
+        self.lifecycle.is_trust_allowed(trust)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -249,5 +373,50 @@ mod tests {
             HookCategory::Blocking
         );
         assert_eq!(classify_hook(HookType::Auth), HookCategory::Blocking);
+    }
+
+    #[test]
+    fn plugin_policy_default_has_conservative_ui() {
+        let policy = PluginPolicy::default();
+        assert!(policy.ui.allow_chat);
+        assert!(policy.ui.allow_toast);
+        assert!(policy.ui.allow_dialog);
+        assert!(!policy.ui.allow_panel);
+        assert!(!policy.ui.allow_status);
+    }
+
+    #[test]
+    fn plugin_policy_default_denies_secrets() {
+        let policy = PluginPolicy::default();
+        assert!(policy.permissions.deny_secrets_by_default);
+        assert!(policy.permissions.deny_env_passthrough_by_default);
+        assert!(policy.permissions.require_high_trust_for_auth_hooks);
+    }
+
+    #[test]
+    fn plugin_policy_default_enforces_runtime() {
+        let policy = PluginPolicy::default();
+        assert!(policy.runtime.deny_process_lifecycle_hooks);
+        assert!(policy.runtime.deny_undeclared_capabilities);
+        assert!(policy.runtime.deny_unknown_surfaces);
+    }
+
+    #[test]
+    fn plugin_policy_default_rejects_path_traversal() {
+        let policy = PluginPolicy::default();
+        assert!(policy.install.reject_path_traversal);
+        assert!(policy.install.refuse_outside_install_dir);
+        assert!(policy.install.warn_wasm_outside_plugin_dir);
+    }
+
+    #[test]
+    fn plugin_policy_delegates_to_lifecycle() {
+        let policy = PluginPolicy::default();
+        assert!(policy.is_hook_allowed(HookType::Event));
+        assert!(!policy.is_hook_allowed(HookType::ToolExecuteBefore));
+        assert!(policy.is_runtime_allowed(&PluginRuntimeSpec::Builtin { handler: "x".into() }));
+        assert!(!policy.is_runtime_allowed(&PluginRuntimeSpec::Process { command: "x".into(), args: vec![], timeout_ms: None }));
+        assert!(policy.is_trust_allowed(&PluginTrustClass::Builtin));
+        assert!(!policy.is_trust_allowed(&PluginTrustClass::LocalProcess));
     }
 }
