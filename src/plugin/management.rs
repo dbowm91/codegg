@@ -432,6 +432,123 @@ impl PluginManager {
             },
         });
 
+        // --- Policy diagnostics (informational) ---
+        if let Some(policy) = self.service.policy() {
+            // Check: process lifecycle hooks
+            if matches!(
+                &info.manifest.runtime,
+                PluginRuntimeSpec::Process { .. }
+            ) {
+                let process_hooks_ok = policy.lifecycle.allow_process_lifecycle_hooks;
+                checks.push(PluginDoctorCheck {
+                    name: "policy_process_hooks".to_string(),
+                    passed: process_hooks_ok,
+                    message: if process_hooks_ok {
+                        "Process lifecycle hooks are allowed by policy".to_string()
+                    } else {
+                        "Process lifecycle hooks denied by policy (default)".to_string()
+                    },
+                });
+            }
+
+            // Check: undeclared capabilities
+            if policy.runtime.deny_undeclared_capabilities {
+                checks.push(PluginDoctorCheck {
+                    name: "policy_undeclared_capabilities".to_string(),
+                    passed: true, // informational
+                    message: "Undeclared capabilities are denied by policy".to_string(),
+                });
+            }
+
+            // Check: secret access
+            if policy.permissions.deny_secrets_by_default {
+                let declared_secrets = info.manifest.permissions.secrets.len();
+                checks.push(PluginDoctorCheck {
+                    name: "policy_secret_access".to_string(),
+                    passed: true, // informational
+                    message: if declared_secrets > 0 {
+                        format!(
+                            "Secret access denied by default; {} secret(s) declared",
+                            declared_secrets
+                        )
+                    } else {
+                        "Secret access denied by default; no secrets declared".to_string()
+                    },
+                });
+            }
+
+            // Check: env passthrough
+            if policy.permissions.deny_env_passthrough_by_default
+                && matches!(&info.manifest.runtime, PluginRuntimeSpec::Process { .. })
+            {
+                checks.push(PluginDoctorCheck {
+                    name: "policy_env_passthrough".to_string(),
+                    passed: true, // informational
+                    message: "Env passthrough denied by default for process plugins".to_string(),
+                });
+            }
+
+            // Check: high-risk permissions
+            let high_risk = info.manifest.permissions.network
+                || info.manifest.permissions.tool_interception
+                || info.manifest.permissions.session_messages;
+            if high_risk {
+                let mut risks = Vec::new();
+                if info.manifest.permissions.network {
+                    risks.push("network");
+                }
+                if info.manifest.permissions.tool_interception {
+                    risks.push("tool_interception");
+                }
+                if info.manifest.permissions.session_messages {
+                    risks.push("session_messages");
+                }
+                checks.push(PluginDoctorCheck {
+                    name: "policy_high_risk_grants".to_string(),
+                    passed: false, // flagged for user review
+                    message: format!(
+                        "High-risk permission(s) declared: {}",
+                        risks.join(", ")
+                    ),
+                });
+            }
+
+            // Check: UI effect restrictions
+            if !policy.ui.allow_panel {
+                checks.push(PluginDoctorCheck {
+                    name: "policy_ui_panel_denied".to_string(),
+                    passed: true, // informational
+                    message: "Panel UI effects denied by policy".to_string(),
+                });
+            }
+            if !policy.ui.allow_status {
+                checks.push(PluginDoctorCheck {
+                    name: "policy_ui_status_denied".to_string(),
+                    passed: true, // informational
+                    message: "Status UI effects denied by policy".to_string(),
+                });
+            }
+
+            // Check: auth hook trust requirement
+            if policy.permissions.require_high_trust_for_auth_hooks
+                && !matches!(info.trust, PluginTrustClass::Builtin)
+            {
+                let has_auth_hook = info.manifest.hooks_capabilities().any(|h| {
+                    h.hook_type == "auth" || h.hook_type == "provider"
+                }) || info.manifest.hooks.iter().any(|h| {
+                    h.hook_type == "auth" || h.hook_type == "provider"
+                });
+                if has_auth_hook {
+                    checks.push(PluginDoctorCheck {
+                        name: "policy_auth_hook_trust".to_string(),
+                        passed: false,
+                        message: "Plugin declares auth/provider hook but is not Builtin trust class"
+                            .to_string(),
+                    });
+                }
+            }
+        }
+
         let all_passed = checks.iter().all(|c| c.passed);
 
         if !all_passed {
@@ -1227,5 +1344,142 @@ mod tests {
         };
         let view = PluginManagementView::from_marketplace(&plugin, true);
         assert!(view.last_error.is_none());
+    }
+
+    #[tokio::test]
+    async fn doctor_includes_policy_checks_when_policy_set() {
+        use crate::plugin::policy::PluginPolicy;
+        let registry = PluginRegistry::new();
+        let manifest = PluginManifest {
+            name: "proc-test".into(),
+            version: "1.0.0".into(),
+            api_version: SUPPORTED_API_VERSION,
+            runtime: PluginRuntimeSpec::Process {
+                command: "echo".into(),
+                args: vec![],
+                timeout_ms: None,
+            },
+            ..Default::default()
+        };
+        registry
+            .register(PluginInfo {
+                id: "proc:1".into(),
+                manifest,
+                enabled: true,
+                trust: PluginTrustClass::LocalProcess,
+                diagnostics: Vec::new(),
+            })
+            .await
+            .unwrap();
+        let service = Arc::new(
+            PluginService::new(Arc::new(registry))
+                .with_policy(Arc::new(PluginPolicy::default())),
+        );
+        let manager = PluginManager::new(service);
+
+        let report = manager.doctor("proc:1").await.unwrap();
+        let policy_check = report
+            .checks
+            .iter()
+            .find(|c| c.name == "policy_process_hooks");
+        assert!(policy_check.is_some());
+        let check = policy_check.unwrap();
+        assert!(!check.passed); // process hooks denied by default
+        assert!(check.message.contains("denied by policy"));
+    }
+
+    #[tokio::test]
+    async fn doctor_includes_env_passthrough_check_for_process_plugins() {
+        use crate::plugin::policy::PluginPolicy;
+        let registry = PluginRegistry::new();
+        let manifest = PluginManifest {
+            name: "proc-test".into(),
+            version: "1.0.0".into(),
+            api_version: SUPPORTED_API_VERSION,
+            runtime: PluginRuntimeSpec::Process {
+                command: "echo".into(),
+                args: vec![],
+                timeout_ms: None,
+            },
+            ..Default::default()
+        };
+        registry
+            .register(PluginInfo {
+                id: "proc:1".into(),
+                manifest,
+                enabled: true,
+                trust: PluginTrustClass::LocalProcess,
+                diagnostics: Vec::new(),
+            })
+            .await
+            .unwrap();
+        let service = Arc::new(
+            PluginService::new(Arc::new(registry))
+                .with_policy(Arc::new(PluginPolicy::default())),
+        );
+        let manager = PluginManager::new(service);
+
+        let report = manager.doctor("proc:1").await.unwrap();
+        let env_check = report
+            .checks
+            .iter()
+            .find(|c| c.name == "policy_env_passthrough");
+        assert!(env_check.is_some());
+        assert!(env_check.unwrap().message.contains("passthrough"));
+    }
+
+    #[tokio::test]
+    async fn doctor_no_policy_checks_when_no_policy() {
+        let registry = PluginRegistry::new();
+        registry
+            .register(make_info("test:1", "test", true))
+            .await
+            .unwrap();
+        let service = Arc::new(PluginService::new(Arc::new(registry)));
+        let manager = PluginManager::new(service);
+
+        let report = manager.doctor("test:1").await.unwrap();
+        let policy_checks: Vec<_> = report
+            .checks
+            .iter()
+            .filter(|c| c.name.starts_with("policy_"))
+            .collect();
+        assert!(policy_checks.is_empty());
+    }
+
+    #[tokio::test]
+    async fn doctor_reports_high_risk_permissions() {
+        use crate::plugin::policy::PluginPolicy;
+        let registry = PluginRegistry::new();
+        let mut manifest = make_manifest("risky", Vec::new());
+        manifest.permissions.network = true;
+        manifest.permissions.tool_interception = true;
+        manifest.api_version = SUPPORTED_API_VERSION;
+        registry
+            .register(PluginInfo {
+                id: "risky:1".into(),
+                manifest,
+                enabled: true,
+                trust: PluginTrustClass::LocalProcess,
+                diagnostics: Vec::new(),
+            })
+            .await
+            .unwrap();
+        let service = Arc::new(
+            PluginService::new(Arc::new(registry))
+                .with_policy(Arc::new(PluginPolicy::default())),
+        );
+        let manager = PluginManager::new(service);
+
+        let report = manager.doctor("risky:1").await.unwrap();
+        let risk_check = report
+            .checks
+            .iter()
+            .find(|c| c.name == "policy_high_risk_grants");
+        assert!(risk_check.is_some());
+        let check = risk_check.unwrap();
+        assert!(!check.passed);
+        assert!(check.message.contains("network"));
+        assert!(check.message.contains("tool_interception"));
     }
 }

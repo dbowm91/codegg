@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 
 use crate::config::schema::{CommandStdinMode, CommandStdoutMode};
+use crate::plugin::policy::PluginPermissionPolicy;
 use crate::protocol::plugin::{PluginInvocation, PluginResponse};
 
 use super::{PluginRuntime, RuntimeError, RuntimeLimits};
@@ -21,15 +22,31 @@ pub struct ProcessRuntimeSpec {
 pub struct ProcessRuntime {
     spec: ProcessRuntimeSpec,
     limits: RuntimeLimits,
+    env_policy: Option<PluginPermissionPolicy>,
 }
 
 impl ProcessRuntime {
     pub fn new(spec: ProcessRuntimeSpec, limits: RuntimeLimits) -> Self {
-        Self { spec, limits }
+        Self {
+            spec,
+            limits,
+            env_policy: None,
+        }
     }
 
     pub fn with_defaults(spec: ProcessRuntimeSpec) -> Self {
         Self::new(spec, RuntimeLimits::default())
+    }
+
+    /// Set the env passthrough policy for this runtime.
+    ///
+    /// When set, env vars without `=` (passthrough references) are
+    /// only resolved from the current environment if the policy allows
+    /// passthrough. With the default policy (`deny_env_passthrough_by_default:
+    /// true`), passthrough env vars are silently dropped.
+    pub fn with_env_policy(mut self, policy: PluginPermissionPolicy) -> Self {
+        self.env_policy = Some(policy);
+        self
     }
 }
 
@@ -86,7 +103,22 @@ impl PluginRuntime for ProcessRuntime {
 
         for env_var in &self.spec.env {
             if let Some((key, value)) = env_var.split_once('=') {
+                // Literal KEY=value — always allowed
                 cmd.env(key, value);
+            } else {
+                // Passthrough KEY — only allowed if policy permits
+                let passthrough_allowed = self
+                    .env_policy
+                    .as_ref()
+                    .map_or(true, |p| !p.deny_env_passthrough_by_default);
+
+                if passthrough_allowed {
+                    if let Ok(val) = std::env::var(env_var) {
+                        cmd.env(env_var, val);
+                    }
+                }
+                // When passthrough is denied, the env var is silently
+                // dropped — the plugin process will not inherit it.
             }
         }
 
@@ -328,5 +360,38 @@ mod tests {
         };
         let opt: Option<ProcessRuntimeSpec> = (&manifest_runtime).into();
         assert!(opt.is_none());
+    }
+
+    #[test]
+    fn process_runtime_default_has_no_env_policy() {
+        let spec = ProcessRuntimeSpec {
+            command: "test".into(),
+            args: vec![],
+            stdin: CommandStdinMode::Json,
+            stdout: CommandStdoutMode::Auto,
+            timeout_ms: None,
+            cwd: None,
+            env: vec![],
+        };
+        let runtime = ProcessRuntime::with_defaults(spec);
+        assert!(runtime.env_policy.is_none());
+    }
+
+    #[test]
+    fn process_runtime_with_env_policy() {
+        use crate::plugin::policy::PluginPermissionPolicy;
+        let spec = ProcessRuntimeSpec {
+            command: "test".into(),
+            args: vec![],
+            stdin: CommandStdinMode::Json,
+            stdout: CommandStdoutMode::Auto,
+            timeout_ms: None,
+            cwd: None,
+            env: vec![],
+        };
+        let policy = PluginPermissionPolicy::default();
+        let runtime = ProcessRuntime::new(spec, RuntimeLimits::default()).with_env_policy(policy);
+        assert!(runtime.env_policy.is_some());
+        assert!(runtime.env_policy.unwrap().deny_env_passthrough_by_default);
     }
 }

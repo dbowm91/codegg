@@ -39,7 +39,8 @@ pub fn check_invocation_allowed(
     trust: &PluginTrustClass,
     policy: &PluginPolicy,
 ) -> PolicyDecision {
-    match invocation {
+    let plugin_name = &manifest.name;
+    let decision = match invocation {
         PluginCapabilityInvocation::Command { name } => {
             let has_command = manifest.capabilities.iter().any(|cap| {
                 matches!(cap, crate::plugin::manifest::PluginCapability::Command(cmd) if cmd.name == *name)
@@ -58,29 +59,25 @@ pub fn check_invocation_allowed(
                 let allowed = policy.is_hook_allowed(ht);
 
                 if !allowed {
-                    return PolicyDecision::Deny(format!(
+                    PolicyDecision::Deny(format!(
                         "{:?} hook {:?} denied by policy",
                         category, ht
-                    ));
-                }
-
-                if !policy.is_trust_allowed(trust) {
-                    return PolicyDecision::Deny(format!(
+                    ))
+                } else if !policy.is_trust_allowed(trust) {
+                    PolicyDecision::Deny(format!(
                         "trust class {:?} not allowed for lifecycle hooks",
                         trust
-                    ));
-                }
-
-                if matches!(ht, HookType::Auth | HookType::Provider)
+                    ))
+                } else if matches!(ht, HookType::Auth | HookType::Provider)
                     && policy.permissions.require_high_trust_for_auth_hooks
                     && !matches!(trust, PluginTrustClass::Builtin)
                 {
-                    return PolicyDecision::Deny(
+                    PolicyDecision::Deny(
                         "auth/provider hooks require Builtin trust class".to_string(),
-                    );
+                    )
+                } else {
+                    PolicyDecision::Allow
                 }
-
-                PolicyDecision::Allow
             } else {
                 PolicyDecision::Deny(format!("unknown hook type: {}", hook_type))
             }
@@ -93,7 +90,17 @@ pub fn check_invocation_allowed(
                 std::mem::discriminant(invocation)
             ))
         }
+    };
+
+    if !decision.is_allowed() {
+        tracing::warn!(
+            plugin = plugin_name,
+            trust = ?trust,
+            decision = %decision.reason().unwrap_or("unknown"),
+            "policy denied invocation"
+        );
     }
+    decision
 }
 
 /// Check whether a UI effect is allowed for a plugin with given capabilities.
@@ -102,7 +109,7 @@ pub fn check_ui_effect_allowed(
     effect: &UiEffect,
     policy: &PluginPolicy,
 ) -> PolicyDecision {
-    match effect {
+    let decision = match effect {
         UiEffect::EmitChat { .. } => {
             let has_chat = manifest.capabilities.iter().any(|cap| {
                 matches!(cap, crate::plugin::manifest::PluginCapability::Command(cmd)
@@ -166,7 +173,17 @@ pub fn check_ui_effect_allowed(
                 )
             }
         }
+    };
+
+    if !decision.is_allowed() {
+        tracing::debug!(
+            plugin = manifest.name,
+            effect = ?std::mem::discriminant(effect),
+            decision = %decision.reason().unwrap_or("unknown"),
+            "policy denied UI effect"
+        );
     }
+    decision
 }
 
 /// Check whether a lifecycle hook is allowed by policy.
@@ -177,30 +194,36 @@ pub fn check_lifecycle_hook_allowed(
 ) -> PolicyDecision {
     let category = classify_hook(hook_type);
 
-    if !policy.is_hook_allowed(hook_type) {
-        return PolicyDecision::Deny(format!(
+    let decision = if !policy.is_hook_allowed(hook_type) {
+        PolicyDecision::Deny(format!(
             "{:?} hook {:?} denied by lifecycle policy",
             category, hook_type
-        ));
-    }
-
-    if !policy.is_trust_allowed(trust) {
-        return PolicyDecision::Deny(format!(
+        ))
+    } else if !policy.is_trust_allowed(trust) {
+        PolicyDecision::Deny(format!(
             "trust class {:?} denied for {:?} hooks",
             trust, category
-        ));
-    }
-
-    if matches!(hook_type, HookType::Auth | HookType::Provider)
+        ))
+    } else if matches!(hook_type, HookType::Auth | HookType::Provider)
         && policy.permissions.require_high_trust_for_auth_hooks
         && !matches!(trust, PluginTrustClass::Builtin)
     {
-        return PolicyDecision::Deny(
+        PolicyDecision::Deny(
             "auth/provider hooks require Builtin trust class".to_string(),
+        )
+    } else {
+        PolicyDecision::Allow
+    };
+
+    if !decision.is_allowed() {
+        tracing::warn!(
+            hook_type = hook_type.as_str(),
+            trust = ?trust,
+            decision = %decision.reason().unwrap_or("unknown"),
+            "policy denied lifecycle hook"
         );
     }
-
-    PolicyDecision::Allow
+    decision
 }
 
 /// Check whether a plugin is allowed to access a secret.
@@ -209,18 +232,26 @@ pub fn check_secret_access_allowed(
     secret_name: &str,
     policy: &PluginPolicy,
 ) -> PolicyDecision {
-    if !policy.permissions.deny_secrets_by_default {
-        return PolicyDecision::Allow;
-    }
-
-    if manifest.permissions.secrets.iter().any(|s| s == secret_name) {
+    let decision = if !policy.permissions.deny_secrets_by_default
+        || manifest.permissions.secrets.iter().any(|s| s == secret_name)
+    {
         PolicyDecision::Allow
     } else {
         PolicyDecision::Deny(format!(
             "secret '{}' not declared in plugin permissions",
             secret_name
         ))
+    };
+
+    if !decision.is_allowed() {
+        tracing::warn!(
+            plugin = manifest.name,
+            secret = secret_name,
+            decision = %decision.reason().unwrap_or("unknown"),
+            "policy denied secret access"
+        );
     }
+    decision
 }
 
 #[cfg(test)]
