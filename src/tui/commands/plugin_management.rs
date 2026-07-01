@@ -11,6 +11,8 @@
 //! [`TuiCommand`] completion variant back through the command channel.
 
 use crate::plugin::install::plugins_dir;
+use crate::plugin::management::{PluginDoctorCheck, PluginDoctorReport, PluginManagementView};
+use crate::plugin::management_ui::{doctor_report_node, node_to_lines, plugin_info_node, plugins_table};
 use crate::plugin::marketplace::{MarketplacePlugin, MarketplaceService};
 use crate::tui::app::App;
 use crate::tui::app::TuiCommand;
@@ -22,6 +24,7 @@ use crate::tui::app::TuiCommand;
 /// Format a single plugin as a one-line summary for the list view.
 ///
 /// Format: `id | name | version | status | capabilities`
+#[allow(dead_code)]
 pub(crate) fn format_plugin_line(plugin: &MarketplacePlugin, enabled: bool) -> String {
     let hook_count = plugin.hooks.len();
     format!(
@@ -39,6 +42,7 @@ pub(crate) fn format_plugin_line(plugin: &MarketplacePlugin, enabled: bool) -> S
 }
 
 /// Format a single plugin as detailed key-value lines for the info view.
+#[allow(dead_code)]
 pub(crate) fn format_plugin_detail(plugin: &MarketplacePlugin, enabled: bool) -> Vec<String> {
     let mut lines = Vec::new();
     lines.push(format!("ID:          {}", plugin.id));
@@ -173,13 +177,17 @@ pub(crate) fn show_plugins(app: &mut App) {
             });
         }
 
-        let mut lines = Vec::new();
-        lines.push(format!("Installed plugins ({}):", plugins.len()));
-        lines.push(String::new());
-        for plugin in &plugins {
-            let enabled = !disabled.contains(&plugin.id);
-            lines.push(format_plugin_line(plugin, enabled));
-        }
+        let views: Vec<PluginManagementView> = plugins
+            .iter()
+            .map(|p| {
+                let enabled = !disabled.contains(&p.id);
+                PluginManagementView::from_marketplace(p, enabled)
+            })
+            .collect();
+        let node = plugins_table(&views);
+        let mut lines = node_to_lines(&node);
+        lines.insert(0, format!("Installed plugins ({}):", plugins.len()));
+        lines.insert(1, String::new());
 
         Some(TuiCommand::PluginListFinished { lines, error: None })
     });
@@ -197,7 +205,9 @@ pub(crate) fn show_plugin_info(app: &mut App, query: &str) {
         match resolve_plugin(&plugins, &query) {
             Ok(plugin) => {
                 let enabled = !disabled.contains(&plugin.id);
-                let lines = format_plugin_detail(plugin, enabled);
+                let view = PluginManagementView::from_marketplace(plugin, enabled);
+                let node = plugin_info_node(&view);
+                let lines = node_to_lines(&node);
                 Some(TuiCommand::PluginInfoFinished {
                     plugin_id: plugin.id.clone(),
                     lines,
@@ -316,17 +326,16 @@ pub(crate) fn doctor_plugin(app: &mut App, query: Option<&str>) {
             None => plugins,
         };
 
-        let mut lines = Vec::new();
-        lines.push(format!(
+        let mut all_lines = Vec::new();
+        all_lines.push(format!(
             "Plugin doctor: checking {} plugin(s)",
             plugins_to_check.len()
         ));
-        lines.push(String::new());
+        all_lines.push(String::new());
 
         let plugins_dir = plugins_dir();
         for plugin in &plugins_to_check {
             let enabled = !disabled.contains(&plugin.id);
-            let status_str = if enabled { "OK" } else { "DISABLED" };
 
             let manifest_path = plugins_dir.join(&plugin.id).join("manifest.toml");
             let manifest_ok = manifest_path.exists();
@@ -334,35 +343,86 @@ pub(crate) fn doctor_plugin(app: &mut App, query: Option<&str>) {
             let wasm_path = plugins_dir.join(&plugin.id).join("plugin.wasm");
             let wasm_ok = wasm_path.exists();
 
-            lines.push(format!(
-                "[{}] {} v{} — manifest={} wasm={} hooks={}",
-                status_str,
-                plugin.name,
-                plugin.version,
-                if manifest_ok { "found" } else { "MISSING" },
-                if wasm_ok { "found" } else { "absent" },
-                plugin.hooks.len(),
-            ));
-
-            if !manifest_ok {
-                lines.push(format!(
-                    "  WARNING: manifest.toml not found at {}",
-                    manifest_path.display()
-                ));
-            }
-            if plugin.hooks.is_empty() {
-                lines.push("  NOTE: plugin declares no hooks or capabilities".to_string());
-            }
+            // Build a PluginDoctorReport for this plugin and render via UiNode.
+            let checks = vec![
+                PluginDoctorCheck {
+                    name: "manifest_present".to_string(),
+                    passed: manifest_ok,
+                    message: if manifest_ok {
+                        format!("manifest.toml found at {}", manifest_path.display())
+                    } else {
+                        format!("manifest.toml MISSING at {}", manifest_path.display())
+                    },
+                },
+                PluginDoctorCheck {
+                    name: "wasm_artifact".to_string(),
+                    passed: true, // informational
+                    message: if wasm_ok {
+                        "plugin.wasm found".to_string()
+                    } else {
+                        "plugin.wasm absent (may not be required for builtin/process plugins)".to_string()
+                    },
+                },
+                PluginDoctorCheck {
+                    name: "enable_state".to_string(),
+                    passed: true, // informational
+                    message: if enabled {
+                        "Plugin is enabled".to_string()
+                    } else {
+                        "Plugin is disabled".to_string()
+                    },
+                },
+                PluginDoctorCheck {
+                    name: "hooks_declared".to_string(),
+                    passed: !plugin.hooks.is_empty(),
+                    message: if plugin.hooks.is_empty() {
+                        "Plugin declares no hooks or capabilities".to_string()
+                    } else {
+                        format!("{} hook(s) declared: {}", plugin.hooks.len(), plugin.hooks.join(", "))
+                    },
+                },
+            ];
+            let report = PluginDoctorReport {
+                plugin_id: plugin.id.clone(),
+                plugin_name: plugin.name.clone(),
+                checks,
+            };
+            let node = doctor_report_node(&report);
+            let mut node_lines = node_to_lines(&node);
+            all_lines.append(&mut node_lines);
+            all_lines.push(String::new());
         }
 
-        lines.push(String::new());
-        lines.push("Diagnostics complete.".to_string());
+        all_lines.push("Diagnostics complete.".to_string());
 
         Some(TuiCommand::PluginDoctorFinished {
-            lines,
+            lines: all_lines,
             error: None,
         })
     });
+}
+
+/// Verify that a plugin target path is safely contained within the
+/// canonical plugins directory.
+///
+/// Returns `Ok(())` if the path resolves inside the plugins dir, or
+/// `Err(message)` if it does not or cannot be resolved.
+///
+/// This is the safety check extracted from the `remove_plugin` handler
+/// for testability.
+pub(crate) fn verify_remove_target_is_safe(
+    target: &std::path::Path,
+) -> Result<(), String> {
+    let plugins_dir = plugins_dir();
+    let target_canonical = std::fs::canonicalize(target)
+        .map_err(|e| format!("Cannot resolve plugin path: {e}"))?;
+    let plugins_dir_canonical = std::fs::canonicalize(&plugins_dir)
+        .map_err(|e| format!("Cannot resolve plugins directory: {e}"))?;
+
+    if !target_canonical.starts_with(&plugins_dir_canonical) {
+        return Err("Refused: plugin path is outside the plugins directory".to_string());
+    }
+    Ok(())
 }
 
 /// Remove (uninstall) an installed plugin.
@@ -387,31 +447,11 @@ pub(crate) fn remove_plugin(app: &mut App, query: &str) {
         };
 
         // Safety check: only remove from the canonical plugins directory
-        let plugins_dir = plugins_dir();
-        let target = plugins_dir.join(&plugin_id);
-        let target_canonical = match std::fs::canonicalize(&target) {
-            Ok(p) => p,
-            Err(e) => {
-                return Some(TuiCommand::PluginRemoveFinished {
-                    plugin_id,
-                    error: Some(format!("Cannot resolve plugin path: {e}")),
-                });
-            }
-        };
-        let plugins_dir_canonical = match std::fs::canonicalize(&plugins_dir) {
-            Ok(p) => p,
-            Err(e) => {
-                return Some(TuiCommand::PluginRemoveFinished {
-                    plugin_id,
-                    error: Some(format!("Cannot resolve plugins directory: {e}")),
-                });
-            }
-        };
-
-        if !target_canonical.starts_with(&plugins_dir_canonical) {
+        let target = plugins_dir().join(&plugin_id);
+        if let Err(e) = verify_remove_target_is_safe(&target) {
             return Some(TuiCommand::PluginRemoveFinished {
                 plugin_id,
-                error: Some("Refused: plugin path is outside the plugins directory".to_string()),
+                error: Some(e),
             });
         }
 
@@ -777,5 +817,153 @@ mod tests {
         );
         let line = format_plugin_line(&plugin, true);
         assert!(line.contains("3 hooks"));
+    }
+
+    #[test]
+    fn verify_remove_target_safety_rejects_nonexistent_path() {
+        // A path that doesn't exist cannot be canonicalized.
+        let result =
+            verify_remove_target_is_safe(std::path::Path::new("/nonexistent/zzz/path/abc"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn verify_remove_target_safety_rejects_path_outside_plugins_dir() {
+        // Use a path that exists but is outside the plugins dir (e.g. /tmp).
+        let outside = std::env::temp_dir();
+        let result = verify_remove_target_is_safe(&outside);
+        // temp_dir canonicalizes to /var/folders/... on macOS which is
+        // outside the canonical plugins dir → must be rejected.
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("outside"));
+    }
+
+    #[test]
+    fn verify_remove_target_safety_accepts_path_inside_plugins_dir() {
+        // The plugins dir itself canonicalizes to a real path; a child
+        // of it should be accepted. We use the plugins dir directly to
+        // avoid filesystem mutation in tests.
+        let dir = plugins_dir();
+        let result = verify_remove_target_is_safe(&dir);
+        assert!(result.is_ok());
+    }
+
+    // --- Apply handler tests ---
+
+    fn make_test_app() -> App {
+        App::new_for_testing("/tmp".into())
+    }
+
+    #[test]
+    fn apply_plugin_list_finished_error_routes_to_toast() {
+        let mut app = make_test_app();
+        apply_plugin_list_finished(&mut app, Vec::new(), Some("boom".to_string()));
+        let toasts: Vec<_> = app.messages_state.toasts.iter().collect();
+        assert_eq!(toasts.len(), 1);
+        assert!(toasts[0].message.contains("Plugin list failed"));
+        assert!(toasts[0].message.contains("boom"));
+    }
+
+    #[test]
+    fn apply_plugin_list_finished_ok_routes_to_dialog() {
+        let mut app = make_test_app();
+        apply_plugin_list_finished(&mut app, vec!["a".into(), "b".into()], None);
+        // Either a short toast or an info dialog should be open.
+        let toasts: Vec<_> = app.messages_state.toasts.iter().collect();
+        let dialog_open = app.dialog_state.info_dialog.is_some();
+        assert!(!toasts.is_empty() || dialog_open);
+    }
+
+    #[test]
+    fn apply_plugin_info_finished_error_routes_to_toast() {
+        let mut app = make_test_app();
+        apply_plugin_info_finished(
+            &mut app,
+            "missing-plugin".into(),
+            Vec::new(),
+            Some("not found".to_string()),
+        );
+        let toasts: Vec<_> = app.messages_state.toasts.iter().collect();
+        assert_eq!(toasts.len(), 1);
+        assert!(toasts[0].message.contains("Plugin info"));
+        assert!(toasts[0].message.contains("not found"));
+    }
+
+    #[test]
+    fn apply_plugin_enable_finished_success_routes_to_toast() {
+        let mut app = make_test_app();
+        apply_plugin_enable_finished(&mut app, "my-plugin".into(), None);
+        let toasts: Vec<_> = app.messages_state.toasts.iter().collect();
+        assert_eq!(toasts.len(), 1);
+        assert!(toasts[0].message.contains("my-plugin"));
+        assert!(toasts[0].message.contains("enabled"));
+    }
+
+    #[test]
+    fn apply_plugin_enable_finished_error_routes_to_toast() {
+        let mut app = make_test_app();
+        apply_plugin_enable_finished(&mut app, "my-plugin".into(), Some("nope".into()));
+        let toasts: Vec<_> = app.messages_state.toasts.iter().collect();
+        assert_eq!(toasts.len(), 1);
+        assert!(toasts[0].message.contains("Enable failed"));
+    }
+
+    #[test]
+    fn apply_plugin_disable_finished_success_routes_to_toast() {
+        let mut app = make_test_app();
+        apply_plugin_disable_finished(&mut app, "my-plugin".into(), None);
+        let toasts: Vec<_> = app.messages_state.toasts.iter().collect();
+        assert_eq!(toasts.len(), 1);
+        assert!(toasts[0].message.contains("disabled"));
+    }
+
+    #[test]
+    fn apply_plugin_remove_finished_success_routes_to_toast() {
+        let mut app = make_test_app();
+        apply_plugin_remove_finished(&mut app, "old-plugin".into(), None);
+        let toasts: Vec<_> = app.messages_state.toasts.iter().collect();
+        assert_eq!(toasts.len(), 1);
+        assert!(toasts[0].message.contains("removed"));
+    }
+
+    #[test]
+    fn apply_plugin_install_finished_error_routes_to_toast() {
+        let mut app = make_test_app();
+        apply_plugin_install_finished(
+            &mut app,
+            "/src/path".into(),
+            Vec::new(),
+            Some("invalid manifest".into()),
+        );
+        let toasts: Vec<_> = app.messages_state.toasts.iter().collect();
+        assert_eq!(toasts.len(), 1);
+        assert!(toasts[0].message.contains("Install failed"));
+    }
+
+    #[test]
+    fn apply_plugin_doctor_finished_error_routes_to_toast() {
+        let mut app = make_test_app();
+        apply_plugin_doctor_finished(&mut app, Vec::new(), Some("missing".into()));
+        let toasts: Vec<_> = app.messages_state.toasts.iter().collect();
+        assert_eq!(toasts.len(), 1);
+        assert!(toasts[0].message.contains("Plugin doctor"));
+    }
+
+    #[test]
+    fn apply_plugin_doctor_finished_ok_with_lines() {
+        let mut app = make_test_app();
+        // UiNode-derived lines go through show_short_or_info
+        let lines = vec![
+            "Plugin doctor: checking 1 plugin(s)".to_string(),
+            String::new(),
+            "== Plugin Doctor: Test ==".to_string(),
+            "1 checks, 1 passed, 0 failed".to_string(),
+            "[PASS] manifest_present: ok".to_string(),
+        ];
+        apply_plugin_doctor_finished(&mut app, lines, None);
+        // Either a toast appears or an info dialog opens
+        let toasts: Vec<_> = app.messages_state.toasts.iter().collect();
+        let dialog_open = app.dialog_state.info_dialog.is_some();
+        assert!(!toasts.is_empty() || dialog_open);
     }
 }

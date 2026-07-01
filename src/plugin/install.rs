@@ -218,3 +218,84 @@ fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    /// Create a unique temp directory under the system temp dir.
+    fn make_temp_dir(label: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "codegg_install_test_{}_{}",
+            label,
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[tokio::test]
+    async fn install_rejects_missing_manifest() {
+        let src = make_temp_dir("no_manifest");
+        // No manifest.toml created
+        let result = install_from_path(&src).await;
+        assert!(matches!(result, Err(InstallError::Manifest(_))));
+    }
+
+    #[tokio::test]
+    async fn install_rejects_invalid_toml_manifest() {
+        let src = make_temp_dir("bad_manifest");
+        fs::write(
+            src.join("manifest.toml"),
+            "this is not valid toml [[[ ]]]",
+        )
+        .unwrap();
+        let result = install_from_path(&src).await;
+        assert!(matches!(result, Err(InstallError::Manifest(_))));
+    }
+
+    #[tokio::test]
+    async fn install_rejects_nonexistent_path() {
+        let result = install_from_path(Path::new("/nonexistent/zzz/path/abc")).await;
+        assert!(matches!(result, Err(InstallError::InvalidPath(_))));
+    }
+
+    #[tokio::test]
+    async fn install_accepts_valid_plugin() {
+        let src = make_temp_dir("valid");
+        fs::write(
+            src.join("manifest.toml"),
+            r#"
+name = "test-plugin"
+version = "1.0.0"
+api_version = 1
+"#,
+        )
+        .unwrap();
+
+        let result = install_from_path(&src).await;
+        // It may succeed or fail with AlreadyInstalled if a previous run
+        // left files; either way it must not be InvalidPath or Manifest error.
+        if let Err(e) = &result {
+            assert!(
+                !matches!(e, InstallError::InvalidPath(_) | InstallError::Manifest(_)),
+                "unexpected error: {e:?}"
+            );
+        }
+        // Cleanup if installed
+        if let Ok(dest) = &result {
+            let _ = fs::remove_dir_all(dest);
+        }
+    }
+
+    #[tokio::test]
+    async fn uninstall_rejects_path_traversal() {
+        // plugins_dir().join(plugin_name) keeps the path anchored to the
+        // canonical plugins directory. A traversal attempt resolves into
+        // a path that doesn't exist relative to plugins_dir.
+        let result = uninstall("../../../etc/passwd").await;
+        assert!(matches!(result, Err(InstallError::InvalidPath(_))));
+    }
+}

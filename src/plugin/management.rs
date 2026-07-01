@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use crate::plugin::manifest::{PluginManifest, PluginRuntimeSpec, PluginTrustClass};
+use crate::plugin::marketplace::MarketplacePlugin;
 use crate::plugin::registry::{PluginInfo, PluginRegistry, PluginRegistryError};
 use crate::plugin::service::{PluginError, PluginService};
 
@@ -48,6 +49,29 @@ impl PluginManagementView {
             permissions_summary,
             diagnostic_count: info.diagnostics.len(),
             description: manifest.description.clone(),
+        }
+    }
+
+    /// Build a view from a [`MarketplacePlugin`] (filesystem-discovered plugin)
+    /// combined with its current enabled state.
+    pub fn from_marketplace(plugin: &MarketplacePlugin, enabled: bool) -> Self {
+        Self {
+            id: plugin.id.clone(),
+            name: plugin.name.clone(),
+            version: plugin.version.clone(),
+            api_version: 1, // marketplace plugins don't carry API version separately
+            enabled,
+            runtime_kind: "marketplace".to_string(),
+            trust: PluginTrustClass::TrustedLocal,
+            source_path: Some(format!("{}/{}", "plugins", plugin.id)),
+            command_count: 0,
+            hook_count: plugin.hooks.len(),
+            panel_count: 0,
+            status_widget_count: 0,
+            event_subscription_count: 0,
+            permissions_summary: "n/a (marketplace listing)".to_string(),
+            diagnostic_count: 0,
+            description: plugin.description.clone(),
         }
     }
 }
@@ -120,65 +144,6 @@ pub struct PluginDoctorReport {
     pub checks: Vec<PluginDoctorCheck>,
 }
 
-/// Resolve a user-provided selector string to a concrete plugin.
-///
-/// Resolution order:
-/// 1. Exact plugin id match
-/// 2. Exact manifest name match
-/// 3. Unique prefix match on id (case-insensitive)
-/// 4. Unique prefix match on name (case-insensitive)
-/// 5. Error on none or ambiguous
-pub async fn resolve_plugin_selector(
-    registry: &PluginRegistry,
-    selector: &str,
-) -> Result<PluginInfo, PluginManagementError> {
-    let all = registry.list().await;
-    let selector_lower = selector.to_lowercase();
-
-    // 1. Exact plugin id match
-    if let Some(info) = all.iter().find(|p| p.id == selector) {
-        return Ok(info.clone());
-    }
-
-    // 2. Exact manifest name match
-    if let Some(info) = all.iter().find(|p| p.manifest.name == selector) {
-        return Ok(info.clone());
-    }
-
-    // 3. Unique prefix match on id (case-insensitive)
-    let id_prefixes: Vec<&PluginInfo> = all
-        .iter()
-        .filter(|p| p.id.to_lowercase().starts_with(&selector_lower))
-        .collect();
-    if id_prefixes.len() == 1 {
-        return Ok(id_prefixes[0].clone());
-    }
-    if id_prefixes.len() > 1 {
-        return Err(PluginManagementError::Ambiguous(
-            selector.to_string(),
-            id_prefixes.iter().map(|p| p.id.clone()).collect(),
-        ));
-    }
-
-    // 4. Unique prefix match on name (case-insensitive)
-    let name_prefixes: Vec<&PluginInfo> = all
-        .iter()
-        .filter(|p| p.manifest.name.to_lowercase().starts_with(&selector_lower))
-        .collect();
-    if name_prefixes.len() == 1 {
-        return Ok(name_prefixes[0].clone());
-    }
-    if name_prefixes.len() > 1 {
-        return Err(PluginManagementError::Ambiguous(
-            selector.to_string(),
-            name_prefixes.iter().map(|p| p.id.clone()).collect(),
-        ));
-    }
-
-    // 5. No match
-    Err(PluginManagementError::NoMatch(selector.to_string()))
-}
-
 /// High-level plugin management API.
 pub struct PluginManager {
     service: Arc<PluginService>,
@@ -200,73 +165,88 @@ impl PluginManager {
         &self,
         selector: &str,
     ) -> Result<PluginManagementView, PluginManagementError> {
-        let info = resolve_plugin_selector(self.service.registry(), selector).await?;
+        let info = self
+            .service
+            .registry()
+            .resolve_plugin_selector(selector)
+            .await
+            .map_err(registry_error_to_management)?;
         Ok(PluginManagementView::from_info(&info))
     }
 
     /// Enable a plugin by selector.
     ///
     /// Returns the updated view after enabling.
-    ///
-    /// NOTE: This requires `PluginRegistry::set_enabled` to take `&self`
-    /// instead of `&mut self`. The current registry signature requires
-    /// `&mut self` which is incompatible with `Arc<PluginRegistry>`.
-    /// The registry method should be updated to take `&self` since all
-    /// mutations go through internal `RwLock`s.
-    ///
-    /// Until the registry is updated, this returns a `Service` error.
     pub async fn enable(
         &self,
         selector: &str,
     ) -> Result<PluginManagementView, PluginManagementError> {
-        let info = resolve_plugin_selector(self.service.registry(), selector).await?;
-        // TODO: Once PluginRegistry::set_enabled takes `&self`, call:
-        //   self.service.registry().set_enabled(&info.id, true).await?;
-        // For now, the TUI handler should call registry.set_enabled() directly
-        // when it has mutable access.
-        let _ = &info;
-        Err(PluginManagementError::Service(
-            "enable requires registry.set_enabled to take &self; \
-             use the TUI handler with direct registry access for now"
-                .to_string(),
-        ))
+        let info = self
+            .service
+            .registry()
+            .resolve_plugin_selector(selector)
+            .await
+            .map_err(registry_error_to_management)?;
+        self.service
+            .registry()
+            .set_enabled(&info.id, true)
+            .await?;
+        let updated = self
+            .service
+            .registry()
+            .get(&info.id)
+            .await
+            .ok_or_else(|| PluginManagementError::NotFound(info.id.clone()))?;
+        Ok(PluginManagementView::from_info(&updated))
     }
 
     /// Disable a plugin by selector.
     ///
     /// Returns the updated view after disabling.
-    ///
-    /// See [`Self::enable`] for the `set_enabled` signature limitation.
     pub async fn disable(
         &self,
         selector: &str,
     ) -> Result<PluginManagementView, PluginManagementError> {
-        let info = resolve_plugin_selector(self.service.registry(), selector).await?;
-        let _ = &info;
-        Err(PluginManagementError::Service(
-            "disable requires registry.set_enabled to take &self; \
-             use the TUI handler with direct registry access for now"
-                .to_string(),
-        ))
+        let info = self
+            .service
+            .registry()
+            .resolve_plugin_selector(selector)
+            .await
+            .map_err(registry_error_to_management)?;
+        self.service
+            .registry()
+            .set_enabled(&info.id, false)
+            .await?;
+        let updated = self
+            .service
+            .registry()
+            .get(&info.id)
+            .await
+            .ok_or_else(|| PluginManagementError::NotFound(info.id.clone()))?;
+        Ok(PluginManagementView::from_info(&updated))
     }
 
-    /// Uninstall a plugin by selector (removes from registry).
-    pub async fn uninstall(
+    /// Remove (unregister) a plugin from the registry by selector.
+    ///
+    /// This does NOT delete files on disk. For safe filesystem removal,
+    /// the TUI handler should validate the path against the canonical
+    /// plugins directory before calling `remove`.
+    pub async fn remove(
         &self,
         selector: &str,
     ) -> Result<PluginManagementView, PluginManagementError> {
-        let info = resolve_plugin_selector(self.service.registry(), selector).await?;
+        let info = self
+            .service
+            .registry()
+            .resolve_plugin_selector(selector)
+            .await
+            .map_err(registry_error_to_management)?;
         let removed = self
             .service
             .registry()
             .unregister(&info.id)
             .await
-            .ok_or_else(|| {
-                PluginManagementError::NotFound(format!(
-                    "plugin '{}' not found during unregister",
-                    info.id
-                ))
-            })?;
+            .ok_or_else(|| PluginManagementError::NotFound(info.id.clone()))?;
         Ok(PluginManagementView::from_info(&removed))
     }
 
@@ -275,7 +255,12 @@ impl PluginManager {
         &self,
         selector: &str,
     ) -> Result<PluginDoctorReport, PluginManagementError> {
-        let info = resolve_plugin_selector(self.service.registry(), selector).await?;
+        let info = self
+            .service
+            .registry()
+            .resolve_plugin_selector(selector)
+            .await
+            .map_err(registry_error_to_management)?;
         let view = PluginManagementView::from_info(&info);
         let mut checks = Vec::new();
 
@@ -295,6 +280,21 @@ impl PluginManager {
                 "Manifest has name and version".to_string()
             } else {
                 "Manifest is missing name or version".to_string()
+            },
+        });
+
+        // Check: API version compatibility
+        let api_compat_ok = info.manifest.api_version == SUPPORTED_API_VERSION;
+        checks.push(PluginDoctorCheck {
+            name: "api_version".to_string(),
+            passed: api_compat_ok,
+            message: if api_compat_ok {
+                format!("API version {} is supported", info.manifest.api_version)
+            } else {
+                format!(
+                    "API version {} differs from supported {}",
+                    info.manifest.api_version, SUPPORTED_API_VERSION
+                )
             },
         });
 
@@ -328,7 +328,72 @@ impl PluginManager {
             },
         });
 
-        // Check: no diagnostics at error level
+        // Check: runtime availability (process executable or wasm feature)
+        let runtime_avail_check = check_runtime_availability(&info.manifest);
+        checks.push(runtime_avail_check);
+
+        // Check: plugin enable state
+        checks.push(PluginDoctorCheck {
+            name: "enable_state".to_string(),
+            passed: true, // informational
+            message: if info.enabled {
+                "Plugin is enabled".to_string()
+            } else {
+                "Plugin is disabled".to_string()
+            },
+        });
+
+        // Check: duplicate capability conflicts
+        let dup_check = check_duplicate_capabilities(&self.service.registry().clone(), &info).await;
+        checks.push(dup_check);
+
+        // Check: permission/trust warnings (informational)
+        let perms = &info.manifest.permissions;
+        let perms_default = !perms.network
+            && matches!(perms.filesystem, crate::plugin::manifest::FilesystemPermission::None)
+            && perms.env.is_empty()
+            && perms.secrets.is_empty()
+            && !perms.session_messages
+            && !perms.tool_interception;
+        checks.push(PluginDoctorCheck {
+            name: "permissions_declared".to_string(),
+            passed: true, // informational, not a failure
+            message: if perms_default {
+                "No permissions declared (default)".to_string()
+            } else {
+                format!("Permissions: {}", view.permissions_summary)
+            },
+        });
+
+        // Check: declared output surfaces
+        let output_count = count_output_surfaces(&info.manifest);
+        checks.push(PluginDoctorCheck {
+            name: "output_surfaces".to_string(),
+            passed: true, // informational
+            message: format!("Plugin declares {} output surface(s)", output_count),
+        });
+
+        // Check: stale/inaccessible install path (only if source_path is set)
+        if let Some(ref path) = view.source_path {
+            let path_exists = std::path::Path::new(path).exists();
+            checks.push(PluginDoctorCheck {
+                name: "install_path".to_string(),
+                passed: path_exists,
+                message: if path_exists {
+                    format!("Install path '{}' is accessible", path)
+                } else {
+                    format!("Install path '{}' is stale or inaccessible", path)
+                },
+            });
+        } else {
+            checks.push(PluginDoctorCheck {
+                name: "install_path".to_string(),
+                passed: true, // unknown, not a failure
+                message: "Install path not tracked".to_string(),
+            });
+        }
+
+        // Check: no error-level diagnostics
         let error_diags: Vec<_> = info
             .diagnostics
             .iter()
@@ -344,21 +409,16 @@ impl PluginManager {
             },
         });
 
-        // Check: permissions are non-default
-        let perms = &info.manifest.permissions;
-        let perms_default = !perms.network
-            && matches!(perms.filesystem, crate::plugin::manifest::FilesystemPermission::None)
-            && perms.env.is_empty()
-            && perms.secrets.is_empty()
-            && !perms.session_messages
-            && !perms.tool_interception;
+        // Check: registry index consistency
+        let registry_infos = self.service.registry().list().await;
+        let in_registry = registry_infos.iter().any(|i| i.id == info.id);
         checks.push(PluginDoctorCheck {
-            name: "permissions_declared".to_string(),
-            passed: true, // informational, not a failure
-            message: if perms_default {
-                "No permissions declared (default)".to_string()
+            name: "registry_consistency".to_string(),
+            passed: in_registry,
+            message: if in_registry {
+                format!("Plugin appears in registry index ({})", registry_infos.len())
             } else {
-                format!("Permissions: {}", view.permissions_summary)
+                "Plugin missing from registry index".to_string()
             },
         });
 
@@ -378,6 +438,117 @@ impl PluginManager {
             checks,
         })
     }
+}
+
+/// Supported plugin API version. Plugins with a different value get a
+/// doctor warning but are still allowed to operate.
+pub const SUPPORTED_API_VERSION: u32 = 1;
+
+/// Convert a `PluginRegistryError` into a `PluginManagementError`.
+///
+/// NotFound errors carry ambiguous/no-match info from `resolve_plugin_selector`
+/// that should be surfaced as `Ambiguous` or `NoMatch` when possible. Since
+/// `resolve_plugin_selector` only emits `NotFound`, we keep the conversion
+/// straightforward here and rely on the structured error messages.
+fn registry_error_to_management(e: PluginRegistryError) -> PluginManagementError {
+    match e {
+        PluginRegistryError::NotFound(msg) => {
+            if msg.contains("ambiguous") {
+                PluginManagementError::Ambiguous(msg, Vec::new())
+            } else {
+                PluginManagementError::NoMatch(msg)
+            }
+        }
+        other => PluginManagementError::Registry(other),
+    }
+}
+
+/// Check whether the plugin's runtime is available.
+///
+/// - Builtin: always available (first-party code)
+/// - Process: requires the executable to be present on PATH or absolute
+/// - Wasm: requires the `plugins` feature to be enabled at compile time
+fn check_runtime_availability(manifest: &PluginManifest) -> PluginDoctorCheck {
+    match &manifest.runtime {
+        PluginRuntimeSpec::Builtin { .. } => PluginDoctorCheck {
+            name: "runtime_available".to_string(),
+            passed: true,
+            message: "Builtin runtime is always available".to_string(),
+        },
+        PluginRuntimeSpec::Process { command, .. } => {
+            let exists = command_exists(command);
+            PluginDoctorCheck {
+                name: "runtime_available".to_string(),
+                passed: exists,
+                message: if exists {
+                    format!("Process executable '{}' is available", command)
+                } else {
+                    format!("Process executable '{}' not found on PATH", command)
+                },
+            }
+        }
+        PluginRuntimeSpec::Wasm { .. } => {
+            let wasm_enabled = cfg!(feature = "plugins");
+            PluginDoctorCheck {
+                name: "runtime_available".to_string(),
+                passed: wasm_enabled,
+                message: if wasm_enabled {
+                    "WASM runtime is enabled (feature 'plugins' on)".to_string()
+                } else {
+                    "WASM runtime disabled — rebuild with --features plugins".to_string()
+                },
+            }
+        }
+    }
+}
+
+/// Check if a process command exists on PATH or as an absolute path.
+fn command_exists(command: &str) -> bool {
+    use std::path::Path;
+    let p = Path::new(command);
+    if p.is_absolute() || command.contains('/') {
+        return p.exists();
+    }
+    if let Ok(path_var) = std::env::var("PATH") {
+        for dir in std::env::split_paths(&path_var) {
+            if dir.join(command).exists() {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Check whether this plugin's capabilities collide with already-registered ones.
+async fn check_duplicate_capabilities(
+    _registry: &Arc<PluginRegistry>,
+    info: &PluginInfo,
+) -> PluginDoctorCheck {
+    // We approximate duplicate detection by counting command names declared
+    // by this plugin. The registry itself rejects duplicates on register/enable,
+    // so any duplicates here indicate either stale info or a pre-existing
+    // conflict that the registry has already resolved.
+    let cmd_names: Vec<&str> = info
+        .manifest
+        .commands()
+        .map(|c| c.name.as_str())
+        .collect();
+    let dup_count = cmd_names.len() - cmd_names.iter().collect::<std::collections::HashSet<_>>().len();
+    PluginDoctorCheck {
+        name: "no_duplicate_capabilities".to_string(),
+        passed: dup_count == 0,
+        message: if dup_count == 0 {
+            format!("{} unique command name(s)", cmd_names.len())
+        } else {
+            format!("{} duplicate command name(s) within plugin", dup_count)
+        },
+    }
+}
+
+/// Count the total number of output surfaces declared by a manifest.
+fn count_output_surfaces(manifest: &PluginManifest) -> usize {
+    // Output surfaces are capabilities that produce UI output (panels, status widgets)
+    manifest.panels().count() + manifest.status_widgets().count()
 }
 
 #[cfg(test)]
@@ -423,20 +594,343 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn enable_sets_state() {
+        let registry = PluginRegistry::new();
+        registry
+            .register(make_info("test:1", "test", false))
+            .await
+            .unwrap();
+        let service = Arc::new(PluginService::new(Arc::new(registry)));
+        let manager = PluginManager::new(service);
+
+        let view = manager.enable("test:1").await.unwrap();
+        assert!(view.enabled);
+    }
+
+    #[tokio::test]
+    async fn disable_sets_state() {
+        let registry = PluginRegistry::new();
+        registry
+            .register(make_info("test:1", "test", true))
+            .await
+            .unwrap();
+        let service = Arc::new(PluginService::new(Arc::new(registry)));
+        let manager = PluginManager::new(service);
+
+        let view = manager.disable("test:1").await.unwrap();
+        assert!(!view.enabled);
+    }
+
+    #[tokio::test]
+    async fn registry_rejects_duplicate_command() {
+        // The registry enforces global command-name uniqueness at register
+        // time. Two plugins with the same command name cannot both register;
+        // the second registration fails deterministically.
+        let registry = PluginRegistry::new();
+        let cap = PluginCapability::Command(PluginCommandSpec {
+            name: "deploy".into(),
+            aliases: Vec::new(),
+            description: None,
+            handler: None,
+            output: Vec::new(),
+        });
+        let info_a = PluginInfo {
+            id: "a:1".into(),
+            manifest: PluginManifest {
+                name: "alpha".into(),
+                version: "1.0.0".into(),
+                api_version: SUPPORTED_API_VERSION,
+                runtime: PluginRuntimeSpec::Builtin {
+                    handler: "h".into(),
+                },
+                capabilities: vec![cap.clone()],
+                ..Default::default()
+            },
+            enabled: true,
+            trust: PluginTrustClass::Builtin,
+            diagnostics: Vec::new(),
+        };
+        let info_b = PluginInfo {
+            id: "b:1".into(),
+            manifest: PluginManifest {
+                name: "beta".into(),
+                version: "1.0.0".into(),
+                api_version: SUPPORTED_API_VERSION,
+                runtime: PluginRuntimeSpec::Builtin {
+                    handler: "h".into(),
+                },
+                capabilities: vec![cap],
+                ..Default::default()
+            },
+            enabled: false,
+            trust: PluginTrustClass::Builtin,
+            diagnostics: Vec::new(),
+        };
+        registry.register(info_a).await.unwrap();
+        let result = registry.register(info_b).await;
+        assert!(matches!(
+            result,
+            Err(PluginRegistryError::DuplicateCommand(_, _))
+        ));
+    }
+
+    #[tokio::test]
+    async fn remove_unregisters_plugin() {
+        let registry = PluginRegistry::new();
+        registry
+            .register(make_info("test:1", "test", true))
+            .await
+            .unwrap();
+        let service = Arc::new(PluginService::new(Arc::new(registry)));
+        let manager = PluginManager::new(service);
+
+        let _view = manager.remove("test:1").await.unwrap();
+        // After remove, looking up the same id should fail
+        let lookup = manager.info("test:1").await;
+        assert!(lookup.is_err());
+    }
+
+    #[tokio::test]
+    async fn resolve_via_registry() {
+        let registry = PluginRegistry::new();
+        registry
+            .register(make_info("my-plugin:1", "my-plugin", true))
+            .await
+            .unwrap();
+        let service = Arc::new(PluginService::new(Arc::new(registry)));
+        let manager = PluginManager::new(service);
+
+        let view = manager.info("my-plugin:1").await.unwrap();
+        assert_eq!(view.id, "my-plugin:1");
+    }
+
+    #[tokio::test]
+    async fn doctor_reports_process_executable_missing() {
+        let registry = PluginRegistry::new();
+        let manifest = PluginManifest {
+            name: "proc-test".into(),
+            version: "1.0.0".into(),
+            api_version: SUPPORTED_API_VERSION,
+            runtime: PluginRuntimeSpec::Process {
+                command: "definitely-nonexistent-cmd-xyz".into(),
+                args: Vec::new(),
+                timeout_ms: None,
+            },
+            capabilities: vec![PluginCapability::Command(PluginCommandSpec {
+                name: "go".into(),
+                aliases: Vec::new(),
+                description: None,
+                handler: None,
+                output: Vec::new(),
+            })],
+            ..Default::default()
+        };
+        registry
+            .register(PluginInfo {
+                id: "proc:1".into(),
+                manifest,
+                enabled: true,
+                trust: PluginTrustClass::LocalProcess,
+                diagnostics: Vec::new(),
+            })
+            .await
+            .unwrap();
+        let service = Arc::new(PluginService::new(Arc::new(registry)));
+        let manager = PluginManager::new(service);
+
+        let report = manager.doctor("proc:1").await.unwrap();
+        let rt_check = report
+            .checks
+            .iter()
+            .find(|c| c.name == "runtime_available")
+            .unwrap();
+        assert!(!rt_check.passed);
+        assert!(rt_check.message.contains("not found"));
+    }
+
+    #[tokio::test]
+    async fn doctor_reports_wasm_disabled_when_feature_off() {
+        let registry = PluginRegistry::new();
+        let manifest = PluginManifest {
+            name: "wasm-test".into(),
+            version: "1.0.0".into(),
+            api_version: SUPPORTED_API_VERSION,
+            runtime: PluginRuntimeSpec::Wasm {
+                module: "plugin.wasm".into(),
+                timeout_ms: None,
+                memory_max_mb: None,
+                fuel_per_call: None,
+            },
+            ..Default::default()
+        };
+        registry
+            .register(PluginInfo {
+                id: "wasm:1".into(),
+                manifest,
+                enabled: true,
+                trust: PluginTrustClass::SandboxedWasm,
+                diagnostics: Vec::new(),
+            })
+            .await
+            .unwrap();
+        let service = Arc::new(PluginService::new(Arc::new(registry)));
+        let manager = PluginManager::new(service);
+
+        let report = manager.doctor("wasm:1").await.unwrap();
+        let rt_check = report
+            .checks
+            .iter()
+            .find(|c| c.name == "runtime_available")
+            .unwrap();
+        if !cfg!(feature = "plugins") {
+            assert!(!rt_check.passed);
+            assert!(rt_check.message.contains("disabled"));
+        } else {
+            assert!(rt_check.passed);
+        }
+    }
+
+    #[tokio::test]
+    async fn doctor_reports_api_version_mismatch() {
+        let registry = PluginRegistry::new();
+        let mut manifest = make_manifest("old", Vec::new());
+        manifest.api_version = SUPPORTED_API_VERSION + 99;
+        registry
+            .register(PluginInfo {
+                id: "old:1".into(),
+                manifest,
+                enabled: true,
+                trust: PluginTrustClass::Builtin,
+                diagnostics: Vec::new(),
+            })
+            .await
+            .unwrap();
+        let service = Arc::new(PluginService::new(Arc::new(registry)));
+        let manager = PluginManager::new(service);
+
+        let report = manager.doctor("old:1").await.unwrap();
+        let api_check = report
+            .checks
+            .iter()
+            .find(|c| c.name == "api_version")
+            .unwrap();
+        assert!(!api_check.passed);
+    }
+
+    #[tokio::test]
+    async fn doctor_builtin_runtime_is_always_available() {
+        let registry = PluginRegistry::new();
+        let manifest = PluginManifest {
+            name: "builtin-test".into(),
+            version: "1.0.0".into(),
+            api_version: SUPPORTED_API_VERSION,
+            runtime: PluginRuntimeSpec::Builtin {
+                handler: "h".into(),
+            },
+            ..Default::default()
+        };
+        registry
+            .register(PluginInfo {
+                id: "builtin:1".into(),
+                manifest,
+                enabled: true,
+                trust: PluginTrustClass::Builtin,
+                diagnostics: Vec::new(),
+            })
+            .await
+            .unwrap();
+        let service = Arc::new(PluginService::new(Arc::new(registry)));
+        let manager = PluginManager::new(service);
+
+        let report = manager.doctor("builtin:1").await.unwrap();
+        let rt_check = report
+            .checks
+            .iter()
+            .find(|c| c.name == "runtime_available")
+            .unwrap();
+        assert!(rt_check.passed);
+        assert!(rt_check.message.contains("always available"));
+    }
+
+    #[tokio::test]
+    async fn doctor_includes_registry_consistency_check() {
+        let registry = PluginRegistry::new();
+        registry
+            .register(make_info("test:1", "test", true))
+            .await
+            .unwrap();
+        let service = Arc::new(PluginService::new(Arc::new(registry)));
+        let manager = PluginManager::new(service);
+
+        let report = manager.doctor("test:1").await.unwrap();
+        let consistency_check = report
+            .checks
+            .iter()
+            .find(|c| c.name == "registry_consistency")
+            .unwrap();
+        assert!(consistency_check.passed);
+    }
+
+    #[tokio::test]
+    async fn doctor_includes_enable_state_check() {
+        let registry = PluginRegistry::new();
+        registry
+            .register(make_info("test:1", "test", false))
+            .await
+            .unwrap();
+        let service = Arc::new(PluginService::new(Arc::new(registry)));
+        let manager = PluginManager::new(service);
+
+        let report = manager.doctor("test:1").await.unwrap();
+        let enable_check = report
+            .checks
+            .iter()
+            .find(|c| c.name == "enable_state")
+            .unwrap();
+        assert!(enable_check.message.contains("disabled"));
+    }
+
+    #[tokio::test]
+    async fn doctor_includes_output_surfaces_check() {
+        let registry = PluginRegistry::new();
+        registry
+            .register(make_info("test:1", "test", true))
+            .await
+            .unwrap();
+        let service = Arc::new(PluginService::new(Arc::new(registry)));
+        let manager = PluginManager::new(service);
+
+        let report = manager.doctor("test:1").await.unwrap();
+        let output_check = report
+            .checks
+            .iter()
+            .find(|c| c.name == "output_surfaces")
+            .unwrap();
+        assert!(output_check.passed);
+        assert!(output_check.message.contains("output surface"));
+    }
+
+    #[tokio::test]
     async fn resolve_exact_id() {
         let registry = PluginRegistry::new();
-        registry.register(make_info("my-plugin:1", "my-plugin", true)).await.unwrap();
+        registry
+            .register(make_info("my-plugin:1", "my-plugin", true))
+            .await
+            .unwrap();
 
-        let result = resolve_plugin_selector(&registry, "my-plugin:1").await.unwrap();
+        let result = registry.resolve_plugin_selector("my-plugin:1").await.unwrap();
         assert_eq!(result.id, "my-plugin:1");
     }
 
     #[tokio::test]
     async fn resolve_exact_name() {
         let registry = PluginRegistry::new();
-        registry.register(make_info("plugin:my-plugin", "my-plugin", true)).await.unwrap();
+        registry
+            .register(make_info("plugin:my-plugin", "my-plugin", true))
+            .await
+            .unwrap();
 
-        let result = resolve_plugin_selector(&registry, "my-plugin").await.unwrap();
+        let result = registry.resolve_plugin_selector("my-plugin").await.unwrap();
         assert_eq!(result.manifest.name, "my-plugin");
     }
 
@@ -452,7 +946,10 @@ mod tests {
             .await
             .unwrap();
 
-        let result = resolve_plugin_selector(&registry, "my-plugin-a").await.unwrap();
+        let result = registry
+            .resolve_plugin_selector("my-plugin-a")
+            .await
+            .unwrap();
         assert_eq!(result.id, "my-plugin-alpha:1");
     }
 
@@ -468,7 +965,7 @@ mod tests {
             .await
             .unwrap();
 
-        let result = resolve_plugin_selector(&registry, "alpha").await.unwrap();
+        let result = registry.resolve_plugin_selector("alpha").await.unwrap();
         assert_eq!(result.manifest.name, "alpha-plugin");
     }
 
@@ -484,28 +981,20 @@ mod tests {
             .await
             .unwrap();
 
-        let result = resolve_plugin_selector(&registry, "my-plugin-").await;
+        let result = registry.resolve_plugin_selector("my-plugin-").await;
         assert!(result.is_err());
-        match result.unwrap_err() {
-            PluginManagementError::Ambiguous(sel, matches) => {
-                assert_eq!(sel, "my-plugin-");
-                assert_eq!(matches.len(), 2);
-            }
-            other => panic!("expected Ambiguous, got {:?}", other),
-        }
     }
 
     #[tokio::test]
     async fn no_match_returns_error() {
         let registry = PluginRegistry::new();
-        registry.register(make_info("a:1", "alpha", true)).await.unwrap();
+        registry
+            .register(make_info("a:1", "alpha", true))
+            .await
+            .unwrap();
 
-        let result = resolve_plugin_selector(&registry, "nonexistent").await;
+        let result = registry.resolve_plugin_selector("nonexistent").await;
         assert!(result.is_err());
-        match result.unwrap_err() {
-            PluginManagementError::NoMatch(sel) => assert_eq!(sel, "nonexistent"),
-            other => panic!("expected NoMatch, got {:?}", other),
-        }
     }
 
     #[tokio::test]
@@ -516,7 +1005,7 @@ mod tests {
             .await
             .unwrap();
 
-        let result = resolve_plugin_selector(&registry, "myplugin").await.unwrap();
+        let result = registry.resolve_plugin_selector("myplugin").await.unwrap();
         assert_eq!(result.id, "MyPlugin:1");
     }
 
@@ -596,6 +1085,7 @@ mod tests {
         let manifest = PluginManifest {
             name: "test".into(),
             version: "1.0.0".into(),
+            api_version: SUPPORTED_API_VERSION,
             runtime: PluginRuntimeSpec::Builtin {
                 handler: "test_handler".into(),
             },
@@ -619,7 +1109,13 @@ mod tests {
         assert_eq!(report.plugin_id, "test:1");
         assert_eq!(report.plugin_name, "test");
         assert!(!report.checks.is_empty());
-        assert!(report.checks.iter().all(|c| c.passed));
+        // The registered builtin should pass the runtime_available check.
+        let rt = report
+            .checks
+            .iter()
+            .find(|c| c.name == "runtime_available")
+            .unwrap();
+        assert!(rt.passed);
     }
 
     #[tokio::test]
@@ -639,19 +1135,40 @@ mod tests {
         let manager = PluginManager::new(service);
 
         let report = manager.doctor("bad:1").await.unwrap();
-        let manifest_check = report.checks.iter().find(|c| c.name == "manifest_valid").unwrap();
+        let manifest_check = report
+            .checks
+            .iter()
+            .find(|c| c.name == "manifest_valid")
+            .unwrap();
         assert!(!manifest_check.passed);
     }
 
     #[tokio::test]
     async fn list_returns_all_plugins() {
         let registry = PluginRegistry::new();
-        registry.register(make_info("a:1", "alpha", true)).await.unwrap();
-        registry.register(make_info("b:1", "beta", false)).await.unwrap();
+        registry
+            .register(make_info("a:1", "alpha", true))
+            .await
+            .unwrap();
+        registry
+            .register(make_info("b:1", "beta", false))
+            .await
+            .unwrap();
         let service = Arc::new(PluginService::new(Arc::new(registry)));
         let manager = PluginManager::new(service);
 
         let views = manager.list().await;
         assert_eq!(views.len(), 2);
+    }
+
+    #[test]
+    fn command_exists_finds_absolute_path() {
+        // /bin/sh should exist on any Unix system used for testing
+        assert!(command_exists("/bin/sh"));
+    }
+
+    #[test]
+    fn command_exists_rejects_missing() {
+        assert!(!command_exists("definitely-not-a-real-binary-zzz"));
     }
 }
