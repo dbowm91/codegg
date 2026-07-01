@@ -92,6 +92,9 @@ pub struct UiState {
     /// instead of speaking locally. Set in RemoteCore mode.
     pub tts_via_daemon: bool,
     pub diagnostics: crate::tui::app::state::diagnostics::TuiDiagnostics,
+    /// Advertised plugin UI capabilities. Checked before applying effects
+    /// to enforce policy/capability filtering at the TUI boundary.
+    pub plugin_ui_caps: crate::protocol::ui::PluginUiCapabilities,
 }
 
 impl UiState {

@@ -182,6 +182,43 @@ pub struct TuiComponent {
 - Memory access is sandboxed
 - Module cache invalidates on file change
 
+## Plugin UI Output Surfaces
+
+Plugins can emit UI effects through lifecycle hooks and process command responses:
+
+| Surface | Description | Capabilities Flag |
+|---------|-------------|-------------------|
+| **Toast** | Transient notification | `toast` |
+| **Dialog** | Modal dialog with title and body | `dialog` |
+| **Panel** | Persistent side panel (Left/Right) | `panel` |
+| **Status Item** | Status bar indicator | `status_item` |
+| **Chat Block** | Inline chat message | `toast` (shares flag) |
+
+Surface IDs are namespaced by plugin ID: `plugin:<plugin-name>:<surface-id>`. Cross-plugin surface ID usage is rejected at apply time.
+
+## Degradation Rules
+
+When a client does not support a given surface type, effects degrade deterministically via `degrade_node_to_text()`:
+
+| Effect | Unsupported Behavior |
+|--------|---------------------|
+| Dialog | Chat block or toast summary |
+| Panel | Chat block |
+| Table | Markdown table |
+| Status Item | Omitted unless important |
+| Markdown | Plain text |
+| Code | Plain text with language header |
+| Progress | Text percentage |
+
+The TUI reference client supports all surface types. Remote/external clients negotiate capabilities via `ClientCapabilities` flags.
+
+## Capability Enforcement
+
+`PluginUiCapabilities` tracks which surface types a client supports. Effects are checked against capabilities before application:
+- Unsupported effects return `PluginUiApplyResult::Unsupported`
+- Toasts and EmitChat always pass (universal support)
+- Cross-plugin ID spoofing is rejected when a `source_plugin_id` is provided
+
 ## Built-in Plugins
 
 The `builtin/` directory contains:

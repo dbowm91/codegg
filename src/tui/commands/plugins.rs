@@ -168,12 +168,12 @@ pub(crate) fn apply_plugin_command_finished(
         if resp.ok {
             // Apply each effect in order
             for effect in resp.effects {
-                app.apply_plugin_ui_effect(effect);
+                app.apply_plugin_ui_effect(effect, None);
             }
         } else {
             // Apply diagnostic effects but show error toast
             for effect in &resp.effects {
-                app.apply_plugin_ui_effect(effect.clone());
+                app.apply_plugin_ui_effect(effect.clone(), None);
             }
             let diag_msgs: Vec<String> = resp
                 .diagnostics
@@ -234,7 +234,7 @@ pub(crate) fn apply_plugin_command_finished(
 /// command response). This is the same as `App::apply_plugin_ui_effect`
 /// but callable from the command dispatch path.
 pub(crate) fn apply_plugin_ui_effect(app: &mut App, effect: UiEffect) {
-    app.apply_plugin_ui_effect(effect);
+    app.apply_plugin_ui_effect(effect, None);
 }
 
 fn level_label(level: crate::protocol::plugin::PluginDiagnosticLevel) -> &'static str {
@@ -251,7 +251,9 @@ fn level_label(level: crate::protocol::plugin::PluginDiagnosticLevel) -> &'stati
 mod tests {
     use super::*;
     use crate::protocol::plugin::{PluginDiagnostic, PluginDiagnosticLevel};
-    use crate::protocol::ui::{DialogSpec, ToastLevel, ToastSpec, UiNode};
+    use crate::protocol::ui::{
+        DialogSpec, PanelPlacement, PanelSpec, ToastLevel, ToastSpec, UiEffect, UiNode,
+    };
     use crate::tui::app::state::PluginUiApplyResult;
     use crate::tui::app::App;
 
@@ -272,7 +274,7 @@ mod tests {
                 level: ToastLevel::Info,
                 message: "direct effect".into(),
             },
-        });
+        }, None);
         assert_eq!(result, PluginUiApplyResult::ToastRequested);
     }
 
@@ -286,7 +288,7 @@ mod tests {
                 body: text_node("hello"),
                 modal: true,
             },
-        });
+        }, None);
         assert_eq!(result, PluginUiApplyResult::Applied);
         assert!(app.plugin_ui_state.get_dialog("test-dlg").is_some());
     }
@@ -871,5 +873,102 @@ mod tests {
         assert!(inv.context.session_id.is_none());
         assert!(inv.context.model.is_none());
         assert!(inv.context.project_dir.is_some());
+    }
+
+    #[test]
+    fn capability_filtering_rejects_unsupported_effect() {
+        use crate::protocol::ui::{PanelPlacement, PanelSpec, PluginUiCapabilities};
+        let mut app = make_test_app();
+        // Disable panel support
+        app.ui_state.plugin_ui_caps = PluginUiCapabilities {
+            dialog: true,
+            toast: true,
+            panel: false,
+            status_item: true,
+            table: true,
+            markdown: true,
+            code: true,
+            progress: true,
+        };
+        let result = app.apply_plugin_ui_effect(
+            UiEffect::OpenPanel {
+                panel: PanelSpec {
+                    id: "test-panel".into(),
+                    title: "Test".into(),
+                    placement: PanelPlacement::Right,
+                    body: UiNode::Empty,
+                },
+            },
+            None,
+        );
+        assert!(matches!(result, PluginUiApplyResult::Unsupported(_)));
+    }
+
+    #[test]
+    fn capability_filtering_allows_supported_effect() {
+        let mut app = make_test_app();
+        // All caps enabled (default)
+        let result = app.apply_plugin_ui_effect(
+            UiEffect::ShowToast {
+                toast: ToastSpec {
+                    level: ToastLevel::Info,
+                    message: "ok".into(),
+                },
+            },
+            None,
+        );
+        assert_eq!(result, PluginUiApplyResult::ToastRequested);
+    }
+
+    #[test]
+    fn cross_plugin_spoofing_rejected() {
+        use crate::protocol::ui::{PanelPlacement, PanelSpec};
+        let mut app = make_test_app();
+        // "evil" plugin tries to use an id belonging to "good" plugin
+        let result = app.apply_plugin_ui_effect(
+            UiEffect::OpenPanel {
+                panel: PanelSpec {
+                    id: "good-plugin:panel-1".into(),
+                    title: "Stolen".into(),
+                    placement: PanelPlacement::Right,
+                    body: UiNode::Empty,
+                },
+            },
+            Some("evil"),
+        );
+        assert!(matches!(result, PluginUiApplyResult::Unsupported(_)));
+    }
+
+    #[test]
+    fn cross_plugin_ownership_passes_for_matching_prefix() {
+        use crate::protocol::ui::{PanelPlacement, PanelSpec};
+        let mut app = make_test_app();
+        let result = app.apply_plugin_ui_effect(
+            UiEffect::OpenPanel {
+                panel: PanelSpec {
+                    id: "my-plugin:panel-1".into(),
+                    title: "Mine".into(),
+                    placement: PanelPlacement::Right,
+                    body: UiNode::Empty,
+                },
+            },
+            Some("my-plugin"),
+        );
+        assert_eq!(result, PluginUiApplyResult::Applied);
+    }
+
+    #[test]
+    fn toasts_always_pass_regardless_of_plugin_source() {
+        let mut app = make_test_app();
+        let result = app.apply_plugin_ui_effect(
+            UiEffect::ShowToast {
+                toast: ToastSpec {
+                    level: ToastLevel::Warning,
+                    message: "test".into(),
+                },
+            },
+            Some("some-plugin"),
+        );
+        assert_eq!(result, PluginUiApplyResult::ToastRequested);
     }
 }

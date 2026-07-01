@@ -527,7 +527,7 @@ fn handle_single_event(app: &mut App, event: AppEvent) -> bool {
         }
         AppEvent::PluginUiEffect {
             session_id,
-            plugin_id: _,
+            plugin_id,
             invocation_id: _,
             effect,
         } => {
@@ -542,7 +542,7 @@ fn handle_single_event(app: &mut App, event: AppEvent) -> bool {
                 .map(|sid| sid == current_session)
                 .unwrap_or(true);
             if matches_session {
-                app.apply_plugin_ui_effect(effect);
+                app.apply_plugin_ui_effect(effect, Some(&plugin_id));
             }
             true
         }

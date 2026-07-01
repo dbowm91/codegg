@@ -194,6 +194,21 @@ pub struct PluginUiCapabilities {
 }
 
 impl PluginUiCapabilities {
+    /// Returns a capabilities set where all surface types are supported.
+    /// Use this as the default for clients known to handle all UI effects.
+    pub fn all_supported() -> Self {
+        Self {
+            dialog: true,
+            toast: true,
+            panel: true,
+            status_item: true,
+            table: true,
+            markdown: true,
+            code: true,
+            progress: true,
+        }
+    }
+
     /// Returns true if the client supports the surface type required by
     /// the given effect. Unknown effects are treated as unsupported.
     pub fn supports_effect(&self, effect: &UiEffect) -> bool {
@@ -560,5 +575,72 @@ mod tests {
     fn degrade_empty_node() {
         let lines = degrade_node_to_text(&UiNode::Empty);
         assert!(lines.is_empty());
+    }
+
+    #[test]
+    fn all_supported_caps_pass_every_effect_type() {
+        let caps = PluginUiCapabilities::all_supported();
+        assert!(caps.dialog);
+        assert!(caps.toast);
+        assert!(caps.panel);
+        assert!(caps.status_item);
+        assert!(caps.table);
+        assert!(caps.markdown);
+        assert!(caps.code);
+        assert!(caps.progress);
+        // Every known effect type should be supported.
+        assert!(caps.supports_effect(&UiEffect::ShowToast {
+            toast: ToastSpec {
+                level: ToastLevel::Info,
+                message: "x".into(),
+            }
+        }));
+        assert!(caps.supports_effect(&UiEffect::EmitChat {
+            block: ChatBlock {
+                format: ChatFormat::Plain,
+                content: "x".into(),
+            }
+        }));
+        assert!(caps.supports_effect(&UiEffect::OpenDialog {
+            dialog: DialogSpec {
+                id: "d".into(),
+                title: "t".into(),
+                body: UiNode::Empty,
+                modal: true,
+            }
+        }));
+        assert!(caps.supports_effect(&UiEffect::CloseDialog {
+            id: "d".into(),
+        }));
+        assert!(caps.supports_effect(&UiEffect::OpenPanel {
+            panel: PanelSpec {
+                id: "p".into(),
+                title: "t".into(),
+                placement: PanelPlacement::Right,
+                body: UiNode::Empty,
+            }
+        }));
+        assert!(caps.supports_effect(&UiEffect::UpdatePanel {
+            id: "p".into(),
+            body: UiNode::Empty,
+        }));
+        assert!(caps.supports_effect(&UiEffect::ClosePanel {
+            id: "p".into(),
+        }));
+        assert!(caps.supports_effect(&UiEffect::AddStatusItem {
+            item: StatusItemSpec {
+                id: "s".into(),
+                label: None,
+                placement: StatusPlacement::Right,
+                body: UiNode::Empty,
+            }
+        }));
+        assert!(caps.supports_effect(&UiEffect::UpdateStatusItem {
+            id: "s".into(),
+            body: UiNode::Empty,
+        }));
+        assert!(caps.supports_effect(&UiEffect::RemoveStatusItem {
+            id: "s".into(),
+        }));
     }
 }

@@ -790,6 +790,7 @@ impl App {
                 resize_debounce: None,
                 tts_via_daemon: false,
                 diagnostics: Default::default(),
+                plugin_ui_caps: crate::protocol::ui::PluginUiCapabilities::all_supported(),
             },
             session_state: SessionState {
                 session: None,
@@ -1163,6 +1164,7 @@ impl App {
                 resize_debounce: None,
                 tts_via_daemon: false,
                 diagnostics: Default::default(),
+                plugin_ui_caps: crate::protocol::ui::PluginUiCapabilities::all_supported(),
             },
             session_state: SessionState {
                 session: None,
@@ -1803,7 +1805,7 @@ impl App {
             }
             Ok(RemoteTuiMessage::PluginUiEffect {
                 session_id,
-                plugin_id: _,
+                plugin_id,
                 invocation_id: _,
                 effect,
             }) => {
@@ -1818,7 +1820,7 @@ impl App {
                     .map(|sid| sid == current_session)
                     .unwrap_or(true);
                 if matches_session {
-                    self.apply_plugin_ui_effect(effect);
+                    self.apply_plugin_ui_effect(effect, Some(&plugin_id));
                 }
             }
             _ => {
@@ -7051,12 +7053,33 @@ impl App {
     /// Apply a protocol-level [`UiEffect`] from a plugin response to
     /// the TUI state. Returns a high-level result so the caller can
     /// decide whether to emit additional toasts or chat messages.
+    ///
+    /// When `source_plugin_id` is provided, the effect is attributed to
+    /// that plugin for cross-plugin ID spoofing checks: surface IDs
+    /// belonging to a different plugin are rejected.
     pub fn apply_plugin_ui_effect(
         &mut self,
         effect: crate::protocol::ui::UiEffect,
+        source_plugin_id: Option<&str>,
     ) -> crate::tui::app::state::PluginUiApplyResult {
         use crate::protocol::ui::UiEffect;
         use crate::tui::app::state::PluginUiApplyResult;
+
+        // Capability gate: reject effects the client does not support.
+        if !self.ui_state.plugin_ui_caps.supports_effect(&effect) {
+            return PluginUiApplyResult::Unsupported(
+                "effect type not supported by client capabilities".to_string(),
+            );
+        }
+
+        // Cross-plugin spoofing protection: when a plugin source is
+        // provided, reject effects whose surface IDs belong to a
+        // different plugin.
+        if let Some(owner) = source_plugin_id {
+            if let Some(violation) = self.validate_plugin_surface_ownership(&effect, owner) {
+                return PluginUiApplyResult::Unsupported(violation);
+            }
+        }
 
         match &effect {
             UiEffect::ShowToast { toast } => {
@@ -7111,6 +7134,40 @@ impl App {
         }
 
         result
+    }
+
+    /// Check that surface IDs in the effect belong to the claimed plugin.
+    /// Returns `Some(reason)` if a spoofing attempt is detected.
+    fn validate_plugin_surface_ownership(
+        &self,
+        effect: &crate::protocol::ui::UiEffect,
+        claimed_owner: &str,
+    ) -> Option<String> {
+        use crate::protocol::ui::UiEffect;
+        let prefix = format!("{}:", claimed_owner);
+        let foreign_id = match effect {
+            UiEffect::OpenDialog { dialog } if !dialog.id.starts_with(&prefix) => {
+                Some(dialog.id.clone())
+            }
+            UiEffect::CloseDialog { id } if !id.starts_with(&prefix) => Some(id.clone()),
+            UiEffect::OpenPanel { panel } if !panel.id.starts_with(&prefix) => {
+                Some(panel.id.clone())
+            }
+            UiEffect::UpdatePanel { id, .. } if !id.starts_with(&prefix) => Some(id.clone()),
+            UiEffect::ClosePanel { id } if !id.starts_with(&prefix) => Some(id.clone()),
+            UiEffect::AddStatusItem { item } if !item.id.starts_with(&prefix) => {
+                Some(item.id.clone())
+            }
+            UiEffect::UpdateStatusItem { id, .. } if !id.starts_with(&prefix) => Some(id.clone()),
+            UiEffect::RemoveStatusItem { id } if !id.starts_with(&prefix) => Some(id.clone()),
+            _ => None,
+        };
+        foreign_id.map(|id| {
+            format!(
+                "plugin '{}' attempted to use surface id '{}' belonging to another plugin",
+                claimed_owner, id
+            )
+        })
     }
 
     #[allow(dead_code)]
@@ -11886,8 +11943,8 @@ mod remote_protocol_tests {
     }
 
     #[test]
-    fn protocol_version_constant_is_one() {
-        assert_eq!(REMOTE_TUI_PROTOCOL_VERSION, 1);
+    fn protocol_version_constant_is_two() {
+        assert_eq!(REMOTE_TUI_PROTOCOL_VERSION, 2);
     }
 
     #[test]
@@ -12058,7 +12115,7 @@ mod remote_protocol_tests {
             "effect": {
                 "type": "open_dialog",
                 "dialog": {
-                    "id": "test-dlg",
+                    "id": "test-plugin:test-dlg",
                     "title": "Test Dialog",
                     "body": {"kind": "text", "text": "hello"},
                     "modal": true
@@ -12067,7 +12124,7 @@ mod remote_protocol_tests {
         });
         app.handle_remote_event(event);
         assert!(
-            app.plugin_ui_state.get_dialog("test-dlg").is_some(),
+            app.plugin_ui_state.get_dialog("test-plugin:test-dlg").is_some(),
             "dialog should be in plugin_ui_state after applying remote PluginUiEffect"
         );
     }
@@ -12083,7 +12140,7 @@ mod remote_protocol_tests {
             "effect": {
                 "type": "open_dialog",
                 "dialog": {
-                    "id": "wrong-session-dlg",
+                    "id": "test-plugin:wrong-session-dlg",
                     "title": "Wrong",
                     "body": {"kind": "text", "text": "nope"},
                     "modal": false
@@ -12093,7 +12150,7 @@ mod remote_protocol_tests {
         app.handle_remote_event(event);
         assert!(
             app.plugin_ui_state
-                .get_dialog("wrong-session-dlg")
+                .get_dialog("test-plugin:wrong-session-dlg")
                 .is_none(),
             "dialog for non-current session should not be applied"
         );
@@ -12110,7 +12167,7 @@ mod remote_protocol_tests {
             "effect": {
                 "type": "open_dialog",
                 "dialog": {
-                    "id": "any-session-dlg",
+                    "id": "test-plugin:any-session-dlg",
                     "title": "Any",
                     "body": {"kind": "text", "text": "applies"},
                     "modal": true
@@ -12119,7 +12176,7 @@ mod remote_protocol_tests {
         });
         app.handle_remote_event(event);
         assert!(
-            app.plugin_ui_state.get_dialog("any-session-dlg").is_some(),
+            app.plugin_ui_state.get_dialog("test-plugin:any-session-dlg").is_some(),
             "effect with no session filter should apply to any session"
         );
     }

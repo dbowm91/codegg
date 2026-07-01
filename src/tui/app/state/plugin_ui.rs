@@ -16,6 +16,7 @@ pub enum PluginUiApplyResult {
     ChatRequested,
     ToastRequested,
     Ignored,
+    Unsupported(String),
     Error(String),
 }
 

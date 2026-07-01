@@ -1,4 +1,9 @@
-pub const REMOTE_TUI_PROTOCOL_VERSION: u32 = 1;
+/// Protocol version for the remote TUI WebSocket interface.
+///
+/// Bumped to 2 in Phase 10: added `PluginUiEffect` variant for
+/// frontend-neutral plugin UI transport. Old clients safely ignore
+/// unknown `#[serde(tag = "type")]` variants, so this is informational.
+pub const REMOTE_TUI_PROTOCOL_VERSION: u32 = 2;
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
 #[serde(tag = "type")]
