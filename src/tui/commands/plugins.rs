@@ -168,12 +168,24 @@ pub(crate) fn apply_plugin_command_finished(
         if resp.ok {
             // Apply each effect in order
             for effect in resp.effects {
-                app.apply_plugin_ui_effect(effect, None);
+                let result = app.apply_plugin_ui_effect(effect, None);
+                if let crate::tui::app::state::PluginUiApplyResult::ChatRequested = result {
+                    tracing::debug!(
+                        target: "codegg::tui::plugins",
+                        "EmitChat effect received from plugin response (deferred to Phase 3)"
+                    );
+                }
             }
         } else {
             // Apply diagnostic effects but show error toast
             for effect in &resp.effects {
-                app.apply_plugin_ui_effect(effect.clone(), None);
+                let result = app.apply_plugin_ui_effect(effect.clone(), None);
+                if let crate::tui::app::state::PluginUiApplyResult::ChatRequested = result {
+                    tracing::debug!(
+                        target: "codegg::tui::plugins",
+                        "EmitChat effect received from plugin error response (deferred to Phase 3)"
+                    );
+                }
             }
             let diag_msgs: Vec<String> = resp
                 .diagnostics
@@ -234,7 +246,13 @@ pub(crate) fn apply_plugin_command_finished(
 /// command response). This is the same as `App::apply_plugin_ui_effect`
 /// but callable from the command dispatch path.
 pub(crate) fn apply_plugin_ui_effect(app: &mut App, effect: UiEffect) {
-    app.apply_plugin_ui_effect(effect, None);
+    let result = app.apply_plugin_ui_effect(effect, None);
+    if let crate::tui::app::state::PluginUiApplyResult::ChatRequested = result {
+        tracing::debug!(
+            target: "codegg::tui::plugins",
+            "EmitChat effect received from local TUI path (deferred to Phase 3)"
+        );
+    }
 }
 
 fn level_label(level: crate::protocol::plugin::PluginDiagnosticLevel) -> &'static str {
@@ -970,5 +988,181 @@ mod tests {
             Some("some-plugin"),
         );
         assert_eq!(result, PluginUiApplyResult::ToastRequested);
+    }
+
+    #[test]
+    fn chat_only_plugin_cannot_open_panel() {
+        use crate::protocol::ui::{PanelPlacement, PanelSpec, PluginUiCapabilities};
+        let mut app = make_test_app();
+        // Only toast/chat supported.
+        app.ui_state.plugin_ui_caps = PluginUiCapabilities {
+            dialog: false,
+            toast: true,
+            panel: false,
+            status_item: false,
+            table: false,
+            markdown: false,
+            code: false,
+            progress: false,
+        };
+        let result = app.apply_plugin_ui_effect(
+            UiEffect::OpenPanel {
+                panel: PanelSpec {
+                    id: "my-plugin:panel-1".into(),
+                    title: "Should Fail".into(),
+                    placement: PanelPlacement::Right,
+                    body: UiNode::Empty,
+                },
+            },
+            Some("my-plugin"),
+        );
+        assert!(
+            matches!(result, PluginUiApplyResult::Unsupported(_)),
+            "chat-only plugin should not be able to open a panel"
+        );
+    }
+
+    #[test]
+    fn status_widget_requires_status_capability() {
+        use crate::protocol::ui::{PluginUiCapabilities, StatusItemSpec, StatusPlacement};
+        let mut app = make_test_app();
+        app.ui_state.plugin_ui_caps = PluginUiCapabilities {
+            dialog: true,
+            toast: true,
+            panel: true,
+            status_item: false,
+            ..Default::default()
+        };
+        let result = app.apply_plugin_ui_effect(
+            UiEffect::AddStatusItem {
+                item: StatusItemSpec {
+                    id: "my-plugin:status-1".into(),
+                    label: Some("Build".into()),
+                    placement: StatusPlacement::Right,
+                    body: UiNode::Empty,
+                },
+            },
+            Some("my-plugin"),
+        );
+        assert!(
+            matches!(result, PluginUiApplyResult::Unsupported(_)),
+            "status item should be rejected when status_item capability is disabled"
+        );
+    }
+
+    #[test]
+    fn panel_effect_requires_panel_capability() {
+        use crate::protocol::ui::{PanelPlacement, PanelSpec, PluginUiCapabilities};
+        let mut app = make_test_app();
+        app.ui_state.plugin_ui_caps = PluginUiCapabilities {
+            dialog: true,
+            toast: true,
+            panel: false,
+            status_item: true,
+            ..Default::default()
+        };
+        let result = app.apply_plugin_ui_effect(
+            UiEffect::OpenPanel {
+                panel: PanelSpec {
+                    id: "my-plugin:panel-1".into(),
+                    title: "Should Fail".into(),
+                    placement: PanelPlacement::Right,
+                    body: UiNode::Empty,
+                },
+            },
+            Some("my-plugin"),
+        );
+        assert!(
+            matches!(result, PluginUiApplyResult::Unsupported(_)),
+            "panel effect should be rejected when panel capability is disabled"
+        );
+    }
+
+    #[test]
+    fn dialog_effect_requires_dialog_capability() {
+        use crate::protocol::ui::{DialogSpec, PluginUiCapabilities};
+        let mut app = make_test_app();
+        app.ui_state.plugin_ui_caps = PluginUiCapabilities {
+            dialog: false,
+            toast: true,
+            ..Default::default()
+        };
+        let result = app.apply_plugin_ui_effect(
+            UiEffect::OpenDialog {
+                dialog: DialogSpec {
+                    id: "my-plugin:dlg-1".into(),
+                    title: "Should Fail".into(),
+                    body: UiNode::Empty,
+                    modal: false,
+                },
+            },
+            Some("my-plugin"),
+        );
+        assert!(
+            matches!(result, PluginUiApplyResult::Unsupported(_)),
+            "dialog effect should be rejected when dialog capability is disabled"
+        );
+    }
+
+    #[test]
+    fn unsupported_effect_degrades_to_toast_summary() {
+        use crate::protocol::ui::{DialogSpec, PluginUiCapabilities};
+        let mut app = make_test_app();
+        app.ui_state.plugin_ui_caps = PluginUiCapabilities {
+            dialog: false,
+            toast: true,
+            ..Default::default()
+        };
+        let result = app.apply_plugin_ui_effect(
+            UiEffect::OpenDialog {
+                dialog: DialogSpec {
+                    id: "my-plugin:dlg-1".into(),
+                    title: "My Dialog".into(),
+                    body: text_node("some content here"),
+                    modal: true,
+                },
+            },
+            Some("my-plugin"),
+        );
+        assert!(matches!(result, PluginUiApplyResult::Unsupported(_)));
+        // The degraded toast should have been emitted.
+        assert!(!app.messages_state.toasts.is_empty());
+        let toast_msg = &app.messages_state.toasts.iter().last().unwrap().message;
+        assert!(
+            toast_msg.contains("dialog") || toast_msg.contains("My Dialog"),
+            "degraded toast should mention the dialog: {toast_msg}"
+        );
+    }
+
+    #[test]
+    fn status_item_omit_when_no_content() {
+        use crate::protocol::ui::{PluginUiCapabilities, StatusItemSpec, StatusPlacement};
+        let mut app = make_test_app();
+        app.ui_state.plugin_ui_caps = PluginUiCapabilities {
+            dialog: true,
+            toast: true,
+            panel: true,
+            status_item: false,
+            ..Default::default()
+        };
+        let toasts_before = app.messages_state.toasts.len();
+        let result = app.apply_plugin_ui_effect(
+            UiEffect::AddStatusItem {
+                item: StatusItemSpec {
+                    id: "my-plugin:status-empty".into(),
+                    label: None,
+                    placement: StatusPlacement::Right,
+                    body: UiNode::Empty,
+                },
+            },
+            Some("my-plugin"),
+        );
+        assert!(matches!(result, PluginUiApplyResult::Unsupported(_)));
+        // Empty status items should NOT produce a toast summary.
+        assert_eq!(
+            app.messages_state.toasts.len(),
+            toasts_before,
+            "empty status items should be silently omitted"
+        );
     }
 }

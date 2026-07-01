@@ -121,6 +121,26 @@ pub struct RemoteTuiStateSnapshot {
     /// asynchronously on the server; the value here is the most
     /// recent successful refresh.
     pub git: Option<RemoteGitInfo>,
+    /// Durable plugin panels open in the current session.
+    #[serde(default)]
+    pub plugin_panels: Vec<RemotePanelView>,
+    /// Durable plugin status items in the current session.
+    #[serde(default)]
+    pub plugin_status_items: Vec<RemoteStatusItemView>,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
+pub struct RemotePanelView {
+    pub id: String,
+    pub title: String,
+    pub placement: String,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
+pub struct RemoteStatusItemView {
+    pub id: String,
+    pub label: Option<String>,
+    pub placement: String,
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]

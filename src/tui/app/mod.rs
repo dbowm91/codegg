@@ -1071,6 +1071,28 @@ impl App {
             })
             .collect();
 
+        let plugin_panels: Vec<crate::protocol::tui::RemotePanelView> = self
+            .plugin_ui_state
+            .panels
+            .iter()
+            .map(|(id, panel)| crate::protocol::tui::RemotePanelView {
+                id: id.clone(),
+                title: panel.title.clone(),
+                placement: format!("{:?}", panel.placement),
+            })
+            .collect();
+
+        let plugin_status_items: Vec<crate::protocol::tui::RemoteStatusItemView> = self
+            .plugin_ui_state
+            .status_items
+            .iter()
+            .map(|(id, item)| crate::protocol::tui::RemoteStatusItemView {
+                id: id.clone(),
+                label: item.label.clone(),
+                placement: format!("{:?}", item.placement),
+            })
+            .collect();
+
         crate::protocol::tui::RemoteTuiStateSnapshot {
             protocol_version: REMOTE_TUI_PROTOCOL_VERSION,
             sequence,
@@ -1090,6 +1112,8 @@ impl App {
                 loading: self.session_state.git_sidebar.loading,
                 error: self.session_state.git_sidebar.error.clone(),
             }),
+            plugin_panels,
+            plugin_status_items,
         }
     }
 
@@ -1820,7 +1844,15 @@ impl App {
                     .map(|sid| sid == current_session)
                     .unwrap_or(true);
                 if matches_session {
-                    self.apply_plugin_ui_effect(effect, Some(&plugin_id));
+                    let result =
+                        self.apply_plugin_ui_effect(effect, Some(&plugin_id));
+                    if let crate::tui::app::state::PluginUiApplyResult::ChatRequested = result {
+                        tracing::debug!(
+                            target: "codegg::tui::events",
+                            plugin_id,
+                            "EmitChat effect received (deferred to Phase 3)"
+                        );
+                    }
                 }
             }
             _ => {
@@ -7066,7 +7098,12 @@ impl App {
         use crate::tui::app::state::PluginUiApplyResult;
 
         // Capability gate: reject effects the client does not support.
+        // Degrade to a summary toast so the effect is not silently lost.
         if !self.ui_state.plugin_ui_caps.supports_effect(&effect) {
+            let summary = Self::degrade_effect_to_summary(&effect);
+            if !summary.is_empty() {
+                self.messages_state.toasts.info(&summary);
+            }
             return PluginUiApplyResult::Unsupported(
                 "effect type not supported by client capabilities".to_string(),
             );
@@ -7134,6 +7171,69 @@ impl App {
         }
 
         result
+    }
+
+    /// Produce a short summary string for an unsupported [`UiEffect`],
+    /// used to degrade gracefully when the client cannot render the
+    /// full effect. Returns an empty string for effects that should
+    /// be silently omitted (e.g. status items).
+    fn degrade_effect_to_summary(effect: &crate::protocol::ui::UiEffect) -> String {
+        use crate::protocol::ui::UiEffect;
+        match effect {
+            UiEffect::OpenDialog { dialog } => {
+                let lines =
+                    crate::tui::components::plugin_renderer::PluginUiRenderer::node_to_lines(
+                        &dialog.body,
+                    );
+                let preview = lines.join(" ");
+                let preview = if preview.len() > 120 {
+                    format!("{}...", &preview[..120])
+                } else {
+                    preview
+                };
+                format!("[dialog] {}: {}", dialog.title, preview)
+            }
+            UiEffect::OpenPanel { panel } => {
+                let lines =
+                    crate::tui::components::plugin_renderer::PluginUiRenderer::node_to_lines(
+                        &panel.body,
+                    );
+                let preview = lines.join(" ");
+                let preview = if preview.len() > 120 {
+                    format!("{}...", &preview[..120])
+                } else {
+                    preview
+                };
+                format!("[panel] {}: {}", panel.title, preview)
+            }
+            UiEffect::AddStatusItem { item } => {
+                // Status items are omitted unless they carry text content.
+                let lines =
+                    crate::tui::components::plugin_renderer::PluginUiRenderer::node_to_lines(
+                        &item.body,
+                    );
+                let preview = lines.join(" ");
+                if preview.is_empty() {
+                    return String::new();
+                }
+                let label = item.label.as_deref().unwrap_or("status");
+                format!("[status] {}: {}", label, preview)
+            }
+            UiEffect::EmitChat { block } => {
+                let preview = if block.content.len() > 120 {
+                    format!("{}...", &block.content[..120])
+                } else {
+                    block.content.clone()
+                };
+                format!("[chat] {}", preview)
+            }
+            UiEffect::ShowToast { toast } => toast.message.clone(),
+            UiEffect::CloseDialog { .. }
+            | UiEffect::UpdatePanel { .. }
+            | UiEffect::ClosePanel { .. }
+            | UiEffect::UpdateStatusItem { .. }
+            | UiEffect::RemoveStatusItem { .. } => String::new(),
+        }
     }
 
     /// Check that surface IDs in the effect belong to the claimed plugin.
@@ -11848,6 +11948,10 @@ mod lsp_command_dispatch_tests {
 mod remote_protocol_tests {
     use super::*;
     use crate::protocol::tui::{TuiMessage as RemoteTuiMessage, REMOTE_TUI_PROTOCOL_VERSION};
+    use crate::protocol::ui::{
+        DialogSpec, PanelPlacement, PanelSpec, StatusItemSpec, StatusPlacement, UiEffect, UiNode,
+        TextNode,
+    };
 
     #[test]
     fn remote_snapshot_does_not_panic_on_empty_app() {
@@ -12068,6 +12172,8 @@ mod remote_protocol_tests {
             dialog: None,
             toasts: vec![],
             git: None,
+            plugin_panels: vec![],
+            plugin_status_items: vec![],
         };
         let json = serde_json::to_string(&snapshot).unwrap();
         assert!(json.contains("\"protocol_version\":1"));
@@ -12092,7 +12198,9 @@ mod remote_protocol_tests {
                 "messages": [],
                 "prompt": "",
                 "dialog": null,
-                "toasts": []
+                "toasts": [],
+                "plugin_panels": [],
+                "plugin_status_items": []
             }
         });
         app.handle_remote_event(event);
@@ -12179,5 +12287,124 @@ mod remote_protocol_tests {
             app.plugin_ui_state.get_dialog("test-plugin:any-session-dlg").is_some(),
             "effect with no session filter should apply to any session"
         );
+    }
+
+    #[test]
+    fn plugin_dialog_does_not_displace_permission_dialog() {
+        use crate::tui::app::state::PluginUiApplyResult;
+        let mut app = App::new_for_testing("/tmp".into());
+        app.ui_state.dialog = Dialog::Permission;
+        let result = app.apply_plugin_ui_effect(
+            UiEffect::OpenDialog {
+                dialog: DialogSpec {
+                    id: "my-plugin:dlg".into(),
+                    title: "Plugin Dialog".into(),
+                    body: UiNode::Empty,
+                    modal: true,
+                },
+            },
+            Some("my-plugin"),
+        );
+        assert_eq!(result, PluginUiApplyResult::Applied);
+        // The plugin dialog is stored but the permission dialog stays active.
+        assert!(app.plugin_ui_state.get_dialog("my-plugin:dlg").is_some());
+        assert!(matches!(app.ui_state.dialog, Dialog::Permission));
+    }
+
+    #[test]
+    fn panel_effect_is_stored_in_plugin_ui_state() {
+        use crate::tui::app::state::PluginUiApplyResult;
+        let mut app = App::new_for_testing("/tmp".into());
+        let result = app.apply_plugin_ui_effect(
+            UiEffect::OpenPanel {
+                panel: PanelSpec {
+                    id: "my-plugin:panel-1".into(),
+                    title: "My Panel".into(),
+                    placement: PanelPlacement::Right,
+                    body: UiNode::Empty,
+                },
+            },
+            Some("my-plugin"),
+        );
+        assert_eq!(result, PluginUiApplyResult::Applied);
+        assert!(app.plugin_ui_state.panels.contains_key("my-plugin:panel-1"));
+    }
+
+    #[test]
+    fn status_item_effect_is_stored_in_plugin_ui_state() {
+        use crate::tui::app::state::PluginUiApplyResult;
+        let mut app = App::new_for_testing("/tmp".into());
+        let result = app.apply_plugin_ui_effect(
+            UiEffect::AddStatusItem {
+                item: StatusItemSpec {
+                    id: "my-plugin:status-1".into(),
+                    label: Some("Build".into()),
+                    placement: StatusPlacement::Right,
+                    body: UiNode::Text(TextNode { text: "passing".into() }),
+                },
+            },
+            Some("my-plugin"),
+        );
+        assert_eq!(result, PluginUiApplyResult::Applied);
+        assert!(app.plugin_ui_state.status_items.contains_key("my-plugin:status-1"));
+    }
+
+    #[test]
+    fn remote_snapshot_includes_plugin_panels_and_status_items() {
+        use crate::protocol::ui::{PanelPlacement, PanelSpec, StatusItemSpec, StatusPlacement};
+        let mut app = App::new_for_testing("/tmp".into());
+        app.apply_plugin_ui_effect(
+            UiEffect::OpenPanel {
+                panel: PanelSpec {
+                    id: "my-plugin:panel-1".into(),
+                    title: "My Panel".into(),
+                    placement: PanelPlacement::Right,
+                    body: UiNode::Empty,
+                },
+            },
+            Some("my-plugin"),
+        );
+        app.apply_plugin_ui_effect(
+            UiEffect::AddStatusItem {
+                item: StatusItemSpec {
+                    id: "my-plugin:status-1".into(),
+                    label: Some("Status".into()),
+                    placement: StatusPlacement::Right,
+                    body: UiNode::Empty,
+                },
+            },
+            Some("my-plugin"),
+        );
+        let snapshot = app.remote_snapshot();
+        assert_eq!(snapshot.plugin_panels.len(), 1);
+        assert_eq!(snapshot.plugin_panels[0].id, "my-plugin:panel-1");
+        assert_eq!(snapshot.plugin_status_items.len(), 1);
+        assert_eq!(snapshot.plugin_status_items[0].id, "my-plugin:status-1");
+    }
+
+    #[test]
+    fn unsupported_effect_degrades_to_toast() {
+        use crate::tui::app::state::PluginUiApplyResult;
+        let mut app = App::new_for_testing("/tmp".into());
+        app.ui_state.plugin_ui_caps =
+            crate::protocol::ui::PluginUiCapabilities {
+                dialog: false,
+                toast: true,
+                ..Default::default()
+            };
+        let result = app.apply_plugin_ui_effect(
+            UiEffect::OpenDialog {
+                dialog: DialogSpec {
+                    id: "my-plugin:dlg".into(),
+                    title: "Test Dialog".into(),
+                    body: UiNode::Text(TextNode { text: "content".into() }),
+                    modal: true,
+                },
+            },
+            Some("my-plugin"),
+        );
+        assert!(matches!(result, PluginUiApplyResult::Unsupported(_)));
+        // The degraded summary should appear as a toast.
+        assert!(!app.messages_state.toasts.is_empty());
     }
 }

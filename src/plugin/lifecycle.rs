@@ -1192,4 +1192,113 @@ mod tests {
         let outcome = hooks.auth(input).await;
         assert!(outcome.is_skipped());
     }
+
+    #[test]
+    fn hook_outcome_ok_carries_effects() {
+        use crate::protocol::ui::{ToastLevel, ToastSpec, UiEffect};
+
+        let effects = vec![
+            UiEffect::ShowToast {
+                toast: ToastSpec {
+                    level: ToastLevel::Info,
+                    message: "first".into(),
+                },
+            },
+            UiEffect::ShowToast {
+                toast: ToastSpec {
+                    level: ToastLevel::Success,
+                    message: "second".into(),
+                },
+            },
+        ];
+        let outcome: PluginHookOutcome<()> = PluginHookOutcome::Ok((), effects);
+        match outcome {
+            PluginHookOutcome::Ok((), effects) => {
+                assert_eq!(effects.len(), 2);
+                assert!(matches!(
+                    effects[0],
+                    UiEffect::ShowToast {
+                        toast: ToastSpec {
+                            level: ToastLevel::Info,
+                            ..
+                        }
+                    }
+                ));
+                assert!(matches!(
+                    effects[1],
+                    UiEffect::ShowToast {
+                        toast: ToastSpec {
+                            level: ToastLevel::Success,
+                            ..
+                        }
+                    }
+                ));
+            }
+            other => panic!("expected Ok, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn hook_outcome_effect_ordering_preserved() {
+        use crate::protocol::ui::{
+            DialogSpec, PanelPlacement, PanelSpec, ToastLevel, ToastSpec, UiEffect, UiNode,
+        };
+
+        let effects = vec![
+            UiEffect::OpenDialog {
+                dialog: DialogSpec {
+                    id: "dlg-1".into(),
+                    title: "Dialog".into(),
+                    body: UiNode::Empty,
+                    modal: true,
+                },
+            },
+            UiEffect::OpenPanel {
+                panel: PanelSpec {
+                    id: "panel-1".into(),
+                    title: "Panel".into(),
+                    placement: PanelPlacement::Right,
+                    body: UiNode::Empty,
+                },
+            },
+            UiEffect::ShowToast {
+                toast: ToastSpec {
+                    level: ToastLevel::Info,
+                    message: "done".into(),
+                },
+            },
+        ];
+        let outcome: PluginHookOutcome<()> = PluginHookOutcome::Ok((), effects);
+        if let PluginHookOutcome::Ok((), effects) = outcome {
+            assert_eq!(effects.len(), 3);
+            assert!(matches!(effects[0], UiEffect::OpenDialog { .. }));
+            assert!(matches!(effects[1], UiEffect::OpenPanel { .. }));
+            assert!(matches!(effects[2], UiEffect::ShowToast { .. }));
+        } else {
+            panic!("expected Ok");
+        }
+    }
+
+    #[tokio::test]
+    async fn disabled_event_hook_skipped_by_policy() {
+        use crate::plugin::registry::PluginRegistry;
+        use crate::plugin::service::PluginService;
+        use std::sync::Arc;
+
+        let registry = Arc::new(PluginRegistry::new());
+        let service = Arc::new(PluginService::new(registry));
+        // Disable observation hooks to test the skip path.
+        let policy = PluginLifecyclePolicy {
+            enable_observation_hooks: false,
+            ..Default::default()
+        };
+        let hooks = LifecycleHooks::new(service, policy);
+        let input = EventHookInput {
+            event_type: "test.event".into(),
+            session_id: None,
+            event: serde_json::json!({}),
+        };
+        let outcome = hooks.emit_event(input).await;
+        assert!(outcome.is_skipped());
+    }
 }

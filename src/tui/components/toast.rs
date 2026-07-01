@@ -111,6 +111,10 @@ impl ToastManager {
         self.toasts.is_empty()
     }
 
+    pub fn len(&self) -> usize {
+        self.toasts.len()
+    }
+
     /// Iterate over the active toasts in insertion order. Intended for
     /// assertions and tests; production rendering should use `render`.
     pub fn iter(&self) -> impl Iterator<Item = &Toast> {
