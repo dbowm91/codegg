@@ -1,13 +1,15 @@
 ---
 name: plugin
-description: Plugin system, WASM execution, hooks, fuel tracking, capability-based registry, runtime abstraction (Process/Wasm/Builtin), EmitChat UI rendering, Phase 11 corrective hardening
-version: 1.3.0
+description: Plugin system, WASM execution, hooks, fuel tracking, capability-based registry, runtime abstraction (Process/Wasm/Builtin), EmitChat UI rendering, Phase 11 corrective hardening, Phase 12 management UX + policy, Phase 13 SDKs and examples
+version: 1.4.0
 tags:
   - plugin
   - wasm
   - hooks
   - fuel
   - wasmtime
+  - sdk
+  - examples
 ---
 
 # Plugin System Guide
@@ -1044,3 +1046,69 @@ First-class slash commands for local plugin management and observability.
 - `check_secret_access_allowed` — validates secret access against declared permissions
 
 Process plugins are local executable code. They are not sandboxed. They are suitable for explicit user-invoked local commands, not silent lifecycle interception by default.
+
+### Phase 13: SDKs and Examples
+
+`examples/plugins/` ships six runnable reference plugins plus two helper SDKs. Use them as templates instead of reverse-engineering protocol types. Each example is independent (own `Cargo.toml` with `[workspace]` isolation or its own directory); the root workspace is unmodified.
+
+**Process examples** (project-local commands via `command/*.md` frontmatter):
+
+| Path | Demonstrates |
+|------|--------------|
+| `process-quota-text/` | Zero-SDK path. Plain stdout; auto-detected as EmitChat. |
+| `process-quota-json/` | Reads `PluginInvocation` from stdin; writes `PluginResponse` with effects to stdout. |
+
+**WASM examples** (install to the platform plugins directory):
+
+| Path | Demonstrates |
+|------|--------------|
+| `wasm-command-table/` | Modern `codegg_plugin_invoke` ABI; returns OpenDialog + Table. |
+| `wasm-hook-message-transform/` | Observation-only `event_subscription` hook (default-policy-permitted). |
+| `wasm-status-widget/` | Panel + status widget via separate capabilities. |
+
+**Documentation-only example:**
+
+| Path | Demonstrates |
+|------|--------------|
+| `builtin-reference/` | Walkthrough of the `BuiltinRuntime` pattern for codegg contributors. |
+
+**SDKs:**
+
+| Path | Provides |
+|------|----------|
+| `sdk-python/` (stdlib-only, 24 tests) | `read_invocation`, `write_response`, builders for every `UiEffect`/`UiNode` variant. |
+| `sdk-rust/` (11 tests, 1 wasm-only `#[ignore]`) | `codegg_plugin!` macro exporting `allocate`/`deallocate`/`codegg_plugin_invoke`; typed builders. Uses a 1 MiB bump allocator. |
+
+**Wire format reference:** `crates/codegg-protocol/src/plugin.rs` (`PLUGIN_PROTOCOL_VERSION = 1`) and `crates/codegg-protocol/src/ui.rs`. Both SDKs re-export protocol types by path dependency so the format cannot drift.
+
+**Build / validation:**
+
+```bash
+PYTHONPATH=examples/plugins/sdk-python \
+  python3 -m unittest discover examples/plugins/sdk-python/tests -v
+
+cargo test --manifest-path examples/plugins/sdk-rust/Cargo.toml
+
+rustup target add wasm32-unknown-unknown
+cargo build --target wasm32-unknown-unknown \
+  --manifest-path examples/plugins/wasm-command-table/Cargo.toml --release
+```
+
+**WASM ABI summary** (modern):
+
+| Export | Signature | Required |
+|--------|-----------|----------|
+| `memory` | linear memory | yes |
+| `allocate` | `(i32) -> i32` | yes |
+| `deallocate` | `(i32, i32)` | optional |
+| `codegg_plugin_invoke` | `(i32, i32) -> i64` | yes (modern) |
+
+The packed i64 return is `(response_ptr << 32) | response_len`. The host reads `len` bytes from `ptr`, deserializes JSON, then optionally calls `deallocate`.
+
+**Manual testing for the JSON process example:**
+
+```bash
+cat examples/plugins/process-quota-json/sample_invocation.json | \
+  python3 examples/plugins/process-quota-json/scripts/quota_json.py | \
+  python3 -m json.tool
+```

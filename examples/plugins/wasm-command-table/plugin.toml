@@ -1,0 +1,20 @@
+name = "wasm-command-table"
+version = "0.1.0"
+api_version = 1
+
+[runtime]
+kind = "wasm"
+module = "plugin.wasm"
+timeout_ms = 5000
+memory_max_mb = 16
+fuel_per_call = 1000000
+
+[[capabilities]]
+type = "command"
+name = "wasm-table"
+description = "Show loaded plugins as a table"
+output = ["dialog", "chat"]
+
+[permissions]
+network = false
+filesystem = "none"

@@ -1,0 +1,17 @@
+{
+  "protocol_version": 1,
+  "invocation_id": "test-001",
+  "plugin_id": "process-quota-json",
+  "capability": {"type": "command", "name": "quota-json"},
+  "args": ["--provider", "anthropic"],
+  "input": {},
+  "context": {
+    "session_id": "sess-test",
+    "turn_id": null,
+    "project_dir": "/tmp",
+    "model": null,
+    "agent": null,
+    "frontend_capabilities": [],
+    "metadata": {}
+  }
+}

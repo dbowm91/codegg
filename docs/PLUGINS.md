@@ -19,29 +19,56 @@ The plugin module (`src/plugin/`) consists of:
 
 ## Plugin Manifest
 
-Each plugin requires a `manifest.toml`:
+Each installed plugin requires a `manifest.toml`. The canonical (Phase 5) format
+declares runtime, capabilities, and permissions explicitly:
 
 ```toml
 name = "my-plugin"
-version = "1.0.0"
-description = "A sample plugin"
-api_version = "0.1.0"
+version = "0.1.0"
+api_version = 1
 
-[hooks]
-auth = "on_auth"
-provider = "on_provider"
-tool_definition = "on_tool_definition"
-tool_execute_before = "on_tool_execute_before"
-tool_execute_after = "on_tool_execute_after"
-chat_params = "on_chat_params"
-chat_headers = "on_chat_headers"
-event = "on_event"
-config = "on_config"
-shell_env = "on_shell_env"
-text_complete = "on_text_complete"
-session_compacting = "on_session_compacting"
-messages_transform = "on_messages_transform"
+[runtime]
+kind = "wasm"
+module = "plugin.wasm"
+timeout_ms = 5000
+memory_max_mb = 16
+fuel_per_call = 1000000
+
+[[capabilities]]
+type = "command"
+name = "greet"
+aliases = ["hi"]
+description = "Print a greeting"
+output = ["chat", "dialog"]
+
+[permissions]
+network = false
+filesystem = "none"
 ```
+
+For a process-backed plugin, use `kind = "process"` and provide `command` and
+`args`:
+
+```toml
+[runtime]
+kind = "process"
+command = "python3"
+args = ["scripts/quota.py"]
+timeout_ms = 5000
+```
+
+For a builtin plugin (compiled into codegg), use `kind = "builtin"` and
+identify the handler:
+
+```toml
+[runtime]
+kind = "builtin"
+handler = "copilot"
+```
+
+The legacy flat format (a top-level `[hooks]` table mapping hook type to export
+name) is still accepted and is auto-converted to `[[capabilities]]` entries on
+load. New manifests should use the canonical form above.
 
 ## Hook System
 
@@ -317,3 +344,64 @@ Four check functions validate invocations:
 When policy is absent, all checks pass (backward compatible).
 
 > **Process plugins are local executable code. They are not sandboxed.** They are suitable for explicit user-invoked local commands, not silent lifecycle interception by default.
+
+## Quickstart Examples and SDKs (Phase 13)
+
+The `examples/plugins/` directory contains small, tested reference
+plugins and SDK helpers. Use them as templates rather than reverse
+engineering the protocol from `codegg-protocol`.
+
+| Path | What it demonstrates |
+|------|---------------------|
+| `examples/plugins/process-quota-text/` | Zero-SDK process plugin emitting plain text stdout (auto-detected as EmitChat). |
+| `examples/plugins/process-quota-json/` | Process plugin reading `PluginInvocation` JSON from stdin and emitting `PluginResponse` JSON with effects. |
+| `examples/plugins/wasm-command-table/` | WASM plugin using the modern `codegg_plugin_invoke` ABI; returns an OpenDialog with a Table. |
+| `examples/plugins/wasm-hook-message-transform/` | WASM observation hook via the `event_subscription` capability (low-risk, default-policy-permitted). |
+| `examples/plugins/wasm-status-widget/` | WASM plugin contributing an OpenPanel and an AddStatusItem. |
+| `examples/plugins/builtin-reference/` | Walk-through of the builtin pattern for codegg contributors (not for external plugin authors). |
+| `examples/plugins/sdk-python/` | Vendorable Python helper package (stdlib only): protocol I/O + builders. |
+| `examples/plugins/sdk-rust/` | Rust helper crate with the `codegg_plugin!` macro and typed builders for WASM plugins. |
+
+### Wire format
+
+All process and WASM plugins exchange JSON `PluginInvocation` and
+`PluginResponse` objects. Both use snake_case field names; tagged enums
+use different tag keys (`kind` for `UiNode`, `type` for `UiEffect` and
+`PluginCapabilityInvocation`, `kind` for `PluginRuntimeSpec`). The
+canonical definitions live in:
+
+- `crates/codegg-protocol/src/plugin.rs` — `PluginInvocation`,
+  `PluginResponse`, `PluginCapabilityInvocation`, `PluginContext`,
+  `PluginDiagnostic`.
+- `crates/codegg-protocol/src/ui.rs` — `UiNode`, `UiEffect`, `ChatBlock`,
+  `DialogSpec`, `PanelSpec`, `StatusItemSpec`.
+
+The current protocol version is `PLUGIN_PROTOCOL_VERSION = 1`. Process
+plugins must validate `protocol_version` and emit a structured error
+response (not a crash) on mismatch.
+
+### Build matrix
+
+```bash
+# Python SDK (24 tests)
+PYTHONPATH=examples/plugins/sdk-python \
+  python3 -m unittest discover examples/plugins/sdk-python/tests -v
+
+# Rust SDK (11 tests, 1 wasm-only ignored)
+cargo test --manifest-path examples/plugins/sdk-rust/Cargo.toml
+
+# WASM examples (require wasm32-unknown-unknown target)
+rustup target add wasm32-unknown-unknown
+cargo build --target wasm32-unknown-unknown \
+  --manifest-path examples/plugins/wasm-command-table/Cargo.toml --release
+```
+
+### Installing an example
+
+Process-based project-local commands live in `command/*.md` next to the
+project root. WASM-based plugins install into the platform plugin
+directory (`~/.local/share/codegg/plugins/` on Linux,
+`~/Library/Application Support/codegg/plugins/` on macOS,
+`%LOCALAPPDATA%\codegg\plugins\` on Windows). See
+`architecture/plugin.md` for the canonical install paths and
+`/plugin-install` for the in-TUI installer.

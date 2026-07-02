@@ -1374,6 +1374,139 @@ When policy is absent, all checks pass (backward compatible).
 
 Process plugins are local executable code. They are not sandboxed. They are suitable for explicit user-invoked local commands, not silent lifecycle interception by default.
 
+## SDKs and Examples (Phase 13)
+
+The `examples/plugins/` directory contains runnable reference plugins
+and helper SDKs. Each is small, self-contained, and tested. Use them
+as templates rather than reverse-engineering the protocol from
+`codegg-protocol`.
+
+### Examples
+
+| Path | Runtime | Demonstrates |
+|------|---------|--------------|
+| `process-quota-text/` | process (stdout) | Zero-SDK path: emit plain text and let auto-detection surface it as `EmitChat`. |
+| `process-quota-json/` | process (JSON) | Read `PluginInvocation` from stdin; emit `PluginResponse` with `OpenDialog` + `EmitChat` to stdout. |
+| `wasm-command-table/` | wasm | Modern `codegg_plugin_invoke` ABI; returns a dialog containing a Table `UiNode`. |
+| `wasm-hook-message-transform/` | wasm | Event-subscription observation hook (default policy permits it without config). |
+| `wasm-status-widget/` | wasm | Panel + status widget via separate capabilities. |
+| `builtin-reference/` | builtin (in-tree Rust) | Walk-through of the `BuiltinRuntime` pattern for codegg contributors. |
+
+### SDKs
+
+#### `sdk-rust/`
+
+A Rust helper crate compiled to `wasm32-unknown-unknown`. Depends on
+`codegg-protocol` by path so the wire format cannot drift.
+
+Key entry points:
+
+- `codegg_plugin!(handler_fn)` — macro that exports `allocate`,
+  `deallocate`, and `codegg_plugin_invoke`.
+- `builders::text_node`, `builders::table_node`, `builders::key_value_node`,
+  `builders::markdown_node`, `builders::code_node`, `builders::progress_node`,
+  `builders::container_node` — typed `UiNode` constructors.
+- `builders::response_chat`, `builders::response_chat_markdown`,
+  `builders::response_dialog`, `builders::response_panel`,
+  `builders::response_status` — typed `PluginResponse` constructors.
+- `builders::ok_response`, `builders::error_response`,
+  `builders::diagnostic` — response helpers.
+
+The allocator is a 1 MiB bump allocator (`src/abi.rs`); memory is not
+freed per-pointer but the heap is reset per invocation since Wasmtime
+re-instantiates the module between calls. This is sufficient for
+short-lived plugin responses.
+
+Tested via `cargo test --manifest-path examples/plugins/sdk-rust/Cargo.toml`
+(11 tests, one wasm-only test marked `#[ignore]`).
+
+#### `sdk-python/`
+
+A stdlib-only Python helper package, vendorable or pip-installable from
+path. Mirrors the Rust builders but emits dict literals matching the
+exact wire format.
+
+```python
+from codegg_plugin import read_invocation, ok_response, write_response, emit_chat, open_dialog, table_node
+
+inv = read_invocation()
+write_response(ok_response(
+    effects=[
+        emit_chat("Hello"),
+        open_dialog("d1", "Title", table_node(["A"], [["1"]]), modal=True),
+    ],
+    data={"ok": True},
+))
+```
+
+Tested via `PYTHONPATH=examples/plugins/sdk-python python3 -m unittest
+discover examples/plugins/sdk-python/tests -v` (24 tests).
+
+### Wire Format Quick Reference
+
+The full schema lives in `crates/codegg-protocol/src/plugin.rs` and
+`crates/codegg-protocol/src/ui.rs`. Plugin authors should re-export the
+protocol types from their SDK rather than redefining them.
+
+```json
+{
+  "protocol_version": 1,
+  "invocation_id": "uuid-or-string",
+  "plugin_id": "plugin:<name>",
+  "capability": {"type": "command", "name": "greet"},
+  "args": [],
+  "input": {},
+  "context": {
+    "session_id": null,
+    "turn_id": null,
+    "project_dir": null,
+    "model": null,
+    "agent": null,
+    "frontend_capabilities": [],
+    "metadata": {}
+  }
+}
+```
+
+```json
+{
+  "ok": true,
+  "effects": [
+    {"type": "open_dialog", "dialog": {"id": "d1", "title": "T", "body": {"kind": "table", "columns": ["a"], "rows": [["1"]]}, "modal": true}}
+  ],
+  "data": null,
+  "diagnostics": [{"level": "info", "message": "ok"}]
+}
+```
+
+### Build Validation
+
+```bash
+# Python SDK
+PYTHONPATH=examples/plugins/sdk-python \
+  python3 -m unittest discover examples/plugins/sdk-python/tests -v
+
+# Rust SDK
+cargo test --manifest-path examples/plugins/sdk-rust/Cargo.toml
+
+# WASM examples (one-time: rustup target add wasm32-unknown-unknown)
+cargo build --target wasm32-unknown-unknown \
+  --manifest-path examples/plugins/wasm-command-table/Cargo.toml --release
+```
+
+### Safety
+
+- Process plugins are local executables; not sandboxed. Treat them like
+  any locally runnable command.
+- WASM plugins run inside Wasmtime with per-plugin fuel budgets
+  (`MAX_PLUGIN_FUEL_BUDGET = 10_000_000`, default
+  `WASM_FUEL_PER_HOOK = 1_000_000`) and memory caps (default 256 MiB).
+- All examples in `examples/plugins/` are local-only: no network, no
+  secrets, no filesystem writes outside the documented paths.
+- The `wasm-hook-message-transform` example uses an observation-only
+  event subscription; mutating or blocking lifecycle hooks remain
+  denied by default under `PluginPolicy`.
+
 ## See Also
 
 - [hooks.md](hooks.md) - External hooks system

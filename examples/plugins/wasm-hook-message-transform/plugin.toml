@@ -1,0 +1,19 @@
+name = "wasm-hook-observer"
+version = "0.1.0"
+api_version = 1
+
+[runtime]
+kind = "wasm"
+module = "plugin.wasm"
+timeout_ms = 3000
+memory_max_mb = 16
+fuel_per_call = 500000
+
+[[capabilities]]
+type = "event_subscription"
+event_type = "*"
+handler = "on_event"
+
+[permissions]
+network = false
+filesystem = "none"

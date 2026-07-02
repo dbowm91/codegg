@@ -1,0 +1,29 @@
+name = "wasm-status-widget"
+version = "0.1.0"
+api_version = 1
+
+[runtime]
+kind = "wasm"
+module = "plugin.wasm"
+timeout_ms = 3000
+memory_max_mb = 16
+fuel_per_call = 500000
+
+[[capabilities]]
+type = "panel"
+id = "system-info"
+title = "System Info"
+placement = "left"
+handler = "on_panel"
+
+[[capabilities]]
+type = "status_widget"
+id = "project-name"
+label = "proj"
+placement = "right"
+refresh_ms = 5000
+handler = "on_status"
+
+[permissions]
+network = false
+filesystem = "none"
