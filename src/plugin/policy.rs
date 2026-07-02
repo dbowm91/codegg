@@ -278,8 +278,10 @@ mod tests {
 
     #[test]
     fn enabling_mutating_allows_mutating_hooks() {
-        let mut policy = PluginLifecyclePolicy::default();
-        policy.enable_mutating_hooks = true;
+        let policy = PluginLifecyclePolicy {
+            enable_mutating_hooks: true,
+            ..Default::default()
+        };
         assert!(policy.is_hook_allowed(HookType::MessagesTransform));
         assert!(policy.is_hook_allowed(HookType::ShellEnv));
         assert!(policy.is_hook_allowed(HookType::ToolDefinition));
@@ -287,8 +289,10 @@ mod tests {
 
     #[test]
     fn enabling_blocking_allows_blocking_hooks() {
-        let mut policy = PluginLifecyclePolicy::default();
-        policy.enable_blocking_hooks = true;
+        let policy = PluginLifecyclePolicy {
+            enable_blocking_hooks: true,
+            ..Default::default()
+        };
         assert!(policy.is_hook_allowed(HookType::ToolExecuteBefore));
         assert!(policy.is_hook_allowed(HookType::Auth));
     }
@@ -324,8 +328,10 @@ mod tests {
 
     #[test]
     fn process_runtime_allowed_when_enabled() {
-        let mut policy = PluginLifecyclePolicy::default();
-        policy.allow_process_lifecycle_hooks = true;
+        let policy = PluginLifecyclePolicy {
+            allow_process_lifecycle_hooks: true,
+            ..Default::default()
+        };
         assert!(policy.is_runtime_allowed(&PluginRuntimeSpec::Process {
             command: "test".into(),
             args: Vec::new(),

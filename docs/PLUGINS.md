@@ -189,6 +189,11 @@ Plugins can be installed from:
 install_from_path(&path, &mut registry)
 ```
 
+Path validation uses lexical containment checks:
+- Symlinks, hardlinks, and absolute paths are rejected in archives and during installation
+- `validate_relative_install_path()` ensures relative paths stay within the destination directory
+- `validate_install_source()` performs lexical `ParentDir`/`RootDir`/`Prefix` rejection before canonicalizing
+
 ### Remote URL
 ```rust
 install_from_url(url, &mut registry).await
@@ -398,8 +403,8 @@ First-class slash commands for local plugin management:
 
 - `/plugins` — List all installed and built-in plugins with status and capability summary
 - `/plugin-info <id>` — Show detailed plugin info (runtime, capabilities, trust, permissions, diagnostics)
-- `/plugin-enable <id>` — Enable a plugin (persisted to disabled_plugins.toml)
-- `/plugin-disable <id>` — Disable a plugin (persisted to disabled_plugins.toml)
+- `/plugin-enable <id>` — Enable a plugin (runtime-only; `/plugins` shows a notice)
+- `/plugin-disable <id>` — Disable a plugin (runtime-only; `/plugins` shows a notice)
 - `/plugin-doctor [id]` — Run diagnostic checks on plugin configuration and health
 - `/plugin-remove <id>` — Remove a locally installed plugin (safe: only from plugin install dir)
 - `/plugin-install <path>` — Install a plugin from a local directory path
@@ -410,9 +415,9 @@ Plugin selectors resolve in order: exact id → exact name → unique id prefix 
 
 ### Safety
 
-- Enable/disable state persists across sessions
+- Enable/disable is runtime-only (in-memory `PluginRegistry::set_enabled`); `/plugins` shows a notice
 - Remove only deletes from the canonical plugin directory (`~/.local/share/codegg/plugins/`)
-- Install validates manifest.toml before copying and rejects invalid manifests
+- Install validates manifests before copying and rejects invalid manifests; path traversal, symlinks, hardlinks, and absolute paths are rejected via lexical containment checks
 - Doctor checks are read-only and never execute plugin code by default
 
 ## Security Policy (Phase 12)

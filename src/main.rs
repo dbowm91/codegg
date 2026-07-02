@@ -1356,6 +1356,7 @@ async fn launch_tui(cli: &Cli) -> Result<(), AppError> {
     app.set_models(model_ids.clone());
     app.agent_state.agents = agents.clone();
     app.notification_manager = Some(notification_mgr);
+    app.init_plugin_manager().await;
 
     if is_socket_mode {
         // Pull theme from config only (no SQLite-backed preferences in socket mode)

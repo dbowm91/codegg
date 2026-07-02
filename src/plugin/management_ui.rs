@@ -292,11 +292,6 @@ mod tests {
     }
 
     fn sample_report(name: &str, checks: Vec<PluginDoctorCheck>) -> PluginDoctorReport {
-        PluginDoctorCheck {
-            name: "check1".to_string(),
-            passed: true,
-            message: "ok".to_string(),
-        };
         PluginDoctorReport {
             plugin_id: "test:1".to_string(),
             plugin_name: name.to_string(),

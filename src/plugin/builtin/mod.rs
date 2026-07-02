@@ -275,7 +275,7 @@ mod tests {
 
     #[tokio::test]
     async fn disabling_builtin_excludes_its_capabilities_from_queries() {
-        let mut registry = crate::plugin::registry::PluginRegistry::new();
+        let registry = crate::plugin::registry::PluginRegistry::new();
         register_builtins(&registry).await;
 
         let auth_hooks_before = registry.hooks_for(HookType::Auth).await;

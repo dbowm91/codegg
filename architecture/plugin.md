@@ -523,44 +523,40 @@ pub async fn uninstall(plugin_name: &str) -> Result<(), InstallError>;
 ```
 
 **Security Measures:**
-- Symlinks not allowed in archives or installation
-- Path canonicalization checks prevent path traversal attacks
+- Symlinks, hardlinks, and absolute paths rejected in archives and during installation
+- Lexical path containment checks prevent path traversal attacks (no canonicalization needed)
+- `validate_uninstall_target()` enforces safe uninstall paths
 - HTTP download support for `.wasm` files or `.tar.gz` archives
 
-### Path Canonicalization Security (`install.rs:136-156`)
+### Path Canonicalization Security (`install.rs`)
 
 The installation process validates extracted paths to prevent directory traversal attacks:
 
+- **`copy_dir_all(src, dst)`**: Validates *destination* containment (not source containment) via lexical path components. The relative path between src and dst is checked to ensure it consists only of `Normal` and `CurDir` components — no `ParentDir`, `RootDir`, or `Prefix`.
+- **`extract_plugin_archive`**: Rejects symlinks, hardlinks, and absolute paths in archive entries before extraction. Uses `validate_relative_install_path()` to enforce lexical containment of each entry path relative to the destination.
+- **`validate_install_source(path, policy)`**: Performs lexical `ParentDir`/`RootDir`/`Prefix` rejection BEFORE canonicalizing, so the original user-supplied path is inspected rather than a resolved canonical form.
+- **`uninstall(plugin_path, policy)`**: Calls `validate_uninstall_target(plugin_path, &policy)` which rejects name components containing path separators, `..`, or absolute paths.
+
+### Shared Helper: `validate_relative_install_path`
+
 ```rust
-fn validate_extracted_path(dest: &Path, entry_path: &Path) -> Result<PathBuf, InstallError> {
-    // Canonicalize the destination directory
-    let dest_canonical = dest.canonicalize()
-        .map_err(|e| InstallError::InvalidPath(format!("dest: {}", e)))?;
-
-    // Canonicalize the entry path (resolved against dest)
-    let entry_full = dest.join(entry_path);
-    let entry_canonical = entry_full.canonicalize()
-        .map_err(|e| InstallError::InvalidPath(format!("entry {}: {}", entry_path.display(), e)))?;
-
-    // Ensure the canonical path starts with the destination directory
-    if !entry_canonical.starts_with(&dest_canonical) {
-        return Err(InstallError::PathTraversal);
-    }
-
-    Ok(entry_canonical)
+fn validate_relative_install_path(rel: &Path) -> Result<(), String> {
+    // Rejects ParentDir, RootDir, Prefix components
+    // Only allows Normal and CurDir components
 }
 ```
 
-This prevents attacks where malicious archive entries like `../../etc/passwd` could write outside the plugin directory.
+Used by both `copy_dir_all` and `extract_plugin_archive` to enforce that relative paths stay within the intended directory.
 
-### Symlink Prevention (`install.rs:183-212`)
+### Symlink and Hardlink Prevention
 
-Archive extraction rejects symlinks to prevent:
+Archive extraction rejects symlinks and hardlinks to prevent:
 - Symlink attacks: extracting `plugin.wasm` -> `/etc/passwd`
+- Hardlink-based data exfiltration
 - Time-of-check-time-of-use (TOCTOU) issues with relative path resolution
 - Arbitrary file overwrite via crafted archives
 
-The check verifies `entry.file_type().is_symlink()` returns false for all archive entries.
+The check verifies `entry.file_type().is_symlink()` and `entry.file_type().is_hard_link()` return false for all archive entries. Absolute paths are also rejected.
 
 ### tui.rs - TUI Extensions (Legacy/Deprecated)
 
@@ -837,8 +833,9 @@ PluginService::dispatch_hook(ctx)
 | Memory Bounds | Input validated before WASM memory write (loader.rs:384) |
 | Output Size Limit | 10MB max from WASM output (loader.rs:424) |
 | WASM Size Limit | 10MB max module size (loader.rs:263) |
-| Path Traversal | Archive extraction validates canonical paths (install.rs:136-156) |
-| Symlink Prevention | Not allowed in archives or installation (install.rs:191, 143) |
+| Path Traversal | Archive extraction and copy validate lexical path containment via `validate_relative_install_path()` |
+| Symlink/Hardlink Prevention | Symlinks, hardlinks, and absolute paths rejected in archives and during installation |
+| Uninstall Safety | `validate_uninstall_target()` rejects path separators, `..`, and absolute path components |
 
 ## Feature Flag
 
@@ -1328,7 +1325,7 @@ Ambiguous or missing selectors produce clear error messages.
 
 ### Safety
 
-- Enable/disable persists to `disabled_plugins.toml` in the plugins directory
+- Enable/disable is runtime-only (in-memory `PluginRegistry::set_enabled`); `/plugins` shows a notice
 - Remove only deletes from the canonical plugin install directory
 - Install validates manifests before copying and refuses to overwrite existing plugins
 - Doctor checks are read-only and never execute plugin code
@@ -1338,6 +1335,8 @@ Ambiguous or missing selectors produce clear error messages.
 - 30 management tests (selector resolution, view construction, doctor checks, last_error)
 - 16 management_ui tests (table rendering, key-value, doctor reports, last_error display)
 - 31 TUI plugin management tests (format helpers, resolve, persistence, apply handler routing)
+- 23 installer tests (traversal, symlinks, hardlinks, absolute paths, nested installs)
+- 13 management tests (PluginManager lifecycle, validate_uninstall_target, edge cases)
 
 ## Security Policy (Phase 12)
 
@@ -1383,6 +1382,28 @@ When policy is absent, all checks pass (backward compatible).
 ### Safety Note
 
 Process plugins are local executable code. They are not sandboxed. They are suitable for explicit user-invoked local commands, not silent lifecycle interception by default.
+
+## Corrective Convergence Pass (2026-07-02)
+
+Closes remaining convergence and safety gaps after Phase 11–15.
+
+### Installer Path Validation Rewrite
+
+`src/plugin/install.rs` was rewritten to fix several correctness gaps:
+
+- **`copy_dir_all`**: Previously validated `src_canonical.starts_with(dst_canonical)` which is backwards for normal source-to-destination copying. Now validates *destination* containment via lexical path components — the relative path must consist only of `Normal`/`CurDir` components.
+- **`extract_plugin_archive`**: Previously canonicalized nonexistent target paths. Now rejects symlinks, hardlinks, and absolute paths before extraction, and uses `validate_relative_install_path()` for lexical containment.
+- **`validate_install_source`**: Previously canonicalized before checking `ParentDir`, making the traversal check mostly ineffective. Now performs lexical `ParentDir`/`RootDir`/`Prefix` rejection BEFORE canonicalizing so the original user-supplied path is inspected.
+- **`uninstall`**: Now calls `validate_uninstall_target(plugin_path, &policy)` which rejects name components containing path separators, `..`, or absolute paths.
+
+### TUI Management Unification
+
+All TUI plugin management commands now route through `PluginManager` (which wraps `PluginService` + `PluginRegistry` + builtins). The live registry is the source of truth. The sidecar `disabled_plugins.toml` file and `MarketplaceService::list_local_plugins()` are no longer used in TUI command paths. Enable/disable is runtime-only; `/plugins` shows a notice that persistence is not yet implemented.
+
+### Test Coverage
+
+- 23 new installer tests: traversal (symlinks, hardlinks, `../`, absolute paths), nested installs, archive extraction hardening
+- 13 new management tests: `PluginManager` lifecycle, `validate_uninstall_target`, selector resolution edge cases
 
 ## SDKs and Examples (Phase 13)
 

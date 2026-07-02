@@ -115,9 +115,7 @@ mod tests {
             cwd: PathBuf::from("/tmp"),
             started_at: std::time::SystemTime::now(),
             finished_at: Some(std::time::SystemTime::now()),
-            status: if exit_code == Some(0) {
-                ShellStatus::Exited
-            } else if exit_code.is_some() {
+            status: if exit_code.is_some() {
                 ShellStatus::Exited
             } else {
                 ShellStatus::Running

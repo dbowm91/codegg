@@ -836,7 +836,7 @@ pub struct TuiComponent {
 
 ## Marketplace Service
 
-Local plugin discovery via filesystem scanning:
+Local plugin discovery via filesystem scanning. Note: TUI plugin management commands now route through `PluginManager` (which wraps `PluginService` + `PluginRegistry` + builtins) — the live registry is the source of truth. `MarketplaceService` is retained for filesystem discovery/install staging but is no longer the authoritative state for `/plugins`.
 
 ```rust
 pub struct MarketplaceService {
@@ -861,8 +861,9 @@ impl MarketplaceService {
 4. **Memory Bounds**: Input validated against memory bounds before writing to WASM.
 5. **Output Size**: 10MB max output size from WASM.
 6. **WASM Size**: 10MB max module size.
-7. **Path Traversal**: Archive extraction validates paths stay within destination.
-8. **Symlink Protection**: Symlinks not allowed in plugin archives or during installation.
+7. **Path Traversal**: Lexical path containment checks via `validate_relative_install_path()` prevent directory traversal (no canonicalization needed).
+8. **Symlink/Hardlink Protection**: Symlinks, hardlinks, and absolute paths rejected in plugin archives and during installation.
+9. **Uninstall Safety**: `validate_uninstall_target()` rejects path separators, `..`, and absolute path components in plugin names.
 
 ## Error Handling
 
@@ -1031,10 +1032,11 @@ First-class slash commands for local plugin management and observability.
 4. Unique prefix match on name (case-insensitive)
 
 **Safety semantics:**
-- Enable/disable persists to `disabled_plugins.toml` in the plugins directory
+- Enable/disable is runtime-only (in-memory `PluginRegistry::set_enabled`); `/plugins` shows a notice
 - Remove only deletes from the canonical plugin install directory
 - Install validates manifests before copying and refuses to overwrite existing plugins
 - Doctor checks are read-only and never execute plugin code
+- Installer path validation uses lexical containment checks (symlinks, hardlinks, absolute paths, and `../` traversal rejected)
 
 **Key types:** `PluginManager`, `PluginManagementView`, `PluginDoctorReport`
 
@@ -1131,3 +1133,18 @@ cat examples/plugins/process-quota-json/sample_invocation.json | \
 First-party builders live in `src/tui/ui_builders/`: `stats.rs` (`stats_node` + `TaskSummaryView` DTO), `plugins.rs` (re-export shim for `management_ui` builders), `shell.rs` (`shell_detail_node`). The plugin management builders (`plugins_table`, `plugin_info_node`, `doctor_report_node`, `node_to_lines`) remain in `src/plugin/management_ui.rs` — the `ui_builders/plugins.rs` shim gives first-party callers a clean import path.
 
 Renderer hardening: empty-table fallback message, key-value alignment to longest key, column-width cap of 60 chars with `…` truncation, ANSI/CSI and control-character sanitization on line output, safe `total=0` percentage. Interactive components (permission/question/command-palette/file-diff/source-preview/tree/security-review) MUST NOT be migrated to `UiNode` — keep them as native ratatui components.
+
+### Corrective Convergence Pass (2026-07-02)
+
+Closes remaining convergence and safety gaps after Phase 11–15.
+
+**Installer path validation rewrite** (`src/plugin/install.rs`):
+- `copy_dir_all` validates destination containment via lexical path components (not source containment — the old check was backwards)
+- `extract_plugin_archive` rejects symlinks, hardlinks, and absolute paths before extraction; uses `validate_relative_install_path()` for lexical containment
+- `validate_install_source` does lexical `ParentDir`/`RootDir`/`Prefix` rejection BEFORE canonicalizing
+- `uninstall` calls `validate_uninstall_target(plugin_path, &policy)` and rejects name components (path separators, `..`, absolute paths)
+- Shared helper: `validate_relative_install_path(Path) -> Result<(), String>`
+
+**TUI management unification**: All 7 TUI plugin management commands route through `PluginManager` (wraps `PluginService` + `PluginRegistry` + builtins). No more `MarketplaceService`/sidecar `disabled_plugins.toml` in TUI command paths. Enable/disable is runtime-only; `/plugins` shows a notice.
+
+**Testing**: 23 new installer tests (traversal, symlinks, hardlinks, absolute paths, nested installs) + 13 new management tests. Validation commands: `cargo fmt --check`, `cargo check --workspace --all-features`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, `cargo test --workspace --all-features`, plus SDK/example validation.

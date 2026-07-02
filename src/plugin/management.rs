@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use crate::plugin::manifest::{PluginManifest, PluginRuntimeSpec, PluginTrustClass};
 use crate::plugin::marketplace::MarketplacePlugin;
+use crate::plugin::policy::PluginInstallPolicy;
 use crate::plugin::registry::{PluginInfo, PluginRegistry, PluginRegistryError};
 use crate::plugin::service::{PluginError, PluginService};
 
@@ -155,6 +156,7 @@ pub struct PluginDoctorReport {
 }
 
 /// High-level plugin management API.
+#[derive(Clone)]
 pub struct PluginManager {
     service: Arc<PluginService>,
 }
@@ -162,6 +164,11 @@ pub struct PluginManager {
 impl PluginManager {
     pub fn new(service: Arc<PluginService>) -> Self {
         Self { service }
+    }
+
+    /// Access the underlying [`PluginService`].
+    pub fn service(&self) -> &Arc<PluginService> {
+        &self.service
     }
 
     /// List all registered plugins.
@@ -252,6 +259,98 @@ impl PluginManager {
             .await
             .ok_or_else(|| PluginManagementError::NotFound(info.id.clone()))?;
         Ok(PluginManagementView::from_info(&removed))
+    }
+
+    /// Install a plugin from a local filesystem path and register it
+    /// in the live registry so subsequent `list()` calls include it.
+    ///
+    /// The source directory must contain a `manifest.toml`. The plugin
+    /// is copied into the canonical plugins directory, the manifest is
+    /// parsed, and the plugin is registered in the registry.
+    pub async fn install_from_path(
+        &self,
+        path: &std::path::Path,
+    ) -> Result<PluginManagementView, PluginManagementError> {
+        let dest = crate::plugin::install::install_from_path(path)
+            .await
+            .map_err(|e| PluginManagementError::Install(e.to_string()))?;
+
+        let manifest_path = dest.join("manifest.toml");
+        let content = tokio::fs::read_to_string(&manifest_path)
+            .await
+            .map_err(|e| PluginManagementError::Install(format!("failed to read manifest: {e}")))?;
+        let manifest: PluginManifest = toml::from_str(&content)
+            .map_err(|e| PluginManagementError::Install(format!("invalid manifest: {e}")))?;
+
+        let plugin_id = format!("plugin:{}", manifest.name);
+        let info = PluginInfo {
+            id: plugin_id.clone(),
+            manifest,
+            enabled: true,
+            trust: PluginTrustClass::TrustedLocal,
+            diagnostics: Vec::new(),
+        };
+
+        self.service
+            .registry()
+            .register(info)
+            .await
+            .map_err(PluginManagementError::Registry)?;
+
+        let updated = self
+            .service
+            .registry()
+            .get(&plugin_id)
+            .await
+            .ok_or(PluginManagementError::NotFound(plugin_id))?;
+        Ok(PluginManagementView::from_info(&updated))
+    }
+
+    /// Uninstall a plugin: unregister from the registry and remove
+    /// its filesystem directory if it is under the canonical plugins dir.
+    pub async fn uninstall(
+        &self,
+        selector: &str,
+    ) -> Result<PluginManagementView, PluginManagementError> {
+        let info = self
+            .service
+            .registry()
+            .resolve_plugin_selector(selector)
+            .await
+            .map_err(registry_error_to_management)?;
+
+        // Unregister from the live registry first.
+        let removed = self
+            .service
+            .registry()
+            .unregister(&info.id)
+            .await
+            .ok_or_else(|| PluginManagementError::NotFound(info.id.clone()))?;
+
+        // Attempt filesystem removal for plugins with a source_path.
+        let view = PluginManagementView::from_info(&removed);
+        if let Some(ref path_str) = view.source_path {
+            let target = std::path::PathBuf::from(path_str);
+            if target.exists() {
+                let policy = PluginInstallPolicy::default();
+                if let Err(e) = crate::plugin::install::validate_uninstall_target(&target, &policy)
+                {
+                    tracing::warn!(
+                        plugin = info.id,
+                        error = %e,
+                        "filesystem uninstall blocked by policy"
+                    );
+                } else if let Err(e) = tokio::fs::remove_dir_all(&target).await {
+                    tracing::warn!(
+                        plugin = info.id,
+                        error = %e,
+                        "failed to remove plugin directory"
+                    );
+                }
+            }
+        }
+
+        Ok(view)
     }
 
     /// Run diagnostic checks on a plugin.
@@ -563,6 +662,18 @@ impl PluginManager {
             plugin_name: info.manifest.name,
             checks,
         })
+    }
+
+    /// Run diagnostic checks on all registered plugins.
+    pub async fn doctor_all(&self) -> Vec<PluginDoctorReport> {
+        let infos = self.service.registry().list().await;
+        let mut reports = Vec::with_capacity(infos.len());
+        for info in &infos {
+            if let Ok(report) = self.doctor(&info.id).await {
+                reports.push(report);
+            }
+        }
+        reports
     }
 }
 

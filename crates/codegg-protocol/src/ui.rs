@@ -263,20 +263,14 @@ impl Default for UiLimits {
 impl UiLimits {
     /// Convenience: validate a single effect against this `UiLimits`
     /// instance. Equivalent to `validate_ui_effect(effect, self)`.
-    pub fn validate_effect(
-        &self,
-        effect: &UiEffect,
-    ) -> Result<(), UiValidationError> {
+    pub fn validate_effect(&self, effect: &UiEffect) -> Result<(), UiValidationError> {
         validate_ui_effect(effect, self)
     }
 
     /// Convenience: validate a batch of effects against this
     /// `UiLimits` instance. Equivalent to
     /// `validate_ui_effects(effects, self)`.
-    pub fn validate_effects(
-        &self,
-        effects: &[UiEffect],
-    ) -> Result<(), UiValidationError> {
+    pub fn validate_effects(&self, effects: &[UiEffect]) -> Result<(), UiValidationError> {
         validate_ui_effects(effects, self)
     }
 
@@ -346,11 +340,9 @@ impl std::fmt::Display for UiValidationError {
                 "effect payload too large (~{} bytes, limit {})",
                 approx, limit
             ),
-            Self::StringTooLong { limit, len } => write!(
-                f,
-                "string field too long ({} chars, limit {})",
-                len, limit
-            ),
+            Self::StringTooLong { limit, len } => {
+                write!(f, "string field too long ({} chars, limit {})", len, limit)
+            }
             Self::TooDeep { limit } => {
                 write!(f, "ui node tree too deep (limit {})", limit)
             }
@@ -466,10 +458,7 @@ fn effect_payload_node(effect: &UiEffect) -> Option<&UiNode> {
 
 /// Validate a single [`UiEffect`] against the given [`UiLimits`]. Checks
 /// the effect payload size, any embedded node tree, and string fields.
-pub fn validate_ui_effect(
-    effect: &UiEffect,
-    limits: &UiLimits,
-) -> Result<(), UiValidationError> {
+pub fn validate_ui_effect(effect: &UiEffect, limits: &UiLimits) -> Result<(), UiValidationError> {
     let approx = serde_json::to_vec(effect)
         .map(|v| v.len())
         .unwrap_or(usize::MAX);
@@ -525,8 +514,7 @@ pub fn validate_ui_effect(
                 .as_deref()
                 .map(|s| s.chars().count())
                 .unwrap_or(0);
-            if item.id.chars().count() > limits.max_string_len
-                || label_len > limits.max_string_len
+            if item.id.chars().count() > limits.max_string_len || label_len > limits.max_string_len
             {
                 return Err(UiValidationError::StringTooLong {
                     limit: limits.max_string_len,
@@ -562,10 +550,7 @@ pub fn validate_ui_effects(
 /// surfaces, a degraded effect when partial support is available (e.g.
 /// a table stripped to key/value rows), or `None` when the client
 /// cannot render the effect at all (caller should drop or log it).
-pub fn degrade_effect(
-    effect: &UiEffect,
-    caps: &PluginUiCapabilities,
-) -> Option<UiEffect> {
+pub fn degrade_effect(effect: &UiEffect, caps: &PluginUiCapabilities) -> Option<UiEffect> {
     if caps.supports_effect(effect) {
         return Some(effect.clone());
     }
@@ -579,9 +564,7 @@ pub fn degrade_effect(
                 None
             }
         }
-        UiEffect::OpenPanel { .. }
-        | UiEffect::UpdatePanel { .. }
-        | UiEffect::ClosePanel { .. } => {
+        UiEffect::OpenPanel { .. } | UiEffect::UpdatePanel { .. } | UiEffect::ClosePanel { .. } => {
             if caps.toast {
                 Some(UiEffect::ShowToast {
                     toast: effect_summary_toast(effect),
@@ -1098,7 +1081,9 @@ mod tests {
 
     #[test]
     fn validate_ui_node_rejects_too_deep_tree() {
-        let mut node = UiNode::Text(TextNode { text: "leaf".into() });
+        let mut node = UiNode::Text(TextNode {
+            text: "leaf".into(),
+        });
         for _ in 0..32 {
             node = UiNode::Container(ContainerNode {
                 title: None,
@@ -1169,7 +1154,10 @@ mod tests {
             UiEffect::CloseDialog { id: "c".into() },
         ];
         let err = validate_ui_effects(&effects, &limits).unwrap_err();
-        assert!(matches!(err, UiValidationError::TooManyEffects { limit: 2 }));
+        assert!(matches!(
+            err,
+            UiValidationError::TooManyEffects { limit: 2 }
+        ));
     }
 
     #[test]
@@ -1196,7 +1184,9 @@ mod tests {
             dialog: DialogSpec {
                 id: "x".into(),
                 title: "t".into(),
-                body: UiNode::Text(TextNode { text: "body".into() }),
+                body: UiNode::Text(TextNode {
+                    text: "body".into(),
+                }),
                 modal: true,
             },
         };
@@ -1242,7 +1232,9 @@ mod tests {
             dialog: DialogSpec {
                 id: "x".into(),
                 title: "My Title".into(),
-                body: UiNode::Text(TextNode { text: "Body".into() }),
+                body: UiNode::Text(TextNode {
+                    text: "Body".into(),
+                }),
                 modal: true,
             },
         };
@@ -1253,8 +1245,14 @@ mod tests {
 
     #[test]
     fn effect_summary_returns_none_for_close_variants() {
-        assert_eq!(effect_summary(&UiEffect::CloseDialog { id: "x".into() }), None);
-        assert_eq!(effect_summary(&UiEffect::ClosePanel { id: "x".into() }), None);
+        assert_eq!(
+            effect_summary(&UiEffect::CloseDialog { id: "x".into() }),
+            None
+        );
+        assert_eq!(
+            effect_summary(&UiEffect::ClosePanel { id: "x".into() }),
+            None
+        );
         assert_eq!(
             effect_summary(&UiEffect::RemoveStatusItem { id: "x".into() }),
             None

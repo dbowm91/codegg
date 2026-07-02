@@ -721,6 +721,10 @@ pub struct App {
     /// Consumed by `apply_plugin_ui_effect` and rendered by
     /// `PluginUiRenderer`.
     pub plugin_ui_state: crate::tui::app::state::PluginUiState,
+    /// Canonical plugin management API. Wraps a `PluginService` with
+    /// builtins registered. Initialized at startup; `None` only in
+    /// minimal test fixtures that don't need plugin management.
+    pub plugin_manager: Option<crate::plugin::management::PluginManager>,
     pub render_panic_injection: RenderPanicInjection,
     /// Monotonic sequence number for remote TUI snapshots. Each
     /// `next_remote_snapshot` call increments this and includes the
@@ -1048,6 +1052,7 @@ impl App {
             plugin_ui_state: crate::tui::app::state::PluginUiState::default(),
             task_registry: crate::tui::task_lifecycle::TuiTaskRegistry::new(),
             render_panic_injection: RenderPanicInjection::all_false(),
+            plugin_manager: None, // initialized lazily after construction
         }
     }
 
@@ -1459,7 +1464,26 @@ impl App {
             task_registry: crate::tui::task_lifecycle::TuiTaskRegistry::new(),
             render_panic_injection: RenderPanicInjection::all_false(),
             remote_sequence: 0,
+            plugin_manager: None, // initialized lazily after construction
         }
+    }
+
+    /// Initialize the plugin manager with builtins registered.
+    ///
+    /// Should be called once at startup after the App is constructed.
+    /// Safe to call multiple times — subsequent calls are no-ops.
+    pub async fn init_plugin_manager(&mut self) {
+        if self.plugin_manager.is_some() {
+            return;
+        }
+        if let Some(service) = crate::plugin::create_default_plugin_service().await {
+            self.plugin_manager = Some(crate::plugin::management::PluginManager::new(service));
+        }
+    }
+
+    /// Access the plugin manager, if initialized.
+    pub fn plugin_manager(&self) -> Option<&crate::plugin::management::PluginManager> {
+        self.plugin_manager.as_ref()
     }
 
     pub fn set_remote_event_rx(&mut self, rx: mpsc::UnboundedReceiver<serde_json::Value>) {
@@ -12753,7 +12777,7 @@ mod remote_protocol_tests {
 
     #[test]
     fn apply_plugin_ui_envelope_dispatches_with_plugin_source() {
-        use crate::protocol::ui::{UiEffect, UiEffectEnvelope, UiEffectSource, UiNode, TextNode};
+        use crate::protocol::ui::{UiEffect, UiEffectEnvelope, UiEffectSource};
         let mut app = App::new_for_testing("/tmp".into());
         let envelope = UiEffectEnvelope {
             session_id: None,
@@ -12829,7 +12853,7 @@ mod remote_protocol_tests {
 
     #[test]
     fn apply_plugin_ui_envelope_core_source_skips_plugin_ownership() {
-        use crate::protocol::ui::{UiEffect, UiEffectEnvelope, UiEffectSource, UiNode, TextNode};
+        use crate::protocol::ui::{TextNode, UiEffect, UiEffectEnvelope, UiEffectSource, UiNode};
         let mut app = App::new_for_testing("/tmp".into());
         let envelope = UiEffectEnvelope {
             session_id: None,
@@ -12841,9 +12865,7 @@ mod remote_protocol_tests {
                     // ownership check is enforced.
                     id: "core-only-dialog".into(),
                     title: "Core".into(),
-                    body: UiNode::Text(TextNode {
-                        text: "hi".into(),
-                    }),
+                    body: UiNode::Text(TextNode { text: "hi".into() }),
                     modal: false,
                 },
             },
@@ -12857,7 +12879,7 @@ mod remote_protocol_tests {
 
     #[test]
     fn apply_plugin_ui_envelope_rejects_cross_plugin_surface_id() {
-        use crate::protocol::ui::{UiEffect, UiEffectEnvelope, UiEffectSource, UiNode, TextNode};
+        use crate::protocol::ui::{TextNode, UiEffect, UiEffectEnvelope, UiEffectSource, UiNode};
         let mut app = App::new_for_testing("/tmp".into());
         let envelope = UiEffectEnvelope {
             session_id: None,
@@ -12885,7 +12907,7 @@ mod remote_protocol_tests {
 
     #[test]
     fn validate_plugin_ui_effects_accepts_balanced_batch() {
-        use crate::protocol::ui::{UiEffect, UiNode, TextNode};
+        use crate::protocol::ui::{TextNode, UiEffect, UiNode};
         let app = App::new_for_testing("/tmp".into());
         let effects = vec![
             UiEffect::ShowToast {
@@ -12899,9 +12921,7 @@ mod remote_protocol_tests {
                     id: "p:panel".into(),
                     title: "Panel".into(),
                     placement: crate::protocol::ui::PanelPlacement::Right,
-                    body: UiNode::Text(TextNode {
-                        text: "ok".into(),
-                    }),
+                    body: UiNode::Text(TextNode { text: "ok".into() }),
                 },
             },
         ];
@@ -12922,7 +12942,7 @@ mod remote_protocol_tests {
 
     #[test]
     fn validate_plugin_ui_effects_rejects_oversize_payload() {
-        use crate::protocol::ui::{UiEffect, UiNode, TextNode};
+        use crate::protocol::ui::{TextNode, UiEffect, UiNode};
         let app = App::new_for_testing("/tmp".into());
         // Single effect with serialized size just over balanced cap
         // (256KiB) should be rejected by validate_effects.
@@ -12941,16 +12961,13 @@ mod remote_protocol_tests {
     #[test]
     fn snapshot_body_within_limit_drops_oversize_body() {
         let big = "z".repeat(SNAPSHOT_BODY_LIMIT + 1);
-        let body = crate::protocol::ui::UiNode::Text(crate::protocol::ui::TextNode {
-            text: big,
-        });
+        let body = crate::protocol::ui::UiNode::Text(crate::protocol::ui::TextNode { text: big });
         assert!(snapshot_body_within_limit(&body, SNAPSHOT_BODY_LIMIT).is_none());
 
         // A body that fits within the limit is kept; one that exceeds
         // it is dropped, regardless of how much limit is added past
         // its serialized size.
-        let just_fits_limit =
-            serde_json::to_vec(&body).map(|v| v.len()).unwrap_or(0) - 1;
+        let just_fits_limit = serde_json::to_vec(&body).map(|v| v.len()).unwrap_or(0) - 1;
         assert!(snapshot_body_within_limit(&body, just_fits_limit).is_none());
     }
 
@@ -13003,11 +13020,9 @@ mod remote_protocol_tests {
                 title: Some("huge".into()),
                 children: (0..128)
                     .map(|i| {
-                        crate::protocol::ui::UiNode::Text(
-                            crate::protocol::ui::TextNode {
-                                text: format!("row-{}-{}", i, "x".repeat(200)),
-                            },
-                        )
+                        crate::protocol::ui::UiNode::Text(crate::protocol::ui::TextNode {
+                            text: format!("row-{}-{}", i, "x".repeat(200)),
+                        })
                     })
                     .collect(),
             });
@@ -13046,7 +13061,7 @@ mod remote_protocol_tests {
     /// degraded toast instead and no panel in the snapshot.
     #[test]
     fn multi_client_different_capabilities_receive_appropriate_forms() {
-        use crate::protocol::ui::{UiEffect, UiEffectEnvelope, UiEffectSource, UiLimits};
+        use crate::protocol::ui::{UiEffect, UiEffectEnvelope, UiEffectSource};
         use crate::tui::app::state::PluginUiApplyResult;
 
         // Full client.
@@ -13180,7 +13195,9 @@ mod remote_protocol_tests {
     /// snapshots. Only durable surfaces (panels, status items) survive.
     #[test]
     fn transient_toast_not_in_reconnect_snapshot() {
-        use crate::protocol::ui::{ToastLevel, ToastSpec, UiEffect, UiEffectEnvelope, UiEffectSource};
+        use crate::protocol::ui::{
+            ToastLevel, ToastSpec, UiEffect, UiEffectEnvelope, UiEffectSource,
+        };
 
         let mut app = App::new_for_testing("/tmp".into());
 
@@ -13223,7 +13240,9 @@ mod remote_protocol_tests {
     /// session's clients receive the effect.
     #[test]
     fn session_scoped_envelope_delivered_only_to_matching_session() {
-        use crate::protocol::ui::{ToastLevel, ToastSpec, UiEffect, UiEffectEnvelope, UiEffectSource};
+        use crate::protocol::ui::{
+            ToastLevel, ToastSpec, UiEffect, UiEffectEnvelope, UiEffectSource,
+        };
 
         let mut app = App::new_for_testing("/tmp".into());
 

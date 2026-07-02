@@ -37,6 +37,28 @@ pub fn plugins_dir() -> PathBuf {
         .join("plugins")
 }
 
+/// Validate that a relative path contains no traversal components.
+///
+/// Only `Normal` and `CurDir` components are allowed. `ParentDir`,
+/// `RootDir`, and `Prefix` components are rejected as path traversal.
+fn validate_relative_install_path(rel: &Path) -> Result<(), String> {
+    for component in rel.components() {
+        match component {
+            std::path::Component::Normal(_) => {}
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir
+            | std::path::Component::RootDir
+            | std::path::Component::Prefix(_) => {
+                return Err(format!(
+                    "path traversal or absolute component not allowed: {}",
+                    rel.display()
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 pub async fn install_from_path(path: &Path) -> Result<PathBuf, InstallError> {
     let path = path
         .canonicalize()
@@ -135,7 +157,7 @@ pub async fn install_from_url(url: &str) -> Result<PathBuf, InstallError> {
     Ok(dest)
 }
 
-fn extract_plugin_archive(archive: &Path, dest: &Path) -> Result<(), InstallError> {
+pub(crate) fn extract_plugin_archive(archive: &Path, dest: &Path) -> Result<(), InstallError> {
     use flate2::read::GzDecoder;
     use std::fs::File;
 
@@ -143,26 +165,35 @@ fn extract_plugin_archive(archive: &Path, dest: &Path) -> Result<(), InstallErro
     let gz = GzDecoder::new(file);
     let mut archive = tar::Archive::new(gz);
 
-    let dest_canonical = std::fs::canonicalize(dest)?;
+    let dest_root = std::fs::canonicalize(dest)?;
 
     for entry in archive.entries()? {
         let mut entry = entry.map_err(|e| InstallError::DownloadFailed(e.to_string()))?;
         let entry_path = entry.path()?.to_path_buf();
 
-        if entry.header().entry_type().is_symlink() {
+        // Reject symlinks and hard links
+        if entry.header().entry_type().is_symlink() || entry.header().entry_type().is_hard_link() {
             return Err(InstallError::DownloadFailed(format!(
-                "symlinks are not allowed in archive: {}",
+                "symlinks and hard links are not allowed in archive: {}",
                 entry_path.display()
             )));
         }
 
-        let dst_path = dest.join(&entry_path);
-        let dst_canonical = std::fs::canonicalize(&dst_path)?;
-        if !dst_canonical.starts_with(&dest_canonical) {
+        // Validate path components on the original (non-canonicalized) path
+        validate_relative_install_path(&entry_path).map_err(InstallError::DownloadFailed)?;
+
+        // Lexical containment: compute dest path before any canonicalize
+        let dst_path = dest_root.join(&entry_path);
+        if !dst_path.starts_with(&dest_root) {
             return Err(InstallError::DownloadFailed(format!(
                 "path outside destination: {}",
                 entry_path.display()
             )));
+        }
+
+        // Ensure parent directory exists
+        if let Some(parent) = dst_path.parent() {
+            std::fs::create_dir_all(parent)?;
         }
 
         entry.unpack(&dst_path)?;
@@ -172,6 +203,16 @@ fn extract_plugin_archive(archive: &Path, dest: &Path) -> Result<(), InstallErro
 }
 
 pub async fn uninstall(plugin_name: &str) -> Result<(), InstallError> {
+    let policy = PluginInstallPolicy::default();
+
+    // Reject plugin names containing path separators or traversal
+    if plugin_name.contains('/') || plugin_name.contains('\\') || plugin_name.contains("..") {
+        return Err(InstallError::InvalidPath(format!(
+            "invalid plugin name: {}",
+            plugin_name
+        )));
+    }
+
     let plugins_dir = plugins_dir();
     let plugin_path = plugins_dir.join(plugin_name);
 
@@ -182,45 +223,55 @@ pub async fn uninstall(plugin_name: &str) -> Result<(), InstallError> {
         )));
     }
 
+    validate_uninstall_target(&plugin_path, &policy)?;
+
     tokio::fs::remove_dir_all(&plugin_path).await?;
     Ok(())
 }
 
-fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
+pub(crate) fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(dst)?;
-    let entries = std::fs::read_dir(src)?;
+    let src_root = src.canonicalize()?;
+    let dst_root = dst.canonicalize()?;
 
-    let dst_canonical = std::fs::canonicalize(dst)?;
+    fn copy_inner(src_root: &Path, current: &Path, dst_root: &Path) -> std::io::Result<()> {
+        for entry in std::fs::read_dir(current)? {
+            let entry = entry?;
+            let ty = entry.file_type()?;
+            let src_path = entry.path();
 
-    for entry in entries {
-        let entry = entry?;
-        let ty = entry.file_type()?;
-        let src_path = entry.path();
-        let dst_path = dst.join(entry.file_name());
-
-        if ty.is_symlink() {
-            return Err(std::io::Error::other(format!(
-                "symlinks are not allowed: {}",
-                src_path.display()
-            )));
-        }
-
-        if ty.is_dir() {
-            copy_dir_all(&src_path, &dst_path)?;
-        } else {
-            let src_canonical = std::fs::canonicalize(&src_path)?;
-            if !src_canonical.starts_with(&dst_canonical) {
+            if ty.is_symlink() {
                 return Err(std::io::Error::other(format!(
-                    "path outside destination tree: {} -> {}",
-                    src_path.display(),
-                    src_canonical.display()
+                    "symlinks are not allowed: {}",
+                    src_path.display()
                 )));
             }
-            std::fs::copy(&src_path, &dst_path)?;
+
+            let rel = src_path
+                .strip_prefix(src_root)
+                .map_err(|_| std::io::Error::other("entry escaped source root"))?;
+
+            validate_relative_install_path(rel).map_err(std::io::Error::other)?;
+
+            let dst_path = dst_root.join(rel);
+            if !dst_path.starts_with(dst_root) {
+                return Err(std::io::Error::other("destination escaped root"));
+            }
+
+            if ty.is_dir() {
+                std::fs::create_dir_all(&dst_path)?;
+                copy_inner(src_root, &src_path, dst_root)?;
+            } else if ty.is_file() {
+                if let Some(parent) = dst_path.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                std::fs::copy(&src_path, &dst_path)?;
+            }
         }
+        Ok(())
     }
 
-    Ok(())
+    copy_inner(&src_root, &src_root, &dst_root)
 }
 
 /// Validate that a target path for uninstall is safely contained within
@@ -286,17 +337,25 @@ pub fn validate_install_source(
         return Ok(());
     }
 
-    let source_canonical = std::fs::canonicalize(source)
-        .map_err(|e| InstallError::InvalidPath(format!("cannot resolve source path: {e}")))?;
-
-    // Check for path components that could indicate traversal
-    for component in source_canonical.components() {
-        if let std::path::Component::ParentDir = component {
-            return Err(InstallError::PolicyViolation(
-                "path traversal detected in install source".to_string(),
-            ));
+    // Check the original (uncanonicalized) path components first.
+    // This catches traversal attempts before canonicalize resolves them away.
+    for component in source.components() {
+        match component {
+            std::path::Component::ParentDir
+            | std::path::Component::RootDir
+            | std::path::Component::Prefix(_) => {
+                return Err(InstallError::PolicyViolation(
+                    "path traversal detected in install source".to_string(),
+                ));
+            }
+            _ => {}
         }
     }
+
+    // Canonicalize to confirm the path exists and is valid
+    let _source_canonical = std::fs::canonicalize(source)
+        .map_err(|e| InstallError::InvalidPath(format!("cannot resolve source path: {e}")))?;
+
     Ok(())
 }
 
@@ -377,6 +436,15 @@ api_version = 1
     }
 
     #[test]
+    fn validate_uninstall_target_rejects_nonexistent_path() {
+        let policy = PluginInstallPolicy::default();
+        let result =
+            validate_uninstall_target(std::path::Path::new("/nonexistent/zzz/path/abc"), &policy);
+        assert!(result.is_err());
+        assert!(matches!(result, Err(InstallError::InvalidPath(_))));
+    }
+
+    #[test]
     fn validate_uninstall_rejects_outside_plugins_dir() {
         let policy = PluginInstallPolicy::default();
         let outside = std::env::temp_dir();
@@ -395,8 +463,10 @@ api_version = 1
 
     #[test]
     fn validate_uninstall_allows_outside_when_policy_disabled() {
-        let mut policy = PluginInstallPolicy::default();
-        policy.refuse_outside_install_dir = false;
+        let policy = PluginInstallPolicy {
+            refuse_outside_install_dir: false,
+            ..Default::default()
+        };
         let outside = std::env::temp_dir();
         let result = validate_uninstall_target(&outside, &policy);
         assert!(result.is_ok());
@@ -423,8 +493,10 @@ api_version = 1
 
     #[test]
     fn validate_wasm_module_allows_outside_when_policy_disabled() {
-        let mut policy = PluginInstallPolicy::default();
-        policy.warn_wasm_outside_plugin_dir = false;
+        let policy = PluginInstallPolicy {
+            warn_wasm_outside_plugin_dir: false,
+            ..Default::default()
+        };
         let outside = std::env::temp_dir().join("some-wasm.wasm");
         let dir = plugins_dir();
         let result = validate_wasm_module_path(&outside, &dir, &policy);
@@ -436,20 +508,292 @@ api_version = 1
         let policy = PluginInstallPolicy::default();
         let source = Path::new("/some/path/../../etc/passwd");
         let result = validate_install_source(source, &policy);
-        // canonicalize will resolve the traversal, so this depends on
-        // whether the path exists. If it doesn't exist, we get InvalidPath.
-        // If it does, we get PolicyViolation. Either way, not Ok for
-        // a path with ParentDir after canonicalization.
-        // Since the path likely doesn't exist, we expect an error.
-        assert!(result.is_err());
+        // The original path components contain ParentDir, so we detect
+        // traversal before canonicalize. This returns PolicyViolation.
+        assert!(matches!(result, Err(InstallError::PolicyViolation(_))));
     }
 
     #[test]
     fn validate_install_source_allows_when_policy_disabled() {
-        let mut policy = PluginInstallPolicy::default();
-        policy.reject_path_traversal = false;
+        let policy = PluginInstallPolicy {
+            reject_path_traversal: false,
+            ..Default::default()
+        };
         let source = Path::new("/some/path/../../etc/passwd");
         let result = validate_install_source(source, &policy);
         assert!(result.is_ok());
+    }
+
+    // ---- New tests ----
+
+    #[test]
+    fn copy_dir_all_valid_directory_nested() {
+        let src = make_temp_dir("nested_src");
+        let dst = make_temp_dir("nested_dst");
+
+        // Create nested structure
+        fs::create_dir_all(src.join("sub").join("deep")).unwrap();
+        fs::write(src.join("top.txt"), "top content").unwrap();
+        fs::write(src.join("sub").join("mid.txt"), "mid content").unwrap();
+        fs::write(
+            src.join("sub").join("deep").join("bottom.txt"),
+            "bottom content",
+        )
+        .unwrap();
+
+        let result = copy_dir_all(&src, &dst);
+        assert!(result.is_ok(), "copy_dir_all failed: {result:?}");
+
+        // Verify files exist
+        assert!(dst.join("top.txt").exists());
+        assert!(dst.join("sub").join("mid.txt").exists());
+        assert!(dst.join("sub").join("deep").join("bottom.txt").exists());
+
+        // Verify content
+        assert_eq!(
+            fs::read_to_string(dst.join("top.txt")).unwrap(),
+            "top content"
+        );
+        assert_eq!(
+            fs::read_to_string(dst.join("sub").join("deep").join("bottom.txt")).unwrap(),
+            "bottom content"
+        );
+
+        let _ = fs::remove_dir_all(&src);
+        let _ = fs::remove_dir_all(&dst);
+    }
+
+    #[test]
+    fn copy_dir_all_rejects_symlink_at_source() {
+        let src = make_temp_dir("symlink_src");
+        let dst = make_temp_dir("symlink_dst");
+
+        // Create a regular file and a symlink
+        fs::write(src.join("real.txt"), "real").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink("/etc/passwd", src.join("bad_link")).unwrap();
+
+        let result = copy_dir_all(&src, &dst);
+        assert!(result.is_err(), "should have rejected symlink");
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("symlink"),
+            "error should mention symlink: {err_msg}"
+        );
+
+        let _ = fs::remove_dir_all(&src);
+        let _ = fs::remove_dir_all(&dst);
+    }
+
+    /// Build a raw tar.gz archive with a single file entry.
+    /// Uses raw tar construction to bypass tar crate's path validation,
+    /// allowing us to test malicious paths like `../escape.txt` or `/etc/passwd`.
+    fn build_raw_tar_gz(entry_path: &str, data: &[u8], entry_type: u8) -> Vec<u8> {
+        use flate2::write::GzEncoder;
+        use flate2::Compression;
+        use std::io::Write;
+
+        let mut header = [0u8; 512];
+
+        // File name at offset 0, 100 bytes
+        let name_bytes = entry_path.as_bytes();
+        let name_len = name_bytes.len().min(100);
+        header[..name_len].copy_from_slice(&name_bytes[..name_len]);
+
+        // Mode at offset 100, 8 bytes (octal)
+        let mode = b"0000644\0";
+        header[100..108].copy_from_slice(mode);
+
+        // UID at offset 108, 8 bytes
+        let uid = b"0000000\0";
+        header[108..116].copy_from_slice(uid);
+
+        // GID at offset 116, 8 bytes
+        let gid = b"0000000\0";
+        header[116..124].copy_from_slice(gid);
+
+        // Size at offset 124, 12 bytes (octal)
+        let size_str = format!("{:011o}", data.len());
+        let size_bytes = size_str.as_bytes();
+        header[124..124 + size_bytes.len()].copy_from_slice(size_bytes);
+
+        // Mtime at offset 136, 12 bytes
+        let mtime = b"00000000000\0";
+        header[136..148].copy_from_slice(mtime);
+
+        // Typeflag at offset 156, 1 byte
+        header[156] = entry_type;
+
+        // Linkname at offset 157, 100 bytes (zeroed = no link)
+
+        // Magic at offset 257, 6 bytes (ustar + null)
+        header[257..263].copy_from_slice(b"ustar\0");
+
+        // Version at offset 263, 2 bytes
+        header[263..265].copy_from_slice(b"00");
+
+        // Compute checksum (replace checksum field with spaces first)
+        for item in header.iter_mut().take(156).skip(148) {
+            *item = b' ';
+        }
+        let chksum: u32 = header.iter().map(|&b| b as u32).sum();
+        let chksum_str = format!("{:06o}\0 ", chksum);
+        header[148..156].copy_from_slice(chksum_str.as_bytes());
+
+        // Build tar stream: header + data + padding to 512
+        let mut tar_bytes = Vec::new();
+        tar_bytes.extend_from_slice(&header);
+        tar_bytes.extend_from_slice(data);
+        // Pad data to 512-byte boundary
+        let padding = (512 - (data.len() % 512)) % 512;
+        tar_bytes.extend(std::iter::repeat(0u8).take(padding));
+
+        // Two 512-byte zero blocks mark end
+        tar_bytes.extend(std::iter::repeat(0u8).take(1024));
+
+        // Gzip it
+        let encoder = GzEncoder::new(Vec::new(), Compression::default());
+        let mut encoder = encoder;
+        encoder.write_all(&tar_bytes).unwrap();
+        encoder.finish().unwrap()
+    }
+
+    #[test]
+    fn extract_plugin_archive_rejects_traversal() {
+        let tmp = make_temp_dir("archive_traversal");
+        let archive_path = tmp.join("bad.tar.gz");
+        let dest = tmp.join("dest");
+
+        let bytes = build_raw_tar_gz("../escape.txt", b"escape content", b'0');
+        fs::write(&archive_path, &bytes).unwrap();
+
+        fs::create_dir_all(&dest).unwrap();
+        let result = extract_plugin_archive(&archive_path, &dest);
+        assert!(result.is_err(), "should have rejected traversal");
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("traversal")
+                || err_msg.contains("outside")
+                || err_msg.contains("not allowed"),
+            "error should mention traversal: {err_msg}"
+        );
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn extract_plugin_archive_rejects_symlink() {
+        let tmp = make_temp_dir("archive_symlink");
+        let archive_path = tmp.join("symlink.tar.gz");
+        let dest = tmp.join("dest");
+
+        // Type '2' = symlink in tar format
+        let bytes = build_raw_tar_gz("link_to_passwd", b"", b'2');
+        fs::write(&archive_path, &bytes).unwrap();
+
+        fs::create_dir_all(&dest).unwrap();
+        let result = extract_plugin_archive(&archive_path, &dest);
+        assert!(result.is_err(), "should have rejected symlink");
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("symlink"),
+            "error should mention symlink: {err_msg}"
+        );
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn extract_plugin_archive_rejects_absolute_path() {
+        let tmp = make_temp_dir("archive_absolute");
+        let archive_path = tmp.join("absolute.tar.gz");
+        let dest = tmp.join("dest");
+
+        let bytes = build_raw_tar_gz("/etc/passwd", b"absolute content", b'0');
+        fs::write(&archive_path, &bytes).unwrap();
+
+        fs::create_dir_all(&dest).unwrap();
+        let result = extract_plugin_archive(&archive_path, &dest);
+        assert!(result.is_err(), "should have rejected absolute path");
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("traversal")
+                || err_msg.contains("absolute")
+                || err_msg.contains("not allowed"),
+            "error should mention the issue: {err_msg}"
+        );
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn validate_relative_install_path_rejects_parent() {
+        let rel = Path::new("../foo");
+        let result = validate_relative_install_path(rel);
+        assert!(result.is_err(), "should reject ParentDir component");
+    }
+
+    #[test]
+    fn validate_install_source_rejects_parent_components_lexically() {
+        let policy = PluginInstallPolicy::default();
+        let source = Path::new("/tmp/../escape");
+        let result = validate_install_source(source, &policy);
+        // Original path has ParentDir component → PolicyViolation before canonicalize
+        assert!(
+            matches!(result, Err(InstallError::PolicyViolation(_))),
+            "should reject lexically: {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn uninstall_rejects_parent_component_in_name() {
+        let result = uninstall("../escape").await;
+        assert!(
+            matches!(result, Err(InstallError::InvalidPath(_))),
+            "should reject ParentDir in name: {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn uninstall_rejects_absolute_path_in_name() {
+        let result = uninstall("/etc/passwd").await;
+        assert!(
+            matches!(result, Err(InstallError::InvalidPath(_))),
+            "should reject absolute path in name: {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn install_creates_nested_valid_plugin() {
+        let src = make_temp_dir("nested_valid");
+        fs::create_dir_all(src.join("subdir")).unwrap();
+        fs::write(src.join("subdir").join("file.txt"), "nested content").unwrap();
+        fs::write(
+            src.join("manifest.toml"),
+            r#"
+name = "nested-plugin"
+version = "1.0.0"
+api_version = 1
+"#,
+        )
+        .unwrap();
+
+        let result = install_from_path(&src).await;
+        assert!(
+            result.is_ok(),
+            "install should succeed for nested valid plugin: {result:?}"
+        );
+
+        // Verify nested file was copied
+        if let Ok(dest) = &result {
+            assert!(dest.join("subdir").join("file.txt").exists());
+            assert_eq!(
+                fs::read_to_string(dest.join("subdir").join("file.txt")).unwrap(),
+                "nested content"
+            );
+            let _ = fs::remove_dir_all(dest);
+        }
+
+        let _ = fs::remove_dir_all(&src);
     }
 }

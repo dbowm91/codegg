@@ -865,7 +865,7 @@ mod tests {
         use crate::plugin::service::PluginService;
         use std::sync::Arc;
 
-        let mut registry = PluginRegistry::new();
+        let registry = PluginRegistry::new();
 
         // Register a plugin with an event hook, then disable it.
         let manifest = PluginManifest {
@@ -992,7 +992,7 @@ mod tests {
         use crate::plugin::service::PluginService;
         use std::sync::Arc;
 
-        let mut registry = PluginRegistry::new();
+        let registry = PluginRegistry::new();
         let manifest = PluginManifest {
             api_version: 1,
             runtime: PluginRuntimeSpec::Builtin {
@@ -1075,8 +1075,10 @@ mod tests {
         use crate::plugin::manifest::PluginRuntimeSpec;
         use crate::plugin::policy::{classify_hook, HookCategory, PluginLifecyclePolicy};
 
-        let mut policy = PluginLifecyclePolicy::default();
-        policy.enable_mutating_hooks = true;
+        let policy = PluginLifecyclePolicy {
+            enable_mutating_hooks: true,
+            ..Default::default()
+        };
 
         // Mutating hook types should be allowed.
         assert!(policy.is_hook_allowed(HookType::MessagesTransform));

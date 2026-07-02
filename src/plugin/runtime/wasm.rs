@@ -555,12 +555,9 @@ fn invoke_legacy(
     }
 }
 
-/// Helper to extract the hook type string from a capability invocation.
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::plugin::runtime::wasm_cache;
 
     #[test]
     fn wasm_spec_from_manifest_relative_path() {

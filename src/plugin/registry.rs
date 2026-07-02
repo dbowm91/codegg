@@ -890,7 +890,7 @@ mod tests {
 
     #[tokio::test]
     async fn disabled_plugin_excluded_from_queries() {
-        let mut registry = PluginRegistry::new();
+        let registry = PluginRegistry::new();
         let manifest = PluginManifest {
             name: "my-plugin".into(),
             capabilities: vec![PluginCapability::Command(
@@ -1316,7 +1316,7 @@ mod tests {
 
     #[tokio::test]
     async fn disabled_plugin_excluded_from_panel_queries() {
-        let mut registry = PluginRegistry::new();
+        let registry = PluginRegistry::new();
         let manifest = PluginManifest {
             name: "panel-plugin".into(),
             capabilities: vec![PluginCapability::Panel(PluginPanelContribution {
@@ -1462,7 +1462,7 @@ mod tests {
 
     #[tokio::test]
     async fn reenable_plugin_with_duplicate_command_rejected() {
-        let mut registry = PluginRegistry::new();
+        let registry = PluginRegistry::new();
 
         // Plugin A registers "deploy"
         let manifest_a = PluginManifest {
@@ -1546,7 +1546,7 @@ mod tests {
 
     #[tokio::test]
     async fn set_enabled_rejects_duplicate_on_enable() {
-        let mut registry = PluginRegistry::new();
+        let registry = PluginRegistry::new();
 
         // Plugin A registers "deploy"
         let manifest_a = PluginManifest {
@@ -1628,7 +1628,7 @@ mod tests {
             PluginCommandSpec, PluginEventSubscriptionSpec, PluginHookSpec,
             PluginPanelContribution, PluginStatusContribution,
         };
-        let mut registry = PluginRegistry::new();
+        let registry = PluginRegistry::new();
         let manifest = PluginManifest {
             name: "p".into(),
             capabilities: vec![
@@ -1743,7 +1743,7 @@ mod tests {
     #[tokio::test]
     async fn duplicate_command_alias_re_enable_semantics_intact() {
         use crate::plugin::manifest::PluginCommandSpec;
-        let mut registry = PluginRegistry::new();
+        let registry = PluginRegistry::new();
         let make = |id: &str, name: &str, aliases: Vec<String>, enabled: bool| PluginInfo {
             id: id.into(),
             manifest: PluginManifest {
