@@ -925,6 +925,7 @@ impl App {
                 research_browser: None,
                 help_dialog: None,
                 info_dialog: None,
+                ui_node_dialog: None,
                 shell_detail_dialog: None,
                 pending_delete_session: None,
                 pending_archive_session: None,
@@ -1323,6 +1324,7 @@ impl App {
                 research_browser: None,
                 help_dialog: None,
                 info_dialog: None,
+                ui_node_dialog: None,
                 shell_detail_dialog: None,
                 pending_delete_session: None,
                 pending_archive_session: None,
@@ -4575,20 +4577,37 @@ impl App {
             }
             "/tui-stats" => {
                 self.ui_state.command_mode = false;
-                let mut summary = self.ui_state.diagnostics.summary();
-                // Append task registry stats
-                let task_summary = self.task_registry.summary();
-                summary.push('\n');
-                summary.push_str(&task_summary);
-                // Append shell handle count
-                if !self.shell_handles.is_empty() {
-                    summary.push_str(&format!("\nShell handles: {}", self.shell_handles.len()));
-                }
-                let lines: Vec<String> = summary.lines().map(|s| s.to_string()).collect();
-                self.open_info_dialog(
-                    crate::tui::components::dialogs::info::InfoType::Stats,
-                    lines,
+                let by_kind: Vec<(String, usize)> = self
+                    .task_registry
+                    .iter()
+                    .fold(
+                        std::collections::HashMap::<String, usize>::new(),
+                        |mut acc, (_id, rec)| {
+                            *acc.entry(rec.kind.to_string()).or_insert(0) += 1;
+                            acc
+                        },
+                    )
+                    .into_iter()
+                    .collect();
+                let oldest = self
+                    .task_registry
+                    .iter()
+                    .min_by_key(|(_id, rec)| rec.started_at)
+                    .map(|(_id, rec)| rec.name.to_string());
+                let task_summary = crate::tui::ui_builders::stats::TaskSummaryView {
+                    active: self.task_registry.active_count(),
+                    completed: self.task_registry.completed_count(),
+                    cancelled: self.task_registry.cancelled_count(),
+                    panicked: self.task_registry.panicked_count(),
+                    by_kind,
+                    oldest,
+                };
+                let node = crate::tui::ui_builders::stats::stats_node(
+                    &self.ui_state.diagnostics,
+                    &task_summary,
+                    self.shell_handles.len(),
                 );
+                self.open_ui_node_dialog("TUI Stats".into(), node);
             }
             "/tts" => {
                 self.toggle_tts();
@@ -6236,11 +6255,7 @@ impl App {
             }
             "/plugin-info" => {
                 let query = self.dialog_state.command_palette.query.clone();
-                let args = query
-                    .split_once(' ')
-                    .map(|x| x.1)
-                    .unwrap_or("")
-                    .trim();
+                let args = query.split_once(' ').map(|x| x.1).unwrap_or("").trim();
                 if args.is_empty() {
                     self.messages_state
                         .toasts
@@ -6251,11 +6266,7 @@ impl App {
             }
             "/plugin-enable" => {
                 let query = self.dialog_state.command_palette.query.clone();
-                let args = query
-                    .split_once(' ')
-                    .map(|x| x.1)
-                    .unwrap_or("")
-                    .trim();
+                let args = query.split_once(' ').map(|x| x.1).unwrap_or("").trim();
                 if args.is_empty() {
                     self.messages_state
                         .toasts
@@ -6266,11 +6277,7 @@ impl App {
             }
             "/plugin-disable" => {
                 let query = self.dialog_state.command_palette.query.clone();
-                let args = query
-                    .split_once(' ')
-                    .map(|x| x.1)
-                    .unwrap_or("")
-                    .trim();
+                let args = query.split_once(' ').map(|x| x.1).unwrap_or("").trim();
                 if args.is_empty() {
                     self.messages_state
                         .toasts
@@ -6281,21 +6288,13 @@ impl App {
             }
             "/plugin-doctor" => {
                 let query = self.dialog_state.command_palette.query.clone();
-                let args = query
-                    .split_once(' ')
-                    .map(|x| x.1)
-                    .unwrap_or("")
-                    .trim();
+                let args = query.split_once(' ').map(|x| x.1).unwrap_or("").trim();
                 let query_opt = if args.is_empty() { None } else { Some(args) };
                 crate::tui::commands::plugin_management::doctor_plugin(self, query_opt);
             }
             "/plugin-remove" => {
                 let query = self.dialog_state.command_palette.query.clone();
-                let args = query
-                    .split_once(' ')
-                    .map(|x| x.1)
-                    .unwrap_or("")
-                    .trim();
+                let args = query.split_once(' ').map(|x| x.1).unwrap_or("").trim();
                 if args.is_empty() {
                     self.messages_state
                         .toasts
@@ -6306,11 +6305,7 @@ impl App {
             }
             "/plugin-install" => {
                 let query = self.dialog_state.command_palette.query.clone();
-                let args = query
-                    .split_once(' ')
-                    .map(|x| x.1)
-                    .unwrap_or("")
-                    .trim();
+                let args = query.split_once(' ').map(|x| x.1).unwrap_or("").trim();
                 if args.is_empty() {
                     self.messages_state
                         .toasts
@@ -7316,7 +7311,7 @@ impl App {
                     Dialog::Permission | Dialog::Question | Dialog::SecurityReview
                 ) {
                     let lines =
-                        crate::tui::components::plugin_renderer::PluginUiRenderer::node_to_lines(
+                        crate::tui::components::ui_node_renderer::UiNodeRenderer::node_to_lines(
                             &spec.body,
                         );
                     let dialog = crate::tui::components::dialogs::plugin::PluginDialog::new(
@@ -7342,10 +7337,9 @@ impl App {
         use crate::protocol::ui::UiEffect;
         match effect {
             UiEffect::OpenDialog { dialog } => {
-                let lines =
-                    crate::tui::components::plugin_renderer::PluginUiRenderer::node_to_lines(
-                        &dialog.body,
-                    );
+                let lines = crate::tui::components::ui_node_renderer::UiNodeRenderer::node_to_lines(
+                    &dialog.body,
+                );
                 let preview = lines.join(" ");
                 let preview = if preview.len() > 120 {
                     format!("{}...", &preview[..120])
@@ -7355,10 +7349,9 @@ impl App {
                 format!("[dialog] {}: {}", dialog.title, preview)
             }
             UiEffect::OpenPanel { panel } => {
-                let lines =
-                    crate::tui::components::plugin_renderer::PluginUiRenderer::node_to_lines(
-                        &panel.body,
-                    );
+                let lines = crate::tui::components::ui_node_renderer::UiNodeRenderer::node_to_lines(
+                    &panel.body,
+                );
                 let preview = lines.join(" ");
                 let preview = if preview.len() > 120 {
                     format!("{}...", &preview[..120])
@@ -7369,10 +7362,9 @@ impl App {
             }
             UiEffect::AddStatusItem { item } => {
                 // Status items are omitted unless they carry text content.
-                let lines =
-                    crate::tui::components::plugin_renderer::PluginUiRenderer::node_to_lines(
-                        &item.body,
-                    );
+                let lines = crate::tui::components::ui_node_renderer::UiNodeRenderer::node_to_lines(
+                    &item.body,
+                );
                 let preview = lines.join(" ");
                 if preview.is_empty() {
                     return String::new();
@@ -7486,6 +7478,26 @@ impl App {
             self.messages_state.toasts.info(&joined);
         } else {
             self.open_info_dialog(info_type, lines);
+        }
+    }
+
+    pub(crate) fn open_ui_node_dialog(&mut self, title: String, body: codegg_protocol::ui::UiNode) {
+        use crate::tui::components::dialogs::ui_node::UiNodeDialog;
+        if let Some(ref mut dialog) = self.dialog_state.ui_node_dialog {
+            dialog.update_content(body);
+            dialog.set_title(title);
+            dialog.set_theme(&self.ui_state.theme);
+        } else {
+            let dialog = UiNodeDialog::new(
+                "stats".into(),
+                title,
+                body,
+                Arc::clone(&self.ui_state.theme),
+            );
+            self.dialog_state.ui_node_dialog = Some(dialog);
+            if let Some(ref d) = self.dialog_state.ui_node_dialog {
+                self.focus_manager.push(Box::new(d.clone()));
+            }
         }
     }
 
@@ -7769,7 +7781,7 @@ impl App {
             Dialog::Plugin => {
                 if let Some(spec) = self.plugin_ui_state.get_dialog("active") {
                     let lines =
-                        crate::tui::components::plugin_renderer::PluginUiRenderer::node_to_lines(
+                        crate::tui::components::ui_node_renderer::UiNodeRenderer::node_to_lines(
                             &spec.body,
                         );
                     let dialog = crate::tui::components::dialogs::plugin::PluginDialog::new(

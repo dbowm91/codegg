@@ -23,3 +23,4 @@ pub mod source_preview;
 pub mod template;
 pub mod theme;
 pub mod tree;
+pub mod ui_node;

@@ -582,10 +582,7 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
             crate::tui::commands::plugin_management::disable_plugin(app, &selector);
         }
         TuiCommand::PluginDoctor { selector } => {
-            crate::tui::commands::plugin_management::doctor_plugin(
-                app,
-                selector.as_deref(),
-            );
+            crate::tui::commands::plugin_management::doctor_plugin(app, selector.as_deref());
         }
         TuiCommand::PluginRemove { selector } => {
             crate::tui::commands::plugin_management::remove_plugin(app, &selector);
@@ -594,9 +591,7 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
             crate::tui::commands::plugin_management::install_plugin(app, &path);
         }
         TuiCommand::PluginListFinished { lines, error } => {
-            crate::tui::commands::plugin_management::apply_plugin_list_finished(
-                app, lines, error,
-            );
+            crate::tui::commands::plugin_management::apply_plugin_list_finished(app, lines, error);
         }
         TuiCommand::PluginInfoFinished {
             plugin_id,

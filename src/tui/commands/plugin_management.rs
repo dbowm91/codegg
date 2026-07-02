@@ -12,7 +12,9 @@
 
 use crate::plugin::install::plugins_dir;
 use crate::plugin::management::{PluginDoctorCheck, PluginDoctorReport, PluginManagementView};
-use crate::plugin::management_ui::{doctor_report_node, node_to_lines, plugin_info_node, plugins_table};
+use crate::plugin::management_ui::{
+    doctor_report_node, node_to_lines, plugin_info_node, plugins_table,
+};
 use crate::plugin::marketplace::{MarketplacePlugin, MarketplaceService};
 use crate::tui::app::App;
 use crate::tui::app::TuiCommand;
@@ -360,7 +362,8 @@ pub(crate) fn doctor_plugin(app: &mut App, query: Option<&str>) {
                     message: if wasm_ok {
                         "plugin.wasm found".to_string()
                     } else {
-                        "plugin.wasm absent (may not be required for builtin/process plugins)".to_string()
+                        "plugin.wasm absent (may not be required for builtin/process plugins)"
+                            .to_string()
                     },
                 },
                 PluginDoctorCheck {
@@ -378,7 +381,11 @@ pub(crate) fn doctor_plugin(app: &mut App, query: Option<&str>) {
                     message: if plugin.hooks.is_empty() {
                         "Plugin declares no hooks or capabilities".to_string()
                     } else {
-                        format!("{} hook(s) declared: {}", plugin.hooks.len(), plugin.hooks.join(", "))
+                        format!(
+                            "{} hook(s) declared: {}",
+                            plugin.hooks.len(),
+                            plugin.hooks.join(", ")
+                        )
                     },
                 },
             ];
@@ -410,12 +417,10 @@ pub(crate) fn doctor_plugin(app: &mut App, query: Option<&str>) {
 ///
 /// This is the safety check extracted from the `remove_plugin` handler
 /// for testability.
-pub(crate) fn verify_remove_target_is_safe(
-    target: &std::path::Path,
-) -> Result<(), String> {
+pub(crate) fn verify_remove_target_is_safe(target: &std::path::Path) -> Result<(), String> {
     let plugins_dir = plugins_dir();
-    let target_canonical = std::fs::canonicalize(target)
-        .map_err(|e| format!("Cannot resolve plugin path: {e}"))?;
+    let target_canonical =
+        std::fs::canonicalize(target).map_err(|e| format!("Cannot resolve plugin path: {e}"))?;
     let plugins_dir_canonical = std::fs::canonicalize(&plugins_dir)
         .map_err(|e| format!("Cannot resolve plugins directory: {e}"))?;
 
@@ -520,11 +525,7 @@ pub(crate) fn install_plugin(app: &mut App, source_path: &str) {
 // ---------------------------------------------------------------------------
 
 /// Apply the result of a plugin list operation.
-pub(crate) fn apply_plugin_list_finished(
-    app: &mut App,
-    lines: Vec<String>,
-    error: Option<String>,
-) {
+pub(crate) fn apply_plugin_list_finished(app: &mut App, lines: Vec<String>, error: Option<String>) {
     if let Some(err) = error {
         app.messages_state
             .toasts

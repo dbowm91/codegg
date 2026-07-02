@@ -242,6 +242,7 @@ tui/
 │   │   ├── permission.rs   # PermissionDialog
 │   │   ├── plan.rs         # PlanDialog
 │   │   ├── plugin.rs       # PluginDialog (plugin UI content dialog)
+│   │   ├── ui_node.rs      # UiNodeDialog (generic UiNode dialog, Phase 14)
 │   │   ├── question.rs     # QuestionDialog
 │   │   ├── research.rs     # ResearchBrowserDialog (research runs browser)
 │   │   ├── review.rs       # ReviewDialog (diff review)
@@ -256,7 +257,8 @@ tui/
 │   ├── image.rs            # ImageViewer (image rendering via ANSI)
 │   ├── messages.rs         # MessagesWidget (message display, streaming)
 │   ├── notification.rs     # NotificationManager (desktop notifications)
-│   ├── plugin_renderer.rs  # PluginUiRenderer (UiNode to ratatui adapter)
+│   ├── plugin_renderer.rs  # PluginUiRenderer (compat alias for UiNodeRenderer)
+│   ├── ui_node_renderer.rs # UiNodeRenderer (UiNode to ratatui/line adapter, Phase 14)
 │   ├── prompt.rs           # PromptWidget (input prompt)
 │   ├── scroll.rs           # CenteredScroll (reusable scrolling)
 │   ├── sidebar.rs          # SidebarWidget (side panel, git info, file changes with diff stats)
@@ -275,6 +277,16 @@ tui/
 ├── command.rs              # Slash command registry
 └── mod.rs                  # TUI entry point, module declarations, re-exports (~1040 lines)
 ```
+
+### UI Builders Directory (`ui_builders/`)
+
+Pure functions that convert first-party domain data into `UiNode` trees (Phase 14). The builders are intentionally free of `App` and ratatui dependencies so they are easy to unit-test and so the same data can be lowered to either the ratatui dialog surface or a flat text fallback via `UiNodeRenderer`.
+
+| Module | Responsibility |
+|--------|----------------|
+| `stats.rs` | `stats_node(diagnostics, task_summary, shell_handles_count) -> UiNode` for `/tui-stats` |
+| `plugins.rs` | Re-exports plugin management builders (`plugins_table`, `plugin_info_node`, `doctor_report_node`, `node_to_lines`) from `crate::plugin::management_ui` |
+| `shell.rs` | `shell_detail_node(entry) -> UiNode` for `/shell-show` |
 
 ### Commands Directory (`commands/`)
 
@@ -556,7 +568,27 @@ pub trait Component: Send + Any {
 
 ### Plugin UI Renderer (Phase 2)
 
-`PluginUiRenderer` (`src/tui/components/plugin_renderer.rs`) converts protocol `UiNode` trees into ratatui widgets and flat text lines. Supported nodes: Text, Markdown (as wrapped text), Code, Table, KeyValue, Progress, Container, Empty, Unsupported. `App::apply_plugin_ui_effect()` routes `UiEffect` variants to state mutations and toast/chat emission.
+`PluginUiRenderer` (`src/tui/components/plugin_renderer.rs`) is now a compat shim that re-exports `UiNodeRenderer` (`src/tui/components/ui_node_renderer.rs`). The renderer converts protocol `UiNode` trees into ratatui widgets and flat text lines. Supported nodes: Text, Markdown (as wrapped text), Code, Table, KeyValue, Progress, Container, Empty, Unsupported. Hardened behaviors (Phase 14): empty-table fallback message, key-value alignment to longest key, column-width cap of 60 chars with `…` truncation, ANSI/control-character sanitization in line output, safe `total=0` percentage handling. `App::apply_plugin_ui_effect()` routes `UiEffect` variants to state mutations and toast/chat emission.
+
+### Shared `UiNode` Surface (Phase 14)
+
+The portable `UiNode` schema (defined in `codegg_protocol::ui`) is now used for both plugin UI and selected first-party read-only surfaces. The shared pipeline is:
+
+```
+Domain data -> UiNode builder -> UiNodeRenderer -> ratatui / line output
+```
+
+- **Builders** live in `src/tui/ui_builders/`: `stats.rs` (TUI diagnostics), `plugins.rs` (re-exports plugin management builders), `shell.rs` (shell command detail). All builders are pure functions of their inputs and produce `UiNode` trees; they have no `App` or ratatui dependencies.
+- **Renderer** (`UiNodeRenderer` in `src/tui/components/ui_node_renderer.rs`) is the single lowering adapter used by both plugin and first-party code.
+- **Generic dialog** (`UiNodeDialog` in `src/tui/components/dialogs/ui_node.rs`) accepts a `UiNode` directly, supports scroll/page/jump navigation, and reuses the `DialogType::Plugin` slot in the focus manager.
+
+First-party surfaces that render through this path as of Phase 14: `/tui-stats` (via `stats_node`). Plugin UI dialogs (Phase 2-13) continue to flow through the same renderer.
+
+### When to Use `UiNode` vs Native Components
+
+Use `UiNode` for: read-only or mostly-read-only informational surfaces (tables, key-value lists, text/code dumps, structured reports, scrollable summaries, plugin-generated dialogs).
+
+Do NOT use `UiNode` for: interactive components that need focus management, selection, or editing — permission prompts, question dialogs, command palette, file diff viewers, source preview with focus/selection semantics, security review workflows with actions, tree browsers, shell interactive execution views. Keep those as native `Component` impls.
 
 ### DialogType
 

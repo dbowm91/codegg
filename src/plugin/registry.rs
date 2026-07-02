@@ -289,11 +289,7 @@ impl PluginRegistry {
             .unwrap_or(false)
     }
 
-    pub async fn set_enabled(
-        &self,
-        id: &str,
-        enabled: bool,
-    ) -> Result<(), PluginRegistryError> {
+    pub async fn set_enabled(&self, id: &str, enabled: bool) -> Result<(), PluginRegistryError> {
         if enabled {
             // Snapshot the set of currently enabled plugins first so duplicate
             // checks do not depend on transient lock state. This avoids

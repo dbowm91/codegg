@@ -52,6 +52,7 @@ pub struct DialogState {
     pub research_browser: Option<crate::tui::components::dialogs::research::ResearchBrowserDialog>,
     pub help_dialog: Option<crate::tui::components::dialogs::help::HelpDialog>,
     pub info_dialog: Option<crate::tui::components::dialogs::info::InfoDialog>,
+    pub ui_node_dialog: Option<crate::tui::components::dialogs::ui_node::UiNodeDialog>,
     pub shell_detail_dialog: Option<crate::tui::components::dialogs::info::InfoDialog>,
     pub pending_delete_session: Option<String>,
     pub pending_archive_session: Option<(String, bool)>,

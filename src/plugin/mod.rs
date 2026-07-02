@@ -43,8 +43,8 @@ pub use permission::{
     check_ui_effect_allowed, PolicyDecision,
 };
 pub use policy::{
-    classify_hook, HookCategory, PluginInstallPolicy, PluginLifecyclePolicy, PluginPermissionPolicy,
-    PluginPolicy, PluginRuntimePolicy, PluginUiPolicy,
+    classify_hook, HookCategory, PluginInstallPolicy, PluginLifecyclePolicy,
+    PluginPermissionPolicy, PluginPolicy, PluginRuntimePolicy, PluginUiPolicy,
 };
 pub use registry::{
     normalize_command_name, PluginCommandRegistration, PluginEventRegistration,

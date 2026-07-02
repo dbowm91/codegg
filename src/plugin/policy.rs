@@ -414,8 +414,14 @@ mod tests {
         let policy = PluginPolicy::default();
         assert!(policy.is_hook_allowed(HookType::Event));
         assert!(!policy.is_hook_allowed(HookType::ToolExecuteBefore));
-        assert!(policy.is_runtime_allowed(&PluginRuntimeSpec::Builtin { handler: "x".into() }));
-        assert!(!policy.is_runtime_allowed(&PluginRuntimeSpec::Process { command: "x".into(), args: vec![], timeout_ms: None }));
+        assert!(policy.is_runtime_allowed(&PluginRuntimeSpec::Builtin {
+            handler: "x".into()
+        }));
+        assert!(!policy.is_runtime_allowed(&PluginRuntimeSpec::Process {
+            command: "x".into(),
+            args: vec![],
+            timeout_ms: None
+        }));
         assert!(policy.is_trust_allowed(&PluginTrustClass::Builtin));
         assert!(!policy.is_trust_allowed(&PluginTrustClass::LocalProcess));
     }

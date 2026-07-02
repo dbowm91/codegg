@@ -69,11 +69,7 @@ impl MarketplaceService {
                                 author: manifest.author,
                                 homepage: manifest.homepage,
                                 tier: PluginTier::Personal,
-                                hooks: manifest
-                                    .hooks
-                                    .iter()
-                                    .map(|h| h.hook_type.clone())
-                                    .collect(),
+                                hooks: manifest.hooks.iter().map(|h| h.hook_type.clone()).collect(),
                             });
                         }
                     }
@@ -89,8 +85,7 @@ impl MarketplaceService {
         all.into_iter()
             .filter(|p| {
                 p.name.to_lowercase().contains(&query_lower)
-                    || p
-                        .description
+                    || p.description
                         .as_ref()
                         .map(|d| d.to_lowercase().contains(&query_lower))
                         .unwrap_or(false)

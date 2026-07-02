@@ -1,6 +1,6 @@
 use crate::plugin::hooks::HookType;
 use crate::plugin::manifest::{PluginManifest, PluginOutputSurface, PluginTrustClass};
-use crate::plugin::policy::{PluginPolicy, classify_hook};
+use crate::plugin::policy::{classify_hook, PluginPolicy};
 use crate::protocol::plugin::PluginCapabilityInvocation;
 use crate::protocol::ui::UiEffect;
 
@@ -59,10 +59,7 @@ pub fn check_invocation_allowed(
                 let allowed = policy.is_hook_allowed(ht);
 
                 if !allowed {
-                    PolicyDecision::Deny(format!(
-                        "{:?} hook {:?} denied by policy",
-                        category, ht
-                    ))
+                    PolicyDecision::Deny(format!("{:?} hook {:?} denied by policy", category, ht))
                 } else if !policy.is_trust_allowed(trust) {
                     PolicyDecision::Deny(format!(
                         "trust class {:?} not allowed for lifecycle hooks",
@@ -84,12 +81,10 @@ pub fn check_invocation_allowed(
         }
         PluginCapabilityInvocation::Panel { .. }
         | PluginCapabilityInvocation::StatusWidget { .. }
-        | PluginCapabilityInvocation::Event { .. } => {
-            PolicyDecision::Deny(format!(
-                "capability type {:?} is not invocable at runtime",
-                std::mem::discriminant(invocation)
-            ))
-        }
+        | PluginCapabilityInvocation::Event { .. } => PolicyDecision::Deny(format!(
+            "capability type {:?} is not invocable at runtime",
+            std::mem::discriminant(invocation)
+        )),
     };
 
     if !decision.is_allowed() {
@@ -138,12 +133,11 @@ pub fn check_ui_effect_allowed(
                 PolicyDecision::Degrade("Dialog effects denied by policy".to_string())
             }
         }
-        UiEffect::OpenPanel { .. }
-        | UiEffect::UpdatePanel { .. }
-        | UiEffect::ClosePanel { .. } => {
-            let has_panel = manifest.capabilities.iter().any(|cap| {
-                matches!(cap, crate::plugin::manifest::PluginCapability::Panel(_))
-            });
+        UiEffect::OpenPanel { .. } | UiEffect::UpdatePanel { .. } | UiEffect::ClosePanel { .. } => {
+            let has_panel = manifest
+                .capabilities
+                .iter()
+                .any(|cap| matches!(cap, crate::plugin::manifest::PluginCapability::Panel(_)));
 
             if has_panel && policy.ui.allow_panel {
                 PolicyDecision::Allow
@@ -159,7 +153,10 @@ pub fn check_ui_effect_allowed(
         | UiEffect::UpdateStatusItem { .. }
         | UiEffect::RemoveStatusItem { .. } => {
             let has_status = manifest.capabilities.iter().any(|cap| {
-                matches!(cap, crate::plugin::manifest::PluginCapability::StatusWidget(_))
+                matches!(
+                    cap,
+                    crate::plugin::manifest::PluginCapability::StatusWidget(_)
+                )
             });
 
             if has_status && policy.ui.allow_status {
@@ -208,9 +205,7 @@ pub fn check_lifecycle_hook_allowed(
         && policy.permissions.require_high_trust_for_auth_hooks
         && !matches!(trust, PluginTrustClass::Builtin)
     {
-        PolicyDecision::Deny(
-            "auth/provider hooks require Builtin trust class".to_string(),
-        )
+        PolicyDecision::Deny("auth/provider hooks require Builtin trust class".to_string())
     } else {
         PolicyDecision::Allow
     };
@@ -233,7 +228,11 @@ pub fn check_secret_access_allowed(
     policy: &PluginPolicy,
 ) -> PolicyDecision {
     let decision = if !policy.permissions.deny_secrets_by_default
-        || manifest.permissions.secrets.iter().any(|s| s == secret_name)
+        || manifest
+            .permissions
+            .secrets
+            .iter()
+            .any(|s| s == secret_name)
     {
         PolicyDecision::Allow
     } else {
@@ -264,7 +263,7 @@ mod tests {
     use crate::plugin::policy::PluginPolicy;
     use crate::protocol::plugin::PluginCapabilityInvocation;
     use crate::protocol::ui::{
-        ChatBlock, ChatFormat, PanelSpec, PanelPlacement, ToastLevel, ToastSpec, UiEffect, UiNode,
+        ChatBlock, ChatFormat, PanelPlacement, PanelSpec, ToastLevel, ToastSpec, UiEffect, UiNode,
     };
 
     fn builtin_manifest() -> PluginManifest {
@@ -272,16 +271,16 @@ mod tests {
             name: "test-plugin".into(),
             version: "1.0.0".into(),
             api_version: 1,
-            runtime: PluginRuntimeSpec::Builtin { handler: "test".into() },
-            capabilities: vec![
-                PluginCapability::Command(PluginCommandSpec {
-                    name: "test-cmd".into(),
-                    description: None,
-                    handler: None,
-                    aliases: vec![],
-                    output: vec![PluginOutputSurface::Chat, PluginOutputSurface::Toast],
-                }),
-            ],
+            runtime: PluginRuntimeSpec::Builtin {
+                handler: "test".into(),
+            },
+            capabilities: vec![PluginCapability::Command(PluginCommandSpec {
+                name: "test-cmd".into(),
+                description: None,
+                handler: None,
+                aliases: vec![],
+                output: vec![PluginOutputSurface::Chat, PluginOutputSurface::Toast],
+            })],
             permissions: PluginPermissionSet::default(),
             description: None,
             author: None,
@@ -319,9 +318,14 @@ mod tests {
     #[test]
     fn check_invocation_allowed_for_declared_command() {
         let manifest = builtin_manifest();
-        let invocation = PluginCapabilityInvocation::Command { name: "test-cmd".into() };
+        let invocation = PluginCapabilityInvocation::Command {
+            name: "test-cmd".into(),
+        };
         let decision = check_invocation_allowed(
-            &manifest, &invocation, &PluginTrustClass::Builtin, &PluginPolicy::default(),
+            &manifest,
+            &invocation,
+            &PluginTrustClass::Builtin,
+            &PluginPolicy::default(),
         );
         assert_eq!(decision, PolicyDecision::Allow);
     }
@@ -329,9 +333,14 @@ mod tests {
     #[test]
     fn check_invocation_denied_for_undeclared_command() {
         let manifest = builtin_manifest();
-        let invocation = PluginCapabilityInvocation::Command { name: "unknown-cmd".into() };
+        let invocation = PluginCapabilityInvocation::Command {
+            name: "unknown-cmd".into(),
+        };
         let decision = check_invocation_allowed(
-            &manifest, &invocation, &PluginTrustClass::Builtin, &PluginPolicy::default(),
+            &manifest,
+            &invocation,
+            &PluginTrustClass::Builtin,
+            &PluginPolicy::default(),
         );
         assert!(decision.is_denied());
         assert!(decision.reason().unwrap().contains("not declared"));
@@ -340,12 +349,13 @@ mod tests {
     #[test]
     fn check_invocation_allows_undeclared_when_policy_disabled() {
         let manifest = builtin_manifest();
-        let invocation = PluginCapabilityInvocation::Command { name: "unknown-cmd".into() };
+        let invocation = PluginCapabilityInvocation::Command {
+            name: "unknown-cmd".into(),
+        };
         let mut policy = PluginPolicy::default();
         policy.runtime.deny_undeclared_capabilities = false;
-        let decision = check_invocation_allowed(
-            &manifest, &invocation, &PluginTrustClass::Builtin, &policy,
-        );
+        let decision =
+            check_invocation_allowed(&manifest, &invocation, &PluginTrustClass::Builtin, &policy);
         assert_eq!(decision, PolicyDecision::Allow);
     }
 
@@ -368,19 +378,23 @@ mod tests {
             name: "no-chat".into(),
             version: "1.0.0".into(),
             api_version: 1,
-            runtime: PluginRuntimeSpec::Builtin { handler: "x".into() },
-            capabilities: vec![
-                PluginCapability::Command(PluginCommandSpec {
-                    name: "cmd".into(),
-                    description: None,
-                    handler: None,
-                    aliases: vec![],
-                    output: vec![PluginOutputSurface::Toast], // no Chat
-                }),
-            ],
+            runtime: PluginRuntimeSpec::Builtin {
+                handler: "x".into(),
+            },
+            capabilities: vec![PluginCapability::Command(PluginCommandSpec {
+                name: "cmd".into(),
+                description: None,
+                handler: None,
+                aliases: vec![],
+                output: vec![PluginOutputSurface::Toast], // no Chat
+            })],
             permissions: PluginPermissionSet::default(),
-            description: None, author: None, homepage: None, license: None,
-            hooks: vec![], config: Default::default(),
+            description: None,
+            author: None,
+            homepage: None,
+            license: None,
+            hooks: vec![],
+            config: Default::default(),
         };
         let effect = UiEffect::EmitChat {
             block: ChatBlock {
@@ -398,7 +412,10 @@ mod tests {
     fn check_ui_effect_toast_allowed_by_default() {
         let manifest = builtin_manifest();
         let effect = UiEffect::ShowToast {
-            toast: ToastSpec { level: ToastLevel::Info, message: "hi".into() },
+            toast: ToastSpec {
+                level: ToastLevel::Info,
+                message: "hi".into(),
+            },
         };
         let decision = check_ui_effect_allowed(&manifest, &effect, &PluginPolicy::default());
         assert_eq!(decision, PolicyDecision::Allow);
@@ -425,16 +442,24 @@ mod tests {
             name: "panel-plugin".into(),
             version: "1.0.0".into(),
             api_version: 1,
-            runtime: PluginRuntimeSpec::Builtin { handler: "x".into() },
-            capabilities: vec![PluginCapability::Panel(crate::plugin::manifest::PluginPanelContribution {
-                id: "p".into(),
-                title: "t".into(),
-                placement: "left".into(),
-                handler: None,
-            })],
+            runtime: PluginRuntimeSpec::Builtin {
+                handler: "x".into(),
+            },
+            capabilities: vec![PluginCapability::Panel(
+                crate::plugin::manifest::PluginPanelContribution {
+                    id: "p".into(),
+                    title: "t".into(),
+                    placement: "left".into(),
+                    handler: None,
+                },
+            )],
             permissions: PluginPermissionSet::default(),
-            description: None, author: None, homepage: None, license: None,
-            hooks: vec![], config: Default::default(),
+            description: None,
+            author: None,
+            homepage: None,
+            license: None,
+            hooks: vec![],
+            config: Default::default(),
         };
         let mut policy = PluginPolicy::default();
         policy.ui.allow_panel = true;
@@ -453,7 +478,9 @@ mod tests {
     #[test]
     fn check_lifecycle_hook_observation_allowed() {
         let decision = check_lifecycle_hook_allowed(
-            HookType::Event, &PluginTrustClass::Builtin, &PluginPolicy::default(),
+            HookType::Event,
+            &PluginTrustClass::Builtin,
+            &PluginPolicy::default(),
         );
         assert_eq!(decision, PolicyDecision::Allow);
     }
@@ -461,7 +488,9 @@ mod tests {
     #[test]
     fn check_lifecycle_hook_blocking_denied() {
         let decision = check_lifecycle_hook_allowed(
-            HookType::ToolExecuteBefore, &PluginTrustClass::Builtin, &PluginPolicy::default(),
+            HookType::ToolExecuteBefore,
+            &PluginTrustClass::Builtin,
+            &PluginPolicy::default(),
         );
         assert!(decision.is_denied());
     }
@@ -469,7 +498,9 @@ mod tests {
     #[test]
     fn check_lifecycle_hook_mutating_denied() {
         let decision = check_lifecycle_hook_allowed(
-            HookType::ShellEnv, &PluginTrustClass::Builtin, &PluginPolicy::default(),
+            HookType::ShellEnv,
+            &PluginTrustClass::Builtin,
+            &PluginPolicy::default(),
         );
         assert!(decision.is_denied());
     }
@@ -477,7 +508,9 @@ mod tests {
     #[test]
     fn check_lifecycle_hook_process_denied() {
         let decision = check_lifecycle_hook_allowed(
-            HookType::Event, &PluginTrustClass::LocalProcess, &PluginPolicy::default(),
+            HookType::Event,
+            &PluginTrustClass::LocalProcess,
+            &PluginPolicy::default(),
         );
         assert!(decision.is_denied());
     }
@@ -486,9 +519,8 @@ mod tests {
     fn check_lifecycle_hook_process_allowed_when_enabled() {
         let mut policy = PluginPolicy::default();
         policy.lifecycle.allow_process_lifecycle_hooks = true;
-        let decision = check_lifecycle_hook_allowed(
-            HookType::Event, &PluginTrustClass::LocalProcess, &policy,
-        );
+        let decision =
+            check_lifecycle_hook_allowed(HookType::Event, &PluginTrustClass::LocalProcess, &policy);
         assert_eq!(decision, PolicyDecision::Allow);
     }
 
@@ -496,9 +528,8 @@ mod tests {
     fn check_lifecycle_auth_requires_builtin_trust() {
         let mut policy = PluginPolicy::default();
         policy.lifecycle.enable_blocking_hooks = true;
-        let decision = check_lifecycle_hook_allowed(
-            HookType::Auth, &PluginTrustClass::SandboxedWasm, &policy,
-        );
+        let decision =
+            check_lifecycle_hook_allowed(HookType::Auth, &PluginTrustClass::SandboxedWasm, &policy);
         assert!(decision.is_denied());
         assert!(decision.reason().unwrap().contains("Builtin trust"));
     }
@@ -507,27 +538,24 @@ mod tests {
     fn check_lifecycle_auth_allowed_for_builtin() {
         let mut policy = PluginPolicy::default();
         policy.lifecycle.enable_blocking_hooks = true;
-        let decision = check_lifecycle_hook_allowed(
-            HookType::Auth, &PluginTrustClass::Builtin, &policy,
-        );
+        let decision =
+            check_lifecycle_hook_allowed(HookType::Auth, &PluginTrustClass::Builtin, &policy);
         assert_eq!(decision, PolicyDecision::Allow);
     }
 
     #[test]
     fn check_secret_access_denied_without_declaration() {
         let manifest = process_manifest();
-        let decision = check_secret_access_allowed(
-            &manifest, "UNDECLARED", &PluginPolicy::default(),
-        );
+        let decision =
+            check_secret_access_allowed(&manifest, "UNDECLARED", &PluginPolicy::default());
         assert!(decision.is_denied());
     }
 
     #[test]
     fn check_secret_access_allowed_when_declared() {
         let manifest = process_manifest();
-        let decision = check_secret_access_allowed(
-            &manifest, "MY_SECRET", &PluginPolicy::default(),
-        );
+        let decision =
+            check_secret_access_allowed(&manifest, "MY_SECRET", &PluginPolicy::default());
         assert_eq!(decision, PolicyDecision::Allow);
     }
 
@@ -536,9 +564,7 @@ mod tests {
         let manifest = process_manifest();
         let mut policy = PluginPolicy::default();
         policy.permissions.deny_secrets_by_default = false;
-        let decision = check_secret_access_allowed(
-            &manifest, "ANYTHING", &policy,
-        );
+        let decision = check_secret_access_allowed(&manifest, "ANYTHING", &policy);
         assert_eq!(decision, PolicyDecision::Allow);
     }
 

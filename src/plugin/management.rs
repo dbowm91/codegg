@@ -197,10 +197,7 @@ impl PluginManager {
             .resolve_plugin_selector(selector)
             .await
             .map_err(registry_error_to_management)?;
-        self.service
-            .registry()
-            .set_enabled(&info.id, true)
-            .await?;
+        self.service.registry().set_enabled(&info.id, true).await?;
         let updated = self
             .service
             .registry()
@@ -223,10 +220,7 @@ impl PluginManager {
             .resolve_plugin_selector(selector)
             .await
             .map_err(registry_error_to_management)?;
-        self.service
-            .registry()
-            .set_enabled(&info.id, false)
-            .await?;
+        self.service.registry().set_enabled(&info.id, false).await?;
         let updated = self
             .service
             .registry()
@@ -360,7 +354,10 @@ impl PluginManager {
         // Check: permission/trust warnings (informational)
         let perms = &info.manifest.permissions;
         let perms_default = !perms.network
-            && matches!(perms.filesystem, crate::plugin::manifest::FilesystemPermission::None)
+            && matches!(
+                perms.filesystem,
+                crate::plugin::manifest::FilesystemPermission::None
+            )
             && perms.env.is_empty()
             && perms.secrets.is_empty()
             && !perms.session_messages
@@ -426,7 +423,10 @@ impl PluginManager {
             name: "registry_consistency".to_string(),
             passed: in_registry,
             message: if in_registry {
-                format!("Plugin appears in registry index ({})", registry_infos.len())
+                format!(
+                    "Plugin appears in registry index ({})",
+                    registry_infos.len()
+                )
             } else {
                 "Plugin missing from registry index".to_string()
             },
@@ -435,10 +435,7 @@ impl PluginManager {
         // --- Policy diagnostics (informational) ---
         if let Some(policy) = self.service.policy() {
             // Check: process lifecycle hooks
-            if matches!(
-                &info.manifest.runtime,
-                PluginRuntimeSpec::Process { .. }
-            ) {
+            if matches!(&info.manifest.runtime, PluginRuntimeSpec::Process { .. }) {
                 let process_hooks_ok = policy.lifecycle.allow_process_lifecycle_hooks;
                 checks.push(PluginDoctorCheck {
                     name: "policy_process_hooks".to_string(),
@@ -506,10 +503,7 @@ impl PluginManager {
                 checks.push(PluginDoctorCheck {
                     name: "policy_high_risk_grants".to_string(),
                     passed: false, // flagged for user review
-                    message: format!(
-                        "High-risk permission(s) declared: {}",
-                        risks.join(", ")
-                    ),
+                    message: format!("High-risk permission(s) declared: {}", risks.join(", ")),
                 });
             }
 
@@ -533,17 +527,22 @@ impl PluginManager {
             if policy.permissions.require_high_trust_for_auth_hooks
                 && !matches!(info.trust, PluginTrustClass::Builtin)
             {
-                let has_auth_hook = info.manifest.hooks_capabilities().any(|h| {
-                    h.hook_type == "auth" || h.hook_type == "provider"
-                }) || info.manifest.hooks.iter().any(|h| {
-                    h.hook_type == "auth" || h.hook_type == "provider"
-                });
+                let has_auth_hook = info
+                    .manifest
+                    .hooks_capabilities()
+                    .any(|h| h.hook_type == "auth" || h.hook_type == "provider")
+                    || info
+                        .manifest
+                        .hooks
+                        .iter()
+                        .any(|h| h.hook_type == "auth" || h.hook_type == "provider");
                 if has_auth_hook {
                     checks.push(PluginDoctorCheck {
                         name: "policy_auth_hook_trust".to_string(),
                         passed: false,
-                        message: "Plugin declares auth/provider hook but is not Builtin trust class"
-                            .to_string(),
+                        message:
+                            "Plugin declares auth/provider hook but is not Builtin trust class"
+                                .to_string(),
                     });
                 }
             }
@@ -655,12 +654,12 @@ async fn check_duplicate_capabilities(
     // by this plugin. The registry itself rejects duplicates on register/enable,
     // so any duplicates here indicate either stale info or a pre-existing
     // conflict that the registry has already resolved.
-    let cmd_names: Vec<&str> = info
-        .manifest
-        .commands()
-        .map(|c| c.name.as_str())
-        .collect();
-    let dup_count = cmd_names.len() - cmd_names.iter().collect::<std::collections::HashSet<_>>().len();
+    let cmd_names: Vec<&str> = info.manifest.commands().map(|c| c.name.as_str()).collect();
+    let dup_count = cmd_names.len()
+        - cmd_names
+            .iter()
+            .collect::<std::collections::HashSet<_>>()
+            .len();
     PluginDoctorCheck {
         name: "no_duplicate_capabilities".to_string(),
         passed: dup_count == 0,
@@ -1045,7 +1044,10 @@ mod tests {
             .await
             .unwrap();
 
-        let result = registry.resolve_plugin_selector("my-plugin:1").await.unwrap();
+        let result = registry
+            .resolve_plugin_selector("my-plugin:1")
+            .await
+            .unwrap();
         assert_eq!(result.id, "my-plugin:1");
     }
 
@@ -1372,8 +1374,7 @@ mod tests {
             .await
             .unwrap();
         let service = Arc::new(
-            PluginService::new(Arc::new(registry))
-                .with_policy(Arc::new(PluginPolicy::default())),
+            PluginService::new(Arc::new(registry)).with_policy(Arc::new(PluginPolicy::default())),
         );
         let manager = PluginManager::new(service);
 
@@ -1414,8 +1415,7 @@ mod tests {
             .await
             .unwrap();
         let service = Arc::new(
-            PluginService::new(Arc::new(registry))
-                .with_policy(Arc::new(PluginPolicy::default())),
+            PluginService::new(Arc::new(registry)).with_policy(Arc::new(PluginPolicy::default())),
         );
         let manager = PluginManager::new(service);
 
@@ -1466,8 +1466,7 @@ mod tests {
             .await
             .unwrap();
         let service = Arc::new(
-            PluginService::new(Arc::new(registry))
-                .with_policy(Arc::new(PluginPolicy::default())),
+            PluginService::new(Arc::new(registry)).with_policy(Arc::new(PluginPolicy::default())),
         );
         let manager = PluginManager::new(service);
 

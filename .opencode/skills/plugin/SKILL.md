@@ -1112,3 +1112,11 @@ cat examples/plugins/process-quota-json/sample_invocation.json | \
   python3 examples/plugins/process-quota-json/scripts/quota_json.py | \
   python3 -m json.tool
 ```
+
+### Phase 14: TUI Component Modularization
+
+`UiNodeRenderer` (`src/tui/components/ui_node_renderer.rs`) is the canonical `UiNode` lowering adapter — both plugin and first-party informational surfaces flow through it. The legacy `PluginUiRenderer` is a compat alias at `src/tui/components/plugin_renderer.rs`. `UiNodeDialog` (`src/tui/components/dialogs/ui_node.rs`) is a generic scrollable dialog that accepts a `UiNode` directly and reuses `DialogType::Plugin` in the focus manager.
+
+First-party builders live in `src/tui/ui_builders/`: `stats.rs` (`stats_node` + `TaskSummaryView` DTO), `plugins.rs` (re-export shim for `management_ui` builders), `shell.rs` (`shell_detail_node`). The plugin management builders (`plugins_table`, `plugin_info_node`, `doctor_report_node`, `node_to_lines`) remain in `src/plugin/management_ui.rs` — the `ui_builders/plugins.rs` shim gives first-party callers a clean import path.
+
+Renderer hardening: empty-table fallback message, key-value alignment to longest key, column-width cap of 60 chars with `…` truncation, ANSI/CSI and control-character sanitization on line output, safe `total=0` percentage. Interactive components (permission/question/command-palette/file-diff/source-preview/tree/security-review) MUST NOT be migrated to `UiNode` — keep them as native ratatui components.

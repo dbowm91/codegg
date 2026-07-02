@@ -328,11 +328,7 @@ mod tests {
     #[tokio::test]
     async fn install_rejects_invalid_toml_manifest() {
         let src = make_temp_dir("bad_manifest");
-        fs::write(
-            src.join("manifest.toml"),
-            "this is not valid toml [[[ ]]]",
-        )
-        .unwrap();
+        fs::write(src.join("manifest.toml"), "this is not valid toml [[[ ]]]").unwrap();
         let result = install_from_path(&src).await;
         assert!(matches!(result, Err(InstallError::Manifest(_))));
     }

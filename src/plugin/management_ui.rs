@@ -245,9 +245,7 @@ fn render_node_lines(node: &UiNode, out: &mut Vec<String>, depth: usize) {
             total,
         }) => {
             let label_part = label.as_deref().unwrap_or("Progress");
-            let total_part = total
-                .map(|t| format!("/{}", t))
-                .unwrap_or_default();
+            let total_part = total.map(|t| format!("/{}", t)).unwrap_or_default();
             out.push(format!("{indent}{label_part}: {current}{total_part}"));
         }
         UiNode::Container(ContainerNode { title, children }) => {
@@ -580,7 +578,9 @@ mod tests {
         let report = sample_report("Test", checks);
         let node = doctor_report_node(&report);
         let lines = node_to_lines(&node);
-        assert!(lines.iter().any(|l| l.contains("== Plugin Doctor: Test ==")));
+        assert!(lines
+            .iter()
+            .any(|l| l.contains("== Plugin Doctor: Test ==")));
         assert!(lines.iter().any(|l| l.contains("[PASS]")));
     }
 
