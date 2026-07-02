@@ -257,6 +257,116 @@ The TUI reference client supports all surface types. Remote/external clients neg
 - Toasts and EmitChat always pass (universal support)
 - Cross-plugin ID spoofing is rejected when a `source_plugin_id` is provided
 
+## Frontend Compatibility (Phase 15)
+
+Phase 15 makes plugin UI, management, lifecycle effects, and durable plugin surfaces robust across embedded TUI, remote TUI, daemon/socket clients, and future GUI/web/mobile frontends.
+
+### Supported Frontend Classes
+
+| Frontend | Transport | Renders |
+|----------|-----------|---------|
+| **Embedded TUI** | In-process | All surfaces (dialogs, panels, status items, tables, markdown, code, progress) |
+| **Remote TUI** | WebSocket/socket | All surfaces via `TuiMessage::PluginUiEffect` and snapshots |
+| **CLI/Automation** | stdio | Degraded text output; dialogs/panels/status items omitted |
+| **GUI/Web/Mobile** | Future | Consumes `UiNode`/`UiEffect` protocol without TUI-specific naming |
+
+### Capability Negotiation
+
+Clients declare their capabilities via `ClientCapabilities` (in `crates/codegg-protocol/src/frames.rs`). The protocol defines:
+
+- `plugin_ui_dialogs`, `plugin_ui_panels`, `plugin_ui_status_items` — surface types
+- `plugin_ui_tables`, `plugin_ui_markdown`, `plugin_ui_code`, `plugin_ui_progress` — node types
+- `visual_notifications`, `desktop_notifications`, `audio`, `tts`, `multi_session_view` — general
+
+All fields default to `false`. `ClientCapabilities::plugin_ui_capabilities()` converts the `plugin_ui_*` fields into a `PluginUiCapabilities` struct for capability-aware degradation.
+
+### Effect Transport
+
+Plugin UI effects cross process/core/frontend boundaries wrapped in a typed envelope:
+
+```rust
+pub struct UiEffectEnvelope {
+    pub session_id: Option<String>,
+    pub source: UiEffectSource,    // Plugin { plugin_id } | Core | Tui
+    pub invocation_id: Option<String>,
+    pub effect: UiEffect,
+}
+```
+
+**Transport rules:**
+
+- **Session-scoped effects** flow through core event transport: `PluginRuntime → PluginResponse.effects → AppEvent::PluginUiEffect → CoreEvent::PluginUiEffect → subscribed clients`.
+- **Local-only effects** (e.g. from `/plugins`) use `UiEffectSource::Tui` and stay local.
+- **Durable surfaces** (panels, status items) are included in snapshots for reconnect fidelity.
+- **Transient surfaces** (dialogs, toasts) are not persisted and are not in reconnect snapshots.
+
+### Size Limits
+
+`UiLimits` in `crates/codegg-protocol/src/ui.rs` defines bounded resource caps:
+
+| Limit | Default (balanced) | text_only | Purpose |
+|-------|-------------------|-----------|---------|
+| `max_effects_per_response` | 32 | 8 | Prevents effect flooding |
+| `max_effect_bytes` | 64 KiB | 16 KiB | Per-effect serialization cap |
+| `max_node_depth` | 16 | 4 | Recursive node depth |
+| `max_table_rows` | 256 | 16 | Table size cap |
+| `max_table_columns` | 32 | 8 | Table width cap |
+| `max_string_len` | 8192 | 1024 | Per-string truncation |
+| `max_panels_per_plugin` | 8 | 0 | Durable panel count |
+| `max_status_items_per_plugin` | 8 | 0 | Status item count |
+| `max_open_dialogs_global` | 4 | 0 | Global dialog cap |
+| `max_snapshot_body_bytes` | 16 KiB | 4 KiB | Snapshot body serialization cap |
+
+Effects exceeding limits are rejected with `UiValidationError`. Policy never panics — it denies or truncates with diagnostics.
+
+### Source Attribution and Ownership
+
+Every plugin UI effect carries source metadata when crossing boundaries:
+
+- `plugin_id` — owning plugin (from `UiEffectSource::Plugin`)
+- `invocation_id` — correlates effect with the original invocation
+- `session_id` — scopes delivery to session subscribers
+
+**Surface-ownership rules:**
+
+- `source.plugin_id` must match durable surface id namespace (e.g. panel id `my-plugin:stats` must come from `plugin_id == "my-plugin"`).
+- Cross-plugin updates are rejected at apply time.
+- Missing source id for durable effects is rejected or namespaced under a safe synthetic source.
+- `UiEffectSource::Core` effects skip plugin-ownership checks (trusted core-originated effects).
+
+### Snapshot Durability
+
+Remote snapshots (`RemoteTuiStateSnapshot`) include durable plugin surface metadata:
+
+- **Panels**: `id`, `title`, `placement`, `source_plugin_id`, `body` (if size-safe)
+- **Status items**: `id`, `label`, `placement`, `source_plugin_id`, `body` (if size-safe)
+
+The snapshot builder populates `body` only when the serialized size is ≤ `SNAPSHOT_BODY_LIMIT` (16 KiB). Bodies exceeding the cap are omitted; metadata alone is sufficient for clients to fetch the body via replay/resync.
+
+Both `source_plugin_id` and `body` are optional with `skip_serializing_if`, so legacy snapshots without these fields deserialize cleanly.
+
+### Multi-Client Behavior
+
+When multiple frontends are connected:
+
+- Session-scoped plugin effects are delivered to subscribers of that session.
+- Durable state changes update snapshots for new/reconnected clients via `RequestSnapshot`.
+- Local-only effects (from `UiEffectSource::Tui`) do not leak to remote clients.
+- Automation clients with limited capabilities receive degraded text or have effects ignored safely.
+- Unsupported clients never block on UI effects — validation/degradation is synchronous.
+
+### Canonical Entry Point
+
+`App::apply_plugin_ui_envelope(envelope)` in `src/tui/app/mod.rs` is the canonical entry point for all plugin UI effects regardless of transport (local TUI command or remote WebSocket). It:
+
+1. Derives `source_plugin_id` from the envelope.
+2. Runs the session guard (drops effects for non-matching session).
+3. Validates against `UiLimits::balanced()`.
+4. Enforces surface-ownership rules.
+5. Delegates to `App::apply_plugin_ui_effect(effect, plugin_id_opt)`.
+
+`App::validate_plugin_ui_effects(effects)` is the batch validator used by lifecycle hooks and the event bridge.
+
 ## Built-in Plugins
 
 The `builtin/` directory contains:

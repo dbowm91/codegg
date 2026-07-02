@@ -18,16 +18,32 @@ The `protocol` module defines the shared request/response envelopes and message 
 
 ```
 crates/codegg-protocol/src/
-├── mod.rs     # Module exports
+├── lib.rs     # Module exports
 ├── core.rs    # CoreRequest, CoreResponse, CoreEvent, envelopes
-└── tui.rs     # TuiMessage, QuestionSpec
+├── dto.rs     # Shared DTOs (Session, Message, etc.)
+├── frames.rs  # ClientCapabilities, RequestEnvelope, EventEnvelope
+├── plugin.rs  # PluginManifestDto, PluginInvocation, PluginResponse, PLUGIN_PROTOCOL_VERSION
+├── tui.rs     # TuiMessage, QuestionSpec, RemoteTuiStateSnapshot, REMOTE_TUI_PROTOCOL_VERSION
+└── ui.rs      # UiNode, UiEffect, UiEffectEnvelope, UiLimits, validation, degradation
 ```
 
-## Protocol Version
+## Protocol Versions
 
 ```rust
-pub const PROTOCOL_VERSION: u32 = 1;
+// crates/codegg-protocol/src/core.rs
+pub const PROTOCOL_VERSION: u32 = 2;
+
+// crates/codegg-protocol/src/tui.rs
+pub const REMOTE_TUI_PROTOCOL_VERSION: u32 = 3;
+
+// crates/codegg-protocol/src/plugin.rs
+pub const PLUGIN_PROTOCOL_VERSION: u32 = 1;
 ```
+
+**Version history:**
+- `PROTOCOL_VERSION`: bumped 1 → 2 in Phase 15 to accommodate `CoreEvent::PluginUiEffect { envelope: UiEffectEnvelope }`.
+- `REMOTE_TUI_PROTOCOL_VERSION`: bumped 2 → 3 in Phase 15 to accommodate `TuiMessage::PluginUiEffect { envelope: UiEffectEnvelope }`.
+- `PLUGIN_PROTOCOL_VERSION`: stable at 1; plugin wire format is independent of core/TUI protocol versions.
 
 ## Envelopes
 
@@ -318,7 +334,13 @@ Server (Axum)
 
 ## Versioning
 
-The protocol uses explicit versioning via `PROTOCOL_VERSION = 1` in `crates/codegg-protocol/src/core.rs`. Envelopes include `protocol_version` to detect mismatches between client and server.
+The protocol uses explicit versioning constants in `crates/codegg-protocol/src/`:
+
+- `PROTOCOL_VERSION = 2` in `core.rs` (core request/response/event envelopes)
+- `REMOTE_TUI_PROTOCOL_VERSION = 3` in `tui.rs` (remote TUI WebSocket protocol)
+- `PLUGIN_PROTOCOL_VERSION = 1` in `plugin.rs` (plugin wire format)
+
+Envelopes (`RequestEnvelope`, `EventEnvelope`) include `protocol_version` to detect mismatches between client and server. See "Phase 15: Plugin UI Multi-Frontend" below for the rationale behind the version bumps.
 
 ## Implementation Notes
 
@@ -327,3 +349,174 @@ The protocol uses explicit versioning via `PROTOCOL_VERSION = 1` in `crates/code
 - All enums use `rename_all = "snake_case"` for JSON compatibility
 - The core module handles `CoreRequest` variants in `src/core/mod.rs`
 - Subagent events (`SubagentStarted`, `SubagentProgress`, `SubagentCompleted`, `SubagentFailed`) exist in both `CoreEvent` and the event bus, and `map_app_event_to_core_event` DOES map all four subagent events (see `src/core/mod.rs:795-838`)
+
+## Client Capabilities
+
+Defined in `crates/codegg-protocol/src/frames.rs`:
+
+```rust
+pub struct ClientCapabilities {
+    pub visual_notifications: bool,
+    pub desktop_notifications: bool,
+    pub audio: bool,
+    pub tts: bool,
+    pub multi_session_view: bool,
+    pub plugin_ui_dialogs: bool,
+    pub plugin_ui_panels: bool,
+    pub plugin_ui_status_items: bool,
+    pub plugin_ui_tables: bool,
+    pub plugin_ui_markdown: bool,
+    pub plugin_ui_code: bool,
+    pub plugin_ui_progress: bool,
+}
+```
+
+All fields default to `false` via `#[serde(default)]`. `ClientCapabilities::plugin_ui_capabilities()` converts the `plugin_ui_*` fields into a `PluginUiCapabilities` struct for capability-aware degradation.
+
+## Phase 15: Plugin UI Multi-Frontend
+
+Phase 15 turned the protocol-level plugin UI foundation into a stable multi-frontend contract supporting embedded TUI, remote TUI, CLI/automation, and future GUI/web/mobile frontends.
+
+### UiEffectEnvelope
+
+All plugin UI effects crossing the core/TUI/remote boundary are wrapped in a typed envelope that carries source attribution:
+
+```rust
+pub struct UiEffectEnvelope {
+    pub session_id: Option<String>,
+    pub source: UiEffectSource,
+    pub invocation_id: Option<String>,
+    pub effect: UiEffect,
+}
+
+pub enum UiEffectSource {
+    Plugin { plugin_id: String },
+    Core,
+    Tui,
+}
+```
+
+The envelope replaces the previous flat `PluginUiEffect` event/message shape in both `CoreEvent` and `TuiMessage`. Source attribution enables:
+
+- **Session scoping**: effects with `session_id` set are filtered to clients subscribed to that session.
+- **Ownership enforcement**: `source.plugin_id` must match durable surface id namespace (e.g. panel id `my-plugin:stats` must come from `plugin_id == "my-plugin"`).
+- **Diagnostics**: `invocation_id` and `source` surface in management/doctor views.
+
+### UiLimits and Validation
+
+`UiLimits` in `crates/codegg-protocol/src/ui.rs` defines bounded resource caps to prevent plugin output from destabilizing clients:
+
+```rust
+pub struct UiLimits {
+    pub max_effects_per_response: usize,
+    pub max_effect_bytes: usize,
+    pub max_node_depth: usize,
+    pub max_table_rows: usize,
+    pub max_table_columns: usize,
+    pub max_string_len: usize,
+    pub max_panels_per_plugin: usize,
+    pub max_status_items_per_plugin: usize,
+    pub max_open_dialogs_global: usize,
+    pub max_snapshot_body_bytes: usize,
+}
+```
+
+Presets:
+
+- `UiLimits::balanced()` — default for embedded and remote TUI clients.
+- `UiLimits::text_only()` — for CLI/automation clients with no rich UI support.
+
+Validation functions:
+
+- `validate_ui_effect(effect, limits) -> Result<(), UiValidationError>` — single-effect check.
+- `validate_ui_effects(effects, limits) -> Result<(), UiValidationError>` — batch check (enforces `max_effects_per_response`).
+- `validate_ui_node(node, limits, depth)` — recursive node validation against depth/string/table caps.
+
+`UiValidationError` is an enum with `Display + Error` implementations. Validation rejects or truncates with diagnostics rather than panicking.
+
+### Degradation Helpers
+
+Deterministic degradation ensures unsupported clients receive appropriate output:
+
+- `degrade_effect(effect, caps) -> Option<UiEffect>` — maps an effect to its degraded form for the given capability set. Returns `None` if the effect has no degraded equivalent (e.g. `ClosePanel` for a text-only client).
+- `degrade_node_to_text(node) -> Option<String>` — flattens a `UiNode` tree to text for clients that cannot render structured nodes.
+- `effect_summary(effect) -> Option<String>` — short human-readable summary for log lines.
+
+Degradation matrix:
+
+| Effect | Full UI client | Text-only client | Unsupported/automation |
+| --- | --- | --- | --- |
+| `EmitChat` | visible UI/chat surface | stdout/log text | log text |
+| `ShowToast` | toast | prefixed text line | optional log |
+| `OpenDialog` | modal/dialog | title + body text | log/report |
+| `OpenPanel` | panel | heading + body text | omit or log summary |
+| `AddStatusItem` | status bar | optional line | omit |
+| `UpdatePanel` | update existing panel | text update | omit |
+| `Close*` | close surface | no-op | no-op |
+
+### Snapshot Durability
+
+`RemoteTuiStateSnapshot` (in `crates/codegg-protocol/src/tui.rs`) now carries durable plugin surface metadata:
+
+```rust
+pub struct RemotePanelView {
+    pub id: String,
+    pub title: String,
+    pub placement: String,
+    pub source_plugin_id: Option<String>,
+    pub body: Option<UiNode>,
+}
+
+pub struct RemoteStatusItemView {
+    pub id: String,
+    pub label: String,
+    pub placement: String,
+    pub source_plugin_id: Option<String>,
+    pub body: Option<UiNode>,
+}
+```
+
+Both `source_plugin_id` and `body` are optional with `#[serde(default, skip_serializing_if = "Option::is_none")]`, so legacy snapshots without these fields deserialize cleanly.
+
+The snapshot builder (`App::build_remote_snapshot` in `src/tui/app/mod.rs`) populates:
+
+- `source_plugin_id` — extracted from the surface id via `plugin_id_from_surface_id()`.
+- `body` — included only when the serialized size is ≤ `SNAPSHOT_BODY_LIMIT` (16 KiB, mirrors `UiLimits::max_snapshot_body_bytes`). Bodies exceeding the cap are omitted; the metadata alone is sufficient for clients to fetch the body via replay/resync.
+
+### Transport Rules
+
+**Session-scoped effects**: Plugin effects belonging to a session flow through core event transport:
+
+```
+PluginRuntime → PluginResponse.effects → AppEvent::PluginUiEffect → CoreEvent::PluginUiEffect → subscribed clients
+```
+
+The bridge in `src/core/mod.rs` wraps `AppEvent::PluginUiEffect` into a `UiEffectEnvelope` before publishing as `CoreEvent::PluginUiEffect`.
+
+**Local-only effects**: Effects produced by purely local TUI commands (e.g. `/plugins` listing) may use `UiEffectSource::Tui` and stay local unless they should be visible to other clients.
+
+**Durable surfaces**: Panels and status items are durable enough to include in snapshots. Dialogs and toasts are transient — they are not persisted and are not included in reconnect snapshots.
+
+**Ordering**: Effects from one plugin response preserve order via the monotonic `event_seq` counter in the event log. No separate sequence system is used.
+
+### Multi-Client Behavior
+
+When multiple frontends are connected:
+
+- Session-scoped plugin effects are delivered to subscribers of that session.
+- Durable state changes update snapshots for new/reconnected clients via `RequestSnapshot`.
+- Local-only effects (e.g. from `UiEffectSource::Tui`) do not leak to remote clients.
+- Automation clients with limited `ClientCapabilities` receive degraded text or have effects ignored safely.
+- Unsupported clients never block on UI effects — validation/degradation is synchronous.
+
+### Canonical Entry Point
+
+`App::apply_plugin_ui_envelope(envelope)` in `src/tui/app/mod.rs` is the canonical entry point for all plugin UI effects regardless of transport:
+
+1. Derives `source_plugin_id` from the envelope.
+2. Runs session guard (drops effects for non-matching session).
+3. Validates against `UiLimits::balanced()`.
+4. Enforces surface-ownership rules.
+5. Delegates to `App::apply_plugin_ui_effect(effect, plugin_id_opt)`.
+
+`App::validate_plugin_ui_effects(effects)` is the batch validator used by lifecycle hooks and the event bridge.

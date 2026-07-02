@@ -13036,4 +13036,235 @@ mod remote_protocol_tests {
         assert_eq!(view.source_plugin_id.as_deref(), Some("my-plugin"));
         assert!(view.body.is_none(), "oversize body must be dropped");
     }
+
+    // -----------------------------------------------------------------
+    // Phase 15: multi-client capability behavior
+    // -----------------------------------------------------------------
+
+    /// A "full" client (all capabilities) receives a panel in the snapshot.
+    /// An "automation" client (panel capability disabled) receives a
+    /// degraded toast instead and no panel in the snapshot.
+    #[test]
+    fn multi_client_different_capabilities_receive_appropriate_forms() {
+        use crate::protocol::ui::{UiEffect, UiEffectEnvelope, UiEffectSource, UiLimits};
+        use crate::tui::app::state::PluginUiApplyResult;
+
+        // Full client.
+        let mut full_client = App::new_for_testing("/tmp".into());
+        // new_for_testing already sets all_supported; assert that.
+        assert!(full_client.ui_state.plugin_ui_caps.panel);
+
+        let panel_effect = UiEffect::OpenPanel {
+            panel: crate::protocol::ui::PanelSpec {
+                id: "multi-client:panel-1".into(),
+                title: "M".into(),
+                placement: crate::protocol::ui::PanelPlacement::Right,
+                body: crate::protocol::ui::UiNode::Text(crate::protocol::ui::TextNode {
+                    text: "panel body".into(),
+                }),
+            },
+        };
+        let envelope = UiEffectEnvelope {
+            session_id: None,
+            source: UiEffectSource::Plugin {
+                plugin_id: "multi-client".into(),
+            },
+            invocation_id: Some("inv-full".into()),
+            effect: panel_effect.clone(),
+        };
+        let result = full_client.apply_plugin_ui_envelope(envelope);
+        assert!(matches!(result, PluginUiApplyResult::Applied));
+
+        let snap_full = full_client.build_remote_snapshot(full_client.remote_sequence);
+        let full_panel = snap_full
+            .plugin_panels
+            .iter()
+            .find(|v| v.id == "multi-client:panel-1");
+        assert!(full_panel.is_some(), "full client must see the panel");
+        assert_eq!(
+            full_panel.unwrap().source_plugin_id.as_deref(),
+            Some("multi-client")
+        );
+
+        // Automation client: same effect, but panel capability is off.
+        let mut automation_client = App::new_for_testing("/tmp".into());
+        automation_client.ui_state.plugin_ui_caps = crate::protocol::ui::PluginUiCapabilities {
+            toast: true,
+            ..Default::default() // dialog=false, panel=false, status_item=false, etc.
+        };
+
+        let envelope = UiEffectEnvelope {
+            session_id: None,
+            source: UiEffectSource::Plugin {
+                plugin_id: "multi-client".into(),
+            },
+            invocation_id: Some("inv-automation".into()),
+            effect: panel_effect,
+        };
+        let result = automation_client.apply_plugin_ui_envelope(envelope);
+        assert!(
+            matches!(result, PluginUiApplyResult::Unsupported(_)),
+            "automation client should reject panel effect"
+        );
+
+        // The unsupported path in apply_plugin_ui_effect degrades to a toast.
+        assert!(
+            !automation_client.messages_state.toasts.is_empty(),
+            "automation client should see a degraded toast summary"
+        );
+
+        // No panel in the automation client's snapshot — durable surface
+        // was never stored because the effect was rejected.
+        let snap_auto = automation_client.build_remote_snapshot(automation_client.remote_sequence);
+        assert!(
+            snap_auto
+                .plugin_panels
+                .iter()
+                .find(|v| v.id == "multi-client:panel-1")
+                .is_none(),
+            "automation client must not have the panel in snapshot"
+        );
+    }
+
+    /// After a panel is stored durably, a fresh snapshot (simulating a
+    /// reconnecting client) still includes the panel with
+    /// `source_plugin_id` and `body`.
+    #[test]
+    fn reconnect_snapshot_includes_durable_plugin_surfaces() {
+        use crate::protocol::ui::{UiEffect, UiEffectEnvelope, UiEffectSource};
+
+        let mut app = App::new_for_testing("/tmp".into());
+        let envelope = UiEffectEnvelope {
+            session_id: None,
+            source: UiEffectSource::Plugin {
+                plugin_id: "reconnect-test".into(),
+            },
+            invocation_id: Some("inv-reconnect".into()),
+            effect: UiEffect::OpenPanel {
+                panel: crate::protocol::ui::PanelSpec {
+                    id: "reconnect-test:status".into(),
+                    title: "Status".into(),
+                    placement: crate::protocol::ui::PanelPlacement::Left,
+                    body: crate::protocol::ui::UiNode::Text(crate::protocol::ui::TextNode {
+                        text: "live data".into(),
+                    }),
+                },
+            },
+        };
+        let _ = app.apply_plugin_ui_envelope(envelope);
+
+        // Simulate reconnect: a new client calls RequestSnapshot.
+        // The fresh snapshot must include the durable surface.
+        let snap1 = app.build_remote_snapshot(app.remote_sequence);
+        let snap2 = app.build_remote_snapshot(app.remote_sequence + 1);
+
+        for snap in [&snap1, &snap2] {
+            let panel = snap
+                .plugin_panels
+                .iter()
+                .find(|v| v.id == "reconnect-test:status")
+                .expect("reconnect snapshot must include durable panel");
+            assert_eq!(
+                panel.source_plugin_id.as_deref(),
+                Some("reconnect-test"),
+                "source_plugin_id must be set on reconnect snapshot"
+            );
+            assert!(
+                panel.body.is_some(),
+                "body should be included when within size cap"
+            );
+        }
+    }
+
+    /// Transient effects (ShowToast) are NOT included in reconnect
+    /// snapshots. Only durable surfaces (panels, status items) survive.
+    #[test]
+    fn transient_toast_not_in_reconnect_snapshot() {
+        use crate::protocol::ui::{ToastLevel, ToastSpec, UiEffect, UiEffectEnvelope, UiEffectSource};
+
+        let mut app = App::new_for_testing("/tmp".into());
+
+        // Apply a transient toast.
+        let envelope = UiEffectEnvelope {
+            session_id: None,
+            source: UiEffectSource::Plugin {
+                plugin_id: "ephemeral".into(),
+            },
+            invocation_id: None,
+            effect: UiEffect::ShowToast {
+                toast: ToastSpec {
+                    level: ToastLevel::Info,
+                    message: "transient message".into(),
+                },
+            },
+        };
+        let _ = app.apply_plugin_ui_envelope(envelope);
+
+        // The toast should be queued.
+        assert!(!app.messages_state.toasts.is_empty());
+
+        // But the snapshot must not contain any toast or durable surface
+        // attributable to "ephemeral" — toasts are transient.
+        let snap = app.build_remote_snapshot(app.remote_sequence);
+        let plugin_panels: Vec<_> = snap
+            .plugin_panels
+            .iter()
+            .filter(|v| v.source_plugin_id.as_deref() == Some("ephemeral"))
+            .collect();
+        assert!(
+            plugin_panels.is_empty(),
+            "transient toasts must not produce durable panels"
+        );
+    }
+
+    /// Session-scoped envelopes that match the active session are
+    /// delivered; envelopes for a different session are silently dropped.
+    /// This pins the multi-client routing rule: only the subscribed
+    /// session's clients receive the effect.
+    #[test]
+    fn session_scoped_envelope_delivered_only_to_matching_session() {
+        use crate::protocol::ui::{ToastLevel, ToastSpec, UiEffect, UiEffectEnvelope, UiEffectSource};
+
+        let mut app = App::new_for_testing("/tmp".into());
+
+        // Envelope with session_id=None (broadcast) is delivered.
+        let envelope = UiEffectEnvelope {
+            session_id: None,
+            source: UiEffectSource::Plugin {
+                plugin_id: "broadcaster".into(),
+            },
+            invocation_id: None,
+            effect: UiEffect::ShowToast {
+                toast: ToastSpec {
+                    level: ToastLevel::Info,
+                    message: "broadcast".into(),
+                },
+            },
+        };
+        let result = app.apply_plugin_ui_envelope(envelope);
+        assert!(matches!(
+            result,
+            crate::tui::app::state::PluginUiApplyResult::ToastRequested
+        ));
+
+        // Envelope with session_id="other-session" is rejected.
+        let envelope = UiEffectEnvelope {
+            session_id: Some("other-session".into()),
+            source: UiEffectSource::Plugin {
+                plugin_id: "broadcaster".into(),
+            },
+            invocation_id: None,
+            effect: UiEffect::ShowToast {
+                toast: ToastSpec {
+                    level: ToastLevel::Info,
+                    message: "for other session".into(),
+                },
+            },
+        };
+        let result = app.apply_plugin_ui_envelope(envelope);
+        assert!(matches!(
+            result,
+            crate::tui::app::state::PluginUiApplyResult::Unsupported(_)
+        ));
+    }
 }
