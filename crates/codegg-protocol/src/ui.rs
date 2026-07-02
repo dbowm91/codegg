@@ -225,6 +225,437 @@ impl PluginUiCapabilities {
     }
 }
 
+/// Limits applied when validating a [`UiEffect`] (and any embedded
+/// [`UiNode`] payloads). Plugins can otherwise be abused as an output
+/// channel; these caps keep wire payloads, in-memory state, and remote
+/// snapshot bodies bounded.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct UiLimits {
+    /// Maximum number of effects accepted in a single response.
+    pub max_effects_per_response: usize,
+    /// Maximum serialized JSON byte size for a single effect payload.
+    pub max_effect_bytes: usize,
+    /// Maximum nesting depth for [`UiNode`] trees.
+    pub max_node_depth: usize,
+    /// Maximum number of rows in a [`UiNode::Table`].
+    pub max_table_rows: usize,
+    /// Maximum number of columns in a [`UiNode::Table`].
+    pub max_table_columns: usize,
+    /// Maximum length (in chars) of any string field inside a [`UiNode`].
+    pub max_string_len: usize,
+    /// Maximum number of durable panels per plugin.
+    pub max_panels_per_plugin: usize,
+    /// Maximum number of durable status items per plugin.
+    pub max_status_items_per_plugin: usize,
+    /// Maximum number of open plugin dialogs globally.
+    pub max_open_dialogs_global: usize,
+    /// Maximum size of a single surface body when included in a
+    /// `RemotePanelView` / `RemoteStatusItemView` snapshot.
+    pub max_snapshot_body_bytes: usize,
+}
+
+impl Default for UiLimits {
+    fn default() -> Self {
+        Self::balanced()
+    }
+}
+
+impl UiLimits {
+    /// Convenience: validate a single effect against this `UiLimits`
+    /// instance. Equivalent to `validate_ui_effect(effect, self)`.
+    pub fn validate_effect(
+        &self,
+        effect: &UiEffect,
+    ) -> Result<(), UiValidationError> {
+        validate_ui_effect(effect, self)
+    }
+
+    /// Convenience: validate a batch of effects against this
+    /// `UiLimits` instance. Equivalent to
+    /// `validate_ui_effects(effects, self)`.
+    pub fn validate_effects(
+        &self,
+        effects: &[UiEffect],
+    ) -> Result<(), UiValidationError> {
+        validate_ui_effects(effects, self)
+    }
+
+    /// Conservative defaults suitable for embedded/remote TUI clients.
+    /// Tight enough to prevent a misbehaving plugin from destabilising
+    /// the client, permissive enough to host real-world plugin UI.
+    pub fn balanced() -> Self {
+        Self {
+            max_effects_per_response: 64,
+            max_effect_bytes: 256 * 1024,
+            max_node_depth: 16,
+            max_table_rows: 512,
+            max_table_columns: 32,
+            max_string_len: 16 * 1024,
+            max_panels_per_plugin: 32,
+            max_status_items_per_plugin: 64,
+            max_open_dialogs_global: 8,
+            max_snapshot_body_bytes: 16 * 1024,
+        }
+    }
+
+    /// Very tight caps suitable for automation / log-only clients.
+    pub fn text_only() -> Self {
+        Self {
+            max_effects_per_response: 16,
+            max_effect_bytes: 32 * 1024,
+            max_node_depth: 4,
+            max_table_rows: 32,
+            max_table_columns: 8,
+            max_string_len: 2 * 1024,
+            max_panels_per_plugin: 0,
+            max_status_items_per_plugin: 0,
+            max_open_dialogs_global: 0,
+            max_snapshot_body_bytes: 0,
+        }
+    }
+}
+
+/// Errors returned by [`validate_ui_node`] / [`validate_ui_effect`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UiValidationError {
+    /// Effect would exceed a per-response effect count cap.
+    TooManyEffects { limit: usize },
+    /// Effect (or its serialized form) exceeds the per-effect byte cap.
+    EffectTooLarge { limit: usize, approx: usize },
+    /// A string field exceeds `max_string_len`.
+    StringTooLong { limit: usize, len: usize },
+    /// A [`UiNode`] exceeds `max_node_depth`.
+    TooDeep { limit: usize },
+    /// A [`UiNode::Table`] exceeds the row or column cap.
+    TableTooLarge {
+        rows: usize,
+        cols: usize,
+        row_limit: usize,
+        col_limit: usize,
+    },
+}
+
+impl std::fmt::Display for UiValidationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TooManyEffects { limit } => {
+                write!(f, "too many effects (limit {})", limit)
+            }
+            Self::EffectTooLarge { limit, approx } => write!(
+                f,
+                "effect payload too large (~{} bytes, limit {})",
+                approx, limit
+            ),
+            Self::StringTooLong { limit, len } => write!(
+                f,
+                "string field too long ({} chars, limit {})",
+                len, limit
+            ),
+            Self::TooDeep { limit } => {
+                write!(f, "ui node tree too deep (limit {})", limit)
+            }
+            Self::TableTooLarge {
+                rows,
+                cols,
+                row_limit,
+                col_limit,
+            } => write!(
+                f,
+                "table too large ({}x{}, limits {}x{})",
+                rows, cols, row_limit, col_limit
+            ),
+        }
+    }
+}
+
+impl std::error::Error for UiValidationError {}
+
+/// Validate a single [`UiNode`] against the given [`UiLimits`]. Walks the
+/// full tree depth-first, checking depth, table size, and string length.
+pub fn validate_ui_node(
+    node: &UiNode,
+    limits: &UiLimits,
+    depth: usize,
+) -> Result<(), UiValidationError> {
+    if depth > limits.max_node_depth {
+        return Err(UiValidationError::TooDeep {
+            limit: limits.max_node_depth,
+        });
+    }
+    let check_str = |s: &str| -> Result<(), UiValidationError> {
+        if s.chars().count() > limits.max_string_len {
+            Err(UiValidationError::StringTooLong {
+                limit: limits.max_string_len,
+                len: s.chars().count(),
+            })
+        } else {
+            Ok(())
+        }
+    };
+    match node {
+        UiNode::Text(t) => check_str(&t.text)?,
+        UiNode::Markdown(m) => check_str(&m.markdown)?,
+        UiNode::Code(c) => {
+            check_str(&c.code)?;
+            if let Some(lang) = &c.language {
+                check_str(lang)?;
+            }
+        }
+        UiNode::Table(t) => {
+            for col in &t.columns {
+                check_str(col)?;
+            }
+            if t.columns.len() > limits.max_table_columns {
+                return Err(UiValidationError::TableTooLarge {
+                    rows: t.rows.len(),
+                    cols: t.columns.len(),
+                    row_limit: limits.max_table_rows,
+                    col_limit: limits.max_table_columns,
+                });
+            }
+            if t.rows.len() > limits.max_table_rows {
+                return Err(UiValidationError::TableTooLarge {
+                    rows: t.rows.len(),
+                    cols: t.columns.len(),
+                    row_limit: limits.max_table_rows,
+                    col_limit: limits.max_table_columns,
+                });
+            }
+            for row in &t.rows {
+                for cell in row {
+                    check_str(cell)?;
+                }
+            }
+        }
+        UiNode::KeyValue(kv) => {
+            for entry in &kv.entries {
+                check_str(&entry.key)?;
+                check_str(&entry.value)?;
+            }
+        }
+        UiNode::Progress(_) => {}
+        UiNode::Container(c) => {
+            if let Some(title) = &c.title {
+                check_str(title)?;
+            }
+            for child in &c.children {
+                validate_ui_node(child, limits, depth + 1)?;
+            }
+        }
+        UiNode::Empty => {}
+        UiNode::Unsupported { unknown_kind, .. } => check_str(unknown_kind)?,
+    }
+    Ok(())
+}
+
+/// Extract the [`UiNode`] payload of an effect, if any.
+fn effect_payload_node(effect: &UiEffect) -> Option<&UiNode> {
+    match effect {
+        UiEffect::OpenDialog { dialog } => Some(&dialog.body),
+        UiEffect::OpenPanel { panel } => Some(&panel.body),
+        UiEffect::UpdatePanel { body, .. } => Some(body),
+        UiEffect::AddStatusItem { item } => Some(&item.body),
+        UiEffect::UpdateStatusItem { body, .. } => Some(body),
+        UiEffect::EmitChat { .. }
+        | UiEffect::ShowToast { .. }
+        | UiEffect::CloseDialog { .. }
+        | UiEffect::ClosePanel { .. }
+        | UiEffect::RemoveStatusItem { .. } => None,
+    }
+}
+
+/// Validate a single [`UiEffect`] against the given [`UiLimits`]. Checks
+/// the effect payload size, any embedded node tree, and string fields.
+pub fn validate_ui_effect(
+    effect: &UiEffect,
+    limits: &UiLimits,
+) -> Result<(), UiValidationError> {
+    let approx = serde_json::to_vec(effect)
+        .map(|v| v.len())
+        .unwrap_or(usize::MAX);
+    if approx > limits.max_effect_bytes {
+        return Err(UiValidationError::EffectTooLarge {
+            limit: limits.max_effect_bytes,
+            approx,
+        });
+    }
+    if let Some(node) = effect_payload_node(effect) {
+        validate_ui_node(node, limits, 1)?;
+    }
+    match effect {
+        UiEffect::EmitChat { block } => {
+            if block.content.chars().count() > limits.max_string_len {
+                return Err(UiValidationError::StringTooLong {
+                    limit: limits.max_string_len,
+                    len: block.content.chars().count(),
+                });
+            }
+        }
+        UiEffect::ShowToast { toast } => {
+            if toast.message.chars().count() > limits.max_string_len {
+                return Err(UiValidationError::StringTooLong {
+                    limit: limits.max_string_len,
+                    len: toast.message.chars().count(),
+                });
+            }
+        }
+        UiEffect::OpenDialog { dialog } => {
+            if dialog.id.chars().count() > limits.max_string_len
+                || dialog.title.chars().count() > limits.max_string_len
+            {
+                return Err(UiValidationError::StringTooLong {
+                    limit: limits.max_string_len,
+                    len: dialog.id.chars().count().max(dialog.title.chars().count()),
+                });
+            }
+        }
+        UiEffect::OpenPanel { panel } => {
+            if panel.id.chars().count() > limits.max_string_len
+                || panel.title.chars().count() > limits.max_string_len
+            {
+                return Err(UiValidationError::StringTooLong {
+                    limit: limits.max_string_len,
+                    len: panel.id.chars().count().max(panel.title.chars().count()),
+                });
+            }
+        }
+        UiEffect::AddStatusItem { item } => {
+            let label_len = item
+                .label
+                .as_deref()
+                .map(|s| s.chars().count())
+                .unwrap_or(0);
+            if item.id.chars().count() > limits.max_string_len
+                || label_len > limits.max_string_len
+            {
+                return Err(UiValidationError::StringTooLong {
+                    limit: limits.max_string_len,
+                    len: item.id.chars().count().max(label_len),
+                });
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Validate a batch of effects: enforces per-response effect count and
+/// validates each effect individually.
+pub fn validate_ui_effects(
+    effects: &[UiEffect],
+    limits: &UiLimits,
+) -> Result<(), UiValidationError> {
+    if effects.len() > limits.max_effects_per_response {
+        return Err(UiValidationError::TooManyEffects {
+            limit: limits.max_effects_per_response,
+        });
+    }
+    for effect in effects {
+        validate_ui_effect(effect, limits)?;
+    }
+    Ok(())
+}
+
+/// Degrade a [`UiEffect`] to a form the client can render.
+///
+/// Returns the unchanged effect when the client supports all relevant
+/// surfaces, a degraded effect when partial support is available (e.g.
+/// a table stripped to key/value rows), or `None` when the client
+/// cannot render the effect at all (caller should drop or log it).
+pub fn degrade_effect(
+    effect: &UiEffect,
+    caps: &PluginUiCapabilities,
+) -> Option<UiEffect> {
+    if caps.supports_effect(effect) {
+        return Some(effect.clone());
+    }
+    match effect {
+        UiEffect::OpenDialog { .. } | UiEffect::CloseDialog { .. } => {
+            if caps.toast {
+                Some(UiEffect::ShowToast {
+                    toast: effect_summary_toast(effect),
+                })
+            } else {
+                None
+            }
+        }
+        UiEffect::OpenPanel { .. }
+        | UiEffect::UpdatePanel { .. }
+        | UiEffect::ClosePanel { .. } => {
+            if caps.toast {
+                Some(UiEffect::ShowToast {
+                    toast: effect_summary_toast(effect),
+                })
+            } else {
+                None
+            }
+        }
+        UiEffect::AddStatusItem { .. }
+        | UiEffect::UpdateStatusItem { .. }
+        | UiEffect::RemoveStatusItem { .. } => None,
+        UiEffect::ShowToast { .. } | UiEffect::EmitChat { .. } => {
+            if caps.toast {
+                Some(effect.clone())
+            } else {
+                None
+            }
+        }
+    }
+}
+
+/// Produce a short textual summary of an effect, suitable for log
+/// output, toast degradation, or chat-style fallback rendering.
+pub fn effect_summary(effect: &UiEffect) -> Option<String> {
+    match effect {
+        UiEffect::OpenDialog { dialog } => {
+            let body_preview = degrade_node_to_text(&dialog.body).join(" ");
+            Some(format!("[dialog] {}: {}", dialog.title, body_preview))
+        }
+        UiEffect::OpenPanel { panel } => {
+            let body_preview = degrade_node_to_text(&panel.body).join(" ");
+            Some(format!("[panel] {}: {}", panel.title, body_preview))
+        }
+        UiEffect::AddStatusItem { item } => {
+            let body_preview = degrade_node_to_text(&item.body).join(" ");
+            if body_preview.is_empty() {
+                None
+            } else {
+                let label = item.label.as_deref().unwrap_or("status");
+                Some(format!("[status] {}: {}", label, body_preview))
+            }
+        }
+        UiEffect::EmitChat { block } => Some(format!("[chat] {}", block.content)),
+        UiEffect::ShowToast { toast } => Some(toast.message.clone()),
+        UiEffect::CloseDialog { .. }
+        | UiEffect::UpdatePanel { .. }
+        | UiEffect::ClosePanel { .. }
+        | UiEffect::UpdateStatusItem { .. }
+        | UiEffect::RemoveStatusItem { .. } => None,
+    }
+}
+
+fn effect_summary_toast(effect: &UiEffect) -> ToastSpec {
+    let message = effect_summary(effect).unwrap_or_else(|| {
+        format!(
+            "[{}] (degraded)",
+            match effect {
+                UiEffect::OpenDialog { .. } | UiEffect::CloseDialog { .. } => "dialog",
+                UiEffect::OpenPanel { .. }
+                | UiEffect::UpdatePanel { .. }
+                | UiEffect::ClosePanel { .. } => "panel",
+                UiEffect::AddStatusItem { .. }
+                | UiEffect::UpdateStatusItem { .. }
+                | UiEffect::RemoveStatusItem { .. } => "status",
+                UiEffect::ShowToast { .. } | UiEffect::EmitChat { .. } => "info",
+            }
+        )
+    });
+    ToastSpec {
+        level: ToastLevel::Info,
+        message,
+    }
+}
+
 /// Degrade a [`UiNode`] to plain text lines when the client does not
 /// support the specific node type.
 pub fn degrade_node_to_text(node: &UiNode) -> Vec<String> {
@@ -636,5 +1067,210 @@ mod tests {
             body: UiNode::Empty,
         }));
         assert!(caps.supports_effect(&UiEffect::RemoveStatusItem { id: "s".into() }));
+    }
+
+    #[test]
+    fn ui_limits_default_is_balanced() {
+        let limits = UiLimits::default();
+        let balanced = UiLimits::balanced();
+        assert_eq!(limits, balanced);
+        assert!(balanced.max_effects_per_response >= 16);
+        assert!(balanced.max_open_dialogs_global >= 1);
+    }
+
+    #[test]
+    fn ui_limits_text_only_is_strict() {
+        let strict = UiLimits::text_only();
+        assert_eq!(strict.max_panels_per_plugin, 0);
+        assert_eq!(strict.max_status_items_per_plugin, 0);
+        assert_eq!(strict.max_open_dialogs_global, 0);
+        assert_eq!(strict.max_snapshot_body_bytes, 0);
+    }
+
+    #[test]
+    fn validate_ui_node_accepts_normal_node() {
+        let node = UiNode::Container(ContainerNode {
+            title: Some("ok".into()),
+            children: vec![UiNode::Text(TextNode { text: "hi".into() })],
+        });
+        assert!(validate_ui_node(&node, &UiLimits::balanced(), 1).is_ok());
+    }
+
+    #[test]
+    fn validate_ui_node_rejects_too_deep_tree() {
+        let mut node = UiNode::Text(TextNode { text: "leaf".into() });
+        for _ in 0..32 {
+            node = UiNode::Container(ContainerNode {
+                title: None,
+                children: vec![node],
+            });
+        }
+        let limits = UiLimits::balanced();
+        let err = validate_ui_node(&node, &limits, 1).unwrap_err();
+        assert!(matches!(err, UiValidationError::TooDeep { .. }));
+    }
+
+    #[test]
+    fn validate_ui_node_rejects_oversize_table() {
+        let big_columns: Vec<String> = (0..100).map(|i| format!("c{}", i)).collect();
+        let node = UiNode::Table(TableNode {
+            columns: big_columns,
+            rows: vec![],
+        });
+        let limits = UiLimits::balanced();
+        let err = validate_ui_node(&node, &limits, 1).unwrap_err();
+        assert!(matches!(err, UiValidationError::TableTooLarge { .. }));
+    }
+
+    #[test]
+    fn validate_ui_node_rejects_oversize_string() {
+        let big_text = "x".repeat(UiLimits::balanced().max_string_len + 8);
+        let node = UiNode::Text(TextNode { text: big_text });
+        let err = validate_ui_node(&node, &UiLimits::balanced(), 1).unwrap_err();
+        assert!(matches!(err, UiValidationError::StringTooLong { .. }));
+    }
+
+    #[test]
+    fn validate_ui_effect_accepts_normal_toast() {
+        let effect = UiEffect::ShowToast {
+            toast: ToastSpec {
+                level: ToastLevel::Info,
+                message: "ok".into(),
+            },
+        };
+        assert!(validate_ui_effect(&effect, &UiLimits::balanced()).is_ok());
+    }
+
+    #[test]
+    fn validate_ui_effect_rejects_oversize_payload() {
+        let limits = UiLimits {
+            max_effect_bytes: 64,
+            ..UiLimits::balanced()
+        };
+        let effect = UiEffect::ShowToast {
+            toast: ToastSpec {
+                level: ToastLevel::Info,
+                message: "this message is longer than 64 bytes by quite a margin".into(),
+            },
+        };
+        let err = validate_ui_effect(&effect, &limits).unwrap_err();
+        assert!(matches!(err, UiValidationError::EffectTooLarge { .. }));
+    }
+
+    #[test]
+    fn validate_ui_effects_rejects_too_many() {
+        let limits = UiLimits {
+            max_effects_per_response: 2,
+            ..UiLimits::balanced()
+        };
+        let effects = vec![
+            UiEffect::CloseDialog { id: "a".into() },
+            UiEffect::CloseDialog { id: "b".into() },
+            UiEffect::CloseDialog { id: "c".into() },
+        ];
+        let err = validate_ui_effects(&effects, &limits).unwrap_err();
+        assert!(matches!(err, UiValidationError::TooManyEffects { limit: 2 }));
+    }
+
+    #[test]
+    fn degrade_effect_returns_same_when_supported() {
+        let caps = PluginUiCapabilities::all_supported();
+        let effect = UiEffect::ShowToast {
+            toast: ToastSpec {
+                level: ToastLevel::Info,
+                message: "hi".into(),
+            },
+        };
+        let degraded = degrade_effect(&effect, &caps);
+        assert_eq!(degraded, Some(effect));
+    }
+
+    #[test]
+    fn degrade_effect_downgrades_dialog_to_toast_when_toast_supported() {
+        let caps = PluginUiCapabilities {
+            dialog: false,
+            toast: true,
+            ..Default::default()
+        };
+        let effect = UiEffect::OpenDialog {
+            dialog: DialogSpec {
+                id: "x".into(),
+                title: "t".into(),
+                body: UiNode::Text(TextNode { text: "body".into() }),
+                modal: true,
+            },
+        };
+        let degraded = degrade_effect(&effect, &caps);
+        assert!(matches!(degraded, Some(UiEffect::ShowToast { .. })));
+    }
+
+    #[test]
+    fn degrade_effect_returns_none_when_no_support() {
+        let caps = PluginUiCapabilities::default();
+        let effect = UiEffect::OpenPanel {
+            panel: PanelSpec {
+                id: "p".into(),
+                title: "t".into(),
+                placement: PanelPlacement::Right,
+                body: UiNode::Empty,
+            },
+        };
+        assert_eq!(degrade_effect(&effect, &caps), None);
+    }
+
+    #[test]
+    fn degrade_effect_drops_status_item_when_unsupported() {
+        let caps = PluginUiCapabilities {
+            status_item: false,
+            toast: true,
+            ..Default::default()
+        };
+        let effect = UiEffect::AddStatusItem {
+            item: StatusItemSpec {
+                id: "s".into(),
+                label: None,
+                placement: StatusPlacement::Right,
+                body: UiNode::Empty,
+            },
+        };
+        assert_eq!(degrade_effect(&effect, &caps), None);
+    }
+
+    #[test]
+    fn effect_summary_extracts_text() {
+        let effect = UiEffect::OpenDialog {
+            dialog: DialogSpec {
+                id: "x".into(),
+                title: "My Title".into(),
+                body: UiNode::Text(TextNode { text: "Body".into() }),
+                modal: true,
+            },
+        };
+        let summary = effect_summary(&effect).unwrap();
+        assert!(summary.contains("My Title"));
+        assert!(summary.contains("Body"));
+    }
+
+    #[test]
+    fn effect_summary_returns_none_for_close_variants() {
+        assert_eq!(effect_summary(&UiEffect::CloseDialog { id: "x".into() }), None);
+        assert_eq!(effect_summary(&UiEffect::ClosePanel { id: "x".into() }), None);
+        assert_eq!(
+            effect_summary(&UiEffect::RemoveStatusItem { id: "x".into() }),
+            None
+        );
+    }
+
+    #[test]
+    fn effect_summary_for_status_item_without_text_is_none() {
+        let effect = UiEffect::AddStatusItem {
+            item: StatusItemSpec {
+                id: "s".into(),
+                label: Some("build".into()),
+                placement: StatusPlacement::Right,
+                body: UiNode::Empty,
+            },
+        };
+        assert_eq!(effect_summary(&effect), None);
     }
 }

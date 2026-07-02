@@ -961,6 +961,17 @@ Phase 10 adds protocol-level transport for plugin UI effects so they can be deli
 - **`HookResult.effects`** and **`PluginHookOutcome::Ok(T, Vec<UiEffect>)`** allow hooks to return UI effects alongside their normal result.
 - **`ClientCapabilities`** includes `plugin_ui_dialogs`, `plugin_ui_panels`, and `plugin_ui_status_widgets` flags for frontend capability negotiation.
 
+### Phase 15: Multi-Frontend Readiness
+
+Phase 15 turns the Phase 10 envelope transport into a stable multi-frontend contract with strict validation and durable snapshots.
+
+- **`UiLimits`** (`balanced()` / `text_only()`) defines validated caps: `max_effects_per_response`, `max_effect_bytes`, `max_node_depth`, `max_table_rows`, `max_table_columns`, `max_string_len`, `max_panels_per_plugin`, `max_status_items_per_plugin`, `max_open_dialogs_global`, `max_snapshot_body_bytes`. `UiLimits::validate_effect(effect)` and `validate_effects(effects)` are the canonical validation gates.
+- **`UiValidationError`** (`TooManyEffects`, `EffectTooLarge`, `StringTooLong`, `TooDeep`, `TableTooLarge`) surfaces structured reasons for rejections.
+- **`App::apply_plugin_ui_envelope(envelope)`** is the canonical dispatch entry point for both local TUI commands and remote WebSocket events. It runs the session guard, validates against `UiLimits::balanced()`, enforces plugin surface-ownership rules, and delegates to `App::apply_plugin_ui_effect(effect, plugin_id_opt)`. Use this for any new effect-delivery path.
+- **`App::validate_plugin_ui_effects(effects)`** is the batch validator used by lifecycle hooks and the event bridge before publishing effects on the bus.
+- **`RemotePanelView`** and **`RemoteStatusItemView`** carry optional `source_plugin_id` and `body: Option<UiNode>` fields. The remote snapshot builder includes the body only when its serialized size ≤ `SNAPSHOT_BODY_LIMIT` (16 KiB). Helper `plugin_id_from_surface_id(id)` extracts the owning plugin from the surface id (`<plugin>:<command>` form; `command:local:...` has no plugin owner). Legacy snapshots deserialize cleanly via `#[serde(default, skip_serializing_if = "Option::is_none")]`.
+- Wire versions: `PROTOCOL_VERSION = 2` for core events, `REMOTE_TUI_PROTOCOL_VERSION = 3` for the remote TUI channel.
+
 ### Phase 11: Corrective Hardening
 
 Four correctness fixes close gaps in the plugin UI/runtime integration:

@@ -1,6 +1,14 @@
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_VERSION: u32 = 1;
+/// Core protocol version.
+///
+/// Bumped to 2 in Phase 15: `CoreEvent::PluginUiEffect` now carries a
+/// typed [`crate::ui::UiEffectEnvelope`] (with explicit source) rather
+/// than flat fields, making plugin UI transport frontend-neutral and
+/// uniformly validated across the bus, event log, and remote replay
+/// path. Old clients that ignore unknown variants remain
+/// forward-compatible.
+pub const PROTOCOL_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RequestEnvelope<T> {
@@ -409,11 +417,14 @@ pub enum CoreEvent {
     },
     /// A plugin produced a UI effect (dialog, toast, panel, status item,
     /// etc.) through a lifecycle hook or session-scoped command.
+    ///
+    /// Phase 15: the effect is carried inside a typed
+    /// [`crate::ui::UiEffectEnvelope`] so the origin (Plugin/Core/Tui),
+    /// session, and invocation are all encoded uniformly. This makes
+    /// ownership checks and capability gating deterministic across the
+    /// bus, event log, and remote replay path.
     PluginUiEffect {
-        session_id: Option<String>,
-        plugin_id: String,
-        invocation_id: Option<String>,
-        effect: crate::ui::UiEffect,
+        envelope: crate::ui::UiEffectEnvelope,
     },
     Error {
         code: String,
@@ -428,7 +439,7 @@ mod tests {
 
     #[test]
     fn protocol_version_is_set() {
-        assert_eq!(PROTOCOL_VERSION, 1);
+        assert_eq!(PROTOCOL_VERSION, 2);
     }
 
     #[test]
@@ -558,16 +569,20 @@ mod tests {
             },
         };
         let env = EventEnvelope {
-            protocol_version: 1,
+            protocol_version: PROTOCOL_VERSION,
             event_seq: 10,
             timestamp_ms: 100,
             session_id: Some("s1".into()),
             turn_id: None,
             payload: CoreEvent::PluginUiEffect {
-                session_id: Some("s1".into()),
-                plugin_id: "my-plugin".into(),
-                invocation_id: Some("inv-1".into()),
-                effect,
+                envelope: crate::ui::UiEffectEnvelope {
+                    session_id: Some("s1".into()),
+                    source: crate::ui::UiEffectSource::Plugin {
+                        plugin_id: "my-plugin".into(),
+                    },
+                    invocation_id: Some("inv-1".into()),
+                    effect,
+                },
             },
         };
         let json = serde_json::to_string(&env).unwrap();
@@ -575,15 +590,53 @@ mod tests {
         assert!(json.contains("my-plugin"));
         let back: EventEnvelope<CoreEvent> = serde_json::from_str(&json).unwrap();
         match back.payload {
-            CoreEvent::PluginUiEffect {
-                plugin_id,
-                invocation_id,
-                effect,
-                ..
-            } => {
-                assert_eq!(plugin_id, "my-plugin");
-                assert_eq!(invocation_id.as_deref(), Some("inv-1"));
-                assert!(matches!(effect, UiEffect::ShowToast { .. }));
+            CoreEvent::PluginUiEffect { envelope } => {
+                assert_eq!(
+                    envelope.source,
+                    crate::ui::UiEffectSource::Plugin {
+                        plugin_id: "my-plugin".into(),
+                    }
+                );
+                assert_eq!(envelope.invocation_id.as_deref(), Some("inv-1"));
+                assert_eq!(envelope.session_id.as_deref(), Some("s1"));
+                assert!(matches!(envelope.effect, UiEffect::ShowToast { .. }));
+            }
+            other => panic!("expected PluginUiEffect, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn core_event_plugin_ui_effect_with_core_source() {
+        let env = EventEnvelope {
+            protocol_version: PROTOCOL_VERSION,
+            event_seq: 11,
+            timestamp_ms: 101,
+            session_id: None,
+            turn_id: None,
+            payload: CoreEvent::PluginUiEffect {
+                envelope: crate::ui::UiEffectEnvelope {
+                    session_id: None,
+                    source: crate::ui::UiEffectSource::Core,
+                    invocation_id: None,
+                    effect: crate::ui::UiEffect::EmitChat {
+                        block: crate::ui::ChatBlock {
+                            format: crate::ui::ChatFormat::Plain,
+                            content: "core says hi".into(),
+                        },
+                    },
+                },
+            },
+        };
+        let json = serde_json::to_string(&env).unwrap();
+        assert!(json.contains("core"));
+        let back: EventEnvelope<CoreEvent> = serde_json::from_str(&json).unwrap();
+        match back.payload {
+            CoreEvent::PluginUiEffect { envelope } => {
+                assert_eq!(envelope.source, crate::ui::UiEffectSource::Core);
+                assert!(matches!(
+                    envelope.effect,
+                    crate::ui::UiEffect::EmitChat { .. }
+                ));
             }
             other => panic!("expected PluginUiEffect, got {:?}", other),
         }

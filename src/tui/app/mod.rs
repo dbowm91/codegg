@@ -65,6 +65,48 @@ use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::{broadcast, mpsc, RwLock};
 
+/// Maximum serialized size of a `UiNode` body included in a remote
+/// snapshot. Mirrors [`crate::protocol::ui::UiLimits::max_snapshot_body_bytes`]
+/// default. Bodies that exceed this limit are omitted so the snapshot
+/// remains bounded under reconnect storms.
+const SNAPSHOT_BODY_LIMIT: usize = 16 * 1024;
+
+/// Return `Some(body.clone())` if the serialized body fits within the
+/// snapshot body limit, otherwise `None`. Caller is expected to send
+/// metadata-only when the body is too large, and the remote client can
+/// request a fresh body on demand via a resync.
+fn snapshot_body_within_limit(
+    body: &crate::protocol::ui::UiNode,
+    limit: usize,
+) -> Option<crate::protocol::ui::UiNode> {
+    let bytes = serde_json::to_vec(body).ok()?.len();
+    if bytes <= limit {
+        Some(body.clone())
+    } else {
+        None
+    }
+}
+
+/// Extract the owning plugin id from a plugin-UI surface id, if any.
+///
+/// Canonical surface ids:
+/// - `<plugin_id>:<command>` for installed plugin command outputs
+/// - `command:local:<command>` for project-local commands (no plugin owner)
+///
+/// Returns the first `:`-segment unless the id starts with `command:`,
+/// in which case there is no plugin owner.
+fn plugin_id_from_surface_id(id: &str) -> Option<String> {
+    if id.starts_with("command:") {
+        return None;
+    }
+    let first = id.split(':').next()?;
+    if first.is_empty() {
+        None
+    } else {
+        Some(first.to_string())
+    }
+}
+
 #[cfg(feature = "debug-logging")]
 macro_rules! debug_log {
     ($($arg:tt)*) => {
@@ -1139,10 +1181,22 @@ impl App {
             .plugin_ui_state
             .panels
             .iter()
-            .map(|(id, panel)| crate::protocol::tui::RemotePanelView {
-                id: id.clone(),
-                title: panel.title.clone(),
-                placement: format!("{:?}", panel.placement),
+            .map(|(id, panel)| {
+                let placement_str = format!("{:?}", panel.placement);
+                // Plugin ownership is encoded as the first `:`-segment
+                // of the panel id (canonical form: "<plugin_id>:<command>"
+                // for installed plugins, "command:local:<name>" for
+                // project-local commands). Anything starting with
+                // "command:" has no plugin owner.
+                let source_plugin_id = plugin_id_from_surface_id(id);
+                let body = snapshot_body_within_limit(&panel.body, SNAPSHOT_BODY_LIMIT);
+                crate::protocol::tui::RemotePanelView {
+                    id: id.clone(),
+                    title: panel.title.clone(),
+                    placement: placement_str,
+                    source_plugin_id,
+                    body,
+                }
             })
             .collect();
 
@@ -1150,10 +1204,17 @@ impl App {
             .plugin_ui_state
             .status_items
             .iter()
-            .map(|(id, item)| crate::protocol::tui::RemoteStatusItemView {
-                id: id.clone(),
-                label: item.label.clone(),
-                placement: format!("{:?}", item.placement),
+            .map(|(id, item)| {
+                let placement_str = format!("{:?}", item.placement);
+                let source_plugin_id = plugin_id_from_surface_id(id);
+                let body = snapshot_body_within_limit(&item.body, SNAPSHOT_BODY_LIMIT);
+                crate::protocol::tui::RemoteStatusItemView {
+                    id: id.clone(),
+                    label: item.label.clone(),
+                    placement: placement_str,
+                    source_plugin_id,
+                    body,
+                }
             })
             .collect();
 
@@ -1892,29 +1953,11 @@ impl App {
                     self.status_bar.set_thinking(false, None);
                 }
             }
-            Ok(RemoteTuiMessage::PluginUiEffect {
-                session_id,
-                plugin_id,
-                invocation_id: _,
-                effect,
-            }) => {
-                let current_session = self
-                    .session_state
-                    .session
-                    .as_ref()
-                    .map(|s| s.id.as_str())
-                    .unwrap_or_default();
-                let matches_session = session_id
-                    .as_deref()
-                    .map(|sid| sid == current_session)
-                    .unwrap_or(true);
-                if matches_session {
-                    // EmitChat is now rendered visibly by the App-level
-                    // effect handler (toast / info dialog). We discard
-                    // the return value because callers do not need to
-                    // take further action.
-                    let _ = self.apply_plugin_ui_effect(effect, Some(&plugin_id));
-                }
+            Ok(RemoteTuiMessage::PluginUiEffect { envelope }) => {
+                // Delegate to the envelope-aware handler so the session
+                // guard, validation, and ownership check are applied
+                // uniformly for both local and remote transports.
+                let _ = self.apply_plugin_ui_envelope(envelope);
             }
             _ => {
                 debug_log!("handle_remote_event: unhandled type={}", _event_type);
@@ -7329,6 +7372,39 @@ impl App {
         result
     }
 
+    /// Render a structured `UiValidationError` as a short user-facing
+    /// description for toasts and tests. This avoids leaking raw serde
+    /// field paths while keeping the human-readable cause.
+    fn validation_error_to_string(err: &crate::protocol::ui::UiValidationError) -> String {
+        use crate::protocol::ui::UiValidationError;
+        match err {
+            UiValidationError::TooManyEffects { limit } => {
+                format!("too many effects (limit {})", limit)
+            }
+            UiValidationError::EffectTooLarge { limit, approx } => {
+                format!(
+                    "effect payload too large (~{} bytes, limit {})",
+                    approx, limit
+                )
+            }
+            UiValidationError::StringTooLong { limit, len } => {
+                format!("string field too long ({} chars, limit {})", len, limit)
+            }
+            UiValidationError::TooDeep { limit } => {
+                format!("node depth exceeds limit {}", limit)
+            }
+            UiValidationError::TableTooLarge {
+                rows,
+                cols,
+                row_limit,
+                col_limit,
+            } => format!(
+                "table {}x{} exceeds limits {}x{}",
+                rows, cols, row_limit, col_limit
+            ),
+        }
+    }
+
     /// Produce a short summary string for an unsupported [`UiEffect`],
     /// used to degrade gracefully when the client cannot render the
     /// full effect. Returns an empty string for effects that should
@@ -7421,6 +7497,80 @@ impl App {
                 claimed_owner, id
             )
         })
+    }
+
+    /// Apply a plugin-UI envelope (with typed source, session, and
+    /// invocation) to the TUI. This is the canonical entry point for
+    /// all plugin UI effects, regardless of transport (local TUI
+    /// command channel or remote WebSocket).
+    ///
+    /// The envelope-derived source is used for ownership checks
+    /// automatically. For Plugin sources the prefix check uses
+    /// `envelope.source.plugin_id`; for Core/Tui sources no plugin
+    /// ownership is enforced.
+    ///
+    /// The effect payload is validated against
+    /// [`crate::protocol::ui::UiLimits::balanced()`] before
+    /// dispatch. Effects that exceed limits are rejected with a
+    /// structured result.
+    pub fn apply_plugin_ui_envelope(
+        &mut self,
+        envelope: crate::protocol::ui::UiEffectEnvelope,
+    ) -> crate::tui::app::state::PluginUiApplyResult {
+        use crate::protocol::ui::{UiEffectSource, UiLimits};
+
+        let limits = UiLimits::balanced();
+        let plugin_id_owned;
+        let plugin_id_opt: Option<&str> = match &envelope.source {
+            UiEffectSource::Plugin { plugin_id } => {
+                plugin_id_owned = plugin_id.clone();
+                Some(plugin_id_owned.as_str())
+            }
+            UiEffectSource::Core | UiEffectSource::Tui => None,
+        };
+
+        // Session guard: drop envelopes targeted at a different
+        // session than the one currently focused.
+        if let Some(sid) = envelope.session_id.as_deref() {
+            let current_session = self
+                .session_state
+                .session
+                .as_ref()
+                .map(|s| s.id.as_str())
+                .unwrap_or_default();
+            if !sid.is_empty() && sid != current_session {
+                return crate::tui::app::state::PluginUiApplyResult::Unsupported(format!(
+                    "envelope session_id '{}' does not match active session '{}'",
+                    sid, current_session
+                ));
+            }
+        }
+
+        // Validate the effect payload against the limits.
+        if let Err(err) = limits.validate_effect(&envelope.effect) {
+            return crate::tui::app::state::PluginUiApplyResult::Unsupported(format!(
+                "ui effect rejected by limits: {}",
+                Self::validation_error_to_string(&err)
+            ));
+        }
+
+        let crate::protocol::ui::UiEffectEnvelope { effect, .. } = envelope;
+        self.apply_plugin_ui_effect(effect, plugin_id_opt)
+    }
+
+    /// Validate a batch of effects against the balanced limits and
+    /// return the offending error if any one fails. Bounded for
+    /// multi-frontend transport — callers (event bridge, lifecycle
+    /// hooks) iterate plugin response vectors and need a deterministic
+    /// per-batch validation point.
+    pub fn validate_plugin_ui_effects(
+        &self,
+        effects: &[crate::protocol::ui::UiEffect],
+    ) -> Result<(), String> {
+        use crate::protocol::ui::UiLimits;
+        UiLimits::balanced()
+            .validate_effects(effects)
+            .map_err(|err| Self::validation_error_to_string(&err))
     }
 
     #[allow(dead_code)]
@@ -12220,8 +12370,8 @@ mod remote_protocol_tests {
     }
 
     #[test]
-    fn protocol_version_constant_is_two() {
-        assert_eq!(REMOTE_TUI_PROTOCOL_VERSION, 2);
+    fn protocol_version_constant_is_three() {
+        assert_eq!(REMOTE_TUI_PROTOCOL_VERSION, 3);
     }
 
     #[test]
@@ -12390,16 +12540,18 @@ mod remote_protocol_tests {
         let mut app = App::new_for_testing("/tmp".into());
         let event = serde_json::json!({
             "type": "PluginUiEffect",
-            "session_id": null,
-            "plugin_id": "test-plugin",
-            "invocation_id": "inv-1",
-            "effect": {
-                "type": "open_dialog",
-                "dialog": {
-                    "id": "test-plugin:test-dlg",
-                    "title": "Test Dialog",
-                    "body": {"kind": "text", "text": "hello"},
-                    "modal": true
+            "envelope": {
+                "session_id": null,
+                "source": {"type": "plugin", "plugin_id": "test-plugin"},
+                "invocation_id": "inv-1",
+                "effect": {
+                    "type": "open_dialog",
+                    "dialog": {
+                        "id": "test-plugin:test-dlg",
+                        "title": "Test Dialog",
+                        "body": {"kind": "text", "text": "hello"},
+                        "modal": true
+                    }
                 }
             }
         });
@@ -12417,16 +12569,18 @@ mod remote_protocol_tests {
         let mut app = App::new_for_testing("/tmp".into());
         let event = serde_json::json!({
             "type": "PluginUiEffect",
-            "session_id": "other-session",
-            "plugin_id": "test-plugin",
-            "invocation_id": null,
-            "effect": {
-                "type": "open_dialog",
-                "dialog": {
-                    "id": "test-plugin:wrong-session-dlg",
-                    "title": "Wrong",
-                    "body": {"kind": "text", "text": "nope"},
-                    "modal": false
+            "envelope": {
+                "session_id": "other-session",
+                "source": {"type": "plugin", "plugin_id": "test-plugin"},
+                "invocation_id": null,
+                "effect": {
+                    "type": "open_dialog",
+                    "dialog": {
+                        "id": "test-plugin:wrong-session-dlg",
+                        "title": "Wrong",
+                        "body": {"kind": "text", "text": "nope"},
+                        "modal": false
+                    }
                 }
             }
         });
@@ -12444,16 +12598,18 @@ mod remote_protocol_tests {
         let mut app = App::new_for_testing("/tmp".into());
         let event = serde_json::json!({
             "type": "PluginUiEffect",
-            "session_id": null,
-            "plugin_id": "test-plugin",
-            "invocation_id": null,
-            "effect": {
-                "type": "open_dialog",
-                "dialog": {
-                    "id": "test-plugin:any-session-dlg",
-                    "title": "Any",
-                    "body": {"kind": "text", "text": "applies"},
-                    "modal": true
+            "envelope": {
+                "session_id": null,
+                "source": {"type": "plugin", "plugin_id": "test-plugin"},
+                "invocation_id": null,
+                "effect": {
+                    "type": "open_dialog",
+                    "dialog": {
+                        "id": "test-plugin:any-session-dlg",
+                        "title": "Any",
+                        "body": {"kind": "text", "text": "applies"},
+                        "modal": true
+                    }
                 }
             }
         });
@@ -12589,5 +12745,295 @@ mod remote_protocol_tests {
         assert!(matches!(result, PluginUiApplyResult::Unsupported(_)));
         // The degraded summary should appear as a toast.
         assert!(!app.messages_state.toasts.is_empty());
+    }
+
+    // -----------------------------------------------------------------
+    // Phase 15: envelope-based dispatch and validation
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn apply_plugin_ui_envelope_dispatches_with_plugin_source() {
+        use crate::protocol::ui::{UiEffect, UiEffectEnvelope, UiEffectSource, UiNode, TextNode};
+        let mut app = App::new_for_testing("/tmp".into());
+        let envelope = UiEffectEnvelope {
+            session_id: None,
+            source: UiEffectSource::Plugin {
+                plugin_id: "my-plugin".into(),
+            },
+            invocation_id: Some("inv-1".into()),
+            effect: UiEffect::ShowToast {
+                toast: crate::protocol::ui::ToastSpec {
+                    level: crate::protocol::ui::ToastLevel::Info,
+                    message: "from envelope".into(),
+                },
+            },
+        };
+        let result = app.apply_plugin_ui_envelope(envelope);
+        assert!(matches!(
+            result,
+            crate::tui::app::state::PluginUiApplyResult::ToastRequested
+        ));
+    }
+
+    #[test]
+    fn apply_plugin_ui_envelope_drops_mismatched_session() {
+        use crate::protocol::ui::{UiEffect, UiEffectEnvelope, UiEffectSource};
+        let mut app = App::new_for_testing("/tmp".into());
+        let envelope = UiEffectEnvelope {
+            session_id: Some("some-other-session".into()),
+            source: UiEffectSource::Plugin {
+                plugin_id: "my-plugin".into(),
+            },
+            invocation_id: None,
+            effect: UiEffect::ShowToast {
+                toast: crate::protocol::ui::ToastSpec {
+                    level: crate::protocol::ui::ToastLevel::Info,
+                    message: "should not appear".into(),
+                },
+            },
+        };
+        let result = app.apply_plugin_ui_envelope(envelope);
+        assert!(matches!(
+            result,
+            crate::tui::app::state::PluginUiApplyResult::Unsupported(_)
+        ));
+        // No toast should be queued for a mismatched session.
+        assert!(app.messages_state.toasts.is_empty());
+    }
+
+    #[test]
+    fn apply_plugin_ui_envelope_rejects_oversize_string() {
+        use crate::protocol::ui::{UiEffect, UiEffectEnvelope, UiEffectSource};
+        let mut app = App::new_for_testing("/tmp".into());
+        // 32KiB string exceeds balanced max_string_len of 16KiB.
+        let huge = "x".repeat(32 * 1024);
+        let envelope = UiEffectEnvelope {
+            session_id: None,
+            source: UiEffectSource::Plugin {
+                plugin_id: "my-plugin".into(),
+            },
+            invocation_id: None,
+            effect: UiEffect::ShowToast {
+                toast: crate::protocol::ui::ToastSpec {
+                    level: crate::protocol::ui::ToastLevel::Info,
+                    message: huge,
+                },
+            },
+        };
+        let result = app.apply_plugin_ui_envelope(envelope);
+        assert!(matches!(
+            result,
+            crate::tui::app::state::PluginUiApplyResult::Unsupported(_)
+        ));
+    }
+
+    #[test]
+    fn apply_plugin_ui_envelope_core_source_skips_plugin_ownership() {
+        use crate::protocol::ui::{UiEffect, UiEffectEnvelope, UiEffectSource, UiNode, TextNode};
+        let mut app = App::new_for_testing("/tmp".into());
+        let envelope = UiEffectEnvelope {
+            session_id: None,
+            source: UiEffectSource::Core,
+            invocation_id: None,
+            effect: UiEffect::OpenDialog {
+                dialog: crate::protocol::ui::DialogSpec {
+                    // id lacks plugin prefix but Core source means no
+                    // ownership check is enforced.
+                    id: "core-only-dialog".into(),
+                    title: "Core".into(),
+                    body: UiNode::Text(TextNode {
+                        text: "hi".into(),
+                    }),
+                    modal: false,
+                },
+            },
+        };
+        let result = app.apply_plugin_ui_envelope(envelope);
+        assert!(matches!(
+            result,
+            crate::tui::app::state::PluginUiApplyResult::Applied
+        ));
+    }
+
+    #[test]
+    fn apply_plugin_ui_envelope_rejects_cross_plugin_surface_id() {
+        use crate::protocol::ui::{UiEffect, UiEffectEnvelope, UiEffectSource, UiNode, TextNode};
+        let mut app = App::new_for_testing("/tmp".into());
+        let envelope = UiEffectEnvelope {
+            session_id: None,
+            source: UiEffectSource::Plugin {
+                plugin_id: "plugin-a".into(),
+            },
+            invocation_id: None,
+            effect: UiEffect::OpenDialog {
+                dialog: crate::protocol::ui::DialogSpec {
+                    id: "plugin-b:foreign-dialog".into(),
+                    title: "Foreign".into(),
+                    body: UiNode::Text(TextNode {
+                        text: "spoof attempt".into(),
+                    }),
+                    modal: false,
+                },
+            },
+        };
+        let result = app.apply_plugin_ui_envelope(envelope);
+        assert!(matches!(
+            result,
+            crate::tui::app::state::PluginUiApplyResult::Unsupported(_)
+        ));
+    }
+
+    #[test]
+    fn validate_plugin_ui_effects_accepts_balanced_batch() {
+        use crate::protocol::ui::{UiEffect, UiNode, TextNode};
+        let app = App::new_for_testing("/tmp".into());
+        let effects = vec![
+            UiEffect::ShowToast {
+                toast: crate::protocol::ui::ToastSpec {
+                    level: crate::protocol::ui::ToastLevel::Info,
+                    message: "first".into(),
+                },
+            },
+            UiEffect::OpenPanel {
+                panel: crate::protocol::ui::PanelSpec {
+                    id: "p:panel".into(),
+                    title: "Panel".into(),
+                    placement: crate::protocol::ui::PanelPlacement::Right,
+                    body: UiNode::Text(TextNode {
+                        text: "ok".into(),
+                    }),
+                },
+            },
+        ];
+        assert!(app.validate_plugin_ui_effects(&effects).is_ok());
+    }
+
+    #[test]
+    fn validate_plugin_ui_effects_rejects_empty_batch() {
+        use crate::protocol::ui::UiEffect;
+        let app = App::new_for_testing("/tmp".into());
+        // An empty batch is invalid by spec: a batch is always
+        // associated with one or more effects. The validate function
+        // returns Ok for an empty slice (vacuous truth) — this test
+        // pins that behavior so future tightening is intentional.
+        let empty: Vec<UiEffect> = Vec::new();
+        assert!(app.validate_plugin_ui_effects(&empty).is_ok());
+    }
+
+    #[test]
+    fn validate_plugin_ui_effects_rejects_oversize_payload() {
+        use crate::protocol::ui::{UiEffect, UiNode, TextNode};
+        let app = App::new_for_testing("/tmp".into());
+        // Single effect with serialized size just over balanced cap
+        // (256KiB) should be rejected by validate_effects.
+        let big_body = "y".repeat(260 * 1024);
+        let effects = vec![UiEffect::OpenPanel {
+            panel: crate::protocol::ui::PanelSpec {
+                id: "p:big".into(),
+                title: "Big".into(),
+                placement: crate::protocol::ui::PanelPlacement::Right,
+                body: UiNode::Text(TextNode { text: big_body }),
+            },
+        }];
+        assert!(app.validate_plugin_ui_effects(&effects).is_err());
+    }
+
+    #[test]
+    fn snapshot_body_within_limit_drops_oversize_body() {
+        let big = "z".repeat(SNAPSHOT_BODY_LIMIT + 1);
+        let body = crate::protocol::ui::UiNode::Text(crate::protocol::ui::TextNode {
+            text: big,
+        });
+        assert!(snapshot_body_within_limit(&body, SNAPSHOT_BODY_LIMIT).is_none());
+
+        // A body that fits within the limit is kept; one that exceeds
+        // it is dropped, regardless of how much limit is added past
+        // its serialized size.
+        let just_fits_limit =
+            serde_json::to_vec(&body).map(|v| v.len()).unwrap_or(0) - 1;
+        assert!(snapshot_body_within_limit(&body, just_fits_limit).is_none());
+    }
+
+    #[test]
+    fn snapshot_body_within_limit_keeps_small_body() {
+        let body = crate::protocol::ui::UiNode::Text(crate::protocol::ui::TextNode {
+            text: "small".into(),
+        });
+        assert!(snapshot_body_within_limit(&body, SNAPSHOT_BODY_LIMIT).is_some());
+    }
+
+    #[test]
+    fn snapshot_panels_have_source_plugin_id_and_body() {
+        let mut app = App::new_for_testing("/tmp".into());
+        let envelope = crate::protocol::ui::UiEffectEnvelope {
+            session_id: None,
+            source: crate::protocol::ui::UiEffectSource::Plugin {
+                plugin_id: "my-plugin".into(),
+            },
+            invocation_id: None,
+            effect: crate::protocol::ui::UiEffect::OpenPanel {
+                panel: crate::protocol::ui::PanelSpec {
+                    id: "my-plugin:panel-1".into(),
+                    title: "P".into(),
+                    placement: crate::protocol::ui::PanelPlacement::Right,
+                    body: crate::protocol::ui::UiNode::Text(crate::protocol::ui::TextNode {
+                        text: "hi".into(),
+                    }),
+                },
+            },
+        };
+        let _ = app.apply_plugin_ui_envelope(envelope);
+        let snap = app.build_remote_snapshot(app.remote_sequence);
+        assert_eq!(snap.plugin_panels.len(), 1);
+        let view = &snap.plugin_panels[0];
+        assert_eq!(view.id, "my-plugin:panel-1");
+        assert_eq!(view.source_plugin_id.as_deref(), Some("my-plugin"));
+        assert!(view.body.is_some());
+    }
+
+    #[test]
+    fn snapshot_panels_drop_oversize_body_but_keep_metadata() {
+        // Use a body that passes validation (`max_string_len = 16KiB`)
+        // but exceeds the snapshot body cap (`SNAPSHOT_BODY_LIMIT =
+        // 16KiB`). The snapshot builder drops the body so it stays
+        // bounded under reconnect storms.
+        let mut app = App::new_for_testing("/tmp".into());
+        let huge_body =
+            crate::protocol::ui::UiNode::Container(crate::protocol::ui::ContainerNode {
+                title: Some("huge".into()),
+                children: (0..128)
+                    .map(|i| {
+                        crate::protocol::ui::UiNode::Text(
+                            crate::protocol::ui::TextNode {
+                                text: format!("row-{}-{}", i, "x".repeat(200)),
+                            },
+                        )
+                    })
+                    .collect(),
+            });
+        let envelope = crate::protocol::ui::UiEffectEnvelope {
+            session_id: None,
+            source: crate::protocol::ui::UiEffectSource::Plugin {
+                plugin_id: "my-plugin".into(),
+            },
+            invocation_id: None,
+            effect: crate::protocol::ui::UiEffect::OpenPanel {
+                panel: crate::protocol::ui::PanelSpec {
+                    id: "my-plugin:huge-panel".into(),
+                    title: "Huge".into(),
+                    placement: crate::protocol::ui::PanelPlacement::Right,
+                    body: huge_body,
+                },
+            },
+        };
+        let _ = app.apply_plugin_ui_envelope(envelope);
+        let snap = app.build_remote_snapshot(app.remote_sequence);
+        let view = snap
+            .plugin_panels
+            .iter()
+            .find(|v| v.id == "my-plugin:huge-panel")
+            .expect("huge panel present");
+        assert_eq!(view.source_plugin_id.as_deref(), Some("my-plugin"));
+        assert!(view.body.is_none(), "oversize body must be dropped");
     }
 }

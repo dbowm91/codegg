@@ -997,6 +997,16 @@ new variant returned by the App-level path.
 
 **TUI consumption**: Both local `TuiCommand::PluginUiEffect` and remote `CoreEvent::PluginUiEffect` route through `App::apply_plugin_ui_effect()`, which checks client capabilities before dispatching.
 
+### UI Effect Validation & Durable Snapshots (Phase 15)
+
+**Envelope-based dispatch**: `CoreEvent::PluginUiEffect` and `TuiMessage::PluginUiEffect` carry a typed `UiEffectEnvelope { session_id, source: UiEffectSource, invocation_id, effect }` instead of flat fields. The source is either `Plugin { plugin_id }`, `Core`, or `Tui`; plugin ownership checks derive from the envelope automatically. Wire-shape version: `PROTOCOL_VERSION = 2` (core) and `REMOTE_TUI_PROTOCOL_VERSION = 3` (remote TUI).
+
+**Validation gates**: `codegg_protocol::ui::UiLimits::balanced()` provides conservative caps (`max_effects_per_response = 64`, `max_effect_bytes = 256 KiB`, `max_node_depth = 16`, `max_table_rows = 512`, `max_table_columns = 32`, `max_string_len = 16 KiB`, `max_panels_per_plugin = 32`, `max_status_items_per_plugin = 64`, `max_open_dialogs_global = 8`, `max_snapshot_body_bytes = 16 KiB`). The strict `text_only()` variant is for log-only clients. Validation surfaces errors as `UiValidationError` (`TooManyEffects`, `EffectTooLarge`, `StringTooLong`, `TooDeep`, `TableTooLarge`).
+
+**Canonical entry point**: `App::apply_plugin_ui_envelope(envelope)` is the single dispatch path for both local TUI and remote WebSocket transports. It enforces (in order): session-id guard, `UiLimits::balanced().validate_effect()`, plugin surface-ownership prefix check, then delegates to `App::apply_plugin_ui_effect()`. Batch validation lives on `App::validate_plugin_ui_effects(effects)` and is the validator used by lifecycle hooks and the event bridge.
+
+**Durable plugin surfaces in snapshots**: `RemotePanelView` and `RemoteStatusItemView` gained optional `source_plugin_id` and `body: Option<UiNode>` fields. The remote snapshot builder (`App::build_remote_snapshot`) populates `source_plugin_id` via `plugin_id_from_surface_id(id)` and includes `body` only when its serialized size ≤ `SNAPSHOT_BODY_LIMIT` (16 KiB, mirrors `UiLimits::max_snapshot_body_bytes`). Oversize bodies fall back to metadata-only so reconnect storms cannot bloat the wire format. Legacy snapshots without these fields deserialize cleanly via `#[serde(default, skip_serializing_if = "Option::is_none")]`.
+
 ### Plugin Types (`codegg_protocol::plugin`)
 
 - `PluginManifestDto` — Plugin metadata with runtime spec, capabilities, and permissions
