@@ -303,6 +303,43 @@ Agent-specific instructions or markdown content
 
 ---
 
+## AgentRegistry (Milestone 4)
+
+`AgentRegistry` (`src/agent/registry.rs`) is the central registry that separates declarative agent sources from resolved runtime agents. It provides source provenance tracking and diagnostics.
+
+### Types
+
+- `AgentSpec` — Declarative agent representation for future TOML/MD agents
+- `ResolvedAgent` — An agent with its source stack and diagnostics
+- `AgentSource` / `AgentSourceKind` — Tracks where an agent came from (Builtin, GlobalFile, ProjectFile, ConfigAgent, ConfigMode, Session)
+- `AgentDiagnostic` / `AgentDiagnosticSeverity` — Issues found during resolution (Info, Warning, Error)
+
+### Registry API
+
+- `AgentRegistry::load(config)` — Resolves agents using the same 5-layer order as `resolve_agents()`
+- `get(name)` — Look up a resolved agent by name
+- `list()` — Iterate all resolved agents (deterministic BTreeMap order)
+- `list_visible()` — Non-hidden agents
+- `list_primary()` — Primary or All mode agents (user-selectable)
+- `list_spawnable()` — Subagent or All mode agents (spawnable via `task`)
+- `diagnostics()` — All diagnostics emitted during resolution
+- `source_stack(name)` — Source provenance for a named agent
+- `into_agents()` — Convert to `Vec<Agent>` for backward compatibility
+
+### Resolution Order
+
+1. Compiled generated built-ins (source: `Builtin`)
+2. Global user agent files `~/.config/codegg/agents/*.md` (source: `GlobalFile`)
+3. Project agent files `.codegg/agents/*.md` (source: `ProjectFile`)
+4. Config `agent` overrides (source: `ConfigAgent`)
+5. Config `mode` compatibility overrides (source: `ConfigMode`)
+
+### Compatibility
+
+Existing callers continue using `resolve_agents(config)` and `builtin_agents()`. The registry is additive — new code that needs diagnostics or source provenance should use `AgentRegistry::load(config)`.
+
+---
+
 ## 3. Compaction (`compaction.rs`)
 
 ### ContextTracker

@@ -165,6 +165,7 @@ CI runs on push/PR to dev/main: `agent-assets` → `fmt` → `check` → `clippy
 - **AgentLoop has ~49 fields** at `src/agent/loop.rs:1380`. Many docs claim 15.
 - **AgentLoopFactory** (`src/agent/agent_loop_factory.rs`) is a build-only seam.
 - **CoreRuntimeDeps** (`src/core/runtime_deps.rs`): Bundles pool, memory_store, legacy_agent, turn_runtime. Use `with_deps()` for new code.
+- **AgentRegistry** (`src/agent/registry.rs`): Central registry separating declarative sources from resolved runtime agents. Tracks source provenance (Builtin, GlobalFile, ProjectFile, ConfigAgent, ConfigMode, Session) and emits diagnostics. `AgentRegistry::load(config)` replicates the 5-layer resolution order from `resolve_agents()`. `into_agents()` provides backward compatibility. New code should prefer `AgentRegistry` over `resolve_agents()`.
 
 ### LSP
 

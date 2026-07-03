@@ -16,6 +16,12 @@ tags:
 
 This skill covers integrating the `AgentLoop` with the TUI's event loop using the GlobalEventBus for proper event-driven architecture.
 
+## AgentRegistry
+
+`AgentRegistry` (`src/agent/registry.rs`) provides centralized agent resolution with source provenance tracking. Use `AgentRegistry::load(config)` when you need diagnostics or source stacks. For simple `Vec<Agent>` consumption, `resolve_agents(config)` remains available.
+
+Key types: `ResolvedAgent`, `AgentSource`, `AgentSourceKind`, `AgentDiagnostic`.
+
 ## Key Components
 
 ### AgentLoop (`src/agent/loop.rs`)

@@ -21,6 +21,7 @@ pub mod task_tool_runtime;
 pub mod team;
 pub mod turn_runtime;
 pub mod worker;
+pub mod registry;
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -327,7 +328,7 @@ fn agent_from_config(key: &str, cfg: &AgentConfig) -> Result<Agent, AgentError> 
     })
 }
 
-fn parse_mode(s: &str) -> Result<AgentMode, AgentError> {
+pub(crate) fn parse_mode(s: &str) -> Result<AgentMode, AgentError> {
     match s {
         "primary" => Ok(AgentMode::Primary),
         "subagent" => Ok(AgentMode::Subagent),
