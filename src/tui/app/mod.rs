@@ -4599,8 +4599,156 @@ impl App {
                 self.open_dialog(Dialog::Model);
             }
             "/agent" => {
-                self.ui_state.command_mode = false;
-                self.open_dialog(Dialog::Agent);
+                let query = self.dialog_state.command_palette.query.trim().to_string();
+                let name = query
+                    .strip_prefix("agent")
+                    .map(|s| s.trim())
+                    .unwrap_or("")
+                    .to_string();
+                if name.is_empty() {
+                    // No argument: open the agent selection dialog
+                    self.ui_state.command_mode = false;
+                    self.open_dialog(Dialog::Agent);
+                    return;
+                }
+                match crate::tui::commands::agents::validate_agent_select(
+                    &name,
+                    &self.agent_state,
+                ) {
+                    Ok(idx) => {
+                        self.agent_state.current_agent = idx;
+                        let agent = &self.agent_state.agents[idx];
+                        let model = self.agent_state.current_model.clone();
+                        self.messages_state.toasts.info(&format!(
+                            "selected agent: {} (model: {})",
+                            agent.name, model
+                        ));
+                    }
+                    Err(e) => {
+                        self.messages_state.toasts.error(&e);
+                    }
+                }
+            }
+            "/agents" => {
+                let query = self.dialog_state.command_palette.query.trim().to_string();
+                // Strip the leading "/agents" to get subcommand args
+                let args = query
+                    .strip_prefix("agents")
+                    .map(|s| s.trim())
+                    .unwrap_or("")
+                    .to_string();
+
+                if args.is_empty() {
+                    // Bare `/agents`: list visible agents
+                    let lines = crate::tui::commands::agents::format_agents_list(
+                        &self.agent_state,
+                        false,
+                    );
+                    self.show_short_or_info(
+                        crate::tui::components::dialogs::info::InfoType::Agents,
+                        lines,
+                    );
+                    return;
+                }
+
+                let parts: Vec<&str> = args.splitn(2, ' ').collect();
+                let subcmd = parts[0];
+                let subargs = parts.get(1).copied().unwrap_or("").trim();
+
+                match subcmd {
+                    "--all" | "-a" => {
+                        let lines = crate::tui::commands::agents::format_agents_list(
+                            &self.agent_state,
+                            true,
+                        );
+                        self.show_short_or_info(
+                            crate::tui::components::dialogs::info::InfoType::Agents,
+                            lines,
+                        );
+                    }
+                    "show" => {
+                        if subargs.is_empty() {
+                            self.messages_state.toasts.warning(
+                                "Usage: /agents show <name>",
+                            );
+                            return;
+                        }
+                        let lines = crate::tui::commands::agents::format_agent_show(subargs);
+                        self.show_short_or_info(
+                            crate::tui::components::dialogs::info::InfoType::Agents,
+                            lines,
+                        );
+                    }
+                    "diff" => {
+                        if subargs.is_empty() {
+                            self.messages_state
+                                .toasts
+                                .warning("Usage: /agents diff <name>");
+                            return;
+                        }
+                        let lines = crate::tui::commands::agents::format_agent_diff(subargs);
+                        self.show_short_or_info(
+                            crate::tui::components::dialogs::info::InfoType::Agents,
+                            lines,
+                        );
+                    }
+                    "validate" => {
+                        let lines = crate::tui::commands::agents::format_agents_validate();
+                        self.show_short_or_info(
+                            crate::tui::components::dialogs::info::InfoType::Agents,
+                            lines,
+                        );
+                    }
+                    "reload" => {
+                        let (new_agents, diags) =
+                            crate::tui::commands::agents::reload_agents();
+                        if !new_agents.is_empty() {
+                            // Preserve current agent if still present
+                            let current_name = self
+                                .agent_state
+                                .agents
+                                .get(self.agent_state.current_agent)
+                                .map(|a| a.name.clone());
+                            self.agent_state.agents = new_agents;
+                            if let Some(ref name) = current_name {
+                                if let Some(idx) = self
+                                    .agent_state
+                                    .agents
+                                    .iter()
+                                    .position(|a| a.name == *name)
+                                {
+                                    self.agent_state.current_agent = idx;
+                                } else {
+                                    // Current agent disappeared, fall back to default
+                                    if let Some(idx) = self
+                                        .agent_state
+                                        .agents
+                                        .iter()
+                                        .position(|a| a.name == "build")
+                                    {
+                                        self.agent_state.current_agent = idx;
+                                    } else {
+                                        self.agent_state.current_agent = 0;
+                                    }
+                                }
+                            }
+                        }
+                        self.show_short_or_info(
+                            crate::tui::components::dialogs::info::InfoType::Agents,
+                            diags,
+                        );
+                    }
+                    _ => {
+                        // Treat unknown subcommand as agent name for convenience
+                        // e.g., `/agents build` shows that agent
+                        let lines =
+                            crate::tui::commands::agents::format_agent_show(subcmd);
+                        self.show_short_or_info(
+                            crate::tui::components::dialogs::info::InfoType::Agents,
+                            lines,
+                        );
+                    }
+                }
             }
             "/clear" | "/new" => {
                 self.clear_session();

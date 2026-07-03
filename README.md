@@ -201,7 +201,13 @@ The TUI supports inline slash commands for quick actions.
 | `/help` | Show help dialog |
 | `/tree` | Open file tree dialog |
 | `/model [name]` | Open model selection or switch to model |
-| `/agent` | Open agent selection dialog |
+| `/agent [name]` | Open agent selection dialog or switch to named agent |
+| `/agents` | List visible agents |
+| `/agents --all` | List all agents including hidden |
+| `/agents show <name>` | Show agent details and configuration |
+| `/agents diff <name>` | Compare agent against built-in base |
+| `/agents validate` | Validate agent configuration and diagnostics |
+| `/agents reload` | Reload agents from files and config |
 | `/clear` or `/new` | Clear session and start new one |
 | `/compact` | Trigger manual context compaction |
 | `/connect` | Open API key connection dialog |
@@ -597,6 +603,98 @@ Define subagents in your config file:
 ```
 
 Subagents support up to 5 concurrent tasks.
+
+## Agent Customization
+
+Define custom agents via TOML or Markdown files. Place them in `~/.config/codegg/agents/` (global) or `.codegg/agents/` (project-specific).
+
+### Quick Start
+
+Create `.codegg/agents/code-reviewer.toml`:
+
+```toml
+[agent]
+name = "code-reviewer"
+description = "Focused code review agent"
+mode = "Subagent"
+color = "yellow"
+
+[agent.permissions]
+read = "allow"
+grep = "allow"
+write = "deny"
+edit = "deny"
+bash = "ask"
+```
+
+Then use it: `/agent code-reviewer` to switch, or `@code-reviewer review this code` to spawn as subagent.
+
+### Commands
+
+| Command | Description |
+|---------|-------------|
+| `/agents` | List visible agents |
+| `/agents --all` | List all agents including hidden |
+| `/agents show <name>` | Show agent details, permissions, source |
+| `/agents diff <name>` | Compare against built-in base |
+| `/agents validate` | Check agent configuration |
+| `/agents reload` | Reload agents from disk |
+| `/agent <name>` | Switch to a different agent |
+
+### TOML Format
+
+```toml
+[agent]
+name = "my-agent"
+mode = "Subagent"          # Primary, Subagent, or All
+description = "What this agent does"
+model = "anthropic/claude-sonnet-4-20250514"  # optional override
+color = "cyan"             # optional
+
+[agent.permissions]
+read = "allow"
+write = "deny"
+bash = "ask"
+
+[agent.bash_permission]    # fine-grained bash control
+action = "ask"
+allow_patterns = ["git diff*", "cargo test*"]
+deny_patterns = ["rm *", "sudo *"]
+
+[agent.path_permission]    # fine-grained file access control
+allow = ["src/**", "tests/**"]
+deny = [".git/**", "target/**"]
+```
+
+### Markdown Format
+
+```markdown
+---
+name: my-agent
+mode: subagent
+description: A custom agent
+---
+
+You are a helpful assistant focused on code quality.
+```
+
+### Overlay Flags
+
+Control how file-based agents interact with built-in agents:
+
+- `replace = false` (default): Merge mode — overlay fields applied on top of base
+- `replace = true`: Full replacement — overlay completely replaces the base agent
+- `disable = true`: Remove agent from resolution entirely
+
+### Permission Actions
+
+| Action | Behavior |
+|--------|----------|
+| `allow` | Execute without asking |
+| `ask` | Prompt for user confirmation |
+| `deny` | Block execution entirely |
+
+See `examples/agents/` for complete examples including code-reviewer, test-writer, docs-writer, and custom build overrides.
 
 ## Server Mode
 

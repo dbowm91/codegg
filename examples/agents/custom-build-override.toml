@@ -1,0 +1,20 @@
+# Custom Build Agent Override
+#
+# Example: Override the built-in 'build' agent with stricter permissions.
+# Place this in .codegg/agents/ to override for a specific project.
+#
+# The overlay merge system will apply your permission overrides on top of
+# the built-in build agent. Fields not specified here are preserved from
+# the original.
+#
+# To FULLY replace the built-in instead of merging, add: replace = true
+
+name = "build"
+description = "Custom build agent with restricted permissions for this project"
+mode = "Primary"
+
+[permission]
+bash = "ask"
+commit = "ask"
+write = "ask"
+edit = "ask"

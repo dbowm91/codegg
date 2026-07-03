@@ -1,0 +1,37 @@
+# Test Writer Agent
+#
+# Specialized in writing and maintaining tests. Has write access to test files only.
+# Uses bash_permission patterns to restrict file writes.
+#
+[agent]
+name = "test-writer"
+role = "test_writer"
+description = "Test writer. Creates and maintains unit tests, integration tests, and test fixtures."
+mode = "Subagent"
+color = "green"
+
+[agent.permissions]
+read = "allow"
+grep = "allow"
+glob = "allow"
+list = "allow"
+write = "allow"
+edit = "allow"
+apply_patch = "allow"
+multiedit = "allow"
+bash = "ask"
+commit = "ask"
+replace = "deny"
+terminal = "deny"
+image = "deny"
+lsp = "allow"
+task = "ask"
+todowrite = "deny"
+todoread = "deny"
+plan_enter = "deny"
+plan_exit = "deny"
+
+[agent.bash_permission]
+action = "ask"
+allow_patterns = ["cargo test*", "cargo check*", "cargo clippy*", "pytest*", "go test*", "npm test*", "npx jest*"]
+deny_patterns = ["rm *", "sudo *", "curl *", "wget *"]

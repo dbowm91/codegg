@@ -146,8 +146,10 @@ impl CommandRegistry {
                 .with_description("Refresh model list"),
             Command::new("/variants", CommandCategory::System, None)
                 .with_description("Switch model variant"),
-            Command::new("/agents", CommandCategory::Agent, Some(Dialog::Agent))
-                .with_description("Switch agent"),
+            Command::new("/agents", CommandCategory::Agent, None)
+                .with_description("Manage agents (/agents, /agents --all, show <name>, diff <name>, validate, reload)"),
+            Command::new("/agent", CommandCategory::Agent, None)
+                .with_description("Select active agent (/agent <name>)"),
             Command::new("/mcps", CommandCategory::System, Some(Dialog::Mcp))
                 .with_description("Manage MCP servers"),
             Command::new("/workspaces", CommandCategory::System, None)
@@ -510,7 +512,7 @@ mod tests {
 
     #[test]
     fn built_in_command_count_matches_release_docs() {
-        assert_eq!(CommandRegistry::built_in_commands().len(), 103);
+        assert_eq!(CommandRegistry::built_in_commands().len(), 104);
     }
 
     #[test]

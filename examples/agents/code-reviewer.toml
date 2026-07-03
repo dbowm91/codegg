@@ -1,0 +1,32 @@
+# Code Reviewer Agent
+#
+# A focused code review agent. Use it via @code-reviewer or switch with /agent code-reviewer.
+# Place this in ~/.config/codegg/agents/ for global use or .codegg/agents/ for project use.
+#
+[agent]
+name = "code-reviewer"
+role = "code_reviewer"
+description = "Focused code reviewer. Checks for bugs, security issues, performance problems, and style violations."
+mode = "Subagent"
+color = "yellow"
+
+[agent.permissions]
+read = "allow"
+grep = "allow"
+glob = "allow"
+list = "allow"
+lsp = "allow"
+task = "ask"
+bash = "ask"
+write = "deny"
+edit = "deny"
+apply_patch = "deny"
+replace = "deny"
+multiedit = "deny"
+commit = "deny"
+image = "deny"
+terminal = "deny"
+todowrite = "deny"
+todoread = "deny"
+plan_enter = "deny"
+plan_exit = "deny"

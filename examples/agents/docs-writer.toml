@@ -1,0 +1,36 @@
+# Documentation Writer Agent
+#
+# Specialized in writing and maintaining documentation, READMEs, and doc comments.
+# Has write access but denied destructive operations.
+#
+[agent]
+name = "docs-writer"
+role = "documentation_writer"
+description = "Documentation writer. Creates and maintains READMEs, doc comments, architecture docs, and changelogs."
+mode = "Subagent"
+color = "cyan"
+
+[agent.permissions]
+read = "allow"
+grep = "allow"
+glob = "allow"
+list = "allow"
+write = "allow"
+edit = "allow"
+apply_patch = "allow"
+multiedit = "allow"
+lsp = "allow"
+bash = "ask"
+commit = "ask"
+replace = "deny"
+terminal = "deny"
+image = "deny"
+task = "ask"
+todowrite = "deny"
+todoread = "deny"
+plan_enter = "deny"
+plan_exit = "deny"
+
+[agent.path_permission]
+allow = ["docs/**", "*.md", "README*", "CHANGELOG*", "LICENSE*", ".github/**"]
+deny = [".git/**", "target/**", "node_modules/**"]

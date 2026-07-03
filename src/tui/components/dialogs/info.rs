@@ -21,6 +21,7 @@ pub enum InfoType {
     GoalShow,
     MemoryResults,
     DoctorReport,
+    Agents,
 }
 
 #[derive(Clone)]
@@ -65,6 +66,7 @@ impl InfoDialog {
             InfoType::GoalShow => " Goal ",
             InfoType::MemoryResults => " Memory ",
             InfoType::DoctorReport => " Doctor ",
+            InfoType::Agents => " Agents ",
         }
     }
 
@@ -80,6 +82,7 @@ impl InfoDialog {
             InfoType::GoalShow => DialogType::GoalShow,
             InfoType::MemoryResults => DialogType::MemoryResults,
             InfoType::DoctorReport => DialogType::DoctorReport,
+            InfoType::Agents => DialogType::Agent,
         }
     }
 
