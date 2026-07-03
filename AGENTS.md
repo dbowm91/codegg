@@ -110,16 +110,19 @@ cargo build --target wasm32-unknown-unknown \
 Built-in agent definitions live in `assets/agents/*.toml` with prompt text in `assets/prompts/agents/*.md`.
 
 ```bash
-python3 scripts/generate_builtin_agents.py   # regenerate src/agent/builtins/generated.rs
-python3 scripts/check_builtin_agents.py      # verify TOML matches generated.rs
+python3 scripts/generate_builtin_agents.py              # regenerate src/agent/builtins/generated.rs
+python3 scripts/generate_builtin_agents.py --check      # staleness + schema validation (CI mode)
+python3 scripts/check_builtin_agents.py                 # verify TOML matches generated.rs
 ```
 
 Generated Rust is checked in at `src/agent/builtins/`. **Do not edit generated files directly.**
 The `builtin_agents()` function in `src/agent/mod.rs` delegates to the generated code.
 
+Schema validation (`--check`) enforces: valid `mode` (Primary/Subagent/All), required `name`/`description`, prompt file exists when `prompt_file` set, valid permission actions (allow/ask/deny), no unknown keys, no duplicate names, and deterministic output.
+
 ## CI Pipeline
 
-CI runs on push/PR to dev/main: `fmt` → `check` → `clippy` → `test` → `plugin-focused` → `examples`. The `plugin-focused` job runs plugin install/management/registry/TUI tests and the core boundary check. `examples` tests SDKs and WASM builds. Local equivalent: `scripts/validate_plugin_ui.sh`.
+CI runs on push/PR to dev/main: `agent-assets` → `fmt` → `check` → `clippy` → `test` → `plugin-focused` → `examples`. The `agent-assets` job validates built-in agent TOML schemas and checks for stale generated output. The `plugin-focused` job runs plugin install/management/registry/TUI tests and the core boundary check. `examples` tests SDKs and WASM builds. Local equivalent: `scripts/validate_plugin_ui.sh`.
 
 ## Critical Gotchas
 

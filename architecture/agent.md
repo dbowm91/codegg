@@ -266,6 +266,12 @@ companion prompt markdown in `assets/prompts/agents/`. A Python generator
 `src/agent/builtins/generated.rs`. Run `scripts/check_builtin_agents.py` to
 verify the TOML sources match the generated Rust output.
 
+The generator supports `--check` mode for CI: validates schema (valid mode,
+required name/description, permission actions, prompt file existence, no unknown
+keys, no duplicate names) and verifies the checked-in generated output matches
+a fresh generation (exits non-zero on drift). Determinism is verified by
+generating twice and comparing.
+
 The `builtin_agents()` function in `src/agent/mod.rs` delegates to the
 generated `builtins::generated_builtin_agents()`.
 

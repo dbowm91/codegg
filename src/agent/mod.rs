@@ -928,4 +928,171 @@ Some body content
         assert!(prompt.contains("websearch"), "prompt should mention websearch");
         assert!(prompt.contains("cite"), "prompt should mention citation");
     }
+
+    // --- Milestone 3: CI and built-in validation hardening ---
+
+    #[test]
+    fn test_builtin_agents_deterministic() {
+        let a = builtin_agents();
+        let b = builtin_agents();
+        assert_eq!(a.len(), b.len());
+        for (aa, bb) in a.iter().zip(b.iter()) {
+            assert_eq!(aa.name, bb.name);
+            assert_eq!(aa.mode, bb.mode);
+            assert_eq!(aa.hidden, bb.hidden);
+            assert_eq!(aa.description, bb.description);
+            assert_eq!(aa.permissions, bb.permissions);
+            assert_eq!(aa.system_prompt, bb.system_prompt);
+            assert_eq!(aa.role, bb.role);
+            assert_eq!(aa.color, bb.color);
+            assert_eq!(aa.temperature, bb.temperature);
+            assert_eq!(aa.steps, bb.steps);
+        }
+    }
+
+    #[test]
+    fn test_builtin_no_duplicate_names() {
+        let agents = builtin_agents();
+        let mut names: Vec<&str> = agents.iter().map(|a| a.name.as_str()).collect();
+        let before = names.len();
+        names.dedup();
+        assert_eq!(before, names.len(), "duplicate agent names detected");
+    }
+
+    #[test]
+    fn test_builtin_all_agents_have_nonempty_name() {
+        for agent in builtin_agents() {
+            assert!(!agent.name.is_empty(), "agent has empty name");
+        }
+    }
+
+    #[test]
+    fn test_builtin_all_agents_have_valid_mode() {
+        for agent in builtin_agents() {
+            assert!(
+                matches!(agent.mode, AgentMode::Primary | AgentMode::Subagent | AgentMode::All),
+                "agent '{}' has unexpected mode: {:?}",
+                agent.name,
+                agent.mode
+            );
+        }
+    }
+
+    #[test]
+    fn test_builtin_all_permission_values_are_valid() {
+        let valid = ["allow", "ask", "deny"];
+        for agent in builtin_agents() {
+            for (tool, action) in &agent.permissions {
+                assert!(
+                    valid.contains(&action.as_str()),
+                    "agent '{}': tool '{}' has invalid permission '{}'",
+                    agent.name,
+                    tool,
+                    action
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_builtin_primary_agents_are_visible() {
+        let agents = builtin_agents();
+        for agent in &agents {
+            if agent.mode == AgentMode::Primary {
+                assert!(
+                    !agent.hidden,
+                    "primary agent '{}' should not be hidden",
+                    agent.name
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_builtin_all_mode_agents_are_visible() {
+        let agents = builtin_agents();
+        for agent in &agents {
+            if agent.mode == AgentMode::All {
+                assert!(
+                    !agent.hidden,
+                    "All-mode agent '{}' should not be hidden",
+                    agent.name
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_builtin_hidden_agents_have_no_prompt_except_compaction() {
+        let agents = builtin_agents();
+        for agent in &agents {
+            if agent.hidden && agent.name != "compaction" {
+                assert!(
+                    agent.system_prompt.is_none(),
+                    "hidden agent '{}' should not have a prompt",
+                    agent.name
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_builtin_visible_agents_have_descriptions() {
+        let agents = builtin_agents();
+        for agent in &agents {
+            if !agent.hidden {
+                assert!(
+                    !agent.description.is_empty(),
+                    "visible agent '{}' has empty description",
+                    agent.name
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_builtin_security_review_deny_list() {
+        let agents = builtin_agents();
+        let sr = agents.iter().find(|a| a.name == "security-review").unwrap();
+        for tool in &["write", "edit", "apply_patch", "replace", "multiedit", "commit", "image"] {
+            assert_eq!(
+                sr.permissions.get(*tool),
+                Some(&"deny".to_string()),
+                "security-review should deny {tool}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_builtin_plan_and_explore_deny_write() {
+        let agents = builtin_agents();
+        for name in &["plan", "explore"] {
+            let agent = agents.iter().find(|a| a.name == *name).unwrap();
+            assert_eq!(
+                agent.permissions.get("write"),
+                Some(&"deny".to_string()),
+                "{name} should deny write"
+            );
+            assert_eq!(
+                agent.permissions.get("edit"),
+                Some(&"deny".to_string()),
+                "{name} should deny edit"
+            );
+        }
+    }
+
+    #[test]
+    fn test_builtin_summary_and_title_deny_todo_and_plan() {
+        let agents = builtin_agents();
+        for name in &["summary", "title"] {
+            let agent = agents.iter().find(|a| a.name == *name).unwrap();
+            for tool in &["todowrite", "todoread", "plan_enter", "plan_exit"] {
+                assert_eq!(
+                    agent.permissions.get(*tool),
+                    Some(&"deny".to_string()),
+                    "{name} should deny {tool}"
+                );
+            }
+        }
+    }
 }

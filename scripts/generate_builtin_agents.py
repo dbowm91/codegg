@@ -7,11 +7,16 @@ Reads `*.toml` from `assets/agents/` and `*.md` prompt files from
   - `src/agent/builtins/mod.rs`
 
 Requires Python 3.11+ (uses tomllib from stdlib).
+
+Usage:
+    python3 scripts/generate_builtin_agents.py           # generate
+    python3 scripts/generate_builtin_agents.py --check   # verify mode (CI)
 """
 
 from __future__ import annotations
 
 import argparse
+import difflib
 import re
 import sys
 from pathlib import Path
@@ -30,6 +35,16 @@ DEFAULT_PROMPT_PATTERNS = (
 )
 
 PROMPT_HEADING_RE = re.compile(r"^#\s+\S+.*$", re.MULTILINE)
+
+# Allowed values for schema validation
+VALID_MODES = {"Primary", "Subagent", "All"}
+VALID_PERMISSION_ACTIONS = {"allow", "ask", "deny"}
+
+# All recognised top-level keys under [agent]
+KNOWN_AGENT_KEYS = {
+    "name", "role", "description", "mode", "hidden",
+    "temperature", "steps", "color", "prompt_file", "permissions",
+}
 
 
 def _repo_root() -> Path:
@@ -94,13 +109,68 @@ def _format_permissions(perms: dict[str, str]) -> str:
     return f"HashMap::from([\n{inner}\n            ])"
 
 
-def _parse_agent_toml(toml_path: Path) -> dict:
-    """Parse a TOML agent file and return the [agent] table."""
+def _validate_agent(agent: dict, toml_path: Path, agent_dir: Path) -> list[str]:
+    """Validate a single agent TOML table.  Returns a list of error strings."""
+    errors: list[str] = []
+    prefix = str(toml_path.relative_to(agent_dir.parent.parent))
+
+    # --- Unknown top-level keys ---
+    unknown = set(agent.keys()) - KNOWN_AGENT_KEYS
+    if unknown:
+        errors.append(f"{prefix}: unknown top-level keys: {', '.join(sorted(unknown))}")
+
+    # --- Required name ---
+    if "name" not in agent:
+        errors.append(f"{prefix}: missing required 'name' field")
+        return errors  # can't validate further without a name
+
+    name = agent["name"]
+
+    # --- Duplicate name handled externally ---
+
+    # --- Mode validation ---
+    mode = agent.get("mode", "Primary")
+    if mode not in VALID_MODES:
+        errors.append(f"{prefix} agent '{name}': invalid mode '{mode}' (expected one of {', '.join(sorted(VALID_MODES))})")
+
+    # --- Description required for non-hidden agents ---
+    hidden = agent.get("hidden", False)
+    if not hidden and not agent.get("description"):
+        errors.append(f"{prefix} agent '{name}': missing 'description' (required for visible agents)")
+
+    # --- Permission action validation ---
+    permissions = agent.get("permissions", {})
+    for perm_key, perm_val in permissions.items():
+        if perm_val not in VALID_PERMISSION_ACTIONS:
+            errors.append(
+                f"{prefix} agent '{name}': permission '{perm_key}' has invalid action '{perm_val}' "
+                f"(expected one of {', '.join(sorted(VALID_PERMISSION_ACTIONS))})"
+            )
+
+    # --- Prompt file validation ---
+    prompt_file_rel = agent.get("prompt_file")
+    if prompt_file_rel:
+        prompt_path = agent_dir.parent / prompt_file_rel
+        if not prompt_path.is_file():
+            errors.append(f"{prefix} agent '{name}': prompt_file '{prompt_file_rel}' does not exist")
+        # Ensure prompt file is under assets/
+        try:
+            prompt_path.resolve().relative_to((agent_dir.parent).resolve())
+        except ValueError:
+            errors.append(f"{prefix} agent '{name}': prompt_file '{prompt_file_rel}' is outside assets/ directory")
+
+    return errors
+
+
+def _parse_agent_toml(toml_path: Path, agent_dir: Path) -> tuple[dict, list[str]]:
+    """Parse and validate a TOML agent file.  Returns (agent_table, errors)."""
     with open(toml_path, "rb") as f:
         data = tomllib.load(f)
     if "agent" not in data:
-        raise ValueError(f"{toml_path}: missing [agent] table")
-    return data["agent"]
+        return {}, [f"{toml_path.name}: missing [agent] table"]
+    agent = data["agent"]
+    errors = _validate_agent(agent, toml_path, agent_dir)
+    return agent, errors
 
 
 def _build_agent_entry(agent: dict, prompt_content: str | None) -> str:
@@ -121,8 +191,9 @@ def _build_agent_entry(agent: dict, prompt_content: str | None) -> str:
         "All": "AgentMode::All",
     }.get(mode_str)
 
+    # Mode validation is handled by _validate_agent; fall back gracefully
     if mode_variant is None:
-        raise ValueError(f"Agent '{name}': unknown mode '{mode_str}'")
+        mode_variant = "AgentMode::Primary"
 
     lines = []
     lines.append("        Agent {")
@@ -147,48 +218,10 @@ def _build_agent_entry(agent: dict, prompt_content: str | None) -> str:
     return "\n".join(lines)
 
 
-def generate(repo_root: Path) -> None:
-    agent_dir = repo_root / "assets" / "agents"
-    prompt_dir = repo_root / "assets" / "prompts" / "agents"
-    out_generated = repo_root / OUTPUT_GENERATED_RS
-    out_mod = repo_root / OUTPUT_MOD_RS
-
-    if not agent_dir.is_dir():
-        print(f"Error: agent directory not found: {agent_dir}", file=sys.stderr)
-        sys.exit(1)
-
-    toml_files = sorted(agent_dir.glob("*.toml"))
-    if not toml_files:
-        print(f"Error: no .toml files found in {agent_dir}", file=sys.stderr)
-        sys.exit(1)
-
-    print(f"Generating from {len(toml_files)} agent definition(s)...")
-
-    agents: list[tuple[str, str]] = []  # (name, rust_expr)
-
-    for toml_path in toml_files:
-        agent = _parse_agent_toml(toml_path)
-        name = agent["name"]
-
-        # Support explicit prompt_file or convention-based lookup
-        prompt_file_rel = agent.pop("prompt_file", None)
-        if prompt_file_rel:
-            prompt_path = repo_root / "assets" / prompt_file_rel
-        else:
-            prompt_path = prompt_dir / f"{name}.md"
-        prompt_content = _read_prompt(prompt_path)
-
-        print(f"  {name}: prompt={'yes' if prompt_content else 'none'}")
-
-        rust_expr = _build_agent_entry(agent, prompt_content)
-        agents.append((name, rust_expr))
-
-    # Sort by name for deterministic output
-    agents.sort(key=lambda a: a[0])
-
-    # Build generated.rs
+def _build_generated_rs(agents: list[tuple[str, str]]) -> str:
+    """Return the full content of generated.rs."""
     entries = ",\n".join(expr for _, expr in agents)
-    generated_rs = (
+    return (
         f"{HEADER}\n"
         "\n"
         "use std::collections::HashMap;\n"
@@ -201,25 +234,171 @@ def generate(repo_root: Path) -> None:
         "}\n"
     )
 
-    out_generated.parent.mkdir(parents=True, exist_ok=True)
-    out_generated.write_text(generated_rs, encoding="utf-8")
-    print(f"Wrote {out_generated}")
 
-    # Build mod.rs
-    mod_rs = (
+def _build_mod_rs() -> str:
+    """Return the full content of mod.rs."""
+    return (
         f"{HEADER}\n"
         "\n"
         "mod generated;\n"
         "pub use generated::generated_builtin_agents;\n"
     )
 
+
+def load_and_validate(repo_root: Path) -> tuple[list[tuple[str, str]], list[str]]:
+    """Load all TOML agents, validate, and return (agents, all_errors)."""
+    agent_dir = repo_root / "assets" / "agents"
+    prompt_dir = repo_root / "assets" / "prompts" / "agents"
+
+    if not agent_dir.is_dir():
+        return [], [f"agent directory not found: {agent_dir}"]
+
+    toml_files = sorted(agent_dir.glob("*.toml"))
+    if not toml_files:
+        return [], [f"no .toml files found in {agent_dir}"]
+
+    all_errors: list[str] = []
+    agents: list[tuple[str, str]] = []
+    seen_names: set[str] = set()
+
+    for toml_path in toml_files:
+        agent, errors = _parse_agent_toml(toml_path, agent_dir)
+        all_errors.extend(errors)
+
+        if not agent or "name" not in agent:
+            continue
+
+        name = agent["name"]
+
+        # Duplicate name check
+        if name in seen_names:
+            all_errors.append(f"{toml_path.name}: duplicate agent name '{name}'")
+            continue
+        seen_names.add(name)
+
+        # Resolve prompt
+        prompt_file_rel = agent.pop("prompt_file", None)
+        if prompt_file_rel:
+            prompt_path = repo_root / "assets" / prompt_file_rel
+        else:
+            prompt_path = prompt_dir / f"{name}.md"
+        prompt_content = _read_prompt(prompt_path)
+
+        rust_expr = _build_agent_entry(agent, prompt_content)
+        agents.append((name, rust_expr))
+
+    # Sort by name for deterministic output
+    agents.sort(key=lambda a: a[0])
+
+    return agents, all_errors
+
+
+def generate(repo_root: Path) -> None:
+    """Generate generated.rs and mod.rs from TOML definitions."""
+    agents, errors = load_and_validate(repo_root)
+
+    if errors:
+        print("Schema validation errors:", file=sys.stderr)
+        for err in errors:
+            print(f"  {err}", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"Generating from {len(agents)} agent definition(s)...")
+
+    out_generated = repo_root / OUTPUT_GENERATED_RS
+    out_mod = repo_root / OUTPUT_MOD_RS
+
+    # Build and write generated.rs
+    generated_rs = _build_generated_rs(agents)
+    out_generated.parent.mkdir(parents=True, exist_ok=True)
+    out_generated.write_text(generated_rs, encoding="utf-8")
+    print(f"Wrote {out_generated}")
+
+    # Build and write mod.rs
+    mod_rs = _build_mod_rs()
     out_mod.write_text(mod_rs, encoding="utf-8")
     print(f"Wrote {out_mod}")
+
+
+def check(repo_root: Path) -> None:
+    """Compare generated output against checked-in files. Exit 1 on drift."""
+    agents, errors = load_and_validate(repo_root)
+
+    if errors:
+        print("Schema validation errors:", file=sys.stderr)
+        for err in errors:
+            print(f"  {err}", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"Checking {len(agents)} agent definition(s)...")
+
+    expected_generated = _build_generated_rs(agents)
+    expected_mod = _build_mod_rs()
+
+    out_generated = repo_root / OUTPUT_GENERATED_RS
+    out_mod = repo_root / OUTPUT_MOD_RS
+
+    drift = False
+
+    # Check generated.rs
+    if out_generated.is_file():
+        actual_generated = out_generated.read_text(encoding="utf-8")
+        if actual_generated != expected_generated:
+            diff = difflib.unified_diff(
+                actual_generated.splitlines(keepends=True),
+                expected_generated.splitlines(keepends=True),
+                fromfile=OUTPUT_GENERATED_RS,
+                tofile=f"{OUTPUT_GENERATED_RS} (expected)",
+            )
+            print(f"DRIFT in {OUTPUT_GENERATED_RS}:", file=sys.stderr)
+            sys.stderr.writelines(diff)
+            drift = True
+        else:
+            print(f"  {OUTPUT_GENERATED_RS}: OK")
+    else:
+        print(f"  {OUTPUT_GENERATED_RS}: MISSING (run generate)", file=sys.stderr)
+        drift = True
+
+    # Check mod.rs
+    if out_mod.is_file():
+        actual_mod = out_mod.read_text(encoding="utf-8")
+        if actual_mod != expected_mod:
+            diff = difflib.unified_diff(
+                actual_mod.splitlines(keepends=True),
+                expected_mod.splitlines(keepends=True),
+                fromfile=OUTPUT_MOD_RS,
+                tofile=f"{OUTPUT_MOD_RS} (expected)",
+            )
+            print(f"DRIFT in {OUTPUT_MOD_RS}:", file=sys.stderr)
+            sys.stderr.writelines(diff)
+            drift = True
+        else:
+            print(f"  {OUTPUT_MOD_RS}: OK")
+    else:
+        print(f"  {OUTPUT_MOD_RS}: MISSING (run generate)", file=sys.stderr)
+        drift = True
+
+    # Determinism check: generate twice, compare
+    agents2, _ = load_and_validate(repo_root)
+    if agents != agents2:
+        print("DETERMINISM FAILURE: two consecutive loads produced different results", file=sys.stderr)
+        drift = True
+
+    if drift:
+        print("\nRun: python3 scripts/generate_builtin_agents.py", file=sys.stderr)
+        sys.exit(1)
+
+    print("All checks passed.")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Generate Rust agent source files from TOML definitions."
+    )
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="Verify checked-in output matches TOML definitions (for CI).",
     )
     parser.add_argument(
         "--repo-root",
@@ -237,7 +416,10 @@ def main() -> None:
         sys.exit(1)
 
     try:
-        generate(repo_root)
+        if args.check:
+            check(repo_root)
+        else:
+            generate(repo_root)
     except Exception as exc:
         print(f"Error: {exc}", file=sys.stderr)
         sys.exit(1)
