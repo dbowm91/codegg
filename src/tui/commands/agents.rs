@@ -354,10 +354,17 @@ pub(crate) fn format_agent_diff(name: &str) -> Vec<String> {
 
 /// Format `/agents validate` output: registry diagnostics.
 pub(crate) fn format_agents_validate() -> Vec<String> {
+    let (lines, _has_errors) = format_agents_validate_inner();
+    lines
+}
+
+/// Validate agents and return diagnostics with error status.
+/// Returns (lines, has_errors) for headless/CLI mode.
+fn format_agents_validate_inner() -> (Vec<String>, bool) {
     let config = Config::load().unwrap_or_default();
     let registry = match AgentRegistry::load(&config) {
         Ok(r) => r,
-        Err(e) => return vec![format!("error: failed to load registry: {e}")],
+        Err(e) => return (vec![format!("error: failed to load registry: {e}")], true),
     };
 
     let mut lines = Vec::new();
@@ -367,20 +374,44 @@ pub(crate) fn format_agents_validate() -> Vec<String> {
 
     lines.push(format!("ok: {total} agents loaded ({visible} visible)"));
 
+    let mut has_errors = false;
     if diags.is_empty() {
         lines.push("ok: no diagnostics".to_string());
     } else {
+        let errors = diags.iter().filter(|d| d.severity == crate::agent::registry::AgentDiagnosticSeverity::Error).count();
+        let warnings = diags.iter().filter(|d| d.severity == crate::agent::registry::AgentDiagnosticSeverity::Warning).count();
+        let infos = diags.iter().filter(|d| d.severity == crate::agent::registry::AgentDiagnosticSeverity::Info).count();
+        has_errors = errors > 0;
+        lines.push(format!("{errors} error(s), {warnings} warning(s), {infos} info(s)"));
+        lines.push(String::new());
         for diag in diags {
             let prefix = match diag.severity {
                 crate::agent::registry::AgentDiagnosticSeverity::Info => "info",
                 crate::agent::registry::AgentDiagnosticSeverity::Warning => "warning",
                 crate::agent::registry::AgentDiagnosticSeverity::Error => "error",
             };
-            lines.push(format!("{prefix}: [{}] {}", diag.agent_name, diag.message));
+            let source_str = diag.source.as_ref().map(|s| format!(" ({:?})", s)).unwrap_or_default();
+            let field_str = diag.field.as_ref().map(|f| format!(" [field: {f}]")).unwrap_or_default();
+            let suggestion_str = diag.suggestion.as_ref().map(|s| format!(" — {s}")).unwrap_or_default();
+            lines.push(format!(
+                "{prefix}: [{}] {}{source_str}{field_str}{suggestion_str}",
+                diag.agent_name, diag.message
+            ));
         }
     }
 
-    lines
+    (lines, has_errors)
+}
+
+/// Validate agents for headless/CLI mode. Returns Ok(lines) if no errors,
+/// Err(lines) with diagnostic lines if errors found.
+pub(crate) fn validate_agents_headless() -> Result<Vec<String>, Vec<String>> {
+    let (lines, has_errors) = format_agents_validate_inner();
+    if has_errors {
+        Err(lines)
+    } else {
+        Ok(lines)
+    }
 }
 
 /// Reload agents and return new agent list + diagnostics.
@@ -402,6 +433,39 @@ pub(crate) fn reload_agents() -> (Vec<crate::agent::Agent>, Vec<String>) {
     }
 }
 
+/// Rebuild the agent registry from scratch and return new agent list + diagnostics.
+/// Unlike reload, this uses the full AgentRegistry to capture source provenance
+/// and diagnostics, then converts to plain agents.
+pub(crate) fn rebuild_agents() -> (Vec<crate::agent::Agent>, Vec<String>) {
+    let config = Config::load().unwrap_or_default();
+    match AgentRegistry::load(&config) {
+        Ok(registry) => {
+            let count = registry.list().count();
+            let visible = registry.list_visible().len();
+            let diags_count = registry.diagnostics().len();
+            let errors = registry
+                .diagnostics()
+                .iter()
+                .filter(|d| d.severity == crate::agent::registry::AgentDiagnosticSeverity::Error)
+                .count();
+            let agents = registry.into_agents();
+            let mut diags = vec![format!(
+                "Rebuilt {count} agents ({visible} visible)"
+            )];
+            if diags_count > 0 {
+                diags.push(format!(
+                    "{diags_count} diagnostic(s) ({errors} error(s))"
+                ));
+            }
+            (agents, diags)
+        }
+        Err(e) => {
+            let diags = vec![format!("Rebuild failed: {e}")];
+            (Vec::new(), diags)
+        }
+    }
+}
+
 /// Handle `/agent <name>`: validate and return the agent index if valid.
 pub(crate) fn validate_agent_select(
     name: &str,
@@ -415,6 +479,14 @@ pub(crate) fn validate_agent_select(
         .ok_or_else(|| format!("Agent '{}' not found.", name))?;
 
     let agent = &agent_state.agents[idx];
+
+    // Reject hidden/system agents
+    if agent.hidden {
+        return Err(format!(
+            "Agent '{}' is a hidden/system agent and cannot be selected as the active agent.",
+            name
+        ));
+    }
 
     // Reject subagent-only agents
     if matches!(agent.mode, AgentMode::Subagent) {

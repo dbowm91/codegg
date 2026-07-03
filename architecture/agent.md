@@ -306,7 +306,6 @@ mode: primary
 description: Custom agent description
 model: gpt-4o
 temperature: 0.7
-replace: false  # merge into base agent (default) vs full replacement
 permission:
   bash: allow
   write: deny
@@ -314,11 +313,15 @@ permission:
 Agent-specific instructions or markdown content
 ```
 
-TOML agent files support rich permissions:
+> **Limitations:** Markdown is a **prompt-first, merge-only** format. It does not support overlay flags (`replace`, `merge`) — files always use merge mode. It also does not support `[bash_permission]` or `[path_permission]` sections; use flat `permission` map or TOML format for structured permissions.
+
+TOML agent files support rich permissions and overlay flags:
+
+> **Case sensitivity:** User TOML files require lowercase mode values (`primary`, `subagent`, `all`). Built-in TOML files use capitalized modes but are compiled by the Python generator, bypassing `parse_mode()`.
 
 ```toml
 name = "my-agent"
-mode = "subagent"
+mode = "subagent"          # lowercase required
 description = "Agent with rich permissions"
 
 [bash_permission]

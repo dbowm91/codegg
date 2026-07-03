@@ -878,7 +878,7 @@ Users and projects can add custom agents via TOML and Markdown files:
 
 ```toml
 name = "my-agent"
-mode = "subagent"
+mode = "subagent"          # lowercase required for user TOML files
 description = "A custom agent"
 prompt = "You are a helpful assistant."
 
@@ -914,6 +914,8 @@ Check for safety issues.
 ```
 
 The markdown body becomes the agent's prompt unless `prompt` or `prompt_file` is explicitly set.
+
+> **Limitations:** Markdown files support flat `permission` maps in frontmatter but do not support overlay flags (`replace`, `disable`, `merge`) or structured permission sections (`[bash_permission]`, `[path_permission]`). Use TOML for those features.
 
 ### Prompt File Resolution
 

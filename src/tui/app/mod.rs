@@ -33,7 +33,7 @@ use super::layout::{LayoutConfig, TuiLayout};
 use super::route::{Route, RouteManager};
 use super::theme::Theme;
 use crate::agent::builtin_agents;
-use crate::agent::Agent;
+use crate::agent::{Agent, AgentMode};
 use crate::config::schema::SessionTemplate;
 use crate::core::CoreClient;
 use crate::error::AppError;
@@ -4699,11 +4699,11 @@ impl App {
                             lines,
                         );
                     }
-                    "reload" => {
+                    "reload" | "rebuild" => {
                         let (new_agents, diags) =
-                            crate::tui::commands::agents::reload_agents();
+                            crate::tui::commands::agents::rebuild_agents();
                         if !new_agents.is_empty() {
-                            // Preserve current agent if still present
+                            // Preserve current agent if still valid
                             let current_name = self
                                 .agent_state
                                 .agents
@@ -4717,7 +4717,23 @@ impl App {
                                     .iter()
                                     .position(|a| a.name == *name)
                                 {
-                                    self.agent_state.current_agent = idx;
+                                    // Check if agent is still selectable (not hidden, not subagent-only)
+                                    let agent = &self.agent_state.agents[idx];
+                                    if !agent.hidden && !matches!(agent.mode, AgentMode::Subagent) {
+                                        self.agent_state.current_agent = idx;
+                                    } else {
+                                        // Current agent became hidden or subagent-only, fall back
+                                        if let Some(idx) = self
+                                            .agent_state
+                                            .agents
+                                            .iter()
+                                            .position(|a| a.name == "build")
+                                        {
+                                            self.agent_state.current_agent = idx;
+                                        } else {
+                                            self.agent_state.current_agent = 0;
+                                        }
+                                    }
                                 } else {
                                     // Current agent disappeared, fall back to default
                                     if let Some(idx) = self

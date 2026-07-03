@@ -7,7 +7,7 @@
 name = "test-writer"
 role = "test_writer"
 description = "Test writer. Creates and maintains unit tests, integration tests, and test fixtures."
-mode = "Subagent"
+mode = "subagent"
 color = "green"
 
 [agent.permissions]

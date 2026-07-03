@@ -49,7 +49,7 @@ Once installed, agents are available immediately:
 ```toml
 [agent]
 name = "my-agent"
-mode = "Subagent"
+mode = "subagent"          # lowercase required for user TOML files
 description = "A custom agent"
 
 [agent.permissions]
@@ -57,12 +57,12 @@ read = "allow"
 write = "deny"
 bash = "ask"
 
-[agent.bash_permission]
+[agent.bash_permission]    # fine-grained bash control (TOML only)
 action = "ask"
 allow_patterns = ["git diff*", "cargo test*"]
 deny_patterns = ["rm *", "sudo *"]
 
-[agent.path_permission]
+[agent.path_permission]    # fine-grained file access control (TOML only)
 allow = ["src/**", "tests/**"]
 deny = [".git/**", "target/**"]
 ```
@@ -71,7 +71,7 @@ deny = [".git/**", "target/**"]
 
 ```toml
 name = "my-agent"
-mode = "Subagent"
+mode = "subagent"
 description = "A custom agent"
 
 [permission]
@@ -91,17 +91,20 @@ description: A custom agent
 You are a helpful assistant.
 ```
 
+> **Note:** Markdown is a **prompt-first, merge-only** format. It supports flat `permission` maps and `disable` in frontmatter but does not support overlay flags (`replace`, `merge`) or structured permission sections (`[bash_permission]`, `[path_permission]`). Use TOML for those features.
+
 ## Overlay Flags
 
-Control how file-based agents interact with built-in agents:
+Control how file-based agents interact with built-in agents (TOML only):
 
 ```toml
 name = "build"
-mode = "Primary"
+mode = "primary"
 description = "Custom build override"
 
 # replace = true   → Full replacement (discard built-in entirely)
 # replace = false  → Merge mode (default): overlay fields applied on top
+# merge = true     → Explicitly enable merge mode (same as default)
 # disable = true   → Remove agent from resolution entirely
 ```
 

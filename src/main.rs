@@ -1191,6 +1191,17 @@ async fn run_single_shot(prompt: &str, cli: &Cli) -> Result<(), AppError> {
         .cloned()
         .ok_or_else(|| AppError::Other(anyhow::anyhow!("Agent not found: {}", target_agent)))?;
 
+    // Phase 3: Apply safety envelope to prevent custom files from escalating
+    // permissions beyond session/config/hard policy bounds.
+    let session_rules = codegg::permission::PermissionRuleset::default();
+    let config_rules = codegg::permission::config_ruleset(Some(&config));
+    let hard_deny = vec![
+        "commit".to_string(),
+        "todowrite".to_string(),
+        "todoread".to_string(),
+    ];
+    let safe_agent = selected_agent.apply_safety_envelope(&session_rules, &config_rules, &hard_deny);
+
     let permission_checker =
         codegg::permission::PermissionChecker::new(Some(&config), None).with_active_mode(&config);
     // Bootstraps the search backend (eggsearch by default) before the agent
@@ -1210,7 +1221,7 @@ async fn run_single_shot(prompt: &str, cli: &Cli) -> Result<(), AppError> {
     );
     let session_id = uuid::Uuid::new_v4().to_string();
     agent_loop.set_session_id(&session_id);
-    agent_loop.set_agent(&selected_agent.name)?;
+    agent_loop.set_agent(&safe_agent.name)?;
 
     let request = provider::ChatRequest {
         messages: vec![provider::Message::User {
@@ -1221,16 +1232,16 @@ async fn run_single_shot(prompt: &str, cli: &Cli) -> Result<(), AppError> {
         model: model_name.to_string(),
         tools: None,
         system: Some(codegg::agent::prompt::load_agent_prompt(
-            &selected_agent,
+            &safe_agent,
             &config,
             &model_name,
         )),
-        temperature: selected_agent.temperature,
-        top_p: selected_agent.top_p,
+        temperature: safe_agent.temperature,
+        top_p: safe_agent.top_p,
         max_tokens: None,
         response_format: None,
-        thinking_budget: selected_agent.thinking_budget,
-        reasoning_effort: selected_agent.reasoning_effort,
+        thinking_budget: safe_agent.thinking_budget,
+        reasoning_effort: safe_agent.reasoning_effort,
     };
 
     let events = agent_loop.run(request).await?;

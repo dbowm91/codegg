@@ -147,7 +147,7 @@ impl CommandRegistry {
             Command::new("/variants", CommandCategory::System, None)
                 .with_description("Switch model variant"),
             Command::new("/agents", CommandCategory::Agent, None)
-                .with_description("Manage agents (/agents, /agents --all, show <name>, diff <name>, validate, reload)"),
+                .with_description("Manage agents (/agents, /agents --all, show <name>, diff <name>, validate, rebuild)"),
             Command::new("/agent", CommandCategory::Agent, None)
                 .with_description("Select active agent (/agent <name>)"),
             Command::new("/mcps", CommandCategory::System, Some(Dialog::Mcp))

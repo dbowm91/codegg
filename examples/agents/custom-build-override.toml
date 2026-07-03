@@ -11,7 +11,7 @@
 
 name = "build"
 description = "Custom build agent with restricted permissions for this project"
-mode = "Primary"
+mode = "primary"
 
 [permission]
 bash = "ask"

@@ -656,9 +656,20 @@ async fn execute_agent_task(
         .find(|a| a.name == *agent_name)
         .ok_or_else(|| format!("Agent '{}' not found", agent_name))?;
 
+    // Phase 3: Apply safety envelope to prevent custom files from escalating
+    // permissions beyond session/config/hard policy bounds.
+    let session_rules = crate::permission::PermissionRuleset::default();
+    let config_rules = crate::permission::config_ruleset(Some(&config));
+    let hard_deny = vec![
+        "commit".to_string(),
+        "todowrite".to_string(),
+        "todoread".to_string(),
+    ];
+    let safe_agent = agent.apply_safety_envelope(&session_rules, &config_rules, &hard_deny);
+
     // Build a fully resolved execution profile with model inheritance and alias resolution.
     let profile = crate::agent::ResolvedAgentExecutionProfile::resolve(
-        agent,
+        &safe_agent,
         &config,
         request.parent_model.as_deref(),
     );
@@ -781,7 +792,7 @@ async fn execute_agent_task(
     });
 
     let mut messages = Vec::new();
-    if let Some(ref system_prompt) = agent.system_prompt {
+    if let Some(ref system_prompt) = safe_agent.system_prompt {
         messages.push(crate::provider::Message::System {
             content: system_prompt.clone().into(),
         });
@@ -799,8 +810,8 @@ async fn execute_agent_task(
         model,
         tools: None,
         system: None,
-        temperature: agent.temperature,
-        top_p: agent.top_p,
+        temperature: safe_agent.temperature,
+        top_p: safe_agent.top_p,
         max_tokens: None,
         response_format: None,
         thinking_budget: None,

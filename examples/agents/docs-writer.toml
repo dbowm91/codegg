@@ -7,7 +7,7 @@
 name = "docs-writer"
 role = "documentation_writer"
 description = "Documentation writer. Creates and maintains READMEs, doc comments, architecture docs, and changelogs."
-mode = "Subagent"
+mode = "subagent"
 color = "cyan"
 
 [agent.permissions]

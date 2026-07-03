@@ -128,6 +128,46 @@ def _field_mode(block: str) -> str | None:
     return m.group(1).lower() if m else None
 
 
+def _field_f64(block: str, name: str) -> float | None:
+    """Extract Some(1.0) or None for f64 fields."""
+    m = re.search(rf"{name}:\s*Some\(\s*([\d.]+)\s*\)", block)
+    if m:
+        return float(m.group(1))
+    if re.search(rf"{name}:\s*None", block):
+        return None
+    return None
+
+
+def _field_usize(block: str, name: str) -> int | None:
+    """Extract Some(N) or None for usize fields."""
+    m = re.search(rf"{name}:\s*Some\(\s*(\d+)\s*\)", block)
+    if m:
+        return int(m.group(1))
+    if re.search(rf"{name}:\s*None", block):
+        return None
+    return None
+
+
+def _field_runtime_kind(block: str) -> str | None:
+    """Extract AgentRuntimeKind::Variant or None, mapping to TOML snake_case."""
+    # Map Rust CamelCase variants to TOML snake_case values
+    RUST_TO_TOML = {
+        "Standard": "standard",
+        "SecurityReview": "security_review",
+        "Research": "research",
+        "Compaction": "compaction",
+        "Title": "title",
+        "Summary": "summary",
+    }
+    m = re.search(r"runtime_kind:\s*Some\(\s*AgentRuntimeKind::(\w+)\s*\)", block)
+    if m:
+        variant = m.group(1)
+        return RUST_TO_TOML.get(variant, variant.lower())
+    if re.search(r"runtime_kind:\s*None", block):
+        return None
+    return None
+
+
 def _field_permissions(block: str) -> dict[str, str]:
     m = re.search(r"permissions:\s*HashMap::from\(\[(.*?)\]\)", block, re.DOTALL)
     if not m:
@@ -167,6 +207,12 @@ def _parse_agent_block(block: str) -> dict:
         "hidden": _field_bool(block, "hidden") or False,
         "permissions": _field_permissions(block),
         "system_prompt": _field_system_prompt(block),
+        "model": _field_opt_str(block, "model"),
+        "fallback_model": _field_opt_str(block, "fallback_model"),
+        "temperature": _field_f64(block, "temperature"),
+        "steps": _field_usize(block, "steps"),
+        "color": _field_opt_str(block, "color"),
+        "runtime_kind": _field_runtime_kind(block),
     }
 
 
@@ -207,6 +253,10 @@ def parse_toml_agents() -> dict[str, dict]:
             if text and not any(pat in lower for pat in default_patterns):
                 prompt_content = text
 
+        # Map runtime_kind from TOML string to lowercase (matches Rust enum variant names)
+        runtime_kind_raw = sec.get("runtime_kind")
+        runtime_kind = runtime_kind_raw.lower() if runtime_kind_raw else None
+
         agents[name] = {
             "name": name,
             "role": sec.get("role"),
@@ -215,6 +265,12 @@ def parse_toml_agents() -> dict[str, dict]:
             "hidden": sec.get("hidden", False),
             "permissions": dict(sec.get("permissions", {})),
             "system_prompt": prompt_content,
+            "model": sec.get("model"),
+            "fallback_model": sec.get("fallback_model"),
+            "temperature": sec.get("temperature"),
+            "steps": sec.get("steps"),
+            "color": sec.get("color"),
+            "runtime_kind": runtime_kind,
             "_file": path.name,
         }
     return agents
@@ -237,6 +293,12 @@ def _diff(rust: dict, toml: dict) -> list[str]:
     _cmp("description", rust["description"], toml["description"])
     _cmp("mode", rust["mode"], toml["mode"])
     _cmp("hidden", rust["hidden"], toml["hidden"])
+    _cmp("model", rust["model"], toml["model"])
+    _cmp("fallback_model", rust["fallback_model"], toml["fallback_model"])
+    _cmp("temperature", rust["temperature"], toml["temperature"])
+    _cmp("steps", rust["steps"], toml["steps"])
+    _cmp("color", rust["color"], toml["color"])
+    _cmp("runtime_kind", rust["runtime_kind"], toml["runtime_kind"])
 
     # Permissions – compare key-by-key for a readable diff
     rp, tp = rust["permissions"], toml["permissions"]

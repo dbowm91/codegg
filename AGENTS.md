@@ -131,7 +131,7 @@ Users and projects can add custom agents via TOML and Markdown files:
 
 ```toml
 name = "my-agent"
-mode = "subagent"
+mode = "subagent"          # lowercase required for user TOML files
 description = "A custom agent"
 prompt = "You are a helpful assistant."
 
@@ -155,7 +155,7 @@ read = "allow"
 
 ### Overlay Flags
 
-File-based agents (TOML/Markdown) support overlay flags that control how they interact with base agents:
+File-based TOML agents support overlay flags that control how they interact with base agents:
 
 ```toml
 name = "my-agent"
@@ -168,7 +168,10 @@ merge = true      # explicitly enable merge mode
 
 - **`replace = true`**: Full replacement — the overlay completely replaces the base agent (legacy behavior)
 - **`replace = false`** (default): Merge mode — overlay fields are applied on top of the base agent. Scalar fields replace only when set. Permissions merge per-tool (overlay overwrites matching keys).
+- **`merge = true`**: Explicitly enable merge mode (same as default, for clarity)
 - **`disable = true`**: Removes the agent from resolution entirely (logged as Info diagnostic)
+
+> **Note:** Overlay flags are TOML-only. Markdown files always use merge mode and do not support `replace`, `disable`, or `merge` flags.
 
 ### Rich Permissions
 
@@ -223,6 +226,8 @@ Check for safety issues.
 ```
 
 The markdown body becomes the agent's prompt unless `prompt` or `prompt_file` is explicitly set.
+
+> **Note:** Markdown is a **prompt-first, merge-only** format. It supports flat `permission` maps in frontmatter and `disable`, but does not support overlay flags (`replace`, `merge`) or structured permission sections (`[bash_permission]`, `[path_permission]`). Use TOML for those features.
 
 ### Prompt File Resolution
 

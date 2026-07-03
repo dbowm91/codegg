@@ -30,7 +30,7 @@ re-run `python3 scripts/generate_builtin_agents.py` to regenerate.
 name = "agent-name"
 role = "role_name"
 description = "What the agent does"
-mode = "Primary" | "Subagent" | "All"
+mode = "Primary" | "Subagent" | "All"   # built-in TOML files use capitalized modes
 hidden = false
 color = "magenta"          # optional
 temperature = 0.2          # optional
@@ -40,6 +40,8 @@ prompt_file = "prompts/agents/name.md"  # optional, overrides convention
 [agent.permissions]
 tool_name = "allow" | "deny" | "ask"
 ```
+
+> **Note:** Built-in agent TOML files (this directory) use capitalized mode values (`Primary`, `Subagent`, `All`). User-defined agent TOML files loaded at runtime require lowercase mode values (`primary`, `subagent`, `all`). This is because built-in files are compiled by the Python generator into Rust enum variants, while user files pass through `parse_mode()` which only accepts lowercase.
 
 Run `python3 scripts/check_builtin_agents.py` to verify TOML sources match
 the generated Rust output.

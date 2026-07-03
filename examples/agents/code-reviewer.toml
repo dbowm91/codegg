@@ -7,7 +7,7 @@
 name = "code-reviewer"
 role = "code_reviewer"
 description = "Focused code reviewer. Checks for bugs, security issues, performance problems, and style violations."
-mode = "Subagent"
+mode = "subagent"
 color = "yellow"
 
 [agent.permissions]

@@ -616,7 +616,7 @@ Create `.codegg/agents/code-reviewer.toml`:
 [agent]
 name = "code-reviewer"
 description = "Focused code review agent"
-mode = "Subagent"
+mode = "subagent"
 color = "yellow"
 
 [agent.permissions]
@@ -639,14 +639,14 @@ Then use it: `/agent code-reviewer` to switch, or `@code-reviewer review this co
 | `/agents diff <name>` | Compare against built-in base |
 | `/agents validate` | Check agent configuration |
 | `/agents reload` | Reload agents from disk |
-| `/agent <name>` | Switch to a different agent |
+| `/agent <name>` | Switch to a different agent (primary/all modes only; use @mention for subagents) |
 
 ### TOML Format
 
 ```toml
 [agent]
 name = "my-agent"
-mode = "Subagent"          # Primary, Subagent, or All
+mode = "subagent"          # primary, subagent, or all (lowercase required)
 description = "What this agent does"
 model = "anthropic/claude-sonnet-4-20250514"  # optional override
 color = "cyan"             # optional
@@ -656,12 +656,12 @@ read = "allow"
 write = "deny"
 bash = "ask"
 
-[agent.bash_permission]    # fine-grained bash control
+[agent.bash_permission]    # fine-grained bash control (TOML only)
 action = "ask"
 allow_patterns = ["git diff*", "cargo test*"]
 deny_patterns = ["rm *", "sudo *"]
 
-[agent.path_permission]    # fine-grained file access control
+[agent.path_permission]    # fine-grained file access control (TOML only)
 allow = ["src/**", "tests/**"]
 deny = [".git/**", "target/**"]
 ```
@@ -678,12 +678,17 @@ description: A custom agent
 You are a helpful assistant focused on code quality.
 ```
 
+Markdown frontmatter supports: `name`, `mode`, `description`, `model`, `temperature`, `color`, `steps`, `hidden`, `prompt`, `prompt_file`, `permission` (flat map), `disable`. The markdown body becomes the agent's prompt unless `prompt` or `prompt_file` is set.
+
+> **Note:** Markdown is a **prompt-first, merge-only** format. It does not support overlay flags (`replace`, `merge`) or structured permission sections (`[bash_permission]`, `[path_permission]`). Use TOML for those features.
+
 ### Overlay Flags
 
-Control how file-based agents interact with built-in agents:
+Control how file-based agents interact with built-in agents (TOML only):
 
 - `replace = false` (default): Merge mode — overlay fields applied on top of base
 - `replace = true`: Full replacement — overlay completely replaces the base agent
+- `merge = true`: Explicitly enable merge mode (same as default, for clarity)
 - `disable = true`: Remove agent from resolution entirely
 
 ### Permission Actions
