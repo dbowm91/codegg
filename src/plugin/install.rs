@@ -59,25 +59,60 @@ fn validate_relative_install_path(rel: &Path) -> Result<(), String> {
     Ok(())
 }
 
-pub async fn install_from_path(path: &Path) -> Result<PathBuf, InstallError> {
-    let path = path
-        .canonicalize()
-        .map_err(|e| InstallError::InvalidPath(e.to_string()))?;
+/// Validate that a user-supplied local install source path is safe to use.
+///
+/// Unlike `validate_relative_install_path`, this helper accepts absolute paths
+/// and `..` components as long as the canonicalized target exists, is a
+/// directory, and contains a `manifest.toml`. This is appropriate for a local
+/// install command where the user explicitly chose the path; it is NOT
+/// appropriate for archive entries or copy-relative paths, which must remain
+/// strictly relative.
+///
+/// Returns the canonicalized path on success.
+pub fn validate_local_install_source(
+    source: &Path,
+    policy: &PluginInstallPolicy,
+) -> Result<PathBuf, InstallError> {
+    if !policy.reject_path_traversal {
+        // When traversal policy is disabled, still canonicalize but don't
+        // lexically reject components.
+        return std::fs::canonicalize(source)
+            .map_err(|e| InstallError::InvalidPath(format!("cannot resolve source path: {e}")));
+    }
 
-    if !path.exists() {
+    // Canonicalize first so we can validate existence and directory-ness
+    // without surprising the user with extra traversal rejection at this layer.
+    // The user-supplied path is a deliberate choice; traversal here is benign
+    // as long as the canonical target is a real directory with a manifest.
+    let canonical = std::fs::canonicalize(source)
+        .map_err(|e| InstallError::InvalidPath(format!("cannot resolve source path: {e}")))?;
+
+    if !canonical.is_dir() {
         return Err(InstallError::InvalidPath(format!(
-            "path does not exist: {}",
-            path.display()
+            "install source is not a directory: {}",
+            canonical.display()
         )));
     }
 
-    let manifest_path = path.join("manifest.toml");
-    if !manifest_path.exists() {
-        return Err(InstallError::Manifest(
-            "manifest.toml not found in plugin directory".into(),
-        ));
+    let manifest_path = canonical.join("manifest.toml");
+    if !manifest_path.is_file() {
+        return Err(InstallError::Manifest(format!(
+            "manifest.toml not found in install source: {}",
+            canonical.display()
+        )));
     }
 
+    Ok(canonical)
+}
+
+pub async fn install_from_path(path: &Path) -> Result<PathBuf, InstallError> {
+    // Validate the user-supplied local install source. This accepts
+    // absolute paths and paths containing `..` as long as the canonical
+    // target exists, is a directory, and contains a `manifest.toml`.
+    let policy = PluginInstallPolicy::default();
+    let path = validate_local_install_source(path, &policy)?;
+
+    let manifest_path = path.join("manifest.toml");
     let manifest_content = tokio::fs::read_to_string(&manifest_path).await?;
     let _manifest: PluginManifest =
         toml::from_str(&manifest_content).map_err(|e| InstallError::Manifest(e.to_string()))?;
@@ -795,5 +830,148 @@ api_version = 1
         }
 
         let _ = fs::remove_dir_all(&src);
+    }
+
+    // ---- validate_local_install_source tests (Workstream B) ----
+
+    fn write_minimal_manifest(dir: &Path) {
+        fs::write(
+            dir.join("manifest.toml"),
+            r#"
+name = "local-install-test"
+version = "1.0.0"
+api_version = 1
+"#,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn validate_local_install_source_accepts_absolute_path_with_manifest() {
+        let dir = make_temp_dir("localsrc_absolute");
+        write_minimal_manifest(&dir);
+        let policy = PluginInstallPolicy::default();
+        let result = validate_local_install_source(&dir, &policy);
+        assert!(
+            result.is_ok(),
+            "absolute local source should validate: {result:?}"
+        );
+        let canonical = result.unwrap();
+        assert!(canonical.is_dir());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn validate_local_install_source_accepts_relative_path() {
+        let dir = make_temp_dir("localsrc_relative");
+        write_minimal_manifest(&dir);
+        let policy = PluginInstallPolicy::default();
+
+        // Build a relative path that resolves to our temp dir.
+        let cwd = std::env::current_dir().unwrap();
+        let relative = match dir.strip_prefix(&cwd) {
+            Ok(p) => p.to_path_buf(),
+            Err(_) => {
+                // If the temp dir is not under cwd, just use absolute.
+                dir.clone()
+            }
+        };
+
+        let result = validate_local_install_source(&relative, &policy);
+        assert!(
+            result.is_ok(),
+            "relative local source should validate: {result:?}"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn validate_local_install_source_accepts_dotdot_when_canonical_resolves() {
+        // Create a nested structure where a `..` traversal resolves to a
+        // real directory containing a manifest.
+        let parent = make_temp_dir("localsrc_dotdot_parent");
+        let child = parent.join("child");
+        fs::create_dir_all(&child).unwrap();
+        write_minimal_manifest(&child);
+        let policy = PluginInstallPolicy::default();
+
+        // Build a sibling+dotdot path: from `parent/sibling/..` we can reach `parent`,
+        // then descend into `child`. The canonical resolution must succeed.
+        let sibling = parent.join("sibling");
+        fs::create_dir_all(&sibling).unwrap();
+        let via_dotdot = sibling.join("..").join("child");
+        let result = validate_local_install_source(&via_dotdot, &policy);
+        assert!(
+            result.is_ok(),
+            "dotdot local source that canonicalizes should validate: {result:?}"
+        );
+        let _ = fs::remove_dir_all(&parent);
+    }
+
+    #[test]
+    fn validate_local_install_source_rejects_missing_manifest() {
+        let dir = make_temp_dir("localsrc_no_manifest");
+        // No manifest.toml
+        let policy = PluginInstallPolicy::default();
+        let result = validate_local_install_source(&dir, &policy);
+        assert!(
+            matches!(result, Err(InstallError::Manifest(_))),
+            "should reject directory without manifest.toml: {result:?}"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn validate_local_install_source_rejects_nonexistent_path() {
+        let policy = PluginInstallPolicy::default();
+        let result = validate_local_install_source(
+            std::path::Path::new("/nonexistent/zzz/local-install-source"),
+            &policy,
+        );
+        assert!(
+            matches!(result, Err(InstallError::InvalidPath(_))),
+            "should reject nonexistent path: {result:?}"
+        );
+    }
+
+    #[test]
+    fn validate_local_install_source_rejects_file_not_directory() {
+        let dir = make_temp_dir("localsrc_file");
+        let file = dir.join("not_a_dir.txt");
+        fs::write(&file, "i am a file").unwrap();
+        let policy = PluginInstallPolicy::default();
+        let result = validate_local_install_source(&file, &policy);
+        assert!(
+            matches!(result, Err(InstallError::InvalidPath(_))),
+            "should reject regular file as install source: {result:?}"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn archive_traversal_still_rejected_after_local_policy_split() {
+        // Regression guard: the strict relative-path validator used for
+        // archive entries must still reject traversal even though
+        // validate_local_install_source accepts dotdot.
+        let policy = PluginInstallPolicy::default();
+        assert!(validate_relative_install_path(Path::new("../escape")).is_err());
+        assert!(validate_relative_install_path(Path::new("/etc/passwd")).is_err());
+        // Sanity: a normal relative path still validates.
+        assert!(validate_relative_install_path(Path::new("sub/file.txt")).is_ok());
+        // Use the policy parameter to silence the unused-variable lint.
+        let _ = policy;
+    }
+
+    #[tokio::test]
+    async fn uninstall_rejects_path_separators_after_split() {
+        // Regression guard: uninstall name validation remains strict.
+        assert!(matches!(
+            uninstall("foo/bar").await,
+            Err(InstallError::InvalidPath(_))
+        ));
+        assert!(matches!(
+            uninstall("foo\\bar").await,
+            Err(InstallError::InvalidPath(_))
+        ));
     }
 }

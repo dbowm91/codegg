@@ -83,6 +83,7 @@ impl PluginService {
             enabled: true,
             trust: PluginTrustClass::from_runtime_kind("wasm"),
             diagnostics: Vec::new(),
+            source: None,
         };
 
         let hook_count = hook_specs.len();
@@ -121,6 +122,7 @@ impl PluginService {
             enabled: true,
             trust: PluginTrustClass::Builtin,
             diagnostics: Vec::new(),
+            source: None,
         };
 
         self.registry.register_with_hooks(info, hook_specs).await

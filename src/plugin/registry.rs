@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
 use tokio::sync::RwLock;
 
 use crate::plugin::hooks::{HookRegistration, HookType};
@@ -14,6 +15,68 @@ pub struct PluginInfo {
     pub enabled: bool,
     pub trust: PluginTrustClass,
     pub diagnostics: Vec<PluginDiagnostic>,
+    pub source: Option<PluginSourceMetadata>,
+}
+
+/// Provenance and install metadata for a plugin.
+///
+/// `install_path` is the on-disk location this plugin lives at (if any).
+/// `original_source_path` records where the user originally pointed at install time.
+/// `installed_by` classifies how the plugin entered the registry, which informs
+/// safe uninstall behavior (e.g., builtins should never have their files deleted).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PluginSourceMetadata {
+    pub install_path: Option<PathBuf>,
+    pub original_source_path: Option<PathBuf>,
+    pub installed_by: PluginInstallKind,
+}
+
+/// How a plugin entered the live registry.
+///
+/// `Builtin` and `RegistryLoaded` plugins may have no install path; filesystem
+/// removal must be skipped for them. `LocalPath` plugins are installed from a
+/// user-supplied directory and have a real install path under the canonical
+/// plugins dir. `Unknown` is a fallback for plugins registered through legacy
+/// paths that did not record provenance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PluginInstallKind {
+    Builtin,
+    LocalPath,
+    RegistryLoaded,
+    Unknown,
+}
+
+impl PluginSourceMetadata {
+    /// Construct a Builtin metadata (no install path, no source).
+    pub fn builtin() -> Self {
+        Self {
+            install_path: None,
+            original_source_path: None,
+            installed_by: PluginInstallKind::Builtin,
+        }
+    }
+
+    /// Construct a LocalPath metadata from a user-supplied source path.
+    ///
+    /// `original_source_path` is the path the user supplied (canonicalized for
+    /// display purposes); `install_path` is the destination inside the
+    /// canonical plugins directory where the plugin was copied.
+    pub fn local_path(original_source: PathBuf, install_path: PathBuf) -> Self {
+        Self {
+            install_path: Some(install_path),
+            original_source_path: Some(original_source),
+            installed_by: PluginInstallKind::LocalPath,
+        }
+    }
+
+    /// Construct a RegistryLoaded metadata (e.g., discovered from plugins dir).
+    pub fn registry_loaded(install_path: PathBuf) -> Self {
+        Self {
+            install_path: Some(install_path),
+            original_source_path: None,
+            installed_by: PluginInstallKind::RegistryLoaded,
+        }
+    }
 }
 
 /// A command contributed by a plugin.
@@ -158,6 +221,7 @@ impl PluginRegistry {
             enabled: true,
             trust: PluginTrustClass::Builtin,
             diagnostics: Vec::new(),
+            source: Some(PluginSourceMetadata::builtin()),
         };
 
         // Best-effort: ignore duplicate errors for legacy registration
@@ -827,6 +891,7 @@ mod tests {
             enabled: true,
             trust: PluginTrustClass::Builtin,
             diagnostics: Vec::new(),
+            source: None,
         }
     }
 
@@ -871,6 +936,7 @@ mod tests {
             enabled: true,
             trust: PluginTrustClass::Builtin,
             diagnostics: Vec::new(),
+            source: None,
         };
         registry.register(info).await.unwrap();
 
@@ -910,6 +976,7 @@ mod tests {
             enabled: true,
             trust: PluginTrustClass::Builtin,
             diagnostics: Vec::new(),
+            source: None,
         };
         registry.register(info).await.unwrap();
 
@@ -954,6 +1021,7 @@ mod tests {
             enabled: true,
             trust: PluginTrustClass::Builtin,
             diagnostics: Vec::new(),
+            source: None,
         };
         registry.register(info_a).await.unwrap();
 
@@ -977,6 +1045,7 @@ mod tests {
             enabled: true,
             trust: PluginTrustClass::Builtin,
             diagnostics: Vec::new(),
+            source: None,
         };
         let result = registry.register(info_b).await;
         assert!(result.is_err());
@@ -1013,6 +1082,7 @@ mod tests {
             enabled: true,
             trust: PluginTrustClass::Builtin,
             diagnostics: Vec::new(),
+            source: None,
         };
         registry.register(info_a).await.unwrap();
 
@@ -1036,6 +1106,7 @@ mod tests {
             enabled: true,
             trust: PluginTrustClass::Builtin,
             diagnostics: Vec::new(),
+            source: None,
         };
         let result = registry.register(info_b).await;
         assert!(result.is_err());
@@ -1076,6 +1147,7 @@ mod tests {
             enabled: true,
             trust: PluginTrustClass::Builtin,
             diagnostics: Vec::new(),
+            source: None,
         };
         registry.register(info).await.unwrap();
 
@@ -1114,6 +1186,7 @@ mod tests {
             enabled: true,
             trust: PluginTrustClass::Builtin,
             diagnostics: Vec::new(),
+            source: None,
         };
         registry.register(info_a).await.unwrap();
 
@@ -1134,6 +1207,7 @@ mod tests {
             enabled: true,
             trust: PluginTrustClass::Builtin,
             diagnostics: Vec::new(),
+            source: None,
         };
         registry.register(info_b).await.unwrap();
 
@@ -1167,6 +1241,7 @@ mod tests {
             enabled: true,
             trust: PluginTrustClass::Builtin,
             diagnostics: Vec::new(),
+            source: None,
         };
         registry.register(info_a).await.unwrap();
 
@@ -1188,6 +1263,7 @@ mod tests {
             enabled: true,
             trust: PluginTrustClass::Builtin,
             diagnostics: Vec::new(),
+            source: None,
         };
         registry.register(info_b).await.unwrap();
 
@@ -1231,6 +1307,7 @@ mod tests {
             enabled: true,
             trust: PluginTrustClass::Builtin,
             diagnostics: Vec::new(),
+            source: None,
         };
         registry.register(info).await.unwrap();
 
@@ -1262,6 +1339,7 @@ mod tests {
             enabled: true,
             trust: PluginTrustClass::Builtin,
             diagnostics: Vec::new(),
+            source: None,
         };
         registry.register(info_a).await.unwrap();
 
@@ -1281,6 +1359,7 @@ mod tests {
             enabled: true,
             trust: PluginTrustClass::Builtin,
             diagnostics: Vec::new(),
+            source: None,
         };
         registry.register(info_b).await.unwrap();
 
@@ -1300,6 +1379,7 @@ mod tests {
             enabled: true,
             trust: PluginTrustClass::Builtin,
             diagnostics: Vec::new(),
+            source: None,
         };
         registry.register(info_c).await.unwrap();
 
@@ -1333,6 +1413,7 @@ mod tests {
             enabled: true,
             trust: PluginTrustClass::Builtin,
             diagnostics: Vec::new(),
+            source: None,
         };
         registry.register(info).await.unwrap();
 
@@ -1362,6 +1443,7 @@ mod tests {
             enabled: true,
             trust: PluginTrustClass::Builtin,
             diagnostics: Vec::new(),
+            source: None,
         };
         registry.register(info).await.unwrap();
 
@@ -1440,6 +1522,7 @@ mod tests {
             enabled: true,
             trust: PluginTrustClass::Builtin,
             diagnostics: Vec::new(),
+            source: None,
         };
         registry.register(info).await.unwrap();
 
@@ -1484,6 +1567,7 @@ mod tests {
             enabled: true,
             trust: PluginTrustClass::Builtin,
             diagnostics: Vec::new(),
+            source: None,
         };
         registry.register(info_a).await.unwrap();
 
@@ -1507,6 +1591,7 @@ mod tests {
             enabled: false,
             trust: PluginTrustClass::Builtin,
             diagnostics: Vec::new(),
+            source: None,
         };
         // This should succeed because B is disabled and global uniqueness allows
         // disabled plugins to coexist (they just can't be queried).
@@ -1536,6 +1621,7 @@ mod tests {
             enabled: false,
             trust: PluginTrustClass::Builtin,
             diagnostics: Vec::new(),
+            source: None,
         };
         registry.register(info_c).await.unwrap();
 
@@ -1568,6 +1654,7 @@ mod tests {
             enabled: true,
             trust: PluginTrustClass::Builtin,
             diagnostics: Vec::new(),
+            source: None,
         };
         registry.register(info_a).await.unwrap();
 
@@ -1588,6 +1675,7 @@ mod tests {
             enabled: false,
             trust: PluginTrustClass::Builtin,
             diagnostics: Vec::new(),
+            source: None,
         };
         registry.register(info_b).await.unwrap();
 
@@ -1611,6 +1699,7 @@ mod tests {
             enabled,
             trust: PluginTrustClass::Builtin,
             diagnostics: Vec::new(),
+            source: None,
         };
         registry.register(make("p-on", true)).await.unwrap();
         registry.register(make("p-off", false)).await.unwrap();
@@ -1670,6 +1759,7 @@ mod tests {
             enabled: true,
             trust: PluginTrustClass::Builtin,
             diagnostics: Vec::new(),
+            source: None,
         };
         registry.register(info).await.unwrap();
 
@@ -1760,6 +1850,7 @@ mod tests {
             enabled,
             trust: PluginTrustClass::Builtin,
             diagnostics: Vec::new(),
+            source: None,
         };
         // Plugin A owns "deploy", enabled. Plugin B has a unique name and is
         // disabled. Both registers succeed.
@@ -1787,5 +1878,73 @@ mod tests {
         // Re-enable B again to confirm idempotent snapshot-based checks.
         registry.set_enabled("b", true).await.unwrap();
         assert_eq!(registry.commands().await.len(), 2);
+    }
+
+    // ---- PluginSourceMetadata + PluginInstallKind tests (Workstream A) ----
+
+    #[test]
+    fn plugin_source_metadata_builtin_has_no_paths() {
+        let m = PluginSourceMetadata::builtin();
+        assert!(m.install_path.is_none());
+        assert!(m.original_source_path.is_none());
+        assert_eq!(m.installed_by, PluginInstallKind::Builtin);
+    }
+
+    #[test]
+    fn plugin_source_metadata_local_path_records_both() {
+        let original = std::path::PathBuf::from("/Users/me/dev/my-plugin");
+        let install = std::path::PathBuf::from("/data/codegg/plugins/my-plugin");
+        let m = PluginSourceMetadata::local_path(original.clone(), install.clone());
+        assert_eq!(m.install_path.as_ref(), Some(&install));
+        assert_eq!(m.original_source_path.as_ref(), Some(&original));
+        assert_eq!(m.installed_by, PluginInstallKind::LocalPath);
+    }
+
+    #[test]
+    fn plugin_source_metadata_registry_loaded_has_install_only() {
+        let install = std::path::PathBuf::from("/data/codegg/plugins/loaded");
+        let m = PluginSourceMetadata::registry_loaded(install.clone());
+        assert_eq!(m.install_path.as_ref(), Some(&install));
+        assert!(m.original_source_path.is_none());
+        assert_eq!(m.installed_by, PluginInstallKind::RegistryLoaded);
+    }
+
+    #[tokio::test]
+    async fn registry_persists_source_metadata_through_unregister() {
+        // Workstream A regression guard: source metadata round-trips through
+        // register/unregister without being lost.
+        let registry = PluginRegistry::new();
+        let original = std::path::PathBuf::from("/src/my-plugin");
+        let install = std::path::PathBuf::from("/dst/my-plugin");
+        let info = PluginInfo {
+            id: "plugin:roundtrip".into(),
+            manifest: PluginManifest {
+                name: "roundtrip".into(),
+                version: "1.0.0".into(),
+                ..Default::default()
+            },
+            enabled: true,
+            trust: PluginTrustClass::TrustedLocal,
+            diagnostics: Vec::new(),
+            source: Some(PluginSourceMetadata::local_path(
+                original.clone(),
+                install.clone(),
+            )),
+        };
+        registry.register(info).await.unwrap();
+        let fetched = registry.get("plugin:roundtrip").await.unwrap();
+        let meta = fetched.source.expect("source metadata should be present");
+        assert_eq!(meta.install_path.as_ref(), Some(&install));
+        assert_eq!(meta.original_source_path.as_ref(), Some(&original));
+        assert_eq!(meta.installed_by, PluginInstallKind::LocalPath);
+
+        let removed = registry
+            .unregister("plugin:roundtrip")
+            .await
+            .expect("plugin should be removed");
+        let meta = removed
+            .source
+            .expect("source metadata should survive unregister");
+        assert_eq!(meta.install_path.as_ref(), Some(&install));
     }
 }

@@ -402,23 +402,71 @@ placeholder.
 First-class slash commands for local plugin management:
 
 - `/plugins` — List all installed and built-in plugins with status and capability summary
-- `/plugin-info <id>` — Show detailed plugin info (runtime, capabilities, trust, permissions, diagnostics)
+- `/plugin-info <id>` — Show detailed plugin info (runtime, capabilities, trust, permissions, diagnostics, install path)
 - `/plugin-enable <id>` — Enable a plugin (runtime-only; `/plugins` shows a notice)
 - `/plugin-disable <id>` — Disable a plugin (runtime-only; `/plugins` shows a notice)
 - `/plugin-doctor [id]` — Run diagnostic checks on plugin configuration and health
-- `/plugin-remove <id>` — Remove a locally installed plugin (safe: only from plugin install dir)
-- `/plugin-install <path>` — Install a plugin from a local directory path
+- `/plugin-remove <id>` — Remove a locally installed plugin; unregisters it from the live registry and, when an install path was recorded, deletes that directory from disk
+- `/plugin-install <path>` — Install a plugin from a local directory path (absolute or relative)
 
 ### Selector Resolution
 
 Plugin selectors resolve in order: exact id → exact name → unique id prefix → unique name prefix. Ambiguous matches produce clear error messages.
 
+### Install Source Semantics
+
+`/plugin-install <path>` accepts a local directory path that the user explicitly
+chose. Both absolute and relative paths are supported, including paths that
+contain `..` components, as long as the canonicalized target exists, is a
+directory, and contains a `manifest.toml`. The path is canonicalized before any
+filesystem operation.
+
+Archive members and copy-relative paths remain strictly validated
+(`validate_relative_install_path`) — they still reject `..`, `RootDir`,
+`Prefix`, symlinks, and hardlinks. Only the user-supplied local source path is
+permitted to traverse via `..`.
+
+### Remove Semantics
+
+`/plugin-remove <id>` returns a structured result and reports the exact
+outcome:
+
+- **Files removed**: `Plugin '<id>' unregistered and removed from <path>.`
+- **No install path recorded**: `Plugin '<id>' unregistered. No install path was recorded, so no files were removed.`
+- **Delete failed**: `Plugin '<id>' unregistered, but failed to remove files: <error>.`
+- **Hard error**: `Remove failed: <error>.`
+
+Builtins (`installed_by = Builtin`) are never deleted from disk. Plugins
+without recorded install metadata are unregistered but no filesystem removal is
+attempted. Removal validation runs **before** unregister; an unsafe target
+(e.g., outside the canonical plugins directory) aborts uninstall without
+touching the registry.
+
 ### Safety
 
 - Enable/disable is runtime-only (in-memory `PluginRegistry::set_enabled`); `/plugins` shows a notice
-- Remove only deletes from the canonical plugin directory (`~/.local/share/codegg/plugins/`)
-- Install validates manifests before copying and rejects invalid manifests; path traversal, symlinks, hardlinks, and absolute paths are rejected via lexical containment checks
+- Remove only deletes from the canonical plugin directory (`~/.local/share/codegg/plugins/`); the target is validated against this directory before unregister and removal
+- Install validates manifests before copying and rejects invalid manifests; local source paths are canonicalized and must contain a `manifest.toml`; archive members and copy-relative paths remain strictly validated
 - Doctor checks are read-only and never execute plugin code by default
+
+### Source Metadata Model
+
+Plugins carry an optional `PluginSourceMetadata` field on `PluginInfo`:
+
+| Field | Meaning |
+|-------|---------|
+| `install_path` | Canonical path under the plugins directory where the plugin lives |
+| `original_source_path` | Path the user supplied at install time |
+| `installed_by` | `Builtin`, `LocalPath`, `RegistryLoaded`, or `Unknown` |
+
+`PluginManagementView::from_info` populates `source_path` from this metadata,
+which is what `/plugin-info` and `/plugin-doctor` surface to the user.
+
+### Validation
+
+Run `./scripts/validate_plugin_ui.sh` to reproduce the GitHub Actions
+`plugin-focused` and `examples` jobs locally. See `architecture/plugin.md` for
+the authoritative CI workflow.
 
 ## Security Policy (Phase 12)
 

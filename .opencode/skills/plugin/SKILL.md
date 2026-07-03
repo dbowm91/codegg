@@ -1,7 +1,7 @@
 ---
 name: plugin
-description: Plugin system, WASM execution, hooks, fuel tracking, capability-based registry, runtime abstraction (Process/Wasm/Builtin), EmitChat UI rendering, Phase 11 corrective hardening, Phase 12 management UX + policy, Phase 13 SDKs and examples
-version: 1.4.0
+description: Plugin system, WASM execution, hooks, fuel tracking, capability-based registry, runtime abstraction (Process/Wasm/Builtin), EmitChat UI rendering, Phase 11 corrective hardening, Phase 12 management UX + policy + final polish (source metadata, structured uninstall, validate_local_install_source, CI/validation signal), Phase 13 SDKs and examples
+version: 1.5.0
 tags:
   - plugin
   - wasm
@@ -1010,7 +1010,7 @@ Four correctness fixes close gaps in the plugin UI/runtime integration:
 First-class slash commands for local plugin management and observability.
 
 **Files added:**
-- `src/plugin/management.rs` — `PluginManager`, `PluginManagementView`, `PluginDoctorReport`, `resolve_plugin_selector()`
+- `src/plugin/management.rs` — `PluginManager`, `PluginManagementView`, `PluginDoctorReport`, `PluginUninstallResult`, `resolve_plugin_selector()`
 - `src/plugin/management_ui.rs` — `plugins_table()`, `plugin_info_node()`, `doctor_report_node()` returning `UiNode`
 - `src/tui/commands/plugin_management.rs` — TUI command handlers
 
@@ -1018,12 +1018,12 @@ First-class slash commands for local plugin management and observability.
 | Command | Description |
 |---------|-------------|
 | `/plugins` (aliases `/plugin-list`, `/plugin-ls`) | List installed and built-in plugins |
-| `/plugin-info <id>` | Show plugin runtime, capabilities, trust, diagnostics |
+| `/plugin-info <id>` | Show plugin runtime, capabilities, trust, diagnostics, install path |
 | `/plugin-enable <id>` | Enable a plugin |
 | `/plugin-disable <id>` | Disable a plugin |
-| `/plugin-doctor [id]` | Diagnose plugin configuration and runtime health |
-| `/plugin-remove <id>` | Remove a local installed plugin |
-| `/plugin-install <path>` | Install a plugin from a local path |
+| `/plugin-doctor [id>` | Diagnose plugin configuration and runtime health |
+| `/plugin-remove <id>` | Remove a local installed plugin; structured result reports whether files were removed |
+| `/plugin-install <path>` | Install a plugin from a local directory path (absolute or relative) |
 
 **Selector resolution order:**
 1. Exact plugin id
@@ -1033,12 +1033,19 @@ First-class slash commands for local plugin management and observability.
 
 **Safety semantics:**
 - Enable/disable is runtime-only (in-memory `PluginRegistry::set_enabled`); `/plugins` shows a notice
-- Remove only deletes from the canonical plugin install directory
-- Install validates manifests before copying and refuses to overwrite existing plugins
+- Remove validates the install target against the canonical plugins directory before unregister; builtins never get filesystem removal; the structured `PluginUninstallResult` reports whether files were removed and any warnings
+- Install accepts absolute and `..` paths via `validate_local_install_source` (canonicalizes, requires directory + `manifest.toml`); archive members and copy-relative paths remain strictly validated via `validate_relative_install_path` (rejects `..`, absolute, symlinks, hardlinks)
 - Doctor checks are read-only and never execute plugin code
-- Installer path validation uses lexical containment checks (symlinks, hardlinks, absolute paths, and `../` traversal rejected)
 
-**Key types:** `PluginManager`, `PluginManagementView`, `PluginDoctorReport`
+**Source metadata model:** `PluginInfo.source: Option<PluginSourceMetadata>` records `install_path`, `original_source_path`, and `installed_by: PluginInstallKind` (`Builtin | LocalPath | RegistryLoaded | Unknown`). `PluginManagementView::from_info` populates `source_path` from this metadata.
+
+**Key types:** `PluginManager`, `PluginManagementView`, `PluginDoctorReport`, `PluginUninstallResult`, `PluginSourceMetadata`, `PluginInstallKind`
+
+**Validation command:**
+```bash
+./scripts/validate_plugin_ui.sh
+```
+Reproduces the GitHub Actions `plugin-focused` and `examples` jobs locally. See `.github/workflows/ci.yml`.
 
 ### Security Policy (Phase 12)
 

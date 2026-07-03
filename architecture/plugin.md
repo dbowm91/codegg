@@ -157,16 +157,11 @@ pub enum FilesystemPermission {
 }
 ```
 
-### PluginSource
+### PluginSource (legacy)
 
-Tracks where a plugin was installed from:
-
-```rust
-pub struct PluginSource {
-    pub kind: PluginSourceKind,    // Path, Url, Registry
-    pub resolved: PathBuf,         // canonical local path after install
-}
-```
+`PluginSource` (the older, unused enumeration shape) is superseded by
+`PluginSourceMetadata` on `PluginInfo` (see Phase 12 source metadata model
+below). New code should use `PluginSourceMetadata` / `PluginInstallKind`.
 
 ### PluginDiagnostic / PluginDiagnosticLevel
 
@@ -1326,17 +1321,104 @@ Ambiguous or missing selectors produce clear error messages.
 ### Safety
 
 - Enable/disable is runtime-only (in-memory `PluginRegistry::set_enabled`); `/plugins` shows a notice
-- Remove only deletes from the canonical plugin install directory
-- Install validates manifests before copying and refuses to overwrite existing plugins
+- Remove only deletes from the canonical plugin install directory; the target is validated against this directory before unregister and removal, and builtins are never deleted
+- Install validates manifests before copying and refuses to overwrite existing plugins; local source paths accept absolute and `..` traversal as long as the canonical target exists with a manifest
 - Doctor checks are read-only and never execute plugin code
+
+### Plugin Source Metadata Model
+
+Plugins carry an optional `PluginSourceMetadata` on `PluginInfo`:
+
+```rust
+pub struct PluginInfo {
+    // ...
+    pub source: Option<PluginSourceMetadata>,
+}
+
+pub struct PluginSourceMetadata {
+    pub install_path: Option<PathBuf>,         // canonical path under plugins dir
+    pub original_source_path: Option<PathBuf>, // user-supplied source at install time
+    pub installed_by: PluginInstallKind,       // Builtin | LocalPath | RegistryLoaded | Unknown
+}
+```
+
+`installed_by` is the authoritative signal for safe uninstall behavior:
+
+| Kind | Install path? | Disk-removal allowed? |
+|------|---------------|----------------------|
+| `Builtin` | `None` | **No** |
+| `LocalPath` | Some | Yes (validated against plugins dir) |
+| `RegistryLoaded` | Some | Yes (validated against plugins dir) |
+| `Unknown` | May be `None` | Only if install path validates |
+
+`PluginManagementView::from_info` populates `source_path` from
+`source.install_path` (falling back to `original_source_path`). This is what
+`/plugin-info` and `/plugin-doctor` display.
+
+### Uninstall Removal Ordering
+
+`PluginManager::uninstall()` follows the preferred flow from
+`plans/plugin_ui_final_polish_pass.md` Workstream A:
+
+1. Resolve the plugin and capture its source metadata.
+2. If a recorded install path exists and the plugin is not a builtin, validate
+   the target against the canonical plugins directory via
+   `validate_uninstall_target`. A failed validation aborts uninstall without
+   touching the registry.
+3. Unregister from the live registry.
+4. Delete the install directory. If the delete fails, the plugin is already
+   unregistered — the warning surfaces this in the result.
+
+The structured result type is `PluginUninstallResult`:
+
+```rust
+pub struct PluginUninstallResult {
+    pub view: PluginManagementView,
+    pub unregistered: bool,
+    pub removed_files: bool,
+    pub install_path: Option<PathBuf>,
+    pub warning: Option<String>,
+}
+```
+
+The TUI completion variant `TuiCommand::PluginRemoveFinished` carries
+`removed_files`, `install_path`, and `warning` fields. The apply function
+renders distinct messages for each of the four scenarios.
+
+### Install Source Path Policy
+
+Local install paths (user-supplied via `/plugin-install`) are validated by
+`validate_local_install_source`, which accepts absolute paths and `..`
+components as long as the canonical target is a directory containing
+`manifest.toml`. Archive entries and copy-relative paths remain strictly
+validated via `validate_relative_install_path`, which rejects `..`, `RootDir`,
+`Prefix`, symlinks, and hardlinks.
+
+### CI / Validation Signal
+
+`.github/workflows/ci.yml` runs a `plugin-focused` job (install, management,
+registry, TUI command tests, and the codegg-core boundary check) plus an
+`examples` job (Rust SDK, Python SDK, and the three WASM examples under
+`examples/plugins/`). For local reproduction, run:
+
+```bash
+./scripts/validate_plugin_ui.sh
+```
 
 ### Tests
 
 - 30 management tests (selector resolution, view construction, doctor checks, last_error)
 - 16 management_ui tests (table rendering, key-value, doctor reports, last_error display)
-- 31 TUI plugin management tests (format helpers, resolve, persistence, apply handler routing)
+- 31 TUI plugin management tests (format helpers, resolve, persistence, apply handler routing, structured remove result variants)
 - 23 installer tests (traversal, symlinks, hardlinks, absolute paths, nested installs)
 - 13 management tests (PluginManager lifecycle, validate_uninstall_target, edge cases)
+- Workstream A: 5 new tests covering `PluginSourceMetadata`, `PluginInstallKind`,
+  source_path population for builtin/local-path/registry-loaded plugins, and
+  structured uninstall outcomes for source-less, builtin, and
+  outside-plugins-dir plugins.
+- Workstream B: 6 new tests for `validate_local_install_source` covering
+  absolute, relative, `..`, missing-manifest, nonexistent, and file-not-dir
+  inputs, plus regression guards for archive and uninstall strictness.
 
 ## Security Policy (Phase 12)
 

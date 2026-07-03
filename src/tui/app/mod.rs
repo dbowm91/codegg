@@ -553,6 +553,9 @@ pub enum TuiCommand {
     /// Completion: a plugin remove operation has finished.
     PluginRemoveFinished {
         plugin_id: String,
+        removed_files: bool,
+        install_path: Option<String>,
+        warning: Option<String>,
         error: Option<String>,
     },
     /// Completion: a plugin install operation has finished.

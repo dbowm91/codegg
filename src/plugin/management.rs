@@ -1,12 +1,20 @@
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::plugin::manifest::{PluginManifest, PluginRuntimeSpec, PluginTrustClass};
 use crate::plugin::marketplace::MarketplacePlugin;
 use crate::plugin::policy::PluginInstallPolicy;
-use crate::plugin::registry::{PluginInfo, PluginRegistry, PluginRegistryError};
+use crate::plugin::registry::{
+    PluginInfo, PluginRegistry, PluginRegistryError, PluginSourceMetadata,
+};
 use crate::plugin::service::{PluginError, PluginService};
 
 /// A flattened view of a plugin for management and display purposes.
+///
+/// `source_path` is derived from `PluginInfo::source.install_path` when the
+/// plugin was installed from a local path or discovered from the registry
+/// plugins directory. It is `None` for builtins and registry-only plugins
+/// whose install location was never recorded.
 #[derive(Debug, Clone)]
 pub struct PluginManagementView {
     pub id: String,
@@ -29,6 +37,23 @@ pub struct PluginManagementView {
     pub last_error: Option<String>,
 }
 
+/// Structured result of a plugin uninstall operation.
+///
+/// `unregistered` is true if the plugin was successfully removed from the
+/// live registry. `removed_files` is true if the install directory was
+/// successfully deleted from disk. The two flags are independent: a builtin
+/// may be unregistered but have no files to remove, or a plugin may be
+/// unregistered but its directory could not be deleted (in which case
+/// `warning` carries the error).
+#[derive(Debug, Clone)]
+pub struct PluginUninstallResult {
+    pub view: PluginManagementView,
+    pub unregistered: bool,
+    pub removed_files: bool,
+    pub install_path: Option<PathBuf>,
+    pub warning: Option<String>,
+}
+
 impl PluginManagementView {
     /// Build a view from a [`PluginInfo`].
     pub fn from_info(info: &PluginInfo) -> Self {
@@ -49,7 +74,7 @@ impl PluginManagementView {
             enabled: info.enabled,
             runtime_kind: manifest.runtime_kind().to_string(),
             trust: info.trust,
-            source_path: None,
+            source_path: source_path_from_metadata(info.source.as_ref()),
             command_count: manifest.commands().count(),
             hook_count: manifest.hooks_capabilities().count() + manifest.hooks.len(),
             panel_count: manifest.panels().count(),
@@ -114,6 +139,22 @@ fn summarize_permissions(manifest: &PluginManifest) -> String {
     } else {
         parts.join(", ")
     }
+}
+
+/// Extract a displayable source path from plugin source metadata, if any.
+///
+/// Returns the install path string when the plugin recorded one. Falls back
+/// to the original source path when only that is available. Returns `None`
+/// when there is no metadata or no path at all (e.g., for builtins).
+fn source_path_from_metadata(source: Option<&PluginSourceMetadata>) -> Option<String> {
+    let meta = source?;
+    if let Some(install) = meta.install_path.as_ref() {
+        return Some(install.display().to_string());
+    }
+    if let Some(original) = meta.original_source_path.as_ref() {
+        return Some(original.display().to_string());
+    }
+    None
 }
 
 /// Errors from plugin management operations.
@@ -283,12 +324,17 @@ impl PluginManager {
             .map_err(|e| PluginManagementError::Install(format!("invalid manifest: {e}")))?;
 
         let plugin_id = format!("plugin:{}", manifest.name);
+        let original_canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
         let info = PluginInfo {
             id: plugin_id.clone(),
             manifest,
             enabled: true,
             trust: PluginTrustClass::TrustedLocal,
             diagnostics: Vec::new(),
+            source: Some(PluginSourceMetadata::local_path(
+                original_canonical,
+                dest.clone(),
+            )),
         };
 
         self.service
@@ -308,10 +354,22 @@ impl PluginManager {
 
     /// Uninstall a plugin: unregister from the registry and remove
     /// its filesystem directory if it is under the canonical plugins dir.
+    ///
+    /// Removal ordering follows the plan's preferred flow:
+    /// 1. Resolve the plugin and capture its source metadata.
+    /// 2. If a recorded install path exists, validate it against the canonical
+    ///    plugins directory (`validate_uninstall_target`).
+    /// 3. Unregister from the live registry.
+    /// 4. Delete the install directory. If the delete fails, the plugin is
+    ///    already unregistered — the warning surfaces this in the result.
+    ///
+    /// Builtins (`installed_by = Builtin`) are never deleted from disk.
+    /// Plugins without a recorded install path are unregistered but no
+    /// filesystem removal is attempted.
     pub async fn uninstall(
         &self,
         selector: &str,
-    ) -> Result<PluginManagementView, PluginManagementError> {
+    ) -> Result<PluginUninstallResult, PluginManagementError> {
         let info = self
             .service
             .registry()
@@ -319,38 +377,74 @@ impl PluginManager {
             .await
             .map_err(registry_error_to_management)?;
 
-        // Unregister from the live registry first.
+        let install_path = info.source.as_ref().and_then(|s| s.install_path.clone());
+
+        let is_builtin = matches!(
+            info.source.as_ref().map(|s| s.installed_by),
+            Some(crate::plugin::registry::PluginInstallKind::Builtin)
+        );
+
+        // Step 1: validate the install target if we have one and the plugin
+        // is not a builtin. A failed validation aborts uninstall without
+        // touching the registry.
+        let mut removed_files = false;
+        let mut warning: Option<String> = None;
+
+        if let Some(target) = install_path.as_ref() {
+            if is_builtin {
+                // Builtins should never have an install_path recorded, but
+                // guard against drift defensively.
+                tracing::warn!(
+                    plugin = info.id,
+                    path = %target.display(),
+                    "builtin plugin has install_path recorded; skipping filesystem removal"
+                );
+            } else if !target.exists() {
+                // No files to remove.
+            } else {
+                let policy = PluginInstallPolicy::default();
+                if let Err(e) = crate::plugin::install::validate_uninstall_target(target, &policy) {
+                    return Err(PluginManagementError::Install(e.to_string()));
+                }
+            }
+        }
+
+        // Step 2: unregister from the live registry.
         let removed = self
             .service
             .registry()
             .unregister(&info.id)
             .await
             .ok_or_else(|| PluginManagementError::NotFound(info.id.clone()))?;
+        let unregistered = true;
 
-        // Attempt filesystem removal for plugins with a source_path.
-        let view = PluginManagementView::from_info(&removed);
-        if let Some(ref path_str) = view.source_path {
-            let target = std::path::PathBuf::from(path_str);
-            if target.exists() {
-                let policy = PluginInstallPolicy::default();
-                if let Err(e) = crate::plugin::install::validate_uninstall_target(&target, &policy)
-                {
-                    tracing::warn!(
-                        plugin = info.id,
-                        error = %e,
-                        "filesystem uninstall blocked by policy"
-                    );
-                } else if let Err(e) = tokio::fs::remove_dir_all(&target).await {
-                    tracing::warn!(
-                        plugin = info.id,
-                        error = %e,
-                        "failed to remove plugin directory"
-                    );
+        // Step 3: attempt filesystem removal if we have a validated target
+        // and the plugin is not a builtin.
+        if !is_builtin {
+            if let Some(target) = install_path.as_ref() {
+                if target.exists() {
+                    if let Err(e) = tokio::fs::remove_dir_all(target).await {
+                        tracing::warn!(
+                            plugin = info.id,
+                            error = %e,
+                            "failed to remove plugin directory after unregister"
+                        );
+                        warning = Some(e.to_string());
+                    } else {
+                        removed_files = true;
+                    }
                 }
             }
         }
 
-        Ok(view)
+        let view = PluginManagementView::from_info(&removed);
+        Ok(PluginUninstallResult {
+            view,
+            unregistered,
+            removed_files,
+            install_path,
+            warning,
+        })
     }
 
     /// Run diagnostic checks on a plugin.
@@ -812,6 +906,7 @@ mod tests {
             enabled,
             trust: PluginTrustClass::Builtin,
             diagnostics: Vec::new(),
+            source: None,
         }
     }
 
@@ -827,6 +922,7 @@ mod tests {
             enabled,
             trust: PluginTrustClass::Builtin,
             diagnostics: Vec::new(),
+            source: None,
         }
     }
 
@@ -886,6 +982,7 @@ mod tests {
             enabled: true,
             trust: PluginTrustClass::Builtin,
             diagnostics: Vec::new(),
+            source: None,
         };
         let info_b = PluginInfo {
             id: "b:1".into(),
@@ -902,6 +999,7 @@ mod tests {
             enabled: false,
             trust: PluginTrustClass::Builtin,
             diagnostics: Vec::new(),
+            source: None,
         };
         registry.register(info_a).await.unwrap();
         let result = registry.register(info_b).await;
@@ -969,6 +1067,7 @@ mod tests {
                 enabled: true,
                 trust: PluginTrustClass::LocalProcess,
                 diagnostics: Vec::new(),
+                source: None,
             })
             .await
             .unwrap();
@@ -1007,6 +1106,7 @@ mod tests {
                 enabled: true,
                 trust: PluginTrustClass::SandboxedWasm,
                 diagnostics: Vec::new(),
+                source: None,
             })
             .await
             .unwrap();
@@ -1039,6 +1139,7 @@ mod tests {
                 enabled: true,
                 trust: PluginTrustClass::Builtin,
                 diagnostics: Vec::new(),
+                source: None,
             })
             .await
             .unwrap();
@@ -1073,6 +1174,7 @@ mod tests {
                 enabled: true,
                 trust: PluginTrustClass::Builtin,
                 diagnostics: Vec::new(),
+                source: None,
             })
             .await
             .unwrap();
@@ -1299,6 +1401,7 @@ mod tests {
             enabled: true,
             trust: PluginTrustClass::Builtin,
             diagnostics: Vec::new(),
+            source: None,
         };
         let view = PluginManagementView::from_info(&info);
         assert!(view.permissions_summary.contains("network"));
@@ -1339,6 +1442,7 @@ mod tests {
                 enabled: true,
                 trust: PluginTrustClass::Builtin,
                 diagnostics: Vec::new(),
+                source: None,
             })
             .await
             .unwrap();
@@ -1368,6 +1472,7 @@ mod tests {
                 enabled: true,
                 trust: PluginTrustClass::Builtin,
                 diagnostics: Vec::new(),
+                source: None,
             })
             .await
             .unwrap();
@@ -1431,6 +1536,7 @@ mod tests {
                     message: "something broke".to_string(),
                 },
             ],
+            source: None,
         };
         let view = PluginManagementView::from_info(&info);
         assert_eq!(view.last_error.as_deref(), Some("something broke"));
@@ -1481,6 +1587,7 @@ mod tests {
                 enabled: true,
                 trust: PluginTrustClass::LocalProcess,
                 diagnostics: Vec::new(),
+                source: None,
             })
             .await
             .unwrap();
@@ -1522,6 +1629,7 @@ mod tests {
                 enabled: true,
                 trust: PluginTrustClass::LocalProcess,
                 diagnostics: Vec::new(),
+                source: None,
             })
             .await
             .unwrap();
@@ -1573,6 +1681,7 @@ mod tests {
                 enabled: true,
                 trust: PluginTrustClass::LocalProcess,
                 diagnostics: Vec::new(),
+                source: None,
             })
             .await
             .unwrap();
@@ -1591,5 +1700,167 @@ mod tests {
         assert!(!check.passed);
         assert!(check.message.contains("network"));
         assert!(check.message.contains("tool_interception"));
+    }
+
+    // ---- Plugin source metadata (Workstream A) ----
+
+    #[test]
+    fn view_from_info_populates_source_path_from_local_path_metadata() {
+        use crate::plugin::registry::{PluginInstallKind, PluginSourceMetadata};
+        let install = std::path::PathBuf::from("/data/codegg/plugins/my-plugin");
+        let original = std::path::PathBuf::from("/Users/me/dev/my-plugin");
+        let info = PluginInfo {
+            id: "plugin:my-plugin".into(),
+            manifest: make_manifest("my-plugin", Vec::new()),
+            enabled: true,
+            trust: PluginTrustClass::TrustedLocal,
+            diagnostics: Vec::new(),
+            source: Some(PluginSourceMetadata {
+                install_path: Some(install.clone()),
+                original_source_path: Some(original),
+                installed_by: PluginInstallKind::LocalPath,
+            }),
+        };
+        let view = PluginManagementView::from_info(&info);
+        assert_eq!(view.source_path.as_deref(), Some(install.to_str().unwrap()));
+    }
+
+    #[test]
+    fn view_from_info_builtin_has_no_source_path() {
+        use crate::plugin::registry::{PluginInstallKind, PluginSourceMetadata};
+        let info = PluginInfo {
+            id: "builtin:codex".into(),
+            manifest: make_manifest("codex", Vec::new()),
+            enabled: true,
+            trust: PluginTrustClass::Builtin,
+            diagnostics: Vec::new(),
+            source: Some(PluginSourceMetadata {
+                install_path: None,
+                original_source_path: None,
+                installed_by: PluginInstallKind::Builtin,
+            }),
+        };
+        let view = PluginManagementView::from_info(&info);
+        assert!(view.source_path.is_none());
+    }
+
+    #[test]
+    fn view_from_info_falls_back_to_original_when_install_missing() {
+        use crate::plugin::registry::{PluginInstallKind, PluginSourceMetadata};
+        let original = std::path::PathBuf::from("/legacy/path/my-plugin");
+        let info = PluginInfo {
+            id: "plugin:my-plugin".into(),
+            manifest: make_manifest("my-plugin", Vec::new()),
+            enabled: true,
+            trust: PluginTrustClass::TrustedLocal,
+            diagnostics: Vec::new(),
+            source: Some(PluginSourceMetadata {
+                install_path: None,
+                original_source_path: Some(original.clone()),
+                installed_by: PluginInstallKind::RegistryLoaded,
+            }),
+        };
+        let view = PluginManagementView::from_info(&info);
+        assert_eq!(
+            view.source_path.as_deref(),
+            Some(original.to_str().unwrap())
+        );
+    }
+
+    #[tokio::test]
+    async fn uninstall_source_less_plugin_reports_unregister_only() {
+        use crate::plugin::registry::{PluginInstallKind, PluginSourceMetadata};
+        let registry = PluginRegistry::new();
+        registry
+            .register(PluginInfo {
+                id: "plugin:sourceless".into(),
+                manifest: make_manifest("sourceless", Vec::new()),
+                enabled: true,
+                trust: PluginTrustClass::TrustedLocal,
+                diagnostics: Vec::new(),
+                source: Some(PluginSourceMetadata {
+                    install_path: None,
+                    original_source_path: None,
+                    installed_by: PluginInstallKind::Unknown,
+                }),
+            })
+            .await
+            .unwrap();
+        let service = Arc::new(PluginService::new(Arc::new(registry)));
+        let manager = PluginManager::new(service);
+
+        let result = manager.uninstall("plugin:sourceless").await.unwrap();
+        assert!(result.unregistered);
+        assert!(!result.removed_files);
+        assert!(result.install_path.is_none());
+        assert!(result.warning.is_none());
+
+        // And the plugin is gone from the registry.
+        let lookup = manager.info("plugin:sourceless").await;
+        assert!(lookup.is_err());
+    }
+
+    #[tokio::test]
+    async fn uninstall_builtin_does_not_attempt_filesystem_removal() {
+        use crate::plugin::registry::{PluginInstallKind, PluginSourceMetadata};
+        let registry = PluginRegistry::new();
+        registry
+            .register(PluginInfo {
+                id: "builtin:codex".into(),
+                manifest: make_manifest("codex", Vec::new()),
+                enabled: true,
+                trust: PluginTrustClass::Builtin,
+                diagnostics: Vec::new(),
+                source: Some(PluginSourceMetadata {
+                    install_path: None,
+                    original_source_path: None,
+                    installed_by: PluginInstallKind::Builtin,
+                }),
+            })
+            .await
+            .unwrap();
+        let service = Arc::new(PluginService::new(Arc::new(registry)));
+        let manager = PluginManager::new(service);
+
+        let result = manager.uninstall("builtin:codex").await.unwrap();
+        assert!(result.unregistered);
+        assert!(!result.removed_files);
+        assert!(result.install_path.is_none());
+        assert!(result.warning.is_none());
+    }
+
+    #[tokio::test]
+    async fn uninstall_with_install_path_outside_plugins_dir_is_rejected() {
+        use crate::plugin::registry::{PluginInstallKind, PluginSourceMetadata};
+        let registry = PluginRegistry::new();
+        // Use a path that does exist and is not under plugins_dir().
+        let outside = std::env::temp_dir();
+        registry
+            .register(PluginInfo {
+                id: "plugin:bad".into(),
+                manifest: make_manifest("bad", Vec::new()),
+                enabled: true,
+                trust: PluginTrustClass::TrustedLocal,
+                diagnostics: Vec::new(),
+                source: Some(PluginSourceMetadata {
+                    install_path: Some(outside),
+                    original_source_path: None,
+                    installed_by: PluginInstallKind::LocalPath,
+                }),
+            })
+            .await
+            .unwrap();
+        let service = Arc::new(PluginService::new(Arc::new(registry)));
+        let manager = PluginManager::new(service);
+
+        let result = manager.uninstall("plugin:bad").await;
+        assert!(
+            matches!(result, Err(PluginManagementError::Install(_))),
+            "expected Install error for outside plugins_dir, got: {result:?}"
+        );
+
+        // Plugin should still be registered because validation failed before unregister.
+        let lookup = manager.info("plugin:bad").await;
+        assert!(lookup.is_ok());
     }
 }

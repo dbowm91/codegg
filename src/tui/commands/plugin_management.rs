@@ -197,12 +197,21 @@ pub(crate) fn remove_plugin(app: &mut App, query: &str) {
     let tx = app.tui_cmd_tx.clone();
     crate::tui::async_cmd::spawn_tui_task(tx, "plugin_remove", async move {
         match mgr.uninstall(&query).await {
-            Ok(view) => Some(TuiCommand::PluginRemoveFinished {
-                plugin_id: view.id,
+            Ok(result) => Some(TuiCommand::PluginRemoveFinished {
+                plugin_id: result.view.id,
+                removed_files: result.removed_files,
+                install_path: result
+                    .install_path
+                    .as_ref()
+                    .map(|p| p.display().to_string()),
+                warning: result.warning,
                 error: None,
             }),
             Err(e) => Some(TuiCommand::PluginRemoveFinished {
                 plugin_id: query,
+                removed_files: false,
+                install_path: None,
+                warning: None,
                 error: Some(e.to_string()),
             }),
         }
@@ -231,6 +240,13 @@ pub(crate) fn install_plugin(app: &mut App, source_path: &str) {
                 lines.push(format!("Name:    {}", view.name));
                 lines.push(format!("Version: {}", view.version));
                 lines.push(format!("Runtime: {}", view.runtime_kind));
+                if let Some(ref src) = view.source_path {
+                    lines.push(format!("Install path: {}", src));
+                }
+                lines.push(format!(
+                    "State:   {} (runtime-only; enable/disable does not persist)",
+                    if view.enabled { "enabled" } else { "disabled" }
+                ));
                 if view.command_count > 0 {
                     lines.push(format!("Commands: {}", view.command_count));
                 }
@@ -342,20 +358,51 @@ pub(crate) fn apply_plugin_doctor_finished(
 }
 
 /// Apply the result of a plugin remove operation.
+///
+/// The TUI message distinguishes between four scenarios:
+/// - files removed: "Plugin '<id>' unregistered and removed from <path>."
+/// - no source path: "Plugin '<id>' unregistered. No install path was recorded,
+///   so no files were removed."
+/// - delete failed: "Plugin '<id>' unregistered, but failed to remove files: <error>."
+/// - hard error: "Remove failed: <error>."
 pub(crate) fn apply_plugin_remove_finished(
     app: &mut App,
     plugin_id: String,
+    removed_files: bool,
+    install_path: Option<String>,
+    warning: Option<String>,
     error: Option<String>,
 ) {
     if let Some(err) = error {
         app.messages_state
             .toasts
             .error(&format!("Remove failed: {err}"));
-    } else {
-        app.messages_state.toasts.success(&format!(
-            "Plugin '{plugin_id}' unregistered and removed from disk (if present)"
-        ));
+        return;
     }
+
+    if let Some(warn) = warning {
+        let path_msg = install_path
+            .as_deref()
+            .map(|p| format!(" (target was {p})"))
+            .unwrap_or_default();
+        app.messages_state.toasts.warning(&format!(
+            "Plugin '{plugin_id}' unregistered, but failed to remove files{path_msg}: {warn}"
+        ));
+        return;
+    }
+
+    if removed_files {
+        let path = install_path.as_deref().unwrap_or("(unknown path)");
+        app.messages_state.toasts.success(&format!(
+            "Plugin '{plugin_id}' unregistered and removed from {path}"
+        ));
+        return;
+    }
+
+    // No files removed, no error. Either builtin or source-less plugin.
+    app.messages_state.toasts.info(&format!(
+        "Plugin '{plugin_id}' unregistered. No install path was recorded, so no files were removed."
+    ));
 }
 
 /// Apply the result of a plugin install operation.
@@ -411,6 +458,7 @@ mod tests {
                 enabled: true,
                 trust: PluginTrustClass::Builtin,
                 diagnostics: Vec::new(),
+                source: None,
             })
             .await
             .unwrap();
@@ -429,6 +477,7 @@ mod tests {
                 enabled: false,
                 trust: PluginTrustClass::Builtin,
                 diagnostics: Vec::new(),
+                source: None,
             })
             .await
             .unwrap();
@@ -508,14 +557,64 @@ mod tests {
     }
 
     #[test]
-    fn apply_plugin_remove_finished_success_routes_to_toast() {
+    fn apply_plugin_remove_finished_files_removed_routes_to_toast() {
         let mut app = make_test_app();
-        apply_plugin_remove_finished(&mut app, "old-plugin".into(), None);
+        apply_plugin_remove_finished(
+            &mut app,
+            "old-plugin".into(),
+            true,
+            Some("/data/codegg/plugins/old-plugin".into()),
+            None,
+            None,
+        );
         let toasts: Vec<_> = app.messages_state.toasts.iter().collect();
         assert_eq!(toasts.len(), 1);
         assert!(toasts[0]
             .message
-            .contains("unregistered and removed from disk"));
+            .contains("unregistered and removed from /data/codegg/plugins/old-plugin"));
+    }
+
+    #[test]
+    fn apply_plugin_remove_finished_no_source_path_routes_to_toast() {
+        let mut app = make_test_app();
+        apply_plugin_remove_finished(&mut app, "old-plugin".into(), false, None, None, None);
+        let toasts: Vec<_> = app.messages_state.toasts.iter().collect();
+        assert_eq!(toasts.len(), 1);
+        assert!(toasts[0].message.contains("No install path was recorded"));
+    }
+
+    #[test]
+    fn apply_plugin_remove_finished_warning_routes_to_toast() {
+        let mut app = make_test_app();
+        apply_plugin_remove_finished(
+            &mut app,
+            "old-plugin".into(),
+            false,
+            Some("/data/codegg/plugins/old-plugin".into()),
+            Some("permission denied".into()),
+            None,
+        );
+        let toasts: Vec<_> = app.messages_state.toasts.iter().collect();
+        assert_eq!(toasts.len(), 1);
+        assert!(toasts[0].message.contains("failed to remove files"));
+        assert!(toasts[0].message.contains("permission denied"));
+    }
+
+    #[test]
+    fn apply_plugin_remove_finished_error_routes_to_toast() {
+        let mut app = make_test_app();
+        apply_plugin_remove_finished(
+            &mut app,
+            "old-plugin".into(),
+            false,
+            None,
+            None,
+            Some("not found".into()),
+        );
+        let toasts: Vec<_> = app.messages_state.toasts.iter().collect();
+        assert_eq!(toasts.len(), 1);
+        assert!(toasts[0].message.contains("Remove failed"));
+        assert!(toasts[0].message.contains("not found"));
     }
 
     #[test]

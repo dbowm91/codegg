@@ -617,9 +617,20 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
                 app, lines, error,
             );
         }
-        TuiCommand::PluginRemoveFinished { plugin_id, error } => {
+        TuiCommand::PluginRemoveFinished {
+            plugin_id,
+            removed_files,
+            install_path,
+            warning,
+            error,
+        } => {
             crate::tui::commands::plugin_management::apply_plugin_remove_finished(
-                app, plugin_id, error,
+                app,
+                plugin_id,
+                removed_files,
+                install_path,
+                warning,
+                error,
             );
         }
         TuiCommand::PluginInstallFinished {

@@ -10,21 +10,22 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  fmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --check --all
+
   check:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo check
-
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo test -- --test-threads=1
+      - run: cargo check --workspace --all-features --all-targets
 
   clippy:
     runs-on: ubuntu-latest
@@ -34,7 +35,55 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      - run: cargo clippy -- -D warnings
+      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --workspace --all-features -- --test-threads=1
+
+  plugin-focused:
+    runs-on: ubuntu-latest
+    needs: [fmt, check, clippy, test]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Plugin install path / policy tests
+        run: cargo test -p codegg --lib plugin::install:: --all-features
+      - name: Plugin management tests
+        run: cargo test -p codegg --lib plugin::management:: --all-features
+      - name: Plugin registry tests
+        run: cargo test -p codegg --lib plugin::registry:: --all-features
+      - name: Plugin TUI command tests
+        run: cargo test -p codegg --lib tui::commands::plugin_management:: --all-features
+      - name: Core boundary check
+        run: ./scripts/check-core-boundary.sh
+
+  examples:
+    runs-on: ubuntu-latest
+    needs: [plugin-focused]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Rust SDK tests
+        run: cargo test --manifest-path examples/plugins/sdk-rust/Cargo.toml
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Python SDK tests
+        run: PYTHONPATH=examples/plugins/sdk-python python3 -m unittest discover examples/plugins/sdk-python/tests -v
+      - name: Install wasm32 target
+        run: rustup target add wasm32-unknown-unknown
+      - name: WASM example: command-table
+        run: cargo check --manifest-path examples/plugins/wasm-command-table/Cargo.toml --target wasm32-unknown-unknown
+      - name: WASM example: hook-message-transform
+        run: cargo check --manifest-path examples/plugins/wasm-hook-message-transform/Cargo.toml --target wasm32-unknown-unknown
+      - name: WASM example: status-widget
+        run: cargo check --manifest-path examples/plugins/wasm-status-widget/Cargo.toml --target wasm32-unknown-unknown
 
   audit:
     runs-on: ubuntu-latest
@@ -46,17 +95,8 @@ jobs:
         run: cargo install cargo-audit --locked
       - run: cargo audit
 
-  fmt:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt
-      - run: cargo fmt --check
-
   build-cross:
-    needs: [check, test, clippy, fmt]
+    needs: [plugin-focused]
     strategy:
       matrix:
         include:

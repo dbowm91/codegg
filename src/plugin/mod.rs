@@ -24,7 +24,7 @@ pub use event_bus::{PluginEventBus, PluginEventSubscription};
 pub use hooks::{HookContext, HookResult, HookType};
 pub use install::{
     install_from_path, install_from_url, uninstall, validate_install_source,
-    validate_uninstall_target, validate_wasm_module_path,
+    validate_local_install_source, validate_uninstall_target, validate_wasm_module_path,
 };
 pub use lifecycle::{
     EventHookInput, LifecycleHooks, MessageTransformInput, MessageTransformOutput,
@@ -48,8 +48,8 @@ pub use policy::{
 };
 pub use registry::{
     normalize_command_name, PluginCommandRegistration, PluginEventRegistration,
-    PluginHookRegistration, PluginInfo, PluginPanelRegistration, PluginRegistry,
-    PluginRegistryError, PluginStatusRegistration,
+    PluginHookRegistration, PluginInfo, PluginInstallKind, PluginPanelRegistration, PluginRegistry,
+    PluginRegistryError, PluginSourceMetadata, PluginStatusRegistration,
 };
 pub use runtime::builtin::{BuiltinHandlerRegistry, BuiltinRuntime};
 pub use runtime::wasm_cache::WasmModuleCache;

@@ -10,7 +10,7 @@ use crate::plugin::manifest::PluginTrustClass;
 use crate::plugin::manifest::{
     LegacyHookSpec, PluginCapability, PluginHookSpec, PluginManifest, PluginRuntimeSpec,
 };
-use crate::plugin::registry::PluginInfo;
+use crate::plugin::registry::{PluginInfo, PluginSourceMetadata};
 use crate::plugin::runtime::builtin::{BuiltinHandlerRegistry, BuiltinHookHandler};
 use std::collections::HashMap;
 use std::sync::RwLock;
@@ -97,6 +97,7 @@ pub async fn register_builtins(registry: &crate::plugin::registry::PluginRegistr
             enabled: true,
             trust: PluginTrustClass::Builtin,
             diagnostics: Vec::new(),
+            source: Some(PluginSourceMetadata::builtin()),
         };
 
         // register() extracts hooks from both capabilities and legacy hooks fields.
@@ -180,6 +181,7 @@ pub fn make_builtin_info(
         enabled: true,
         trust: PluginTrustClass::Builtin,
         diagnostics: Vec::new(),
+        source: Some(PluginSourceMetadata::builtin()),
     };
 
     (info, registrations)

@@ -886,6 +886,7 @@ mod tests {
             enabled: true,
             trust: PluginTrustClass::Builtin,
             diagnostics: Vec::new(),
+            source: None,
         };
         registry.register(info).await.unwrap();
 
@@ -1011,6 +1012,7 @@ mod tests {
             enabled: true,
             trust: PluginTrustClass::Builtin,
             diagnostics: Vec::new(),
+            source: None,
         };
         registry.register(info).await.unwrap();
 
