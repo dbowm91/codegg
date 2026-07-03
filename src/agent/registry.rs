@@ -100,15 +100,46 @@ impl AgentRegistry {
             resolved.insert(name, ra);
         }
 
-        // Layer 2: Global user agent files (~/.config/codegg/agents/*.md)
+        // Layer 2: Global user agent files (~/.config/codegg/agents/*.toml)
+        // Overlay merge by default; replace=true replaces the entire definition.
         if let Some(config_dir) = dirs::config_dir() {
             let agents_dir = config_dir.join("codegg").join("agents");
             if let Ok(file_agents) = load_agents_from_dir(&agents_dir) {
                 for file_agent in file_agents {
                     let name = file_agent.agent.name.clone();
                     let path = PathBuf::from(file_agent.source.clone());
+                    let replace = file_agent.overlay.replace.unwrap_or(false);
+                    let disable = file_agent.overlay.disable.unwrap_or(false);
+
+                    if disable {
+                        // Remove agent from resolution
+                        resolved.remove(&name);
+                        diagnostics.push(AgentDiagnostic {
+                            severity: AgentDiagnosticSeverity::Info,
+                            agent_name: name.clone(),
+                            message: format!(
+                                "agent '{name}' disabled by global file overlay"
+                            ),
+                        });
+                        continue;
+                    }
+
                     if let Some(existing) = resolved.get_mut(&name) {
-                        existing.agent = file_agent.agent;
+                        let merged = existing.agent.merge_overlay(&file_agent.agent, replace);
+                        let diag_severity = if replace {
+                            AgentDiagnosticSeverity::Warning
+                        } else {
+                            AgentDiagnosticSeverity::Info
+                        };
+                        let action = if replace { "replaces" } else { "merged into" };
+                        diagnostics.push(AgentDiagnostic {
+                            severity: diag_severity,
+                            agent_name: name.clone(),
+                            message: format!(
+                                "global file overlay {action} built-in {name}"
+                            ),
+                        });
+                        existing.agent = merged;
                         existing.sources.push(AgentSource {
                             kind: AgentSourceKind::GlobalFile,
                             path: Some(path),
@@ -132,7 +163,8 @@ impl AgentRegistry {
             }
         }
 
-        // Layer 3: Project agent files (.codegg/agents/*.md relative to PWD)
+        // Layer 3: Project agent files (.codegg/agents/*.toml relative to PWD)
+        // Overlay merge by default; replace=true replaces the entire definition.
         if let Some(project_dir) = std::env::var("PWD").ok().filter(|p| !p.is_empty()) {
             let project_agents_dir = PathBuf::from(&project_dir)
                 .join(".codegg")
@@ -141,8 +173,37 @@ impl AgentRegistry {
                 for file_agent in file_agents {
                     let name = file_agent.agent.name.clone();
                     let path = PathBuf::from(file_agent.source.clone());
+                    let replace = file_agent.overlay.replace.unwrap_or(false);
+                    let disable = file_agent.overlay.disable.unwrap_or(false);
+
+                    if disable {
+                        resolved.remove(&name);
+                        diagnostics.push(AgentDiagnostic {
+                            severity: AgentDiagnosticSeverity::Info,
+                            agent_name: name.clone(),
+                            message: format!(
+                                "agent '{name}' disabled by project file overlay"
+                            ),
+                        });
+                        continue;
+                    }
+
                     if let Some(existing) = resolved.get_mut(&name) {
-                        existing.agent = file_agent.agent;
+                        let merged = existing.agent.merge_overlay(&file_agent.agent, replace);
+                        let diag_severity = if replace {
+                            AgentDiagnosticSeverity::Warning
+                        } else {
+                            AgentDiagnosticSeverity::Info
+                        };
+                        let action = if replace { "replaces" } else { "merged into" };
+                        diagnostics.push(AgentDiagnostic {
+                            severity: diag_severity,
+                            agent_name: name.clone(),
+                            message: format!(
+                                "project file overlay {action} existing agent {name}"
+                            ),
+                        });
+                        existing.agent = merged;
                         existing.sources.push(AgentSource {
                             kind: AgentSourceKind::ProjectFile,
                             path: Some(path),

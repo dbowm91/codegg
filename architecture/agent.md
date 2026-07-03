@@ -238,6 +238,11 @@ pub enum AgentMode {
 - `"deny"` → `PermissionLevel::Deny`
 - `_*` → `PermissionLevel::Ask`
 - Special `"paths"` key creates `PathRule` with `PermissionLevel::Ask`
+- Structured keys:
+  - `bash:allow:<pattern>` → `ToolRule` with `bash_patterns` and Allow level
+  - `bash:deny:<pattern>` → `ToolRule` with `bash_patterns` and Deny level (listed before allow)
+  - `path:allow:<pattern>` → `PathRule` with Allow level
+  - `path:deny:<pattern>` → `PathRule` with Deny level
 
 ### Mode Application
 
@@ -285,6 +290,13 @@ Loads agents from multiple sources (in priority order):
 4. Config file `agent` section
 5. Config file `mode` section (creates agents from modes)
 
+**Overlay behavior**:
+- Layers 2-3 (file-based agents): **Merge by default** — overlay fields are applied on top of the base agent. Use `replace = true` for full replacement.
+- Layer 4 (config `agent` map): **Field-level merge** — each field uses `cfg.field.or_else(|| agent.field)` pattern.
+- Layer 5 (config `mode` map): **Permission merge** — mode tools are applied on top of existing agent permissions.
+
+**Safety envelope**: Agent permissions are bounded by the most restrictive level across agent, session, config, and hard-deny layers.
+
 Markdown agent files use YAML frontmatter:
 
 ```yaml
@@ -294,11 +306,29 @@ mode: primary
 description: Custom agent description
 model: gpt-4o
 temperature: 0.7
+replace: false  # merge into base agent (default) vs full replacement
 permission:
   bash: allow
   write: deny
 ---
 Agent-specific instructions or markdown content
+```
+
+TOML agent files support rich permissions:
+
+```toml
+name = "my-agent"
+mode = "subagent"
+description = "Agent with rich permissions"
+
+[bash_permission]
+action = "ask"
+allow_patterns = ["git diff*", "cargo test*"]
+deny_patterns = ["curl*", "rm *"]
+
+[path_permission]
+allow = ["src/**", "crates/**"]
+deny = [".git/**", "target/**"]
 ```
 
 ---
@@ -333,6 +363,11 @@ Agent-specific instructions or markdown content
 3. Project agent files `.codegg/agents/*.md` (source: `ProjectFile`)
 4. Config `agent` overrides (source: `ConfigAgent`)
 5. Config `mode` compatibility overrides (source: `ConfigMode`)
+
+**Overlay behavior (Milestone 6)**:
+- Layers 2-3: **Merge by default** — `Agent::merge_overlay()` applies overlay fields on top of base agent. Use `replace = true` for full replacement.
+- `disable = true` removes agent from resolution (Info diagnostic)
+- TOML files support `[bash_permission]` and `[path_permission]` sections for rich permissions
 
 ### Compatibility
 

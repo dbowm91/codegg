@@ -65,8 +65,37 @@ impl Agent {
     pub fn permission_ruleset(&self) -> PermissionRuleset {
         let mut tool_rules = Vec::new();
         let mut path_rules = Vec::new();
+        let mut bash_allow_patterns: Vec<String> = Vec::new();
+        let mut bash_deny_patterns: Vec<String> = Vec::new();
 
         for (key, value) in &self.permissions {
+            // Handle structured bash allow patterns: "bash:allow:<pattern>"
+            if let Some(pattern) = key.strip_prefix("bash:allow:") {
+                bash_allow_patterns.push(pattern.to_string());
+                continue;
+            }
+            // Handle structured bash deny patterns: "bash:deny:<pattern>"
+            if let Some(pattern) = key.strip_prefix("bash:deny:") {
+                bash_deny_patterns.push(pattern.to_string());
+                continue;
+            }
+            // Handle structured path allow patterns: "path:allow:<pattern>"
+            if let Some(pattern) = key.strip_prefix("path:allow:") {
+                path_rules.push(permission::PathRule {
+                    pattern: pattern.to_string(),
+                    level: permission::PermissionLevel::Allow,
+                });
+                continue;
+            }
+            // Handle structured path deny patterns: "path:deny:<pattern>"
+            if let Some(pattern) = key.strip_prefix("path:deny:") {
+                path_rules.push(permission::PathRule {
+                    pattern: pattern.to_string(),
+                    level: permission::PermissionLevel::Deny,
+                });
+                continue;
+            }
+            // Legacy "paths" key
             if key == "paths" {
                 path_rules.push(permission::PathRule {
                     pattern: value.clone(),
@@ -87,6 +116,28 @@ impl Agent {
             });
         }
 
+        // If we have structured bash patterns, create a ToolRule with bash_patterns
+        if !bash_allow_patterns.is_empty() || !bash_deny_patterns.is_empty() {
+            // Deny patterns take precedence: add them as deny rules with patterns
+            if !bash_deny_patterns.is_empty() {
+                tool_rules.push(permission::ToolRule {
+                    tool: "bash".to_string(),
+                    level: permission::PermissionLevel::Deny,
+                    paths: None,
+                    bash_patterns: Some(bash_deny_patterns),
+                });
+            }
+            // Allow patterns are added as allow rules with patterns
+            if !bash_allow_patterns.is_empty() {
+                tool_rules.push(permission::ToolRule {
+                    tool: "bash".to_string(),
+                    level: permission::PermissionLevel::Allow,
+                    paths: None,
+                    bash_patterns: Some(bash_allow_patterns),
+                });
+            }
+        }
+
         PermissionRuleset {
             default: permission::PermissionLevel::Ask,
             tool_rules,
@@ -97,6 +148,126 @@ impl Agent {
     pub fn merge_permissions(&self, config_perms: &PermissionRuleset) -> PermissionRuleset {
         let agent_perms = self.permission_ruleset();
         permission::merge_rulesets(config_perms, &agent_perms)
+    }
+
+    /// Merge another agent's fields into this one (overlay merge).
+    /// Scalar fields replace only when the overlay has them set.
+    /// Permissions merge per-tool.
+    /// `replace=true` in overlay resets the base before applying.
+    pub fn merge_overlay(&self, overlay: &Agent, replace: bool) -> Agent {
+        if replace {
+            return overlay.clone();
+        }
+
+        let mut merged = self.clone();
+
+        if !overlay.name.is_empty() {
+            merged.name = overlay.name.clone();
+        }
+        if overlay.role.is_some() {
+            merged.role = overlay.role.clone();
+        }
+        if !overlay.description.is_empty() {
+            merged.description = overlay.description.clone();
+        }
+        if overlay.mode != AgentMode::Primary || overlay.mode_name.is_some() {
+            merged.mode = overlay.mode.clone();
+        }
+        if overlay.model.is_some() {
+            merged.model = overlay.model.clone();
+        }
+        if overlay.variant.is_some() {
+            merged.variant = overlay.variant.clone();
+        }
+        if overlay.temperature.is_some() {
+            merged.temperature = overlay.temperature;
+        }
+        if overlay.top_p.is_some() {
+            merged.top_p = overlay.top_p;
+        }
+        if overlay.color.is_some() {
+            merged.color = overlay.color.clone();
+        }
+        if overlay.steps.is_some() {
+            merged.steps = overlay.steps;
+        }
+        if overlay.system_prompt.is_some() {
+            merged.system_prompt = overlay.system_prompt.clone();
+        }
+        if overlay.hidden {
+            merged.hidden = overlay.hidden;
+        }
+        if overlay.thinking_budget.is_some() {
+            merged.thinking_budget = overlay.thinking_budget;
+        }
+        if overlay.reasoning_effort.is_some() {
+            merged.reasoning_effort = overlay.reasoning_effort.clone();
+        }
+
+        // Permissions: merge per-tool (overlay overwrites matching keys)
+        for (key, value) in &overlay.permissions {
+            merged.permissions.insert(key.clone(), value.clone());
+        }
+
+        merged
+    }
+
+    /// Apply the safety envelope: effective permissions are bounded by the
+    /// most restrictive result across agent, session, config, and hard safety
+    /// constraints. This prevents custom agent files from silently escalating
+    /// permissions beyond runtime safety bounds.
+    ///
+    /// `session_rules` are the session-level permission overrides.
+    /// `config_rules` are the global config permission rules.
+    /// `hard_deny` are tools that must always be denied (e.g., sandbox restrictions).
+    pub fn apply_safety_envelope(
+        &self,
+        session_rules: &PermissionRuleset,
+        config_rules: &PermissionRuleset,
+        hard_deny: &[String],
+    ) -> Agent {
+        let mut agent = self.clone();
+        let agent_ruleset = agent.permission_ruleset();
+
+        // For each tool in hard_deny, ensure it's denied
+        for tool in hard_deny {
+            agent.permissions.insert(tool.clone(), "deny".to_string());
+        }
+
+        // Safety envelope: for each tool rule in agent permissions,
+        // check if session or config rules are more restrictive.
+        // The most restrictive result wins.
+        for tool_rule in &agent_ruleset.tool_rules {
+            // Check session rules for this tool
+            for session_rule in &session_rules.tool_rules {
+                if session_rule.tool == tool_rule.tool
+                    || session_rule.matches(&tool_rule.tool)
+                {
+                    // Session rule is more restrictive (Deny > Ask > Allow)
+                    if session_rule.level < tool_rule.level {
+                        agent.permissions.insert(
+                            tool_rule.tool.clone(),
+                            session_rule.level.as_str().to_string(),
+                        );
+                    }
+                }
+            }
+            // Check config rules for this tool
+            for config_rule in &config_rules.tool_rules {
+                if config_rule.tool == tool_rule.tool
+                    || config_rule.matches(&tool_rule.tool)
+                {
+                    if config_rule.level < tool_rule.level {
+                        agent.permissions.insert(
+                            tool_rule.tool.clone(),
+                            config_rule.level.as_str().to_string(),
+                        );
+                    }
+                }
+            }
+        }
+
+        agent
     }
 
     pub fn with_mode(mut self, mode_def: ModeDefinition) -> Self {
@@ -341,6 +512,8 @@ pub(crate) fn parse_mode(s: &str) -> Result<AgentMode, AgentError> {
 pub struct FileAgent {
     pub agent: Agent,
     pub source: String,
+    /// Overlay control flags from the TOML file.
+    pub overlay: OverlayFlags,
 }
 
 pub fn load_agents_from_dir(dir: &Path) -> Result<Vec<FileAgent>, AgentError> {
@@ -420,7 +593,63 @@ pub fn load_agent_from_file(path: &Path) -> Result<Option<FileAgent>, AgentError
 
     let source = path.to_string_lossy().to_string();
 
-    Ok(Some(FileAgent { agent, source }))
+    // Markdown files always use merge overlay (no replace/disable flags)
+    Ok(Some(FileAgent {
+        agent,
+        source,
+        overlay: OverlayFlags::default(),
+    }))
+}
+
+/// Apply structured bash permission spec to agent permissions.
+/// Converts BashPermissionSpec into flat permission entries.
+fn apply_bash_permission_spec(agent: &mut Agent, spec: &BashPermissionSpec) {
+    // Set the default bash action
+    if let Some(ref action) = spec.action {
+        agent
+            .permissions
+            .insert("bash".to_string(), action.clone());
+    }
+
+    // Store allow/deny patterns as structured entries
+    // These will be converted to ToolRules during permission_ruleset()
+    if let Some(ref allow_patterns) = spec.allow_patterns {
+        for pattern in allow_patterns {
+            agent.permissions.insert(
+                format!("bash:allow:{}", pattern),
+                "allow".to_string(),
+            );
+        }
+    }
+    if let Some(ref deny_patterns) = spec.deny_patterns {
+        for pattern in deny_patterns {
+            agent.permissions.insert(
+                format!("bash:deny:{}", pattern),
+                "deny".to_string(),
+            );
+        }
+    }
+}
+
+/// Apply structured path permission spec to agent permissions.
+/// Converts PathPermissionSpec into flat permission entries.
+fn apply_path_permission_spec(agent: &mut Agent, spec: &PathPermissionSpec) {
+    if let Some(ref allow_patterns) = spec.allow {
+        for pattern in allow_patterns {
+            agent.permissions.insert(
+                format!("path:allow:{}", pattern),
+                "allow".to_string(),
+            );
+        }
+    }
+    if let Some(ref deny_patterns) = spec.deny {
+        for pattern in deny_patterns {
+            agent.permissions.insert(
+                format!("path:deny:{}", pattern),
+                "deny".to_string(),
+            );
+        }
+    }
 }
 
 fn parse_frontmatter(content: &str) -> Option<(String, String)> {
@@ -438,11 +667,58 @@ fn parse_frontmatter(content: &str) -> Option<(String, String)> {
     Some((frontmatter, body))
 }
 
+/// Overlay control flags for TOML agent files.
+#[derive(serde::Deserialize, Debug, Clone, Default)]
+pub struct OverlayFlags {
+    /// When true, completely replaces the existing agent definition instead of merging.
+    pub replace: Option<bool>,
+    /// When true, disables the agent (prevents it from appearing in resolution).
+    pub disable: Option<bool>,
+    /// Explicitly merge into existing definition (default behavior, can be used for clarity).
+    pub merge: Option<bool>,
+}
+
+/// Structured bash permission spec for agent definitions.
+#[derive(serde::Deserialize, Debug, Clone, Default)]
+pub struct BashPermissionSpec {
+    /// Default action for bash: "allow", "deny", or "ask".
+    pub action: Option<String>,
+    /// Glob patterns that are explicitly allowed.
+    pub allow_patterns: Option<Vec<String>>,
+    /// Glob patterns that are explicitly denied.
+    pub deny_patterns: Option<Vec<String>>,
+}
+
+/// Structured path permission spec for agent definitions.
+#[derive(serde::Deserialize, Debug, Clone, Default)]
+pub struct PathPermissionSpec {
+    /// Glob patterns for allowed paths.
+    pub allow: Option<Vec<String>>,
+    /// Glob patterns for denied paths.
+    pub deny: Option<Vec<String>>,
+}
+
+/// Rich permission spec supporting both simple strings and structured rules.
+#[derive(serde::Deserialize, Debug, Clone)]
+#[serde(untagged)]
+pub enum AgentPermissionSpec {
+    /// Simple action string: "allow", "deny", or "ask"
+    Simple(String),
+    /// Structured bash permission
+    Bash(BashPermissionSpec),
+    /// Structured path permission
+    Paths(PathPermissionSpec),
+}
+
 /// TOML agent file: supports both flat format and `[agent]` wrapped format.
 #[derive(serde::Deserialize, Debug, Default)]
 #[serde(default)]
 struct TomlAgentFile {
     schema_version: Option<u32>,
+    /// Overlay control flags
+    replace: Option<bool>,
+    disable: Option<bool>,
+    merge: Option<bool>,
     /// Wrapped format: `[agent]` section
     agent: Option<TomlAgentInner>,
     // Flat format: top-level keys
@@ -459,9 +735,11 @@ struct TomlAgentFile {
     color: Option<String>,
     steps: Option<u32>,
     hidden: Option<bool>,
-    disable: Option<bool>,
-    // Flat format: `[permission]` section
+    // Flat format: `[permission]` section — simple string values only
     permission: Option<HashMap<String, String>>,
+    // Structured permission sub-tables: `[bash_permission]` and `[path_permission]`
+    bash_permission: Option<BashPermissionSpec>,
+    path_permission: Option<PathPermissionSpec>,
 }
 
 /// Inner struct for `[agent]` wrapped TOML format.
@@ -486,16 +764,36 @@ struct TomlAgentInner {
 }
 
 impl TomlAgentFile {
+    /// Extract overlay control flags from the top-level fields.
+    fn overlay_flags(&self) -> OverlayFlags {
+        OverlayFlags {
+            replace: self.replace,
+            disable: self.disable,
+            merge: self.merge,
+        }
+    }
+
+    /// Convert simple permission strings to PermissionRule for AgentConfig.
+    fn simplify_permissions(
+        perms: &Option<HashMap<String, String>>,
+    ) -> Option<HashMap<String, crate::config::schema::PermissionRule>> {
+        perms.as_ref().map(|m| {
+            m.iter()
+                .map(|(k, v)| {
+                    (
+                        k.clone(),
+                        crate::config::schema::PermissionRule::Action(v.clone()),
+                    )
+                })
+                .collect()
+        })
+    }
+
     /// Convert to AgentConfig, preferring `[agent]` section over flat fields.
     fn into_agent_config(self) -> AgentConfig {
         if let Some(inner) = self.agent {
             // Wrapped format: use inner fields
-            let permission = inner.permissions.map(|perms| {
-                perms
-                    .into_iter()
-                    .map(|(k, v)| (k, crate::config::schema::PermissionRule::Action(v)))
-                    .collect()
-            });
+            let permission = Self::simplify_permissions(&inner.permissions);
             AgentConfig {
                 name: inner.name,
                 role: inner.role,
@@ -517,12 +815,7 @@ impl TomlAgentFile {
             }
         } else {
             // Flat format: use top-level fields
-            let permission = self.permission.map(|perms| {
-                perms
-                    .into_iter()
-                    .map(|(k, v)| (k, crate::config::schema::PermissionRule::Action(v)))
-                    .collect()
-            });
+            let permission = Self::simplify_permissions(&self.permission);
             AgentConfig {
                 name: self.name,
                 role: self.role,
@@ -544,6 +837,22 @@ impl TomlAgentFile {
             }
         }
     }
+
+    /// Extract structured bash permission from dedicated section.
+    fn structured_bash_permission(&self) -> Option<BashPermissionSpec> {
+        if let Some(ref bash) = self.bash_permission {
+            return Some(bash.clone());
+        }
+        None
+    }
+
+    /// Extract structured path permission from dedicated section.
+    fn structured_path_permission(&self) -> Option<PathPermissionSpec> {
+        if let Some(ref paths) = self.path_permission {
+            return Some(paths.clone());
+        }
+        None
+    }
 }
 
 pub fn load_agent_from_toml(path: &Path) -> Result<Option<FileAgent>, AgentError> {
@@ -552,6 +861,9 @@ pub fn load_agent_from_toml(path: &Path) -> Result<Option<FileAgent>, AgentError
     let toml_file: TomlAgentFile =
         toml::from_str(&content).map_err(|e| AgentError::Invalid(e.to_string()))?;
 
+    let overlay = toml_file.overlay_flags();
+    let bash_spec = toml_file.structured_bash_permission();
+    let path_spec = toml_file.structured_path_permission();
     let mut agent_cfg = toml_file.into_agent_config();
 
     let name = agent_cfg.name.clone().unwrap_or_else(|| {
@@ -581,10 +893,25 @@ pub fn load_agent_from_toml(path: &Path) -> Result<Option<FileAgent>, AgentError
         }
     }
 
-    let agent = agent_from_config(&name, &agent_cfg)?;
+    let mut agent = agent_from_config(&name, &agent_cfg)?;
+
+    // Apply structured bash permissions to agent.permissions
+    if let Some(bash) = bash_spec {
+        apply_bash_permission_spec(&mut agent, &bash);
+    }
+
+    // Apply structured path permissions to agent.permissions
+    if let Some(paths) = path_spec {
+        apply_path_permission_spec(&mut agent, &paths);
+    }
+
     let source = path.to_string_lossy().to_string();
 
-    Ok(Some(FileAgent { agent, source }))
+    Ok(Some(FileAgent {
+        agent,
+        source,
+        overlay,
+    }))
 }
 
 pub fn find_default_agent(agents: &[Agent]) -> Option<&Agent> {
@@ -1488,9 +1815,6 @@ description = "TOML agent"
 
     #[test]
     fn test_registry_loads_toml_from_global_dir() {
-        use crate::config::schema::Config;
-        use crate::agent::registry::AgentRegistry;
-
         let tmp = tempfile::tempdir().unwrap();
         let content = r#"
 name = "global-toml-agent"
@@ -1504,5 +1828,459 @@ description = "Global TOML agent"
         let agents = load_agents_from_dir(tmp.path()).unwrap();
         assert_eq!(agents.len(), 1);
         assert_eq!(agents[0].agent.name, "global-toml-agent");
+    }
+
+    // --- Milestone 6: Overlay merge behavior tests ---
+
+    #[test]
+    fn test_overlay_merge_preserves_base_fields() {
+        let base = Agent {
+            name: "security-review".to_string(),
+            role: Some("reviewer".to_string()),
+            description: "Built-in security reviewer".to_string(),
+            mode: AgentMode::Subagent,
+            mode_name: None,
+            model: Some("tier.frontier".to_string()),
+            variant: None,
+            temperature: Some(0.1),
+            top_p: None,
+            color: None,
+            steps: None,
+            system_prompt: Some("Review for security issues.".to_string()),
+            permissions: HashMap::from([
+                ("read".to_string(), "allow".to_string()),
+                ("bash".to_string(), "deny".to_string()),
+            ]),
+            hidden: false,
+            thinking_budget: None,
+            reasoning_effort: None,
+        };
+
+        // Overlay only changes temperature
+        let overlay = Agent {
+            name: "security-review".to_string(),
+            role: None,
+            description: String::new(),
+            mode: AgentMode::Primary,
+            mode_name: None,
+            model: None,
+            variant: None,
+            temperature: Some(0.05),
+            top_p: None,
+            color: None,
+            steps: None,
+            system_prompt: None,
+            permissions: HashMap::new(),
+            hidden: false,
+            thinking_budget: None,
+            reasoning_effort: None,
+        };
+
+        let merged = base.merge_overlay(&overlay, false);
+        // Temperature replaced
+        assert_eq!(merged.temperature, Some(0.05));
+        // Other fields preserved from base
+        assert_eq!(merged.name, "security-review");
+        assert_eq!(merged.description, "Built-in security reviewer");
+        assert_eq!(merged.mode, AgentMode::Subagent);
+        assert_eq!(
+            merged.system_prompt.as_deref(),
+            Some("Review for security issues.")
+        );
+        assert_eq!(merged.permissions.get("read"), Some(&"allow".to_string()));
+        assert_eq!(merged.permissions.get("bash"), Some(&"deny".to_string()));
+    }
+
+    #[test]
+    fn test_overlay_merge_permissions_per_tool() {
+        let base = Agent {
+            name: "test".to_string(),
+            role: None,
+            description: "Base".to_string(),
+            mode: AgentMode::Primary,
+            mode_name: None,
+            model: None,
+            variant: None,
+            temperature: None,
+            top_p: None,
+            color: None,
+            steps: None,
+            system_prompt: None,
+            permissions: HashMap::from([
+                ("read".to_string(), "allow".to_string()),
+                ("bash".to_string(), "deny".to_string()),
+            ]),
+            hidden: false,
+            thinking_budget: None,
+            reasoning_effort: None,
+        };
+
+        // Overlay changes bash to ask
+        let overlay = Agent {
+            name: "test".to_string(),
+            role: None,
+            description: String::new(),
+            mode: AgentMode::Primary,
+            mode_name: None,
+            model: None,
+            variant: None,
+            temperature: None,
+            top_p: None,
+            color: None,
+            steps: None,
+            system_prompt: None,
+            permissions: HashMap::from([
+                ("bash".to_string(), "ask".to_string()),
+            ]),
+            hidden: false,
+            thinking_budget: None,
+            reasoning_effort: None,
+        };
+
+        let merged = base.merge_overlay(&overlay, false);
+        assert_eq!(merged.permissions.get("read"), Some(&"allow".to_string()));
+        assert_eq!(merged.permissions.get("bash"), Some(&"ask".to_string()));
+    }
+
+    #[test]
+    fn test_overlay_replace_discards_base() {
+        let base = Agent {
+            name: "test".to_string(),
+            role: Some("base-role".to_string()),
+            description: "Base description".to_string(),
+            mode: AgentMode::Subagent,
+            mode_name: None,
+            model: Some("old-model".to_string()),
+            variant: None,
+            temperature: Some(0.5),
+            top_p: None,
+            color: None,
+            steps: None,
+            system_prompt: Some("Base prompt".to_string()),
+            permissions: HashMap::from([
+                ("read".to_string(), "allow".to_string()),
+            ]),
+            hidden: false,
+            thinking_budget: None,
+            reasoning_effort: None,
+        };
+
+        let overlay = Agent {
+            name: "test".to_string(),
+            role: None,
+            description: "Overlay description".to_string(),
+            mode: AgentMode::Primary,
+            mode_name: None,
+            model: Some("new-model".to_string()),
+            variant: None,
+            temperature: None,
+            top_p: None,
+            color: None,
+            steps: None,
+            system_prompt: Some("Overlay prompt".to_string()),
+            permissions: HashMap::from([
+                ("bash".to_string(), "allow".to_string()),
+            ]),
+            hidden: false,
+            thinking_budget: None,
+            reasoning_effort: None,
+        };
+
+        let merged = base.merge_overlay(&overlay, true);
+        // replace=true: overlay is used as-is
+        assert_eq!(merged.description, "Overlay description");
+        assert_eq!(merged.model, Some("new-model".to_string()));
+        assert_eq!(
+            merged.system_prompt.as_deref(),
+            Some("Overlay prompt")
+        );
+        assert_eq!(merged.permissions.get("bash"), Some(&"allow".to_string()));
+        // Base permissions are gone
+        assert!(merged.permissions.get("read").is_none());
+    }
+
+    #[test]
+    fn test_overlay_disable_flag() {
+        let tmp = tempfile::tempdir().unwrap();
+        let content = r#"
+name = "my-agent"
+mode = "subagent"
+description = "Should be disabled"
+disable = true
+"#;
+        std::fs::write(tmp.path().join("disabled.toml"), content).unwrap();
+        let agents = load_agents_from_dir(tmp.path()).unwrap();
+        assert_eq!(agents.len(), 1);
+        assert_eq!(agents[0].overlay.disable, Some(true));
+    }
+
+    #[test]
+    fn test_overlay_replace_flag() {
+        let tmp = tempfile::tempdir().unwrap();
+        let content = r#"
+name = "my-agent"
+mode = "subagent"
+description = "Replace mode"
+replace = true
+"#;
+        std::fs::write(tmp.path().join("replace.toml"), content).unwrap();
+        let agents = load_agents_from_dir(tmp.path()).unwrap();
+        assert_eq!(agents.len(), 1);
+        assert_eq!(agents[0].overlay.replace, Some(true));
+    }
+
+    // --- Milestone 6: Rich permission tests ---
+
+    #[test]
+    fn test_toml_structured_bash_permissions() {
+        let tmp = tempfile::tempdir().unwrap();
+        let content = r#"
+name = "bash-agent"
+mode = "subagent"
+description = "Agent with structured bash permissions"
+
+[bash_permission]
+action = "ask"
+allow_patterns = ["git diff*", "git status*", "cargo test*"]
+deny_patterns = ["curl*", "wget*", "rm *"]
+"#;
+        std::fs::write(tmp.path().join("bash.toml"), content).unwrap();
+        let agents = load_agents_from_dir(tmp.path()).unwrap();
+        assert_eq!(agents.len(), 1);
+        let agent = &agents[0].agent;
+        // Default bash action
+        assert_eq!(agent.permissions.get("bash"), Some(&"ask".to_string()));
+        // Structured allow patterns stored as prefixed keys
+        assert_eq!(
+            agent.permissions.get("bash:allow:git diff*"),
+            Some(&"allow".to_string())
+        );
+        assert_eq!(
+            agent.permissions.get("bash:allow:cargo test*"),
+            Some(&"allow".to_string())
+        );
+        // Structured deny patterns stored as prefixed keys
+        assert_eq!(
+            agent.permissions.get("bash:deny:curl*"),
+            Some(&"deny".to_string())
+        );
+        assert_eq!(
+            agent.permissions.get("bash:deny:rm *"),
+            Some(&"deny".to_string())
+        );
+    }
+
+    #[test]
+    fn test_toml_structured_path_permissions() {
+        let tmp = tempfile::tempdir().unwrap();
+        let content = r#"
+name = "path-agent"
+mode = "subagent"
+description = "Agent with structured path permissions"
+
+[path_permission]
+allow = ["src/**", "crates/**"]
+deny = [".git/**", "target/**"]
+"#;
+        std::fs::write(tmp.path().join("paths.toml"), content).unwrap();
+        let agents = load_agents_from_dir(tmp.path()).unwrap();
+        assert_eq!(agents.len(), 1);
+        let agent = &agents[0].agent;
+        assert_eq!(
+            agent.permissions.get("path:allow:src/**"),
+            Some(&"allow".to_string())
+        );
+        assert_eq!(
+            agent.permissions.get("path:deny:.git/**"),
+            Some(&"deny".to_string())
+        );
+    }
+
+    #[test]
+    fn test_structured_bash_to_ruleset_conversion() {
+        let agent = Agent {
+            name: "test".to_string(),
+            role: None,
+            description: "Test".to_string(),
+            mode: AgentMode::Primary,
+            mode_name: None,
+            model: None,
+            variant: None,
+            temperature: None,
+            top_p: None,
+            color: None,
+            steps: None,
+            system_prompt: None,
+            permissions: HashMap::from([
+                ("bash".to_string(), "ask".to_string()),
+                ("bash:allow:git diff*".to_string(), "allow".to_string()),
+                ("bash:allow:cargo test*".to_string(), "allow".to_string()),
+                ("bash:deny:rm *".to_string(), "deny".to_string()),
+                ("bash:deny:curl*".to_string(), "deny".to_string()),
+            ]),
+            hidden: false,
+            thinking_budget: None,
+            reasoning_effort: None,
+        };
+        let ruleset = agent.permission_ruleset();
+        // Should have: bash ask rule, deny patterns rule, allow patterns rule
+        let bash_rules: Vec<_> = ruleset
+            .tool_rules
+            .iter()
+            .filter(|r| r.tool == "bash")
+            .collect();
+        assert!(bash_rules.len() >= 2, "should have bash deny+allow pattern rules");
+        // Deny rule should have patterns
+        let deny_rule = bash_rules.iter().find(|r| r.level == permission::PermissionLevel::Deny).unwrap();
+        assert!(deny_rule.bash_patterns.is_some());
+        let patterns = deny_rule.bash_patterns.as_ref().unwrap();
+        assert!(patterns.contains(&"rm *".to_string()));
+        assert!(patterns.contains(&"curl*".to_string()));
+        // Allow rule should have patterns
+        let allow_rule = bash_rules.iter().find(|r| r.level == permission::PermissionLevel::Allow).unwrap();
+        assert!(allow_rule.bash_patterns.is_some());
+        let patterns = allow_rule.bash_patterns.as_ref().unwrap();
+        assert!(patterns.contains(&"git diff*".to_string()));
+        assert!(patterns.contains(&"cargo test*".to_string()));
+    }
+
+    #[test]
+    fn test_structured_path_to_ruleset_conversion() {
+        let agent = Agent {
+            name: "test".to_string(),
+            role: None,
+            description: "Test".to_string(),
+            mode: AgentMode::Primary,
+            mode_name: None,
+            model: None,
+            variant: None,
+            temperature: None,
+            top_p: None,
+            color: None,
+            steps: None,
+            system_prompt: None,
+            permissions: HashMap::from([
+                ("path:allow:src/**".to_string(), "allow".to_string()),
+                ("path:deny:.git/**".to_string(), "deny".to_string()),
+            ]),
+            hidden: false,
+            thinking_budget: None,
+            reasoning_effort: None,
+        };
+        let ruleset = agent.permission_ruleset();
+        assert_eq!(ruleset.path_rules.len(), 2);
+        let allow_rule = ruleset.path_rules.iter().find(|r| r.level == permission::PermissionLevel::Allow).unwrap();
+        assert_eq!(allow_rule.pattern, "src/**");
+        let deny_rule = ruleset.path_rules.iter().find(|r| r.level == permission::PermissionLevel::Deny).unwrap();
+        assert_eq!(deny_rule.pattern, ".git/**");
+    }
+
+    #[test]
+    fn test_simple_permission_strings_still_work() {
+        let tmp = tempfile::tempdir().unwrap();
+        let content = r#"
+name = "simple-agent"
+mode = "subagent"
+description = "Simple permissions"
+
+[permission]
+read = "allow"
+bash = "ask"
+write = "deny"
+"#;
+        std::fs::write(tmp.path().join("simple.toml"), content).unwrap();
+        let agents = load_agents_from_dir(tmp.path()).unwrap();
+        assert_eq!(agents.len(), 1);
+        let agent = &agents[0].agent;
+        assert_eq!(agent.permissions.get("read"), Some(&"allow".to_string()));
+        assert_eq!(agent.permissions.get("bash"), Some(&"ask".to_string()));
+        assert_eq!(agent.permissions.get("write"), Some(&"deny".to_string()));
+    }
+
+    #[test]
+    fn test_safety_envelope_restricts_permissions() {
+        let agent = Agent {
+            name: "test".to_string(),
+            role: None,
+            description: "Test".to_string(),
+            mode: AgentMode::Primary,
+            mode_name: None,
+            model: None,
+            variant: None,
+            temperature: None,
+            top_p: None,
+            color: None,
+            steps: None,
+            system_prompt: None,
+            permissions: HashMap::from([
+                ("bash".to_string(), "allow".to_string()),
+                ("write".to_string(), "allow".to_string()),
+            ]),
+            hidden: false,
+            thinking_budget: None,
+            reasoning_effort: None,
+        };
+
+        // Session says bash should be deny
+        let session_rules = crate::permission::PermissionRuleset {
+            default: crate::permission::PermissionLevel::Ask,
+            tool_rules: vec![crate::permission::ToolRule {
+                tool: "bash".to_string(),
+                level: crate::permission::PermissionLevel::Deny,
+                paths: None,
+                bash_patterns: None,
+            }],
+            path_rules: Vec::new(),
+        };
+
+        let config_rules = crate::permission::PermissionRuleset::default();
+        let hard_deny = vec!["commit".to_string()];
+
+        let safe_agent = agent.apply_safety_envelope(&session_rules, &config_rules, &hard_deny);
+        // Session restriction wins: bash should be deny
+        assert_eq!(safe_agent.permissions.get("bash"), Some(&"deny".to_string()));
+        // Write not restricted by session/config
+        assert_eq!(safe_agent.permissions.get("write"), Some(&"allow".to_string()));
+        // Hard deny applied
+        assert_eq!(safe_agent.permissions.get("commit"), Some(&"deny".to_string()));
+    }
+
+    #[test]
+    fn test_deny_pattern_wins_over_broad_allow() {
+        // When both deny and allow patterns exist for bash,
+        // deny patterns should be listed first (evaluated first in ruleset)
+        let agent = Agent {
+            name: "test".to_string(),
+            role: None,
+            description: "Test".to_string(),
+            mode: AgentMode::Primary,
+            mode_name: None,
+            model: None,
+            variant: None,
+            temperature: None,
+            top_p: None,
+            color: None,
+            steps: None,
+            system_prompt: None,
+            permissions: HashMap::from([
+                ("bash".to_string(), "ask".to_string()),
+                ("bash:allow:*".to_string(), "allow".to_string()),
+                ("bash:deny:rm *".to_string(), "deny".to_string()),
+            ]),
+            hidden: false,
+            thinking_budget: None,
+            reasoning_effort: None,
+        };
+        let ruleset = agent.permission_ruleset();
+        let bash_rules: Vec<_> = ruleset
+            .tool_rules
+            .iter()
+            .filter(|r| r.tool == "bash")
+            .collect();
+        // Deny rule should come before allow rule
+        let deny_idx = bash_rules.iter().position(|r| r.level == permission::PermissionLevel::Deny);
+        let allow_idx = bash_rules.iter().position(|r| r.level == permission::PermissionLevel::Allow);
+        assert!(deny_idx.is_some() && allow_idx.is_some());
+        assert!(deny_idx.unwrap() < allow_idx.unwrap(), "deny patterns should be evaluated before allow patterns");
     }
 }

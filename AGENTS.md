@@ -153,6 +153,62 @@ description = "A custom agent"
 read = "allow"
 ```
 
+### Overlay Flags
+
+File-based agents (TOML/Markdown) support overlay flags that control how they interact with base agents:
+
+```toml
+name = "my-agent"
+mode = "subagent"
+description = "Agent with overlay flags"
+replace = false   # merge into base agent (default) vs full replacement
+disable = false   # remove agent from resolution
+merge = true      # explicitly enable merge mode
+```
+
+- **`replace = true`**: Full replacement — the overlay completely replaces the base agent (legacy behavior)
+- **`replace = false`** (default): Merge mode — overlay fields are applied on top of the base agent. Scalar fields replace only when set. Permissions merge per-tool (overlay overwrites matching keys).
+- **`disable = true`**: Removes the agent from resolution entirely (logged as Info diagnostic)
+
+### Rich Permissions
+
+#### Simple Permissions
+
+```toml
+[permission]
+read = "allow"
+bash = "ask"
+write = "deny"
+```
+
+#### Bash Permission Patterns
+
+Fine-grained control over bash commands:
+
+```toml
+[bash_permission]
+action = "ask"                                          # default action for unmatched commands
+allow_patterns = ["git diff*", "cargo test*", "ls *"]   # auto-allowed command patterns
+deny_patterns = ["curl*", "rm *", "sudo *"]             # auto-denied command patterns
+```
+
+- Patterns use glob syntax (`*` matches any characters)
+- Deny patterns are evaluated before allow patterns
+- The `action` field sets the default for commands that match no patterns
+
+#### Path Permission Patterns
+
+Fine-grained control over file access:
+
+```toml
+[path_permission]
+allow = ["src/**", "crates/**", "tests/**"]   # allowed file path patterns
+deny = [".git/**", "target/**", "**/*.env"]    # denied file path patterns
+```
+
+- Patterns use glob syntax (`**` matches directories, `*` matches within a directory)
+- Denied paths are checked before allowed paths
+
 ### Markdown Format
 
 ```markdown
@@ -183,6 +239,13 @@ prompt_file = "prompts/my-agent.md"  # resolved from agent file's directory
 3. Project files (`.codegg/agents/`)
 4. Config `agent` map
 5. Config `mode` map
+
+**Overlay merge behavior**:
+- Layers 2-3 (file-based agents): **Merge by default** — overlay fields are applied on top of the base agent. Use `replace = true` for full replacement.
+- Layer 4 (config `agent` map): **Field-level merge** — each field uses `cfg.field.or_else(|| agent.field)` pattern. Permissions merge additively (config overwrites matching keys).
+- Layer 5 (config `mode` map): **Permission merge** — mode tools are applied on top of existing agent permissions.
+
+**Safety envelope**: Agent permissions are bounded by the most restrictive level across agent, session, config, and hard-deny layers. A deny at any layer overrides allows at lower layers.
 
 Project files override global files. Config overrides file-based agents.
 
