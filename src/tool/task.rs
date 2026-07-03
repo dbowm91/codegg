@@ -343,6 +343,7 @@ pub struct TaskTool {
     parent_session_id: Option<String>,
     denied_tools: Vec<String>,
     depth: usize,
+    parent_model: Option<String>,
 }
 
 impl TaskTool {
@@ -358,6 +359,7 @@ impl TaskTool {
             parent_session_id,
             denied_tools,
             depth: 0,
+            parent_model: None,
         }
     }
 
@@ -372,7 +374,18 @@ impl TaskTool {
             parent_session_id,
             denied_tools,
             depth: 0,
+            parent_model: None,
         }
+    }
+
+    pub fn with_parent_model(mut self, model: Option<String>) -> Self {
+        self.parent_model = model;
+        self
+    }
+
+    pub fn with_depth(mut self, depth: usize) -> Self {
+        self.depth = depth;
+        self
     }
 
     pub fn store(&self) -> Arc<Mutex<TaskStore>> {
@@ -509,6 +522,7 @@ impl Tool for TaskTool {
                     allowed_paths,
                     depth: self.depth + 1,
                     max_tool_calls: None,
+                    parent_model: self.parent_model.clone(),
                 };
                 spawner.send_async(req).await.map_err(|e| {
                     ToolError::Execution(format!("failed to queue subagent: {}", e))

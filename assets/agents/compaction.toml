@@ -4,6 +4,7 @@ role = "compactor"
 description = "Context compaction agent"
 mode = "Subagent"
 hidden = true
+runtime_kind = "compaction"
 
 [agent.permissions]
 "*" = "deny"

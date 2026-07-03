@@ -3,6 +3,7 @@ name = "security-review"
 role = "security_reviewer"
 description = "Defensive security review of changed code. Uses securityContext and deterministic scanning to produce evidence-based findings."
 mode = "Subagent"
+runtime_kind = "security_review"
 
 [agent.permissions]
 read = "allow"

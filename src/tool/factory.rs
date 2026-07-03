@@ -24,6 +24,7 @@ pub fn build_session_tool_registry(
     session_id: &str,
     task_tool_runtime: Option<&crate::agent::task_tool_runtime::TaskToolRuntime>,
     task_state_policy: TaskStatePolicy,
+    parent_model: Option<String>,
 ) -> (ToolRegistry, Arc<dyn ContextArtifactStore>) {
     let todo_state = Arc::new(tokio::sync::Mutex::new(crate::task_state::TodoState::new()));
 
@@ -65,7 +66,8 @@ pub fn build_session_tool_registry(
             runtime.spawner(),
             Some(session_id.to_string()),
             Vec::new(),
-        );
+        )
+        .with_parent_model(parent_model);
         tool_registry.register(task_tool);
     }
 

@@ -717,6 +717,7 @@ pub struct AgentConfig {
     pub name: Option<String>,
     pub role: Option<String>,
     pub model: Option<String>,
+    pub fallback_model: Option<String>,
     pub variant: Option<String>,
     pub mode: Option<String>,
     pub temperature: Option<f64>,
@@ -731,6 +732,7 @@ pub struct AgentConfig {
     pub permission: Option<HashMap<String, PermissionRule>>,
     pub tools: Option<HashMap<String, bool>>,
     pub options: Option<HashMap<String, serde_json::Value>>,
+    pub runtime_kind: Option<String>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, PartialEq)]

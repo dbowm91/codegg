@@ -4,6 +4,7 @@ role = "researcher"
 description = "Long-horizon research agent. Uses the `research` tool for structured multi-source answers and the `websearch` tool for quick lookups."
 mode = "All"
 color = "magenta"
+runtime_kind = "research"
 prompt_file = "prompts/agents/research.md"
 
 [agent.permissions]

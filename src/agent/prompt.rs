@@ -559,7 +559,9 @@ mod tests {
             permissions: std::collections::HashMap::new(),
             hidden: false,
             thinking_budget: None,
+            fallback_model: None,
             reasoning_effort: None,
+            runtime_kind: None,
         }
     }
 

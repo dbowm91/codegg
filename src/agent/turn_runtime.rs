@@ -203,6 +203,7 @@ impl TurnRuntime for DefaultTurnRuntime {
             &session_id,
             task_tool_runtime.as_ref(),
             task_state_policy.clone(),
+            Some(model.clone()),
         );
 
         // ── Memory context ───────────────────────────────────────────

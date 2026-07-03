@@ -533,6 +533,8 @@ fn build_test_agent_loop(provider: Box<dyn Provider>, tool_registry: ToolRegistr
         hidden: false,
         thinking_budget: None,
         reasoning_effort: None,
+        fallback_model: None,
+        runtime_kind: None,
     }];
 
     let permission_checker =
@@ -591,6 +593,8 @@ fn build_test_agent_loop_with_permissions(
         hidden: false,
         thinking_budget: None,
         reasoning_effort: None,
+        fallback_model: None,
+        runtime_kind: None,
     }];
 
     let config = Config::default();
@@ -631,6 +635,8 @@ fn build_test_agent_loop_with_config(
         hidden: false,
         thinking_budget: None,
         reasoning_effort: None,
+        fallback_model: None,
+        runtime_kind: None,
     }];
 
     AgentLoop::new(
@@ -2053,6 +2059,8 @@ fn build_agent_loop_with_error_config(
         hidden: false,
         thinking_budget: None,
         reasoning_effort: None,
+        fallback_model: None,
+        runtime_kind: None,
     }];
 
     let permission_checker =
@@ -3155,6 +3163,8 @@ async fn test_task_tool_integration_with_subagent() {
             hidden: false,
             thinking_budget: None,
             reasoning_effort: None,
+            fallback_model: None,
+            runtime_kind: None,
         },
         Agent {
             name: "subagent".to_string(),
@@ -3173,6 +3183,8 @@ async fn test_task_tool_integration_with_subagent() {
             hidden: false,
             thinking_budget: None,
             reasoning_effort: None,
+            fallback_model: None,
+            runtime_kind: None,
         },
     ];
 
@@ -3352,6 +3364,8 @@ async fn test_task_tool_denied_tools_passthrough() {
             hidden: false,
             thinking_budget: None,
             reasoning_effort: None,
+            fallback_model: None,
+            runtime_kind: None,
         },
         Agent {
             name: "subagent".to_string(),
@@ -3370,6 +3384,8 @@ async fn test_task_tool_denied_tools_passthrough() {
             hidden: false,
             thinking_budget: None,
             reasoning_effort: None,
+            fallback_model: None,
+            runtime_kind: None,
         },
     ];
 

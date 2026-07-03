@@ -335,6 +335,8 @@ mod real_build_tool_definitions_tests {
             hidden: false,
             thinking_budget: None,
             reasoning_effort: None,
+            fallback_model: None,
+            runtime_kind: None,
         }]
     }
 

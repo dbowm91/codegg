@@ -4154,6 +4154,7 @@ impl AgentLoop {
             description: "Auto-triggered security review".to_string(),
             depth: 1,
             max_tool_calls: None,
+            parent_model: self.agents.get(&self.state.current_agent).and_then(|a| a.model.clone()),
         };
 
         tokio::spawn(async move {

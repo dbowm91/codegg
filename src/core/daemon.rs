@@ -1121,6 +1121,7 @@ impl CoreDaemon {
                                 description: "Background loop task".to_string(),
                                 depth: 1,
                                 max_tool_calls: None,
+                                parent_model: None,
                             };
                             let _ = pool.spawner().send(request).await;
                         }

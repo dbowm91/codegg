@@ -4,6 +4,7 @@ role = "title"
 description = "Generates session titles"
 mode = "Subagent"
 hidden = true
+runtime_kind = "title"
 
 [agent.permissions]
 todowrite = "deny"

@@ -4,6 +4,7 @@ role = "summarizer"
 description = "Generates session summaries"
 mode = "Subagent"
 hidden = true
+runtime_kind = "summary"
 
 [agent.permissions]
 todowrite = "deny"

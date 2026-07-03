@@ -39,11 +39,13 @@ PROMPT_HEADING_RE = re.compile(r"^#\s+\S+.*$", re.MULTILINE)
 # Allowed values for schema validation
 VALID_MODES = {"Primary", "Subagent", "All"}
 VALID_PERMISSION_ACTIONS = {"allow", "ask", "deny"}
+VALID_RUNTIME_KINDS = {"standard", "security_review", "research", "compaction", "title", "summary"}
 
 # All recognised top-level keys under [agent]
 KNOWN_AGENT_KEYS = {
     "name", "role", "description", "mode", "hidden",
     "temperature", "steps", "color", "prompt_file", "permissions",
+    "model", "fallback_model", "runtime_kind",
 }
 
 
@@ -159,6 +161,14 @@ def _validate_agent(agent: dict, toml_path: Path, agent_dir: Path) -> list[str]:
         except ValueError:
             errors.append(f"{prefix} agent '{name}': prompt_file '{prompt_file_rel}' is outside assets/ directory")
 
+    # --- Runtime kind validation ---
+    runtime_kind = agent.get("runtime_kind")
+    if runtime_kind is not None and runtime_kind not in VALID_RUNTIME_KINDS:
+        errors.append(
+            f"{prefix} agent '{name}': invalid runtime_kind '{runtime_kind}' "
+            f"(expected one of {', '.join(sorted(VALID_RUNTIME_KINDS))})"
+        )
+
     return errors
 
 
@@ -184,6 +194,9 @@ def _build_agent_entry(agent: dict, prompt_content: str | None) -> str:
     temperature = agent.get("temperature")
     steps = agent.get("steps")
     color = agent.get("color")
+    model = agent.get("model")
+    fallback_model = agent.get("fallback_model")
+    runtime_kind = agent.get("runtime_kind")
 
     mode_variant = {
         "Primary": "AgentMode::Primary",
@@ -195,6 +208,21 @@ def _build_agent_entry(agent: dict, prompt_content: str | None) -> str:
     if mode_variant is None:
         mode_variant = "AgentMode::Primary"
 
+    def _format_runtime_kind(kind: str | None) -> str:
+        if kind is None:
+            return "None"
+        variant = {
+            "standard": "AgentRuntimeKind::Standard",
+            "security_review": "AgentRuntimeKind::SecurityReview",
+            "research": "AgentRuntimeKind::Research",
+            "compaction": "AgentRuntimeKind::Compaction",
+            "title": "AgentRuntimeKind::Title",
+            "summary": "AgentRuntimeKind::Summary",
+        }.get(kind)
+        if variant is None:
+            return "None"
+        return f"Some({variant})"
+
     lines = []
     lines.append("        Agent {")
     lines.append(f"            name: {_format_string_literal(name)},")
@@ -202,7 +230,8 @@ def _build_agent_entry(agent: dict, prompt_content: str | None) -> str:
     lines.append(f"            description: {_format_string_literal(description)},")
     lines.append(f"            mode: {mode_variant},")
     lines.append("            mode_name: None,")
-    lines.append("            model: None,")
+    lines.append(f"            model: {_format_option_string(model)},")
+    lines.append(f"            fallback_model: {_format_option_string(fallback_model)},")
     lines.append("            variant: None,")
     lines.append(f"            temperature: {_format_option_f64(temperature)},")
     lines.append("            top_p: None,")
@@ -213,6 +242,7 @@ def _build_agent_entry(agent: dict, prompt_content: str | None) -> str:
     lines.append(f"            hidden: {'true' if hidden else 'false'},")
     lines.append("            thinking_budget: None,")
     lines.append("            reasoning_effort: None,")
+    lines.append(f"            runtime_kind: {_format_runtime_kind(runtime_kind)},")
     lines.append("        }")
 
     return "\n".join(lines)
@@ -225,7 +255,7 @@ def _build_generated_rs(agents: list[tuple[str, str]]) -> str:
         f"{HEADER}\n"
         "\n"
         "use std::collections::HashMap;\n"
-        "use crate::agent::{Agent, AgentMode};\n"
+        "use crate::agent::{Agent, AgentMode, AgentRuntimeKind};\n"
         "\n"
         "pub fn generated_builtin_agents() -> Vec<Agent> {\n"
         "    vec![\n"

@@ -664,6 +664,7 @@ pub(crate) fn handle_spawn_subagent(app: &mut App, agent_name: String, prompt: S
         ),
         depth: 1,
         max_tool_calls: None,
+        parent_model: None,
     };
 
     app.messages_state

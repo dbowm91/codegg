@@ -353,7 +353,9 @@ impl AgentRegistry {
                             permissions: HashMap::new(),
                             hidden: false,
                             thinking_budget: None,
-                            reasoning_effort: None,
+                            fallback_model: None,
+            reasoning_effort: None,
+            runtime_kind: None,
                         };
                         agent = agent.with_config_mode(mode_cfg, None);
                         resolved.insert(
@@ -397,7 +399,9 @@ impl AgentRegistry {
                         permissions: HashMap::new(),
                         hidden: false,
                         thinking_budget: None,
-                        reasoning_effort: None,
+                        fallback_model: None,
+            reasoning_effort: None,
+            runtime_kind: None,
                     };
                     agent = agent.with_config_mode(mode_cfg, None);
                     resolved.insert(

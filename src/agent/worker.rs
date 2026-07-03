@@ -87,6 +87,7 @@ pub struct SubAgentRequest {
     pub description: String,
     pub depth: usize,
     pub max_tool_calls: Option<usize>,
+    pub parent_model: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -655,10 +656,26 @@ async fn execute_agent_task(
         .find(|a| a.name == *agent_name)
         .ok_or_else(|| format!("Agent '{}' not found", agent_name))?;
 
-    let provider_name = agent
-        .model
-        .as_ref()
-        .and_then(|m| m.split('/').next())
+    // Build a fully resolved execution profile with model inheritance and alias resolution.
+    let profile = crate::agent::ResolvedAgentExecutionProfile::resolve(
+        agent,
+        &config,
+        request.parent_model.as_deref(),
+    );
+
+    tracing::debug!(
+        "Subagent '{}': runtime_kind={}, resolved_model='{}'",
+        agent_name,
+        profile.runtime_kind,
+        profile.resolved_model,
+    );
+
+    // Extract provider name from the resolved model (format: "provider/model").
+    let provider_name = profile
+        .resolved_model
+        .split('/')
+        .next()
+        .filter(|s| !s.is_empty())
         .unwrap_or("openai")
         .to_string();
 
@@ -776,7 +793,7 @@ async fn execute_agent_task(
         }],
     });
 
-    let model = agent.model.clone().unwrap_or_default();
+    let model = profile.resolved_model.clone();
     let request = crate::provider::ChatRequest {
         messages,
         model,

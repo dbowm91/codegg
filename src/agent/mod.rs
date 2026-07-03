@@ -25,12 +25,72 @@ pub mod registry;
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::fmt;
 use std::path::{Path, PathBuf};
 
 use crate::config::schema::{AgentConfig, Config};
 use crate::error::AgentError;
 use crate::permission::modes::ModeDefinition;
 use crate::permission::{self, PermissionRuleset};
+
+/// Runtime classification for agents.
+///
+/// This metadata selects Rust-defined runtime behavior for specialized agents.
+/// TOML sets the kind; Rust implements the behavior (security preflight,
+/// research orchestration, compaction contracts, etc.).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentRuntimeKind {
+    /// Default agent runtime — standard prompt, no special orchestration.
+    Standard,
+    /// Security review runtime — defensive scanning, evidence-based findings.
+    SecurityReview,
+    /// Research runtime — multi-hop research, citation-bearing synthesis.
+    Research,
+    /// Context compaction runtime.
+    Compaction,
+    /// Title generation runtime.
+    Title,
+    /// Summary generation runtime.
+    Summary,
+}
+
+impl Default for AgentRuntimeKind {
+    fn default() -> Self {
+        Self::Standard
+    }
+}
+
+impl fmt::Display for AgentRuntimeKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Standard => write!(f, "standard"),
+            Self::SecurityReview => write!(f, "security_review"),
+            Self::Research => write!(f, "research"),
+            Self::Compaction => write!(f, "compaction"),
+            Self::Title => write!(f, "title"),
+            Self::Summary => write!(f, "summary"),
+        }
+    }
+}
+
+impl std::str::FromStr for AgentRuntimeKind {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "standard" => Ok(Self::Standard),
+            "security_review" => Ok(Self::SecurityReview),
+            "research" => Ok(Self::Research),
+            "compaction" => Ok(Self::Compaction),
+            "title" => Ok(Self::Title),
+            "summary" => Ok(Self::Summary),
+            other => Err(format!(
+                "unknown runtime kind '{other}' (expected one of: standard, security_review, research, compaction, title, summary)"
+            )),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Agent {
@@ -40,6 +100,7 @@ pub struct Agent {
     pub mode: AgentMode,
     pub mode_name: Option<String>,
     pub model: Option<String>,
+    pub fallback_model: Option<String>,
     pub variant: Option<String>,
     pub temperature: Option<f64>,
     pub top_p: Option<f64>,
@@ -50,6 +111,8 @@ pub struct Agent {
     pub hidden: bool,
     pub thinking_budget: Option<usize>,
     pub reasoning_effort: Option<String>,
+    #[serde(default)]
+    pub runtime_kind: Option<AgentRuntimeKind>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
@@ -328,6 +391,106 @@ pub fn builtin_agents() -> Vec<Agent> {
     builtins::generated_builtin_agents()
 }
 
+/// Well-known model alias prefixes.
+///
+/// These resolve to the provider's best available model in each tier.
+/// The actual resolution is delegated to the provider registry; the
+/// alias just selects the tier.
+pub const MODEL_ALIAS_FRONTIER: &str = "tier.frontier";
+pub const MODEL_ALIAS_WORKHORSE: &str = "tier.workhorse";
+
+/// Check if a model string is a known alias.
+pub fn is_model_alias(model: &str) -> bool {
+    matches!(model, MODEL_ALIAS_FRONTIER | MODEL_ALIAS_WORKHORSE)
+}
+
+/// Resolve a model alias to an actual model string.
+///
+/// Returns `None` if the input is not a known alias, allowing the caller
+/// to fall through to other resolution steps.
+pub fn resolve_model_alias(alias: &str, config: &Config) -> Option<String> {
+    match alias {
+        MODEL_ALIAS_FRONTIER => config
+            .model
+            .clone()
+            .or_else(|| Some("openai/gpt-4o".to_string())),
+        MODEL_ALIAS_WORKHORSE => config
+            .model
+            .clone()
+            .or_else(|| Some("openai/gpt-4o-mini".to_string())),
+        _ => None,
+    }
+}
+
+/// Fully resolved execution profile for a subagent task.
+///
+/// Bundles the resolved agent, runtime kind, effective model, and
+/// permissions so that task execution does not need to re-derive
+/// provider/model behavior from raw strings.
+#[derive(Debug, Clone)]
+pub struct ResolvedAgentExecutionProfile {
+    pub agent: Agent,
+    pub runtime_kind: AgentRuntimeKind,
+    pub resolved_model: String,
+    pub effective_permissions: PermissionRuleset,
+}
+
+impl ResolvedAgentExecutionProfile {
+    /// Build a resolved profile by applying model inheritance and alias resolution.
+    ///
+    /// Resolution order:
+    /// 1. Explicit `agent.model`
+    /// 2. `agent.fallback_model`
+    /// 3. Config `model` (global)
+    /// 4. Provider default
+    pub fn resolve(
+        agent: &Agent,
+        config: &Config,
+        parent_model: Option<&str>,
+    ) -> Self {
+        // 1. Explicit agent.model
+        let raw_model = agent
+            .model
+            .as_deref()
+            // 3. Parent/session model inheritance (for subagents)
+            .or(parent_model)
+            // 4. Global config model
+            .or(config.model.as_deref())
+            .unwrap_or("");
+
+        // Resolve model aliases
+        let resolved_model = if is_model_alias(raw_model) {
+            resolve_model_alias(raw_model, config).unwrap_or_else(|| raw_model.to_string())
+        } else if raw_model.is_empty() {
+            // Fallback model or provider default
+            agent
+                .fallback_model
+                .as_deref()
+                .and_then(|fm| {
+                    if is_model_alias(fm) {
+                        resolve_model_alias(fm, config)
+                    } else {
+                        Some(fm.to_string())
+                    }
+                })
+                .or_else(|| config.model.clone())
+                .unwrap_or_default()
+        } else {
+            raw_model.to_string()
+        };
+
+        let runtime_kind = agent.runtime_kind.clone().unwrap_or_default();
+        let effective_permissions = agent.permission_ruleset();
+
+        Self {
+            agent: agent.clone(),
+            runtime_kind,
+            resolved_model,
+            effective_permissions,
+        }
+    }
+}
+
 pub fn resolve_agents(config: &Config) -> Result<Vec<Agent>, AgentError> {
     let mut agents = builtin_agents();
 
@@ -405,7 +568,9 @@ pub fn resolve_agents(config: &Config) -> Result<Vec<Agent>, AgentError> {
                     permissions: HashMap::new(),
                     hidden: false,
                     thinking_budget: None,
-                    reasoning_effort: None,
+                    fallback_model: None,
+            reasoning_effort: None,
+            runtime_kind: None,
                 };
                 agent = agent.with_config_mode(mode_cfg, None);
                 agents.push(agent);
@@ -431,6 +596,10 @@ fn merge_agent_config(agent: &Agent, cfg: &AgentConfig) -> Result<Agent, AgentEr
         }))?,
         mode_name: None,
         model: cfg.model.clone().or_else(|| agent.model.clone()),
+        fallback_model: cfg
+            .fallback_model
+            .clone()
+            .or_else(|| agent.fallback_model.clone()),
         variant: cfg.variant.clone().or_else(|| agent.variant.clone()),
         temperature: cfg.temperature.or(agent.temperature),
         top_p: cfg.top_p.or(agent.top_p),
@@ -457,6 +626,11 @@ fn merge_agent_config(agent: &Agent, cfg: &AgentConfig) -> Result<Agent, AgentEr
         hidden: cfg.hidden.unwrap_or(agent.hidden),
         thinking_budget: None,
         reasoning_effort: None,
+        runtime_kind: cfg
+            .runtime_kind
+            .as_deref()
+            .and_then(|s| s.parse::<AgentRuntimeKind>().ok())
+            .or_else(|| agent.runtime_kind.clone()),
     })
 }
 
@@ -486,6 +660,7 @@ fn agent_from_config(key: &str, cfg: &AgentConfig) -> Result<Agent, AgentError> 
         mode,
         mode_name: None,
         model: cfg.model.clone(),
+        fallback_model: cfg.fallback_model.clone(),
         variant: cfg.variant.clone(),
         temperature: cfg.temperature,
         top_p: cfg.top_p,
@@ -496,6 +671,10 @@ fn agent_from_config(key: &str, cfg: &AgentConfig) -> Result<Agent, AgentError> 
         hidden: cfg.hidden.unwrap_or(false),
         thinking_budget: None,
         reasoning_effort: None,
+        runtime_kind: cfg
+            .runtime_kind
+            .as_deref()
+            .and_then(|s| s.parse::<AgentRuntimeKind>().ok()),
     })
 }
 
@@ -727,6 +906,7 @@ struct TomlAgentFile {
     description: Option<String>,
     mode: Option<String>,
     model: Option<String>,
+    fallback_model: Option<String>,
     variant: Option<String>,
     temperature: Option<f64>,
     top_p: Option<f64>,
@@ -735,6 +915,7 @@ struct TomlAgentFile {
     color: Option<String>,
     steps: Option<u32>,
     hidden: Option<bool>,
+    runtime_kind: Option<String>,
     // Flat format: `[permission]` section — simple string values only
     permission: Option<HashMap<String, String>>,
     // Structured permission sub-tables: `[bash_permission]` and `[path_permission]`
@@ -751,6 +932,7 @@ struct TomlAgentInner {
     description: Option<String>,
     mode: Option<String>,
     model: Option<String>,
+    fallback_model: Option<String>,
     variant: Option<String>,
     temperature: Option<f64>,
     top_p: Option<f64>,
@@ -761,6 +943,7 @@ struct TomlAgentInner {
     hidden: Option<bool>,
     disable: Option<bool>,
     permissions: Option<HashMap<String, String>>,
+    runtime_kind: Option<String>,
 }
 
 impl TomlAgentFile {
@@ -800,6 +983,7 @@ impl TomlAgentFile {
                 description: inner.description,
                 mode: inner.mode,
                 model: inner.model,
+                fallback_model: None,
                 variant: inner.variant,
                 temperature: inner.temperature,
                 top_p: inner.top_p,
@@ -812,6 +996,7 @@ impl TomlAgentFile {
                 permission,
                 tools: None,
                 options: None,
+                runtime_kind: None,
             }
         } else {
             // Flat format: use top-level fields
@@ -822,6 +1007,7 @@ impl TomlAgentFile {
                 description: self.description,
                 mode: self.mode,
                 model: self.model,
+                fallback_model: self.fallback_model,
                 variant: self.variant,
                 temperature: self.temperature,
                 top_p: self.top_p,
@@ -834,6 +1020,7 @@ impl TomlAgentFile {
                 permission,
                 tools: None,
                 options: None,
+                runtime_kind: self.runtime_kind,
             }
         }
     }
@@ -1094,7 +1281,9 @@ mod tests {
             permissions: HashMap::new(),
             hidden: false,
             thinking_budget: None,
+            fallback_model: None,
             reasoning_effort: None,
+            runtime_kind: None,
         }];
         let default = find_default_agent(&agents).unwrap();
         assert_eq!(default.name, "custom");
@@ -1191,7 +1380,9 @@ mod tests {
             permissions,
             hidden: false,
             thinking_budget: None,
+            fallback_model: None,
             reasoning_effort: None,
+            runtime_kind: None,
         };
         let ruleset = agent.permission_ruleset();
         assert_eq!(ruleset.tool_rules.len(), 2);
@@ -1219,7 +1410,9 @@ mod tests {
             permissions,
             hidden: false,
             thinking_budget: None,
+            fallback_model: None,
             reasoning_effort: None,
+            runtime_kind: None,
         };
         let config_ruleset = crate::permission::PermissionRuleset {
             default: crate::permission::PermissionLevel::Ask,
@@ -1853,7 +2046,9 @@ description = "Global TOML agent"
             ]),
             hidden: false,
             thinking_budget: None,
+            fallback_model: None,
             reasoning_effort: None,
+            runtime_kind: None,
         };
 
         // Overlay only changes temperature
@@ -1873,7 +2068,9 @@ description = "Global TOML agent"
             permissions: HashMap::new(),
             hidden: false,
             thinking_budget: None,
+            fallback_model: None,
             reasoning_effort: None,
+            runtime_kind: None,
         };
 
         let merged = base.merge_overlay(&overlay, false);
@@ -1912,7 +2109,9 @@ description = "Global TOML agent"
             ]),
             hidden: false,
             thinking_budget: None,
+            fallback_model: None,
             reasoning_effort: None,
+            runtime_kind: None,
         };
 
         // Overlay changes bash to ask
@@ -1934,7 +2133,9 @@ description = "Global TOML agent"
             ]),
             hidden: false,
             thinking_budget: None,
+            fallback_model: None,
             reasoning_effort: None,
+            runtime_kind: None,
         };
 
         let merged = base.merge_overlay(&overlay, false);
@@ -1962,7 +2163,9 @@ description = "Global TOML agent"
             ]),
             hidden: false,
             thinking_budget: None,
+            fallback_model: None,
             reasoning_effort: None,
+            runtime_kind: None,
         };
 
         let overlay = Agent {
@@ -1983,7 +2186,9 @@ description = "Global TOML agent"
             ]),
             hidden: false,
             thinking_budget: None,
+            fallback_model: None,
             reasoning_effort: None,
+            runtime_kind: None,
         };
 
         let merged = base.merge_overlay(&overlay, true);
@@ -2120,7 +2325,9 @@ deny = [".git/**", "target/**"]
             ]),
             hidden: false,
             thinking_budget: None,
+            fallback_model: None,
             reasoning_effort: None,
+            runtime_kind: None,
         };
         let ruleset = agent.permission_ruleset();
         // Should have: bash ask rule, deny patterns rule, allow patterns rule
@@ -2165,7 +2372,9 @@ deny = [".git/**", "target/**"]
             ]),
             hidden: false,
             thinking_budget: None,
+            fallback_model: None,
             reasoning_effort: None,
+            runtime_kind: None,
         };
         let ruleset = agent.permission_ruleset();
         assert_eq!(ruleset.path_rules.len(), 2);
@@ -2218,7 +2427,9 @@ write = "deny"
             ]),
             hidden: false,
             thinking_budget: None,
+            fallback_model: None,
             reasoning_effort: None,
+            runtime_kind: None,
         };
 
         // Session says bash should be deny
@@ -2269,7 +2480,9 @@ write = "deny"
             ]),
             hidden: false,
             thinking_budget: None,
+            fallback_model: None,
             reasoning_effort: None,
+            runtime_kind: None,
         };
         let ruleset = agent.permission_ruleset();
         let bash_rules: Vec<_> = ruleset
