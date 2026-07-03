@@ -264,7 +264,10 @@ Built-in agent definitions are maintained as TOML files in `assets/agents/` with
 companion prompt markdown in `assets/prompts/agents/`. A Python generator
 (`scripts/generate_builtin_agents.py`) compiles these into
 `src/agent/builtins/generated.rs`. Run `scripts/check_builtin_agents.py` to
-verify the TOML sources match the hardcoded values in `src/agent/mod.rs`.
+verify the TOML sources match the generated Rust output.
+
+The `builtin_agents()` function in `src/agent/mod.rs` delegates to the
+generated `builtins::generated_builtin_agents()`.
 
 ### Agent Resolution (`resolve_agents()`)
 

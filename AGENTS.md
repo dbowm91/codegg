@@ -111,10 +111,11 @@ Built-in agent definitions live in `assets/agents/*.toml` with prompt text in `a
 
 ```bash
 python3 scripts/generate_builtin_agents.py   # regenerate src/agent/builtins/generated.rs
-python3 scripts/check_builtin_agents.py      # verify TOML matches mod.rs
+python3 scripts/check_builtin_agents.py      # verify TOML matches generated.rs
 ```
 
 Generated Rust is checked in at `src/agent/builtins/`. **Do not edit generated files directly.**
+The `builtin_agents()` function in `src/agent/mod.rs` delegates to the generated code.
 
 ## CI Pipeline
 

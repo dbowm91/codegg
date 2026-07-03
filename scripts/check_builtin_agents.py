@@ -12,8 +12,9 @@ import tomllib
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-MOD_RS = REPO_ROOT / "src" / "agent" / "mod.rs"
+GENERATED_RS = REPO_ROOT / "src" / "agent" / "builtins" / "generated.rs"
 AGENTS_DIR = REPO_ROOT / "assets" / "agents"
+PROMPT_DIR = REPO_ROOT / "assets" / "prompts" / "agents"
 
 
 # ---------------------------------------------------------------------------
@@ -170,9 +171,9 @@ def _parse_agent_block(block: str) -> dict:
 
 
 def parse_mod_rs() -> dict[str, dict]:
-    """Return ``{name: agent_dict}`` for every agent in builtin_agents()."""
-    content = MOD_RS.read_text()
-    blocks = _extract_blocks(content, "pub fn builtin_agents()")
+    """Return ``{name: agent_dict}`` for every agent in generated_builtin_agents()."""
+    content = GENERATED_RS.read_text()
+    blocks = _extract_blocks(content, "pub fn generated_builtin_agents()")
     agents = [_parse_agent_block(b) for b in blocks]
     return {a["name"]: a for a in agents}
 
@@ -189,6 +190,23 @@ def parse_toml_agents() -> dict[str, dict]:
             data = tomllib.load(f)
         sec = data.get("agent", {})
         name = sec.get("name", path.stem)
+
+        # Load prompt from .md file (same convention as the generator)
+        prompt_content = None
+        prompt_file_rel = sec.get("prompt_file")
+        if prompt_file_rel:
+            prompt_path = REPO_ROOT / "assets" / prompt_file_rel
+        else:
+            prompt_path = PROMPT_DIR / f"{name}.md"
+        if prompt_path.is_file():
+            text = prompt_path.read_text(encoding="utf-8").strip()
+            # Strip heading
+            text = re.sub(r"^#\s+\S+.*$", "", text, count=1, flags=re.MULTILINE).strip()
+            lower = text.lower()
+            default_patterns = ("uses the default", "no custom prompt", "default system prompt")
+            if text and not any(pat in lower for pat in default_patterns):
+                prompt_content = text
+
         agents[name] = {
             "name": name,
             "role": sec.get("role"),
@@ -196,7 +214,7 @@ def parse_toml_agents() -> dict[str, dict]:
             "mode": sec.get("mode", "Primary").lower(),
             "hidden": sec.get("hidden", False),
             "permissions": dict(sec.get("permissions", {})),
-            "system_prompt": sec.get("prompt") or sec.get("system_prompt"),
+            "system_prompt": prompt_content,
             "_file": path.name,
         }
     return agents

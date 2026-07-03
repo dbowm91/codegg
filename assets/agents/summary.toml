@@ -1,0 +1,12 @@
+[agent]
+name = "summary"
+role = "summarizer"
+description = "Generates session summaries"
+mode = "Subagent"
+hidden = true
+
+[agent.permissions]
+todowrite = "deny"
+todoread = "deny"
+plan_enter = "deny"
+plan_exit = "deny"

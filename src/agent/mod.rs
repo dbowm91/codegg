@@ -6,7 +6,6 @@
 //! Subagent (limited), and All (combines multiple agents).
 
 pub mod agent_loop_factory;
-#[cfg(test)]
 pub mod builtins;
 pub mod compaction;
 pub mod context_frame;
@@ -154,275 +153,7 @@ impl Agent {
 }
 
 pub fn builtin_agents() -> Vec<Agent> {
-    vec![
-        Agent {
-            name: "build".to_string(),
-            role: Some("executor".to_string()),
-            description: "Default agent with full permissions".to_string(),
-            mode: AgentMode::Primary,
-            mode_name: None,
-            model: None,
-            variant: None,
-            temperature: None,
-            top_p: None,
-            color: None,
-            steps: None,
-            system_prompt: None,
-            permissions: HashMap::new(),
-            hidden: false,
-            thinking_budget: None,
-            reasoning_effort: None,
-        },
-        Agent {
-            name: "plan".to_string(),
-            role: Some("planner".to_string()),
-            description: "Read-only agent for planning".to_string(),
-            mode: AgentMode::Primary,
-            mode_name: None,
-            model: None,
-            variant: None,
-            temperature: None,
-            top_p: None,
-            color: None,
-            steps: None,
-            system_prompt: None,
-            permissions: HashMap::from([
-                ("write".to_string(), "deny".to_string()),
-                ("edit".to_string(), "deny".to_string()),
-                ("bash".to_string(), "deny".to_string()),
-                ("apply_patch".to_string(), "deny".to_string()),
-                ("replace".to_string(), "deny".to_string()),
-                ("multiedit".to_string(), "deny".to_string()),
-                ("terminal".to_string(), "deny".to_string()),
-                ("commit".to_string(), "deny".to_string()),
-            ]),
-            hidden: false,
-            thinking_budget: None,
-            reasoning_effort: None,
-        },
-        Agent {
-            name: "general".to_string(),
-            role: Some("executor".to_string()),
-            description: "Subagent without todo/goal management".to_string(),
-            mode: AgentMode::Subagent,
-            mode_name: None,
-            model: None,
-            variant: None,
-            temperature: None,
-            top_p: None,
-            color: None,
-            steps: None,
-            system_prompt: None,
-            permissions: HashMap::from([
-                ("todowrite".to_string(), "deny".to_string()),
-                ("todoread".to_string(), "deny".to_string()),
-                ("plan_enter".to_string(), "deny".to_string()),
-                ("plan_exit".to_string(), "deny".to_string()),
-            ]),
-            hidden: false,
-            thinking_budget: None,
-            reasoning_effort: None,
-        },
-        Agent {
-            name: "explore".to_string(),
-            role: Some("explorer".to_string()),
-            description: "Read-only exploration agent".to_string(),
-            mode: AgentMode::All,
-            mode_name: None,
-            model: None,
-            variant: None,
-            temperature: None,
-            top_p: None,
-            color: None,
-            steps: None,
-            system_prompt: None,
-            permissions: HashMap::from([
-                ("write".to_string(), "deny".to_string()),
-                ("edit".to_string(), "deny".to_string()),
-                ("apply_patch".to_string(), "deny".to_string()),
-                ("replace".to_string(), "deny".to_string()),
-                ("multiedit".to_string(), "deny".to_string()),
-                ("terminal".to_string(), "deny".to_string()),
-                ("bash".to_string(), "deny".to_string()),
-                ("commit".to_string(), "deny".to_string()),
-                ("image".to_string(), "deny".to_string()),
-                ("todowrite".to_string(), "deny".to_string()),
-                ("todoread".to_string(), "deny".to_string()),
-                ("plan_enter".to_string(), "deny".to_string()),
-                ("plan_exit".to_string(), "deny".to_string()),
-            ]),
-            hidden: false,
-            thinking_budget: None,
-            reasoning_effort: None,
-        },
-        Agent {
-            name: "title".to_string(),
-            role: Some("title".to_string()),
-            description: "Generates session titles".to_string(),
-            mode: AgentMode::Subagent,
-            mode_name: None,
-            model: None,
-            variant: None,
-            temperature: None,
-            top_p: None,
-            color: None,
-            steps: None,
-            system_prompt: None,
-            permissions: HashMap::from([
-                ("todowrite".to_string(), "deny".to_string()),
-                ("todoread".to_string(), "deny".to_string()),
-                ("plan_enter".to_string(), "deny".to_string()),
-                ("plan_exit".to_string(), "deny".to_string()),
-            ]),
-            hidden: true,
-            thinking_budget: None,
-            reasoning_effort: None,
-        },
-        Agent {
-            name: "summary".to_string(),
-            role: Some("summarizer".to_string()),
-            description: "Generates session summaries".to_string(),
-            mode: AgentMode::Subagent,
-            mode_name: None,
-            model: None,
-            variant: None,
-            temperature: None,
-            top_p: None,
-            color: None,
-            steps: None,
-            system_prompt: None,
-            permissions: HashMap::from([
-                ("todowrite".to_string(), "deny".to_string()),
-                ("todoread".to_string(), "deny".to_string()),
-                ("plan_enter".to_string(), "deny".to_string()),
-                ("plan_exit".to_string(), "deny".to_string()),
-            ]),
-            hidden: true,
-            thinking_budget: None,
-            reasoning_effort: None,
-        },
-        Agent {
-            name: "compaction".to_string(),
-            role: Some("compactor".to_string()),
-            description: "Context compaction agent".to_string(),
-            mode: AgentMode::Subagent,
-            mode_name: None,
-            model: None,
-            variant: None,
-            temperature: None,
-            top_p: None,
-            color: None,
-            steps: None,
-            system_prompt: None,
-            permissions: HashMap::from([("*".to_string(), "deny".to_string())]),
-            hidden: true,
-            thinking_budget: None,
-            reasoning_effort: None,
-        },
-        Agent {
-            name: "security-review".to_string(),
-            role: Some("security_reviewer".to_string()),
-            description: "Defensive security review of changed code. Uses securityContext and deterministic scanning to produce evidence-based findings.".to_string(),
-            mode: AgentMode::Subagent,
-            mode_name: None,
-            model: None,
-            variant: None,
-            temperature: None,
-            top_p: None,
-            color: None,
-            steps: None,
-            system_prompt: Some(
-                "You are a defensive code security reviewer. Use the `security` tool for deterministic scanning and the `lsp` tool (securityContext operation) for risk-marker evidence around changed code.\n\
-                 \n\
-                 Workflow:\n\
-                 1. Identify changed files and hunks (use git diff or the security workflow).\n\
-                 2. Classify each file into a security preset (rust_server, rust_cli, web_backend, dependency_review, unsafe_review).\n\
-                 3. Run deterministic preflight checks (secret/unsafe pattern scans) on changed lines.\n\
-                 4. Request securityContext around changed hunks and high-risk symbols.\n\
-                 5. Correlate risk markers, diagnostics, symbols, and call expansion.\n\
-                 6. Produce findings only when there is concrete evidence.\n\
-                 7. Distinguish review prompts (marker-only) from confirmed findings.\n\
-                 8. Suggest minimal mitigations or tests.\n\
-                 \n\
-                 Risk markers are review prompts, not findings. Never emit a finding from a marker alone.\n\
-                 Do not provide exploit steps or offensive automation. Never mutate files during review."
-                    .to_string(),
-            ),
-            permissions: HashMap::from([
-                ("read".to_string(), "allow".to_string()),
-                ("grep".to_string(), "allow".to_string()),
-                ("glob".to_string(), "allow".to_string()),
-                ("list".to_string(), "allow".to_string()),
-                ("security".to_string(), "allow".to_string()),
-                ("lsp".to_string(), "allow".to_string()),
-                ("bash".to_string(), "ask".to_string()),
-                ("write".to_string(), "deny".to_string()),
-                ("edit".to_string(), "deny".to_string()),
-                ("apply_patch".to_string(), "deny".to_string()),
-                ("replace".to_string(), "deny".to_string()),
-                ("multiedit".to_string(), "deny".to_string()),
-                ("commit".to_string(), "deny".to_string()),
-                ("image".to_string(), "deny".to_string()),
-                ("terminal".to_string(), "deny".to_string()),
-                ("todowrite".to_string(), "deny".to_string()),
-                ("todoread".to_string(), "deny".to_string()),
-                ("plan_enter".to_string(), "deny".to_string()),
-                ("plan_exit".to_string(), "deny".to_string()),
-            ]),
-            hidden: false,
-            thinking_budget: None,
-            reasoning_effort: None,
-        },
-        Agent {
-            name: "research".to_string(),
-            role: Some("researcher".to_string()),
-            description: "Long-horizon research agent. Uses the `research` tool for structured multi-source answers and the `websearch` tool for quick lookups.".to_string(),
-            mode: AgentMode::All,
-            mode_name: None,
-            model: None,
-            variant: None,
-            temperature: None,
-            top_p: None,
-            color: Some("magenta".to_string()),
-            steps: None,
-            system_prompt: Some(
-                "You are codegg's research agent. You produce long-horizon, multi-source answers.\n\
-                 For in-depth, comparative, or multi-hop questions, prefer the `research` tool — it runs the full pipeline (source collection, evidence extraction, claim construction, citation verification, synthesis).\n\
-                 For a quick lookup, use the `websearch` tool directly (defaults to DuckDuckGo, no key required; falls back to Mojeek; uses key-based providers if their env vars are set).\n\
-                 Always cite sources in your final output. When the `research` tool is available, prefer it for synthesis; `websearch` is for lookups.\n\
-                 Avoid `curl`/`wget` for web search — use the `websearch` tool."
-                    .to_string(),
-            ),
-            permissions: HashMap::from([
-                ("read".to_string(), "allow".to_string()),
-                ("glob".to_string(), "allow".to_string()),
-                ("grep".to_string(), "allow".to_string()),
-                ("list".to_string(), "allow".to_string()),
-                ("websearch".to_string(), "allow".to_string()),
-                ("webfetch".to_string(), "allow".to_string()),
-                ("research".to_string(), "allow".to_string()),
-                ("skill".to_string(), "allow".to_string()),
-                ("question".to_string(), "allow".to_string()),
-                ("task".to_string(), "allow".to_string()),
-                ("codesearch".to_string(), "allow".to_string()),
-                ("todowrite".to_string(), "allow".to_string()),
-                ("todoread".to_string(), "allow".to_string()),
-                ("bash".to_string(), "ask".to_string()),
-                ("apply_patch".to_string(), "ask".to_string()),
-                ("edit".to_string(), "ask".to_string()),
-                ("write".to_string(), "ask".to_string()),
-                ("multiedit".to_string(), "ask".to_string()),
-                ("terminal".to_string(), "ask".to_string()),
-                ("commit".to_string(), "ask".to_string()),
-                ("image".to_string(), "deny".to_string()),
-                ("plan_enter".to_string(), "deny".to_string()),
-                ("plan_exit".to_string(), "deny".to_string()),
-            ]),
-            hidden: false,
-            thinking_budget: None,
-            reasoning_effort: None,
-        },
-    ]
+    builtins::generated_builtin_agents()
 }
 
 pub fn resolve_agents(config: &Config) -> Result<Vec<Agent>, AgentError> {
@@ -1071,5 +802,130 @@ Some body content
             review.is_some() || agents.len() >= 2,
             "review mode should be resolved"
         );
+    }
+
+    // --- Behavioral invariant tests (milestone 2) ---
+
+    #[test]
+    fn test_builtin_build_is_visible_primary() {
+        let agents = builtin_agents();
+        let build = agents.iter().find(|a| a.name == "build").unwrap();
+        assert_eq!(build.mode, AgentMode::Primary);
+        assert!(!build.hidden);
+    }
+
+    #[test]
+    fn test_builtin_plan_is_visible_and_denies_mutation() {
+        let agents = builtin_agents();
+        let plan = agents.iter().find(|a| a.name == "plan").unwrap();
+        assert_eq!(plan.mode, AgentMode::Primary);
+        assert!(!plan.hidden);
+        for tool in &["write", "edit", "bash", "apply_patch", "replace", "multiedit", "terminal", "commit"] {
+            assert_eq!(
+                plan.permissions.get(*tool),
+                Some(&"deny".to_string()),
+                "plan should deny {tool}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_builtin_general_and_explore_are_subagents() {
+        let agents = builtin_agents();
+        let general = agents.iter().find(|a| a.name == "general").unwrap();
+        let explore = agents.iter().find(|a| a.name == "explore").unwrap();
+        assert_eq!(general.mode, AgentMode::Subagent);
+        assert_eq!(explore.mode, AgentMode::All);
+    }
+
+    #[test]
+    fn test_builtin_title_summary_compaction_are_hidden() {
+        let agents = builtin_agents();
+        for name in &["title", "summary", "compaction"] {
+            let agent = agents.iter().find(|a| a.name == *name).unwrap();
+            assert!(agent.hidden, "{name} should be hidden");
+        }
+    }
+
+    #[test]
+    fn test_builtin_compaction_denies_all() {
+        let agents = builtin_agents();
+        let compaction = agents.iter().find(|a| a.name == "compaction").unwrap();
+        assert_eq!(compaction.permissions.get("*"), Some(&"deny".to_string()));
+        assert!(compaction.hidden);
+    }
+
+    #[test]
+    fn test_builtin_security_review_allows_read_and_denies_mutation() {
+        let agents = builtin_agents();
+        let sr = agents.iter().find(|a| a.name == "security-review").unwrap();
+        assert_eq!(sr.mode, AgentMode::Subagent);
+        assert!(!sr.hidden);
+        for tool in &["read", "grep", "glob", "list", "security", "lsp"] {
+            assert_eq!(
+                sr.permissions.get(*tool),
+                Some(&"allow".to_string()),
+                "security-review should allow {tool}"
+            );
+        }
+        for tool in &["write", "edit", "apply_patch", "replace", "multiedit", "commit", "image"] {
+            assert_eq!(
+                sr.permissions.get(*tool),
+                Some(&"deny".to_string()),
+                "security-review should deny {tool}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_builtin_research_mode_all_and_permissions() {
+        let agents = builtin_agents();
+        let research = agents.iter().find(|a| a.name == "research").unwrap();
+        assert_eq!(research.mode, AgentMode::All);
+        assert!(!research.hidden);
+        assert_eq!(research.color.as_deref(), Some("magenta"));
+        for tool in &["websearch", "webfetch", "research", "skill", "question", "task"] {
+            assert_eq!(
+                research.permissions.get(*tool),
+                Some(&"allow".to_string()),
+                "research should allow {tool}"
+            );
+        }
+        assert_eq!(research.permissions.get("image"), Some(&"deny".to_string()));
+        assert_eq!(research.permissions.get("plan_enter"), Some(&"deny".to_string()));
+        assert_eq!(research.permissions.get("plan_exit"), Some(&"deny".to_string()));
+    }
+
+    #[test]
+    fn test_builtin_count_is_nine() {
+        assert_eq!(builtin_agents().len(), 9);
+    }
+
+    #[test]
+    fn test_builtin_visible_count_is_six() {
+        let agents = builtin_agents();
+        let visible = list_visible_agents(&agents);
+        assert_eq!(visible.len(), 6);
+    }
+
+    #[test]
+    fn test_security_review_prompt_sentinels() {
+        let agents = builtin_agents();
+        let sr = agents.iter().find(|a| a.name == "security-review").unwrap();
+        let prompt = sr.system_prompt.as_ref().expect("security-review should have a prompt");
+        assert!(prompt.contains("defensive"), "prompt should mention defensive");
+        assert!(prompt.contains("deterministic"), "prompt should mention deterministic");
+        assert!(prompt.contains("evidence"), "prompt should mention evidence");
+        assert!(prompt.contains("Never mutate files"), "prompt should prohibit file mutation");
+    }
+
+    #[test]
+    fn test_research_prompt_sentinels() {
+        let agents = builtin_agents();
+        let research = agents.iter().find(|a| a.name == "research").unwrap();
+        let prompt = research.system_prompt.as_ref().expect("research should have a prompt");
+        assert!(prompt.contains("research"), "prompt should mention research tool");
+        assert!(prompt.contains("websearch"), "prompt should mention websearch");
+        assert!(prompt.contains("cite"), "prompt should mention citation");
     }
 }

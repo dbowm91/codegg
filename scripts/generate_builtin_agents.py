@@ -69,6 +69,18 @@ def _format_option_string(s: str | None) -> str:
     return f"Some({_format_string_literal(s)})"
 
 
+def _format_option_f64(v: float | None) -> str:
+    if v is None:
+        return "None"
+    return f"Some({v})"
+
+
+def _format_option_usize(v: int | None) -> str:
+    if v is None:
+        return "None"
+    return f"Some({v})"
+
+
 def _format_permissions(perms: dict[str, str]) -> str:
     """Return a Rust HashMap literal for permissions."""
     if not perms:
@@ -99,6 +111,9 @@ def _build_agent_entry(agent: dict, prompt_content: str | None) -> str:
     hidden = agent.get("hidden", False)
     role = agent.get("role")
     permissions = agent.get("permissions", {})
+    temperature = agent.get("temperature")
+    steps = agent.get("steps")
+    color = agent.get("color")
 
     mode_variant = {
         "Primary": "AgentMode::Primary",
@@ -118,10 +133,10 @@ def _build_agent_entry(agent: dict, prompt_content: str | None) -> str:
     lines.append("            mode_name: None,")
     lines.append("            model: None,")
     lines.append("            variant: None,")
-    lines.append("            temperature: None,")
+    lines.append(f"            temperature: {_format_option_f64(temperature)},")
     lines.append("            top_p: None,")
-    lines.append("            color: None,")
-    lines.append("            steps: None,")
+    lines.append(f"            color: {_format_option_string(color)},")
+    lines.append(f"            steps: {_format_option_usize(steps)},")
     lines.append(f"            system_prompt: {_format_option_string(prompt_content)},")
     lines.append(f"            permissions: {_format_permissions(permissions)},")
     lines.append(f"            hidden: {'true' if hidden else 'false'},")
@@ -155,7 +170,12 @@ def generate(repo_root: Path) -> None:
         agent = _parse_agent_toml(toml_path)
         name = agent["name"]
 
-        prompt_path = prompt_dir / f"{name}.md"
+        # Support explicit prompt_file or convention-based lookup
+        prompt_file_rel = agent.pop("prompt_file", None)
+        if prompt_file_rel:
+            prompt_path = repo_root / "assets" / prompt_file_rel
+        else:
+            prompt_path = prompt_dir / f"{name}.md"
         prompt_content = _read_prompt(prompt_path)
 
         print(f"  {name}: prompt={'yes' if prompt_content else 'none'}")
