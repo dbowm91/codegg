@@ -1,7 +1,7 @@
 ---
 name: security
 description: Guide for security implementations in opencode-rs
-version: 1.0.0
+version: 1.1.0
 tags:
   - security
   - permissions
@@ -390,8 +390,16 @@ fn revalidate_dns(host: &str, port: u16, validated_ips: &[IpAddr]) -> Result<(),
     let current_ips: Vec<IpAddr> = current_addrs.iter().map(|addr| addr.ip()).collect();
 
     // Check if any IP has changed since initial validation
-    for ip in current_ips {
-        if !validated_ips.contains(&ip) {
+    for ip in &current_ips {
+        if !validated_ips.contains(ip) {
+            // Check if IPv6 address maps to an IPv4 that was validated
+            if let IpAddr::V6(ipv6) = ip {
+                if let Some(v4) = ipv6_segments_to_ipv4(ipv6) {
+                    if validated_ips.contains(&IpAddr::V4(v4)) {
+                        continue;  // IPv4-mapped address, same as already validated
+                    }
+                }
+            }
             return Err(ToolError::Execution(
                 "DNS rebinding attack detected: IP address changed".to_string(),
             ));
@@ -414,6 +422,286 @@ This pattern is implemented in `src/tool/webfetch.rs` to prevent attackers from 
 Path extraction from tool arguments:
 - `read`, `write`, `edit`, `replace`, `glob`, `grep`, `list` → `arguments["path"]`
 - `apply_patch` → `arguments["patch_path"]`
+
+## Security review workflow
+
+The `src/security/workflow/` module provides a structured security review workflow that ties together the existing security infrastructure. The workflow is split into submodules:
+
+| Submodule | Purpose |
+|-----------|---------|
+| `mod.rs` | Facade, re-exports, tests |
+| `types.rs` | DTOs and enums |
+| `diff.rs` | Diff parsing, exclusion, preset selection, target building |
+| `preflight.rs` | Filename and content preflight checks |
+| `evidence.rs` | Evidence helpers, synthesis, classification |
+| `context.rs` | securityContext payloads, escalation plan |
+| `report.rs` | Assembly, rendering, orchestrator, command handler, `run_security_review_background` |
+| `enrichment.rs` | LSP enrichment runner, executor integration |
+| `receipt.rs` | TUI-facing `SecurityReviewReceipt` DTO, panel item projection (with `hunk: Option<SecurityReviewHunkRef>`), `SecurityReviewFilter` (including `HunkBacked`), `SecurityReviewTaskState` reentrancy guard |
+
+### Workflow types
+
+- `SecurityReviewTarget` — A file/location selected for review, with preset and reason
+- `SecurityReviewFinding` — Evidence-based finding with severity, confidence, evidence, reasoning, recommendation
+- `SecurityReviewPrompt` — Marker-only triage prompt (not a confirmed finding)
+- `SecurityPreflightResult` — Deterministic check result (pass/fail/skipped)
+- `SecurityReviewOutput` — Complete workflow output combining all of the above; includes `hunks: Vec<SecurityReviewHunkRef>` for TUI hunk display
+- `SecurityReviewHunkRef` — Compact hunk context for TUI display, carrying `file_path`, line ranges, header, and `lines: Vec<SecurityReviewHunkLine>`. Has a `contains_new_line(line: u32) -> bool` method that checks whether the hunk covers a given new-side line (actual line match first, range fallback).
+- `SecurityReviewHunkLine` — Single line within a hunk with `old_line`/`new_line` numbers, `kind: SecurityReviewHunkLineKind`, and `text`. Focus (highlight) is computed at render time by comparing the panel item's line number against `new_line`, not stored on the struct.
+- `SecurityReviewHunkLineKind` — Enum (`Added`, `Removed`, `Context`) for hunk line display styling
+- `ChangedHunk` — Now includes `lines: Vec<DiffLine>` with `DiffLine { kind: DiffLineKind, text }` — the diff parser preserves individual line content
+
+### Target discovery
+
+`discover_targets_from_diff()` uses `egggit` to parse unified diffs and produce `SecurityReviewTarget` instances. Files are filtered through `should_skip_file()` which excludes binary, vendor, and generated paths. This is a read-only operation — it does not mutate the worktree.
+
+`parse_changed_hunks_for_file()` handles per-file patches that may lack a `diff --git` header, falling back to hunk-header parsing with the provided file path.
+
+`build_file_level_security_review_target()` creates unpositioned targets for files where no parseable hunks are available, using content-based preset selection.
+
+### Preset selection
+
+`select_security_preset()` maps file paths and optional content hints to `securityContext` presets deterministically:
+- `Cargo.toml`, `build.rs` → `dependency_review`
+- Files with "unsafe" in name or content → `unsafe_review`
+- Auth/middleware/handler/route paths → `web_backend`
+- CLI/command/process paths → `rust_cli`
+- Default → `rust_server`
+
+### Prompt sources
+
+Planned targets produce prompts with `source: changed_hunk` evidence. Risk-marker prompts from `securityContext` include `source: securityContext.risk_marker` evidence, making the two sources distinguishable.
+
+### Evidence-based security findings
+
+The security workflow separates review prompts from findings. Risk markers remain prompts unless additional evidence supports a concrete issue. Finding synthesis is conservative: severity and confidence are deterministic enums, recommendations are defensive, and outputs are not proof of exploitability.
+
+#### Finding model
+
+- `SecuritySeverity` enum: Info, Low, Medium, High, Critical (no Critical emitted by default)
+- `SecurityConfidence` enum: Low, Medium, High
+- `SecurityEvidenceKind` enum: ChangedHunk, RiskMarker, Diagnostic, CallPath, Preflight, CodeReasoning, TruncationNotice
+- `StructuredSecurityEvidence` struct with kind, file_path, line, summary, detail
+- `SecurityReviewFinding` struct with severity, confidence, title, file_path, line, category, evidence, reasoning, recommendation, tests
+
+#### Eligibility gate
+
+`is_finding_eligible()` requires at least two meaningful evidence dimensions:
+- Marker-only evidence is never eligible (`marker_only_is_finding_eligible()` always returns false)
+- Changed hunk + risk marker => eligible (low/medium confidence)
+- Content preflight failure + changed hunk => eligible
+- Code reasoning + changed hunk => eligible
+- Call path to public/auth boundary + marker => eligible
+
+#### Evidence conversion
+
+- `evidence_from_target()` converts `SecurityReviewTarget` to structured evidence
+- `evidence_from_review_prompt()` converts `SecurityReviewPrompt` to structured evidence (RiskMarker for securityContext source, ChangedHunk for diff source)
+- `run_content_preflight_checks()` runs local, deterministic content scans for hardcoded secrets, unsafe keywords, process execution APIs, SQL interpolation, and weak crypto, populating `SecurityPreflightEvidence` with file paths and line numbers
+- `run_content_preflight_checks_for_targets()` provides locality-aware scanning that only checks a line window (radius=10) around positioned targets
+
+#### Finding synthesis
+
+`synthesize_evidence_based_findings()` groups evidence by file and nearby line bucket, applies the eligibility gate, and emits findings only for eligible groups. Preflight evidence is converted via structured `SecurityPreflightEvidence` with file-scoped paths — different-file evidence never supports a finding. `evidence_matches_group()` enforces same-file + nearby-line (+/-5) grouping for positioned groups. Legacy string-only preflight evidence is not finding-eligible. Ineligible prompts are preserved.
+
+`synthesize_review_prompts_only()` is the renamed prompt-only synthesis (marker-only → prompts, findings always empty). `synthesize_findings()` is a deprecated wrapper.
+
+`classify_finding()` deterministically maps category + evidence to severity/confidence. Truncation reduces confidence by one level. No Critical findings by default.
+
+#### Evidence scoping
+
+Evidence-based findings only combine evidence from the same file and nearby changed-hunk context:
+- `SecurityPreflightEvidence` carries `file_path` and optional `line` — structured preflight evidence is always file-scoped
+- `evidence_matches_group()` checks that evidence matches the group's file path and is within the same line bucket or +/-5 lines for positioned groups
+- Filename-only hints remain prompts unless supported by additional same-file evidence
+- Content preflight is local and deterministic; it is heuristic and not proof of exploitability
+- Legacy string-only preflight evidence cannot globally support findings
+
+#### Conservative semantics
+
+- Risk markers are review prompts, not confirmed findings
+- Findings are heuristic defensive review outputs, not proof of exploitability
+- All preflight checks are local and deterministic (no network, no external scanner)
+- Recommendations are defensive (no exploit instructions)
+- Tests are concrete regression tests, not offensive payload recipes
+- Evidence-based findings only combine evidence from the same file and nearby changed-hunk context
+- Filename-only hints remain prompts unless supported by additional same-file evidence
+- Content preflight is local and deterministic; it is heuristic and not proof of exploitability
+
+### Security context escalation
+
+`SecurityContextEscalationLevel` controls selective LSP call expansion for `securityContext` requests:
+
+| Level | Meaning |
+|-------|---------|
+| `None` | No call expansion (default for most targets) |
+| `Basic` | Shallow call hierarchy (depth 1) for targets near auth/crypto/network boundaries |
+| `CallDepth1` | Depth-1 expansion for moderate-risk targets |
+| `CallDepth2` | Depth-2 expansion for high-risk targets (e.g. process execution, unsafe blocks) |
+
+`choose_security_context_escalation(target, finding, prompt)` is a pure decision helper that maps risk signals (target reason, finding category, prompt risk markers) to an escalation level. The rules are deterministic and bounded — escalation never exceeds depth 2.
+
+`plan_security_context_escalations(targets, ...)` returns a `SecurityContextEscalationPlan` DTO — a policy output that recommends escalation levels per target without executing LSP requests. The plan is a recommendation, not an execution.
+
+`build_escalated_security_context_request(target, level)` builds the JSON payload for `securityContext` with appropriate `call_depth` and node caps. The request is read-only — it sends LSP hierarchy queries but never writes files or executes code.
+
+Escalation is always read-only and bounded. No preset enables depth 2 by default; escalation is activated through explicit risk signals only.
+
+### Invoking the workflow
+
+**Async orchestrator**: `run_security_review_workflow(root, base, options)` runs the full pipeline (discover targets → build prompts → preflight checks → evidence-based synthesis → assemble output). It does NOT execute `securityContext` LSP requests — those are deferred to a subsequent phase. Content preflight uses `root.join(p)` for repo-root-relative reads, so it works correctly when launched from any working directory.
+
+`SecurityReviewWorkflowOptions` configures the orchestrator:
+- `include_prompts` / `include_findings` — toggle output sections
+- `run_filename_preflight` / `run_content_preflight` / `hunk_local_content_preflight` — toggle preflight check stages
+- `max_findings` / `max_prompts` — cap output counts
+
+**Rendering helpers**:
+- `render_security_review_summary(output)` — compact summary with counts
+- `render_security_review_findings(output)` — findings with severity/confidence labels
+- `render_security_review_prompts(output)` — review prompts without severity
+
+**Testable command functions** (in `src/security/workflow/report.rs`):
+- `SecurityReviewCommandArgs` — parsed CLI arguments struct
+- `parse_security_review_args(input) -> Result<SecurityReviewCommandArgs>` — parse command input
+- `run_security_review_command(args) -> Result<String>` — execute the command
+
+**TUI command**: `/security-review` with flags:
+- `--changed` — shorthand for `--base HEAD`, only review changed files
+- `--base <ref>` — specify base ref for diff
+- `--json` — output as JSON
+- `--prompts-only` — only output review prompts
+- `--findings-only` — only output evidence-based findings
+- `--no-content` — skip content preflight checks
+- `--no-filename` — skip filename preflight checks
+- `--max-findings N` — cap findings count
+- `--max-prompts N` — cap prompts count
+- `--panel` — auto-open the result panel on completion
+
+Usage examples:
+```
+/security-review --changed
+/security-review --changed --json
+/security-review --base main --findings-only
+/security-review --prompts-only
+/security-review --base HEAD --no-content --max-findings 5
+/security-review --changed --panel
+```
+
+**Other invocation paths**:
+- Subagent: spawn `security-review` agent via task tool
+- Internal: call `discover_targets_from_diff()` + `run_preflight_checks()` + `synthesize_findings()` directly
+- Internal: call `synthesize_evidence_based_findings()` for evidence-based finding synthesis
+
+The TUI command dispatches asynchronously via `TuiCommand::SecurityReviewRun`; the UI stays responsive while the review runs. A reentrancy guard (`App.security_review_running`) prevents concurrent runs. By default the report goes to the timeline and the result panel can be reopened with `/security-review-show`. The `--panel` flag auto-opens the result panel on completion. The local-mode `LspSecurityContextExecutor` and the remote/socket deterministic fallback (with `note_lsp_enrichment_unavailable`) are both preserved. Receipt persistence is in-memory only (cleared on app restart).
+
+#### LSP Executor Integration
+
+`/security-review --enrich` can execute bounded, read-only `securityContext` LSP requests when an executor is available. The executor hierarchy:
+
+- `NoopSecurityContextExecutor`: Always returns an error. Used when no LSP is available.
+- `FixtureSecurityContextExecutor`: Pre-configured responses keyed by file path. Used in unit tests.
+- `LspSecurityContextExecutor`: Real adapter wrapping `Arc<LspTool>`. Validates requests via `validate_security_context_request()`, injects the `"operation": "securityContext"` field, delegates to `LspTool::execute()`, and parses the JSON string response.
+
+**Injection plumbing**: `run_security_review_command_with_executor(root, args, executor)` accepts `Option<&dyn SecurityContextExecutor>` — the injection point for an executor. `run_security_review_command(root, args)` delegates to it with `None`. In local mode the TUI creates a shared `LspTool` at startup (`App.lsp_tool`) and passes a `LspSecurityContextExecutor` to the command handler for `--enrich`. In socket/remote mode `lsp_tool` is `None` and `--enrich` falls back to deterministic stage-1 with an unavailable note. The new `run_security_review_background(root: PathBuf, args: SecurityReviewCommandArgs, lsp_tool: Option<Arc<LspTool>>)` helper (also in `src/security/workflow/report.rs`) is the TUI-facing entry point: it owns its inputs (no borrowed `&self` survives the await) and constructs the `LspSecurityContextExecutor` internally when `lsp_tool` is `Some`, so the caller can spawn it from `handle_security_review_run` in `src/tui/mod.rs`.
+
+The `SecurityContextExecutorProvider` trait exists (providing `fn security_context_executor(&self) -> Option<Arc<dyn SecurityContextExecutor>>`) but has **zero implementations** — no struct implements it yet. It is available as a future wiring pattern.
+
+The TUI command handler (`src/tui/app/mod.rs:4094-4103`) passes `None` because the TUI `App` does not hold a direct reference to `LspTool`. When LSP state becomes accessible, a real executor can be injected here.
+
+**Enrichment note helpers** produce precise notes:
+- `note_lsp_enrichment_unavailable`: "LSP enrichment requested but no securityContext executor is available in this runtime."
+- `note_lsp_enrichment_no_eligible_targets`: "LSP enrichment requested but no targets met escalation policy."
+- `note_lsp_enrichment_executed`: "LSP enrichment executed N request(s)."
+
+**Request validation** (`validate_security_context_request` in `src/security/lsp_executor.rs`) checks:
+- `file_path` exists and is a non-empty string
+- `security_preset` exists and is a non-empty string
+- `call_depth` is 0, 1, or 2 if present
+- `max_call_nodes` is within cap (64) if present
+- No mutation fields (apply, write, edit, patch, command, execute, shell) are present
+
+All enrichment is:
+- Opt-in via `--enrich` flag
+- Read-only (never mutates files)
+- Bounded (max depth 2, max nodes 64, per-request timeout)
+- Fail-soft (returns stage-1 output on any failure)
+
+### Result panel + show/cancel commands
+
+After a successful `/security-review`, the TUI stores a structured `SecurityReviewReceipt` on `App.latest_security_review` (set by `App::set_latest_security_review` at `src/tui/app/mod.rs:914`). The receipt carries the structured `SecurityReviewOutput` plus the rendered report and is the input to the result panel. The output includes `hunks: Vec<SecurityReviewHunkRef>` — parsed diff hunks with line-level detail for hunk context display in the panel.
+
+The `src/security/workflow/receipt.rs` submodule holds:
+- `SecurityReviewReceipt` — DTO with `id`, `root`, `args`, `output`, `rendered_report`, `completed_at_ms`, `enriched`, `lsp_available`.
+- `SecurityReviewPanelItem` / `SecurityReviewPanelItemKind` — flat projection of findings, prompts, notes, and preflight results. Each item has `hunk: Option<SecurityReviewHunkRef>` — findings/prompts are matched to hunks by `file_path` + new-side line via `hunk.contains_new_line()` in `project_receipt_to_panel_items()`. Findings also have an evidence-line fallback: if the finding has no direct line but structured evidence has a same-file line inside a hunk, the hunk is still attached. Focus (highlight) is computed at render time by comparing `item.line` against `hunk_line.new_line`, so two items sharing one hunk can highlight different lines.
+- `SecurityReviewFilter` (`All`, `Findings`, `Prompts`, `Notes`, `HighConfidence`, `MediumOrHigherSeverity`, `HunkBacked`) with `next()` for cycling. The `HunkBacked` filter shows only items with a matching hunk context (`item.hunk.is_some()`).
+- `project_receipt_to_panel_items(receipt)` / `filter_panel_items(items, filter)` — pure helpers for the panel.
+- `SecurityReviewTaskState { id, abort_handle }` — the reentrancy guard for an in-flight review. Held by `App.security_review_running`.
+
+`Dialog::SecurityReview` (the result panel) is a master/detail view at `src/tui/components/dialogs/security_review.rs`:
+- Header: `Security Review — <root> | Findings: N | Prompts: N | Notes: N | Enrichment: local-lsp|unavailable|off`.
+- List: `[FINDING]`, `[PROMPT]`, `[NOTE]`, `[PREFLIGHT]` markers; severity-colored findings.
+- Detail: title, location, summary, structured evidence, recommendation, suggested tests. When a finding or prompt has a matching hunk, the detail section renders hunk context with added/removed/context line styling (green/red/neutral).
+- Keybindings: `j`/`k` (or `↑`/`↓`) move selection; `PgUp`/`PgDn` scroll detail; `f` cycle filter (including `HunkBacked`); `n` toggle notes-only; `p` toggle prompts-only; `h` jump detail scroll to hunk section; `H` copy hunk text to clipboard (bounded, 4KB); `]`/`[` navigate to next/previous hunk-backed item (wraps); `Enter` opens a read-only source preview dialog for the finding's file (root-scoped via `resolve_security_review_item_path` in `receipt.rs`; shows "Security Review Finding/Prompt" origin label; falls back to clipboard if the file cannot be opened); `Esc`/`q` close.
+- Constructed on demand in `App::open_dialog` (`src/tui/app/mod.rs:5379`) and registered as `Some(Dialog::SecurityReview)` so command-mode completion opens the dialog.
+
+Commands:
+- `/security-review-show` — reopens the latest `Dialog::SecurityReview` from `App.latest_security_review`. Does NOT rerun the review. If no receipt exists, shows a "No security review result available yet." warning toast. Registered in `src/tui/command.rs:215`.
+- `/security-review-cancel` — aborts the running task via `App::cancel_security_review` (`src/tui/app/mod.rs:936`) which calls `AbortHandle::abort()` and clears the guard. Idempotent: if no review is running, shows a "No security review is running." warning toast. Registered in `src/tui/command.rs:217`.
+
+The completion handler `handle_security_review_finished` in `src/tui/mod.rs:2205` guards against stale completions by comparing the incoming `id` against `app.security_review_running.id` via `App::security_review_run_id`; mismatches are silently dropped so a cancelled run cannot reinstate its guard or push a stale receipt. Cancellation is best-effort: if the spawned task is in a non-cancellable section (e.g. inside a blocking syscall), its completion may still arrive and is dropped by the id-mismatch guard.
+
+The full review is read-only by design — no file mutations, no exploit generation, no network scanning. The result panel adds navigation over the existing output but does not introduce new behaviors.
+
+### LSP-Enriched Security Review (Phase 7)
+
+Phase 7 adds `security_review_enriched`, a workflow recipe that augments the deterministic security review with LSP evidence. It composes existing primitives without creating a new review pathway.
+
+**Location:** `crates/egglsp/src/workflow_recipes.rs`
+
+#### What it does
+
+1. Runs the deterministic security scan (secrets, commands, dependencies)
+2. Collects LSP evidence for files involved in the security review
+3. Enriches the deterministic findings with semantic context (types, references, definitions)
+4. Always uses `LspRiskMode::Aggressive` regardless of model tier
+
+#### Usage
+
+```rust
+use codegg_egglsp::workflow_recipes::{
+    execute_security_review_enriched, SecurityReviewEnrichedRequest,
+    SecurityReviewEnrichedFiles, RecipeSettings,
+};
+use codegg_egglsp::context::LspContextMode;
+
+let request = SecurityReviewEnrichedRequest {
+    files: SecurityReviewEnrichedFiles {
+        added: vec!["src/new_module.rs".into()],
+        modified: vec!["src/config.rs".into()],
+        deleted: vec![],
+    },
+    settings: RecipeSettings {
+        model_tier: ModelTier::Workhorse,
+        mode: LspContextMode::Required,
+        risk_mode: LspRiskMode::Aggressive,
+        max_files: 8,
+        include_definitions: true,
+        include_references: true,
+        include_preview_hints: false,
+    },
+};
+
+let outcome = execute_security_review_enriched(&provider, &request).await?;
+// outcome.rendered contains the enriched security context for the agent
+```
+
+#### How it composes with existing security review
+
+- The deterministic scan (`eggsentry`) produces risk markers and findings
+- `security_review_enriched` adds LSP semantic context (type information, references, definitions)
+- This helps the agent understand *why* code is risky, not just *that* it is risky
+- The recipe does NOT replace the deterministic scan — it enriches it
 
 ## Security Checklist
 
@@ -598,15 +886,14 @@ WASM plugins have fuel (instruction budget) limits to prevent DoS:
 const MAX_WASM_SIZE: usize = 10 * 1024 * 1024;  // 10MB
 const WASM_FUEL_PER_HOOK: u64 = 1_000_000;       // 1M fuel
 const WASM_HOOK_TIMEOUT: Duration = Duration::from_secs(30);
-static PLUGIN_FUEL_BUDGET: AtomicU64 = AtomicU64::new(10_000_000);
 const MAX_PLUGIN_FUEL_BUDGET: u64 = 10_000_000;
 ```
 
-Before executing a hook, check if budget is exhausted:
+Fuel is tracked per-plugin in `ModuleCache::fuel_budgets`. Before executing a hook, fuel is reserved and checked:
 
 ```rust
-let current_budget = PLUGIN_FUEL_BUDGET.load(Ordering::Relaxed);
-if current_budget >= MAX_PLUGIN_FUEL_BUDGET {
+let current_plugin_fuel = fuel_budgets.get(plugin_id).map(|v| v.load(Ordering::Relaxed)).unwrap_or(MAX_PLUGIN_FUEL_BUDGET);
+if current_plugin_fuel >= MAX_PLUGIN_FUEL_BUDGET {
     tracing::warn!(plugin = plugin_id, "plugin fuel budget exhausted");
     return HookResult::ok(ctx.input);
 }
@@ -856,24 +1143,25 @@ fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
 The bash tool supports OS-level filesystem sandboxing via Landlock (Linux 5.13+):
 
 ```rust
-use crate::security::sandbox::{LandlockSandbox, SandboxConfig};
+use crate::security::sandbox::{SandboxConfig, get_default_allowed_paths, get_sensitive_paths};
 
 // Create sandbox configuration
-let config = SandboxConfig {
-    enabled: true,
-    allowed_paths: vec![
-        "/home/user/project".to_string(),
-        "/tmp/opencode".to_string(),
-    ],
-    deny_paths: vec![
-        "/etc".to_string(),
-        "/root".to_string(),
-    ],
-};
+let config = SandboxConfig::new()
+    .with_enabled(true)
+    .with_allowed_paths(get_default_allowed_paths())
+    .with_deny_paths(get_sensitive_paths());
 
 // Enforce sandbox before bash execution
-enforce(&config)?;
+config.enforce()?;
 ```
+
+Note: `SandboxConfig` is the struct (not `LandlockSandbox`). The struct has builder methods:
+- `new()` - creates default config
+- `with_enabled(bool)` - enable/disable sandbox
+- `with_allowed_paths(Vec<String>)` - set allowed paths
+- `with_deny_paths(Vec<String>)` - set denied paths
+- `is_available()` - check if Landlock is supported on this system
+- `enforce()` - apply the sandbox restrictions
 
 The sandbox uses Linux Landlock syscalls to restrict filesystem access. On unsupported systems, it falls back gracefully.
 

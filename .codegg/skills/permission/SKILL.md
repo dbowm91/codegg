@@ -1,6 +1,7 @@
 ---
 name: Permission
 description: Permission system architecture and registration patterns in opencode-rs
+version: 1.1.0
 tags: [security, permission, agent, mode]
 ---
 
@@ -12,6 +13,21 @@ Use the `/skill:Permission` command to load additional permissions context for f
 | ------------- | --------------------------------------------- |
 | `permission/` | Access control and path restrictions          |
 | `permission/modes.rs` | Mode system for specialized workflows |
+| `bus/mod.rs` | `PermissionRegistry` and `QuestionRegistry` |
+
+## Permission Types
+
+Defined in `src/permission/mod.rs`:
+
+```rust
+pub const PERMISSION_TYPES: &[&str] = &[
+    "read", "edit", "glob", "grep", "list", "bash", "git", "task",
+    "todowrite", "question", "webfetch", "websearch", "codesearch",
+    "lsp", "doom_loop", "skill",
+];
+```
+
+**Note**: `external_directory` was incorrectly included and has been removed (it is not a real tool name).
 
 ## Permission Architecture
 
@@ -49,9 +65,10 @@ AgentTool permissions are checked at the AgentLoop level before any tool execute
 
 ### PermissionStore
 
-The `PermissionStore` persists decisions using SQLite:
-- `add_decision(tool, path, level)` stores Allow/Deny
-- `get_decision(tool, path)` retrieves cached decisions
+The `PermissionStore` persists decisions to a JSON file at `~/.config/codegg/permissions.json`:
+- `add_decision(tool, path, level)` stores Allow/Deny with HMAC signature
+- `get_decision(tool, path)` retrieves cached decisions with signature verification
+- Session-specific decisions are checked first, then global decisions
 
 ### ToolRule Pattern Matching
 
@@ -107,7 +124,7 @@ pub struct DoomLoopDetector {
 }
 ```
 
-**Important**: DoomLoopDetector tracks CONSECUTIVE repetitions. When a different tool interrupts, the consecutive count resets.
+**Important**: DoomLoopDetector uses window-based counting (O(1) HashMap), NOT consecutive repetitions. The count reflects how many times a tool has been called within the window, regardless of whether other tools interrupted it.
 
 ### Mode System
 
@@ -133,12 +150,20 @@ mode:
       edit: "ask"
   docs:
     description: "Documentation mode"
-    default: "allow"
+    default: "ask"
     tools:
       edit: "allow"
       read: "allow"
       bash: "deny"
 ```
+
+**Built-in Modes** (defined in `BuiltinModes`):
+
+| Mode | Default | Allowed Tools | Restricted Tools |
+|------|---------|---------------|------------------|
+| `review` | Ask | read, glob, grep, list, question, webfetch, websearch, codesearch, lsp | edit, bash, task, todowrite |
+| `debug` | Allow | read, glob, grep, list, bash, question, webfetch, websearch, codesearch, edit, lsp | task, todowrite |
+| `docs` | Ask | read, glob, grep, list, question, webfetch, websearch, codesearch, edit, write, lsp | bash, task, todowrite |
 
 ## PermissionChoice Enum
 
@@ -159,22 +184,40 @@ impl PermissionChoice {
 }
 ```
 
+## PermissionDecision vs PermissionChoice
+
+`PermissionDecision` is the bus-owned DTO defined in `src/bus/mod.rs`. It has the same variants (`AllowOnce`, `AlwaysAllow`, `DenyOnce`, `AlwaysDeny`) and identical `allowed()` / `persist()` methods as `PermissionChoice`.
+
+`PermissionChoice` is the domain type defined in `src/permission/mod.rs`.
+
+Bidirectional `From` impls allow conversion between the two:
+
+```rust
+impl From<PermissionChoice> for PermissionDecision { ... }
+impl From<PermissionDecision> for PermissionChoice { ... }
+```
+
+The bus layer uses `PermissionDecision` to avoid depending on the `permission` domain module. The `PermissionRegistry` stores `Sender<PermissionDecision>`.
+
 ## PermissionRegistry Usage
 
 The `PermissionRegistry` in `src/bus/mod.rs` manages pending permission requests:
 
 ```rust
 pub struct PermissionRegistry {
-    senders: DashMap<String, tokio::sync::oneshot::Sender<PermissionChoice>>,
+    senders: DashMap<String, PendingPermission>,
 }
 
 impl PermissionRegistry {
-    pub async fn register(perm_id: String, tx: tokio::sync::oneshot::Sender<PermissionChoice>);
-    pub async fn respond(perm_id: String, choice: PermissionChoice) -> bool;
-    pub async fn unregister(perm_id: &str);
+    pub fn register(perm_id: String, tx: tokio::sync::oneshot::Sender<PermissionDecision>);
+    pub fn respond(perm_id: String, choice: PermissionDecision) -> bool;
+    pub fn unregister(perm_id: &str);
     pub fn is_registered(perm_id: &str) -> bool;
+    pub fn pending_permission_ids() -> Vec<String>;
 }
 ```
+
+**Note**: All methods are synchronous (`fn`), NOT async. Entries have a 310s TTL (5s buffer above agent loop timeout).
 
 ### Test Patterns
 
@@ -182,13 +225,13 @@ impl PermissionRegistry {
 ```rust
 // Register permission request
 let (tx, rx) = tokio::sync::oneshot::channel();
-PermissionRegistry::register("test-perm-1".to_string(), tx).await;
+PermissionRegistry::register("test-perm-1".to_string(), tx);
 
 // Verify registered
 assert!(PermissionRegistry::is_registered("test-perm-1"));
 
 // Respond with AllowOnce
-PermissionRegistry::respond("test-perm-1".to_string(), PermissionChoice::AllowOnce).await;
+PermissionRegistry::respond("test-perm-1".to_string(), PermissionDecision::AllowOnce);
 
 // Verify response received
 let response = rx.await.unwrap();
@@ -198,18 +241,18 @@ assert!(response.allowed());
 **Ask/Deny Pattern**:
 ```rust
 let (tx, rx) = tokio::sync::oneshot::channel();
-PermissionRegistry::register("test-perm-2".to_string(), tx).await;
+PermissionRegistry::register("test-perm-2".to_string(), tx);
 
 // Respond with DenyOnce
-PermissionRegistry::respond("test-perm-2".to_string(), PermissionChoice::DenyOnce).await;
+PermissionRegistry::respond("test-perm-2".to_string(), PermissionDecision::DenyOnce);
 
 let response = rx.await.unwrap();
-assert!(matches!(response, PermissionChoice::DenyOnce));
+assert!(matches!(response, PermissionDecision::DenyOnce));
 ```
 
 **Always Allow Pattern** (persists decision):
 ```rust
-PermissionRegistry::respond("test-perm".to_string(), PermissionChoice::AlwaysAllow).await;
+PermissionRegistry::respond("test-perm".to_string(), PermissionDecision::AlwaysAllow);
 // Decision is persisted - future calls to same tool/path will auto-allow
 ```
 
@@ -223,11 +266,13 @@ pub struct QuestionRegistry {
 }
 
 impl QuestionRegistry {
-    pub async fn register(question_id: String, tx: tokio::sync::oneshot::Sender<String>);
-    pub async fn answer_question(question_id: String, answers: String) -> bool;
-    pub async fn unregister(question_id: &str);
+    pub fn register(question_id: String, tx: tokio::sync::oneshot::Sender<String>);
+    pub fn answer_question(question_id: String, answers: String) -> bool;
+    pub fn unregister(question_id: &str);
 }
 ```
+
+**Important**: These are synchronous functions (`fn`), NOT async. Do NOT use `await` when calling these.
 
 Example usage in tests:
 ```rust
@@ -236,11 +281,11 @@ agent_loop.set_session_id("test-session-123");
 
 // Register question
 let (tx, rx) = tokio::sync::oneshot::channel();
-QuestionRegistry::register("test-session-123".to_string(), tx).await;
+QuestionRegistry::register("test-session-123".to_string(), tx);  // NOT async
 
 // Answer the question
 let answers = serde_json::json!({"q1": "red"}).to_string();
-QuestionRegistry::answer_question("test-session-123".to_string(), answers).await;
+QuestionRegistry::answer_question("test-session-123".to_string(), answers);  // NOT async
 
 // Verify response
 let response = rx.await.unwrap();

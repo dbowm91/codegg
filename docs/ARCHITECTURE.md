@@ -35,23 +35,41 @@ src/
 │   └── mod.rs          # IDE MCP server for openDiff tool
 ├── lsp/                # Language Server Protocol support
 ├── mcp/                # MCP (Model Context Protocol) client/server
-│   ├── mod.rs           # McpManager, ToolRegistry integration
+│   ├── mod.rs           # McpService, ToolRegistry integration
 │   ├── local.rs         # Local MCP server connections (stdio)
 │   ├── remote.rs        # Remote MCP with OAuth, DNS rebinding protection
 │   ├── ide_server.rs    # IDE MCP server for diff viewing
-│   ├── auth.rs          # OAuth flow for MCP
-│   └── transport.rs     # MCP transport implementations
+│   └── auth.rs          # OAuth flow for MCP
 ├── memory/             # Persistent memory system for session-to-session learning
 │   └── mod.rs          # MemoryStore, save() persistence, superseded_by field
 ├── model/              # Model definitions and flags (if separate from provider)
 ├── permission/         # Access control and path restrictions
 │   ├── mod.rs           # PermissionChecker, PathCache, PATH_CANONICALIZE_CACHE_TTL_SECS=1
 │   └── rule.rs         # ToolRule pattern matching (glob patterns like "git *")
-├── plugin/             # WASM plugin system with fuel tracking
-│   ├── mod.rs           # PluginManager, WASM execution
+├── plugin/             # Plugin system with WASM/process/builtin runtimes
+│   ├── mod.rs           # Plugin module exports
+│   ├── registry.rs      # PluginRegistry, capability indexing
+│   ├── management.rs    # PluginManager (install/enable/disable/remove)
+│   ├── lifecycle.rs     # Plugin lifecycle management
+│   ├── service.rs       # PluginService, hook dispatch
 │   ├── loader.rs        # Module caching with DashMap, mtime-based invalidation
 │   ├── marketplace.rs   # Plugin marketplace integration
-│   └── service.rs       # PluginService, hook dispatch
+│   ├── install.rs       # Plugin install validation, path traversal checks
+│   ├── manifest.rs      # Manifest parsing and validation
+│   ├── permission.rs    # Plugin permission system
+│   ├── policy.rs        # PluginPolicy (lifecycle, UI, permission, install, runtime)
+│   ├── api.rs           # Plugin API surface
+│   ├── hooks.rs         # Hook dispatch system
+│   ├── event_bus.rs     # Plugin event bus integration
+│   ├── management_ui.rs # Management UI rendering
+│   ├── tui.rs           # TUI integration (legacy)
+│   ├── builtin/         # Built-in plugins (poe, gitlab, copilot, codex)
+│   └── runtime/         # Runtime implementations
+│       ├── mod.rs       # Runtime trait and dispatch
+│       ├── process.rs   # ProcessRuntime (subprocess execution)
+│       ├── wasm.rs      # WasmRuntime (WASM execution via wasmtime)
+│       ├── wasm_cache.rs # WASM module caching
+│       └── builtin.rs   # BuiltinRuntime (in-process execution)
 ├── provider/           # LLM providers — re-export from `crates/codegg-providers`
 │   └── (see crates/codegg-providers/src/)  # anthropic, openai, google, azure, bedrock, etc.
 ├── pty/                # PTY (pseudo-terminal) support
@@ -80,7 +98,7 @@ src/
 │   └── mod.rs          # Tts struct, TtsEngine trait, Ctrl+Y toggle, Ctrl+Shift+Y stop
 ├── tool/               # Built-in tools
 │   ├── mod.rs           # Tool trait, ToolRegistry, tool definition caching
-│   ├── bash.rs          # BashTool, BLOCKED_PATTERNS (46 regex), env_clear(), &&/|| blocking
+│   ├── bash.rs          # BashTool, BLOCKED_PATTERNS (52 regex), env_clear(), &&/|| blocking
 │   ├── read.rs          # ReadTool, symlink check, unrestricted bypass
 │   ├── write.rs         # WriteTool, unrestricted bypass
 │   ├── edit.rs          # EditTool, unrestricted bypass
@@ -110,8 +128,7 @@ src/
 │   └── util.rs          # validate_path(), canonicalize_path(), symlink checking
 ├── tui/                # Terminal user interface
 │   ├── app/              # Main TUI application
-│   │   ├── mod.rs         # App struct, event handling, state management
-│   │   ├── handlers.rs    # Input handling (107KB, on_key, mouse, dialogs, @ mention completion)
+│   │   ├── mod.rs         # App struct, event handling, state management (~13K lines)
 │   │   ├── types.rs       # CompletionType, Dialog, HistoryEntry, SessionStatus, TodoEntry
 │   │   └── state/         # UiState, SessionState, and other UI state management
 │   ├── components/       # UI widgets
@@ -138,12 +155,27 @@ src/
 │   │   │   ├── template.rs # Template dialog
 │   │   │   ├── theme.rs     # Theme picker dialog
 │   │   │   ├── tree.rs      # Tree dialog
-│   │   │   └── help_overlay.rs # Help overlay
+│   │   │   ├── help.rs      # Help overlay
+│   │   │   ├── command.rs   # Command palette dialog
+│   │   │   ├── diff.rs      # Diff viewer dialog
+│   │   │   ├── info.rs      # Scrollable info dialog
+│   │   │   ├── plugin.rs    # Plugin dialog (generic)
+│   │   │   ├── research.rs  # Research results dialog
+│   │   │   ├── review.rs    # Code review dialog
+│   │   │   ├── security_review.rs # Security review dialog
+│   │   │   ├── source_preview.rs # Source preview dialog
+│   │   │   └── ui_node.rs   # Plugin UI node renderer
 │   │   ├── completion_overlay.rs # Completion popup (path detection, file/dir icons)
 │   │   ├── toast.rs       # Toast notification manager
 │   │   ├── spinner.rs     # Spinner widget
 │   │   ├── scroll.rs      # Scroll utilities
 │   │   └── tool_output.rs # Tool output display
+│   ├── runtime/          # TUI runtime (async command dispatch, event loop)
+│   │   ├── mod.rs        # Runtime module exports
+│   │   ├── command_dispatch.rs # TuiCommand dispatch handlers
+│   │   ├── event_loop.rs # Main event loop
+│   │   ├── app_events.rs # Application event processing
+│   │   └── render_recovery.rs # Render panic recovery
 │   ├── input.rs         # Input handling, keybindings (InputAction, KeybindConfig)
 │   ├── layout.rs        # Layout configuration (LayoutConfig, TuiLayout)
 │   ├── theme.rs         # Theme definitions (uses Arc<Theme> to avoid cloning)
@@ -275,6 +307,7 @@ TUI uses a command channel (`tui_cmd_tx: Option<mpsc::Sender<TuiCommand>>`) for 
 ```rust
 #[derive(Debug, Clone, PartialEq)]
 pub enum TuiCommand {
+    // Representative subset — actual enum has 88+ variants (src/tui/app/mod.rs)
     DeleteSession { session_id: String },
     ArchiveSession { session_id: String, unarchive: bool },
     UndoDelete { session_id: String },
@@ -290,6 +323,7 @@ pub enum TuiCommand {
     CreateFromTemplate { template_id: String, session_id: String },
     LoadSessionMessages { session_id: String },
     SpawnSubagent { agent_name: String, prompt: String },
+    // ... 70+ more variants for git, LSP, plugins, tasks, etc.
 }
 ```
 
@@ -318,7 +352,7 @@ fn handle_fork_session(&mut self) {
 - DoomLoopDetector uses HashMap for O(1) loop detection, normalizes tool names (lowercase, trimmed)
 - Theme uses `Arc<Theme>` to avoid cloning on every `set_theme()` call
 - SSE parser uses `drain()` and indices to reduce allocations
-- Bash regex uses `LazyLock<Regex>` for pre-compiled patterns (46 BLOCKED_PATTERNS)
+- Bash regex uses `once_cell::sync::Lazy<Vec<...>>` for pre-compiled patterns (52 BLOCKED_PATTERNS)
 - Session read-after-write uses `RETURNING` clause instead of UPDATE+SELECT
 - Batch inserts use `QueryBuilder::push_values()`
 - HTTP pool tuning: `pool_max_idle_per_host(32)`, `pool_idle_timeout(30s)`, `tcp_keepalive(30s)`

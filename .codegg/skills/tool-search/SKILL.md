@@ -1,3 +1,13 @@
+---
+name: tool-search
+description: Tool catalog system and tool_search tool for on-demand tool discovery
+version: 1.0.0
+tags:
+  - tool
+  - search
+  - catalog
+---
+
 # Skill: tool-search
 
 # Tool Search & Catalog Guide
@@ -101,6 +111,6 @@ registry.register(crate::tool::tool_search::ToolSearchTool::new(Arc::new(registr
 }
 ```
 
-Base directory for this skill: file:///home/sugarwookie/projects/coder/.opencode/skills/tool-search
+Base directory for this skill: file:///Users/davidbowman/projects/codegg/.opencode/skills/tool-search
 Relative paths in this skill (e.g., scripts/, reference/) are relative to this base directory.
 Note: file list is sampled.

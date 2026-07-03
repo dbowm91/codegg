@@ -71,7 +71,7 @@ hidden by default — see [MCP](mcp.md)).
 
 ## Core Protocol
 
-- **Protocol Version**: 1 (defined in `protocol/core.rs`)
+- **Protocol Version**: 1 (defined in `crates/codegg-protocol/src/core.rs`)
 - **Request/Response Separation**: `CoreRequest` / `CoreResponse` via `RequestEnvelope<T>` and `EventEnvelope<T>`
 - **Transport Adapters** (in `core/transport/`):
   - `InprocCoreClient` - In-process communication (used by TUI)
@@ -120,7 +120,7 @@ hidden by default — see [MCP](mcp.md)).
 ### Agent Loop
 - `AgentLoop` - Main execution cycle in `agent/loop.rs`
 - `Agent` - Agent definition with mode (Primary/Subagent/All)
-- 7 built-in agents: build, plan, general, explore, title, summary, compaction
+- 9 built-in agents: build, plan, general, explore, title, summary, compaction, security-review, research
 
 ### Tools
 - `Tool` trait - All tools implement `name()`, `description()`, `parameters()`, `execute()`
@@ -141,7 +141,7 @@ hidden by default — see [MCP](mcp.md)).
 - Config: `[tool_backends.<domain>]` sections with `backend`, `expose_raw_mcp_tools`, `fallback_to_native`, `server_name`, `command`, `args`, `timeout_ms`, `env` (see `config::schema::ExternalToolBackendConfigSchema`)
 
 ### Events
-- `AppEvent` enum - 41 variants for session, tool, MCP, permission, subagent, goal events
+- `AppEvent` enum - 42 variants for session, tool, MCP, permission, subagent, goal events
 - `GlobalEventBus` - tokio broadcast channel (2048 buffer)
 - PermissionRegistry and QuestionRegistry are **synchronous** (`fn`, not `async fn`)
 
@@ -159,13 +159,13 @@ hidden by default — see [MCP](mcp.md)).
 
 | Item | Count | Location |
 |------|-------|----------|
-| Tools (default registry) | 30 | `tool/mod.rs:231-406` |
-| LSP servers | 40 | `crates/egglsp/src/server.rs` |
-| Native tool crates | 4 | `crates/egglsp`, `crates/egggit`, `crates/eggsentry`, `crates/eggcontext` |
-| UiState fields | 27 | `tui/app/state/ui.rs:40-92` |
-| AppEvent variants | 41 | `bus/events.rs:61-258` |
+| Tools (default registry) | ~30 | `tool/mod.rs:234-406` |
+| LSP servers | 39 | `crates/egglsp/src/server.rs` |
+| Native tool crates | 9 | `crates/` (codegg-core, codegg-config, codegg-protocol, codegg-providers, egglsp, egggit, eggsentry, eggcontext, egglsp-test-server) |
+| UiState fields | 30 | `tui/app/state/ui.rs:40-98` |
+| AppEvent variants | 42 | `crates/codegg-core/src/bus/events.rs:61-265` |
 | Built-in commands | 96 | `tui/command.rs` |
-| Built-in agents | 7 | `agent/mod.rs:147-262` |
+| Built-in agents | 9 | `agent/mod.rs:154-423` |
 
 ## Feature Gates
 

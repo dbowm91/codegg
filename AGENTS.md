@@ -147,14 +147,14 @@ CI runs on push/PR to dev/main: `fmt` → `check` → `clippy` → `test` → `p
 ### Agent Runtime
 
 - **TurnRuntime**: Daemon calls `DefaultTurnRuntime.run_turn(TurnRunInput)` via `deps.turn_runtime`. No direct `DefaultTurnRuntime` construction in daemon code.
-- **AgentLoop has ~55 fields** at `src/agent/loop.rs:1380`. Many docs claim 15.
+- **AgentLoop has ~49 fields** at `src/agent/loop.rs:1380`. Many docs claim 15.
 - **AgentLoopFactory** (`src/agent/agent_loop_factory.rs`) is a build-only seam.
 - **CoreRuntimeDeps** (`src/core/runtime_deps.rs`): Bundles pool, memory_store, legacy_agent, turn_runtime. Use `with_deps()` for new code.
 
 ### LSP
 
 - **egglsp is authoritative**: `src/lsp/` is a thin shim. All real LSP logic lives in `crates/egglsp/`.
-- **40 LSP servers** configured in `crates/egglsp/src/server.rs`.
+- **39 LSP servers** configured in `crates/egglsp/src/server.rs`.
 - **Preview-only boundary**: `renamePreview`, `formatPreview`, `sourceActionPreview` never write to disk. `workspace/executeCommand` is never invoked.
 - **LSP tests need `lsp-test-support` feature**: The fake server binary is `codegg-lsp-test-server`. Tests use polling loops (bounded waits), not fixed sleeps.
 - **Preview apply (Phase 9)**: `/lsp-preview-apply` applies patches directly to disk with SHA-256 hash revalidation. Stale previews are blocked. `LspTool` remains read-only; file writes use `std::fs`.
@@ -202,12 +202,12 @@ CI runs on push/PR to dev/main: `fmt` → `check` → `clippy` → `test` → `p
 | Document | Key Gotchas |
 |----------|-------------|
 | `architecture/overview.md` | Counts drift — verify against source |
-| `architecture/agent.md` | AgentLoop has ~55 fields |
+| `architecture/agent.md` | AgentLoop has ~49 fields |
 | `architecture/plugin.md` | No `wasm.rs`; `marketplace.rs` exists |
-| `architecture/lsp.md` | egglsp is authoritative; 40 servers |
+| `architecture/lsp.md` | egglsp is authoritative; 39 servers |
 | `architecture/human_shell.md` | ! commands not in model context unless promoted |
 
-`.opencode/skills/*/SKILL.md` contain 52 module-specific skill guides loaded on-demand via `/skill:`.
+`.codegg/skills/*/SKILL.md` contain 44 module-specific skill guides loaded on-demand via `/skill:`.
 
 ## Key Lessons
 

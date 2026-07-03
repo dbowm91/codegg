@@ -1,6 +1,7 @@
 ---
 name: TTS
 description: Text-to-speech module for audio output in opencode-rs
+version: 1.0.0
 tags: [tts, audio, speak]
 ---
 
@@ -13,10 +14,11 @@ Location: `src/tts/mod.rs`
 ### Core Components
 
 ```rust
-#[derive(Debug, Clone)]
 pub struct Tts {
-    speaking: std::sync::atomic::AtomicBool,
+    speaking: std::sync::Mutex<std::sync::atomic::AtomicBool>,
 }
+
+impl Clone for Tts { /* Uses Mutex for thread-safe cloning */ }
 
 #[async_trait]
 pub trait TtsEngine: Send + Sync {
@@ -29,6 +31,10 @@ pub enum TtsProvider {
     None,  // Currently only supported provider
 }
 ```
+
+### Error Handling
+
+When `say` fails, `speak()` now returns `Err(AppError::Io(...))` with the stderr message instead of silently ignoring the failure. Callers should handle these errors appropriately.
 
 ### TTS State in UI
 
@@ -54,6 +60,17 @@ TTS has two keyboard shortcuts defined in `src/tui/input.rs`:
 
 These can be customized via the keybind dialog.
 
+### Commands
+
+| Command | Description |
+|---------|-------------|
+| `/tts` | Toggle text-to-speech on/off |
+| `/voice` | Alias for `/tts` |
+
+### Auto-Stop Behavior
+
+When an agent turn completes (receives `AgentFinished` event), TTS automatically stops if currently speaking. This is implemented in `src/tui/mod.rs` event loop handler.
+
 ### Footer Status
 
 When TTS is enabled, the footer displays a speaker icon:
@@ -63,29 +80,45 @@ When TTS is enabled, the footer displays a speaker icon:
 
 ### Usage in App
 
+TTS is controlled via two methods in `src/tui/app/mod.rs`:
+
 ```rust
-// src/tui/app/mod.rs - toggle_tts method
 fn toggle_tts(&mut self) {
     self.ui_state.tts_enabled = !self.ui_state.tts_enabled;
     if self.ui_state.tts_enabled {
         if let Some(idx) = self.messages_state.messages.sel_msg {
             if let Some(msg) = self.messages_state.messages.get_message(idx) {
                 let text = msg.text_content();
-                let tts = self.ui_state.tts.clone();
-                tokio::spawn(async move {
-                    let _ = tts.speak(&text).await;
-                });
+                if !text.is_empty() {
+                    let tts = self.ui_state.tts.clone();
+                    let text = text.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = tts.speak(&text).await {
+                            tracing::debug!("TTS speak error: {}", e);
+                        }
+                    });
+                }
             }
         }
         self.messages_state.toasts.info("TTS enabled");
     } else {
-        self.ui_state.tts.stop();
+        let tts = self.ui_state.tts.clone();
+        tokio::spawn(async move {
+            if let Err(e) = tts.stop().await {
+                tracing::debug!("TTS stop error: {}", e);
+            }
+        });
         self.messages_state.toasts.info("TTS disabled");
     }
 }
 
 fn stop_tts(&mut self) {
-    self.ui_state.tts.stop();
+    let tts = self.ui_state.tts.clone();
+    tokio::spawn(async move {
+        if let Err(e) = tts.stop().await {
+            tracing::debug!("TTS stop error: {}", e);
+        }
+    });
     self.messages_state.toasts.info("TTS stopped");
 }
 ```
@@ -110,5 +143,5 @@ impl UIMessage {
 
 ## Reference
 
-- **TUI Development Guide**: `.opencode/skills/tui/SKILL.md`
+- **TUI Development Guide**: `.skills/tui/SKILL.md`
 - **Keybind Dialog**: `src/tui/components/dialogs/keybind.rs` handles TTS action bindings

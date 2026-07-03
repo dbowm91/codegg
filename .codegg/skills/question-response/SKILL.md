@@ -1,6 +1,7 @@
 ---
 name: question-response
 description: Question and permission response shape consistency across HTTP, WebSocket, and local registry
+version: 1.0.0
 tags: [question, permission, http, websocket, registry]
 ---
 
@@ -43,7 +44,7 @@ pub async fn submit_question(
         AppError::Storage(StorageError::Database(format!("failed to serialize: {}", e)))
     })?;
     
-    let answered = QuestionRegistry::answer_question(session_id, answers_json).await;
+    let answered = QuestionRegistry::answer_question(session_id, answers_json);
     // ...
 }
 ```
@@ -62,7 +63,7 @@ TuiMessage::QuestionResponse { id, answers } => {
         Ok(json) => json,
         Err(_) => return,
     };
-    let _ = crate::bus::QuestionRegistry::answer_question(id, answers_json).await;
+    let _ = crate::bus::QuestionRegistry::answer_question(id, answers_json);
 }
 ```
 
@@ -70,7 +71,7 @@ TuiMessage::QuestionResponse { id, answers } => {
 
 ```rust
 impl QuestionRegistry {
-    pub async fn answer_question(question_id: String, answers: String) -> bool {
+    pub fn answer_question(question_id: String, answers: String) -> bool {
         // answers is a JSON string (either format)
         // The agent loop receives this string via oneshot channel
     }
@@ -121,12 +122,12 @@ enum TuiMessage {
 
 // Handling:
 TuiMessage::PermissionResponse { id, choice } => {
-    let perm_choice = match choice.as_str() {
-        "allow" => PermissionChoice::AllowOnce,
-        "deny" => PermissionChoice::DenyOnce,
+    let perm_decision = match choice.as_str() {
+        "allow" => PermissionDecision::AllowOnce,
+        "deny" => PermissionDecision::DenyOnce,
         _ => return,
     };
-    let _ = crate::bus::PermissionRegistry::respond(id, perm_choice).await;
+    let _ = crate::bus::PermissionRegistry::respond(id, perm_decision);
 }
 ```
 
@@ -188,12 +189,12 @@ pub fn get_pending_permissions_for_session(session_id: &str) -> serde_json::Valu
 async fn test_question_answer_format() {
     // Object format
     let answers = serde_json::json!({"q1": "red"}).to_string();
-    let answered = QuestionRegistry::answer_question("session-1".to_string(), answers).await;
+    let answered = QuestionRegistry::answer_question("session-1".to_string(), answers);
     assert!(answered);
     
     // Array format (still supported)
     let answers = serde_json::json!(["answer1"]).to_string();
-    let answered = QuestionRegistry::answer_question("session-2".to_string(), answers).await;
+    let answered = QuestionRegistry::answer_question("session-2".to_string(), answers);
     assert!(answered);
 }
 ```

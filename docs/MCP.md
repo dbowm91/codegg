@@ -17,7 +17,6 @@ The MCP module (`src/mcp/`) consists of:
 - **`local.rs`** - `LocalClient` for stdio-based local servers
 - **`remote.rs`** - `RemoteClient` for HTTP-based remote servers
 - **`auth.rs`** - `OAuthManager` for OAuth authentication flow
-- **`transport.rs`** - Transport implementations
 - **`cli.rs`** - CLI helper utilities
 - **`ide_server.rs`** - IDE MCP server for diff viewing
 
@@ -195,7 +194,9 @@ The `OAuthManager` (`auth.rs`) handles the OAuth flow for servers that require i
 | `McpError::Connection` | Network/connection failures |
 | `McpError::Server` | Server-side errors |
 | `McpError::ToolCall` | Tool execution failures |
-| `McpError::Transport` | Transport-level errors |
+| `McpError::OAuth` | OAuth authentication errors |
+| `McpError::Encryption` | Encryption/decryption errors |
+| `McpError::Timeout` | Request timeout errors |
 
 ## SSE (Server-Sent Events)
 

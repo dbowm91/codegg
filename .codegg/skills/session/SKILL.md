@@ -1,7 +1,7 @@
 ---
 name: session
 description: Session storage, database schema, CRUD operations
-version: 1.0.0
+version: 1.2.0
 tags:
   - session
   - storage
@@ -12,13 +12,15 @@ tags:
 
 # Session System Guide
 
+> Module now lives in `crates/codegg-core/src/session/`. Root `src/session/` is a re-export shim.
+
 This skill covers the session storage and persistence system in opencode-rs.
 
 ## Architecture Overview
 
 ```
 SessionStore (session/store.rs) - Main store implementation
-├── SQLite database (sessions, messages, parts, todos)
+├── SQLite database (sessions, messages, parts, todos, permissions)
 ├── Session CRUD operations
 ├── Import/export functionality
 └── QueryBuilder for batch operations
@@ -26,10 +28,11 @@ SessionStore (session/store.rs) - Main store implementation
 Supporting modules:
 ├── row.rs - Database row mappings
 ├── models.rs - Session, CreateSession, UpdateSession structs
-├── import.rs - Import validation and processing
-├── message.rs - Message storage utilities
-├── checkpoint.rs - Session checkpoints
-└── schema.rs - Database migrations
+├── import.rs - Import validation, redaction, and processing
+├── message.rs - Message, Part, PartData types with serialization tests
+├── checkpoint.rs - Session checkpoints with CheckpointStore
+├── status.rs - SessionStatus and SessionState for UI
+└── schema.rs - Database migrations v1-v14
 ```
 
 ## Database Schema
@@ -58,6 +61,7 @@ CREATE TABLE IF NOT EXISTS session (
     time_updated INTEGER NOT NULL,
     time_compacting INTEGER,
     time_archived INTEGER,
+    time_deleted INTEGER,
     FOREIGN KEY (project_id) REFERENCES project(id) ON DELETE CASCADE
 )
 ```
@@ -105,6 +109,76 @@ CREATE TABLE IF NOT EXISTS project (
 )
 ```
 
+**todo** - Todo items:
+```sql
+CREATE TABLE IF NOT EXISTS todo (
+    session_id TEXT NOT NULL,
+    content TEXT NOT NULL,
+    status TEXT NOT NULL,
+    priority TEXT NOT NULL,
+    position INTEGER NOT NULL,
+    time_created INTEGER NOT NULL,
+    time_updated INTEGER NOT NULL,
+    PRIMARY KEY (session_id, position),
+    FOREIGN KEY (session_id) REFERENCES session(id) ON DELETE CASCADE
+)
+```
+
+**session_share** - Session sharing with expiring tokens:
+```sql
+CREATE TABLE IF NOT EXISTS session_share (
+    session_id TEXT PRIMARY KEY,
+    id TEXT NOT NULL,
+    secret TEXT NOT NULL,
+    url TEXT NOT NULL,
+    share_expires_at INTEGER,
+    time_created INTEGER NOT NULL,
+    time_updated INTEGER NOT NULL,
+    FOREIGN KEY (session_id) REFERENCES session(id) ON DELETE CASCADE
+)
+```
+
+**checkpoints** - Session checkpoints for resume:
+```sql
+CREATE TABLE IF NOT EXISTS checkpoints (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    timestamp INTEGER NOT NULL,
+    state TEXT NOT NULL,
+    FOREIGN KEY (session_id) REFERENCES session(id) ON DELETE CASCADE
+)
+```
+
+**task** - Task tracking:
+```sql
+CREATE TABLE IF NOT EXISTS task (
+    id INTEGER PRIMARY KEY,
+    parent_id TEXT,
+    session_id TEXT NOT NULL,
+    description TEXT NOT NULL,
+    prompt TEXT NOT NULL,
+    agent TEXT NOT NULL,
+    status TEXT NOT NULL,
+    result TEXT,
+    denied_tools TEXT,
+    allowed_paths TEXT,
+    time_created INTEGER NOT NULL,
+    time_updated INTEGER NOT NULL
+)
+```
+
+**snapshot** - File snapshots:
+```sql
+CREATE TABLE IF NOT EXISTS snapshot (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    label TEXT,
+    data TEXT NOT NULL,
+    FOREIGN KEY (session_id) REFERENCES session(id) ON DELETE CASCADE
+)
+```
+
 **migration_version** - Schema version tracking:
 ```sql
 CREATE TABLE IF NOT EXISTS migration_version (
@@ -116,7 +190,7 @@ CREATE TABLE IF NOT EXISTS migration_version (
 ## Session Struct
 
 ```rust
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Session {
     pub id: String,
     pub project_id: String,
@@ -142,166 +216,333 @@ pub struct Session {
 }
 ```
 
-## Key Operations
+Note: `CreateSession` has `agent` and `model` fields that are accepted during creation but **not stored** in the database.
 
-### Create Session
+## Message Struct (internal JSON storage)
 
-```rust
-pub async fn create(&self, input: CreateSession) -> Result<Session, StorageError>
-```
-
-### Get Session
+Messages store data as serialized JSON:
 
 ```rust
-pub async fn get(&self, id: &str) -> Result<Session, StorageError>
-pub async fn get_with_messages(&self, id: &str) -> Result<(Session, Vec<Message>), StorageError>
-```
-
-### Update Session
-
-```rust
-pub async fn update(&self, id: &str, input: UpdateSession) -> Result<Session, StorageError>
-pub async fn set_tags(&self, id: &str, tags: Vec<String>) -> Result<Session, StorageError>
-pub async fn archive(&self, id: &str) -> Result<Session, StorageError>
-pub async fn unarchive(&self, id: &str) -> Result<Session, StorageError>
-```
-
-### Soft Delete/Restore
-
-Sessions use soft delete with `time_deleted` column (added in migration v12):
-
-```rust
-pub async fn soft_delete(&self, id: &str) -> Result<Session, StorageError> {
-    sqlx::query("UPDATE session SET time_deleted = ?, time_updated = ? WHERE id = ? RETURNING *")
-    // ...
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Message {
+    pub id: String,
+    pub session_id: String,
+    pub time_created: i64,
+    pub time_updated: i64,
+    pub data: MessageData,
 }
 
-pub async fn restore(&self, id: &str) -> Result<Session, StorageError> {
-    sqlx::query("UPDATE session SET time_deleted = NULL, time_updated = ? WHERE id = ? RETURNING *")
-    // ...
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MessageData {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub session_id: String,
+    #[serde(rename = "messageID")]
+    #[serde(default)]
+    pub message_id: String,
+    #[serde(default)]
+    pub parts: Vec<PartInfo>,
 }
 
-pub async fn list_deleted(&self, project_id: &str) -> Result<Vec<Session>, StorageError> {
-    sqlx::query(&format!("SELECT {} FROM session WHERE project_id = ? AND time_deleted IS NOT NULL ORDER BY time_deleted DESC", SESSION_COLUMNS))
-    // ...
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum PartData {
+    Text { text: String },
+    Reasoning { reasoning: String },
+    ToolCall { id: String, name: String, input: Value, output: Option<String>, status: ToolStatus },
+    Image { url: String },
+    File { path: String, content: String },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolStatus {
+    #[default]
+    Pending,
+    Running,
+    Completed,
+    Error,
 }
 ```
 
-### Hard Delete
+## Stores
+
+The module provides multiple stores, all re-exported from `session::mod.rs`:
 
 ```rust
-pub async fn delete(&self, id: &str) -> Result<(), StorageError>
+pub use store::{
+    escape_sql_like, generate_slug, MessageStore, PartStore, PermissionStore, SessionStore, TodoStore,
+};
+pub use checkpoint::CheckpointStore;
 ```
 
-### Fork Session
+### SessionStore - Main session operations
 
 ```rust
-pub async fn fork(&self, id: &str) -> Result<Session, StorageError>
+impl SessionStore {
+    // Session CRUD
+    pub async fn create(&self, input: CreateSession) -> Result<Session, StorageError>
+    pub async fn create_from_template(&self, template: &SessionTemplate, project_id: &str, directory: &str) -> Result<Session, StorageError>
+    pub async fn get(&self, id: &str) -> Result<Option<Session>, StorageError>
+    pub async fn update(&self, id: &str, input: UpdateSession) -> Result<Session, StorageError>
+    pub async fn delete(&self, id: &str) -> Result<(), StorageError>  // soft delete
+
+    // Listing and search
+    pub async fn list(&self, project_id: &str, limit: usize) -> Result<Vec<Session>, StorageError>
+    pub async fn list_with_offset(&self, project_id: &str, limit: usize, offset: usize) -> Result<Vec<Session>, StorageError>
+    pub async fn list_all(&self, project_id: &str, limit: Option<usize>) -> Result<Vec<Session>, StorageError>
+    pub async fn list_all_with_offset(&self, project_id: &str, limit: Option<usize>, offset: usize) -> Result<Vec<Session>, StorageError>
+    pub async fn search(&self, project_id: &str, query: &str) -> Result<Vec<Session>, StorageError>
+    pub async fn search_all(&self, project_id: &str, query: &str) -> Result<Vec<Session>, StorageError>
+    pub async fn find_by_tag(&self, project_id: &str, tag: &str) -> Result<Vec<Session>, StorageError>
+    pub async fn all_tags(&self, project_id: &str) -> Result<Vec<String>, StorageError>
+
+    // Counts
+    pub async fn session_count(&self, project_id: &str) -> Result<usize, StorageError>
+    pub async fn message_count(&self, session_id: &str) -> Result<usize, StorageError>
+    pub async fn message_counts(&self, session_ids: &[String]) -> Result<HashMap<String, usize>, StorageError>
+
+    // Soft delete/restore
+    pub async fn soft_delete(&self, id: &str) -> Result<Session, StorageError>
+    pub async fn restore(&self, id: &str) -> Result<Session, StorageError>
+    pub async fn list_deleted(&self, project_id: &str) -> Result<Vec<Session>, StorageError>
+
+    // Archive
+    pub async fn archive(&self, id: &str) -> Result<Session, StorageError>
+    pub async fn unarchive(&self, id: &str) -> Result<Session, StorageError>
+
+    // Fork
+    pub async fn fork(&self, id: &str) -> Result<Session, StorageError>
+
+    // Hierarchy
+    pub async fn children(&self, id: &str) -> Result<Vec<Session>, StorageError>
+
+    // Tags
+    pub async fn set_tags(&self, id: &str, tags: Vec<String>) -> Result<Session, StorageError>
+
+    // Revert
+    pub async fn revert_to_message(&self, session_id: &str, message_id: &str) -> Result<Session, StorageError>
+    pub async fn unrevert_session(&self, session_id: &str) -> Result<Session, StorageError>
+
+    // Sharing
+    pub async fn share_session(&self, session_id: &str) -> Result<Session, StorageError>
+    pub async fn unshare_session(&self, session_id: &str) -> Result<Session, StorageError>
+    pub async fn set_share_url(&self, id: &str, url: &str) -> Result<Session, StorageError>
+
+    // Summary generation
+    pub async fn generate_summary(&self, provider: &impl SessionSummaryProvider, session_id: &str) -> Result<Session, StorageError>
+    pub async fn generate_title(&self, provider: &impl SessionSummaryProvider, session_id: &str) -> Result<Session, StorageError>
+
+    // Import/export
+    pub async fn export_session(&self, session_id: &str) -> Result<Value, StorageError>
+    pub async fn import_session(&self, data: Value, new_project_id: Option<&str>) -> Result<Session, StorageError>
+
+    // Analytics
+    pub async fn get_analytics(&self, project_id: &str) -> Result<SessionAnalytics, StorageError>
+}
 ```
 
-### Search Sessions
-
-All search methods use `escape_sql_like()` and filter out deleted sessions:
+### MessageStore - Message operations
 
 ```rust
-pub async fn search(&self, query: &str) -> Result<Vec<Session>, StorageError>
-pub fn search_all(&self, query: &str) -> impl Stream<Item = Result<Session, StorageError>>
-pub async fn find_by_tag(&self, tag: &str) -> Result<Vec<Session>, StorageError>
+impl MessageStore {
+    pub async fn create(&self, session_id: &str, data: Value) -> Result<Message, StorageError>
+    pub async fn get(&self, session_id: &str, id: &str) -> Result<Option<Message>, StorageError>
+    pub async fn list(&self, session_id: &str) -> Result<Vec<Message>, StorageError>
+    pub async fn count(&self, session_id: &str) -> Result<usize, StorageError>
+    pub async fn update(&self, session_id: &str, id: &str, data: Value) -> Result<Message, StorageError>
+    pub async fn delete(&self, session_id: &str, id: &str) -> Result<(), StorageError>
+}
+```
+
+### PartStore - Part operations
+
+```rust
+impl PartStore {
+    pub async fn create(&self, message_id: &str, session_id: &str, data: Value) -> Result<Part, StorageError>
+    pub async fn get(&self, id: &str) -> Result<Option<Part>, StorageError>
+    pub async fn list_by_message(&self, message_id: &str) -> Result<Vec<Part>, StorageError>
+    pub async fn list_by_session(&self, session_id: &str) -> Result<Vec<Part>, StorageError>
+    pub async fn update(&self, id: &str, data: Value) -> Result<Part, StorageError>
+    pub async fn delete(&self, id: &str) -> Result<(), StorageError>
+}
+```
+
+### TodoStore - Todo operations
+
+```rust
+impl TodoStore {
+    pub async fn list(&self, session_id: &str) -> Result<Vec<TodoItem>, StorageError>
+    pub async fn set(&self, session_id: &str, items: Vec<TodoItemInput>) -> Result<Vec<TodoItem>, StorageError>
+    pub async fn add(&self, session_id: &str, item: TodoItemInput) -> Result<TodoItem, StorageError>
+    pub async fn update(&self, session_id: &str, position: i64, item: TodoItemInput) -> Result<Vec<TodoItem>, StorageError>
+    pub async fn remove(&self, session_id: &str, position: i64) -> Result<Vec<TodoItem>, StorageError>
+    pub async fn clear(&self, session_id: &str) -> Result<(), StorageError>
+}
+```
+
+### PermissionStore - Permission operations
+
+```rust
+impl PermissionStore {
+    pub async fn get(&self, project_id: &str) -> Result<Option<PermissionEntry>, StorageError>
+    pub async fn upsert(&self, project_id: &str, data: Value) -> Result<PermissionEntry, StorageError>
+    pub async fn delete(&self, project_id: &str) -> Result<(), StorageError>
+}
+```
+
+### CheckpointStore - Checkpoint operations
+
+```rust
+impl CheckpointStore {
+    pub fn new(pool: SqlitePool) -> Self
+    pub async fn save(&self, checkpoint: &Checkpoint) -> Result<(), StorageError>
+    pub async fn load(&self, id: &str) -> Result<Option<Checkpoint>, StorageError>
+    pub async fn load_latest(&self, session_id: &str) -> Result<Option<Checkpoint>, StorageError>
+    pub async fn list(&self, session_id: &str) -> Result<Vec<Checkpoint>, StorageError>
+    pub async fn delete(&self, id: &str) -> Result<(), StorageError>
+    pub async fn delete_all(&self, session_id: &str) -> Result<(), StorageError>
+    pub async fn has_checkpoint(&self, session_id: &str) -> Result<bool, StorageError>
+}
+
+// Helper functions
+pub fn compute_checksum(content: &str) -> String;
+pub fn create_working_file(path: &str, pre_state: Option<String>) -> Option<WorkingFile>;
+pub fn verify_file(path: &str, expected_checksum: &str) -> bool;
 ```
 
 ## Query Constants
 
-The codebase uses constants to avoid duplication:
+The module defines these constants to avoid duplication:
 
 ```rust
 const SESSION_COLUMNS: &str = r#"id, project_id, workspace_id, parent_id, slug, directory,
     title, version, share_url, summary_additions, summary_deletions,
     summary_files, summary_diffs, revert, permission, tags,
-    time_created, time_updated, time_compacting, time_archived"#;
+    time_created, time_updated, time_compacting, time_archived, time_deleted"#;
 
 const SESSION_COLUMNS_QUALIFIED: &str = r#"s.id, s.project_id, s.workspace_id, s.parent_id, s.slug, s.directory,
     s.title, s.version, s.share_url, s.summary_additions, s.summary_deletions,
     s.summary_files, s.summary_diffs, s.revert, s.permission, s.tags,
-    s.time_created, s.time_updated, s.time_compacting, s.time_archived"#;
+    s.time_created, s.time_updated, s.time_compacting, s.time_archived, s.time_deleted"#;
 
 const MESSAGE_QUERY: &str = r#"SELECT id, session_id, time_created, time_updated, data
     FROM message WHERE session_id = ?
     ORDER BY time_created ASC, id ASC"#;
+
+const PART_QUERY: &str = r#"SELECT id, message_id, session_id, time_created, time_updated, data
+    FROM part WHERE session_id = ?
+    ORDER BY time_created ASC, id ASC"#;
 ```
 
-## Message Storage
+## Soft Delete Pattern
 
-### Retrieve Messages
-
-```rust
-pub async fn messages(&self, session_id: &str) -> Result<Vec<Message>, StorageError>
-pub async fn parts(&self, session_id: &str) -> Result<Vec<Part>, StorageError>
-```
-
-### Store Messages
+Sessions use soft delete with `time_deleted` column (added in migration v12):
 
 ```rust
-pub async fn store_message(&mut self, session_id: &str, message: Message) -> Result<Message, StorageError>
-pub async fn store_part(&mut self, session_id: &str, part: Part) -> Result<Part, StorageError>
-```
+pub async fn soft_delete(&self, id: &str) -> Result<Session, StorageError> {
+    sqlx::query_as::<_, SessionRow>(
+        "UPDATE session SET time_deleted = ?, time_updated = ? WHERE id = ? RETURNING *"
+    )
+    .bind(now)
+    .bind(now)
+    .bind(id)
+    .fetch_one(&self.pool)
+    .await
+    .map_err(|e| StorageError::Database(e.to_string()))?
+    .into()
+}
 
-## Import/Export
-
-### Export Session
-
-```rust
-pub async fn export(&self, id: &str) -> Result<Value, StorageError>
-```
-
-Options:
-- `include_messages`: Include message history
-- `include_parts`: Include message parts
-- `redact`: Redact sensitive tool inputs/outputs
-
-### Import Session
-
-```rust
-pub async fn import(&mut self, data: Value) -> Result<Session, StorageError>
-```
-
-**Limits:**
-- MAX_IMPORT_MESSAGES: 100,000
-- MAX_IMPORT_PARTS: 500,000
-- MAX_TOTAL_IMPORT_BYTES: 500 MB
-
-## Session Templates
-
-Sessions can be created from templates:
-
-```rust
-pub struct SessionTemplate {
-    pub id: String,
-    pub project_id: String,
-    pub template: Option<String>,
-    pub workspace_id: Option<String>,
-    pub directory: String,
-    pub title: String,
-    pub agent: Option<String>,
-    pub model: Option<String>,
-    pub permission: Option<PermissionConfig>,
-    pub system_prompt: Option<String>,
+pub async fn restore(&self, id: &str) -> Result<Session, StorageError> {
+    sqlx::query_as::<_, SessionRow>(
+        "UPDATE session SET time_deleted = NULL, time_updated = ? WHERE id = ? RETURNING *"
+    )
+    .bind(now)
+    .bind(now)
+    .bind(id)
+    .fetch_one(&self.pool)
+    .await?
+    .into()
 }
 ```
 
-## Tagging System
+## Helper Functions
 
-Sessions support tags for organization:
+### generate_slug
+
+Generates URL-friendly slugs from session titles:
 
 ```rust
-pub async fn set_tags(&self, id: &str, tags: Vec<String>) -> Result<Session, StorageError>
-pub async fn add_tag(&self, id: &str, tag: &str) -> Result<Session, StorageError>
-pub async fn remove_tag(&self, id: &str, tag: &str) -> Result<Session, StorageError>
-pub async fn find_by_tag(&self, tag: &str) -> Result<Vec<Session>, StorageError>
+pub fn generate_slug(title: &Option<String>) -> String {
+    title
+        .as_ref()
+        .map(|t| {
+            t.to_lowercase()
+                .chars()
+                .filter(|c| c.is_alphanumeric() || *c == ' ')
+                .collect::<String>()
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join("-")
+        })
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "untitled".to_string())
+}
+```
+
+### escape_sql_like
+
+Escapes special characters for SQL LIKE queries:
+
+```rust
+pub fn escape_sql_like(s: &str) -> String {
+    s.replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
+}
+```
+
+### redact_for_export
+
+Redacts sensitive tool inputs/outputs during export:
+
+```rust
+pub fn redact_for_export(value: Value) -> Value {
+    // Recursively processes JSON, redacting:
+    // - tool_call inputs/outputs
+    // - Specific keys: command, path, content, text, pattern, replacement,
+    //   old_string, new_string, url, patch for sensitive tools (bash, write, read, edit, etc.)
+}
+```
+
+### parse_json_field
+
+Graceful JSON parsing helper that returns `Null` on failure (with warning logged):
+
+```rust
+pub(crate) fn parse_json_field(raw: &str) -> serde_json::Value {
+    match serde_json::from_str(raw) {
+        Ok(v) => v,
+        Err(e) => {
+            let preview = if raw.len() > 100 {
+                format!("{}...", &raw[..100])
+            } else {
+                raw.to_string()
+            };
+            warn!(
+                "failed to parse JSON field (input preview: {}): {}",
+                preview, e
+            );
+            serde_json::Value::Null
+        }
+    }
+}
 ```
 
 ## RETURNING Clause Usage
 
-Methods that update and need the updated session use `RETURNING *` to avoid separate SELECT:
+Methods that update and need the updated session use `RETURNING *` to avoid extra SELECT:
 
 ```rust
 // Soft delete with RETURNING
@@ -323,50 +564,45 @@ Methods that update and need the updated session use `RETURNING *` to avoid sepa
 Bulk operations use `QueryBuilder::push_values()` for efficient batch inserts:
 
 ```rust
-pub async fn unrevert_session(&self, id: &str) -> Result<Session, StorageError> {
-    let session = self.get(id).await?;
-    let revert_data: serde_json::Value = session.revert.ok_or_else(|| ...)?;
-    // ...
-    let mut msg_query: QueryBuilder<_> = QueryBuilder::new("INSERT INTO message (id, session_id, time_created, time_updated, data) ");
-    msg_query.push_values(messages.iter(), |mut b, msg| {
-        b.push_bind(msg.id)
-            .push_bind(&session.id)
-            .push_bind(msg.time_created)
-            .push_bind(msg.time_updated)
-            .push_bind(&msg.data);
-    });
-    let msg_result = msg_query.build().execute(&self.pool).await?;
-    // ...
-}
+// In fork() or import_session()
+let mut msg_query: QueryBuilder<_> = QueryBuilder::new(
+    "INSERT INTO message (id, session_id, time_created, time_updated, data) ",
+);
+msg_query.push_values(&msg_values, |mut b, val| {
+    b.push_bind(&val.0)
+        .push_bind(&val.1)
+        .push_bind(val.2)
+        .push_bind(val.3)
+        .push_bind(&val.4);
+});
+msg_query.build().execute(&mut *tx).await?;
 ```
 
 ## Transaction Safety
 
-**Important**: When using transactions, ALL database operations must use `&mut *tx`, not `&self.pool`: 
+**Important**: When using transactions, ALL database operations must use `&mut *tx`, not `&self.pool`:
 
 ```rust
-// ✅ Good - all operations use the transaction
+// Good - all operations use the transaction
 let mut tx = self.pool.begin().await?;
 sqlx::query("...").bind(id).execute(&mut *tx).await?;
 tx.commit().await?;
 
-// ❌ Bad - mixing transaction and pool usage
+// Bad - mixing transaction and pool usage
 let mut tx = self.pool.begin().await?;
 self.get(id).await?;  // Uses pool, not transaction!
 sqlx::query("...").bind(id).execute(&mut *tx).await?;
 tx.commit().await?;  // May timeout due to pool exhaustion
 ```
 
-## SQL LIKE Escaping
+## Import Limits
 
-Search functions use `escape_sql_like()` to handle special characters:
+Import validation enforces these limits:
 
 ```rust
-fn escape_sql_like(s: &str) -> String {
-    s.replace('\\', "\\\\")
-        .replace('%', "\\%")
-        .replace('_', "\\_")
-}
+const MAX_IMPORT_MESSAGES: usize = 100_000;
+const MAX_IMPORT_PARTS: usize = 500_000;
+const MAX_TOTAL_IMPORT_BYTES: usize = 500 * 1024 * 1024; // 500 MB
 ```
 
 ## Error Handling
@@ -383,10 +619,47 @@ pub enum StorageError {
     #[error("not found: {0}")]
     NotFound(String),
 
+    #[error("llm operation failed: {operation}: {message}")]
+    LlmOperation { operation: String, message: String },
+
     #[error("import error: {0}")]
     Import(String),
 
     #[error("export error: {0}")]
     Export(String),
+}
+```
+
+## SessionStatus and SessionState (status.rs)
+
+For TUI state tracking:
+
+```rust
+#[derive(Debug, Clone, Default)]
+pub enum SessionStatus {
+    #[default]
+    Idle,
+    Busy,
+    Error,
+    Compacting,
+    Exporting,
+}
+
+impl SessionStatus {
+    pub fn is_busy(&self) -> bool;  // true for Busy, Compacting, Exporting
+    pub fn is_terminal(&self) -> bool;  // true only for Error
+    pub fn label(&self) -> &'static str;
+    pub fn icon(&self) -> &'static str;
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct SessionState {
+    pub status: SessionStatus,
+    pub started_at: Option<SystemTime>,
+    pub last_activity: Option<SystemTime>,
+    pub turn_count: usize,
+    pub token_in: usize,
+    pub token_out: usize,
+    pub error_message: Option<String>,
 }
 ```

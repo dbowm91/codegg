@@ -1,6 +1,7 @@
 ---
 name: diff
 description: Inline diff visualization with similar crate
+version: 1.0.0
 tags: [diff, visualization, tui, widget]
 ---
 

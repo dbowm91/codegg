@@ -16,7 +16,7 @@ The `tool` module provides the built-in tools that the agent can use to interact
 
 ## Tool Trait
 
-All tools implement the `Tool` trait defined at `src/tool/mod.rs:85-108`:
+All tools implement the `Tool` trait defined at `src/tool/mod.rs:100-155`:
 
 ```rust
 #[async_trait]
@@ -206,12 +206,13 @@ registry.register(crate::tool::multiedit::MultiEditTool::default());
 
 ## ToolRegistry
 
-Manages registration and lookup of tools at `src/tool/mod.rs:118-121`:
+Manages registration and lookup of tools at `src/tool/mod.rs:163-167`:
 
 ```rust
 pub struct ToolRegistry {
     tools: HashMap<String, Box<dyn Tool>>,
     catalog: catalog::ToolCatalog,
+    tool_backends: ToolBackendConfig,
 }
 ```
 
@@ -224,7 +225,7 @@ pub struct ToolRegistry {
 | `with_defaults()` | Create registry with all 30 built-in tools, all-native backend defaults |
 | `with_session_config_defaults(&Config, todo_state, policy, pool, session_id)` | **Production session constructor.** Resolves `ToolBackendConfig::from_config(&Config)` and threads it through `with_options`, so resolved `[tool_backends]` config (LSP/security backends, MCP fallback) is preserved. |
 | `with_session_defaults(todo_state, policy, pool, session_id)` | Session registry with **all-native backend defaults** — drops any loaded `[tool_backends]`. Kept for tests and non-config-aware callers; the doc comment warns against using it in production paths. |
-| `register(&mut self, tool: impl Tool + 'static)` | Register a tool (takes `&dyn Tool` not `Box<dyn Tool>`) |
+| `register(&mut self, tool: impl Tool + 'static)` | Register a tool (takes owned value via `impl Tool + 'static`) |
 | `get(&self, name: &str) -> Option<&dyn Tool>` | Get tool by name (includes hidden stubs) |
 | `list(&self) -> Vec<&dyn Tool>` | List all tools (includes hidden stubs) |
 | `filter_out(&mut self, denied_tools: &[String])` | Remove denied tools from registry |

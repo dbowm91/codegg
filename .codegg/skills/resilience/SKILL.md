@@ -1,7 +1,7 @@
 ---
 name: resilience
 description: Circuit breaker and resilience patterns in opencode-rs
-version: 1.0.0
+version: 1.2.0
 tags:
   - resilience
   - circuit-breaker
@@ -21,13 +21,46 @@ The resilience module provides:
 
 ## Circuit Breaker (`src/resilience/circuit.rs`)
 
+> Module now lives in `crates/codegg-core/src/resilience.rs` (re-export from `codegg-providers`).
+
 ### States
 
 - **Closed**: Requests pass through. Track failures. On `failure_threshold`, transition to Open.
 - **Open**: Requests fail immediately with `CircuitOpen` error. After `timeout_secs`, transition to HalfOpen.
 - **HalfOpen**: Allow one request. If success, transition to Closed. If failure, transition to Open.
 
-### Public API (Updated 2026-05-02)
+### Implementation (Updated 2026-05-22)
+
+The circuit breaker uses `TokioRwLock` for all state fields (not `AtomicU8` as older documentation claimed).
+
+`is_available()` uses write lock from the start to avoid TOCTOU race:
+
+```rust
+pub async fn is_available(&self) -> bool {
+    let mut state = self.inner.state.write().await;  // Write lock from start
+    match *state {
+        CircuitState::Closed | CircuitState::HalfOpen => true,
+        CircuitState::Open => {
+            if let Some(last_failure) = *self.inner.last_failure_time.read().await {
+                let timeout = Duration::from_secs(self.inner.timeout_secs);
+                if last_failure.elapsed() >= timeout {
+                    let now = Instant::now();
+                    *state = CircuitState::HalfOpen;
+                    *self.inner.half_open_start_time.write().await = Some(now);
+                    tracing::info!(
+                        "circuit breaker {} transitioned to HalfOpen",
+                        self.inner.name
+                    );
+                    return true;
+                }
+            }
+            false
+        }
+    }
+}
+```
+
+### Public API
 
 ```rust
 use crate::resilience::CircuitBreaker;
@@ -41,9 +74,8 @@ let breaker = CircuitBreaker::new(
 
 // Check if circuit allows calls
 if breaker.is_available().await {
-    // Record success/failure manually if not using call()
-    breaker.record_success().await;   // Now public (2026-05-02)
-    breaker.record_failure().await;   // Now public (2026-05-02)
+    breaker.record_success().await;   // Record successful call
+    breaker.record_failure().await;   // Record failed call
 }
 
 // Or use call() to wrap operations automatically
@@ -72,6 +104,15 @@ if let Some(cb) = self.circuit_breakers.get(i) {
 
 ## Provider Fallback (`src/provider/fallback.rs`)
 
+### FallbackProvider Configuration
+
+`FallbackProvider` creates circuit breakers with fixed default parameters:
+- `failure_threshold`: 3
+- `timeout_secs`: 60
+- `success_threshold`: 2
+
+These cannot be configured externally (intentionally opinionated).
+
 ### Usage
 
 ```rust
@@ -89,8 +130,23 @@ let stream = fallback.stream(&request).await;
 
 1. Try primary provider
 2. If error matches status codes, try next in chain
-3. If all fail, return last error
-4. Log each fallback attempt
+3. If circuit breaker is open for a provider, skip to next
+4. If all fail, return last error
+5. Log each fallback attempt
+6. **Exponential backoff** between providers: `2^i` seconds, capped at 30s
+
+### CircuitOpen Error (2026-05-22)
+
+When a circuit breaker is open, `FallbackProvider` returns `ProviderError::CircuitOpen`:
+
+```rust
+if !cb.is_available().await {
+    last_error = Some(ProviderError::CircuitOpen(provider.name().to_string()));
+    continue;
+}
+```
+
+`CircuitError::Open` from `CircuitBreaker::call()` automatically converts to `ProviderError::CircuitOpen` via the `From` trait in `error.rs:204-212`.
 
 ## Related Skills
 

@@ -1,7 +1,7 @@
 ---
 name: tool
 description: Tool trait, registration, execution flow, adding new tools
-version: 1.0.0
+version: 1.2.0
 tags:
   - tool
   - trait
@@ -29,7 +29,7 @@ ToolRegistry → Tool implementations
     ├── TaskTool
     ├── WebFetchTool
     ├── WebSearchTool
-    └── ... (25+ total)
+    └── ... (27 total including ImageTool)
 ```
 
 ## Tool Trait
@@ -43,6 +43,21 @@ pub trait Tool: Send + Sync {
     fn description(&self) -> &str;
     fn parameters(&self) -> serde_json::Value;
     async fn execute(&self, input: serde_json::Value) -> Result<String, ToolError>;
+
+    // Optional:
+    fn category(&self) -> ToolCategory { ToolCategory::Mutating }
+    fn set_available_tools(&mut self, _tools: Vec<String>) {}
+    fn defer_loading(&self) -> bool { false }
+    /// Whether this tool should appear in the model-facing tool
+    /// definitions (default `true`). Overridden by `DisabledTool`
+    /// to `false` so disabled/MCP-stub tools do not pollute the
+    /// model tool surface.
+    fn expose_in_definitions(&self) -> bool { true }
+    async fn execute_structured(
+        &self,
+        input: serde_json::Value,
+        _ctx: Option<ToolExecutionContext>,
+    ) -> Result<StructuredToolResult, ToolError> { /* default wraps execute() */ }
 }
 ```
 
@@ -52,6 +67,15 @@ pub trait Tool: Send + Sync {
 2. **description()** - LLM-facing description of what the tool does
 3. **parameters()** - JSON schema for tool input parameters
 4. **execute()** - Async execution logic
+
+`expose_in_definitions()` defaults to `true`. Tools that exist only
+for diagnostics or as placeholders (e.g. `DisabledTool` registered
+when `[tool_backends.lsp|security]` is `disabled` or
+`mcp + fallback_to_native = false`) override it to `false` so the
+model never sees them, while remaining callable by name from
+`/tool-backends` and tests. `ToolRegistry::definitions()` and
+`AgentLoop::build_tool_definitions()` both filter through this
+predicate.
 
 ### Example Implementation
 
@@ -96,15 +120,82 @@ Manages tool registration and lookup:
 ```rust
 pub struct ToolRegistry {
     tools: HashMap<String, Box<dyn Tool>>,
+    catalog: ToolCatalog,
+    tool_backends: ToolBackendConfig,
 }
 
 impl ToolRegistry {
     pub fn new() -> Self;
     pub fn with_defaults() -> Self;
+    /// **Production session constructor.** Resolves
+    /// `ToolBackendConfig::from_config(&Config)` and threads it
+    /// through `with_options`, so resolved `[tool_backends]`
+    /// config is preserved.
+    pub fn with_session_config_defaults(
+        config: &Config,
+        todo_state: Arc<Mutex<TodoState>>,
+        policy: TaskStatePolicy,
+        pool: Option<SqlitePool>,
+        session_id: Option<String>,
+    ) -> Self;
+    /// Session registry with **all-native backend defaults** —
+    /// drops any loaded `[tool_backends]`. Kept for tests and
+    /// non-config-aware callers; the doc comment warns against
+    /// using it in production paths.
+    pub fn with_session_defaults(
+        todo_state: Arc<Mutex<TodoState>>,
+        policy: TaskStatePolicy,
+        pool: Option<SqlitePool>,
+        session_id: Option<String>,
+    ) -> Self;
+    /// Central execution path for native tool calls in the agent
+    /// loop. Calls `execute_structured()` internally, falls back
+    /// to `ToolProvenance::legacy(name)` for tools that do not
+    /// override it, and records provenance via `tracing::debug!`.
+    /// `AgentLoop::build_tool_execution_context(tc, timeout_ms)`
+    /// builds the `ToolExecutionContext`; the dispatcher
+    /// (`AgentLoop::execute_tool_calls` in `src/agent/loop.rs`)
+    /// calls this for every non-MCP native tool. MCP tools
+    /// (`mcp__server__tool`) continue to dispatch through
+    /// `McpService::call_tool`.
+    pub async fn execute_capture(
+        &self,
+        name: &str,
+        input: serde_json::Value,
+        ctx: Option<ToolExecutionContext>,
+    ) -> Result<StructuredToolResult, ToolError>;
     pub fn register(&mut self, tool: impl Tool + 'static);
     pub fn get(&self, name: &str) -> Option<&dyn Tool>;
     pub fn list(&self) -> Vec<&dyn Tool>;
+    /// Filters through `Tool::expose_in_definitions()` so
+    /// `DisabledTool` stubs are hidden from the model.
     pub fn definitions(&self) -> Vec<ToolDefinition>;
+    pub fn filter_out(&mut self, denied_tools: &[String]);
+    pub fn catalog(&self) -> &ToolCatalog;
+    pub fn tool_backends(&self) -> &ToolBackendConfig;
+    pub fn backend_report(
+        &self,
+        mcp_server_names: Option<&[String]>,
+    ) -> Vec<RegistryBackendStatus>;
+}
+```
+
+### ToolCatalog
+
+The `ToolCatalog` maintains metadata about tools and supports deferred loading:
+
+```rust
+pub struct ToolCatalog {
+    tools: HashMap<String, ToolMetadata>,
+    deferred_load: Vec<String>,
+}
+
+impl ToolCatalog {
+    pub fn register(&mut self, tool: &dyn Tool);
+    pub fn search(&self, query: &str) -> Vec<&ToolMetadata>;
+    pub fn get(&self, name: &str) -> Option<&ToolMetadata>;
+    pub fn list(&self) -> Vec<&ToolMetadata>;
+    pub fn deferred_tools(&self) -> Vec<&ToolMetadata>;
 }
 ```
 
@@ -118,7 +209,6 @@ impl ToolRegistry {
 | `write` | Write content to file |
 | `edit` | Edit file by finding/replacing content |
 | `replace` | Replace content with exact matching |
-| `multiedit` | Multiple edits in one operation |
 | `glob` | Find files by glob pattern |
 | `grep` | Search file contents |
 | `list` | List directory contents |
@@ -149,6 +239,8 @@ impl ToolRegistry {
 | `plan_enter` | Enter plan mode (read-only, allows plan file editing) |
 | `plan_exit` | Exit plan mode and switch to build mode |
 
+Note: These are two separate tools (`PlanEnterTool` and `PlanExitTool`) registered individually.
+
 ### Other Tools
 
 | Tool | Description |
@@ -158,7 +250,94 @@ impl ToolRegistry {
 | `todo` | Manage TODO list |
 | `skill` | Load and use skills |
 | `batch` | Execute multiple operations |
-| `lsp` | LSP (Language Server Protocol) integration |
+
+## Extended Tool Modules
+
+These tools require separate registration (not included in `with_defaults()`).
+
+### Team Tools (`src/tool/teams.rs`)
+
+Multi-agent coordination via team-based communication:
+
+```rust
+pub struct TeamTools {
+    pub team_create: TeamCreateTool,
+    pub send_message: SendMessageTool,
+    pub list_messages: ListMessagesTool,
+    pub team_status: TeamStatusTool,
+    pub list_teams: ListTeamsTool,
+}
+```
+
+| Tool | Description |
+|------|-------------|
+| `team_create` | Create a new team |
+| `send_message` | Send message to a team |
+| `list_messages` | List messages in a team |
+| `team_status` | Get team status |
+| `list_teams` | List all teams |
+
+Register via `TeamTools::register_all()`:
+```rust
+let team_tools = TeamTools::new(manager, base_dir);
+team_tools.register_all(&mut registry);
+```
+
+### Multiedit Tool (`src/tool/multiedit.rs`)
+
+Multiple edits in one operation - NOT included in `with_defaults()`:
+
+| Tool | Description |
+|------|-------------|
+| `multiedit` | Apply multiple file edits atomically |
+
+Register via `MultieditTool::register()`:
+```rust
+let multiedit = MultieditTool::new();
+registry.register(multiedit);
+```
+
+### LSP Tool (`src/tool/lsp.rs`)
+
+Language Server Protocol integration for code intelligence:
+
+```rust
+pub struct LspTool {
+    service: Arc<crate::lsp::service::LspService>,
+    allowed_root: PathBuf,
+}
+```
+
+| Operation | Description |
+|-----------|-------------|
+| `goToDefinition` | Jump to symbol definition |
+| `findReferences` | Find all references to a symbol |
+| `hover` | Get hover information |
+| `documentSymbol` | List symbols in a document |
+| `workspaceSymbol` | Search symbols across workspace |
+| `diagnostics` | Get diagnostics for a file |
+| `renamePreview` | Preview rename as unified diff (read-only) |
+| `formatPreview` | Preview formatting as unified diff (read-only) |
+| `sourceActionPreview` | Preview source action (currently only `source.organizeImports`) as unified diff (read-only) |
+
+Parameters: `operation` (required), `file_path`, `line`, `column`, `end_line`, `end_column`, `symbol`, `action` (for `sourceActionPreview`)
+
+### Formatter (`src/tool/formatter.rs`)
+
+Code formatting via external formatters (not a Tool, used internally):
+
+```rust
+pub struct Formatter {
+    rules: HashMap<String, FormatterRule>,
+}
+```
+
+| Method | Description |
+|--------|-------------|
+| `format_file(path)` | Run formatter on file |
+| `has_rule(ext)` | Check if formatter exists for extension |
+
+Configured via `FormatterConfig` with rules for each file extension. Uses user's actual PATH when spawning formatter process.
 
 ## Adding a New Tool
 
@@ -237,45 +416,9 @@ execute_tools()
   ↓
 ToolRegistry.get(tool_name)
   ↓
-ToolExecutor.execute_with_retry()
-  ↓
 tool.execute(input)
   ↓
 ToolResult
-```
-
-### ToolExecutor with Retry Logic
-
-```rust
-pub struct ToolExecutor {
-    max_attempts: usize,
-    base_delay: Duration,
-    max_delay: Duration,
-}
-
-impl ToolExecutor {
-    pub fn new(max_attempts: usize) -> Self;
-    pub fn with_delays(mut self, base_delay: Duration, max_delay: Duration) -> Self;
-    
-    pub async fn execute_with_retry<F, Fut>(&self, f: F) -> Result<Value, ToolError>
-    where
-        F: Fn() -> Fut,
-        Fut: std::future::Future<Output = Result<Value, ToolError>>,
-    {
-        let mut attempt = 0;
-        loop {
-            attempt += 1;
-            match f().await {
-                Ok(result) => return Ok(result),
-                Err(e) if e.is_retryable() && attempt < self.max_attempts => {
-                    let delay = self.calculate_delay(attempt);
-                    sleep(delay).await;
-                }
-                Err(e) => return Err(e),
-            }
-        }
-    }
-}
 ```
 
 ### ToolError Retry Logic
@@ -283,26 +426,29 @@ impl ToolExecutor {
 ```rust
 #[derive(Error, Debug)]
 pub enum ToolError {
-    #[error("invalid input: {0}")]
-    InvalidInput(String),
+    #[error("tool not found: {0}")]
+    NotFound(String),
 
-    #[error("execution error: {0}")]
+    #[error("tool execution failed: {0}")]
     Execution(String),
 
-    #[error("io error: {0}")]
-    Io(#[from] std::io::Error),
+    #[error("tool timeout: {0}")]
+    Timeout(String),
 
     #[error("permission denied: {0}")]
     Permission(String),
 
-    #[error("not found: {0}")]
-    NotFound(String),
+    #[error("tool formatting failed: {0}")]
+    Format(String),
+
+    #[error("tool disabled: {0}")]
+    Disabled(String),
+
+    #[error("I/O error: {0}")]
+    Io(String),
 
     #[error("network error: {0}")]
     Network(String),
-
-    #[error("timeout: {0}")]
-    Timeout(String),
 }
 
 impl ToolError {
@@ -312,6 +458,10 @@ impl ToolError {
     }
 }
 ```
+
+## Tool Input
+
+Tools receive `serde_json::Value` as input directly in their `execute()` method. There is no `ToolContext` struct - context information must be accessed through other means if needed.
 
 ## Tool Result
 
@@ -340,17 +490,38 @@ pub fn validate_path(path: &str, base_dir: &Path) -> Result<PathBuf, ToolError> 
 ```rust
 #[derive(Debug, thiserror::Error)]
 pub enum ToolError {
-    #[error("invalid input: {0}")]
-    InvalidInput(String),
+    #[error("tool not found: {0}")]
+    NotFound(String),
 
-    #[error("io error: {0}")]
-    Io(#[from] std::io::Error),
+    #[error("tool execution failed: {0}")]
+    Execution(String),
+
+    #[error("tool timeout: {0}")]
+    Timeout(String),
 
     #[error("permission denied: {0}")]
     Permission(String),
 
-    #[error("not found: {0}")]
-    NotFound(String),
+    #[error("tool formatting failed: {0}")]
+    Format(String),
+
+    #[error("tool disabled: {0}")]
+    Disabled(String),
+
+    #[error("I/O error: {0}")]
+    Io(String),
+
+    #[error("network error: {0}")]
+    Network(String),
+}
+
+impl ToolError {
+    pub fn is_retryable(&self) -> bool {
+        matches!(
+            self,
+            ToolError::Io(_) | ToolError::Network(_) | ToolError::Timeout(_)
+        )
+    }
 }
 ```
 
@@ -359,22 +530,26 @@ pub enum ToolError {
 1. **Path Validation** - Always validate paths with `validate_path()` to prevent directory traversal
 2. **Symlink Handling** - Walk tools (list, grep, glob) skip symlinks during traversal
 3. **BashTool Blocked Patterns** - Tools should check against blocked patterns
-4. **Unrestricted Mode** - For trusted environments only; skips validation
+4. **Unrestricted Mode** - Available in permission system; skips path validation for trusted environments (use with caution)
 
 ### Subprocess Security
 
-When spawning external processes, always use `env_clear()` with a minimal safe PATH:
+When spawning external processes, always use `env_clear()` with the user's actual PATH:
 
 ```rust
 use std::process::Command;
 
 let mut cmd = Command::new("git");
 cmd.env_clear();
-cmd.env("PATH", "/usr/local/bin:/usr/bin:/bin");  // Hardcoded, not from environment
+if let Some(path) = std::env::var_os("PATH") {
+    cmd.env("PATH", path);
+} else {
+    cmd.env("PATH", "/usr/local/bin:/usr/bin:/bin");
+}
 cmd.args(&["log", "--oneline"]);
 ```
 
-**Critical**: Use hardcoded PATH `/usr/local/bin:/usr/bin:/bin` after `env_clear()`. Do NOT use `std::env::var("PATH")` as this restores the original unsafe PATH. This pattern is implemented in: bash.rs, commit.rs, formatter.rs, git.rs, terminal.rs, mcp/local.rs, lsp/launch.rs, hooks/mod.rs.
+**Critical**: Use the user's actual PATH via `std::env::var_os("PATH")` after `env_clear()`. Never hardcode PATH as this breaks tools installed in non-standard locations (e.g., Homebrew, cargo, pyenv). This pattern is implemented in: bash.rs, commit.rs, formatter.rs, git.rs, terminal.rs, review.rs.
 
 ## Tool Definition Conversion
 

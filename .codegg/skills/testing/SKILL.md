@@ -1,3 +1,13 @@
+---
+name: testing
+description: Testing guidance for opencode-rs including unit, integration, and E2E tests
+version: 1.0.0
+tags:
+  - testing
+  - unit-test
+  - integration-test
+---
+
 # Skill: Testing
 
 Guidance for testing opencode-rs, including unit, integration, and E2E tests.
@@ -13,6 +23,12 @@ Guidance for testing opencode-rs, including unit, integration, and E2E tests.
 - Located in `tests/` directory
 - Cover cross-module interactions (156+ TUI tests passing)
 - Run with: `cargo test --tests`
+
+### TUI Render Regression Tests
+- Located in `tests/tui_render.rs` (49 tests, headless)
+- Uses `ratatui::backend::TestBackend` to exercise `App::render()` across multiple terminal sizes
+- Covers: empty states, streaming, tool calls, sidebar variants, dialogs, completions, toasts, pathological content, unicode, ANSI escapes, and component panic fallbacks
+- Run with: `cargo test --test tui_render`
 
 ### E2E Tests
 - TUI E2E with PTY infrastructure deferred due to complexity

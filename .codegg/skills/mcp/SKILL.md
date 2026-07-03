@@ -1,7 +1,7 @@
 ---
 name: mcp
 description: MCP client/server system, local vs remote, OAuth flow
-version: 1.0.0
+version: 1.3.0
 tags:
   - mcp
   - model context protocol
@@ -51,6 +51,11 @@ pub struct LocalClient {
     args: Vec<String>,
     env: HashMap<String, String>,
     timeout: u64,
+    child: Option<Child>,
+    stdin: Option<tokio::process::ChildStdin>,
+    pending: PendingSenders,
+    shutdown_notify: Arc<Notify>,
+    request_id: AtomicU64,
 }
 ```
 
@@ -66,6 +71,12 @@ client.initialize().await?;
 let tools = client.discover_tools().await?;
 ```
 
+**Implementation Notes:**
+- Uses `std::env::var_os("PATH")` to preserve user's actual PATH (not hardcoded)
+- Spawn timeout: process spawn is wrapped in `tokio::time::timeout` (capped at 10s) to prevent hangs
+- Read loop runs in spawned task, handles JSON-RPC responses via pending request map
+- Graceful shutdown via `shutdown_notify` Notify mechanism
+
 ### RemoteClient (`src/mcp/remote.rs`)
 
 For remote MCP servers via HTTP with DNS rebinding protection:
@@ -80,12 +91,16 @@ pub struct RemoteClient {
     oauth_token: Mutex<Option<String>>,
     sse_events: Arc<Mutex<Vec<serde_json::Value>>>,
     request_id: AtomicU64,
+    shutdown: Arc<Mutex<bool>>,
+    sse_shutdown: Arc<Notify>,
+    validated_ips: Arc<Mutex<Option<Vec<IpAddr>>>>,  // Arc<Mutex<...>> for Clone semantics
 }
 ```
 
 **DNS Rebinding Protection:**
 - `validate_url_host()` validates DNS at connection time, blocks internal IPs
 - `revalidate_dns()` revalidates DNS before each HTTP request
+- **IP re-validation on reconnect**: `initialize()` re-validates DNS on each call, preventing bypass via DNS changes between connections
 - Detects IPv4-mapped IPv6 addresses
 - Blocks loopback, private, link-local, and reserved IP ranges
 
@@ -93,20 +108,43 @@ pub struct RemoteClient {
 
 Automatic reconnection with exponential backoff and heartbeat:
 
+**Clone Implementation:**
+- `McpConnectionManager` has a manual `Clone` implementation (not derived)
+- `CancellationToken` from `tokio_util::sync` is `!Clone`, so it requires special handling
+- `Clone` uses `Arc::clone()` for Arc fields and copies primitive types directly
+
+```rust
+// CancellationToken wrapped in Arc<Mutex<Option<CancellationToken>>> is cloned via:
+Arc::clone(&self.heartbeat_cancellation)
+```
+
+### McpConnectionManager
+
 ```rust
 pub struct McpConnectionManager {
     client: RemoteClient,
-    state: ConnectionState,
-    retry_count: usize,
-    max_retries: usize,
-    backoff_secs: u64,
+    state: Arc<Mutex<ConnectionState>>,
+    retry_count: Arc<AtomicU64>,
+    max_retries: u64,
+    base_delay: Duration,
+    max_delay: Duration,
+    heartbeat_interval: Duration,
+    shutdown: Arc<Notify>,
+    reconnect_needed: Arc<Notify>,
+    heartbeat_token: CancellationToken,                           // Cloneable
+    heartbeat_cancellation: Arc<Mutex<Option<CancellationToken>>>, // Cloneable via Arc::clone
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum ConnectionState {
-    Connected,
-    Disconnected,
-    Reconnecting,
+impl Clone for McpConnectionManager {
+    fn clone(&self) -> Self {
+        McpConnectionManager {
+            client: self.client.clone(),
+            state: Arc::clone(&self.state),
+            // ... all fields cloned via Arc::clone or copy
+            heartbeat_token: self.heartbeat_token.clone(),
+            heartbeat_cancellation: Arc::clone(&self.heartbeat_cancellation),
+        }
+    }
 }
 ```
 
@@ -115,21 +153,20 @@ pub enum ConnectionState {
 - Max 5 retry attempts before giving up
 - Heartbeat every 30s to keep connection alive
 - State notification via watch channel
+- **ensure_connected()**: Spawns reconnection in background task, waits for notification, falls back to direct connect if needed
 
 **Usage:**
 ```rust
-let mut manager = McpConnectionManager::new(client);
-manager.start_connection_manager().await;
+let mut manager = McpConnectionManager::new(url, headers, timeout)?;
+manager.connect().await?;
 
-// Watch for state changes
-let mut stateWatcher = manager.watch();
-while let Some(state) = stateWatcher.recv().await {
-    tracing::info!("Connection state: {:?}", state);
-}
+// Ensure connected before making requests
+manager.ensure_connected().await?;
 ```
 
+**DNS Rebinding Protection Details:**
+
 ```rust
-// Validation at connection time in validate_url_host()
 fn validate_url_host(url: &str) -> Result<(String, Vec<IpAddr>), McpError> {
     let parsed = reqwest::Url::parse(url)?;
     let host = parsed.host_str().ok_or_else(|| ...)?;
@@ -173,47 +210,76 @@ pub struct IdeServer {
 - `openDiff` - Opens file diff in IDE (VS Code extension, JetBrains plugin)
 
 **Transport Modes:**
-- stdio mode (for IDE extensions)
+- stdio mode (for IDE extensions) - uses async I/O via `tokio::io::stdin()/stdout()`
 - Unix socket mode
 
 ```rust
 impl IdeServer {
     pub fn new() -> Self;
-    pub async fn run_stdio(&self) -> Result<(), McpError>;
-    pub async fn run_unix_socket(&self, path: &str) -> Result<(), McpError>;
+    pub async fn run_stdio(&self) -> Result<(), McpError>;  // Uses tokio async I/O
+    pub async fn run_socket(&self, socket_path: &str) -> Result<(), McpError>;
 }
 ```
+
+**Async I/O Implementation:**
+- `run_stdio()` uses `tokio::io::stdin()` and `tokio::io::stdout()` (not blocking `std::io`)
+- Uses `BufReader` with `AsyncBufReadExt` for async line reading
+- Uses `AsyncWriteExt` for async write and flush operations
 
 ### OAuthManager (`src/mcp/auth.rs`)
 
-Handles OAuth 2.0 authorization code flow:
+Handles OAuth 2.0 authorization code flow with token encryption:
 
 ```rust
 pub struct OAuthManager {
-    pending_auths: Arc<tokio::sync::Mutex<HashMap<String, PendingAuth>>>,
-    completed_flows: Arc<RwLock<HashMap<String, TokenInfo>>>,
+    token_store: PathBuf,
+    used_codes_store: PathBuf,
+    servers: std::collections::HashMap<String, ServerTokens>,
+    used_codes: std::collections::HashMap<String, UsedCode>,
 }
 
-pub struct PendingAuth {
+pub struct ServerTokens {
     pub server_url: String,
-    pub client_id: String,
-    pub redirect_uri: String,
-    pub code_verifier: String,
-    pub state: String,
-    pub initiated_at: Instant,
+    pub tokens: TokenSet,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TokenSet {
+    pub access_token: String,
+    pub refresh_token: Option<String>,
+    pub token_type: String,
+    pub expires_at: Option<u64>,
+    pub scope: Option<String>,
 }
 ```
 
+**Token Encryption:**
+- Tokens encrypted with AES-256-GCM using `CODEGG_TOKEN_KEY` env var
+- Uses `CODEGG_ENC_v1` magic bytes prefix for version detection
+- Legacy unencrypted format supported for migration
+
+**PKCE Support:**
+- `generate_pkce_pair()` creates code_verifier and code_challenge
+- S256 code challenge method used
+
+**Replay Protection:**
+- Used authorization codes tracked to prevent replay attacks
+- Codes expire after 600 seconds
+- **Important**: Code is marked as used BEFORE calling `exchange_code_for_tokens()` to eliminate race window
+- If exchange fails after marking, code remains marked (acceptable - prevents replay of failed codes)
+
 **OAuth Flow:**
-1. Server returns 401 with auth URL
-2. `initiate_auth()` opens browser for user authorization
-3. Callback received with authorization code
-4. `exchange_code()` exchanges code for tokens
-5. Tokens stored and refreshed automatically
+1. `build_authorization_url()` creates OAuth URL with PKCE
+2. `start_callback_server()` starts local server to receive callback
+3. `exchange_code_for_tokens_with_replay_protection()` exchanges code for tokens
+4. `refresh_tokens()` refreshes expired tokens
+5. `revoke_token()` revokes tokens when logging out
 
 ```rust
-pub fn initiate_auth(&self, server_url: &str, config: &OAuthConfig) -> Result<String, McpError>;
-pub async fn exchange_code(&self, server_url: &str, code: String) -> Result<TokenInfo, McpError>;
+pub fn generate_pkce_pair() -> (String, String);
+pub fn build_authorization_url(&self, auth_url: &str, client_id: &str, code_challenge: &str, redirect_uri: &str, scope: &str) -> Result<String, McpError>;
+pub async fn exchange_code_for_tokens_with_replay_protection(&mut self, token_url: &str, client_id: &str, client_secret: Option<&str>, code: &str, code_verifier: &str, redirect_uri: &str) -> Result<TokenSet, McpError>;
+pub async fn refresh_tokens(&self, token_url: &str, client_id: &str, client_secret: Option<&str>, refresh_token: &str) -> Result<TokenSet, McpError>;
 pub fn get_token_for_server(&self, server_url: &str) -> Option<String>;
 ```
 
@@ -345,18 +411,24 @@ MCP servers can be managed via TUI dialogs (`src/tui/components/dialogs/mcp.rs`)
 ## Error Handling
 
 ```rust
-#[derive(Debug, thiserror::Error)]
+#[derive(Error, Debug)]
 pub enum McpError {
+    #[error("connection error: {0}")]
+    Connection(String),
     #[error("server error: {0}")]
     Server(String),
-    #[error("connection error: {0}")]
-    Connection(#[from] reqwest::Error),
+    #[error("tool call failed: {0}")]
+    ToolCall(String),
     #[error("oauth error: {0}")]
     OAuth(String),
-    #[error("invalid URL: {0}")]
-    InvalidUrl(String),
+    #[error("encryption error: {0}")]
+    Encryption(String),
+    #[error("timeout: {0}")]
+    Timeout(String),
 }
 ```
+
+Note: `McpError` is defined in `src/error.rs` and re-exported in the `mcp` module.
 
 ## Security Considerations
 
@@ -364,3 +436,15 @@ pub enum McpError {
 2. **Internal IP Blocking**: Only HTTP/HTTPS schemes allowed; internal IPs blocked
 3. **OAuth Token Storage**: Tokens stored in memory, refreshed automatically
 4. **Header Validation**: Custom headers validated at connection time
+
+## Known Limitations
+
+1. **Tool definition cache staleness**: Uses `mcp_tool_count` as proxy for MCP tool changes. If tool identities change without count changing, cache may be stale. MCP service would need to expose a version/hash for more precise invalidation.
+
+2. **SSE support not integrated**: `connect_sse()` and `connect_sse_stream()` exist but are not automatically called during remote connection setup. SSE events are collected but require event loop integration to process.
+
+3. **OAuthManager structure**: The skill documentation showed an outdated `pending_auths`/`completed_flows` structure. Actual implementation uses `token_store` and `servers` HashMap for token persistence.
+
+4. **OAuthManager error handling**: Sync token loading methods (`load_tokens_sync()`, `load_used_codes_sync()`) are called during initialization with errors logged via `tracing::warn!` instead of silently ignored.
+
+5. **IdeServer socket mode**: `run_socket()` Unix socket server exists but is not wired to any IDE extension integration. Uses `run_stdio()` for IDE communication.

@@ -1,3 +1,13 @@
+---
+name: model-dialog
+description: Model selection dialog for opencode-rs TUI
+version: 1.0.0
+tags:
+  - tui
+  - dialog
+  - model
+---
+
 # Model Dialog Skill
 
 Guide for working with the Model Dialog in opencode-rs TUI.

@@ -244,7 +244,7 @@ pub enum AgentMode {
 - `with_mode()`: Applies a `ModeDefinition` to an agent
 - `with_config_mode()`: Applies a `ModeConfig` from config file
 
-### Built-in Agents (7 total)
+### Built-in Agents (9 total)
 
 | Name | Mode | Permissions | Hidden | Purpose |
 |------|------|-------------|--------|---------|
@@ -255,6 +255,8 @@ pub enum AgentMode {
 | **title** | Subagent | None | Yes | Generate session titles |
 | **summary** | Subagent | None | Yes | Generate session summaries |
 | **compaction** | Subagent | deny: * (all) | Yes | Context compaction agent |
+| **security-review** | Subagent | deny: write, edit | No | Defensive security review |
+| **research** | All | deny: image | No | Long-horizon research |
 
 ### Agent Resolution (`resolve_agents()`)
 

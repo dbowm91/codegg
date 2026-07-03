@@ -1797,7 +1797,7 @@ This pass closes the gap between "implemented by commit message" and "verified b
 - 0 active `/lsp-start` or `/lsp-replay-docs` registrations.
 - 0 active disk cache mode (only `Disabled` and `Memory` variants in `LspCacheMode`).
 
-## Supported Languages (40 servers)
+## Supported Languages (39 servers)
 
 | Language | Server | Command |
 |----------|--------|---------|
@@ -4122,7 +4122,7 @@ Closed Phases 6, 7, and 8 with targeted fixes:
 - **Hash consistency**: `refresh_staleness()` now uses SHA-256 hex (`crate::edit::sha256_hex`) matching `FileEditPreview.original_hash`. `DefaultHasher` is no longer used for preview stale-base comparison.
 - **Edit counts**: `LspPreviewArtifact::Formatting` and `LspPreviewArtifact::CodeAction` now carry `edit_count: usize`. `preview_edit_count()` returns real counts for all artifact variants.
 - **Apply-candidate export**: `export_preview_apply_candidate()` is documented and tested as strictly read-only — it does not call `mark_applied` or modify registry state.
-- **Phase 6 verification**: 40 server definitions, consistent doc counts, `counts_from_packet` flag tested, `/lsp-status` and preview commands documented.
+- **Phase 6 verification**: 39 server definitions, consistent doc counts, `counts_from_packet` flag tested, `/lsp-status` and preview commands documented.
 - **Phase 7 verification**: All 7 recipes re-exported, recipe outputs use canonical `LspContextPacket`, hunk source tags survive dedup/ranking/budget, `preview_suggestion` does not apply.
 - **Tests**: 714 egglsp tests pass, clippy clean, pre-existing `codegg-providers::fallback` failure confirmed unrelated.
 

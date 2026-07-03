@@ -235,6 +235,8 @@ pub async fn run_event_loop(app: &mut App) -> Result<(), AppError> {
 
 ### Spawning AgentLoop
 
+Agent loops are now constructed via the `AgentLoopFactory` trait (`src/agent/agent_loop_factory.rs`), with `DefaultAgentLoopFactory` as the default implementation. This decouples agent loop construction from the daemon.
+
 ```rust
 processing_task = Some(tokio::spawn({
     let model = app.agent_state.current_model.clone();
@@ -252,15 +254,15 @@ processing_task = Some(tokio::spawn({
         
         if let Some(base_provider) = registry.get(&provider_name) {
             let provider = base_provider.clone_box();
-            let tool_registry = ToolRegistry::with_defaults();
-            let permission_checker = PermissionChecker::new(Some(&config), None);
-
-            let mut agent_loop = AgentLoop::new(
+            let factory = DefaultAgentLoopFactory::new(
                 agents,
                 provider,
+                config,
+            );
+            let mut agent_loop = factory.create(
                 permission_checker,
                 tool_registry,
-                config,
+                None, // mcp_service
             );
             agent_loop.set_session_id(&session_id);
 
@@ -282,23 +284,45 @@ processing_task = Some(tokio::spawn({
 }));
 ```
 
+### CoreRuntimeDeps
+
+`CoreRuntimeDeps` (`src/core/runtime_deps.rs`) bundles runtime dependencies for the daemon:
+
+```rust
+pub struct CoreRuntimeDeps {
+    pub pool: Option<SqlitePool>,
+    pub memory_store: Option<Arc<MemoryStore>>,
+    pub legacy_agent: LegacyAgentRuntimeDeps,
+    pub turn_runtime: Arc<dyn TurnRuntime>,
+}
+
+pub struct LegacyAgentRuntimeDeps {
+    pub subagent_pool: Arc<SubAgentPool>,
+    pub bg_scheduler: Arc<BackgroundScheduler>,
+}
+```
+
+This replaces the previous flat structure where `subagent_pool` and `bg_scheduler` were top-level fields.
+
 ## PermissionRegistry Pattern
 
 For handling permission responses from TUI:
 
 ```rust
 // In src/bus/mod.rs
+use crate::bus::PermissionDecision;
+
 pub struct PermissionRegistry {
-    senders: DashMap<String, tokio::sync::oneshot::Sender<PermissionChoice>>,
+    senders: DashMap<String, tokio::sync::oneshot::Sender<PermissionDecision>>,
 }
 
 impl PermissionRegistry {
-    // Note: These are async functions
-    pub async fn register(perm_id: String, tx: tokio::sync::oneshot::Sender<PermissionChoice>) {
+    // Note: These are synchronous functions (NOT async)
+    pub fn register(perm_id: String, tx: tokio::sync::oneshot::Sender<PermissionDecision>) {
         PERMISSION_REGISTRY.senders.insert(perm_id, tx);
     }
 
-    pub async fn respond(perm_id: String, choice: PermissionChoice) -> bool {
+    pub fn respond(perm_id: String, choice: PermissionDecision) -> bool {
         if let Some((_, tx)) = PERMISSION_REGISTRY.senders.remove(&perm_id) {
             let _ = tx.send(choice);
             true
@@ -315,16 +339,14 @@ impl PermissionRegistry {
 // In TUI, when user responds to permission dialog:
 pub fn submit_permission_response(&mut self, allowed: bool) {
     if let Some(perm_id) = self.dialog_state.permission_perm_id {
-        // Call async respond function
-        tokio::spawn(async move {
-            PermissionRegistry::respond(
-                perm_id,
-                match allowed {
-                    true => PermissionChoice::AllowOnce,
-                    false => PermissionChoice::DenyOnce,
-                },
-            ).await;
-        });
+        // Call sync respond function (NOT async)
+        PermissionRegistry::respond(
+            perm_id,
+            match allowed {
+                true => PermissionDecision::AllowOnce,
+                false => PermissionDecision::DenyOnce,
+            },
+        );
     }
 }
 ```
@@ -340,12 +362,12 @@ pub struct QuestionRegistry {
 }
 
 impl QuestionRegistry {
-    // Note: These are async functions
-    pub async fn register(question_id: String, tx: tokio::sync::oneshot::Sender<String>) {
+    // Note: These are synchronous functions (NOT async)
+    pub fn register(question_id: String, tx: tokio::sync::oneshot::Sender<String>) {
         QUESTION_REGISTRY.senders.insert(question_id, tx);
     }
 
-    pub async fn answer_question(question_id: String, answers: String) -> bool {
+    pub fn answer_question(question_id: String, answers: String) -> bool {
         if let Some((_, tx)) = QUESTION_REGISTRY.senders.remove(&question_id) {
             let _ = tx.send(answers);
             true
@@ -359,9 +381,8 @@ impl QuestionRegistry {
 pub fn submit_question_answers(&mut self) {
     if let Some(session_id) = self.dialog_state.question_session_id.take() {
         let answers = self.dialog_state.question_dialog.as_ref().unwrap().answers_json();
-        tokio::spawn(async move {
-            QuestionRegistry::answer_question(session_id, answers).await;
-        });
+        // Call sync answer function (NOT async)
+        QuestionRegistry::answer_question(session_id, answers);
     }
 }
 ```
@@ -450,6 +471,9 @@ loop {
     }
 }
 ```
+
+### Background command cancellation (security review pattern)
+Long-running slash commands that spawn tokio tasks (e.g. `/security-review`) use `tokio::task::AbortHandle` for best-effort cancellation. The TUI stores a `SecurityReviewTaskState { id, abort_handle }` on `App` for the lifetime of the background work so the user can cancel via a dedicated slash command. The completion path must compare the incoming run id against the active guard before mutating state so a stale completion (id mismatch) cannot reinstate the guard or push a stale receipt. The `--panel` flag auto-opens the result panel on completion; default behavior sends the report to the timeline. The `Enter` key in the result panel opens a read-only source preview dialog (root-scoped via `resolve_security_review_item_path`), falling back to clipboard. See `App::cancel_security_review` (`src/tui/app/mod.rs:936`) and `handle_security_review_finished` (`src/tui/mod.rs:2205`) for the canonical pattern.
 
 ## Common Issues
 
@@ -836,6 +860,6 @@ subagent_provider.wait_for_request(100, 20).await
 ## Related Skills
 
 - See `.opencode/skills/tui/SKILL.md` for TUI development overview
-- See `.opencode/skills/permission/SKILL.md` for PermissionChoice and registry usage
+- See `.opencode/skills/permission/SKILL.md` for PermissionDecision (bus-owned type) and registry usage
 - See `.opencode/skills/provider/SKILL.md` for ScriptedProvider and transcript tests
 - See `AGENTS.md` for project-wide patterns

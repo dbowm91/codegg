@@ -1,6 +1,7 @@
 ---
 name: sandbox
 description: OS-level filesystem sandboxing for bash tool using Landlock
+version: 1.0.0
 tags: [security, sandbox, landlock, linux, bash]
 ---
 
@@ -69,7 +70,11 @@ security:
 
 Or via builder pattern:
 ```rust
-let sandbox = LandlockSandbox::new()
-    .with_allowed_paths(["/project"])
-    .enforce()?;
+let config = SandboxConfig::new()
+    .with_enabled(true)
+    .with_allowed_paths(vec!["/project".to_string()])
+    .with_deny_paths(vec!["/etc".to_string()]);
+config.enforce()?;
 ```
+
+Note: `SandboxConfig` is the actual struct, not `LandlockSandbox` as shown in older documentation.
