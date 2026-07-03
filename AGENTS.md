@@ -120,6 +120,72 @@ The `builtin_agents()` function in `src/agent/mod.rs` delegates to the generated
 
 Schema validation (`--check`) enforces: valid `mode` (Primary/Subagent/All), required `name`/`description`, prompt file exists when `prompt_file` set, valid permission actions (allow/ask/deny), no unknown keys, no duplicate names, and deterministic output.
 
+## User/Project Agent Customization
+
+Users and projects can add custom agents via TOML and Markdown files:
+
+- **Global agents**: `~/.config/codegg/agents/*.toml` or `*.md`
+- **Project agents**: `.codegg/agents/*.toml` or `*.md` (relative to `$PWD`)
+
+### TOML Format
+
+```toml
+name = "my-agent"
+mode = "subagent"
+description = "A custom agent"
+prompt = "You are a helpful assistant."
+
+[permission]
+read = "allow"
+bash = "ask"
+write = "deny"
+```
+
+Or wrapped format:
+
+```toml
+[agent]
+name = "my-agent"
+mode = "subagent"
+description = "A custom agent"
+
+[agent.permissions]
+read = "allow"
+```
+
+### Markdown Format
+
+```markdown
+---
+name: my-agent
+mode: subagent
+description: A custom agent
+---
+
+You are a focused code reviewer.
+Check for safety issues.
+```
+
+The markdown body becomes the agent's prompt unless `prompt` or `prompt_file` is explicitly set.
+
+### Prompt File Resolution
+
+`prompt_file` is resolved relative to the directory containing the agent file:
+
+```toml
+prompt_file = "prompts/my-agent.md"  # resolved from agent file's directory
+```
+
+### Resolution Order
+
+1. Compiled built-ins
+2. Global files (`~/.config/codegg/agents/`)
+3. Project files (`.codegg/agents/`)
+4. Config `agent` map
+5. Config `mode` map
+
+Project files override global files. Config overrides file-based agents.
+
 ## CI Pipeline
 
 CI runs on push/PR to dev/main: `agent-assets` → `fmt` → `check` → `clippy` → `test` → `plugin-focused` → `examples`. The `agent-assets` job validates built-in agent TOML schemas and checks for stale generated output. The `plugin-focused` job runs plugin install/management/registry/TUI tests and the core boundary check. `examples` tests SDKs and WASM builds. Local equivalent: `scripts/validate_plugin_ui.sh`.

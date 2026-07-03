@@ -867,6 +867,72 @@ subagent_provider.wait_for_request(100, 20).await
 
 Source assets: `assets/agents/*.toml` → `scripts/generate_builtin_agents.py` → `src/agent/builtins/generated.rs`.
 
+## User/Project Agent Customization
+
+Users and projects can add custom agents via TOML and Markdown files:
+
+- **Global agents**: `~/.config/codegg/agents/*.toml` or `*.md`
+- **Project agents**: `.codegg/agents/*.toml` or `*.md` (relative to `$PWD`)
+
+### TOML Format
+
+```toml
+name = "my-agent"
+mode = "subagent"
+description = "A custom agent"
+prompt = "You are a helpful assistant."
+
+[permission]
+read = "allow"
+bash = "ask"
+write = "deny"
+```
+
+Or wrapped format (matching builtins):
+
+```toml
+[agent]
+name = "my-agent"
+mode = "subagent"
+description = "A custom agent"
+
+[agent.permissions]
+read = "allow"
+```
+
+### Markdown Format
+
+```markdown
+---
+name: my-agent
+mode: subagent
+description: A custom agent
+---
+
+You are a focused code reviewer.
+Check for safety issues.
+```
+
+The markdown body becomes the agent's prompt unless `prompt` or `prompt_file` is explicitly set.
+
+### Prompt File Resolution
+
+`prompt_file` is resolved relative to the directory containing the agent file:
+
+```toml
+prompt_file = "prompts/my-agent.md"  # resolved from agent file's directory
+```
+
+### Resolution Order
+
+1. Compiled built-ins
+2. Global files (`~/.config/codegg/agents/`)
+3. Project files (`.codegg/agents/`)
+4. Config `agent` map
+5. Config `mode` map
+
+Project files override global files. Config overrides file-based agents.
+
 ## Related Skills
 
 - See `.opencode/skills/tui/SKILL.md` for TUI development overview

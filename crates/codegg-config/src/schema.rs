@@ -722,6 +722,7 @@ pub struct AgentConfig {
     pub temperature: Option<f64>,
     pub top_p: Option<f64>,
     pub prompt: Option<String>,
+    pub prompt_file: Option<String>,
     pub description: Option<String>,
     pub color: Option<String>,
     pub steps: Option<u32>,

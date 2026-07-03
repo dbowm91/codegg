@@ -25,7 +25,7 @@ pub mod registry;
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::config::schema::{AgentConfig, Config};
 use crate::error::AgentError;
@@ -354,12 +354,19 @@ pub fn load_agents_from_dir(dir: &Path) -> Result<Vec<FileAgent>, AgentError> {
         let entry = entry.map_err(|e| AgentError::Invalid(e.to_string()))?;
         let path = entry.path();
 
-        if path.extension().and_then(|e| e.to_str()) != Some("md") {
-            continue;
-        }
-
-        if let Some(file_agent) = load_agent_from_file(&path)? {
-            agents.push(file_agent);
+        let ext = path.extension().and_then(|e| e.to_str());
+        match ext {
+            Some("md") => {
+                if let Some(file_agent) = load_agent_from_file(&path)? {
+                    agents.push(file_agent);
+                }
+            }
+            Some("toml") => {
+                if let Some(file_agent) = load_agent_from_toml(&path)? {
+                    agents.push(file_agent);
+                }
+            }
+            _ => continue,
         }
     }
 
@@ -369,18 +376,45 @@ pub fn load_agents_from_dir(dir: &Path) -> Result<Vec<FileAgent>, AgentError> {
 pub fn load_agent_from_file(path: &Path) -> Result<Option<FileAgent>, AgentError> {
     let content = std::fs::read_to_string(path).map_err(|e| AgentError::Invalid(e.to_string()))?;
 
-    let Some((frontmatter, _body)) = parse_frontmatter(&content) else {
+    let Some((frontmatter, body)) = parse_frontmatter(&content) else {
         return Ok(None);
     };
 
-    let agent_cfg: AgentConfig =
+    let mut agent_cfg: AgentConfig =
         serde_yaml::from_str(&frontmatter).map_err(|e| AgentError::Invalid(e.to_string()))?;
+
+    // Body-as-prompt: use markdown body as prompt when no explicit prompt or prompt_file
+    let body = body.trim().to_string();
+    if agent_cfg.prompt.is_none() && agent_cfg.prompt_file.is_none() && !body.is_empty() {
+        agent_cfg.prompt = Some(body);
+    }
 
     let name = agent_cfg.name.clone().unwrap_or_else(|| {
         path.file_stem()
             .map(|s| s.to_string_lossy().to_string())
             .unwrap_or_else(|| "unnamed".to_string())
     });
+
+    // Resolve prompt_file: load content into prompt if prompt is not already set
+    if agent_cfg.prompt.is_none() {
+        if let Some(ref prompt_file) = agent_cfg.prompt_file.clone() {
+            let resolved_path = if Path::new(prompt_file).is_absolute() {
+                PathBuf::from(prompt_file)
+            } else if let Some(parent) = path.parent() {
+                parent.join(prompt_file)
+            } else {
+                PathBuf::from(prompt_file)
+            };
+            match std::fs::read_to_string(&resolved_path) {
+                Ok(prompt_content) => {
+                    agent_cfg.prompt = Some(prompt_content);
+                }
+                Err(_) => {
+                    // File not found — agent still loads, just without the prompt
+                }
+            }
+        }
+    }
 
     let agent = agent_from_config(&name, &agent_cfg)?;
 
@@ -402,6 +436,155 @@ fn parse_frontmatter(content: &str) -> Option<(String, String)> {
     let body = rest[end + 3..].to_string();
 
     Some((frontmatter, body))
+}
+
+/// TOML agent file: supports both flat format and `[agent]` wrapped format.
+#[derive(serde::Deserialize, Debug, Default)]
+#[serde(default)]
+struct TomlAgentFile {
+    schema_version: Option<u32>,
+    /// Wrapped format: `[agent]` section
+    agent: Option<TomlAgentInner>,
+    // Flat format: top-level keys
+    name: Option<String>,
+    role: Option<String>,
+    description: Option<String>,
+    mode: Option<String>,
+    model: Option<String>,
+    variant: Option<String>,
+    temperature: Option<f64>,
+    top_p: Option<f64>,
+    prompt: Option<String>,
+    prompt_file: Option<String>,
+    color: Option<String>,
+    steps: Option<u32>,
+    hidden: Option<bool>,
+    disable: Option<bool>,
+    // Flat format: `[permission]` section
+    permission: Option<HashMap<String, String>>,
+}
+
+/// Inner struct for `[agent]` wrapped TOML format.
+#[derive(serde::Deserialize, Debug, Default)]
+#[serde(default)]
+struct TomlAgentInner {
+    name: Option<String>,
+    role: Option<String>,
+    description: Option<String>,
+    mode: Option<String>,
+    model: Option<String>,
+    variant: Option<String>,
+    temperature: Option<f64>,
+    top_p: Option<f64>,
+    prompt: Option<String>,
+    prompt_file: Option<String>,
+    color: Option<String>,
+    steps: Option<u32>,
+    hidden: Option<bool>,
+    disable: Option<bool>,
+    permissions: Option<HashMap<String, String>>,
+}
+
+impl TomlAgentFile {
+    /// Convert to AgentConfig, preferring `[agent]` section over flat fields.
+    fn into_agent_config(self) -> AgentConfig {
+        if let Some(inner) = self.agent {
+            // Wrapped format: use inner fields
+            let permission = inner.permissions.map(|perms| {
+                perms
+                    .into_iter()
+                    .map(|(k, v)| (k, crate::config::schema::PermissionRule::Action(v)))
+                    .collect()
+            });
+            AgentConfig {
+                name: inner.name,
+                role: inner.role,
+                description: inner.description,
+                mode: inner.mode,
+                model: inner.model,
+                variant: inner.variant,
+                temperature: inner.temperature,
+                top_p: inner.top_p,
+                prompt: inner.prompt,
+                prompt_file: inner.prompt_file,
+                color: inner.color,
+                steps: inner.steps,
+                hidden: inner.hidden,
+                disable: inner.disable,
+                permission,
+                tools: None,
+                options: None,
+            }
+        } else {
+            // Flat format: use top-level fields
+            let permission = self.permission.map(|perms| {
+                perms
+                    .into_iter()
+                    .map(|(k, v)| (k, crate::config::schema::PermissionRule::Action(v)))
+                    .collect()
+            });
+            AgentConfig {
+                name: self.name,
+                role: self.role,
+                description: self.description,
+                mode: self.mode,
+                model: self.model,
+                variant: self.variant,
+                temperature: self.temperature,
+                top_p: self.top_p,
+                prompt: self.prompt,
+                prompt_file: self.prompt_file,
+                color: self.color,
+                steps: self.steps,
+                hidden: self.hidden,
+                disable: self.disable,
+                permission,
+                tools: None,
+                options: None,
+            }
+        }
+    }
+}
+
+pub fn load_agent_from_toml(path: &Path) -> Result<Option<FileAgent>, AgentError> {
+    let content = std::fs::read_to_string(path).map_err(|e| AgentError::Invalid(e.to_string()))?;
+
+    let toml_file: TomlAgentFile =
+        toml::from_str(&content).map_err(|e| AgentError::Invalid(e.to_string()))?;
+
+    let mut agent_cfg = toml_file.into_agent_config();
+
+    let name = agent_cfg.name.clone().unwrap_or_else(|| {
+        path.file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| "unnamed".to_string())
+    });
+
+    // Resolve prompt_file: load content into prompt if prompt is not already set
+    if agent_cfg.prompt.is_none() {
+        if let Some(ref prompt_file) = agent_cfg.prompt_file.clone() {
+            let resolved_path = if Path::new(prompt_file).is_absolute() {
+                PathBuf::from(prompt_file)
+            } else if let Some(parent) = path.parent() {
+                parent.join(prompt_file)
+            } else {
+                PathBuf::from(prompt_file)
+            };
+            match std::fs::read_to_string(&resolved_path) {
+                Ok(prompt_content) => {
+                    agent_cfg.prompt = Some(prompt_content);
+                }
+                Err(_) => {
+                    // File not found — agent still loads, just without the prompt
+                }
+            }
+        }
+    }
+
+    let agent = agent_from_config(&name, &agent_cfg)?;
+    let source = path.to_string_lossy().to_string();
+
+    Ok(Some(FileAgent { agent, source }))
 }
 
 pub fn find_default_agent(agents: &[Agent]) -> Option<&Agent> {
@@ -1095,5 +1278,231 @@ Some body content
                 );
             }
         }
+    }
+
+    // --- TOML agent loading tests ---
+
+    #[test]
+    fn test_load_toml_agent_flat_format() {
+        let tmp = tempfile::tempdir().unwrap();
+        let content = r#"
+name = "my-agent"
+mode = "subagent"
+description = "A custom agent"
+prompt = "You are a helpful assistant."
+"#;
+        std::fs::write(tmp.path().join("my-agent.toml"), content).unwrap();
+        let agents = load_agents_from_dir(tmp.path()).unwrap();
+        assert_eq!(agents.len(), 1);
+        assert_eq!(agents[0].agent.name, "my-agent");
+        assert_eq!(agents[0].agent.mode, AgentMode::Subagent);
+        assert_eq!(
+            agents[0].agent.system_prompt.as_deref(),
+            Some("You are a helpful assistant.")
+        );
+    }
+
+    #[test]
+    fn test_load_toml_agent_wrapped_format() {
+        let tmp = tempfile::tempdir().unwrap();
+        let content = r#"
+[agent]
+name = "wrapped-agent"
+mode = "primary"
+description = "Wrapped format agent"
+"#;
+        std::fs::write(tmp.path().join("wrapped.toml"), content).unwrap();
+        let agents = load_agents_from_dir(tmp.path()).unwrap();
+        assert_eq!(agents.len(), 1);
+        assert_eq!(agents[0].agent.name, "wrapped-agent");
+        assert_eq!(agents[0].agent.mode, AgentMode::Primary);
+    }
+
+    #[test]
+    fn test_load_toml_agent_with_permissions() {
+        let tmp = tempfile::tempdir().unwrap();
+        let content = r#"
+name = "perm-agent"
+mode = "subagent"
+description = "Agent with permissions"
+
+[permission]
+read = "allow"
+bash = "ask"
+write = "deny"
+"#;
+        std::fs::write(tmp.path().join("perm.toml"), content).unwrap();
+        let agents = load_agents_from_dir(tmp.path()).unwrap();
+        assert_eq!(agents.len(), 1);
+        assert_eq!(agents[0].agent.permissions.get("read"), Some(&"allow".to_string()));
+        assert_eq!(agents[0].agent.permissions.get("bash"), Some(&"ask".to_string()));
+        assert_eq!(agents[0].agent.permissions.get("write"), Some(&"deny".to_string()));
+    }
+
+    #[test]
+    fn test_load_toml_agent_uses_filename_as_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        let content = r#"
+mode = "subagent"
+description = "No name in file"
+"#;
+        std::fs::write(tmp.path().join("from-file.toml"), content).unwrap();
+        let agents = load_agents_from_dir(tmp.path()).unwrap();
+        assert_eq!(agents.len(), 1);
+        assert_eq!(agents[0].agent.name, "from-file");
+    }
+
+    #[test]
+    fn test_load_toml_invalid_toml_returns_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("bad.toml"), "not valid {{{ toml").unwrap();
+        let result = load_agents_from_dir(tmp.path());
+        assert!(result.is_err());
+    }
+
+    // --- Markdown body-as-prompt tests ---
+
+    #[test]
+    fn test_md_body_becomes_prompt() {
+        let tmp = tempfile::tempdir().unwrap();
+        let content = r#"---
+name: body-agent
+mode: subagent
+description: Agent with body prompt
+---
+
+You are a focused code reviewer.
+Check for safety issues.
+"#;
+        std::fs::write(tmp.path().join("body.md"), content).unwrap();
+        let agents = load_agents_from_dir(tmp.path()).unwrap();
+        assert_eq!(agents.len(), 1);
+        let prompt = agents[0].agent.system_prompt.as_deref().unwrap();
+        assert!(prompt.contains("You are a focused code reviewer."));
+        assert!(prompt.contains("Check for safety issues."));
+    }
+
+    #[test]
+    fn test_md_explicit_prompt_overrides_body() {
+        let tmp = tempfile::tempdir().unwrap();
+        let content = r#"---
+name: override-agent
+mode: subagent
+description: Agent with explicit prompt
+prompt: "Explicit prompt wins"
+---
+
+Body content that should be ignored
+"#;
+        std::fs::write(tmp.path().join("override.md"), content).unwrap();
+        let agents = load_agents_from_dir(tmp.path()).unwrap();
+        assert_eq!(agents.len(), 1);
+        assert_eq!(
+            agents[0].agent.system_prompt.as_deref(),
+            Some("Explicit prompt wins")
+        );
+    }
+
+    // --- Prompt file resolution tests ---
+
+    #[test]
+    fn test_prompt_file_resolved_relative_to_agent_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Create prompt file in same directory as agent file
+        std::fs::write(tmp.path().join("my-prompt.md"), "Prompt from file content").unwrap();
+        let content = r#"---
+name: file-prompt-agent
+mode: subagent
+description: Agent with prompt_file
+prompt_file: my-prompt.md
+---"#;
+        std::fs::write(tmp.path().join("agent.md"), content).unwrap();
+        let agents = load_agents_from_dir(tmp.path()).unwrap();
+        assert_eq!(agents.len(), 1);
+        assert_eq!(
+            agents[0].agent.system_prompt.as_deref(),
+            Some("Prompt from file content")
+        );
+    }
+
+    #[test]
+    fn test_toml_prompt_file_resolved_relative() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("prompt.md"), "TOML prompt file content").unwrap();
+        let content = r#"
+name = "toml-file-prompt"
+mode = "subagent"
+description = "TOML agent with prompt_file"
+prompt_file = "prompt.md"
+"#;
+        std::fs::write(tmp.path().join("agent.toml"), content).unwrap();
+        let agents = load_agents_from_dir(tmp.path()).unwrap();
+        assert_eq!(agents.len(), 1);
+        assert_eq!(
+            agents[0].agent.system_prompt.as_deref(),
+            Some("TOML prompt file content")
+        );
+    }
+
+    #[test]
+    fn test_prompt_file_missing_agent_still_loads() {
+        let tmp = tempfile::tempdir().unwrap();
+        let content = r#"---
+name: missing-prompt-agent
+mode: subagent
+description: Agent with missing prompt_file
+prompt_file: nonexistent.md
+---"#;
+        std::fs::write(tmp.path().join("agent.md"), content).unwrap();
+        let agents = load_agents_from_dir(tmp.path()).unwrap();
+        assert_eq!(agents.len(), 1);
+        // Agent loads but prompt is None (file not found)
+        assert!(agents[0].agent.system_prompt.is_none());
+    }
+
+    // --- Mixed format directory tests ---
+
+    #[test]
+    fn test_load_mixed_md_and_toml_agents() {
+        let tmp = tempfile::tempdir().unwrap();
+        let md_content = r#"---
+name: md-agent
+mode: primary
+description: Markdown agent
+---"#;
+        let toml_content = r#"
+name = "toml-agent"
+mode = "subagent"
+description = "TOML agent"
+"#;
+        std::fs::write(tmp.path().join("md-agent.md"), md_content).unwrap();
+        std::fs::write(tmp.path().join("toml-agent.toml"), toml_content).unwrap();
+        let agents = load_agents_from_dir(tmp.path()).unwrap();
+        assert_eq!(agents.len(), 2);
+        let names: Vec<&str> = agents.iter().map(|a| a.agent.name.as_str()).collect();
+        assert!(names.contains(&"md-agent"));
+        assert!(names.contains(&"toml-agent"));
+    }
+
+    // --- Registry integration tests ---
+
+    #[test]
+    fn test_registry_loads_toml_from_global_dir() {
+        use crate::config::schema::Config;
+        use crate::agent::registry::AgentRegistry;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let content = r#"
+name = "global-toml-agent"
+mode = "subagent"
+description = "Global TOML agent"
+"#;
+        std::fs::write(tmp.path().join("global.toml"), content).unwrap();
+
+        // We can't easily test the real global dir, but we can test
+        // that load_agents_from_dir works with TOML files
+        let agents = load_agents_from_dir(tmp.path()).unwrap();
+        assert_eq!(agents.len(), 1);
+        assert_eq!(agents[0].agent.name, "global-toml-agent");
     }
 }
