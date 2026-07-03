@@ -1,0 +1,20 @@
+[agent]
+name = "explore"
+role = "explorer"
+description = "Read-only exploration agent"
+mode = "All"
+
+[agent.permissions]
+write = "deny"
+edit = "deny"
+apply_patch = "deny"
+replace = "deny"
+multiedit = "deny"
+terminal = "deny"
+bash = "deny"
+commit = "deny"
+image = "deny"
+todowrite = "deny"
+todoread = "deny"
+plan_enter = "deny"
+plan_exit = "deny"

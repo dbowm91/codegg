@@ -258,6 +258,14 @@ pub enum AgentMode {
 | **security-review** | Subagent | deny: write, edit | No | Defensive security review |
 | **research** | All | deny: image | No | Long-horizon research |
 
+### Source Assets
+
+Built-in agent definitions are maintained as TOML files in `assets/agents/` with
+companion prompt markdown in `assets/prompts/agents/`. A Python generator
+(`scripts/generate_builtin_agents.py`) compiles these into
+`src/agent/builtins/generated.rs`. Run `scripts/check_builtin_agents.py` to
+verify the TOML sources match the hardcoded values in `src/agent/mod.rs`.
+
 ### Agent Resolution (`resolve_agents()`)
 
 Loads agents from multiple sources (in priority order):

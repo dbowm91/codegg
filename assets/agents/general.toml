@@ -1,0 +1,11 @@
+[agent]
+name = "general"
+role = "executor"
+description = "Subagent without todo/goal management"
+mode = "Subagent"
+
+[agent.permissions]
+todowrite = "deny"
+todoread = "deny"
+plan_enter = "deny"
+plan_exit = "deny"

@@ -1,0 +1,15 @@
+[agent]
+name = "plan"
+role = "planner"
+description = "Read-only agent for planning"
+mode = "Primary"
+
+[agent.permissions]
+write = "deny"
+edit = "deny"
+bash = "deny"
+apply_patch = "deny"
+replace = "deny"
+multiedit = "deny"
+terminal = "deny"
+commit = "deny"

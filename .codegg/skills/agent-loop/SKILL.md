@@ -857,6 +857,10 @@ subagent_provider.wait_for_request(100, 20).await
 - Follow-ups arriving AFTER `run()` returns are NOT consumed by the completed run
 - `drain_follow_up()` uses non-blocking `try_recv()`
 
+## Built-in Agents
+
+Source assets: `assets/agents/*.toml` → `scripts/generate_builtin_agents.py` → `src/agent/builtins/generated.rs`.
+
 ## Related Skills
 
 - See `.opencode/skills/tui/SKILL.md` for TUI development overview

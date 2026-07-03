@@ -1,0 +1,5 @@
+[agent]
+name = "build"
+role = "executor"
+description = "Default agent with full permissions"
+mode = "Primary"

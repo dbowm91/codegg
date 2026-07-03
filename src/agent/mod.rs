@@ -6,6 +6,8 @@
 //! Subagent (limited), and All (combines multiple agents).
 
 pub mod agent_loop_factory;
+#[cfg(test)]
+pub mod builtins;
 pub mod compaction;
 pub mod context_frame;
 pub mod r#loop;

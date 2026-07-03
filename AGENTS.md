@@ -105,6 +105,17 @@ cargo build --target wasm32-unknown-unknown \
   --manifest-path examples/plugins/wasm-command-table/Cargo.toml --release  # WASM build
 ```
 
+## Built-in Agent Assets
+
+Built-in agent definitions live in `assets/agents/*.toml` with prompt text in `assets/prompts/agents/*.md`.
+
+```bash
+python3 scripts/generate_builtin_agents.py   # regenerate src/agent/builtins/generated.rs
+python3 scripts/check_builtin_agents.py      # verify TOML matches mod.rs
+```
+
+Generated Rust is checked in at `src/agent/builtins/`. **Do not edit generated files directly.**
+
 ## CI Pipeline
 
 CI runs on push/PR to dev/main: `fmt` → `check` → `clippy` → `test` → `plugin-focused` → `examples`. The `plugin-focused` job runs plugin install/management/registry/TUI tests and the core boundary check. `examples` tests SDKs and WASM builds. Local equivalent: `scripts/validate_plugin_ui.sh`.

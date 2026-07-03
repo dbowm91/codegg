@@ -1,0 +1,9 @@
+[agent]
+name = "compaction"
+role = "compactor"
+description = "Context compaction agent"
+mode = "Subagent"
+hidden = true
+
+[agent.permissions]
+"*" = "deny"
