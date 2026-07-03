@@ -53,10 +53,7 @@ pub(crate) fn format_agents_list(agent_state: &AgentState, show_all: bool) -> Ve
             let hidden = if ra.agent.hidden { " (hidden)" } else { "" };
             lines.push(format!(
                 "  {} {:<20} {}{}",
-                marker,
-                ra.agent.name,
-                ra.agent.description,
-                hidden
+                marker, ra.agent.name, ra.agent.description, hidden
             ));
         }
     }
@@ -76,10 +73,7 @@ pub(crate) fn format_agents_list(agent_state: &AgentState, show_all: bool) -> Ve
     }
 
     if show_all {
-        let hidden: Vec<_> = agents
-            .iter()
-            .filter(|ra| ra.agent.hidden)
-            .collect();
+        let hidden: Vec<_> = agents.iter().filter(|ra| ra.agent.hidden).collect();
         if !hidden.is_empty() {
             if !lines.is_empty() {
                 lines.push(String::new());
@@ -234,11 +228,16 @@ pub(crate) fn format_agent_diff(name: &str) -> Vec<String> {
     }
 
     // Check for replace flag in source history
-    let has_builtin = ra.sources.iter().any(|s| s.kind == AgentSourceKind::Builtin);
-    let has_overlay = ra
+    let has_builtin = ra
         .sources
         .iter()
-        .any(|s| matches!(s.kind, AgentSourceKind::GlobalFile | AgentSourceKind::ProjectFile));
+        .any(|s| s.kind == AgentSourceKind::Builtin);
+    let has_overlay = ra.sources.iter().any(|s| {
+        matches!(
+            s.kind,
+            AgentSourceKind::GlobalFile | AgentSourceKind::ProjectFile
+        )
+    });
 
     if has_builtin && has_overlay {
         // Check if any overlay replaced the builtin
@@ -257,10 +256,7 @@ pub(crate) fn format_agent_diff(name: &str) -> Vec<String> {
             let mut changed = Vec::new();
 
             if agent.model != base.model {
-                changed.push(format!(
-                    "model: {:?} -> {:?}",
-                    base.model, agent.model
-                ));
+                changed.push(format!("model: {:?} -> {:?}", base.model, agent.model));
             }
             if agent.temperature != base.temperature {
                 changed.push(format!(
@@ -324,10 +320,9 @@ pub(crate) fn format_agent_diff(name: &str) -> Vec<String> {
                 }
             }
             for key in &["edit", "write", "security", "lsp", "bash", "read"] {
-                if let ( Some(base_val), Some(agent_val) ) = (
-                    base.permissions.get(*key),
-                    agent.permissions.get(*key),
-                ) {
+                if let (Some(base_val), Some(agent_val)) =
+                    (base.permissions.get(*key), agent.permissions.get(*key))
+                {
                     if base_val == agent_val {
                         critical.push(format!("  {key}: {agent_val}"));
                     }
@@ -378,11 +373,22 @@ fn format_agents_validate_inner() -> (Vec<String>, bool) {
     if diags.is_empty() {
         lines.push("ok: no diagnostics".to_string());
     } else {
-        let errors = diags.iter().filter(|d| d.severity == crate::agent::registry::AgentDiagnosticSeverity::Error).count();
-        let warnings = diags.iter().filter(|d| d.severity == crate::agent::registry::AgentDiagnosticSeverity::Warning).count();
-        let infos = diags.iter().filter(|d| d.severity == crate::agent::registry::AgentDiagnosticSeverity::Info).count();
+        let errors = diags
+            .iter()
+            .filter(|d| d.severity == crate::agent::registry::AgentDiagnosticSeverity::Error)
+            .count();
+        let warnings = diags
+            .iter()
+            .filter(|d| d.severity == crate::agent::registry::AgentDiagnosticSeverity::Warning)
+            .count();
+        let infos = diags
+            .iter()
+            .filter(|d| d.severity == crate::agent::registry::AgentDiagnosticSeverity::Info)
+            .count();
         has_errors = errors > 0;
-        lines.push(format!("{errors} error(s), {warnings} warning(s), {infos} info(s)"));
+        lines.push(format!(
+            "{errors} error(s), {warnings} warning(s), {infos} info(s)"
+        ));
         lines.push(String::new());
         for diag in diags {
             let prefix = match diag.severity {
@@ -390,9 +396,21 @@ fn format_agents_validate_inner() -> (Vec<String>, bool) {
                 crate::agent::registry::AgentDiagnosticSeverity::Warning => "warning",
                 crate::agent::registry::AgentDiagnosticSeverity::Error => "error",
             };
-            let source_str = diag.source.as_ref().map(|s| format!(" ({:?})", s)).unwrap_or_default();
-            let field_str = diag.field.as_ref().map(|f| format!(" [field: {f}]")).unwrap_or_default();
-            let suggestion_str = diag.suggestion.as_ref().map(|s| format!(" — {s}")).unwrap_or_default();
+            let source_str = diag
+                .source
+                .as_ref()
+                .map(|s| format!(" ({:?})", s))
+                .unwrap_or_default();
+            let field_str = diag
+                .field
+                .as_ref()
+                .map(|f| format!(" [field: {f}]"))
+                .unwrap_or_default();
+            let suggestion_str = diag
+                .suggestion
+                .as_ref()
+                .map(|s| format!(" — {s}"))
+                .unwrap_or_default();
             lines.push(format!(
                 "{prefix}: [{}] {}{source_str}{field_str}{suggestion_str}",
                 diag.agent_name, diag.message
@@ -421,9 +439,7 @@ pub(crate) fn reload_agents() -> (Vec<crate::agent::Agent>, Vec<String>) {
         Ok(agents) => {
             let count = agents.len();
             let visible = agents.iter().filter(|a| !a.hidden).count();
-            let diags = vec![format!(
-                "Reloaded {count} agents ({visible} visible)"
-            )];
+            let diags = vec![format!("Reloaded {count} agents ({visible} visible)")];
             (agents, diags)
         }
         Err(e) => {
@@ -449,13 +465,9 @@ pub(crate) fn rebuild_agents() -> (Vec<crate::agent::Agent>, Vec<String>) {
                 .filter(|d| d.severity == crate::agent::registry::AgentDiagnosticSeverity::Error)
                 .count();
             let agents = registry.into_agents();
-            let mut diags = vec![format!(
-                "Rebuilt {count} agents ({visible} visible)"
-            )];
+            let mut diags = vec![format!("Rebuilt {count} agents ({visible} visible)")];
             if diags_count > 0 {
-                diags.push(format!(
-                    "{diags_count} diagnostic(s) ({errors} error(s))"
-                ));
+                diags.push(format!("{diags_count} diagnostic(s) ({errors} error(s))"));
             }
             (agents, diags)
         }
@@ -467,10 +479,7 @@ pub(crate) fn rebuild_agents() -> (Vec<crate::agent::Agent>, Vec<String>) {
 }
 
 /// Handle `/agent <name>`: validate and return the agent index if valid.
-pub(crate) fn validate_agent_select(
-    name: &str,
-    agent_state: &AgentState,
-) -> Result<usize, String> {
+pub(crate) fn validate_agent_select(name: &str, agent_state: &AgentState) -> Result<usize, String> {
     // Find agent by name
     let idx = agent_state
         .agents
@@ -571,5 +580,74 @@ mod tests {
         };
         let result = validate_agent_select("build", &state);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn format_agents_list_all_shows_hidden() {
+        let state = AgentState {
+            agents: resolve_agents(&Config::default()).unwrap_or_default(),
+            current_agent: 0,
+            current_model: String::new(),
+            models: Vec::new(),
+            model_idx: 0,
+            plan_mode: false,
+            plan_topic: None,
+        };
+        let lines = format_agents_list(&state, true);
+        let text = lines.join("\n");
+        assert!(
+            text.contains("Hidden/system agents:"),
+            "Expected 'Hidden/system agents:' section in --all output"
+        );
+        assert!(
+            text.contains("compactor") || text.contains("summary") || text.contains("title"),
+            "Expected at least one hidden agent name in output"
+        );
+    }
+
+    #[test]
+    fn validate_agent_select_rejects_hidden() {
+        let hidden_agent = crate::agent::Agent {
+            name: "compaction".to_string(),
+            hidden: true,
+            mode: crate::agent::AgentMode::Primary,
+            description: "hidden agent".to_string(),
+            ..Default::default()
+        };
+        let state = AgentState {
+            agents: vec![hidden_agent],
+            current_agent: 0,
+            current_model: String::new(),
+            models: Vec::new(),
+            model_idx: 0,
+            plan_mode: false,
+            plan_topic: None,
+        };
+        let result = validate_agent_select("compaction", &state);
+        assert!(result.is_err());
+        assert!(
+            result.unwrap_err().contains("hidden"),
+            "Error should mention hidden agent"
+        );
+    }
+
+    #[test]
+    fn format_agent_diff_nonexistent_agent() {
+        let lines = format_agent_diff("nonexistent-agent");
+        let text = lines.join("\n");
+        assert!(
+            text.contains("not found"),
+            "Expected 'not found' for unknown agent"
+        );
+    }
+
+    #[test]
+    fn format_agents_validate_clean() {
+        let lines = format_agents_validate();
+        assert!(
+            lines[0].starts_with("ok:"),
+            "Expected output to start with 'ok:', got: {}",
+            lines[0]
+        );
     }
 }

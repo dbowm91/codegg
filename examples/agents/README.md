@@ -49,7 +49,7 @@ Once installed, agents are available immediately:
 ```toml
 [agent]
 name = "my-agent"
-mode = "subagent"          # lowercase required for user TOML files
+mode = "subagent"          # case-insensitive: Primary, SUBAGENT, All, etc.
 description = "A custom agent"
 
 [agent.permissions]

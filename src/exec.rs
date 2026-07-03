@@ -1,5 +1,5 @@
 use crate::agent::r#loop::AgentLoop;
-use crate::agent::{self, processor::EventProcessor};
+use crate::agent::{self, processor::EventProcessor, EMERGENCY_DEFAULT_MODEL};
 use crate::config::schema::Config;
 use crate::error::{AppError, ProviderError, ToolError};
 use crate::permission::PermissionChecker;
@@ -87,7 +87,7 @@ impl ExecMode {
         let default_model = config
             .model
             .clone()
-            .unwrap_or_else(|| "openai/gpt-4o".to_string());
+            .unwrap_or_else(|| EMERGENCY_DEFAULT_MODEL.to_string());
         let model = input.model.unwrap_or(default_model);
         let (provider_id, model_name) = Self::parse_model(&model);
 

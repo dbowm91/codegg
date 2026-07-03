@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use futures::StreamExt;
 use serde_json::json;
 
+use crate::agent::EMERGENCY_DEFAULT_MODEL;
 use crate::config::schema::Config;
 use crate::error::ToolError;
 use crate::provider::{
@@ -43,7 +44,7 @@ impl ReviewTool {
         let model = config
             .model
             .clone()
-            .unwrap_or_else(|| "openai/gpt-4o".to_string());
+            .unwrap_or_else(|| EMERGENCY_DEFAULT_MODEL.to_string());
 
         let provider = registry
             .get(&model)

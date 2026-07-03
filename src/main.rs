@@ -1200,7 +1200,8 @@ async fn run_single_shot(prompt: &str, cli: &Cli) -> Result<(), AppError> {
         "todowrite".to_string(),
         "todoread".to_string(),
     ];
-    let safe_agent = selected_agent.apply_safety_envelope(&session_rules, &config_rules, &hard_deny);
+    let safe_agent =
+        selected_agent.apply_safety_envelope(&session_rules, &config_rules, &hard_deny);
 
     let permission_checker =
         codegg::permission::PermissionChecker::new(Some(&config), None).with_active_mode(&config);

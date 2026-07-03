@@ -317,11 +317,9 @@ Agent-specific instructions or markdown content
 
 TOML agent files support rich permissions and overlay flags:
 
-> **Case sensitivity:** User TOML files require lowercase mode values (`primary`, `subagent`, `all`). Built-in TOML files use capitalized modes but are compiled by the Python generator, bypassing `parse_mode()`.
-
 ```toml
 name = "my-agent"
-mode = "subagent"          # lowercase required
+mode = "subagent"          # case-insensitive: Primary, SUBAGENT, All, etc.
 description = "Agent with rich permissions"
 
 [bash_permission]

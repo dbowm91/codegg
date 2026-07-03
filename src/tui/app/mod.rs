@@ -4611,10 +4611,8 @@ impl App {
                     self.open_dialog(Dialog::Agent);
                     return;
                 }
-                match crate::tui::commands::agents::validate_agent_select(
-                    &name,
-                    &self.agent_state,
-                ) {
+                match crate::tui::commands::agents::validate_agent_select(&name, &self.agent_state)
+                {
                     Ok(idx) => {
                         self.agent_state.current_agent = idx;
                         let agent = &self.agent_state.agents[idx];
@@ -4640,10 +4638,8 @@ impl App {
 
                 if args.is_empty() {
                     // Bare `/agents`: list visible agents
-                    let lines = crate::tui::commands::agents::format_agents_list(
-                        &self.agent_state,
-                        false,
-                    );
+                    let lines =
+                        crate::tui::commands::agents::format_agents_list(&self.agent_state, false);
                     self.show_short_or_info(
                         crate::tui::components::dialogs::info::InfoType::Agents,
                         lines,
@@ -4668,9 +4664,9 @@ impl App {
                     }
                     "show" => {
                         if subargs.is_empty() {
-                            self.messages_state.toasts.warning(
-                                "Usage: /agents show <name>",
-                            );
+                            self.messages_state
+                                .toasts
+                                .warning("Usage: /agents show <name>");
                             return;
                         }
                         let lines = crate::tui::commands::agents::format_agent_show(subargs);
@@ -4700,8 +4696,7 @@ impl App {
                         );
                     }
                     "reload" | "rebuild" => {
-                        let (new_agents, diags) =
-                            crate::tui::commands::agents::rebuild_agents();
+                        let (new_agents, diags) = crate::tui::commands::agents::rebuild_agents();
                         if !new_agents.is_empty() {
                             // Preserve current agent if still valid
                             let current_name = self
@@ -4711,11 +4706,8 @@ impl App {
                                 .map(|a| a.name.clone());
                             self.agent_state.agents = new_agents;
                             if let Some(ref name) = current_name {
-                                if let Some(idx) = self
-                                    .agent_state
-                                    .agents
-                                    .iter()
-                                    .position(|a| a.name == *name)
+                                if let Some(idx) =
+                                    self.agent_state.agents.iter().position(|a| a.name == *name)
                                 {
                                     // Check if agent is still selectable (not hidden, not subagent-only)
                                     let agent = &self.agent_state.agents[idx];
@@ -4757,8 +4749,7 @@ impl App {
                     _ => {
                         // Treat unknown subcommand as agent name for convenience
                         // e.g., `/agents build` shows that agent
-                        let lines =
-                            crate::tui::commands::agents::format_agent_show(subcmd);
+                        let lines = crate::tui::commands::agents::format_agent_show(subcmd);
                         self.show_short_or_info(
                             crate::tui::components::dialogs::info::InfoType::Agents,
                             lines,

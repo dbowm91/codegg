@@ -878,7 +878,7 @@ Users and projects can add custom agents via TOML and Markdown files:
 
 ```toml
 name = "my-agent"
-mode = "subagent"          # lowercase required for user TOML files
+mode = "subagent"          # case-insensitive: Primary, SUBAGENT, All, etc.
 description = "A custom agent"
 prompt = "You are a helpful assistant."
 

@@ -5,8 +5,8 @@ use crate::config::schema::{AgentConfig, Config};
 use crate::error::AgentError;
 
 use super::{
-    builtin_agents, load_agents_from_dir, Agent, AgentMode, AgentRuntimeKind,
-    agent_from_config, merge_agent_config, parse_mode,
+    agent_from_config, builtin_agents, load_agents_from_dir, merge_agent_config, parse_mode, Agent,
+    AgentMode, AgentRuntimeKind,
 };
 
 /// Declarative agent source representation for future TOML/MD agents.
@@ -41,11 +41,7 @@ impl AgentSpec {
     /// Create an AgentSpec from an AgentConfig, preserving which fields were
     /// explicitly set (all `Option` fields come through as-is).
     pub fn from_agent_config(name: &str, cfg: &AgentConfig) -> Result<Self, AgentError> {
-        let mode = cfg
-            .mode
-            .as_deref()
-            .map(parse_mode)
-            .transpose()?;
+        let mode = cfg.mode.as_deref().map(parse_mode).transpose()?;
 
         let permission = cfg.permission.as_ref().map(|m| {
             m.iter()
@@ -132,23 +128,41 @@ impl AgentSpec {
         AgentSpec {
             name: overlay.name.clone().or_else(|| self.name.clone()),
             role: overlay.role.clone().or_else(|| self.role.clone()),
-            description: overlay.description.clone().or_else(|| self.description.clone()),
+            description: overlay
+                .description
+                .clone()
+                .or_else(|| self.description.clone()),
             mode: overlay.mode.clone().or_else(|| self.mode.clone()),
             model: overlay.model.clone().or_else(|| self.model.clone()),
-            fallback_model: overlay.fallback_model.clone().or_else(|| self.fallback_model.clone()),
+            fallback_model: overlay
+                .fallback_model
+                .clone()
+                .or_else(|| self.fallback_model.clone()),
             variant: overlay.variant.clone().or_else(|| self.variant.clone()),
             temperature: overlay.temperature.or(self.temperature),
             top_p: overlay.top_p.or(self.top_p),
             prompt: overlay.prompt.clone().or_else(|| self.prompt.clone()),
-            prompt_file: overlay.prompt_file.clone().or_else(|| self.prompt_file.clone()),
+            prompt_file: overlay
+                .prompt_file
+                .clone()
+                .or_else(|| self.prompt_file.clone()),
             color: overlay.color.clone().or_else(|| self.color.clone()),
             steps: overlay.steps.or(self.steps),
             hidden: overlay.hidden.or(self.hidden),
             disable: overlay.disable.or(self.disable),
             thinking_budget: overlay.thinking_budget.or(self.thinking_budget),
-            reasoning_effort: overlay.reasoning_effort.clone().or_else(|| self.reasoning_effort.clone()),
-            runtime_kind: overlay.runtime_kind.clone().or_else(|| self.runtime_kind.clone()),
-            permission: overlay.permission.clone().or_else(|| self.permission.clone()),
+            reasoning_effort: overlay
+                .reasoning_effort
+                .clone()
+                .or_else(|| self.reasoning_effort.clone()),
+            runtime_kind: overlay
+                .runtime_kind
+                .clone()
+                .or_else(|| self.runtime_kind.clone()),
+            permission: overlay
+                .permission
+                .clone()
+                .or_else(|| self.permission.clone()),
             options: if !overlay.options.is_empty() {
                 overlay.options.clone()
             } else {
@@ -161,30 +175,42 @@ impl AgentSpec {
     /// Each field uses the spec value if set, otherwise the base value.
     pub fn resolve(&self, base: &Agent) -> Result<Agent, AgentError> {
         let name = self.name.clone().unwrap_or_else(|| base.name.clone());
-        let mode = self
-            .mode
-            .clone()
-            .unwrap_or_else(|| base.mode.clone());
+        let mode = self.mode.clone().unwrap_or_else(|| base.mode.clone());
 
         Ok(Agent {
             name: name.clone(),
             role: self.role.clone().or_else(|| base.role.clone()),
-            description: self.description.clone().unwrap_or_else(|| base.description.clone()),
+            description: self
+                .description
+                .clone()
+                .unwrap_or_else(|| base.description.clone()),
             mode,
             mode_name: None,
             model: self.model.clone().or_else(|| base.model.clone()),
-            fallback_model: self.fallback_model.clone().or_else(|| base.fallback_model.clone()),
+            fallback_model: self
+                .fallback_model
+                .clone()
+                .or_else(|| base.fallback_model.clone()),
             variant: self.variant.clone().or_else(|| base.variant.clone()),
             temperature: self.temperature.or(base.temperature),
             top_p: self.top_p.or(base.top_p),
             color: self.color.clone().or_else(|| base.color.clone()),
             steps: self.steps.map(|s| s as usize).or(base.steps),
             system_prompt: self.prompt.clone().or_else(|| base.system_prompt.clone()),
-            permissions: self.permission.clone().unwrap_or_else(|| base.permissions.clone()),
+            permissions: self
+                .permission
+                .clone()
+                .unwrap_or_else(|| base.permissions.clone()),
             hidden: self.hidden.unwrap_or(base.hidden),
             thinking_budget: self.thinking_budget.or(base.thinking_budget),
-            reasoning_effort: self.reasoning_effort.clone().or_else(|| base.reasoning_effort.clone()),
-            runtime_kind: self.runtime_kind.clone().or_else(|| base.runtime_kind.clone()),
+            reasoning_effort: self
+                .reasoning_effort
+                .clone()
+                .or_else(|| base.reasoning_effort.clone()),
+            runtime_kind: self
+                .runtime_kind
+                .clone()
+                .or_else(|| base.runtime_kind.clone()),
         })
     }
 }
@@ -311,9 +337,7 @@ impl AgentRegistry {
                         diagnostics.push(AgentDiagnostic {
                             severity: AgentDiagnosticSeverity::Info,
                             agent_name: name.clone(),
-                            message: format!(
-                                "agent '{name}' disabled by global file overlay"
-                            ),
+                            message: format!("agent '{name}' disabled by global file overlay"),
                             source: Some(AgentSourceKind::GlobalFile),
                             field: None,
                             suggestion: None,
@@ -334,9 +358,7 @@ impl AgentRegistry {
                         diagnostics.push(AgentDiagnostic {
                             severity: diag_severity,
                             agent_name: name.clone(),
-                            message: format!(
-                                "global file overlay {action} built-in {name}"
-                            ),
+                            message: format!("global file overlay {action} built-in {name}"),
                             source: Some(AgentSourceKind::GlobalFile),
                             field: None,
                             suggestion: None,
@@ -368,9 +390,7 @@ impl AgentRegistry {
         // Layer 3: Project agent files (.codegg/agents/*.toml relative to PWD)
         // Overlay merge by default; replace=true replaces the entire definition.
         if let Some(project_dir) = std::env::var("PWD").ok().filter(|p| !p.is_empty()) {
-            let project_agents_dir = PathBuf::from(&project_dir)
-                .join(".codegg")
-                .join("agents");
+            let project_agents_dir = PathBuf::from(&project_dir).join(".codegg").join("agents");
             if let Ok(file_agents) = load_agents_from_dir(&project_agents_dir) {
                 for file_agent in file_agents {
                     let name = file_agent.agent.name.clone();
@@ -383,9 +403,7 @@ impl AgentRegistry {
                         diagnostics.push(AgentDiagnostic {
                             severity: AgentDiagnosticSeverity::Info,
                             agent_name: name.clone(),
-                            message: format!(
-                                "agent '{name}' disabled by project file overlay"
-                            ),
+                            message: format!("agent '{name}' disabled by project file overlay"),
                             source: Some(AgentSourceKind::ProjectFile),
                             field: None,
                             suggestion: None,
@@ -406,9 +424,7 @@ impl AgentRegistry {
                         diagnostics.push(AgentDiagnostic {
                             severity: diag_severity,
                             agent_name: name.clone(),
-                            message: format!(
-                                "project file overlay {action} existing agent {name}"
-                            ),
+                            message: format!("project file overlay {action} existing agent {name}"),
                             source: Some(AgentSourceKind::ProjectFile),
                             field: None,
                             suggestion: None,
@@ -675,7 +691,10 @@ impl AgentRegistry {
                         let base_ruleset = existing.agent.permission_ruleset();
                         let _mode_ruleset =
                             crate::permission::modes::mode_ruleset(mode_cfg, Some(&base_ruleset));
-                        existing.agent = existing.agent.clone().with_config_mode(mode_cfg, Some(&base_ruleset));
+                        existing.agent = existing
+                            .agent
+                            .clone()
+                            .with_config_mode(mode_cfg, Some(&base_ruleset));
                         existing.sources.push(AgentSource {
                             kind: AgentSourceKind::ConfigMode,
                             path: None,
@@ -704,8 +723,8 @@ impl AgentRegistry {
                             hidden: false,
                             thinking_budget: None,
                             fallback_model: None,
-            reasoning_effort: None,
-            runtime_kind: None,
+                            reasoning_effort: None,
+                            runtime_kind: None,
                         };
                         agent = agent.with_config_mode(mode_cfg, None);
                         resolved.insert(
@@ -750,8 +769,8 @@ impl AgentRegistry {
                         hidden: false,
                         thinking_budget: None,
                         fallback_model: None,
-            reasoning_effort: None,
-            runtime_kind: None,
+                        reasoning_effort: None,
+                        runtime_kind: None,
                     };
                     agent = agent.with_config_mode(mode_cfg, None);
                     resolved.insert(
@@ -788,7 +807,10 @@ impl AgentRegistry {
 
     /// Return all non-hidden agents.
     pub fn list_visible(&self) -> Vec<&ResolvedAgent> {
-        self.resolved.values().filter(|ra| !ra.agent.hidden).collect()
+        self.resolved
+            .values()
+            .filter(|ra| !ra.agent.hidden)
+            .collect()
     }
 
     /// Return agents with Primary or All mode.
@@ -919,7 +941,10 @@ mod tests {
         assert_eq!(build.agent.description, "Custom builder");
         assert_eq!(build.sources.len(), 2);
         assert!(matches!(build.sources[0].kind, AgentSourceKind::Builtin));
-        assert!(matches!(build.sources[1].kind, AgentSourceKind::ConfigAgent));
+        assert!(matches!(
+            build.sources[1].kind,
+            AgentSourceKind::ConfigAgent
+        ));
     }
 
     #[test]
@@ -944,7 +969,10 @@ mod tests {
         let registry = AgentRegistry::load(&config).unwrap();
         let reviewer = registry.get("Reviewer").unwrap();
         assert_eq!(reviewer.agent.mode, AgentMode::Primary);
-        assert!(matches!(reviewer.sources[0].kind, AgentSourceKind::ConfigAgent));
+        assert!(matches!(
+            reviewer.sources[0].kind,
+            AgentSourceKind::ConfigAgent
+        ));
     }
 
     #[test]
@@ -967,7 +995,10 @@ mod tests {
         let registry = AgentRegistry::load(&config).unwrap();
         // Disabled agent still exists (builtin stays), but config override was skipped
         let build = registry.get("build").unwrap();
-        assert_eq!(build.agent.description, "Default agent with full permissions");
+        assert_eq!(
+            build.agent.description,
+            "Default agent with full permissions"
+        );
         // But diagnostics should record the disabled info
         assert!(registry
             .diagnostics()
@@ -997,12 +1028,9 @@ mod tests {
         let registry = AgentRegistry::load(&config).unwrap();
         // Should still resolve (error diagnostic recorded)
         // The error message from parse_mode is "unknown agent mode: {s}"
-        assert!(registry
-            .diagnostics()
-            .iter()
-            .any(|d| d.agent_name == "bad"
-                && d.severity == AgentDiagnosticSeverity::Error
-                && d.message.contains("unknown agent mode")));
+        assert!(registry.diagnostics().iter().any(|d| d.agent_name == "bad"
+            && d.severity == AgentDiagnosticSeverity::Error
+            && d.message.contains("unknown agent mode")));
     }
 
     #[test]
@@ -1031,7 +1059,10 @@ mod tests {
         let review = registry.get("review");
         assert!(review.is_some());
         let review = review.unwrap();
-        assert!(matches!(review.sources[0].kind, AgentSourceKind::ConfigMode));
+        assert!(matches!(
+            review.sources[0].kind,
+            AgentSourceKind::ConfigMode
+        ));
     }
 
     #[test]

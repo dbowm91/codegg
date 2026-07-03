@@ -14,6 +14,7 @@ pub mod mention;
 pub mod policy;
 pub mod processor;
 pub mod prompt;
+pub mod registry;
 pub mod router;
 pub mod runtime_factory;
 pub mod task;
@@ -21,7 +22,6 @@ pub mod task_tool_runtime;
 pub mod team;
 pub mod turn_runtime;
 pub mod worker;
-pub mod registry;
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -292,11 +292,6 @@ impl Agent {
         let mut agent = self.clone();
         let agent_ruleset = agent.permission_ruleset();
 
-        // For each tool in hard_deny, ensure it's denied
-        for tool in hard_deny {
-            agent.permissions.insert(tool.clone(), "deny".to_string());
-        }
-
         // Safety envelope: for each tool rule in agent permissions,
         // check if session or config rules are more restrictive.
         // The most restrictive result across all layers wins.
@@ -304,9 +299,7 @@ impl Agent {
             let mut current_level = tool_rule.level.clone();
             // Check session rules for this tool
             for session_rule in &session_rules.tool_rules {
-                if session_rule.tool == tool_rule.tool
-                    || session_rule.matches(&tool_rule.tool)
-                {
+                if session_rule.tool == tool_rule.tool || session_rule.matches(&tool_rule.tool) {
                     if session_rule.level < current_level {
                         current_level = session_rule.level.clone();
                     }
@@ -314,18 +307,20 @@ impl Agent {
             }
             // Check config rules for this tool
             for config_rule in &config_rules.tool_rules {
-                if config_rule.tool == tool_rule.tool
-                    || config_rule.matches(&tool_rule.tool)
-                {
+                if config_rule.tool == tool_rule.tool || config_rule.matches(&tool_rule.tool) {
                     if config_rule.level < current_level {
                         current_level = config_rule.level.clone();
                     }
                 }
             }
-            agent.permissions.insert(
-                tool_rule.tool.clone(),
-                current_level.as_str().to_string(),
-            );
+            agent
+                .permissions
+                .insert(tool_rule.tool.clone(), current_level.as_str().to_string());
+        }
+
+        // Hard deny always wins — applied last so it cannot be overwritten
+        for tool in hard_deny {
+            agent.permissions.insert(tool.clone(), "deny".to_string());
         }
 
         agent
@@ -397,6 +392,13 @@ pub fn builtin_agents() -> Vec<Agent> {
 pub const MODEL_ALIAS_FRONTIER: &str = "tier.frontier";
 pub const MODEL_ALIAS_WORKHORSE: &str = "tier.workhorse";
 
+/// Emergency fallback model used when no model is configured at any level.
+/// This should be rare — users should configure models explicitly.
+pub const EMERGENCY_DEFAULT_MODEL: &str = "openai/gpt-4o";
+
+/// Emergency fallback for the "workhorse" (small/fast) tier.
+pub const EMERGENCY_DEFAULT_WORKHORSE_MODEL: &str = "openai/gpt-4o-mini";
+
 /// Check if a model string is a known alias.
 pub fn is_model_alias(model: &str) -> bool {
     matches!(model, MODEL_ALIAS_FRONTIER | MODEL_ALIAS_WORKHORSE)
@@ -411,11 +413,11 @@ pub fn resolve_model_alias(alias: &str, config: &Config) -> Option<String> {
         MODEL_ALIAS_FRONTIER => config
             .model
             .clone()
-            .or_else(|| Some("openai/gpt-4o".to_string())),
+            .or_else(|| Some(EMERGENCY_DEFAULT_MODEL.to_string())),
         MODEL_ALIAS_WORKHORSE => config
             .model
             .clone()
-            .or_else(|| Some("openai/gpt-4o-mini".to_string())),
+            .or_else(|| Some(EMERGENCY_DEFAULT_WORKHORSE_MODEL.to_string())),
         _ => None,
     }
 }
@@ -444,11 +446,7 @@ impl ResolvedAgentExecutionProfile {
     /// 5. Hardcoded default (openai/gpt-4o)
     ///
     /// Phase 4: Ensures no empty model strings are emitted.
-    pub fn resolve(
-        agent: &Agent,
-        config: &Config,
-        parent_model: Option<&str>,
-    ) -> Self {
+    pub fn resolve(agent: &Agent, config: &Config, parent_model: Option<&str>) -> Self {
         // 1. Explicit agent.model
         // 3. Parent/session model inheritance (for subagents)
         // 4. Global config model
@@ -476,7 +474,14 @@ impl ResolvedAgentExecutionProfile {
                     }
                 })
                 .or_else(|| config.model.clone())
-                .unwrap_or_else(|| "openai/gpt-4o".to_string())
+                .unwrap_or_else(|| {
+                    tracing::warn!(
+                        "Using emergency default model '{}'. No model configured at agent, session, or config level. \
+                         Set a model in your config or agent definition to suppress this warning.",
+                        EMERGENCY_DEFAULT_MODEL
+                    );
+                    EMERGENCY_DEFAULT_MODEL.to_string()
+                })
         } else {
             raw_model.to_string()
         };
@@ -571,8 +576,8 @@ pub fn resolve_agents(config: &Config) -> Result<Vec<Agent>, AgentError> {
                     hidden: false,
                     thinking_budget: None,
                     fallback_model: None,
-            reasoning_effort: None,
-            runtime_kind: None,
+                    reasoning_effort: None,
+                    runtime_kind: None,
                 };
                 agent = agent.with_config_mode(mode_cfg, None);
                 agents.push(agent);
@@ -698,7 +703,7 @@ fn agent_from_config(key: &str, cfg: &AgentConfig) -> Result<Agent, AgentError> 
 }
 
 pub(crate) fn parse_mode(s: &str) -> Result<AgentMode, AgentError> {
-    match s {
+    match s.to_ascii_lowercase().as_str() {
         "primary" => Ok(AgentMode::Primary),
         "subagent" => Ok(AgentMode::Subagent),
         "all" => Ok(AgentMode::All),
@@ -851,27 +856,23 @@ pub fn load_agent_from_file(path: &Path) -> Result<Option<FileAgent>, AgentError
 fn apply_bash_permission_spec(agent: &mut Agent, spec: &BashPermissionSpec) {
     // Set the default bash action
     if let Some(ref action) = spec.action {
-        agent
-            .permissions
-            .insert("bash".to_string(), action.clone());
+        agent.permissions.insert("bash".to_string(), action.clone());
     }
 
     // Store allow/deny patterns as structured entries
     // These will be converted to ToolRules during permission_ruleset()
     if let Some(ref allow_patterns) = spec.allow_patterns {
         for pattern in allow_patterns {
-            agent.permissions.insert(
-                format!("bash:allow:{}", pattern),
-                "allow".to_string(),
-            );
+            agent
+                .permissions
+                .insert(format!("bash:allow:{}", pattern), "allow".to_string());
         }
     }
     if let Some(ref deny_patterns) = spec.deny_patterns {
         for pattern in deny_patterns {
-            agent.permissions.insert(
-                format!("bash:deny:{}", pattern),
-                "deny".to_string(),
-            );
+            agent
+                .permissions
+                .insert(format!("bash:deny:{}", pattern), "deny".to_string());
         }
     }
 }
@@ -881,18 +882,16 @@ fn apply_bash_permission_spec(agent: &mut Agent, spec: &BashPermissionSpec) {
 fn apply_path_permission_spec(agent: &mut Agent, spec: &PathPermissionSpec) {
     if let Some(ref allow_patterns) = spec.allow {
         for pattern in allow_patterns {
-            agent.permissions.insert(
-                format!("path:allow:{}", pattern),
-                "allow".to_string(),
-            );
+            agent
+                .permissions
+                .insert(format!("path:allow:{}", pattern), "allow".to_string());
         }
     }
     if let Some(ref deny_patterns) = spec.deny {
         for pattern in deny_patterns {
-            agent.permissions.insert(
-                format!("path:deny:{}", pattern),
-                "deny".to_string(),
-            );
+            agent
+                .permissions
+                .insert(format!("path:deny:{}", pattern), "deny".to_string());
         }
     }
 }
@@ -1117,13 +1116,32 @@ pub fn load_agent_from_toml(path: &Path) -> Result<Option<FileAgent>, AgentError
     // Check for unknown top-level TOML keys
     let mut file_diags = Vec::new();
     {
-        let raw: toml::Value = toml::from_str(&content).map_err(|e| AgentError::Invalid(e.to_string()))?;
+        let raw: toml::Value =
+            toml::from_str(&content).map_err(|e| AgentError::Invalid(e.to_string()))?;
         if let Some(table) = raw.as_table() {
             let known_toml_keys = [
-                "schema_version", "replace", "disable", "merge", "agent",
-                "name", "role", "description", "mode", "model", "fallback_model",
-                "variant", "temperature", "top_p", "prompt", "prompt_file", "color",
-                "steps", "hidden", "runtime_kind", "permission", "bash_permission",
+                "schema_version",
+                "replace",
+                "disable",
+                "merge",
+                "agent",
+                "name",
+                "role",
+                "description",
+                "mode",
+                "model",
+                "fallback_model",
+                "variant",
+                "temperature",
+                "top_p",
+                "prompt",
+                "prompt_file",
+                "color",
+                "steps",
+                "hidden",
+                "runtime_kind",
+                "permission",
+                "bash_permission",
                 "path_permission",
             ];
             let unknown: Vec<&str> = table
@@ -1135,7 +1153,9 @@ pub fn load_agent_from_toml(path: &Path) -> Result<Option<FileAgent>, AgentError
                 file_diags.push(
                     registry::AgentDiagnostic::new(
                         registry::AgentDiagnosticSeverity::Warning,
-                        path.file_stem().and_then(|s| s.to_str()).unwrap_or("unknown"),
+                        path.file_stem()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or("unknown"),
                         format!("unknown TOML keys: {}", unknown.join(", ")),
                     )
                     .with_source(registry::AgentSourceKind::GlobalFile),
@@ -1180,7 +1200,9 @@ pub fn load_agent_from_toml(path: &Path) -> Result<Option<FileAgent>, AgentError
                     format!("invalid runtime_kind: {rk}"),
                 )
                 .with_field("runtime_kind")
-                .with_suggestion("use one of: standard, security_review, research, compaction, title, summary"),
+                .with_suggestion(
+                    "use one of: standard, security_review, research, compaction, title, summary",
+                ),
             );
         }
     }
@@ -1190,12 +1212,11 @@ pub fn load_agent_from_toml(path: &Path) -> Result<Option<FileAgent>, AgentError
         for (tool, rule) in perms {
             let action = match rule {
                 crate::config::schema::PermissionRule::Action(s) => s.as_str(),
-                crate::config::schema::PermissionRule::Object(obj) => {
-                    obj.get("default")
-                        .or_else(|| obj.get("action"))
-                        .map(|s| s.as_str())
-                        .unwrap_or("ask")
-                }
+                crate::config::schema::PermissionRule::Object(obj) => obj
+                    .get("default")
+                    .or_else(|| obj.get("action"))
+                    .map(|s| s.as_str())
+                    .unwrap_or("ask"),
             };
             if !matches!(action, "allow" | "deny" | "ask") {
                 file_diags.push(
@@ -1266,19 +1287,13 @@ pub fn load_agent_from_toml(path: &Path) -> Result<Option<FileAgent>, AgentError
         if let Some(ref allow_patterns) = bash.allow_patterns {
             let perms = spec.permission.get_or_insert_with(HashMap::new);
             for pattern in allow_patterns {
-                perms.insert(
-                    format!("bash:allow:{}", pattern),
-                    "allow".to_string(),
-                );
+                perms.insert(format!("bash:allow:{}", pattern), "allow".to_string());
             }
         }
         if let Some(ref deny_patterns) = bash.deny_patterns {
             let perms = spec.permission.get_or_insert_with(HashMap::new);
             for pattern in deny_patterns {
-                perms.insert(
-                    format!("bash:deny:{}", pattern),
-                    "deny".to_string(),
-                );
+                perms.insert(format!("bash:deny:{}", pattern), "deny".to_string());
             }
         }
     }
@@ -1286,19 +1301,13 @@ pub fn load_agent_from_toml(path: &Path) -> Result<Option<FileAgent>, AgentError
         if let Some(ref allow_patterns) = paths.allow {
             let perms = spec.permission.get_or_insert_with(HashMap::new);
             for pattern in allow_patterns {
-                perms.insert(
-                    format!("path:allow:{}", pattern),
-                    "allow".to_string(),
-                );
+                perms.insert(format!("path:allow:{}", pattern), "allow".to_string());
             }
         }
         if let Some(ref deny_patterns) = paths.deny {
             let perms = spec.permission.get_or_insert_with(HashMap::new);
             for pattern in deny_patterns {
-                perms.insert(
-                    format!("path:deny:{}", pattern),
-                    "deny".to_string(),
-                );
+                perms.insert(format!("path:deny:{}", pattern), "deny".to_string());
             }
         }
     }
@@ -1333,6 +1342,29 @@ mod tests {
     use super::*;
     use crate::config::schema::{AgentConfig, Config, ModeConfig};
     use std::collections::HashMap;
+
+    fn make_test_agent(name: &str) -> Agent {
+        Agent {
+            name: name.to_string(),
+            role: None,
+            description: "Test agent".to_string(),
+            mode: AgentMode::Primary,
+            mode_name: None,
+            model: None,
+            variant: None,
+            temperature: None,
+            top_p: None,
+            color: None,
+            steps: None,
+            system_prompt: None,
+            permissions: HashMap::new(),
+            hidden: false,
+            thinking_budget: None,
+            fallback_model: None,
+            reasoning_effort: None,
+            runtime_kind: None,
+        }
+    }
 
     #[test]
     fn test_builtin_agents_count() {
@@ -1647,8 +1679,19 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_mode_case_insensitive() {
+        assert!(matches!(parse_mode("Primary"), Ok(AgentMode::Primary)));
+        assert!(matches!(parse_mode("PRIMARY"), Ok(AgentMode::Primary)));
+        assert!(matches!(parse_mode("Subagent"), Ok(AgentMode::Subagent)));
+        assert!(matches!(parse_mode("SUBAGENT"), Ok(AgentMode::Subagent)));
+        assert!(matches!(parse_mode("All"), Ok(AgentMode::All)));
+        assert!(matches!(parse_mode("ALL"), Ok(AgentMode::All)));
+    }
+
+    #[test]
     fn test_parse_mode_invalid() {
         assert!(parse_mode("invalid").is_err());
+        assert!(parse_mode("unknown").is_err());
     }
 
     #[test]
@@ -1689,6 +1732,119 @@ Some body content
         std::fs::write(tmp.path().join("myagent.md"), content).unwrap();
         let agents = load_agents_from_dir(tmp.path()).unwrap();
         assert_eq!(agents[0].agent.name, "myagent");
+    }
+
+    #[test]
+    fn test_markdown_unsupported_keys_emit_warnings() {
+        let tmp = tempfile::tempdir().unwrap();
+        let content = r#"---
+name: test-warn
+mode: subagent
+replace: true
+merge: true
+bash_permission:
+  action: ask
+path_permission:
+  allow: ["src/**"]
+---
+You are a test agent.
+"#;
+        std::fs::write(tmp.path().join("warn.md"), content).unwrap();
+        let file_agent = load_agent_from_file(&tmp.path().join("warn.md"))
+            .unwrap()
+            .expect("should load");
+        assert_eq!(file_agent.agent.name, "test-warn");
+        assert!(
+            !file_agent.diagnostics.is_empty(),
+            "should emit warnings for TOML-only keys"
+        );
+        let warning_keys: Vec<_> = file_agent
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == registry::AgentDiagnosticSeverity::Warning)
+            .filter_map(|d| d.field.as_deref())
+            .collect();
+        assert!(warning_keys.contains(&"replace"), "replace should warn");
+        assert!(warning_keys.contains(&"merge"), "merge should warn");
+        assert!(
+            warning_keys.contains(&"bash_permission"),
+            "bash_permission should warn"
+        );
+        assert!(
+            warning_keys.contains(&"path_permission"),
+            "path_permission should warn"
+        );
+    }
+
+    #[test]
+    fn test_markdown_supported_keys_work() {
+        let tmp = tempfile::tempdir().unwrap();
+        let content = r#"---
+name: full-agent
+mode: subagent
+model: tier.frontier
+temperature: 0.7
+color: blue
+steps: 10
+hidden: false
+description: A full markdown agent
+permission:
+  read: allow
+  bash: ask
+  write: deny
+---
+The full body prompt.
+"#;
+        std::fs::write(tmp.path().join("full.md"), content).unwrap();
+        let file_agent = load_agent_from_file(&tmp.path().join("full.md"))
+            .unwrap()
+            .expect("should load");
+        assert_eq!(file_agent.agent.name, "full-agent");
+        assert_eq!(file_agent.agent.mode, AgentMode::Subagent);
+        assert_eq!(file_agent.agent.description, "A full markdown agent");
+        assert_eq!(
+            file_agent.agent.permissions.get("read"),
+            Some(&"allow".to_string())
+        );
+        assert_eq!(
+            file_agent.agent.permissions.get("bash"),
+            Some(&"ask".to_string())
+        );
+        assert_eq!(
+            file_agent.agent.permissions.get("write"),
+            Some(&"deny".to_string())
+        );
+        assert_eq!(
+            file_agent.agent.system_prompt,
+            Some("The full body prompt.".to_string())
+        );
+        assert!(
+            file_agent.diagnostics.is_empty(),
+            "supported keys should not emit warnings"
+        );
+    }
+
+    #[test]
+    fn test_markdown_example_file_is_valid() {
+        let example_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("examples/agents/markdown-agent.md");
+        if !example_path.exists() {
+            eprintln!("skipping: example file not found at {example_path:?}");
+            return;
+        }
+        let file_agent = load_agent_from_file(&example_path)
+            .unwrap()
+            .expect("example markdown-agent.md should load");
+        assert_eq!(file_agent.agent.name, "markdown-agent");
+        assert_eq!(file_agent.agent.mode, AgentMode::Subagent);
+        assert!(
+            file_agent.agent.system_prompt.is_some(),
+            "body should become prompt"
+        );
+        assert!(
+            file_agent.diagnostics.is_empty(),
+            "example should have no warnings"
+        );
     }
 
     #[test]
@@ -1735,7 +1891,16 @@ Some body content
         let plan = agents.iter().find(|a| a.name == "plan").unwrap();
         assert_eq!(plan.mode, AgentMode::Primary);
         assert!(!plan.hidden);
-        for tool in &["write", "edit", "bash", "apply_patch", "replace", "multiedit", "terminal", "commit"] {
+        for tool in &[
+            "write",
+            "edit",
+            "bash",
+            "apply_patch",
+            "replace",
+            "multiedit",
+            "terminal",
+            "commit",
+        ] {
             assert_eq!(
                 plan.permissions.get(*tool),
                 Some(&"deny".to_string()),
@@ -1783,7 +1948,15 @@ Some body content
                 "security-review should allow {tool}"
             );
         }
-        for tool in &["write", "edit", "apply_patch", "replace", "multiedit", "commit", "image"] {
+        for tool in &[
+            "write",
+            "edit",
+            "apply_patch",
+            "replace",
+            "multiedit",
+            "commit",
+            "image",
+        ] {
             assert_eq!(
                 sr.permissions.get(*tool),
                 Some(&"deny".to_string()),
@@ -1799,7 +1972,14 @@ Some body content
         assert_eq!(research.mode, AgentMode::All);
         assert!(!research.hidden);
         assert_eq!(research.color.as_deref(), Some("magenta"));
-        for tool in &["websearch", "webfetch", "research", "skill", "question", "task"] {
+        for tool in &[
+            "websearch",
+            "webfetch",
+            "research",
+            "skill",
+            "question",
+            "task",
+        ] {
             assert_eq!(
                 research.permissions.get(*tool),
                 Some(&"allow".to_string()),
@@ -1807,8 +1987,14 @@ Some body content
             );
         }
         assert_eq!(research.permissions.get("image"), Some(&"deny".to_string()));
-        assert_eq!(research.permissions.get("plan_enter"), Some(&"deny".to_string()));
-        assert_eq!(research.permissions.get("plan_exit"), Some(&"deny".to_string()));
+        assert_eq!(
+            research.permissions.get("plan_enter"),
+            Some(&"deny".to_string())
+        );
+        assert_eq!(
+            research.permissions.get("plan_exit"),
+            Some(&"deny".to_string())
+        );
     }
 
     #[test]
@@ -1827,20 +2013,44 @@ Some body content
     fn test_security_review_prompt_sentinels() {
         let agents = builtin_agents();
         let sr = agents.iter().find(|a| a.name == "security-review").unwrap();
-        let prompt = sr.system_prompt.as_ref().expect("security-review should have a prompt");
-        assert!(prompt.contains("defensive"), "prompt should mention defensive");
-        assert!(prompt.contains("deterministic"), "prompt should mention deterministic");
-        assert!(prompt.contains("evidence"), "prompt should mention evidence");
-        assert!(prompt.contains("Never mutate files"), "prompt should prohibit file mutation");
+        let prompt = sr
+            .system_prompt
+            .as_ref()
+            .expect("security-review should have a prompt");
+        assert!(
+            prompt.contains("defensive"),
+            "prompt should mention defensive"
+        );
+        assert!(
+            prompt.contains("deterministic"),
+            "prompt should mention deterministic"
+        );
+        assert!(
+            prompt.contains("evidence"),
+            "prompt should mention evidence"
+        );
+        assert!(
+            prompt.contains("Never mutate files"),
+            "prompt should prohibit file mutation"
+        );
     }
 
     #[test]
     fn test_research_prompt_sentinels() {
         let agents = builtin_agents();
         let research = agents.iter().find(|a| a.name == "research").unwrap();
-        let prompt = research.system_prompt.as_ref().expect("research should have a prompt");
-        assert!(prompt.contains("research"), "prompt should mention research tool");
-        assert!(prompt.contains("websearch"), "prompt should mention websearch");
+        let prompt = research
+            .system_prompt
+            .as_ref()
+            .expect("research should have a prompt");
+        assert!(
+            prompt.contains("research"),
+            "prompt should mention research tool"
+        );
+        assert!(
+            prompt.contains("websearch"),
+            "prompt should mention websearch"
+        );
         assert!(prompt.contains("cite"), "prompt should mention citation");
     }
 
@@ -1885,7 +2095,10 @@ Some body content
     fn test_builtin_all_agents_have_valid_mode() {
         for agent in builtin_agents() {
             assert!(
-                matches!(agent.mode, AgentMode::Primary | AgentMode::Subagent | AgentMode::All),
+                matches!(
+                    agent.mode,
+                    AgentMode::Primary | AgentMode::Subagent | AgentMode::All
+                ),
                 "agent '{}' has unexpected mode: {:?}",
                 agent.name,
                 agent.mode
@@ -1969,7 +2182,15 @@ Some body content
     fn test_builtin_security_review_deny_list() {
         let agents = builtin_agents();
         let sr = agents.iter().find(|a| a.name == "security-review").unwrap();
-        for tool in &["write", "edit", "apply_patch", "replace", "multiedit", "commit", "image"] {
+        for tool in &[
+            "write",
+            "edit",
+            "apply_patch",
+            "replace",
+            "multiedit",
+            "commit",
+            "image",
+        ] {
             assert_eq!(
                 sr.permissions.get(*tool),
                 Some(&"deny".to_string()),
@@ -2019,7 +2240,10 @@ Some body content
         let names: Vec<&str> = agents.iter().map(|a| a.name.as_str()).collect();
         let mut sorted = names.clone();
         sorted.sort();
-        assert_eq!(names, sorted, "builtin agents must be sorted by name for stable formatting");
+        assert_eq!(
+            names, sorted,
+            "builtin agents must be sorted by name for stable formatting"
+        );
     }
 
     #[test]
@@ -2096,10 +2320,21 @@ Some body content
         // If you add/remove a built-in agent, update this count.
         // Then run: python3 scripts/generate_builtin_agents.py
         let agents = builtin_agents();
-        assert_eq!(agents.len(), 9, "built-in agent count changed — update TOML definitions or this test");
+        assert_eq!(
+            agents.len(),
+            9,
+            "built-in agent count changed — update TOML definitions or this test"
+        );
         let expected_names = [
-            "build", "compaction", "explore", "general", "plan",
-            "research", "security-review", "summary", "title",
+            "build",
+            "compaction",
+            "explore",
+            "general",
+            "plan",
+            "research",
+            "security-review",
+            "summary",
+            "title",
         ];
         let actual_names: Vec<&str> = agents.iter().map(|a| a.name.as_str()).collect();
         assert_eq!(actual_names, expected_names, "built-in agent names changed");
@@ -2159,9 +2394,18 @@ write = "deny"
         std::fs::write(tmp.path().join("perm.toml"), content).unwrap();
         let agents = load_agents_from_dir(tmp.path()).unwrap();
         assert_eq!(agents.len(), 1);
-        assert_eq!(agents[0].agent.permissions.get("read"), Some(&"allow".to_string()));
-        assert_eq!(agents[0].agent.permissions.get("bash"), Some(&"ask".to_string()));
-        assert_eq!(agents[0].agent.permissions.get("write"), Some(&"deny".to_string()));
+        assert_eq!(
+            agents[0].agent.permissions.get("read"),
+            Some(&"allow".to_string())
+        );
+        assert_eq!(
+            agents[0].agent.permissions.get("bash"),
+            Some(&"ask".to_string())
+        );
+        assert_eq!(
+            agents[0].agent.permissions.get("write"),
+            Some(&"deny".to_string())
+        );
     }
 
     #[test]
@@ -2433,9 +2677,7 @@ description = "Global TOML agent"
             color: None,
             steps: None,
             system_prompt: None,
-            permissions: HashMap::from([
-                ("bash".to_string(), "ask".to_string()),
-            ]),
+            permissions: HashMap::from([("bash".to_string(), "ask".to_string())]),
             hidden: false,
             thinking_budget: None,
             fallback_model: None,
@@ -2463,9 +2705,7 @@ description = "Global TOML agent"
             color: None,
             steps: None,
             system_prompt: Some("Base prompt".to_string()),
-            permissions: HashMap::from([
-                ("read".to_string(), "allow".to_string()),
-            ]),
+            permissions: HashMap::from([("read".to_string(), "allow".to_string())]),
             hidden: false,
             thinking_budget: None,
             fallback_model: None,
@@ -2486,9 +2726,7 @@ description = "Global TOML agent"
             color: None,
             steps: None,
             system_prompt: Some("Overlay prompt".to_string()),
-            permissions: HashMap::from([
-                ("bash".to_string(), "allow".to_string()),
-            ]),
+            permissions: HashMap::from([("bash".to_string(), "allow".to_string())]),
             hidden: false,
             thinking_budget: None,
             fallback_model: None,
@@ -2500,10 +2738,7 @@ description = "Global TOML agent"
         // replace=true: overlay is used as-is
         assert_eq!(merged.description, "Overlay description");
         assert_eq!(merged.model, Some("new-model".to_string()));
-        assert_eq!(
-            merged.system_prompt.as_deref(),
-            Some("Overlay prompt")
-        );
+        assert_eq!(merged.system_prompt.as_deref(), Some("Overlay prompt"));
         assert_eq!(merged.permissions.get("bash"), Some(&"allow".to_string()));
         // Base permissions are gone
         assert!(merged.permissions.get("read").is_none());
@@ -2641,15 +2876,24 @@ deny = [".git/**", "target/**"]
             .iter()
             .filter(|r| r.tool == "bash")
             .collect();
-        assert!(bash_rules.len() >= 2, "should have bash deny+allow pattern rules");
+        assert!(
+            bash_rules.len() >= 2,
+            "should have bash deny+allow pattern rules"
+        );
         // Deny rule should have patterns
-        let deny_rule = bash_rules.iter().find(|r| r.level == permission::PermissionLevel::Deny).unwrap();
+        let deny_rule = bash_rules
+            .iter()
+            .find(|r| r.level == permission::PermissionLevel::Deny)
+            .unwrap();
         assert!(deny_rule.bash_patterns.is_some());
         let patterns = deny_rule.bash_patterns.as_ref().unwrap();
         assert!(patterns.contains(&"rm *".to_string()));
         assert!(patterns.contains(&"curl*".to_string()));
         // Allow rule should have patterns
-        let allow_rule = bash_rules.iter().find(|r| r.level == permission::PermissionLevel::Allow).unwrap();
+        let allow_rule = bash_rules
+            .iter()
+            .find(|r| r.level == permission::PermissionLevel::Allow)
+            .unwrap();
         assert!(allow_rule.bash_patterns.is_some());
         let patterns = allow_rule.bash_patterns.as_ref().unwrap();
         assert!(patterns.contains(&"git diff*".to_string()));
@@ -2683,9 +2927,17 @@ deny = [".git/**", "target/**"]
         };
         let ruleset = agent.permission_ruleset();
         assert_eq!(ruleset.path_rules.len(), 2);
-        let allow_rule = ruleset.path_rules.iter().find(|r| r.level == permission::PermissionLevel::Allow).unwrap();
+        let allow_rule = ruleset
+            .path_rules
+            .iter()
+            .find(|r| r.level == permission::PermissionLevel::Allow)
+            .unwrap();
         assert_eq!(allow_rule.pattern, "src/**");
-        let deny_rule = ruleset.path_rules.iter().find(|r| r.level == permission::PermissionLevel::Deny).unwrap();
+        let deny_rule = ruleset
+            .path_rules
+            .iter()
+            .find(|r| r.level == permission::PermissionLevel::Deny)
+            .unwrap();
         assert_eq!(deny_rule.pattern, ".git/**");
     }
 
@@ -2754,11 +3006,20 @@ write = "deny"
 
         let safe_agent = agent.apply_safety_envelope(&session_rules, &config_rules, &hard_deny);
         // Session restriction wins: bash should be deny
-        assert_eq!(safe_agent.permissions.get("bash"), Some(&"deny".to_string()));
+        assert_eq!(
+            safe_agent.permissions.get("bash"),
+            Some(&"deny".to_string())
+        );
         // Write not restricted by session/config
-        assert_eq!(safe_agent.permissions.get("write"), Some(&"allow".to_string()));
+        assert_eq!(
+            safe_agent.permissions.get("write"),
+            Some(&"allow".to_string())
+        );
         // Hard deny applied
-        assert_eq!(safe_agent.permissions.get("commit"), Some(&"deny".to_string()));
+        assert_eq!(
+            safe_agent.permissions.get("commit"),
+            Some(&"deny".to_string())
+        );
     }
 
     #[test]
@@ -2796,10 +3057,17 @@ write = "deny"
             .filter(|r| r.tool == "bash")
             .collect();
         // Deny rule should come before allow rule
-        let deny_idx = bash_rules.iter().position(|r| r.level == permission::PermissionLevel::Deny);
-        let allow_idx = bash_rules.iter().position(|r| r.level == permission::PermissionLevel::Allow);
+        let deny_idx = bash_rules
+            .iter()
+            .position(|r| r.level == permission::PermissionLevel::Deny);
+        let allow_idx = bash_rules
+            .iter()
+            .position(|r| r.level == permission::PermissionLevel::Allow);
         assert!(deny_idx.is_some() && allow_idx.is_some());
-        assert!(deny_idx.unwrap() < allow_idx.unwrap(), "deny patterns should be evaluated before allow patterns");
+        assert!(
+            deny_idx.unwrap() < allow_idx.unwrap(),
+            "deny patterns should be evaluated before allow patterns"
+        );
     }
 
     // Phase 4: Model resolution tests
@@ -2894,11 +3162,8 @@ write = "deny"
         let config = crate::config::schema::Config::default();
 
         // Parent model should be inherited
-        let profile = ResolvedAgentExecutionProfile::resolve(
-            &agent,
-            &config,
-            Some("openai/gpt-4-turbo"),
-        );
+        let profile =
+            ResolvedAgentExecutionProfile::resolve(&agent, &config, Some("openai/gpt-4-turbo"));
         assert_eq!(profile.resolved_model, "openai/gpt-4-turbo");
     }
 
@@ -2979,13 +3244,25 @@ write = "deny"
         let safe_agent = agent.apply_safety_envelope(&session_rules, &config_rules, &hard_deny);
 
         // Session restriction should win: bash should be denied
-        assert_eq!(safe_agent.permissions.get("bash"), Some(&"deny".to_string()));
+        assert_eq!(
+            safe_agent.permissions.get("bash"),
+            Some(&"deny".to_string())
+        );
         // Hard deny tools should be denied
-        assert_eq!(safe_agent.permissions.get("commit"), Some(&"deny".to_string()));
+        assert_eq!(
+            safe_agent.permissions.get("commit"),
+            Some(&"deny".to_string())
+        );
         assert_eq!(safe_agent.permissions.get("rm"), Some(&"deny".to_string()));
         // write and edit not restricted by session/config, should remain allow
-        assert_eq!(safe_agent.permissions.get("write"), Some(&"allow".to_string()));
-        assert_eq!(safe_agent.permissions.get("edit"), Some(&"allow".to_string()));
+        assert_eq!(
+            safe_agent.permissions.get("write"),
+            Some(&"allow".to_string())
+        );
+        assert_eq!(
+            safe_agent.permissions.get("edit"),
+            Some(&"allow".to_string())
+        );
     }
 
     #[test]
@@ -3034,9 +3311,15 @@ write = "deny"
         let safe_agent = agent.apply_safety_envelope(&session_rules, &config_rules, &hard_deny);
 
         // Config restriction should win: write should be denied
-        assert_eq!(safe_agent.permissions.get("write"), Some(&"deny".to_string()));
+        assert_eq!(
+            safe_agent.permissions.get("write"),
+            Some(&"deny".to_string())
+        );
         // bash not restricted, should remain allow
-        assert_eq!(safe_agent.permissions.get("bash"), Some(&"allow".to_string()));
+        assert_eq!(
+            safe_agent.permissions.get("bash"),
+            Some(&"allow".to_string())
+        );
     }
 
     #[test]
@@ -3074,9 +3357,18 @@ write = "deny"
         let safe_agent = agent.apply_safety_envelope(&session_rules, &config_rules, &hard_deny);
 
         // All permissions should be preserved
-        assert_eq!(safe_agent.permissions.get("bash"), Some(&"allow".to_string()));
-        assert_eq!(safe_agent.permissions.get("write"), Some(&"ask".to_string()));
-        assert_eq!(safe_agent.permissions.get("edit"), Some(&"deny".to_string()));
+        assert_eq!(
+            safe_agent.permissions.get("bash"),
+            Some(&"allow".to_string())
+        );
+        assert_eq!(
+            safe_agent.permissions.get("write"),
+            Some(&"ask".to_string())
+        );
+        assert_eq!(
+            safe_agent.permissions.get("edit"),
+            Some(&"deny".to_string())
+        );
     }
 
     #[test]
@@ -3096,9 +3388,7 @@ write = "deny"
             color: None,
             steps: None,
             system_prompt: None,
-            permissions: HashMap::from([
-                ("bash".to_string(), "allow".to_string()),
-            ]),
+            permissions: HashMap::from([("bash".to_string(), "allow".to_string())]),
             hidden: false,
             thinking_budget: None,
             fallback_model: None,
@@ -3135,6 +3425,345 @@ write = "deny"
         let safe_agent = agent.apply_safety_envelope(&session_rules, &config_rules, &hard_deny);
 
         // Session (deny) should win over config (ask)
-        assert_eq!(safe_agent.permissions.get("bash"), Some(&"deny".to_string()));
+        assert_eq!(
+            safe_agent.permissions.get("bash"),
+            Some(&"deny".to_string())
+        );
+    }
+
+    #[test]
+    fn test_emergency_default_model_constant_not_empty() {
+        assert!(!EMERGENCY_DEFAULT_MODEL.is_empty());
+        assert!(!EMERGENCY_DEFAULT_WORKHORSE_MODEL.is_empty());
+    }
+
+    #[test]
+    fn test_resolve_profile_explicit_model_no_emergency_fallback() {
+        let agent = Agent {
+            name: "test".to_string(),
+            role: None,
+            description: "Test".to_string(),
+            mode: AgentMode::Primary,
+            mode_name: None,
+            model: Some("anthropic/claude-sonnet-4-20250514".to_string()),
+            variant: None,
+            temperature: None,
+            top_p: None,
+            color: None,
+            steps: None,
+            system_prompt: None,
+            permissions: HashMap::new(),
+            hidden: false,
+            thinking_budget: None,
+            fallback_model: None,
+            reasoning_effort: None,
+            runtime_kind: None,
+        };
+        let config = Config::default();
+        let profile = ResolvedAgentExecutionProfile::resolve(&agent, &config, None);
+        assert_eq!(profile.resolved_model, "anthropic/claude-sonnet-4-20250514");
+    }
+
+    #[test]
+    fn test_resolve_profile_no_model_uses_emergency_fallback() {
+        let agent = Agent {
+            name: "test".to_string(),
+            role: None,
+            description: "Test".to_string(),
+            mode: AgentMode::Primary,
+            mode_name: None,
+            model: None,
+            variant: None,
+            temperature: None,
+            top_p: None,
+            color: None,
+            steps: None,
+            system_prompt: None,
+            permissions: HashMap::new(),
+            hidden: false,
+            thinking_budget: None,
+            fallback_model: None,
+            reasoning_effort: None,
+            runtime_kind: None,
+        };
+        let config = Config::default();
+        let profile = ResolvedAgentExecutionProfile::resolve(&agent, &config, None);
+        assert_eq!(profile.resolved_model, EMERGENCY_DEFAULT_MODEL);
+    }
+
+    #[test]
+    fn test_resolve_profile_config_model_takes_precedence() {
+        let agent = Agent {
+            name: "test".to_string(),
+            role: None,
+            description: "Test".to_string(),
+            mode: AgentMode::Primary,
+            mode_name: None,
+            model: None,
+            variant: None,
+            temperature: None,
+            top_p: None,
+            color: None,
+            steps: None,
+            system_prompt: None,
+            permissions: HashMap::new(),
+            hidden: false,
+            thinking_budget: None,
+            fallback_model: None,
+            reasoning_effort: None,
+            runtime_kind: None,
+        };
+        let mut config = Config::default();
+        config.model = Some("openai/gpt-4o-mini".to_string());
+        let profile = ResolvedAgentExecutionProfile::resolve(&agent, &config, None);
+        assert_eq!(profile.resolved_model, "openai/gpt-4o-mini");
+    }
+
+    #[test]
+    fn test_resolve_model_alias_frontier_uses_emergency_constant() {
+        let config = Config::default();
+        let result = resolve_model_alias(MODEL_ALIAS_FRONTIER, &config);
+        assert_eq!(result.as_deref(), Some(EMERGENCY_DEFAULT_MODEL));
+    }
+
+    #[test]
+    fn test_resolve_model_alias_workhorse_uses_emergency_constant() {
+        let config = Config::default();
+        let result = resolve_model_alias(MODEL_ALIAS_WORKHORSE, &config);
+        assert_eq!(result.as_deref(), Some(EMERGENCY_DEFAULT_WORKHORSE_MODEL));
+    }
+
+    // --- Phase 7: Example agents parse tests ---
+
+    #[test]
+    fn test_example_agents_parse() {
+        let examples_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("examples")
+            .join("agents");
+        if !examples_dir.exists() {
+            eprintln!("Skipping example agents test: examples/agents/ not found");
+            return;
+        }
+
+        let result = load_agents_from_dir(&examples_dir);
+        assert!(
+            result.is_ok(),
+            "Failed to load example agents: {:?}",
+            result.err()
+        );
+
+        let agents = result.unwrap();
+        // Should have at least the 5 agent files (4 TOML + 1 MD)
+        assert!(
+            agents.len() >= 5,
+            "Expected at least 5 example agents, got {}",
+            agents.len()
+        );
+
+        // All agents should have names
+        for fa in &agents {
+            assert!(
+                !fa.agent.name.is_empty(),
+                "Agent from {} has empty name",
+                fa.source
+            );
+            // All agents should have descriptions
+            assert!(
+                !fa.agent.description.is_empty(),
+                "Agent '{}' has no description",
+                fa.agent.name
+            );
+            // All agents should have valid modes
+            // (parse_mode would have failed if mode was invalid)
+        }
+    }
+
+    #[test]
+    fn test_each_example_agent_file_parses() {
+        let examples_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("examples")
+            .join("agents");
+        if !examples_dir.exists() {
+            return;
+        }
+
+        let entries: Vec<_> = std::fs::read_dir(&examples_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                let p = e.path();
+                p.extension()
+                    .map_or(false, |ext| ext == "toml" || ext == "md")
+            })
+            .collect();
+
+        assert!(!entries.is_empty(), "No example agent files found");
+
+        for entry in &entries {
+            let path = entry.path();
+            let result = if path.extension().unwrap() == "toml" {
+                load_agent_from_toml(&path)
+            } else {
+                load_agent_from_file(&path)
+            };
+
+            assert!(
+                result.is_ok(),
+                "Failed to parse {}: {:?}",
+                path.display(),
+                result.err()
+            );
+            let agent_opt = result.unwrap();
+            if let Some(fa) = agent_opt {
+                assert!(
+                    !fa.agent.name.is_empty(),
+                    "Agent from {} has empty name",
+                    path.display()
+                );
+            }
+        }
+    }
+
+    // Phase 4: Safety envelope integration tests for custom agents
+
+    #[test]
+    fn test_safety_envelope_custom_agent_session_deny_overrides_allow() {
+        let mut agent = make_test_agent("custom-agent");
+        agent
+            .permissions
+            .insert("edit".to_string(), "allow".to_string());
+
+        let session_rules = crate::permission::PermissionRuleset {
+            default: crate::permission::PermissionLevel::Ask,
+            tool_rules: vec![crate::permission::ToolRule {
+                tool: "edit".to_string(),
+                level: crate::permission::PermissionLevel::Deny,
+                paths: None,
+                bash_patterns: None,
+            }],
+            path_rules: Vec::new(),
+        };
+
+        let config_rules = crate::permission::PermissionRuleset::default();
+        let hard_deny = vec![];
+
+        let safe = agent.apply_safety_envelope(&session_rules, &config_rules, &hard_deny);
+        let ruleset = safe.permission_ruleset();
+        let edit_rule = ruleset.tool_rules.iter().find(|r| r.tool == "edit");
+        assert!(edit_rule.is_some());
+        assert_eq!(
+            edit_rule.unwrap().level,
+            crate::permission::PermissionLevel::Deny
+        );
+    }
+
+    #[test]
+    fn test_safety_envelope_custom_agent_config_ask_overrides_allow() {
+        let mut agent = make_test_agent("custom-agent");
+        agent
+            .permissions
+            .insert("bash".to_string(), "allow".to_string());
+
+        let session_rules = crate::permission::PermissionRuleset::default();
+        let config_rules = crate::permission::PermissionRuleset {
+            default: crate::permission::PermissionLevel::Ask,
+            tool_rules: vec![crate::permission::ToolRule {
+                tool: "bash".to_string(),
+                level: crate::permission::PermissionLevel::Ask,
+                paths: None,
+                bash_patterns: None,
+            }],
+            path_rules: Vec::new(),
+        };
+
+        let hard_deny = vec![];
+
+        let safe = agent.apply_safety_envelope(&session_rules, &config_rules, &hard_deny);
+        let ruleset = safe.permission_ruleset();
+        let bash_rule = ruleset.tool_rules.iter().find(|r| r.tool == "bash");
+        assert!(bash_rule.is_some());
+        assert_eq!(
+            bash_rule.unwrap().level,
+            crate::permission::PermissionLevel::Ask
+        );
+    }
+
+    #[test]
+    fn test_safety_envelope_hard_deny_always_wins_over_agent_allow() {
+        let mut agent = make_test_agent("custom-agent");
+        agent
+            .permissions
+            .insert("commit".to_string(), "allow".to_string());
+
+        let session_rules = crate::permission::PermissionRuleset::default();
+        let config_rules = crate::permission::PermissionRuleset::default();
+        let hard_deny = vec!["commit".to_string()];
+
+        let safe = agent.apply_safety_envelope(&session_rules, &config_rules, &hard_deny);
+        assert_eq!(safe.permissions.get("commit").unwrap(), "deny");
+    }
+
+    #[test]
+    fn test_safety_envelope_subagent_permissions_bounded() {
+        let mut agent = make_test_agent("sub-agent");
+        agent.mode = AgentMode::Subagent;
+        agent
+            .permissions
+            .insert("edit".to_string(), "allow".to_string());
+        agent
+            .permissions
+            .insert("bash".to_string(), "allow".to_string());
+        agent
+            .permissions
+            .insert("write".to_string(), "allow".to_string());
+
+        let session_rules = crate::permission::PermissionRuleset::default();
+        let config_rules = crate::permission::PermissionRuleset {
+            default: crate::permission::PermissionLevel::Ask,
+            tool_rules: vec![crate::permission::ToolRule {
+                tool: "bash".to_string(),
+                level: crate::permission::PermissionLevel::Ask,
+                paths: None,
+                bash_patterns: None,
+            }],
+            path_rules: Vec::new(),
+        };
+
+        let hard_deny = vec!["commit".to_string()];
+
+        let safe = agent.apply_safety_envelope(&session_rules, &config_rules, &hard_deny);
+        let ruleset = safe.permission_ruleset();
+
+        // edit and write remain allow (no session/config restriction)
+        let edit_rule = ruleset.tool_rules.iter().find(|r| r.tool == "edit");
+        assert_eq!(
+            edit_rule.unwrap().level,
+            crate::permission::PermissionLevel::Allow
+        );
+
+        // bash is restricted to ask by config
+        let bash_rule = ruleset.tool_rules.iter().find(|r| r.tool == "bash");
+        assert_eq!(
+            bash_rule.unwrap().level,
+            crate::permission::PermissionLevel::Ask
+        );
+
+        // commit is hard-denied
+        assert_eq!(safe.permissions.get("commit").unwrap(), "deny");
+    }
+
+    #[test]
+    fn test_safety_envelope_empty_agent_permissions_get_defaults() {
+        let agent = make_test_agent("bare-agent");
+
+        let session_rules = crate::permission::PermissionRuleset::default();
+        let config_rules = crate::permission::PermissionRuleset::default();
+        let hard_deny = vec![];
+
+        let safe = agent.apply_safety_envelope(&session_rules, &config_rules, &hard_deny);
+        let ruleset = safe.permission_ruleset();
+        // Should not panic and should produce a valid (empty) ruleset
+        assert!(ruleset.tool_rules.is_empty());
+        assert_eq!(ruleset.default, crate::permission::PermissionLevel::Ask);
     }
 }

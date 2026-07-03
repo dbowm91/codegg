@@ -120,6 +120,18 @@ The `builtin_agents()` function in `src/agent/mod.rs` delegates to the generated
 
 Schema validation (`--check`) enforces: valid `mode` (Primary/Subagent/All), required `name`/`description`, prompt file exists when `prompt_file` set, valid permission actions (allow/ask/deny), no unknown keys, no duplicate names, and deterministic output.
 
+### Local Validation
+
+After making changes to agents, run the full validation suite:
+
+```bash
+python3 scripts/generate_builtin_agents.py --check      # staleness + schema validation
+python3 scripts/check_builtin_agents.py                 # verify TOML matches generated.rs
+cargo fmt --check                                        # formatting check
+cargo check --workspace                                  # compilation check
+cargo test --workspace                                   # all tests
+```
+
 ## User/Project Agent Customization
 
 Users and projects can add custom agents via TOML and Markdown files:
@@ -131,7 +143,7 @@ Users and projects can add custom agents via TOML and Markdown files:
 
 ```toml
 name = "my-agent"
-mode = "subagent"          # lowercase required for user TOML files
+mode = "subagent"          # case-insensitive: Primary, SUBAGENT, All, etc.
 description = "A custom agent"
 prompt = "You are a helpful assistant."
 
@@ -300,6 +312,7 @@ CI runs on push/PR to dev/main: `agent-assets` → `fmt` → `check` → `clippy
 - **AgentLoopFactory** (`src/agent/agent_loop_factory.rs`) is a build-only seam.
 - **CoreRuntimeDeps** (`src/core/runtime_deps.rs`): Bundles pool, memory_store, legacy_agent, turn_runtime. Use `with_deps()` for new code.
 - **AgentRegistry** (`src/agent/registry.rs`): Central registry separating declarative sources from resolved runtime agents. Tracks source provenance (Builtin, GlobalFile, ProjectFile, ConfigAgent, ConfigMode, Session) and emits diagnostics. `AgentRegistry::load(config)` replicates the 5-layer resolution order from `resolve_agents()`. `into_agents()` provides backward compatibility. New code should prefer `AgentRegistry` over `resolve_agents()`.
+- **Emergency fallback model**: `EMERGENCY_DEFAULT_MODEL` constant is centralized in `src/agent/mod.rs`. When no model is configured or resolved, this constant is used and a warning is emitted. Users should always configure models explicitly to avoid silent fallback behavior.
 
 ### LSP
 
