@@ -38,10 +38,11 @@ use crate::permission::{self, PermissionRuleset};
 /// This metadata selects Rust-defined runtime behavior for specialized agents.
 /// TOML sets the kind; Rust implements the behavior (security preflight,
 /// research orchestration, compaction contracts, etc.).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentRuntimeKind {
     /// Default agent runtime — standard prompt, no special orchestration.
+    #[default]
     Standard,
     /// Security review runtime — defensive scanning, evidence-based findings.
     SecurityReview,
@@ -53,12 +54,6 @@ pub enum AgentRuntimeKind {
     Title,
     /// Summary generation runtime.
     Summary,
-}
-
-impl Default for AgentRuntimeKind {
-    fn default() -> Self {
-        Self::Standard
-    }
 }
 
 impl fmt::Display for AgentRuntimeKind {
@@ -299,18 +294,18 @@ impl Agent {
             let mut current_level = tool_rule.level.clone();
             // Check session rules for this tool
             for session_rule in &session_rules.tool_rules {
-                if session_rule.tool == tool_rule.tool || session_rule.matches(&tool_rule.tool) {
-                    if session_rule.level < current_level {
-                        current_level = session_rule.level.clone();
-                    }
+                if (session_rule.tool == tool_rule.tool || session_rule.matches(&tool_rule.tool))
+                    && session_rule.level < current_level
+                {
+                    current_level = session_rule.level.clone();
                 }
             }
             // Check config rules for this tool
             for config_rule in &config_rules.tool_rules {
-                if config_rule.tool == tool_rule.tool || config_rule.matches(&tool_rule.tool) {
-                    if config_rule.level < current_level {
-                        current_level = config_rule.level.clone();
-                    }
+                if (config_rule.tool == tool_rule.tool || config_rule.matches(&tool_rule.tool))
+                    && config_rule.level < current_level
+                {
+                    current_level = config_rule.level.clone();
                 }
             }
             agent
@@ -2741,7 +2736,7 @@ description = "Global TOML agent"
         assert_eq!(merged.system_prompt.as_deref(), Some("Overlay prompt"));
         assert_eq!(merged.permissions.get("bash"), Some(&"allow".to_string()));
         // Base permissions are gone
-        assert!(merged.permissions.get("read").is_none());
+        assert!(!merged.permissions.contains_key("read"));
     }
 
     #[test]
@@ -3513,8 +3508,10 @@ write = "deny"
             reasoning_effort: None,
             runtime_kind: None,
         };
-        let mut config = Config::default();
-        config.model = Some("openai/gpt-4o-mini".to_string());
+        let config = Config {
+            model: Some("openai/gpt-4o-mini".to_string()),
+            ..Config::default()
+        };
         let profile = ResolvedAgentExecutionProfile::resolve(&agent, &config, None);
         assert_eq!(profile.resolved_model, "openai/gpt-4o-mini");
     }
@@ -3593,7 +3590,7 @@ write = "deny"
             .filter(|e| {
                 let p = e.path();
                 p.extension()
-                    .map_or(false, |ext| ext == "toml" || ext == "md")
+                    .is_some_and(|ext| ext == "toml" || ext == "md")
             })
             .collect();
 

@@ -472,41 +472,35 @@ pub fn validate_ui_effect(effect: &UiEffect, limits: &UiLimits) -> Result<(), Ui
         validate_ui_node(node, limits, 1)?;
     }
     match effect {
-        UiEffect::EmitChat { block } => {
-            if block.content.chars().count() > limits.max_string_len {
-                return Err(UiValidationError::StringTooLong {
-                    limit: limits.max_string_len,
-                    len: block.content.chars().count(),
-                });
-            }
+        UiEffect::EmitChat { block } if block.content.chars().count() > limits.max_string_len => {
+            return Err(UiValidationError::StringTooLong {
+                limit: limits.max_string_len,
+                len: block.content.chars().count(),
+            });
         }
-        UiEffect::ShowToast { toast } => {
-            if toast.message.chars().count() > limits.max_string_len {
-                return Err(UiValidationError::StringTooLong {
-                    limit: limits.max_string_len,
-                    len: toast.message.chars().count(),
-                });
-            }
+        UiEffect::ShowToast { toast } if toast.message.chars().count() > limits.max_string_len => {
+            return Err(UiValidationError::StringTooLong {
+                limit: limits.max_string_len,
+                len: toast.message.chars().count(),
+            });
         }
-        UiEffect::OpenDialog { dialog } => {
+        UiEffect::OpenDialog { dialog }
             if dialog.id.chars().count() > limits.max_string_len
-                || dialog.title.chars().count() > limits.max_string_len
-            {
-                return Err(UiValidationError::StringTooLong {
-                    limit: limits.max_string_len,
-                    len: dialog.id.chars().count().max(dialog.title.chars().count()),
-                });
-            }
+                || dialog.title.chars().count() > limits.max_string_len =>
+        {
+            return Err(UiValidationError::StringTooLong {
+                limit: limits.max_string_len,
+                len: dialog.id.chars().count().max(dialog.title.chars().count()),
+            });
         }
-        UiEffect::OpenPanel { panel } => {
+        UiEffect::OpenPanel { panel }
             if panel.id.chars().count() > limits.max_string_len
-                || panel.title.chars().count() > limits.max_string_len
-            {
-                return Err(UiValidationError::StringTooLong {
-                    limit: limits.max_string_len,
-                    len: panel.id.chars().count().max(panel.title.chars().count()),
-                });
-            }
+                || panel.title.chars().count() > limits.max_string_len =>
+        {
+            return Err(UiValidationError::StringTooLong {
+                limit: limits.max_string_len,
+                len: panel.id.chars().count().max(panel.title.chars().count()),
+            });
         }
         UiEffect::AddStatusItem { item } => {
             let label_len = item

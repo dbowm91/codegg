@@ -3510,8 +3510,7 @@ impl Tool for LspTool {
                         risk_markers_truncated,
                         diagnostics_truncated: semantic_limits.diagnostics_truncated
                             || security_diag_truncated,
-                        symbols_truncated: semantic_limits.symbols_truncated
-                            || security_sym_truncated,
+                        symbols_truncated: security_sym_truncated,
                         references_truncated: semantic_limits.references_truncated,
                         excerpt_truncated: semantic_limits.excerpt_truncated,
                         overlay_diagnostics_truncated: semantic_limits

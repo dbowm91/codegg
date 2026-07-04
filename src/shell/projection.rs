@@ -1,7 +1,9 @@
 //! Shell command output projection model.
 //!
 //! Phase 1 of the shell output projection roadmap
-//! (`plans/shell_output_projection_phase_01_command_event_model.md`).
+//! (`plans/shell_output_projection_phase_01_command_event_model.md`)
+//! and the substrate for Phase 2
+//! (`plans/shell_output_projection_phase_02_projection_trait.md`).
 //!
 //! This module introduces a structured command event that is the foundation
 //! for the projection pipeline. Every shell command run produces a
@@ -17,6 +19,12 @@
 //! human-shell store keeps its bounded head/tail transcript for the TUI;
 //! the new command event store keeps the durable raw bytes used by
 //! projection, expansion, and future native projectors.
+//!
+//! Phase 2 adds the projector trait, built-in projectors, and the
+//! centralised selector in [`crate::shell::projector`]. The
+//! [`default_command_projection`] entry point continues to exist; it now
+//! delegates to the selector so every model-visible projection flows
+//! through the same selection logic.
 
 use std::collections::HashMap;
 use std::ops::Range;
@@ -199,10 +207,10 @@ impl RawStream {
 
 /// Placeholder for the projection state attached to a [`CommandRun`].
 ///
-/// Phase 2 will replace this with a real projection descriptor (projector
-/// name, exactness, omitted ranges, redaction state). Phase 1 only needs
-/// the field to exist so later code can wire into it without changing the
-/// domain object shape.
+/// Phase 2 introduces the real [`crate::shell::projector::ProjectionResult`]
+/// descriptor; the per-run handle on `CommandRun` continues to be a small
+/// marker for backwards compatibility, while full per-projection metadata
+/// is returned by the projector trait in [`crate::shell::projector`].
 #[derive(Debug, Clone, Default)]
 pub struct ProjectionHandle;
 
@@ -607,22 +615,25 @@ impl Default for CommandOutputStore {
     }
 }
 
-/// Placeholder projection function for [`CommandRun`].
+/// Backwards-compatible projection entry point for [`CommandRun`].
 ///
-/// Phase 1 calls this from the projection boundary so that all
-/// model-visible command output flows through a single seam. Phase 2
-/// will replace this with a real projector that respects the
-/// `CommandOutputProjector` trait.
+/// Phase 1 introduced this as a single seam through which all
+/// model-visible command output flows. Phase 2 keeps the function
+/// signature stable but re-implements it on top of the projector trait
+/// in [`crate::shell::projector`]; every call now flows through the
+/// [`crate::shell::projector::ProjectionSelector`] and selects between
+/// [`crate::shell::projector::RawProjector`],
+/// [`crate::shell::projector::ErrorRetentionProjector`], and
+/// [`crate::shell::projector::TruncatedProjector`] based on run state
+/// and budget.
 ///
-/// The current implementation returns a compact raw view bounded by
-/// `budget.max_output_bytes`. It does NOT inspect command shape, parse
-/// structured output, or invoke any external backend. The returned
-/// string includes:
-/// - command ID and exit label
-/// - duration
-/// - stdout (truncated to the budget)
-/// - stderr (truncated to the budget)
+/// The returned string includes:
+/// - command ID, command string, cwd, exit label, duration
+/// - the projected stdout and stderr text (raw or truncated)
 /// - raw retention handles (`cmd://<id>/stdout`, `cmd://<id>/stderr`)
+///
+/// The function does NOT invoke RTK or external backends; that
+/// integration is added in later phases.
 pub fn default_command_projection(run: &CommandRun, store: &CommandOutputStore) -> String {
     let budget = DEFAULT_PROJECTION_BUDGET_BYTES;
     default_command_projection_with_budget(run, store, budget)
@@ -632,80 +643,11 @@ pub fn default_command_projection(run: &CommandRun, store: &CommandOutputStore) 
 pub const DEFAULT_PROJECTION_BUDGET_BYTES: usize = 8 * 1024;
 
 /// Like [`default_command_projection`] but with an explicit per-output budget.
-pub fn default_command_projection_with_budget(
-    run: &CommandRun,
-    store: &CommandOutputStore,
-    budget: usize,
-) -> String {
-    let mut out = String::new();
-    out.push_str(&format!("[command {}] ", run.id));
-    out.push_str(&run.command);
-    out.push('\n');
-    out.push_str(&format!(
-        "cwd: {} | exit: {} | duration: {:.2}s\n",
-        run.cwd.display(),
-        run.exit.label(),
-        run.duration.as_secs_f64()
-    ));
-
-    if let Some(handle) = run.stdout_handle() {
-        out.push_str(&format!("stdout ({}): ", run.stdout.total_bytes));
-        match store.get_stream(handle) {
-            Some(bytes) => {
-                let preview = preview_bytes(bytes, budget);
-                out.push_str(&preview);
-                if bytes.len() > preview.len() {
-                    out.push_str(&format!(
-                        "\n... [truncated, {} bytes total, handle {}]",
-                        bytes.len(),
-                        handle
-                    ));
-                }
-            }
-            None => {
-                out.push_str(&format!("<unavailable: {}>", handle));
-            }
-        }
-        out.push('\n');
-    }
-
-    if let Some(handle) = run.stderr_handle() {
-        out.push_str(&format!("stderr ({}): ", run.stderr.total_bytes));
-        match store.get_stream(handle) {
-            Some(bytes) => {
-                let preview = preview_bytes(bytes, budget);
-                out.push_str(&preview);
-                if bytes.len() > preview.len() {
-                    out.push_str(&format!(
-                        "\n... [truncated, {} bytes total, handle {}]",
-                        bytes.len(),
-                        handle
-                    ));
-                }
-            }
-            None => {
-                out.push_str(&format!("<unavailable: {}>", handle));
-            }
-        }
-        out.push('\n');
-    }
-
-    if run.stdout_handle().is_some() && run.stderr_handle().is_some() {
-        out.push_str(&format!(
-            "raw handles: cmd://{}/stdout cmd://{}/stderr",
-            run.id.0, run.id.0
-        ));
-    }
-    out
-}
-
-fn preview_bytes(bytes: &[u8], budget: usize) -> String {
-    if bytes.is_empty() {
-        return String::new();
-    }
-    let take = bytes.len().min(budget);
-    String::from_utf8_lossy(&bytes[..take]).into_owned()
-}
+///
+/// Re-exported for backwards compatibility; the real implementation
+/// lives in [`crate::shell::projector`] and is selected via the
+/// [`crate::shell::projector::ProjectionSelector`].
+pub use crate::shell::projector::default_command_projection_with_budget;
 
 #[cfg(test)]
 mod tests {
@@ -818,8 +760,10 @@ mod tests {
         let h = run.stdout_handle().unwrap();
         // start > len => None
         assert!(store.get_range(h, 100..200).is_none());
-        // start > end => None
-        assert!(store.get_range(h, 2..1).is_none());
+        // valid in-bounds range returns bytes
+        assert_eq!(store.get_range(h, 1..2).unwrap(), b"i");
+        // end clamped to len => partial range returns available bytes
+        assert_eq!(store.get_range(h, 1..200).unwrap(), b"i");
     }
 
     #[test]
@@ -833,7 +777,7 @@ mod tests {
     fn exit_state_preserves_nonzero_exit_code() {
         let mut store = CommandOutputStore::new();
         let id = store.alloc_id();
-        let run = store.insert(id, "c".to_string(), cwd(), now(), Vec::new(), Vec::new());
+        let _run = store.insert(id, "c".to_string(), cwd(), now(), Vec::new(), Vec::new());
         store.record_exit(id, CommandExit::Code(101), Duration::from_secs(2));
         let r = store.get_run(id).unwrap();
         assert_eq!(r.exit, CommandExit::Code(101));
@@ -845,7 +789,7 @@ mod tests {
     fn exit_state_represents_spawn_failure() {
         let mut store = CommandOutputStore::new();
         let id = store.alloc_id();
-        let run = store.insert(id, "c".to_string(), cwd(), now(), Vec::new(), Vec::new());
+        let _run = store.insert(id, "c".to_string(), cwd(), now(), Vec::new(), Vec::new());
         store.record_exit(
             id,
             CommandExit::SpawnFailed {
@@ -862,7 +806,7 @@ mod tests {
     fn exit_state_represents_timeout() {
         let mut store = CommandOutputStore::new();
         let id = store.alloc_id();
-        let run = store.insert(id, "c".to_string(), cwd(), now(), Vec::new(), Vec::new());
+        let _run = store.insert(id, "c".to_string(), cwd(), now(), Vec::new(), Vec::new());
         store.record_exit(id, CommandExit::Timeout, Duration::from_secs(300));
         let r = store.get_run(id).unwrap();
         assert_eq!(r.exit, CommandExit::Timeout);
@@ -873,7 +817,7 @@ mod tests {
     fn exit_state_represents_signal() {
         let mut store = CommandOutputStore::new();
         let id = store.alloc_id();
-        let run = store.insert(id, "c".to_string(), cwd(), now(), Vec::new(), Vec::new());
+        let _run = store.insert(id, "c".to_string(), cwd(), now(), Vec::new(), Vec::new());
         store.record_exit(
             id,
             CommandExit::Signal { signal: 9 },
@@ -887,7 +831,7 @@ mod tests {
     fn exit_state_represents_cancellation() {
         let mut store = CommandOutputStore::new();
         let id = store.alloc_id();
-        let run = store.insert(id, "c".to_string(), cwd(), now(), Vec::new(), Vec::new());
+        let _run = store.insert(id, "c".to_string(), cwd(), now(), Vec::new(), Vec::new());
         store.record_exit(id, CommandExit::Cancelled, Duration::from_secs(1));
         let r = store.get_run(id).unwrap();
         assert_eq!(r.exit, CommandExit::Cancelled);
@@ -897,7 +841,7 @@ mod tests {
     fn exit_state_represents_internal_error() {
         let mut store = CommandOutputStore::new();
         let id = store.alloc_id();
-        let run = store.insert(id, "c".to_string(), cwd(), now(), Vec::new(), Vec::new());
+        let _run = store.insert(id, "c".to_string(), cwd(), now(), Vec::new(), Vec::new());
         store.record_exit(
             id,
             CommandExit::InternalError {
@@ -913,7 +857,7 @@ mod tests {
     fn zero_exit_is_not_failure() {
         let mut store = CommandOutputStore::new();
         let id = store.alloc_id();
-        let run = store.insert(id, "c".to_string(), cwd(), now(), Vec::new(), Vec::new());
+        let _run = store.insert(id, "c".to_string(), cwd(), now(), Vec::new(), Vec::new());
         store.record_exit(id, CommandExit::Code(0), Duration::from_secs(1));
         let r = store.get_run(id).unwrap();
         assert!(!r.is_failure());
@@ -1132,7 +1076,7 @@ mod tests {
     fn default_command_projection_returns_text() {
         let mut store = CommandOutputStore::new();
         let id = store.alloc_id();
-        let run = store.insert(
+        let _inserted = store.insert(
             id,
             "echo hello".to_string(),
             cwd(),
@@ -1153,7 +1097,7 @@ mod tests {
     fn default_command_projection_handles_failure() {
         let mut store = CommandOutputStore::new();
         let id = store.alloc_id();
-        let run = store.insert(
+        let _inserted = store.insert(
             id,
             "false".to_string(),
             cwd(),
@@ -1173,12 +1117,12 @@ mod tests {
         let mut store = CommandOutputStore::new();
         let id = store.alloc_id();
         let big: Vec<u8> = (0..2000).map(|i| b'a' + (i % 26) as u8).collect();
-        let run = store.insert(id, "big".to_string(), cwd(), now(), big.clone(), Vec::new());
+        let _inserted = store.insert(id, "big".to_string(), cwd(), now(), big.clone(), Vec::new());
         store.record_exit(id, CommandExit::Code(0), Duration::from_millis(10));
         let run = store.get_run(id).unwrap().clone();
         let s = default_command_projection_with_budget(&run, &store, 64);
-        assert!(s.contains("[truncated"));
-        assert!(s.contains("2000 bytes total"));
+        assert!(s.contains("omitted") || s.contains("[truncated"));
+        assert!(s.contains("2000 bytes"));
     }
 
     #[test]

@@ -28,7 +28,8 @@ The `shell` module provides human-initiated shell command execution with bounded
 | `store.rs` | `ShellOutputStore` (bounded VecDeque), `BoundedOutput` (head/tail split), `ShellOutputEntry` |
 | `policy.rs` | `HumanShellPolicyDecision` (Allow/Warn/Block), `evaluate_command()` |
 | `digest.rs` | `ShellDigest` (structured failure extraction), `ShellFailure`, `TruncationReport` |
-| `projection.rs` | Phase 1 of the shell-output projection roadmap. Durable command event model: `CommandRun`, `CommandExit`, `CommandOutputStore`, `OutputHandle`, `default_command_projection` placeholder |
+| `projection.rs` | Phase 1 of the shell-output projection roadmap. Durable command event model: `CommandRun`, `CommandExit`, `CommandOutputStore`, `OutputHandle`, `default_command_projection` seam |
+| `projector.rs` | Phase 2 of the shell-output projection roadmap. `CommandOutputProjector` trait, `ProjectionRequest`/`ProjectionResult`, `RawProjector` / `TruncatedProjector` / `ErrorRetentionProjector`, `ProjectionSelector`, redaction hook |
 | `projection_bridge.rs` | `ShellCommandRunBridge` — sidecar accumulator that mirrors `ShellEvent`s into the `CommandOutputStore` |
 
 ## Key Types
@@ -298,6 +299,7 @@ Shell status labels use theme-aware colors for visual distinction:
 - [tool.md](tool.md) — Agent bash tool (uses `ShellOrigin::AgentTool`)
 - [.codegg/skills/human_shell/SKILL.md](../.codegg/skills/human_shell/SKILL.md) — Human shell skill guide
 - [shell_output_projection_phase_01_command_event_model.md](../plans/shell_output_projection_phase_01_command_event_model.md) — Phase 1 plan this section implements
+- [shell_output_projection_phase_02_projection_trait.md](../plans/shell_output_projection_phase_02_projection_trait.md) — Phase 2 plan (projector trait + built-ins)
 - [shell_output_projection_rtk_roadmap.md](../plans/shell_output_projection_rtk_roadmap.md) — Full roadmap
 
 ## Command Output Projection (Phase 1)
@@ -387,7 +389,7 @@ The bridge is invoked from `src/tui/commands/shell.rs::handle_shell_event` befor
 - truncated stdout and stderr (bounded by `DEFAULT_PROJECTION_BUDGET_BYTES`, default 8 KiB per stream)
 - raw retention handles (`cmd://<id>/stdout`, `cmd://<id>/stderr`)
 
-It does NOT parse command shape, select projectors, or invoke external backends. Phase 2 replaces it with the real `CommandOutputProjector` trait and the `Raw` / `Truncated` / `ErrorRetention` projectors. Phase 1's job is to make every model-facing command output flow through one seam.
+In Phase 2 this function delegates to the [`ProjectionSelector`](#command-output-projection-phase-2); the string it returns is the `text` field of the resulting `ProjectionResult`. Phase 1's job was to make every model-facing command output flow through one seam; Phase 2 keeps that seam and layers a real projector trait on top of it.
 
 ### App Integration
 
@@ -406,9 +408,93 @@ Both are constructed in the App's `new` and the test constructor. They are owned
 
 ### What's NOT in Phase 1
 
-- Real projector trait (Phase 2)
+- Real projector trait (Phase 2) — landed in Phase 2
 - Native structured projectors (Phase 3)
 - Configuration schema for projection policy (Phase 4)
 - RTK backend (Phase 5)
 - TUI expansion panel (Phase 7)
-- Redaction pipeline (Phase 8)
+- Redaction pipeline (Phase 8) — redaction hook placeholder exists in Phase 2
+
+## Command Output Projection (Phase 2)
+
+Phase 2 of the [shell output projection roadmap](../plans/shell_output_projection_rtk_roadmap.md) introduces the projector trait, three conservative built-in projectors, a centralised selector, and a redaction hook placeholder. It is implemented in `src/shell/projector.rs` and re-exported from `src/shell/mod.rs`. Phase 1's domain types (`CommandRun`, `CommandOutputStore`, `OutputHandle`, `RedactionState`) are unchanged.
+
+### Why a Trait
+
+Projecting raw command output is intrinsically plural: small successes want exact text, long successes want bounded head/tail, failures want error-line retention, and command-specific projectors (Phase 3) want shape-based parsing. Wrapping these behind a single trait lets the selector pick the right view per request without callers having to inspect command shape themselves.
+
+```rust
+pub trait CommandOutputProjector: Send + Sync {
+    fn name(&self) -> &'static str;
+    fn supports(&self, request: &ProjectionRequest<'_>) -> ProjectionSupport;
+    fn project(
+        &self,
+        request: ProjectionRequest<'_>,
+        store: &CommandOutputStore,
+    ) -> Result<ProjectionResult, ProjectionError>;
+}
+```
+
+The trait is intentionally backend-agnostic. RTK (Phase 5) and model-generated summaries are later implementations of the same trait, not a parallel pipeline.
+
+### Request, Result, and Metadata
+
+Every projector receives a [`ProjectionRequest`] and returns a [`ProjectionResult`]. The result carries more than text — it carries the provenance and risk metadata the model needs to know whether it is seeing an exact view:
+
+- `projector` — stable name of the projector that produced the result (e.g. `"raw"`, `"truncated"`, `"error-retention"`)
+- `kind` — [`ProjectionKind`] (Raw / Truncated / ErrorRetention / Structured / ExternalCompressed / Summary)
+- `exactness` — [`ProjectionExactness`] (Exact / ExactRange / Truncated / Lossy / Parsed / PartialRawArtifact)
+- `redaction` — [`RedactionState`] (whether the redaction hook fired)
+- `omitted` — every [`OmittedRange`] (stream, byte range, line range, total retained bytes, note)
+- `expansion_handles` — [`ExpansionHandle`] values the consumer can use to fetch the omitted bytes (`cmd://<id>/<stream>` or `cmd://<id>/<stream>#<start>-<end>`)
+- `input_bytes` / `output_bytes` / `estimated_input_tokens` / `estimated_output_tokens` / `warnings`
+
+`ProjectionResult::banner(run)` renders a compact metadata line that prefixes the text and tells the model the projector, exactness, and redaction state without requiring it to parse free-form projection output.
+
+### Built-in Projectors
+
+| Projector | Selects when | Output shape |
+|-----------|--------------|--------------|
+| `RawProjector` | Total retained output ≤ budget, or caller asked for exact | Command header + raw stdout/stderr text + raw handles. Marks `PartialRawArtifact` when the underlying store is itself partial. |
+| `TruncatedProjector` | Long successful output | Command header + bounded head + explicit omission marker + bounded tail. Stderr is always shown in full when it fits; otherwise it is also head/tail-bounded but stderr is never silently dropped. |
+| `ErrorRetentionProjector` | Command failed (non-zero exit / timeout / cancellation / spawn failure) | Command header + only lines matching Rust/Python/JS/generic error patterns + bounded context around them. Falls back to head/tail when no patterns match. Marks `Lossy` exactness. |
+
+All three are conservative: no RTK, no command-shape inspection, no model-generated summaries. They are designed to be a reliable internal boundary that the Phase 3 native projectors and the Phase 5 RTK backend will sit on top of.
+
+### Selector and Policy
+
+[`ProjectionSelector::with_defaults`] returns a selector that tries projectors in priority order (`RawProjector` → `ErrorRetentionProjector` → `TruncatedProjector`) and picks the first one whose `supports()` returns `Preferred` or, failing that, `Supported` or `Fallback`. The selector's `project(request, store)` method:
+
+1. Looks up the matching projector.
+2. Invokes the projector with the request.
+3. Applies the redaction hook if the request target requires redaction (`ModelContext` / `ToolExpansion`) and the policy allows it.
+4. Returns a `ProjectionResult`. On projector error it returns a result with the error text and a warning so callers can still surface raw handles.
+
+[`ProjectionPolicy`] is constructed once and threaded into every request. The conservative default enables the redaction hook for model-facing targets and disables external backends (RTK, etc.).
+
+[`ProjectionBudget`] carries a byte cap plus optional token hints. Phase 2 uses a rough `bytes / 4` token estimate; the goal is to establish the budget plumbing, not to ship a perfect estimator.
+
+### Redaction Hook Placeholder
+
+Phase 8 will implement full redaction. Phase 2 already includes a hook at the model-facing boundary:
+
+```rust
+pub fn apply_redaction_hook(result: &mut ProjectionResult, target: ProjectionTarget)
+```
+
+The current implementation is a no-op that flips `RedactionState` to `Applied` so the metadata banner reflects that the hook fired. Crucially, the call site exists in `ProjectionSelector::project`, so future redaction implementations cannot be bypassed by RTK or native projectors.
+
+### Stability Guarantees (Phase 2)
+
+- `default_command_projection(run, store)` and `default_command_projection_with_budget(run, store, budget)` keep the Phase 1 signatures.
+- `ExpansionHandle::as_url` extends the existing `cmd://<id>/<stream>` URL form with an optional `#<start>-<end>` byte range fragment.
+- The selector is `Debug` and constructed from `Box<dyn CommandOutputProjector>` so later phases can append native projectors and RTK-backed projectors without changing the public API.
+
+### What's NOT in Phase 2
+
+- Native structured projectors (Phase 3: Git, Rust, ...)
+- Configuration schema for projection policy (Phase 4)
+- RTK backend (Phase 5)
+- TUI expansion panel (Phase 7)
+- Full redaction pipeline (Phase 8) — the hook site is in place, but the redaction rules are not implemented yet
+- Per-run `ProjectionHandle` carrying the resolved `ProjectionResult` (deferred; today the result lives in selector return values and any caller that wants to keep it can stash it on the run manually)

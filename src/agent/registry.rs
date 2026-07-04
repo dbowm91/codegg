@@ -64,7 +64,7 @@ impl AgentSpec {
             .as_deref()
             .map(|s| s.parse::<AgentRuntimeKind>())
             .transpose()
-            .map_err(|e| AgentError::Invalid(e))?;
+            .map_err(AgentError::Invalid)?;
 
         Ok(AgentSpec {
             name: Some(cfg.name.clone().unwrap_or_else(|| name.to_string())),
@@ -377,7 +377,7 @@ impl AgentRegistry {
                                 sources: vec![AgentSource {
                                     kind: AgentSourceKind::GlobalFile,
                                     path: Some(path),
-                                    name: name,
+                                    name,
                                 }],
                                 diagnostics: Vec::new(),
                             },
@@ -443,7 +443,7 @@ impl AgentRegistry {
                                 sources: vec![AgentSource {
                                     kind: AgentSourceKind::ProjectFile,
                                     path: Some(path),
-                                    name: name,
+                                    name,
                                 }],
                                 diagnostics: Vec::new(),
                             },

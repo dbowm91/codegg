@@ -2,6 +2,7 @@ pub mod digest;
 pub mod policy;
 pub mod projection;
 pub mod projection_bridge;
+pub mod projector;
 pub mod runtime;
 pub mod store;
 pub mod types;
@@ -9,13 +10,19 @@ pub mod types;
 pub use digest::{ShellDigest, ShellFailure, ShellFailureKind, TruncationReport};
 pub use policy::{evaluate_command, HumanShellPolicyDecision};
 pub use projection::{
-    default_command_projection, default_command_projection_with_budget, CommandExit,
-    CommandOutputStore, CommandOutputStoreLimits, CommandOutputStream, CommandRun, CommandRunId,
-    OutputCompleteness, OutputEncoding, OutputHandle, ProjectionHandle, RawStream, RedactionState,
-    COMMAND_OUTPUT_MAX_HISTORY_ENTRIES, COMMAND_OUTPUT_MAX_RETAINED_BYTES,
-    COMMAND_OUTPUT_MAX_SINGLE_STREAM_BYTES, DEFAULT_PROJECTION_BUDGET_BYTES,
+    default_command_projection, CommandExit, CommandOutputStore, CommandOutputStoreLimits,
+    CommandOutputStream, CommandRun, CommandRunId, OutputCompleteness, OutputEncoding,
+    OutputHandle, ProjectionHandle, RawStream, RedactionState, COMMAND_OUTPUT_MAX_HISTORY_ENTRIES,
+    COMMAND_OUTPUT_MAX_RETAINED_BYTES, COMMAND_OUTPUT_MAX_SINGLE_STREAM_BYTES,
+    DEFAULT_PROJECTION_BUDGET_BYTES,
 };
 pub use projection_bridge::ShellCommandRunBridge;
+pub use projector::{
+    default_command_projection_with_budget, CommandOutputProjector, ErrorRetentionProjector,
+    ExpansionHandle, OmittedRange, ProjectionBudget, ProjectionError, ProjectionExactness,
+    ProjectionKind, ProjectionPolicy, ProjectionRequest, ProjectionResult, ProjectionSelector,
+    ProjectionSupport, ProjectionTarget, RawProjector, TruncatedProjector, APPROX_BYTES_PER_TOKEN,
+};
 pub use runtime::{ShellHandle, ShellRuntime};
 pub use store::{BoundedOutput, ShellOutputEntry, ShellOutputStore};
 pub use types::{

@@ -1,13 +1,14 @@
 ---
 name: human-shell
-description: Human-initiated shell command execution, ephemeral transcript storage, projection pipeline foundation (Phase 1), policy evaluation, and structured failure digest extraction
-version: 1.0.0
+description: Human-initiated shell command execution, ephemeral transcript storage, projection pipeline (Phases 1 and 2), policy evaluation, and structured failure digest extraction
+version: 1.1.0
 tags:
   - shell
   - bash
   - command
   - ephemeral
   - projection
+  - projector
   - command-event
   - output-handles
 ---
@@ -17,8 +18,8 @@ tags:
 This skill covers `src/shell/` — codegg's human-initiated shell execution
 path. It owns the human-shell ephemeral transcript, the policy
 gatekeeper that blocks destructive commands, the structured failure
-digest, and the Phase 1 command-event projection model that becomes
-the substrate for later projection, expansion, redaction, and TUI
+digest, and the Phase 1+2 command-event projection pipeline that
+becomes the substrate for later expansion, redaction, and TUI
 features.
 
 A detailed architecture document lives at `architecture/human_shell.md`.
@@ -42,6 +43,7 @@ prior command's output on demand.
 | `shell::digest` | `ShellDigest`, `ShellFailure`, `ShellFailureKind`, `TruncationReport` | Structured failure extraction from captured output |
 | `shell::projection` (Phase 1) | `CommandRun`, `CommandRunId`, `CommandExit`, `CommandOutputStore`, `OutputHandle`, `OutputStreamKind`, `default_command_projection` | Durable command-event model; raw stdout/stderr retention out-of-band from model context |
 | `shell::projection_bridge` (Phase 1) | `ShellCommandRunBridge` | Sidecar that mirrors `ShellEvent`s into `CommandOutputStore` |
+| `shell::projector` (Phase 2) | `CommandOutputProjector`, `ProjectionRequest`, `ProjectionResult`, `ProjectionKind`, `ProjectionExactness`, `OmittedRange`, `ExpansionHandle`, `ProjectionSupport`, `ProjectionTarget`, `ProjectionBudget`, `ProjectionPolicy`, `ProjectionError`, `ProjectionSelector`, `RawProjector`, `TruncatedProjector`, `ErrorRetentionProjector`, `apply_redaction_hook` | Projector trait + built-in projectors + selector + redaction hook site |
 
 ## What Phase 1 Adds
 
@@ -61,16 +63,67 @@ the projection pipeline.
 - **Stable command IDs**: `CommandRunId` allocated via `CommandOutputStore::alloc_id()`; matches `ShellCommandId` by `.0` value.
 - **Stable handle URLs**: `cmd://<id>/<stream>` for `stdout` / `stderr` / `combined`.
 - **Bounded retention**: per-stream and total caps prevent unbounded memory growth.
-- **Single projection seam**: `default_command_projection(run, store)` is the only path that produces model-visible command text in Phase 1. Phase 2 will replace it with the real projector trait.
+- **Single projection seam**: `default_command_projection(run, store)` is the only path that produces model-visible command text. Phase 1 made it the seam; Phase 2 routed it through the projector trait while keeping the function signature stable.
 
 ### Phase 1 Non-Goals
 
-- Real projector selection (Phase 2)
+- Real projector selection (Phase 2) — landed
 - Native structured projectors (Phase 3)
 - Projection policy config (Phase 4)
 - RTK backend (Phase 5)
 - TUI expansion UI (Phase 7)
-- Redaction pipeline (Phase 8)
+- Redaction pipeline (Phase 8) — redaction hook site present
+
+## What Phase 2 Adds
+
+Phase 2 introduces the projection abstraction that converts raw command artifacts into explicit model-facing and TUI-facing views. Every model-visible command output now flows through a single selector that picks the right projector for the request.
+
+### Built-in Projectors
+
+| Projector | `name()` | Selects when | Output shape |
+|-----------|----------|--------------|--------------|
+| `RawProjector` | `raw` | Total retained output ≤ budget, or caller asked for exact | Command header + raw stdout/stderr text + raw handles. Marks `PartialRawArtifact` when the underlying store is itself partial. |
+| `ErrorRetentionProjector` | `error-retention` | Command failed (non-zero exit / timeout / cancellation / spawn failure) | Command header + only lines matching Rust/Python/JS/generic error patterns + bounded context. Falls back to head/tail when no patterns match. Marks `Lossy` exactness. |
+| `TruncatedProjector` | `truncated` | Long successful output, or the previous two declined | Command header + bounded head + explicit omission marker + bounded tail. Stderr is always shown in full when it fits. |
+
+The selector (`ProjectionSelector::with_defaults()`) tries projectors in priority order `raw → error-retention → truncated` and picks the first one whose `supports()` returns `Preferred` (or, failing that, `Supported` or `Fallback`).
+
+### Result Metadata
+
+`ProjectionResult` is more than text. It carries:
+
+- `projector` — stable projector name (e.g. `"raw"`, `"error-retention"`, `"truncated"`)
+- `kind` — `ProjectionKind` enum (Raw / Truncated / ErrorRetention / Structured / ExternalCompressed / Summary)
+- `exactness` — `ProjectionExactness` enum (Exact / ExactRange / Truncated / Lossy / Parsed / PartialRawArtifact)
+- `redaction` — `RedactionState` (NotApplied / Applied)
+- `omitted` — every `OmittedRange` (stream, byte range, line range, total retained bytes, note)
+- `expansion_handles` — `ExpansionHandle` values the consumer can use to fetch the omitted bytes
+- `input_bytes` / `output_bytes` / token estimates / warnings
+
+`ProjectionResult::banner(run)` renders a compact metadata line that prefixes the text and tells the model the projector, exactness, duration, and redaction state.
+
+### Redaction Hook
+
+`apply_redaction_hook(result, target)` is invoked for `ModelContext` and `ToolExpansion` targets when the policy allows it. Phase 2 ships a no-op placeholder that flips `RedactionState` to `Applied`; Phase 8 will replace the body with a real implementation. The call site lives in `ProjectionSelector::project` so future redaction cannot be bypassed by RTK or native projectors.
+
+### Expansion Handles
+
+`ExpansionHandle::as_url()` extends the existing `cmd://<id>/<stream>` URL form with an optional byte range fragment:
+
+```text
+cmd://42/stdout               # full stdout
+cmd://42/stderr#0-1024        # first KiB of stderr
+```
+
+These are exactly the handles surfaced in the projection text and embedded in `ProjectionResult::expansion_handles`.
+
+### Phase 2 Non-Goals
+
+- Native structured projectors (Phase 3)
+- Configuration schema for projection policy (Phase 4)
+- RTK backend (Phase 5)
+- TUI expansion panel (Phase 7)
+- Full redaction pipeline (Phase 8) — only the call site is in place
 
 ## Working Examples
 
@@ -130,6 +183,37 @@ bridge.observe(&mut store, &ShellEvent::Exited { id: shell_id(1), status: Some(0
 // store now has a CommandRun with stdout="hi\n", exit=Code(0), duration=20ms.
 ```
 
+### Running a projection through the Phase 2 selector
+
+```rust
+use crate::shell::projector::{
+    ProjectionPolicy, ProjectionRequest, ProjectionSelector, ProjectionTarget,
+};
+
+let policy = ProjectionPolicy::conservative();
+let run = store.get_run(id).unwrap();
+let request = ProjectionRequest::for_target(run, ProjectionTarget::ModelContext, &policy);
+let selector = ProjectionSelector::with_defaults();
+let result = selector.project(request, &store);
+// result.projector, result.kind, result.exactness, result.omitted,
+// result.expansion_handles, result.warnings all carry provenance.
+let text = result.text; // also obtainable via default_command_projection(run, &store).
+```
+
+### Building an `ExpansionHandle` for a byte range
+
+```rust
+use crate::shell::projector::ExpansionHandle;
+use crate::shell::projection::{CommandOutputStream, CommandRunId};
+
+let handle = ExpansionHandle {
+    command_id: CommandRunId(42),
+    stream: CommandOutputStream::Stderr,
+    byte_range: Some(0..1024),
+};
+assert_eq!(handle.as_url(), "cmd://42/stderr#0-1024");
+```
+
 ## Integration Points
 
 - `src/tui/app/mod.rs` carries `shell_store`, `command_run_store`, and `command_run_bridge` as fields on `App`.
@@ -139,6 +223,8 @@ bridge.observe(&mut store, &ShellEvent::Exited { id: shell_id(1), status: Some(0
 ## Boundaries and Caveats
 
 - **Phase 1 does not synthesize combined output.** `get_stream` returns `None` for `CommandOutputStream::Combined` unless the execution layer supplies it explicitly. Downstream code must label any synthesized combined output.
-- **Phase 1 placeholder projection is conservative.** It does not inspect command shape, parse structured output, or invoke any external backend. The metadata banner and raw handles are present, but compactness and selection are deferred to Phase 2+.
 - **Stream caps mark `Partial`.** Code that consumes a `RawStream` MUST check `OutputCompleteness` and surface the partial state to the user/model rather than silently truncating.
 - **Bridge is additive.** It does NOT modify the existing `ShellOutputStore`, the `ShellEvent` enum, or `ShellRuntime`. Removing or altering those would break Phase 1.
+- **Built-in projectors are conservative.** `RawProjector`, `TruncatedProjector`, and `ErrorRetentionProjector` do not parse command shape, do not invoke RTK, and do not produce model-generated summaries. Native structured projectors (Phase 3) and the RTK backend (Phase 5) plug into the same selector without changing the public API.
+- **Redaction hook is a placeholder.** `apply_redaction_hook` flips `RedactionState` to `Applied` for `ModelContext` and `ToolExpansion` targets but does not actually rewrite any text. Phase 8 will replace the body; the call site in `ProjectionSelector::project` is the contract.
+- **`ProjectionResult` owns the metadata.** The model-facing text is the `text` field; consumers MUST also surface `projector`, `kind`, `exactness`, `redaction`, and `omitted` (or the rendered banner) so the model knows what it is looking at.

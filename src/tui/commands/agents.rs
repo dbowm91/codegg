@@ -4,7 +4,9 @@
 //! `/agent <name>` (select active agent).
 
 use crate::agent::registry::{AgentRegistry, AgentSourceKind};
-use crate::agent::{resolve_agents, AgentMode};
+#[cfg(test)]
+use crate::agent::resolve_agents;
+use crate::agent::AgentMode;
 use crate::config::schema::Config;
 use crate::tui::app::state::agent::AgentState;
 
@@ -419,34 +421,6 @@ fn format_agents_validate_inner() -> (Vec<String>, bool) {
     }
 
     (lines, has_errors)
-}
-
-/// Validate agents for headless/CLI mode. Returns Ok(lines) if no errors,
-/// Err(lines) with diagnostic lines if errors found.
-pub(crate) fn validate_agents_headless() -> Result<Vec<String>, Vec<String>> {
-    let (lines, has_errors) = format_agents_validate_inner();
-    if has_errors {
-        Err(lines)
-    } else {
-        Ok(lines)
-    }
-}
-
-/// Reload agents and return new agent list + diagnostics.
-pub(crate) fn reload_agents() -> (Vec<crate::agent::Agent>, Vec<String>) {
-    let config = Config::load().unwrap_or_default();
-    match resolve_agents(&config) {
-        Ok(agents) => {
-            let count = agents.len();
-            let visible = agents.iter().filter(|a| !a.hidden).count();
-            let diags = vec![format!("Reloaded {count} agents ({visible} visible)")];
-            (agents, diags)
-        }
-        Err(e) => {
-            let diags = vec![format!("Reload failed: {e}")];
-            (Vec::new(), diags)
-        }
-    }
 }
 
 /// Rebuild the agent registry from scratch and return new agent list + diagnostics.
