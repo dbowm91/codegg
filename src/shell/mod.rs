@@ -18,10 +18,12 @@ pub use projection::{
 };
 pub use projection_bridge::ShellCommandRunBridge;
 pub use projector::{
-    default_command_projection_with_budget, CommandOutputProjector, ErrorRetentionProjector,
-    ExpansionHandle, OmittedRange, ProjectionBudget, ProjectionError, ProjectionExactness,
-    ProjectionKind, ProjectionPolicy, ProjectionRequest, ProjectionResult, ProjectionSelector,
-    ProjectionSupport, ProjectionTarget, RawProjector, TruncatedProjector, APPROX_BYTES_PER_TOKEN,
+    default_command_projection_with_budget, CargoCheckProjector, CargoTestProjector,
+    CommandOutputProjector, ErrorRetentionProjector, ExpansionHandle, GitDiffProjector,
+    GitLogProjector, GitStatusProjector, OmittedRange, ProjectionBudget, ProjectionError,
+    ProjectionExactness, ProjectionKind, ProjectionPolicy, ProjectionRequest, ProjectionResult,
+    ProjectionSelector, ProjectionSupport, ProjectionTarget, RawProjector, TruncatedProjector,
+    APPROX_BYTES_PER_TOKEN,
 };
 pub use runtime::{ShellHandle, ShellRuntime};
 pub use store::{BoundedOutput, ShellOutputEntry, ShellOutputStore};

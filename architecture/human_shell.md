@@ -29,7 +29,7 @@ The `shell` module provides human-initiated shell command execution with bounded
 | `policy.rs` | `HumanShellPolicyDecision` (Allow/Warn/Block), `evaluate_command()` |
 | `digest.rs` | `ShellDigest` (structured failure extraction), `ShellFailure`, `TruncationReport` |
 | `projection.rs` | Phase 1 of the shell-output projection roadmap. Durable command event model: `CommandRun`, `CommandExit`, `CommandOutputStore`, `OutputHandle`, `default_command_projection` seam |
-| `projector.rs` | Phase 2 of the shell-output projection roadmap. `CommandOutputProjector` trait, `ProjectionRequest`/`ProjectionResult`, `RawProjector` / `TruncatedProjector` / `ErrorRetentionProjector`, `ProjectionSelector`, redaction hook |
+| `projector.rs` | Phase 2+3 of the shell-output projection roadmap. `CommandOutputProjector` trait, `ProjectionRequest`/`ProjectionResult`, `RawProjector` / `TruncatedProjector` / `ErrorRetentionProjector` + Phase 3 native projectors (`GitStatusProjector`, `GitDiffProjector`, `GitLogProjector`, `CargoCheckProjector`, `CargoTestProjector`), `ProjectionSelector`, redaction hook |
 | `projection_bridge.rs` | `ShellCommandRunBridge` — sidecar accumulator that mirrors `ShellEvent`s into the `CommandOutputStore` |
 
 ## Key Types
@@ -409,7 +409,7 @@ Both are constructed in the App's `new` and the test constructor. They are owned
 ### What's NOT in Phase 1
 
 - Real projector trait (Phase 2) — landed in Phase 2
-- Native structured projectors (Phase 3)
+- Native structured projectors (Phase 3) — landed
 - Configuration schema for projection policy (Phase 4)
 - RTK backend (Phase 5)
 - TUI expansion panel (Phase 7)
@@ -463,7 +463,7 @@ All three are conservative: no RTK, no command-shape inspection, no model-genera
 
 ### Selector and Policy
 
-[`ProjectionSelector::with_defaults`] returns a selector that tries projectors in priority order (`RawProjector` → `ErrorRetentionProjector` → `TruncatedProjector`) and picks the first one whose `supports()` returns `Preferred` or, failing that, `Supported` or `Fallback`. The selector's `project(request, store)` method:
+[`ProjectionSelector::with_defaults`] returns a selector that tries projectors in priority order (`RawProjector` → `GitStatusProjector` → `GitDiffProjector` → `GitLogProjector` → `CargoCheckProjector` → `CargoTestProjector` → `ErrorRetentionProjector` → `TruncatedProjector`) and picks the first one whose `supports()` returns `Preferred` or, failing that, `Supported` or `Fallback`. The selector's `project(request, store)` method:
 
 1. Looks up the matching projector.
 2. Invokes the projector with the request.
@@ -492,9 +492,47 @@ The current implementation is a no-op that flips `RedactionState` to `Applied` s
 
 ### What's NOT in Phase 2
 
-- Native structured projectors (Phase 3: Git, Rust, ...)
+- Native structured projectors (Phase 3: Git, Rust, ...) — landed
 - Configuration schema for projection policy (Phase 4)
 - RTK backend (Phase 5)
 - TUI expansion panel (Phase 7)
 - Full redaction pipeline (Phase 8) — the hook site is in place, but the redaction rules are not implemented yet
 - Per-run `ProjectionHandle` carrying the resolved `ProjectionResult` (deferred; today the result lives in selector return values and any caller that wants to keep it can stash it on the run manually)
+
+## Command Output Projection (Phase 3)
+
+Phase 3 adds native structured projectors that parse command-specific output into semantically meaningful, low-token summaries. These projectors are registered in `ProjectionSelector::with_defaults()` after `RawProjector` and before the generic fallback projectors.
+
+### Native Projectors
+
+| Projector | `name()` | Selects when | Output shape |
+|-----------|----------|--------------|--------------|
+| `GitStatusProjector` | `native-git-status` | `git status` with allowed flags (`--porcelain`, `--short`, `--branch`, etc.) | Structured summary: branch info, staged/unstaged/untracked/conflicted file counts with filenames |
+| `GitDiffProjector` | `native-git-diff` | `git diff`, `git diff --cached/--staged`, `git show` | File stats with hunk previews (≤5 files, ≤3 hunks each) |
+| `GitLogProjector` | `native-git-log` | `git log` with any flags | Compact commit list capped at 20 entries (hash, subject, author) |
+| `CargoCheckProjector` | `native-cargo-diagnostics` | `cargo check`, `cargo build`, `cargo clippy` | Parsed Rust diagnostics: error codes, file locations, notes/help |
+| `CargoTestProjector` | `native-cargo-test` | `cargo test` | Test result summary with failure details and panic output |
+
+### Selector Priority
+
+The updated selector order is:
+```
+RawProjector → GitStatus → GitDiff → GitLog → CargoCheck → CargoTest → ErrorRetention → Truncated
+```
+
+Native projectors return `ProjectionSupport::Preferred` when their command matches, and `Unsupported` otherwise. The selector picks the first `Preferred` projector, falling through to generic projectors for unrecognized commands.
+
+All native projectors produce `ProjectionKind::Structured` with `ProjectionExactness::Parsed` and include raw expansion handles for full output access.
+
+### Helper Functions
+
+- `base_command_name(run)` — extracts the base command name from argv or command string
+- `command_args(run)` — extracts the argument list from argv or command string
+- `make_native_result(name, text, run, expansion_handles, omitted, warnings)` — builds a `ProjectionResult` with `Structured` kind and `Parsed` exactness
+
+### What's NOT in Phase 3
+
+- Configuration schema for projection policy (Phase 4)
+- RTK backend (Phase 5)
+- TUI expansion panel (Phase 7)
+- Full redaction pipeline (Phase 8) — the hook site is in place, but the redaction rules are not implemented yet
