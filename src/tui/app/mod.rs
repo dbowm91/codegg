@@ -716,6 +716,15 @@ pub struct App {
     /// once such a mechanism exists. No schema migration in this pass.
     pub latest_security_review: Option<crate::security::workflow::SecurityReviewReceipt>,
     pub shell_store: crate::shell::ShellOutputStore,
+    /// Durable command-run store for the projection pipeline
+    /// (Phase 1 of `plans/shell_output_projection_phase_01_command_event_model.md`).
+    /// Populated alongside `shell_store` so the projection seam has raw
+    /// stdout/stderr available without rerunning commands.
+    pub command_run_store: crate::shell::CommandOutputStore,
+    /// Sidecar accumulator that feeds `ShellEvent`s into
+    /// `command_run_store`. Holds in-flight stdout/stderr buffers until
+    /// each command reaches a terminal state.
+    pub command_run_bridge: crate::shell::ShellCommandRunBridge,
     pub shell_handles: std::collections::HashMap<u64, crate::shell::runtime::ShellHandle>,
     /// Registry of TUI-owned background tasks.  Tracked tasks can be
     /// counted, cancelled, and reaped on shutdown or dialog close.
@@ -1050,6 +1059,8 @@ impl App {
                 .and_then(|c| c.human_shell.as_ref())
                 .map(crate::shell::ShellOutputStore::from_config)
                 .unwrap_or_default(),
+            command_run_store: crate::shell::CommandOutputStore::new(),
+            command_run_bridge: crate::shell::ShellCommandRunBridge::new(),
             remote_sequence: 0,
             shell_handles: std::collections::HashMap::new(),
             plugin_ui_state: crate::tui::app::state::PluginUiState::default(),
@@ -1462,6 +1473,8 @@ impl App {
             security_review_running: None,
             latest_security_review: None,
             shell_store: crate::shell::ShellOutputStore::new(),
+            command_run_store: crate::shell::CommandOutputStore::new(),
+            command_run_bridge: crate::shell::ShellCommandRunBridge::new(),
             shell_handles: std::collections::HashMap::new(),
             plugin_ui_state: crate::tui::app::state::PluginUiState::default(),
             task_registry: crate::tui::task_lifecycle::TuiTaskRegistry::new(),

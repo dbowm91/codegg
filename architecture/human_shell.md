@@ -28,6 +28,8 @@ The `shell` module provides human-initiated shell command execution with bounded
 | `store.rs` | `ShellOutputStore` (bounded VecDeque), `BoundedOutput` (head/tail split), `ShellOutputEntry` |
 | `policy.rs` | `HumanShellPolicyDecision` (Allow/Warn/Block), `evaluate_command()` |
 | `digest.rs` | `ShellDigest` (structured failure extraction), `ShellFailure`, `TruncationReport` |
+| `projection.rs` | Phase 1 of the shell-output projection roadmap. Durable command event model: `CommandRun`, `CommandExit`, `CommandOutputStore`, `OutputHandle`, `default_command_projection` placeholder |
+| `projection_bridge.rs` | `ShellCommandRunBridge` — sidecar accumulator that mirrors `ShellEvent`s into the `CommandOutputStore` |
 
 ## Key Types
 
@@ -294,4 +296,119 @@ Shell status labels use theme-aware colors for visual distinction:
 ## See Also
 
 - [tool.md](tool.md) — Agent bash tool (uses `ShellOrigin::AgentTool`)
-- [.opencode/skills/human-shell/SKILL.md](../.opencode/skills/human-shell/SKILL.md) — Human shell skill guide
+- [.codegg/skills/human_shell/SKILL.md](../.codegg/skills/human_shell/SKILL.md) — Human shell skill guide
+- [shell_output_projection_phase_01_command_event_model.md](../plans/shell_output_projection_phase_01_command_event_model.md) — Phase 1 plan this section implements
+- [shell_output_projection_rtk_roadmap.md](../plans/shell_output_projection_rtk_roadmap.md) — Full roadmap
+
+## Command Output Projection (Phase 1)
+
+Phase 1 of the [shell output projection roadmap](../plans/shell_output_projection_rtk_roadmap.md) introduces a structured command event that becomes the durable substrate for projection, expansion, redaction, and TUI expansion. It is implemented in `src/shell/projection.rs` and `src/shell/projection_bridge.rs`. The system runs **alongside** the existing `ShellOutputStore` — it does not replace it.
+
+### Why Two Stores
+
+| Store | Purpose | Retention |
+|-------|---------|-----------|
+| `ShellOutputStore` (existing) | Ephemeral TUI transcript: bounded head/tail for `ShellCell` rendering, digests, `/shell-include` promotion | 1 MB per command, 8 MB total, head + tail only |
+| `CommandOutputStore` (new) | Durable raw stdout/stderr for the projection pipeline; resolved by stable `cmd://<id>/<stream>` handles | 32 MiB per stream, 64 MiB total, full prefix retained |
+
+Both stores are populated by the same `ShellEvent` stream. The legacy store keeps lossy head/tail previews for the TUI; the projection store keeps the raw bytes that later projectors, expansion requests, and redaction passes need.
+
+### Core Types
+
+```rust
+pub struct CommandRun {
+    pub id: CommandRunId,
+    pub command: String,
+    pub argv: Option<Vec<String>>,
+    pub cwd: PathBuf,
+    pub started_at: SystemTime,
+    pub duration: Duration,
+    pub exit: CommandExit,
+    pub stdout: RawStream,
+    pub stderr: RawStream,
+    pub combined: Option<RawStream>,
+    pub projection: Option<ProjectionHandle>,
+    pub redaction: RedactionState,
+}
+
+pub enum CommandExit {
+    Code(i32),
+    Signal { signal: i32 },
+    Timeout,
+    Cancelled,
+    SpawnFailed { message: String },
+    InternalError { message: String },
+}
+
+pub struct OutputHandle {
+    pub command_id: CommandRunId,
+    pub stream: CommandOutputStream, // Stdout | Stderr | Combined
+}
+```
+
+`OutputHandle` round-trips through the canonical URL form `cmd://<id>/<stream>` (e.g. `cmd://42/stdout`, `cmd://42/stderr`). `CommandOutputStore::parse_handle` resolves URLs back into handles.
+
+### CommandOutputStore API
+
+```rust
+impl CommandOutputStore {
+    pub fn alloc_id(&self) -> CommandRunId;
+    pub fn insert(&mut self, id: CommandRunId, command: String, cwd: PathBuf,
+                  started_at: SystemTime, stdout: Vec<u8>, stderr: Vec<u8>) -> CommandRun;
+    pub fn record_exit(&mut self, id: CommandRunId, exit: CommandExit, duration: Duration);
+    pub fn get_run(&self, id: CommandRunId) -> Option<&CommandRun>;
+    pub fn get_stream(&self, handle: OutputHandle) -> Option<&[u8]>;
+    pub fn get_range(&self, handle: OutputHandle, range: Range<usize>) -> Option<&[u8]>;
+    pub fn byte_len(&self, handle: OutputHandle) -> Option<usize>;
+    pub fn parse_handle(&self, url: &str) -> Option<OutputHandle>;
+}
+```
+
+Per-stream bytes are capped at `COMMAND_OUTPUT_MAX_SINGLE_STREAM_BYTES` (32 MiB). When a stream exceeds the cap, the prefix is retained and `OutputCompleteness::Partial` is set on the corresponding `RawStream` so downstream code can tell the difference between "the command produced small output" and "we only kept the head of large output". Total retention is capped at `COMMAND_OUTPUT_MAX_RETAINED_BYTES` (64 MiB) and history is capped at `COMMAND_OUTPUT_MAX_HISTORY_ENTRIES` (100 commands); eviction is LRU.
+
+### ShellCommandRunBridge
+
+The bridge in `src/shell/projection_bridge.rs` is a sidecar accumulator that mirrors `ShellEvent`s into the `CommandOutputStore`:
+
+- `Started` records the command metadata and reserves an entry.
+- `Stdout` / `Stderr` append bytes to the in-flight buffer.
+- `Exited` / `TimedOut` / `FailedToStart` finalize the entry into the store with the appropriate `CommandExit` and duration.
+
+`FailedToStart` arriving without a prior `Started` is handled by synthesizing an empty entry so the projection pipeline still has a record.
+
+The bridge is invoked from `src/tui/commands/shell.rs::handle_shell_event` before the legacy store update, so every `ShellEvent` populates both stores.
+
+### Default Projection Boundary
+
+`default_command_projection(run, store)` is the Phase 1 placeholder for the model-visible projection seam. It produces a compact text view containing:
+
+- command ID and command string
+- cwd, exit label, duration
+- truncated stdout and stderr (bounded by `DEFAULT_PROJECTION_BUDGET_BYTES`, default 8 KiB per stream)
+- raw retention handles (`cmd://<id>/stdout`, `cmd://<id>/stderr`)
+
+It does NOT parse command shape, select projectors, or invoke external backends. Phase 2 replaces it with the real `CommandOutputProjector` trait and the `Raw` / `Truncated` / `ErrorRetention` projectors. Phase 1's job is to make every model-facing command output flow through one seam.
+
+### App Integration
+
+`App` carries:
+
+- `command_run_store: CommandOutputStore` — durable raw output for projection
+- `command_run_bridge: ShellCommandRunBridge` — in-flight accumulator
+
+Both are constructed in the App's `new` and the test constructor. They are owned by `App` and do not yet feed any UI surface — the projection seam is wired but not yet exposed in the TUI. Phase 4 will add TUI metadata display and Phase 7 will add expansion UI.
+
+### Stability Guarantees
+
+- Command IDs are stable for the lifetime of the store.
+- `cmd://<id>/<stream>` URLs resolve to the same bytes until the run is evicted by retention limits.
+- Combined stream is **not** synthesized in Phase 1 — `get_stream` returns `None` for `CommandOutputStream::Combined` unless the execution layer supplies it explicitly.
+
+### What's NOT in Phase 1
+
+- Real projector trait (Phase 2)
+- Native structured projectors (Phase 3)
+- Configuration schema for projection policy (Phase 4)
+- RTK backend (Phase 5)
+- TUI expansion panel (Phase 7)
+- Redaction pipeline (Phase 8)

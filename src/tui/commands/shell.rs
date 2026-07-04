@@ -99,6 +99,14 @@ pub(crate) fn spawn_human_shell(app: &mut app::App, command: String, promote_aft
 }
 
 pub(crate) fn handle_shell_event(app: &mut app::App, event: crate::shell::ShellEvent) {
+    // Mirror the event into the durable command-run store used by the
+    // Phase 1 projection pipeline. This must happen for every event
+    // variant (Started/Stdout/Stderr/Exited/TimedOut/FailedToStart)
+    // so that the bridge has all the bytes it needs when it finalizes
+    // the run on a terminal event.
+    app.command_run_bridge
+        .observe(&mut app.command_run_store, &event);
+
     match &event {
         crate::shell::ShellEvent::Started { id, .. } => {
             app.messages_state.messages.update_shell_cell(id.0, |cell| {

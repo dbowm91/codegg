@@ -350,8 +350,9 @@ CI runs on push/PR to dev/main: `agent-assets` → `fmt` → `check` → `clippy
 
 - **Central invariant**: A human `!` command is not model context unless the user explicitly promotes it.
 - **Syntax**: `!command` runs a shell command with output hidden from the model (ephemeral). `!!command` runs and auto-promotes output into the conversation.
-- **Module location**: `src/shell/` — `types.rs`, `runtime.rs`, `store.rs`, `policy.rs`, `digest.rs`.
+- **Module location**: `src/shell/` — `types.rs`, `runtime.rs`, `store.rs`, `policy.rs`, `digest.rs`, `projection.rs`, `projection_bridge.rs`.
 - **Policy evaluation**: `evaluate_command()` blocks destructive commands (rm -rf /, mkfs, dd to device, fork bombs, shutdown/reboot/halt) and warns on risky ones (rm -rf ., git clean -f, sudo, curl|sh, chmod 777, recursive chown).
+- **Command-event projection (Phase 1)**: `CommandOutputStore` retains raw stdout/stderr out-of-band for the projection pipeline. `ShellCommandRunBridge` mirrors `ShellEvent`s into the store. `default_command_projection` is the single model-visible projection seam. Stable handles `cmd://<id>/<stream>` resolve raw output without rerunning commands. Caps: 32 MiB per stream, 64 MiB total, 100 history entries. Streams exceeding the cap are marked `OutputCompleteness::Partial` rather than silently truncated. The two stores (`ShellOutputStore` for TUI transcripts, `CommandOutputStore` for projection) run side by side — Phase 1 is additive, not a replacement.
 
 ### Context Policy
 
@@ -368,7 +369,7 @@ CI runs on push/PR to dev/main: `agent-assets` → `fmt` → `check` → `clippy
 | `architecture/agent.md` | AgentLoop has ~49 fields |
 | `architecture/plugin.md` | No `wasm.rs`; `marketplace.rs` exists |
 | `architecture/lsp.md` | egglsp is authoritative; 39 servers |
-| `architecture/human_shell.md` | ! commands not in model context unless promoted |
+| `architecture/human_shell.md` | ! commands not in model context unless promoted; Phase 1 adds `CommandOutputStore` + projection seam |
 
 `.codegg/skills/*/SKILL.md` contain 44 module-specific skill guides loaded on-demand via `/skill:`.
 

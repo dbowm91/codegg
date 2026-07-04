@@ -1,11 +1,21 @@
 pub mod digest;
 pub mod policy;
+pub mod projection;
+pub mod projection_bridge;
 pub mod runtime;
 pub mod store;
 pub mod types;
 
 pub use digest::{ShellDigest, ShellFailure, ShellFailureKind, TruncationReport};
 pub use policy::{evaluate_command, HumanShellPolicyDecision};
+pub use projection::{
+    default_command_projection, default_command_projection_with_budget, CommandExit,
+    CommandOutputStore, CommandOutputStoreLimits, CommandOutputStream, CommandRun, CommandRunId,
+    OutputCompleteness, OutputEncoding, OutputHandle, ProjectionHandle, RawStream, RedactionState,
+    COMMAND_OUTPUT_MAX_HISTORY_ENTRIES, COMMAND_OUTPUT_MAX_RETAINED_BYTES,
+    COMMAND_OUTPUT_MAX_SINGLE_STREAM_BYTES, DEFAULT_PROJECTION_BUDGET_BYTES,
+};
+pub use projection_bridge::ShellCommandRunBridge;
 pub use runtime::{ShellHandle, ShellRuntime};
 pub use store::{BoundedOutput, ShellOutputEntry, ShellOutputStore};
 pub use types::{
@@ -87,6 +97,12 @@ mod tests {
         let _ = std::mem::size_of::<ShellCapturePolicy>();
         let _ = std::mem::size_of::<ShellPromotionMode>();
         let _ = std::mem::size_of::<ShellEnvPolicy>();
+        let _ = std::mem::size_of::<CommandRunId>();
+        let _ = std::mem::size_of::<OutputHandle>();
+        let _ = std::mem::size_of::<CommandOutputStream>();
+        let _ = std::mem::size_of::<OutputCompleteness>();
+        let _ = std::mem::size_of::<OutputEncoding>();
+        let _ = std::mem::size_of::<RedactionState>();
     }
 
     #[test]
