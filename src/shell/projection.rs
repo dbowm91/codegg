@@ -214,23 +214,24 @@ impl RawStream {
 #[derive(Debug, Clone, Default)]
 pub struct ProjectionHandle;
 
-/// Placeholder for redaction state attached to a [`CommandRun`].
+/// Redaction state attached to a [`CommandRun`] or [`ProjectionResult`].
 ///
-/// Phase 8 will replace this with a real redaction descriptor. Phase 1
-/// Tracks whether the redaction hook was applied to a [`ProjectionResult`].
-///
-/// The redaction pipeline is currently a **placeholder** (Phase 1–7). The hook
-/// fires in the model-facing path so future implementations cannot be bypassed,
-/// but it does **not** actually filter secrets. Do not treat `HookAppliedNoRules`
-/// as evidence that sensitive content was removed.
+/// Tracks whether the redaction hook was applied and what happened.
 ///
 /// Variants:
 /// - [`NotApplied`] – No redaction was attempted (default).
 /// - [`HookAppliedNoRules`] – The hook ran but no rules are implemented yet
-///   (placeholder). Text was **not** modified.
-/// - [`Applied`] – Real redaction rules filtered the output (Phase 8+).
-/// - [`Skipped`] – Redaction was deliberately not applied (e.g. empty text,
-///   policy override).
+///   (legacy placeholder, kept for backwards compatibility). Text was **not**
+///   modified.
+/// - [`Applied`] – Real redaction rules filtered the output and at least one
+///   replacement was made. The `replacements` field records how many values
+///   were redacted.
+/// - [`AppliedNoMatches`] – The hook ran with real rules but nothing matched.
+///   Text was **not** modified.
+/// - [`SkippedByPolicy`] – Redaction was deliberately not applied (e.g.
+///   policy override). The output was not modified.
+/// - [`Unavailable`] – Redaction could not be performed (e.g. the redactor
+///   failed to initialize).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum RedactionState {
     /// No redaction was attempted. This is the default for fresh results and
@@ -239,18 +240,29 @@ pub enum RedactionState {
     NotApplied,
 
     /// The redaction hook was invoked but no actual redaction rules exist yet.
-    /// This is a **placeholder** — the output text was **not** modified.
-    /// Phase 8 will replace this with real secret filtering.
+    /// This is a **legacy placeholder** — the output text was **not** modified.
+    /// Kept for backwards compatibility with Phase 1–7 callers.
     HookAppliedNoRules,
 
-    /// Real redaction rules were applied and the output may have been modified
-    /// to remove sensitive content. This state is not yet reachable; it will be
-    /// used once Phase 8 implements actual filtering.
-    Applied,
+    /// Real redaction rules were applied and at least one sensitive value was
+    /// replaced. The `replacements` field records the total number of
+    /// substitutions made.
+    Applied {
+        /// Total number of replacements applied across all rules.
+        replacements: usize,
+    },
 
-    /// Redaction was deliberately skipped (e.g. the output was empty or the
-    /// policy opted out). The output was not modified.
-    Skipped,
+    /// The redaction hook ran with real rules installed but no matches were
+    /// found. The output text was **not** modified.
+    AppliedNoMatches,
+
+    /// Redaction was deliberately skipped by policy (e.g. the output was
+    /// empty or the policy opted out). The output was not modified.
+    SkippedByPolicy,
+
+    /// Redaction could not be performed (e.g. the redactor failed to
+    /// initialize or an internal error occurred).
+    Unavailable,
 }
 
 /// Structured command execution event.

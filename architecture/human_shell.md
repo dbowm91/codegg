@@ -445,7 +445,7 @@ Every projector receives a [`ProjectionRequest`] and returns a [`ProjectionResul
 - `projector` — stable name of the projector that produced the result (e.g. `"raw"`, `"truncated"`, `"error-retention"`)
 - `kind` — [`ProjectionKind`] (Raw / Truncated / ErrorRetention / Structured / ExternalCompressed / Summary)
 - `exactness` — [`ProjectionExactness`] (Exact / ExactRange / Truncated / Lossy / Parsed / PartialRawArtifact)
-- `redaction` — [`RedactionState`] (whether the redaction hook fired)
+- `redaction` — [`RedactionState`] (whether redaction was applied and how many replacements were made)
 - `omitted` — every [`OmittedRange`] (stream, byte range, line range, total retained bytes, note)
 - `expansion_handles` — [`ExpansionHandle`] values the consumer can use to fetch the omitted bytes (`cmd://<id>/<stream>` or `cmd://<id>/<stream>#<start>-<end>`)
 - `input_bytes` / `output_bytes` / `estimated_input_tokens` / `estimated_output_tokens` / `warnings`
@@ -475,15 +475,28 @@ All three are conservative: no RTK, no command-shape inspection, no model-genera
 
 [`ProjectionBudget`] carries a byte cap plus optional token hints. Phase 2 uses a rough `bytes / 4` token estimate; the goal is to establish the budget plumbing, not to ship a perfect estimator.
 
-### Redaction Hook Placeholder
+### Redaction Pipeline (Phase 8)
 
-Phase 8 will implement full redaction. Phase 2 already includes a hook at the model-facing boundary:
+Phase 8 replaces the placeholder with a real deterministic redaction pipeline in `src/shell/redactor.rs`. The `Redactor` applies six `RedactRule` implementations:
+
+1. **`AuthorizationRule`** — Bearer tokens, Basic auth, API key headers
+2. **`EnvSecretRule`** — UPPERCASE variable assignments with sensitive keywords (SECRET, KEY, TOKEN, PASSWORD, CREDENTIAL)
+3. **`PemBlockRule`** — PEM-encoded private keys and certificates
+4. **`CloudCredentialRule`** — AWS access key IDs, secret keys; GCP private_key fields; Azure connection strings
+5. **`EmbeddedCredentialUrlRule`** — URLs with `user:password@host` patterns
+6. **`SessionMaterialRule`** — Cookie/Set-Cookie headers, session_id/sid assignments, CSRF tokens
+
+The entry point is `apply_redaction_hook` in `src/shell/projector.rs`:
 
 ```rust
-pub fn apply_redaction_hook(result: &mut ProjectionResult, target: ProjectionTarget)
+pub fn apply_redaction_hook(result: &mut ProjectionResult, _target: ProjectionTarget) {
+    let redactor = crate::shell::redactor::Redactor::new();
+    let output = redactor.redact(&result.text);
+    // Sets RedactionState::Applied { replacements } or AppliedNoMatches
+}
 ```
 
-The current implementation is a no-op that flips `RedactionState` to `Applied` so the metadata banner reflects that the hook fired. Crucially, the call site exists in `ProjectionSelector::project`, so future redaction implementations cannot be bypassed by RTK or native projectors.
+The call site exists in `ProjectionSelector::project`, so redaction cannot be bypassed by RTK or native projectors. Replacement markers are stable strings like `[REDACTED:bearer-token]`, `[REDACTED:env-secret]`, `[REDACTED:pem-block]`, etc. Original sensitive values are never logged or exposed.
 
 ### Stability Guarantees (Phase 2)
 
@@ -497,7 +510,7 @@ The current implementation is a no-op that flips `RedactionState` to `Applied` s
 - Configuration schema for projection policy (Phase 4)
 - RTK backend (Phase 5) — landed
 - TUI expansion panel (Phase 7)
-- Full redaction pipeline (Phase 8) — the hook site is in place, but the redaction rules are not implemented yet
+- Full redaction pipeline (Phase 8) — implemented in `src/shell/redactor.rs`
 - Per-run `ProjectionHandle` carrying the resolved `ProjectionResult` (deferred; today the result lives in selector return values and any caller that wants to keep it can stash it on the run manually)
 
 ## Command Output Projection (Phase 3)
@@ -536,7 +549,7 @@ All native projectors produce `ProjectionKind::Structured` with `ProjectionExact
 - Configuration schema for projection policy (Phase 4)
 - RTK backend (Phase 5) — landed
 - TUI expansion panel (Phase 7)
-- Full redaction pipeline (Phase 8) — the hook site is in place, but the redaction rules are not implemented yet
+- Full redaction pipeline (Phase 8) — implemented in `src/shell/redactor.rs`
 
 ## Command Output Projection (Phase 4 — partial)
 
@@ -659,7 +672,7 @@ Raw → Native → RTK (if enabled) → ErrorRetention → Truncated
 
 ### What's NOT in Phase 5/6
 
-- Full redaction pipeline (Phase 8) — the hook site is in place, but the redaction rules are not implemented yet
+- Full redaction pipeline (Phase 8) — implemented in `src/shell/redactor.rs`
 - Broad RTK coverage — Phase 6 is intentionally conservative, covering low-risk read-only commands only
 
 ## Command Output Projection (Phase 7)
@@ -711,7 +724,7 @@ Tests cover: handle parsing (full stream + range forms), range expansion exactne
 
 ### What's NOT in Phase 7
 
-- Full redaction pipeline (Phase 8)
+- Full redaction pipeline (Phase 8) — implemented in `src/shell/redactor.rs`
 - Model-accessible `command_output_read` tool (deferred; internal API is ready)
 
 ## Current Projection Pipeline Status
@@ -719,10 +732,10 @@ Tests cover: handle parsing (full stream + range forms), range expansion exactne
 | Phase | Status | Notes |
 |-------|--------|-------|
 | Phase 1 | **Landed** | `CommandOutputStore`, `ShellCommandRunBridge`, stable handles, bounded retention |
-| Phase 2 | **Landed** | `CommandOutputProjector` trait, `RawProjector`/`TruncatedProjector`/`ErrorRetentionProjector`, `ProjectionSelector`, redaction hook placeholder |
+| Phase 2 | **Landed** | `CommandOutputProjector` trait, `RawProjector`/`TruncatedProjector`/`ErrorRetentionProjector`, `ProjectionSelector`, redaction hook entry point |
 | Phase 3 | **Landed** | Native structured projectors: `GitStatusProjector`, `GitDiffProjector`, `GitLogProjector`, `CargoCheckProjector`, `CargoTestProjector` |
 | Phase 4 | **Partial** | Config schema and `ProjectionSelector::with_config()` present; per-command rules and escape hatches deferred |
 | Phase 5 | **Landed** | RTK discovery, eligibility classification, `RtkCapabilities`, `RtkProjector` skeleton |
 | Phase 6 | **Landed** | Real RTK invocation: `RtkInvocationMode` (PostProcess/Wrapper/Disabled), capability-driven dispatch, input capping, timeout enforcement, projection metadata |
 | Phase 7 | **Landed** | Expansion API (`CommandOutputExpansion`, `ExpansionExactness`, `ExpansionRequest`), `/shell-expand` command, TUI detail panel with projection metadata |
-| Phase 8 | **Pending** | Full redaction pipeline — hook site in Phase 2, rules not implemented yet |
+| Phase 8 | **Landed** | Redaction pipeline: `Redactor` with six `RedactRule` implementations, `apply_redaction_hook` entry point, `RedactionState::Applied { replacements }` |

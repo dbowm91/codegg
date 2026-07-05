@@ -1,6 +1,6 @@
 ---
 name: human-shell
-description: Human-initiated shell command execution, ephemeral transcript storage, projection pipeline (Phases 1-7), policy evaluation, and structured failure digest extraction
+description: Human-initiated shell command execution, ephemeral transcript storage, projection pipeline (Phases 1-8), policy evaluation, and structured failure digest extraction
 version: 1.5.0
 tags:
   - shell
@@ -20,7 +20,7 @@ path. It owns the human-shell ephemeral transcript, the policy
 gatekeeper that blocks destructive commands, the structured failure
 digest, and the Phase 1+2 command-event projection pipeline that
 becomes the substrate for later expansion, redaction, and TUI
-features.
+features. Phase 8 adds the deterministic redaction pipeline.
 
 A detailed architecture document lives at `architecture/human_shell.md`.
 The roadmap is `plans/shell_output_projection_rtk_roadmap.md`.
@@ -36,7 +36,7 @@ The roadmap is `plans/shell_output_projection_rtk_roadmap.md`.
 | Phase 5 | **Landed** | RTK discovery, eligibility classification, `RtkCapabilities`, `RtkProjector` skeleton |
 | Phase 6 | **Landed** | Real RTK invocation: `RtkInvocationMode` (PostProcess/Wrapper/Disabled), capability-driven dispatch, input capping, timeout enforcement, projection metadata |
 | Phase 7 | **Landed** | Expansion API (`CommandOutputExpansion`, `ExpansionExactness`, `ExpansionRequest`), `/shell-expand` command, TUI detail panel with projection metadata |
-| Phase 8 | **Pending** | Full redaction pipeline — hook site in Phase 2, rules not implemented yet |
+| Phase 8 | **Landed** | Redaction pipeline: `Redactor` with six `RedactRule` implementations, `apply_redaction_hook` entry point, `RedactionState::Applied { replacements }` |
 
 ## Central Invariant
 

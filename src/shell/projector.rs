@@ -511,8 +511,23 @@ impl ProjectionResult {
             match self.redaction {
                 RedactionState::NotApplied => "none",
                 RedactionState::HookAppliedNoRules => "hook-no-rules",
-                RedactionState::Applied => "applied",
-                RedactionState::Skipped => "skipped",
+                RedactionState::Applied { replacements } => {
+                    return format!(
+                        "[cmd {} | exit: {} | duration: {:.2}s | projection: {} ({}/{}) | input: {} B | output: {} B | redaction: applied ({} replacements)]",
+                        run.id,
+                        run.exit.label(),
+                        run.duration.as_secs_f64(),
+                        self.projector,
+                        self.kind.label(),
+                        self.exactness.label(),
+                        self.input_bytes,
+                        self.output_bytes,
+                        replacements,
+                    );
+                }
+                RedactionState::AppliedNoMatches => "applied-no-matches",
+                RedactionState::SkippedByPolicy => "skipped-by-policy",
+                RedactionState::Unavailable => "unavailable",
             },
         )
     }
@@ -2316,16 +2331,12 @@ fn format_unprojectable(request: &ProjectionRequest<'_>) -> String {
     s
 }
 
-/// Apply the Phase 2 redaction hook placeholder to a model-facing
-/// projection.
+/// Apply the Phase 8 redaction pipeline to a model-facing projection.
 ///
-/// Placeholder redaction hook — no actual secret filtering is performed.
-///
-/// Phase 8 will replace this with a real implementation that scans for
-/// secrets (API keys, passwords, tokens, etc.) and redacts them. The current
-/// placeholder marks the result as [`RedactionState::HookAppliedNoRules`] so
-/// the metadata banner reflects that the hook fired without implying that
-/// content was modified.
+/// The [`Redactor`] scans for secrets (API keys, passwords, tokens, PEM
+/// blocks, cloud credentials, etc.) and replaces them with stable markers.
+/// The result's [`RedactionState`] reflects what happened so the metadata
+/// banner can report it.
 ///
 /// The call site exists in the model-facing path so future redaction
 /// implementations cannot be bypassed by RTK or native projectors.
@@ -2333,7 +2344,18 @@ pub fn apply_redaction_hook(result: &mut ProjectionResult, _target: ProjectionTa
     if result.text.is_empty() {
         return;
     }
-    result.redaction = RedactionState::HookAppliedNoRules;
+
+    let redactor = crate::shell::redactor::Redactor::new();
+    let output = redactor.redact(&result.text);
+
+    if output.replacements > 0 {
+        result.text = output.text;
+        result.redaction = RedactionState::Applied {
+            replacements: output.replacements,
+        };
+    } else {
+        result.redaction = RedactionState::AppliedNoMatches;
+    }
 }
 
 /// Model-visible projection entry point that delegates to the
@@ -3100,7 +3122,7 @@ mod tests {
         let request = ProjectionRequest::for_target(&run, ProjectionTarget::ModelContext, &policy);
         let selector = ProjectionSelector::with_defaults();
         let result = selector.project(request, &store);
-        assert_eq!(result.redaction, RedactionState::HookAppliedNoRules);
+        assert_eq!(result.redaction, RedactionState::AppliedNoMatches);
     }
 
     #[test]
