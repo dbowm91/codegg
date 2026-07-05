@@ -1,7 +1,7 @@
 ---
 name: human-shell
-description: Human-initiated shell command execution, ephemeral transcript storage, projection pipeline (Phases 1-3, 5), policy evaluation, and structured failure digest extraction
-version: 1.2.0
+description: Human-initiated shell command execution, ephemeral transcript storage, projection pipeline (Phases 1-5), policy evaluation, and structured failure digest extraction
+version: 1.3.0
 tags:
   - shell
   - bash
@@ -24,6 +24,17 @@ features.
 
 A detailed architecture document lives at `architecture/human_shell.md`.
 The roadmap is `plans/shell_output_projection_rtk_roadmap.md`.
+
+## Current Projection Pipeline Status
+
+| Phase | Status | Notes |
+|-------|--------|-------|
+| Phase 1 | **Landed** | `CommandOutputStore`, `ShellCommandRunBridge`, stable handles, bounded retention |
+| Phase 2 | **Landed** | `CommandOutputProjector` trait, `RawProjector`/`TruncatedProjector`/`ErrorRetentionProjector`, `ProjectionSelector`, redaction hook placeholder |
+| Phase 3 | **Landed** | Native structured projectors: `GitStatusProjector`, `GitDiffProjector`, `GitLogProjector`, `CargoCheckProjector`, `CargoTestProjector` |
+| Phase 4 | **Partial** | Config schema and `ProjectionSelector::with_config()` present; per-command rules and escape hatches deferred |
+| Phase 5 | **Skeleton landed** | RTK discovery, eligibility classification, `RtkProjector` skeleton — returns `BackendUnavailable` error, does NOT perform RTK compression |
+| Phase 6+ | **Pending** | Real RTK invocation, TUI expansion panel (Phase 7), full redaction pipeline (Phase 8) |
 
 ## Central Invariant
 
@@ -97,7 +108,7 @@ The selector (`ProjectionSelector::with_defaults()`) tries projectors in priorit
 - `projector` — stable projector name (e.g. `"raw"`, `"error-retention"`, `"truncated"`)
 - `kind` — `ProjectionKind` enum (Raw / Truncated / ErrorRetention / Structured / ExternalCompressed / Summary)
 - `exactness` — `ProjectionExactness` enum (Exact / ExactRange / Truncated / Lossy / Parsed / PartialRawArtifact)
-- `redaction` — `RedactionState` (NotApplied / Applied)
+- `redaction` — `RedactionState` (NotApplied / HookAppliedNoRules / Applied / Skipped)
 - `omitted` — every `OmittedRange` (stream, byte range, line range, total retained bytes, note)
 - `expansion_handles` — `ExpansionHandle` values the consumer can use to fetch the omitted bytes
 - `input_bytes` / `output_bytes` / token estimates / warnings
@@ -106,7 +117,7 @@ The selector (`ProjectionSelector::with_defaults()`) tries projectors in priorit
 
 ### Redaction Hook
 
-`apply_redaction_hook(result, target)` is invoked for `ModelContext` and `ToolExpansion` targets when the policy allows it. Phase 2 ships a no-op placeholder that flips `RedactionState` to `Applied`; Phase 8 will replace the body with a real implementation. The call site lives in `ProjectionSelector::project` so future redaction cannot be bypassed by RTK or native projectors.
+`apply_redaction_hook(result, target)` is invoked for `ModelContext` and `ToolExpansion` targets when the policy allows it. Phase 2 ships a no-op placeholder that sets `RedactionState::HookAppliedNoRules` (not `Applied`) to make it clear no actual secret filtering occurs; Phase 8 will replace the body with a real implementation. The call site lives in `ProjectionSelector::project` so future redaction cannot be bypassed by RTK or native projectors. `RedactionState` has four variants: `NotApplied`, `HookAppliedNoRules`, `Applied` (Phase 8+), `Skipped`.
 
 ### Expansion Handles
 
@@ -205,8 +216,8 @@ without making it a hard dependency or default execution path.
 
 - Returns `Unsupported` when RTK is disabled, unavailable, or command is ineligible
 - Returns `Fallback` support level when RTK is available and command is eligible
-- Returns `ProjectionKind::ExternalCompressed` with `ProjectionExactness::Lossy`
-- Phase 5 skeleton does NOT invoke RTK — returns placeholder text
+- Returns `ProjectionError::BackendUnavailable` — the skeleton does NOT produce fake placeholder output
+- The selector falls back to safe projection on error and records a warning
 - Raw expansion handles are included for stdout/stderr
 
 ### Selector Integration
@@ -229,9 +240,8 @@ Raw → Native → RTK (if enabled) → ErrorRetention → Truncated
 - Projector rejection when RTK unavailable
 - Projector acceptance for eligible commands
 - Projector rejection for ineligible commands
-- Skeleton returns `ExternalCompressed`/`Lossy`
-- `BackendUnavailable` error for unprobed discovery
-- Selector includes/excludes RTK projector
+- Skeleton returns `BackendUnavailable` error (no fake output)
+- Selector falls back to safe projection on RTK error with warning
 
 ## Working Examples
 
@@ -334,5 +344,5 @@ assert_eq!(handle.as_url(), "cmd://42/stderr#0-1024");
 - **Stream caps mark `Partial`.** Code that consumes a `RawStream` MUST check `OutputCompleteness` and surface the partial state to the user/model rather than silently truncating.
 - **Bridge is additive.** It does NOT modify the existing `ShellOutputStore`, the `ShellEvent` enum, or `ShellRuntime`. Removing or altering those would break Phase 1.
 - **Built-in projectors are conservative.** `RawProjector`, `TruncatedProjector`, and `ErrorRetentionProjector` do not parse command shape, do not invoke RTK, and do not produce model-generated summaries. Native structured projectors (Phase 3) and the RTK backend (Phase 5) plug into the same selector without changing the public API.
-- **Redaction hook is a placeholder.** `apply_redaction_hook` flips `RedactionState` to `Applied` for `ModelContext` and `ToolExpansion` targets but does not actually rewrite any text. Phase 8 will replace the body; the call site in `ProjectionSelector::project` is the contract.
+- **Redaction hook is a placeholder.** `apply_redaction_hook` sets `RedactionState::HookAppliedNoRules` for `ModelContext` and `ToolExpansion` targets but does not actually rewrite any text. Phase 8 will replace the body; the call site in `ProjectionSelector::project` is the contract.
 - **`ProjectionResult` owns the metadata.** The model-facing text is the `text` field; consumers MUST also surface `projector`, `kind`, `exactness`, `redaction`, and `omitted` (or the rendered banner) so the model knows what it is looking at.

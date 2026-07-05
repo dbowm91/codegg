@@ -217,13 +217,40 @@ pub struct ProjectionHandle;
 /// Placeholder for redaction state attached to a [`CommandRun`].
 ///
 /// Phase 8 will replace this with a real redaction descriptor. Phase 1
-/// only needs the field to exist so later code can wire into it without
-/// changing the domain object shape.
+/// Tracks whether the redaction hook was applied to a [`ProjectionResult`].
+///
+/// The redaction pipeline is currently a **placeholder** (Phase 1–7). The hook
+/// fires in the model-facing path so future implementations cannot be bypassed,
+/// but it does **not** actually filter secrets. Do not treat `HookAppliedNoRules`
+/// as evidence that sensitive content was removed.
+///
+/// Variants:
+/// - [`NotApplied`] – No redaction was attempted (default).
+/// - [`HookAppliedNoRules`] – The hook ran but no rules are implemented yet
+///   (placeholder). Text was **not** modified.
+/// - [`Applied`] – Real redaction rules filtered the output (Phase 8+).
+/// - [`Skipped`] – Redaction was deliberately not applied (e.g. empty text,
+///   policy override).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum RedactionState {
+    /// No redaction was attempted. This is the default for fresh results and
+    /// for targets that do not require redaction (e.g. TUI views).
     #[default]
     NotApplied,
+
+    /// The redaction hook was invoked but no actual redaction rules exist yet.
+    /// This is a **placeholder** — the output text was **not** modified.
+    /// Phase 8 will replace this with real secret filtering.
+    HookAppliedNoRules,
+
+    /// Real redaction rules were applied and the output may have been modified
+    /// to remove sensitive content. This state is not yet reachable; it will be
+    /// used once Phase 8 implements actual filtering.
     Applied,
+
+    /// Redaction was deliberately skipped (e.g. the output was empty or the
+    /// policy opted out). The output was not modified.
+    Skipped,
 }
 
 /// Structured command execution event.

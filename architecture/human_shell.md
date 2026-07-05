@@ -538,6 +538,46 @@ All native projectors produce `ProjectionKind::Structured` with `ProjectionExact
 - TUI expansion panel (Phase 7)
 - Full redaction pipeline (Phase 8) — the hook site is in place, but the redaction rules are not implemented yet
 
+## Command Output Projection (Phase 4 — partial)
+
+Phase 4 provides configuration-driven projection policy and TUI metadata display. The config schema and selector integration are landed; per-command rules and full escape hatches are deferred.
+
+### Config Schema
+
+`ShellOutputConfig` in `crates/codegg-config/src/schema.rs` defines:
+
+```toml
+[shell.output]
+projection = "safe"           # off | safe | rtk | aggressive (default: safe)
+retain_raw = true             # default: true
+redact_model_visible_output = "model_only"  # off | model_only | all (default: model_only)
+max_model_output_tokens = 4000              # default: 4000
+max_tui_output_bytes = 200000               # default: 200000
+show_projection_metadata = true             # default: true
+prefer_native_projectors = true             # default: true
+
+[shell.output.rtk]
+enabled = false               # default: false
+path = "rtk"                  # optional explicit path
+eligible_only = true          # default: true
+timeout_ms = 5000             # default: 5000
+allow_side_effecting_commands = false
+```
+
+`ProjectionSelector::with_config()` builds the appropriate selector from this config, including RTK when enabled.
+
+### What's Landed
+
+- Config schema (`ShellOutputConfig`, `ProjectionPolicyKind`, `ProjectionRedactPolicy`, `ShellOutputRtkConfig`, `ShellOutputRuleConfig`)
+- `ProjectionPolicy::from_config()`, `ProjectionBudget::from_config()`, `ProjectionSelector::with_config()`
+- TUI metadata display via `ProjectionResult::banner()`
+
+### What's Deferred
+
+- Per-command rules (parsed but not consumed by projection pipeline)
+- Escape hatches and rule-based projector selection
+- Full TUI metadata panel (Phase 7)
+
 ## Command Output Projection (Phase 5)
 
 Phase 5 adds RTK as an optional, detected command-output compressor backend behind the projection abstraction. It is implemented in `src/shell/rtk.rs` and integrated into the selector via `ProjectionSelector::with_rtk()` and `ProjectionSelector::with_config()`.
@@ -582,8 +622,8 @@ Phase 5 adds RTK as an optional, detected command-output compressor backend behi
 
 - Returns `Unsupported` when RTK is disabled, unavailable, or command is ineligible
 - Returns `Fallback` support level when RTK is available and command is eligible
-- Returns `ProjectionKind::ExternalCompressed` with `ProjectionExactness::Lossy`
-- Phase 5 skeleton does NOT invoke RTK — returns placeholder text
+- Returns `ProjectionError::BackendUnavailable` — the skeleton does NOT produce fake placeholder output
+- The selector falls back to safe projection on error and records a warning
 - Raw expansion handles are included for stdout/stderr
 
 ### Selector Integration
@@ -600,7 +640,17 @@ Raw → Native → RTK (if enabled) → ErrorRetention → Truncated
 
 ### What's NOT in Phase 5
 
-- Actual RTK invocation (skeleton only — returns placeholder text)
-- Configuration schema for projection policy (Phase 4)
+- Actual RTK invocation (skeleton only — returns `BackendUnavailable` error)
 - TUI expansion panel (Phase 7)
 - Full redaction pipeline (Phase 8) — the hook site is in place, but the redaction rules are not implemented yet
+
+## Current Projection Pipeline Status
+
+| Phase | Status | Notes |
+|-------|--------|-------|
+| Phase 1 | **Landed** | `CommandOutputStore`, `ShellCommandRunBridge`, stable handles, bounded retention |
+| Phase 2 | **Landed** | `CommandOutputProjector` trait, `RawProjector`/`TruncatedProjector`/`ErrorRetentionProjector`, `ProjectionSelector`, redaction hook placeholder |
+| Phase 3 | **Landed** | Native structured projectors: `GitStatusProjector`, `GitDiffProjector`, `GitLogProjector`, `CargoCheckProjector`, `CargoTestProjector` |
+| Phase 4 | **Partial** | Config schema and `ProjectionSelector::with_config()` present; per-command rules and escape hatches deferred |
+| Phase 5 | **Skeleton landed** | RTK discovery, eligibility classification, `RtkProjector` skeleton — returns `BackendUnavailable` error, does NOT perform RTK compression |
+| Phase 6+ | **Pending** | Real RTK invocation, TUI expansion panel (Phase 7), full redaction pipeline (Phase 8) |

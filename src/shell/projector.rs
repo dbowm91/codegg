@@ -510,7 +510,9 @@ impl ProjectionResult {
             self.output_bytes,
             match self.redaction {
                 RedactionState::NotApplied => "none",
+                RedactionState::HookAppliedNoRules => "hook-no-rules",
                 RedactionState::Applied => "applied",
+                RedactionState::Skipped => "skipped",
             },
         )
     }
@@ -529,7 +531,10 @@ pub enum ProjectionError {
     Unsupported { feature: &'static str },
     /// An external backend (e.g. RTK) was unavailable or failed.
     /// The selector should fall back to safe native/generic projection.
-    BackendUnavailable { backend: &'static str, reason: String },
+    BackendUnavailable {
+        backend: &'static str,
+        reason: String,
+    },
 }
 
 impl std::fmt::Display for ProjectionError {
@@ -1056,7 +1061,9 @@ impl CommandOutputProjector for GitStatusProjector {
             "-z",
         ];
         for arg in &args[1..] {
-            if !allowed_flags.iter().any(|f| arg == f || arg.starts_with("--porcelain="))
+            if !allowed_flags
+                .iter()
+                .any(|f| arg == f || arg.starts_with("--porcelain="))
                 && !arg.starts_with("-u=")
                 && !arg.starts_with("--untracked-files=")
             {
@@ -1075,9 +1082,11 @@ impl CommandOutputProjector for GitStatusProjector {
         let handle = run.stdout_handle().ok_or(ProjectionError::Unsupported {
             feature: "no stdout handle",
         })?;
-        let bytes = store.get_stream(handle).ok_or(ProjectionError::Unsupported {
-            feature: "stdout not in store",
-        })?;
+        let bytes = store
+            .get_stream(handle)
+            .ok_or(ProjectionError::Unsupported {
+                feature: "stdout not in store",
+            })?;
         let output = String::from_utf8_lossy(bytes);
 
         let mut staged: Vec<String> = Vec::new();
@@ -1104,8 +1113,7 @@ impl CommandOutputProjector for GitStatusProjector {
 
                 if x == '?' && y == '?' {
                     untracked.push(filename);
-                } else if x == 'U' || y == 'U' || (x == 'A' && y == 'A') || (x == 'D' && y == 'D')
-                {
+                } else if x == 'U' || y == 'U' || (x == 'A' && y == 'A') || (x == 'D' && y == 'D') {
                     conflicted.push(format!("{} {}", &line[..2], filename));
                 } else {
                     if x != ' ' && x != '?' {
@@ -1279,9 +1287,11 @@ impl CommandOutputProjector for GitDiffProjector {
         let handle = run.stdout_handle().ok_or(ProjectionError::Unsupported {
             feature: "no stdout handle",
         })?;
-        let bytes = store.get_stream(handle).ok_or(ProjectionError::Unsupported {
-            feature: "stdout not in store",
-        })?;
+        let bytes = store
+            .get_stream(handle)
+            .ok_or(ProjectionError::Unsupported {
+                feature: "stdout not in store",
+            })?;
         let output = String::from_utf8_lossy(bytes);
 
         // Parse unified diff: collect file headers and stats.
@@ -1369,11 +1379,7 @@ impl CommandOutputProjector for GitDiffProjector {
             let _ = writeln!(text, "{} file(s) changed", files.len());
             text.push('\n');
             for f in &files {
-                let _ = writeln!(
-                    text,
-                    "{} (+{}/-{}):",
-                    f.path, f.additions, f.deletions
-                );
+                let _ = writeln!(text, "{} (+{}/-{}):", f.path, f.additions, f.deletions);
                 // For diffs with ≤5 files, show up to 3 hunks per file.
                 // For larger diffs, only show stats.
                 if files.len() <= 5 {
@@ -1384,11 +1390,7 @@ impl CommandOutputProjector for GitDiffProjector {
                         }
                     }
                     if f.hunks.len() > 3 {
-                        let _ = writeln!(
-                            text,
-                            "  ... ({} more hunks)",
-                            f.hunks.len() - 3
-                        );
+                        let _ = writeln!(text, "  ... ({} more hunks)", f.hunks.len() - 3);
                     }
                 }
                 text.push('\n');
@@ -1467,9 +1469,11 @@ impl CommandOutputProjector for GitLogProjector {
         let handle = run.stdout_handle().ok_or(ProjectionError::Unsupported {
             feature: "no stdout handle",
         })?;
-        let bytes = store.get_stream(handle).ok_or(ProjectionError::Unsupported {
-            feature: "stdout not in store",
-        })?;
+        let bytes = store
+            .get_stream(handle)
+            .ok_or(ProjectionError::Unsupported {
+                feature: "stdout not in store",
+            })?;
         let output = String::from_utf8_lossy(bytes);
 
         let mut commits: Vec<CommitEntry> = Vec::new();
@@ -1624,9 +1628,11 @@ impl CommandOutputProjector for CargoCheckProjector {
         let handle = run.stderr_handle().ok_or(ProjectionError::Unsupported {
             feature: "no stderr handle",
         })?;
-        let bytes = store.get_stream(handle).ok_or(ProjectionError::Unsupported {
-            feature: "stderr not in store",
-        })?;
+        let bytes = store
+            .get_stream(handle)
+            .ok_or(ProjectionError::Unsupported {
+                feature: "stderr not in store",
+            })?;
         let output = String::from_utf8_lossy(bytes);
 
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
@@ -1640,7 +1646,10 @@ impl CommandOutputProjector for CargoCheckProjector {
             //   --> src/main.rs:5:10
             //   = note: ...
             //   = help: ...
-            if line.starts_with("error[") || line.starts_with("error:") || line.starts_with("error ") {
+            if line.starts_with("error[")
+                || line.starts_with("error:")
+                || line.starts_with("error ")
+            {
                 // Save previous diagnostic
                 if let Some(diag_lines) = current_diag.take() {
                     diagnostics.push(parse_diagnostic(&diag_lines));
@@ -1671,7 +1680,10 @@ impl CommandOutputProjector for CargoCheckProjector {
         }
 
         let errors: Vec<_> = diagnostics.iter().filter(|d| d.level == "error").collect();
-        let warnings: Vec<_> = diagnostics.iter().filter(|d| d.level == "warning").collect();
+        let warnings: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| d.level == "warning")
+            .collect();
 
         let mut text = String::new();
         append_header(&mut text, run);
@@ -1693,11 +1705,7 @@ impl CommandOutputProjector for CargoCheckProjector {
                 format_diagnostic(&mut text, d);
             }
             if errors.len() > shown_errors {
-                let _ = writeln!(
-                    text,
-                    "... ({} more errors)",
-                    errors.len() - shown_errors
-                );
+                let _ = writeln!(text, "... ({} more errors)", errors.len() - shown_errors);
             }
             let shown_warnings = warnings.len().min(20);
             for d in &warnings[..shown_warnings] {
@@ -1759,11 +1767,7 @@ fn parse_diagnostic(lines: &[String]) -> Diagnostic {
             let msg = rest[idx + 1..].trim_start_matches(": ").to_string();
             ("error".to_string(), Some(c), msg)
         } else {
-            (
-                "error".to_string(),
-                None,
-                rest.trim().to_string(),
-            )
+            ("error".to_string(), None, rest.trim().to_string())
         }
     } else if let Some(rest) = header.strip_prefix("warning[") {
         if let Some(idx) = rest.find(']') {
@@ -1837,11 +1841,7 @@ fn format_diagnostic(text: &mut String, diag: &Diagnostic) {
         .as_ref()
         .map(|c| format!("[{c}]"))
         .unwrap_or_default();
-    let _ = write!(
-        text,
-        "{}{}: {}",
-        diag.level, code_str, diag.message
-    );
+    let _ = write!(text, "{}{}: {}", diag.level, code_str, diag.message);
     if let Some(file) = &diag.file {
         let _ = write!(text, " --> {file}");
         if let Some(line) = diag.line {
@@ -1897,9 +1897,11 @@ impl CommandOutputProjector for CargoTestProjector {
         let handle = run.stdout_handle().ok_or(ProjectionError::Unsupported {
             feature: "no stdout handle",
         })?;
-        let bytes = store.get_stream(handle).ok_or(ProjectionError::Unsupported {
-            feature: "stdout not in store",
-        })?;
+        let bytes = store
+            .get_stream(handle)
+            .ok_or(ProjectionError::Unsupported {
+                feature: "stdout not in store",
+            })?;
         let output = String::from_utf8_lossy(bytes);
 
         // Also read stderr for panic backtraces.
@@ -2043,8 +2045,7 @@ impl CommandOutputProjector for CargoTestProjector {
         // Also capture panics from stderr if any.
         if !stderr_output.is_empty() {
             let has_panic = stderr_output.contains("panicked at")
-                || stderr_output.contains("thread '")
-                    && stderr_output.contains("panicked");
+                || stderr_output.contains("thread '") && stderr_output.contains("panicked");
             if has_panic && !test_failures.is_empty() {
                 text.push('\n');
                 text.push_str("--- Panic details (stderr) ---\n");
@@ -2226,53 +2227,74 @@ impl ProjectionSelector {
     /// If no projector supports the request, returns an empty
     /// `ProjectionResult` so the caller can still surface the raw
     /// handles.
+    ///
+    /// When a supported projector returns an error (e.g. an external
+    /// backend is unavailable), the selector falls back to the next
+    /// supported projector and records the error as a warning.
     pub fn project(
         &self,
         request: ProjectionRequest<'_>,
         store: &CommandOutputStore,
     ) -> ProjectionResult {
-        let picked = match self.pick(&request) {
-            Some(p) => p,
-            None => {
-                return ProjectionResult {
-                    projector: "none".to_string(),
-                    kind: ProjectionKind::Raw,
-                    exactness: ProjectionExactness::Exact,
-                    redaction: RedactionState::NotApplied,
-                    text: format_unprojectable(&request),
-                    omitted: Vec::new(),
-                    expansion_handles: Vec::new(),
-                    input_bytes: request.run.total_bytes(),
-                    output_bytes: 0,
-                    estimated_input_tokens: None,
-                    estimated_output_tokens: None,
-                    warnings: vec!["no projector supports this request".to_string()],
-                };
-            }
-        };
+        // Collect all projectors that support this request, in priority
+        // order: preferred first, then supported, then fallback.
+        let supported: Vec<_> = self
+            .projectors
+            .iter()
+            .filter(|p| !matches!(p.supports(&request), ProjectionSupport::Unsupported))
+            .collect();
 
-        let name = picked.name();
-        match picked.project(request, store) {
-            Ok(mut result) => {
-                if request.target.requires_redaction() && request.policy.redact_model_visible {
-                    apply_redaction_hook(&mut result, request.target);
-                }
-                result
-            }
-            Err(err) => ProjectionResult {
-                projector: name.to_string(),
+        if supported.is_empty() {
+            return ProjectionResult {
+                projector: "none".to_string(),
                 kind: ProjectionKind::Raw,
-                exactness: ProjectionExactness::Lossy,
+                exactness: ProjectionExactness::Exact,
                 redaction: RedactionState::NotApplied,
-                text: format!("[projection error: {err}]"),
+                text: format_unprojectable(&request),
                 omitted: Vec::new(),
                 expansion_handles: Vec::new(),
                 input_bytes: request.run.total_bytes(),
                 output_bytes: 0,
                 estimated_input_tokens: None,
                 estimated_output_tokens: None,
-                warnings: vec![format!("projector {name} failed: {err}")],
-            },
+                warnings: vec!["no projector supports this request".to_string()],
+            };
+        }
+
+        let mut warnings: Vec<String> = Vec::new();
+
+        for picked in &supported {
+            let name = picked.name();
+            match picked.project(request, store) {
+                Ok(mut result) => {
+                    if !warnings.is_empty() {
+                        result.warnings.extend(warnings);
+                    }
+                    if request.target.requires_redaction() && request.policy.redact_model_visible {
+                        apply_redaction_hook(&mut result, request.target);
+                    }
+                    return result;
+                }
+                Err(err) => {
+                    warnings.push(format!("projector {name} failed: {err}"));
+                }
+            }
+        }
+
+        // All supported projectors failed.
+        ProjectionResult {
+            projector: "none".to_string(),
+            kind: ProjectionKind::Raw,
+            exactness: ProjectionExactness::Lossy,
+            redaction: RedactionState::NotApplied,
+            text: format_unprojectable(&request),
+            omitted: Vec::new(),
+            expansion_handles: Vec::new(),
+            input_bytes: request.run.total_bytes(),
+            output_bytes: 0,
+            estimated_input_tokens: None,
+            estimated_output_tokens: None,
+            warnings,
         }
     }
 }
@@ -2297,16 +2319,21 @@ fn format_unprojectable(request: &ProjectionRequest<'_>) -> String {
 /// Apply the Phase 2 redaction hook placeholder to a model-facing
 /// projection.
 ///
-/// Phase 8 will replace this with a real implementation. The current
-/// placeholder is a no-op that marks the result as redacted so the
-/// metadata banner reflects that the hook fired. Critically, the
-/// call site exists in the model-facing path so future redaction
+/// Placeholder redaction hook — no actual secret filtering is performed.
+///
+/// Phase 8 will replace this with a real implementation that scans for
+/// secrets (API keys, passwords, tokens, etc.) and redacts them. The current
+/// placeholder marks the result as [`RedactionState::HookAppliedNoRules`] so
+/// the metadata banner reflects that the hook fired without implying that
+/// content was modified.
+///
+/// The call site exists in the model-facing path so future redaction
 /// implementations cannot be bypassed by RTK or native projectors.
 pub fn apply_redaction_hook(result: &mut ProjectionResult, _target: ProjectionTarget) {
     if result.text.is_empty() {
         return;
     }
-    result.redaction = RedactionState::Applied;
+    result.redaction = RedactionState::HookAppliedNoRules;
 }
 
 /// Model-visible projection entry point that delegates to the
@@ -2390,11 +2417,7 @@ pub fn render_metadata_header(
     let _ = writeln!(header, "[command {}]", run.id);
     let _ = writeln!(header, "command: {}", run.command);
     let _ = writeln!(header, "exit: {}", run.exit.label());
-    let _ = writeln!(
-        header,
-        "duration: {:.2}s",
-        run.duration.as_secs_f64()
-    );
+    let _ = writeln!(header, "duration: {:.2}s", run.duration.as_secs_f64());
 
     // Projection info
     let raw_handle = result.expansion_handles.first().map(|h| h.as_url());
@@ -3077,7 +3100,7 @@ mod tests {
         let request = ProjectionRequest::for_target(&run, ProjectionTarget::ModelContext, &policy);
         let selector = ProjectionSelector::with_defaults();
         let result = selector.project(request, &store);
-        assert_eq!(result.redaction, RedactionState::Applied);
+        assert_eq!(result.redaction, RedactionState::HookAppliedNoRules);
     }
 
     #[test]
@@ -3664,9 +3687,7 @@ mod tests {
         let mut store = CommandOutputStore::new();
         let mut stdout = Vec::new();
         for i in 0..25 {
-            stdout.extend_from_slice(
-                format!("commit {i:040x}\nSubject line {i}\n\n").as_bytes(),
-            );
+            stdout.extend_from_slice(format!("commit {i:040x}\nSubject line {i}\n\n").as_bytes());
         }
         let run = make_run_with_cmd(
             &mut store,
@@ -3847,7 +3868,7 @@ mod tests {
     #[test]
     fn cargo_check_projector_no_stderr_is_error() {
         use crate::shell::projection::RawStream;
-        let mut store = CommandOutputStore::new();
+        let store = CommandOutputStore::new();
         let id = store.alloc_id();
         // Build a CommandRun with stderr.handle = None
         let run = CommandRun {

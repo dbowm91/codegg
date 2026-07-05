@@ -6,8 +6,7 @@ use codegg_config::schema::ShellOutputRtkConfig;
 
 use crate::shell::projection::CommandOutputStore;
 use crate::shell::projector::{
-    CommandOutputProjector, ExpansionHandle, ProjectionError, ProjectionExactness, ProjectionKind,
-    ProjectionRequest, ProjectionResult, ProjectionSupport,
+    CommandOutputProjector, ProjectionError, ProjectionRequest, ProjectionResult, ProjectionSupport,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -184,11 +183,7 @@ impl RtkDiscovery {
             _ => {}
         }
 
-        match run_with_timeout(
-            rtk_path,
-            &["sh", "-c", "echo err >&2"],
-            timeout,
-        ) {
+        match run_with_timeout(rtk_path, &["sh", "-c", "echo err >&2"], timeout) {
             Ok(_) => {}
             Err(TimedOutError::TimedOut) => {}
             Err(TimedOutError::Other(_)) => {}
@@ -240,8 +235,8 @@ pub fn classify_command(command: &str) -> CompressionEligibility {
                 _ => CompressionEligibility::Unknown,
             }
         }
-        "rg" | "grep" | "ls" | "find" | "fd" | "tree" | "cat" | "head" | "tail" | "wc"
-        | "echo" | "printf" | "date" | "pwd" | "which" | "whoami" => {
+        "rg" | "grep" | "ls" | "find" | "fd" | "tree" | "cat" | "head" | "tail" | "wc" | "echo"
+        | "printf" | "date" | "pwd" | "which" | "whoami" => {
             CompressionEligibility::EligibleReadOnly
         }
         "npm" | "yarn" | "pip" | "apt" | "brew" | "docker" | "kubectl" => {
@@ -262,11 +257,12 @@ fn classify_git_command(command: &str) -> CompressionEligibility {
     let sub = rest.split_whitespace().next().unwrap_or("");
 
     match sub {
-        "status" | "diff" | "show" | "log" | "describe" | "remote" | "branch" | "tag"
-        | "blame" | "shortlog" => CompressionEligibility::EligibleReadOnly,
+        "status" | "diff" | "show" | "log" | "describe" | "remote" | "branch" | "tag" | "blame"
+        | "shortlog" => CompressionEligibility::EligibleReadOnly,
         "checkout" | "reset" | "merge" | "rebase" | "cherry-pick" | "revert" | "stash"
-        | "clean" | "fetch" | "pull" | "push" | "commit" | "add" | "rm" | "mv"
-        | "restore" => CompressionEligibility::IneligibleSideEffecting,
+        | "clean" | "fetch" | "pull" | "push" | "commit" | "add" | "rm" | "mv" | "restore" => {
+            CompressionEligibility::IneligibleSideEffecting
+        }
         _ => CompressionEligibility::Unknown,
     }
 }
@@ -311,12 +307,7 @@ impl CommandOutputProjector for RtkProjector {
             return ProjectionSupport::Unsupported;
         }
 
-        if self
-            .discovery
-            .config
-            .eligible_only
-            .unwrap_or(true)
-        {
+        if self.discovery.config.eligible_only.unwrap_or(true) {
             let eligibility = classify_command(&request.run.command);
             if !matches!(
                 eligibility,
@@ -367,39 +358,12 @@ impl CommandOutputProjector for RtkProjector {
             });
         }
 
-        let mut expansion_handles = Vec::new();
-        if request.run.stdout_handle().is_some() {
-            expansion_handles.push(ExpansionHandle::full(
-                request.run.id,
-                crate::shell::projection::CommandOutputStream::Stdout,
-            ));
-        }
-        if request.run.stderr_handle().is_some() {
-            expansion_handles.push(ExpansionHandle::full(
-                request.run.id,
-                crate::shell::projection::CommandOutputStream::Stderr,
-            ));
-        }
-
-        let text = format!(
-            "[RTK backend skeleton] RTK compression not yet implemented in Phase 5\n\
-             cmd {} | command: {}",
-            request.run.id, request.run.command,
-        );
-
-        Ok(ProjectionResult {
-            text,
-            projector: Self::NAME.to_string(),
-            kind: ProjectionKind::ExternalCompressed,
-            exactness: ProjectionExactness::Lossy,
-            redaction: crate::shell::projection::RedactionState::NotApplied,
-            omitted: Vec::new(),
-            expansion_handles,
-            input_bytes: request.run.total_bytes(),
-            output_bytes: 0,
-            estimated_input_tokens: None,
-            estimated_output_tokens: None,
-            warnings: vec!["rtk backend not yet implemented".to_string()],
+        // Phase 5 skeleton: RTK compression is not yet implemented.
+        // Return a recoverable error so the selector falls back to safe
+        // native/generic projection rather than producing fake output.
+        Err(ProjectionError::BackendUnavailable {
+            backend: "rtk",
+            reason: "RTK compression not yet implemented (Phase 5 skeleton)".into(),
         })
     }
 }
@@ -409,7 +373,11 @@ enum TimedOutError {
     Other(std::io::Error),
 }
 
-fn run_with_timeout(binary: &Path, args: &[&str], timeout: Duration) -> Result<String, TimedOutError> {
+fn run_with_timeout(
+    binary: &Path,
+    args: &[&str],
+    timeout: Duration,
+) -> Result<String, TimedOutError> {
     let mut cmd = Command::new(binary);
     cmd.args(args);
     cmd.stdout(std::process::Stdio::piped());
@@ -451,9 +419,10 @@ fn run_with_timeout(binary: &Path, args: &[&str], timeout: Duration) -> Result<S
             if status.success() {
                 Ok(stdout)
             } else {
-                Err(TimedOutError::Other(std::io::Error::other(
-                    format!("exit status: {}", status),
-                )))
+                Err(TimedOutError::Other(std::io::Error::other(format!(
+                    "exit status: {}",
+                    status
+                ))))
             }
         }
         Ok((Err(e), _)) => Err(TimedOutError::Other(e)),
@@ -638,10 +607,7 @@ mod tests {
             classify_command("some-random-tool arg1 arg2"),
             CompressionEligibility::Unknown
         );
-        assert_eq!(
-            classify_command(""),
-            CompressionEligibility::Unknown
-        );
+        assert_eq!(classify_command(""), CompressionEligibility::Unknown);
     }
 
     #[test]
@@ -662,10 +628,7 @@ mod tests {
             &policy,
         );
 
-        assert_eq!(
-            projector.supports(&request),
-            ProjectionSupport::Unsupported
-        );
+        assert_eq!(projector.supports(&request), ProjectionSupport::Unsupported);
     }
 
     #[test]
@@ -686,10 +649,7 @@ mod tests {
             &policy,
         );
 
-        assert_eq!(
-            projector.supports(&request),
-            ProjectionSupport::Unsupported
-        );
+        assert_eq!(projector.supports(&request), ProjectionSupport::Unsupported);
     }
 
     #[test]
@@ -722,10 +682,7 @@ mod tests {
             &policy,
         );
 
-        assert_eq!(
-            projector.supports(&request),
-            ProjectionSupport::Fallback
-        );
+        assert_eq!(projector.supports(&request), ProjectionSupport::Fallback);
     }
 
     #[test]
@@ -758,14 +715,11 @@ mod tests {
             &policy,
         );
 
-        assert_eq!(
-            projector.supports(&request),
-            ProjectionSupport::Unsupported
-        );
+        assert_eq!(projector.supports(&request), ProjectionSupport::Unsupported);
     }
 
     #[test]
-    fn rtk_projector_skeleton_returns_lossy_external_compressed() {
+    fn rtk_projector_skeleton_returns_backend_unavailable() {
         let config = ShellOutputRtkConfig {
             enabled: Some(true),
             path: None,
@@ -795,11 +749,68 @@ mod tests {
         );
         let store = CommandOutputStore::new();
 
-        let result = projector.project(request, &store).unwrap();
-        assert_eq!(result.kind, ProjectionKind::ExternalCompressed);
-        assert_eq!(result.exactness, ProjectionExactness::Lossy);
-        assert_eq!(result.projector, "rtk");
-        assert!(result.text.contains("Phase 5"));
+        let err = projector.project(request, &store).unwrap_err();
+        assert!(matches!(
+            err,
+            ProjectionError::BackendUnavailable { backend: "rtk", .. }
+        ));
+        // Verify no fake output is produced — the error message must not
+        // contain the old placeholder text.
+        let err_str = err.to_string();
+        assert!(!err_str.contains("[RTK backend skeleton]"));
+        assert!(err_str.contains("not yet implemented"));
+    }
+
+    #[test]
+    fn selector_falls_back_when_rtk_projector_errors() {
+        use crate::shell::projector::ProjectionSelector;
+
+        let config = ShellOutputRtkConfig {
+            enabled: Some(true),
+            path: None,
+            eligible_only: Some(true),
+            timeout_ms: Some(1000),
+            allow_side_effecting_commands: None,
+        };
+        // Build a selector with only RTK + generic fallbacks (no RawProjector).
+        // RTK will be tried first (it's the only one before fallbacks) and
+        // will error, so the selector should fall back to TruncatedProjector.
+        let mut selector = ProjectionSelector::empty();
+        let mut discovery = RtkDiscovery::new(config);
+        discovery.availability = Some(RtkAvailability {
+            state: RtkState::Available,
+            path: Some(PathBuf::from("/fake/rtk")),
+            version: Some("0.1.0".to_string()),
+            diagnostics: vec![],
+        });
+        selector.push(RtkProjector { discovery });
+        selector.push(crate::shell::projector::TruncatedProjector);
+
+        let mut store = CommandOutputStore::new();
+        let run = make_test_run_with_store(
+            &mut store,
+            "git status",
+            Some(vec!["git".into(), "status".into()]),
+            b"## main\n".to_vec(),
+        );
+        let policy = crate::shell::projector::ProjectionPolicy {
+            allow_external_backend: true,
+            allow_lossy: true,
+            redact_model_visible: true,
+        };
+        let request = ProjectionRequest::for_target(
+            &run,
+            crate::shell::projector::ProjectionTarget::ModelContext,
+            &policy,
+        );
+
+        let result = selector.project(request, &store);
+        // Should NOT be the RTK projector — it fell back.
+        assert_ne!(result.projector, "rtk");
+        // Should have a warning about the RTK failure.
+        assert!(result.warnings.iter().any(|w| w.contains("rtk failed")));
+        // Should still produce valid output from a safe projector.
+        assert!(!result.text.is_empty());
     }
 
     #[test]
@@ -898,5 +909,24 @@ mod tests {
             projection: None,
             redaction: crate::shell::projection::RedactionState::NotApplied,
         }
+    }
+
+    fn make_test_run_with_store(
+        store: &mut CommandOutputStore,
+        command: &str,
+        argv: Option<Vec<String>>,
+        stdout_bytes: Vec<u8>,
+    ) -> crate::shell::projection::CommandRun {
+        use std::time::UNIX_EPOCH;
+
+        store.insert_with_argv(
+            crate::shell::projection::CommandRunId(1),
+            command.to_string(),
+            argv,
+            std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            UNIX_EPOCH,
+            stdout_bytes,
+            Vec::new(),
+        )
     }
 }

@@ -170,7 +170,10 @@ pub(crate) fn handle_shell_event(app: &mut app::App, event: crate::shell::ShellE
             });
 
             // Populate projection metadata from the command-run store
-            if let Some(run) = app.command_run_store.get_run(crate::shell::projection::CommandRunId(id.0)) {
+            if let Some(run) = app
+                .command_run_store
+                .get_run(crate::shell::projection::CommandRunId(id.0))
+            {
                 let config = crate::config::schema::Config::load().unwrap_or_default();
                 let output_config = config.shell.as_ref().and_then(|s| s.output.as_ref());
                 let shell_output_config = output_config.cloned().unwrap_or_default();
@@ -183,7 +186,8 @@ pub(crate) fn handle_shell_event(app: &mut app::App, event: crate::shell::ShellE
                 let omitted_summary = if result.omitted.is_empty() {
                     None
                 } else {
-                    let total_omitted: usize = result.omitted.iter().map(|o| o.total_retained_bytes).sum();
+                    let total_omitted: usize =
+                        result.omitted.iter().map(|o| o.total_retained_bytes).sum();
                     if total_omitted > 0 {
                         Some(crate::shell::projector::format_bytes(total_omitted as u64))
                     } else {

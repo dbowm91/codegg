@@ -2210,15 +2210,19 @@ impl MessagesWidget {
                     )]));
                     // Projection metadata line
                     if let Some(ref projector) = projection_projector {
-                        let mut meta_parts: Vec<String> = vec![format!("projection: {}", projector)];
+                        let mut meta_parts: Vec<String> =
+                            vec![format!("projection: {}", projector)];
                         if let Some(ref exactness) = projection_exactness {
                             meta_parts.push(exactness.clone());
                         }
                         if let (Some(in_bytes), Some(out_bytes)) =
                             (projection_input_bytes, projection_output_bytes)
                         {
-                            meta_parts
-                                .push(format!("{} -> {}", format_bytes(*in_bytes), format_bytes(*out_bytes as u64)));
+                            meta_parts.push(format!(
+                                "{} -> {}",
+                                format_bytes(*in_bytes),
+                                format_bytes(*out_bytes as u64)
+                            ));
                         }
                         if let Some(ref omitted) = projection_omitted {
                             meta_parts.push(format!("omitted {}", omitted));

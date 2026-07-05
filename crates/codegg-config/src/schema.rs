@@ -1872,7 +1872,8 @@ impl ShellOutputConfig {
         }
         if self.projection == Some(ProjectionPolicyKind::Off) && self.retain_raw == Some(false) {
             errors.push(
-                "shell.output: projection=off with retain_raw=false risks unbounded output".to_string(),
+                "shell.output: projection=off with retain_raw=false risks unbounded output"
+                    .to_string(),
             );
         }
 
@@ -2241,7 +2242,10 @@ mod tests {
             (r#"{"projection": "off"}"#, ProjectionPolicyKind::Off),
             (r#"{"projection": "safe"}"#, ProjectionPolicyKind::Safe),
             (r#"{"projection": "rtk"}"#, ProjectionPolicyKind::Rtk),
-            (r#"{"projection": "aggressive"}"#, ProjectionPolicyKind::Aggressive),
+            (
+                r#"{"projection": "aggressive"}"#,
+                ProjectionPolicyKind::Aggressive,
+            ),
         ] {
             let cfg: ShellOutputConfig = serde_json::from_str(json).unwrap();
             assert_eq!(cfg.projection_kind(), expected);
