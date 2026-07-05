@@ -1,0 +1,13 @@
+[fixture]
+name = "cargo_check_multi_error"
+command = "cargo check"
+exit_code = 101
+stream = "stderr"
+
+[expect]
+must_contain = ["error[E0308]", "error[E0596]"]
+must_not_contain = []
+source_spans = ["src/lib.rs:42", "src/lib.rs:63"]
+failed_tests = []
+max_projected_tokens_safe = 3000
+max_projected_tokens_aggressive = 1500

@@ -1,0 +1,13 @@
+[fixture]
+name = "git_status_clean"
+command = "git status"
+exit_code = 0
+stream = "stdout"
+
+[expect]
+must_contain = ["nothing to commit", "working tree clean"]
+must_not_contain = []
+source_spans = []
+failed_tests = []
+max_projected_tokens_safe = 500
+max_projected_tokens_aggressive = 500

@@ -1,0 +1,13 @@
+[fixture]
+name = "cargo_check_one_error"
+command = "cargo check"
+exit_code = 101
+stream = "stderr"
+
+[expect]
+must_contain = ["error[E0308]", "mismatched types", "src/lib.rs:42"]
+must_not_contain = []
+source_spans = ["src/lib.rs:42"]
+failed_tests = []
+max_projected_tokens_safe = 2000
+max_projected_tokens_aggressive = 1000

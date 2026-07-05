@@ -1,0 +1,13 @@
+[fixture]
+name = "long_rg_output"
+command = "rg process"
+exit_code = 0
+stream = "stdout"
+
+[expect]
+must_contain = ["src/module_a.rs", "process_data"]
+must_not_contain = []
+source_spans = []
+failed_tests = []
+max_projected_tokens_safe = 4000
+max_projected_tokens_aggressive = 2000

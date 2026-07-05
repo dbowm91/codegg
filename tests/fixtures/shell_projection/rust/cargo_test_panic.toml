@@ -1,0 +1,13 @@
+[fixture]
+name = "cargo_test_panic"
+command = "cargo test"
+exit_code = 101
+stream = "stderr"
+
+[expect]
+must_contain = ["FAILED", "panicking", "assertion failed"]
+must_not_contain = []
+source_spans = ["src/lib.rs:95"]
+failed_tests = ["tests::panicking"]
+max_projected_tokens_safe = 3000
+max_projected_tokens_aggressive = 1500

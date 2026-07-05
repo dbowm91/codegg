@@ -1,0 +1,13 @@
+[fixture]
+name = "mixed_stdout_stderr"
+command = "process_items"
+exit_code = 0
+stream = "combined"
+
+[expect]
+must_contain = ["Progress", "Done", "WARN"]
+must_not_contain = []
+source_spans = []
+failed_tests = []
+max_projected_tokens_safe = 1000
+max_projected_tokens_aggressive = 500

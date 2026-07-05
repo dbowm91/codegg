@@ -90,6 +90,9 @@ cargo test --test tui_render
 # TUI unit/integration tests
 cargo test --test tui
 
+# Shell output projection evaluation harness (fixture corpus, 11 invariant tests)
+cargo test --test shell_projection_harness
+
 # LSP integration (fake server, no network, needs lsp-test-support)
 cargo test -p egglsp --features lsp-test-support --test scenario_engine
 cargo test --features lsp-test-support --test lsp_composite_stdio

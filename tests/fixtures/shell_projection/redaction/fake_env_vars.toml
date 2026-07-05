@@ -1,0 +1,15 @@
+[fixture]
+name = "fake_env_vars"
+command = "env"
+exit_code = 0
+stream = "stdout"
+redaction_fixture = true
+
+[expect]
+must_contain = ["Loading", "APP_NAME", "Connection"]
+must_not_contain = []
+must_redact = ["supersecretpassword123", "ghp_1234567890abcdef1234567890abcdef"]
+source_spans = []
+failed_tests = []
+max_projected_tokens_safe = 500
+max_projected_tokens_aggressive = 500

@@ -1,0 +1,14 @@
+[fixture]
+name = "timeout_exit"
+command = "sleep 300"
+exit_code = -1
+exit_state = "timeout"
+stream = "stdout"
+
+[expect]
+must_contain = []
+must_not_contain = []
+source_spans = []
+failed_tests = []
+max_projected_tokens_safe = 100
+max_projected_tokens_aggressive = 100

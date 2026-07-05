@@ -1,0 +1,13 @@
+[fixture]
+name = "cargo_check_success"
+command = "cargo check"
+exit_code = 0
+stream = "stdout"
+
+[expect]
+must_contain = ["Finished"]
+must_not_contain = ["error"]
+source_spans = []
+failed_tests = []
+max_projected_tokens_safe = 200
+max_projected_tokens_aggressive = 200

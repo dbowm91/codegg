@@ -1,0 +1,22 @@
+error[E0308]: mismatched types
+ --> src/lib.rs:42:5
+  |
+42 |     let x: i32 = "hello";
+  |            ---   ^^^^^^^ expected `i32`, found `&str`
+  |            |
+  |            expected due to this
+
+warning: unused variable: `y`
+ --> src/lib.rs:50:9
+  |
+50 |     let y = 10;
+  |         ^ help: if this is intentional, prefix it with an underscore: `_y`
+
+error[E0596]: cannot borrow `self.data` as mutable
+ --> src/lib.rs:63:5
+  |
+63 |     self.data.push(item);
+  |     ^^^^^^^^^^^^^^^^^^^^^^ `self.data` was mutably borrowed here in the previous iteration of the loop
+
+For more information about this error, try `rustc --explain E0308`.
+error: could not compile `my_project` (lib)

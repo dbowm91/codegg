@@ -1,0 +1,14 @@
+[fixture]
+name = "spawn_failed"
+command = "nonexistent_command_abc123"
+exit_code = -1
+exit_state = "spawn_failed"
+stream = "stderr"
+
+[expect]
+must_contain = ["command not found"]
+must_not_contain = []
+source_spans = []
+failed_tests = []
+max_projected_tokens_safe = 200
+max_projected_tokens_aggressive = 200

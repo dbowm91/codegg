@@ -1,0 +1,13 @@
+[fixture]
+name = "git_status_dirty"
+command = "git status"
+exit_code = 0
+stream = "stdout"
+
+[expect]
+must_contain = ["Changes to be committed", "Changes not staged", "Untracked"]
+must_not_contain = []
+source_spans = []
+failed_tests = []
+max_projected_tokens_safe = 1000
+max_projected_tokens_aggressive = 800

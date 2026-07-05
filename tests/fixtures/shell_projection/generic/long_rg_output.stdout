@@ -1,0 +1,48 @@
+src/module_a.rs:42:fn process_data(input: &str) -> Result<String> {
+src/module_a.rs:55:    let cleaned = input.trim();
+src/module_a.rs:56:    Ok(cleaned.to_string())
+src/module_b.rs:12:pub struct Config {
+src/module_b.rs:13:    name: String,
+src/module_b.rs:14:    value: u32,
+src/module_b.rs:15:}
+src/main.rs:8:fn main() {
+src/main.rs:10:    let config = Config { name: "test".into(), value: 42 };
+src/main.rs:11:    println!("{}", config.name);
+src/main.rs:12:}
+tests/test_a.rs:3:#[test]
+tests/test_a.rs:4:fn test_process() {
+tests/test_a.rs:5:    assert_eq!(process_data(" hello ").unwrap(), "hello");
+tests/test_a.rs:6:}
+tests/test_b.rs:10:fn test_config() {
+tests/test_b.rs:11:    let c = Config { name: "prod".into(), value: 100 };
+tests/test_b.rs:12:    assert_eq!(c.value, 100);
+}
+src/utils.rs:5:pub fn helper() {}
+src/utils.rs:10:fn internal() {}
+src/lib.rs:20:pub fn run() {}
+src/lib.rs:25:fn setup() {}
+src/lib.rs:30:fn teardown() {}
+src/handler.rs:15:fn handle_request() {}
+src/handler.rs:20:fn validate_input() {}
+src/handler.rs:25:fn format_response() {}
+src/db.rs:40:pub fn connect() {}
+src/db.rs:45:pub fn query() {}
+src/db.rs:50:pub fn close() {}
+tests/integration.rs:5:fn test_integration() {}
+tests/integration.rs:10:fn test_e2e() {}
+tests/unit.rs:5:fn test_unit_a() {}
+tests/unit.rs:10:fn test_unit_b() {}
+tests/unit.rs:15:fn test_unit_c() {}
+src/auth.rs:12:pub fn authenticate() {}
+src/auth.rs:18:pub fn authorize() {}
+src/auth.rs:24:pub fn validate_token() {}
+src/api.rs:30:pub fn get_user() {}
+src/api.rs:35:pub fn create_user() {}
+src/api.rs:40:pub fn update_user() {}
+src/api.rs:45:pub fn delete_user() {}
+src/models.rs:10:pub struct User {}
+src/models.rs:15:pub struct Post {}
+src/models.rs:20:pub struct Comment {}
+src/services.rs:25:pub fn send_email() {}
+src/services.rs:30:pub fn generate_report() {}
+src/services.rs:35:pub fn sync_data() {}

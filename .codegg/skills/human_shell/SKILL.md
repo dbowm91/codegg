@@ -20,7 +20,7 @@ path. It owns the human-shell ephemeral transcript, the policy
 gatekeeper that blocks destructive commands, the structured failure
 digest, and the Phase 1+2 command-event projection pipeline that
 becomes the substrate for later expansion, redaction, and TUI
-features. Phase 8 adds the deterministic redaction pipeline.
+features. Phase 8 adds the deterministic redaction pipeline. Phase 9 adds the evaluation harness.
 
 A detailed architecture document lives at `architecture/human_shell.md`.
 The roadmap is `plans/shell_output_projection_rtk_roadmap.md`.
@@ -37,6 +37,7 @@ The roadmap is `plans/shell_output_projection_rtk_roadmap.md`.
 | Phase 6 | **Landed** | Real RTK invocation: `RtkInvocationMode` (PostProcess/Wrapper/Disabled), capability-driven dispatch, input capping, timeout enforcement, projection metadata |
 | Phase 7 | **Landed** | Expansion API (`CommandOutputExpansion`, `ExpansionExactness`, `ExpansionRequest`), `/shell-expand` command, TUI detail panel with projection metadata |
 | Phase 8 | **Landed** | Redaction pipeline: `Redactor` with six `RedactRule` implementations, `apply_redaction_hook` entry point, `RedactionState::Applied { replacements }` |
+| Phase 9 | **Landed** | Evaluation harness: `tests/shell_projection_harness.rs` (11 invariant tests), fixture corpus in `tests/fixtures/shell_projection/` |
 
 ## Central Invariant
 

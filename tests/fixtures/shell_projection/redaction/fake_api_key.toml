@@ -1,0 +1,15 @@
+[fixture]
+name = "fake_api_key"
+command = "curl -H 'Authorization: Bearer sk-test-1234567890abcdef1234567890abcdef' https://api.example.com"
+exit_code = 0
+stream = "stdout"
+redaction_fixture = true
+
+[expect]
+must_contain = ["Connecting", "Response"]
+must_not_contain = []
+must_redact = ["sk-test-1234567890abcdef1234567890abcdef"]
+source_spans = []
+failed_tests = []
+max_projected_tokens_safe = 500
+max_projected_tokens_aggressive = 500

@@ -1,0 +1,15 @@
+[fixture]
+name = "false_positive_prose"
+command = "echo 'docs'"
+exit_code = 0
+stream = "stdout"
+redaction_fixture = true
+
+[expect]
+must_contain = ["authorization", "API key", "connection string"]
+must_not_contain = []
+must_not_redact = ["authorization", "API key", "connection string"]
+source_spans = []
+failed_tests = []
+max_projected_tokens_safe = 500
+max_projected_tokens_aggressive = 500

@@ -1,0 +1,5 @@
+Loading configuration...
+DB_PASSWORD=supersecretpassword123
+API_TOKEN=ghp_1234567890abcdef1234567890abcdef
+APP_NAME=myapp
+Connection established.

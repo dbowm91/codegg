@@ -1,0 +1,13 @@
+[fixture]
+name = "typescript_error"
+command = "tsc"
+exit_code = 1
+stream = "stderr"
+
+[expect]
+must_contain = ["error TS2322", "error TS2345", "Type 'string' is not assignable"]
+must_not_contain = []
+source_spans = ["src/index.ts:15", "src/utils.ts:8"]
+failed_tests = []
+max_projected_tokens_safe = 2000
+max_projected_tokens_aggressive = 1000
