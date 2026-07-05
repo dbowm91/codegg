@@ -11,9 +11,10 @@ pub mod types;
 pub use digest::{ShellDigest, ShellFailure, ShellFailureKind, TruncationReport};
 pub use policy::{evaluate_command, HumanShellPolicyDecision};
 pub use projection::{
-    default_command_projection, CommandExit, CommandOutputStore, CommandOutputStoreLimits,
-    CommandOutputStream, CommandRun, CommandRunId, OutputCompleteness, OutputEncoding,
-    OutputHandle, ProjectionHandle, RawStream, RedactionState, COMMAND_OUTPUT_MAX_HISTORY_ENTRIES,
+    default_command_projection, CommandExit, CommandOutputExpansion, CommandOutputStore,
+    CommandOutputStoreLimits, CommandOutputStream, CommandRun, CommandRunId, ExpansionExactness,
+    ExpansionRequest, OutputCompleteness, OutputEncoding, OutputHandle, ProjectionHandle,
+    RawStream, RedactionState, COMMAND_OUTPUT_MAX_HISTORY_ENTRIES,
     COMMAND_OUTPUT_MAX_RETAINED_BYTES, COMMAND_OUTPUT_MAX_SINGLE_STREAM_BYTES,
     DEFAULT_PROJECTION_BUDGET_BYTES,
 };

@@ -132,8 +132,8 @@ mod shell_dispatch_tests {
     };
     use crate::tui::app::App;
     use crate::tui::commands::shell::{
-        handle_shell_ask, handle_shell_include, handle_shell_kill, handle_shell_list,
-        handle_shell_show,
+        handle_shell_ask, handle_shell_expand, handle_shell_include, handle_shell_kill,
+        handle_shell_list, handle_shell_show,
     };
     use crate::tui::components::messages::MessageRole;
     use std::time::Duration;

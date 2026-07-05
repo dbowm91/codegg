@@ -40,8 +40,9 @@ use super::super::commands::sessions::{
 };
 #[allow(unused_imports)]
 use super::super::commands::shell::{
-    handle_run_human_shell, handle_shell_ask, handle_shell_event, handle_shell_include,
-    handle_shell_kill, handle_shell_list, handle_shell_rerun, handle_shell_show,
+    handle_run_human_shell, handle_shell_ask, handle_shell_event, handle_shell_expand,
+    handle_shell_include, handle_shell_kill, handle_shell_list, handle_shell_rerun,
+    handle_shell_show,
 };
 #[allow(unused_imports)]
 use super::super::commands::tasks::{
@@ -450,6 +451,9 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
         }
         TuiCommand::ShellAsk { id, question } => {
             handle_shell_ask(app, id, question);
+        }
+        TuiCommand::ShellExpand { id, stream, range } => {
+            handle_shell_expand(app, id, stream, range);
         }
         TuiCommand::FileDiffStatsReady {
             path,

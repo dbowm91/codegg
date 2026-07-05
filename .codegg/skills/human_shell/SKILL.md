@@ -1,7 +1,7 @@
 ---
 name: human-shell
-description: Human-initiated shell command execution, ephemeral transcript storage, projection pipeline (Phases 1-6), policy evaluation, and structured failure digest extraction
-version: 1.4.0
+description: Human-initiated shell command execution, ephemeral transcript storage, projection pipeline (Phases 1-7), policy evaluation, and structured failure digest extraction
+version: 1.5.0
 tags:
   - shell
   - bash
@@ -35,7 +35,8 @@ The roadmap is `plans/shell_output_projection_rtk_roadmap.md`.
 | Phase 4 | **Partial** | Config schema and `ProjectionSelector::with_config()` present; per-command rules and escape hatches deferred |
 | Phase 5 | **Landed** | RTK discovery, eligibility classification, `RtkCapabilities`, `RtkProjector` skeleton |
 | Phase 6 | **Landed** | Real RTK invocation: `RtkInvocationMode` (PostProcess/Wrapper/Disabled), capability-driven dispatch, input capping, timeout enforcement, projection metadata |
-| Phase 7+ | **Pending** | TUI expansion panel, full redaction pipeline (Phase 8) |
+| Phase 7 | **Landed** | Expansion API (`CommandOutputExpansion`, `ExpansionExactness`, `ExpansionRequest`), `/shell-expand` command, TUI detail panel with projection metadata |
+| Phase 8 | **Pending** | Full redaction pipeline — hook site in Phase 2, rules not implemented yet |
 
 ## Central Invariant
 
@@ -255,6 +256,49 @@ Raw → Native → RTK (if enabled) → ErrorRetention → Truncated
 - Invocation: PostProcess and Wrapper mode dispatch, disabled mode fallback
 - Skeleton: returns `BackendUnavailable` when invocation disabled
 - Selector: falls back to safe projection on RTK error with warning
+
+## What Phase 7 Adds
+
+Phase 7 adds user-facing and model-tool-facing affordances for expanding
+retained raw command output from projection handles.
+
+### Expansion API
+
+`CommandOutputStore::expand()` and `expand_stream()` are core expansion
+operations in `src/shell/projection.rs`:
+
+- `ExpansionRequest` — command_id, stream, optional byte_range
+- `CommandOutputExpansion` — result with text, exactness, total_stream_bytes, returned_bytes, warnings
+- `ExpansionExactness` — `Exact`, `LossyUtf8`, `Unavailable` (with `label()`)
+
+Expansion handles eviction, missing streams, UTF-8 errors, and clamps
+out-of-range byte offsets to available data.
+
+### `/shell-expand` Command
+
+New slash command: `/shell-expand <id|last> stdout|stderr [start..end]`
+
+- Resolves shell ID via `resolve_shell_id()` (supports `"last"` or numeric ID)
+- Parses optional byte range in `start..end` format
+- Calls `app.command_run_store.expand_stream()` for raw expansion
+- Displays result in `InfoDialog` with metadata and expanded output (truncated at 8192 chars)
+
+### TUI Shell Detail Enhancement
+
+`handle_shell_show()` dialog now includes projection metadata:
+
+- Raw retention sizes, observed vs retained bytes, partiality
+- Projector name, exactness, output size
+- Omitted ranges with byte ranges
+- Expansion handles as `cmd://` URLs
+- Footer includes `e expand` keybinding
+
+### Promotion Semantics
+
+- `!command`: expansion remains local; model cannot read raw output
+- `!!command`: projection can enter model context; raw handles accessible
+- `/shell-include`: includes projection/expansion into model context
+- `/shell-expand`: local TUI operation unless explicitly promoted
 
 ## Working Examples
 

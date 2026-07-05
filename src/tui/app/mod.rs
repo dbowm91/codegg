@@ -399,6 +399,11 @@ pub enum TuiCommand {
         id: u64,
         question: String,
     },
+    ShellExpand {
+        id: u64,
+        stream: String,
+        range: Option<String>,
+    },
     FileDiffStatsReady {
         path: PathBuf,
         generation: u64,
@@ -3748,6 +3753,15 @@ impl App {
                         self.close_dialog();
                         return;
                     }
+                    crossterm::event::KeyCode::Char('e') => {
+                        self.prompt_state.prompt.clear();
+                        self.prompt_state
+                            .prompt
+                            .set_text(format!("/shell-expand {} stdout", id));
+                        self.ui_state.command_mode = true;
+                        self.close_dialog();
+                        return;
+                    }
                     _ => {}
                 }
             }
@@ -6485,6 +6499,31 @@ impl App {
                         self.messages_state
                             .toasts
                             .warning("Usage: /shell-show <id|last>");
+                    }
+                }
+            }
+            "/shell-expand" => {
+                self.ui_state.command_mode = false;
+                let query = self.dialog_state.command_palette.query.clone();
+                let args_str = query.strip_prefix("/shell-expand").unwrap_or("").trim();
+                let args: Vec<&str> = args_str.splitn(3, ' ').collect();
+                let id_str = args.first().copied().unwrap_or("");
+                let stream_str = args.get(1).copied().unwrap_or("stdout");
+                let range_str = args.get(2).map(|s| s.to_string());
+                match self.resolve_shell_id(id_str) {
+                    Some(id) => {
+                        if let Some(ref tx) = self.tui_cmd_tx {
+                            let _ = tx.try_send(TuiCommand::ShellExpand {
+                                id,
+                                stream: stream_str.to_string(),
+                                range: range_str,
+                            });
+                        }
+                    }
+                    None => {
+                        self.messages_state.toasts.warning(
+                            "Usage: /shell-expand <id|last> stdout|stderr [start..end]",
+                        );
                     }
                 }
             }

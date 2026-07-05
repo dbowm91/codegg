@@ -569,6 +569,163 @@ impl CommandOutputStore {
         Some(OutputHandle::new(command_id, stream))
     }
 
+    /// Resolve a handle URL with optional byte range fragment
+    /// (`cmd://<id>/<stream>#<start>-<end>`).
+    pub fn parse_handle_with_range(&self, url: &str) -> Option<ExpansionRequest> {
+        let (base, range_part) = url.split_once('#').unwrap_or((url, ""));
+        let rest = base.strip_prefix("cmd://")?;
+        let mut parts = rest.split('/');
+        let id: u64 = parts.next()?.parse().ok()?;
+        let stream = match parts.next()? {
+            "stdout" => CommandOutputStream::Stdout,
+            "stderr" => CommandOutputStream::Stderr,
+            "combined" => CommandOutputStream::Combined,
+            _ => return None,
+        };
+        if parts.next().is_some() {
+            return None;
+        }
+        let command_id = CommandRunId(id);
+        if !self.runs.contains_key(&command_id) {
+            return None;
+        }
+        let byte_range = if range_part.is_empty() {
+            None
+        } else {
+            let (start_str, end_str) = range_part.split_once('-')?;
+            let start: usize = start_str.parse().ok()?;
+            let end: usize = end_str.parse().ok()?;
+            Some(start..end)
+        };
+        Some(ExpansionRequest {
+            command_id,
+            stream,
+            byte_range,
+        })
+    }
+
+    /// Expand raw output from a command run handle.
+    ///
+    /// Returns the full retained stream for the given handle, or an
+    /// error if the handle is invalid, the command has been evicted, or
+    /// the stream was not captured.
+    pub fn expand(&self, handle: &ExpansionRequest) -> CommandOutputExpansion {
+        let total_stream_bytes = self
+            .get_stream(OutputHandle::new(handle.command_id, handle.stream))
+            .map(|s| s.len())
+            .unwrap_or(0);
+
+        if !self.runs.contains_key(&handle.command_id) {
+            return CommandOutputExpansion {
+                command_id: handle.command_id,
+                stream: handle.stream,
+                byte_range: handle.byte_range.clone(),
+                text: String::new(),
+                exactness: ExpansionExactness::Unavailable,
+                total_stream_bytes,
+                returned_bytes: 0,
+                warnings: vec!["command has been evicted from the store".to_string()],
+            };
+        }
+
+        let raw = match self.get_stream(OutputHandle::new(handle.command_id, handle.stream)) {
+            Some(bytes) => bytes,
+            None => {
+                return CommandOutputExpansion {
+                    command_id: handle.command_id,
+                    stream: handle.stream,
+                    byte_range: handle.byte_range.clone(),
+                    text: String::new(),
+                    exactness: ExpansionExactness::Unavailable,
+                    total_stream_bytes: 0,
+                    returned_bytes: 0,
+                    warnings: vec!["stream was not captured".to_string()],
+                };
+            }
+        };
+
+        let slice = if let Some(range) = &handle.byte_range {
+            let clamped_start = range.start.min(raw.len());
+            let clamped_end = range.end.min(raw.len());
+            if clamped_start >= clamped_end {
+                return CommandOutputExpansion {
+                    command_id: handle.command_id,
+                    stream: handle.stream,
+                    byte_range: handle.byte_range.clone(),
+                    text: String::new(),
+                    exactness: ExpansionExactness::Unavailable,
+                    total_stream_bytes: raw.len(),
+                    returned_bytes: 0,
+                    warnings: vec!["range is out of bounds or empty".to_string()],
+                };
+            }
+            &raw[clamped_start..clamped_end]
+        } else {
+            raw
+        };
+
+        let (text, exactness, warnings) = match std::str::from_utf8(slice) {
+            Ok(s) => (s.to_string(), ExpansionExactness::Exact, Vec::new()),
+            Err(e) => {
+                let valid_up_to = e.valid_up_to();
+                let decoded =
+                    String::from_utf8_lossy(&slice[..valid_up_to]).into_owned();
+                let remaining = &slice[valid_up_to..];
+                let mut full = decoded;
+                full.push_str(&String::from_utf8_lossy(remaining));
+                (
+                    full,
+                    ExpansionExactness::LossyUtf8,
+                    vec!["output contains invalid UTF-8; rendered lossily".to_string()],
+                )
+            }
+        };
+
+        let returned_bytes = slice.len();
+        let mut warnings = warnings;
+        if let Some(range) = &handle.byte_range {
+            if range.end > total_stream_bytes {
+                warnings.push(format!(
+                    "requested range {}-{} exceeds stream length {}; clamped to available bytes",
+                    range.start,
+                    range.end,
+                    total_stream_bytes
+                ));
+            }
+        }
+
+        CommandOutputExpansion {
+            command_id: handle.command_id,
+            stream: handle.stream,
+            byte_range: handle.byte_range.clone(),
+            text,
+            exactness,
+            total_stream_bytes,
+            returned_bytes,
+            warnings,
+        }
+    }
+
+    /// Expand raw output for a shorthand stream name ("stdout" or "stderr").
+    pub fn expand_stream(
+        &self,
+        command_id: CommandRunId,
+        stream: &str,
+        byte_range: Option<Range<usize>>,
+    ) -> Option<CommandOutputExpansion> {
+        let stream_enum = match stream {
+            "stdout" => CommandOutputStream::Stdout,
+            "stderr" => CommandOutputStream::Stderr,
+            "combined" => CommandOutputStream::Combined,
+            _ => return None,
+        };
+        Some(self.expand(&ExpansionRequest {
+            command_id,
+            stream: stream_enum,
+            byte_range,
+        }))
+    }
+
     /// Returns the number of completed command runs retained.
     pub fn len(&self) -> usize {
         self.runs.len()
@@ -639,6 +796,72 @@ impl CommandOutputStore {
 impl Default for CommandOutputStore {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Exactness of an expansion result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExpansionExactness {
+    /// All requested bytes were decoded as valid UTF-8.
+    Exact,
+    /// Some bytes contained invalid UTF-8 and were rendered lossily.
+    LossyUtf8,
+    /// The command has been evicted from the store; no bytes are available.
+    Unavailable,
+}
+
+impl ExpansionExactness {
+    pub fn label(&self) -> &'static str {
+        match self {
+            ExpansionExactness::Exact => "exact",
+            ExpansionExactness::LossyUtf8 => "lossy-utf8",
+            ExpansionExactness::Unavailable => "unavailable",
+        }
+    }
+}
+
+/// A request to expand raw output from a command run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExpansionRequest {
+    pub command_id: CommandRunId,
+    pub stream: CommandOutputStream,
+    pub byte_range: Option<Range<usize>>,
+}
+
+/// The result of expanding raw command output.
+#[derive(Debug, Clone)]
+pub struct CommandOutputExpansion {
+    /// Command run being expanded.
+    pub command_id: CommandRunId,
+    /// Stream that was expanded.
+    pub stream: CommandOutputStream,
+    /// Requested byte range (if any).
+    pub byte_range: Option<Range<usize>>,
+    /// The expanded text (valid UTF-8 or lossy-decoded).
+    pub text: String,
+    /// Exactness of the expansion.
+    pub exactness: ExpansionExactness,
+    /// Total bytes in the retained stream.
+    pub total_stream_bytes: usize,
+    /// Number of bytes actually returned.
+    pub returned_bytes: usize,
+    /// Non-fatal warnings (clamping, eviction, encoding).
+    pub warnings: Vec<String>,
+}
+
+impl CommandOutputExpansion {
+    /// True if the expansion returned all requested bytes.
+    pub fn is_complete(&self) -> bool {
+        match self.exactness {
+            ExpansionExactness::Exact => {
+                if let Some(range) = &self.byte_range {
+                    self.returned_bytes == range.end.saturating_sub(range.start)
+                } else {
+                    self.returned_bytes == self.total_stream_bytes
+                }
+            }
+            _ => false,
+        }
     }
 }
 
@@ -1282,5 +1505,254 @@ mod tests {
         let h = OutputHandle::new(CommandRunId(42), CommandOutputStream::Stdout);
         assert_eq!(h.as_url(), "cmd://42/stdout");
         assert_eq!(h.to_string(), "cmd://42/stdout");
+    }
+
+    // ── Phase 7: expansion tests ──────────────────────────────────
+
+    #[test]
+    fn parse_handle_with_range_full() {
+        let mut store = CommandOutputStore::new();
+        let id = store.alloc_id();
+        store.insert(id, "c".to_string(), cwd(), now(), b"hello".to_vec(), Vec::new());
+        let req = store.parse_handle_with_range("cmd://1/stdout").unwrap();
+        assert_eq!(req.command_id, id);
+        assert_eq!(req.stream, CommandOutputStream::Stdout);
+        assert!(req.byte_range.is_none());
+    }
+
+    #[test]
+    fn parse_handle_with_range_bounded() {
+        let mut store = CommandOutputStore::new();
+        let id = store.alloc_id();
+        store.insert(id, "c".to_string(), cwd(), now(), b"hello world".to_vec(), Vec::new());
+        let req = store.parse_handle_with_range(&format!("cmd://{}/stdout#0-5", id.0)).unwrap();
+        assert_eq!(req.byte_range, Some(0..5));
+    }
+
+    #[test]
+    fn parse_handle_with_range_rejects_bad_id() {
+        let store = CommandOutputStore::new();
+        assert!(store.parse_handle_with_range("cmd://9999/stdout").is_none());
+    }
+
+    #[test]
+    fn parse_handle_with_range_rejects_bad_stream() {
+        let mut store = CommandOutputStore::new();
+        let id = store.alloc_id();
+        store.insert(id, "c".to_string(), cwd(), now(), Vec::new(), Vec::new());
+        assert!(store
+            .parse_handle_with_range(&format!("cmd://{}/bogus", id.0))
+            .is_none());
+    }
+
+    #[test]
+    fn parse_handle_with_range_rejects_bad_range() {
+        let mut store = CommandOutputStore::new();
+        let id = store.alloc_id();
+        store.insert(id, "c".to_string(), cwd(), now(), Vec::new(), Vec::new());
+        assert!(store
+            .parse_handle_with_range(&format!("cmd://{}/stdout#abc-def", id.0))
+            .is_none());
+    }
+
+    #[test]
+    fn expand_full_stdout() {
+        let mut store = CommandOutputStore::new();
+        let id = store.alloc_id();
+        store.insert(
+            id,
+            "c".to_string(),
+            cwd(),
+            now(),
+            b"hello\n".to_vec(),
+            b"err\n".to_vec(),
+        );
+        let result = store.expand_stream(id, "stdout", None).unwrap();
+        assert_eq!(result.text, "hello\n");
+        assert_eq!(result.exactness, ExpansionExactness::Exact);
+        assert_eq!(result.total_stream_bytes, 6);
+        assert_eq!(result.returned_bytes, 6);
+        assert!(result.is_complete());
+    }
+
+    #[test]
+    fn expand_range_returns_exact_bytes() {
+        let mut store = CommandOutputStore::new();
+        let id = store.alloc_id();
+        store.insert(
+            id,
+            "c".to_string(),
+            cwd(),
+            now(),
+            b"hello world".to_vec(),
+            Vec::new(),
+        );
+        let result = store.expand_stream(id, "stdout", Some(0..5)).unwrap();
+        assert_eq!(result.text, "hello");
+        assert_eq!(result.exactness, ExpansionExactness::Exact);
+        assert_eq!(result.returned_bytes, 5);
+        assert!(result.is_complete());
+    }
+
+    #[test]
+    fn expand_clamps_overshoot() {
+        let mut store = CommandOutputStore::new();
+        let id = store.alloc_id();
+        store.insert(
+            id,
+            "c".to_string(),
+            cwd(),
+            now(),
+            b"hi".to_vec(),
+            Vec::new(),
+        );
+        let result = store.expand_stream(id, "stdout", Some(0..100)).unwrap();
+        assert_eq!(result.text, "hi");
+        assert_eq!(result.returned_bytes, 2);
+        assert_eq!(result.total_stream_bytes, 2);
+        assert!(!result.warnings.is_empty());
+    }
+
+    #[test]
+    fn expand_evicted_command_returns_unavailable() {
+        let store = CommandOutputStore::new();
+        let result = store.expand_stream(CommandRunId(9999), "stdout", None).unwrap();
+        assert_eq!(result.exactness, ExpansionExactness::Unavailable);
+        assert!(result.text.is_empty());
+        assert!(!result.warnings.is_empty());
+    }
+
+    #[test]
+    fn expand_missing_stream_returns_unavailable() {
+        let mut store = CommandOutputStore::new();
+        let id = store.alloc_id();
+        store.insert(id, "c".to_string(), cwd(), now(), Vec::new(), Vec::new());
+        // combined stream is not retained
+        let result = store.expand_stream(id, "combined", None).unwrap();
+        assert_eq!(result.exactness, ExpansionExactness::Unavailable);
+    }
+
+    #[test]
+    fn expand_non_utf8_lossy() {
+        let mut store = CommandOutputStore::new();
+        let id = store.alloc_id();
+        store.insert(
+            id,
+            "c".to_string(),
+            cwd(),
+            now(),
+            vec![0xFF, 0xFE, b'a'],
+            Vec::new(),
+        );
+        let result = store.expand_stream(id, "stdout", None).unwrap();
+        assert_eq!(result.exactness, ExpansionExactness::LossyUtf8);
+        assert!(!result.warnings.is_empty());
+    }
+
+    #[test]
+    fn expand_invalid_stream_name() {
+        let mut store = CommandOutputStore::new();
+        let id = store.alloc_id();
+        store.insert(id, "c".to_string(), cwd(), now(), Vec::new(), Vec::new());
+        assert!(store.expand_stream(id, "bogus", None).is_none());
+    }
+
+    #[test]
+    fn expansion_exactness_labels() {
+        assert_eq!(ExpansionExactness::Exact.label(), "exact");
+        assert_eq!(ExpansionExactness::LossyUtf8.label(), "lossy-utf8");
+        assert_eq!(ExpansionExactness::Unavailable.label(), "unavailable");
+    }
+
+    #[test]
+    fn expand_full_stderr() {
+        let mut store = CommandOutputStore::new();
+        let id = store.alloc_id();
+        store.insert(
+            id,
+            "c".to_string(),
+            cwd(),
+            now(),
+            Vec::new(),
+            b"error!\n".to_vec(),
+        );
+        let result = store.expand_stream(id, "stderr", None).unwrap();
+        assert_eq!(result.text, "error!\n");
+        assert_eq!(result.stream, CommandOutputStream::Stderr);
+        assert_eq!(result.exactness, ExpansionExactness::Exact);
+    }
+
+    #[test]
+    fn expand_via_expansion_request() {
+        let mut store = CommandOutputStore::new();
+        let id = store.alloc_id();
+        store.insert(
+            id,
+            "c".to_string(),
+            cwd(),
+            now(),
+            b"abcdef".to_vec(),
+            Vec::new(),
+        );
+        let req = ExpansionRequest {
+            command_id: id,
+            stream: CommandOutputStream::Stdout,
+            byte_range: Some(2..5),
+        };
+        let result = store.expand(&req);
+        assert_eq!(result.text, "cde");
+        assert_eq!(result.returned_bytes, 3);
+    }
+
+    #[test]
+    fn expand_start_beyond_len_returns_empty() {
+        let mut store = CommandOutputStore::new();
+        let id = store.alloc_id();
+        store.insert(id, "c".to_string(), cwd(), now(), b"hi".to_vec(), Vec::new());
+        let result = store.expand_stream(id, "stdout", Some(100..200)).unwrap();
+        assert_eq!(result.returned_bytes, 0);
+        assert_eq!(result.exactness, ExpansionExactness::Unavailable);
+    }
+
+    #[test]
+    fn expand_partial_stream_reports_partial_info() {
+        let mut store = CommandOutputStore::with_limits(CommandOutputStoreLimits {
+            max_total_retained_bytes: 64 * 1024 * 1024,
+            max_single_stream_bytes: 16,
+            max_history_entries: 100,
+        });
+        let id = store.alloc_id();
+        let stdout = vec![b'x'; 1024];
+        store.insert(
+            id,
+            "c".to_string(),
+            cwd(),
+            now(),
+            stdout.clone(),
+            Vec::new(),
+        );
+        // Full stream expansion returns what's retained
+        let result = store.expand_stream(id, "stdout", None).unwrap();
+        assert_eq!(result.returned_bytes, 16);
+        assert_eq!(result.total_stream_bytes, 16); // only retained bytes
+        assert_eq!(result.text.len(), 16);
+    }
+
+    #[test]
+    fn expansion_request_fields_preserved() {
+        let mut store = CommandOutputStore::new();
+        let id = store.alloc_id();
+        store.insert(id, "c".to_string(), cwd(), now(), b"abcdef".to_vec(), Vec::new());
+        let req = ExpansionRequest {
+            command_id: id,
+            stream: CommandOutputStream::Stderr,
+            byte_range: None,
+        };
+        let result = store.expand(&req);
+        assert_eq!(result.command_id, id);
+        assert_eq!(result.stream, CommandOutputStream::Stderr);
+        // stderr is empty — valid UTF-8, zero bytes returned
+        assert_eq!(result.exactness, ExpansionExactness::Exact);
+        assert_eq!(result.returned_bytes, 0);
     }
 }

@@ -304,6 +304,8 @@ impl CommandRegistry {
                 .with_description("Kill a running shell command (args: <id|last>)"),
             Command::new("/shell-ask", CommandCategory::System, None)
                 .with_description("Ask about shell output (args: <id|last> <question>)"),
+            Command::new("/shell-expand", CommandCategory::System, None)
+                .with_description("Expand raw shell output from projection handle (args: <id|last> stdout|stderr [start..end])"),
             Command::new("/tui-stats", CommandCategory::System, None)
                 .with_description("Show TUI runtime diagnostics"),
             Command::new("/plugins", CommandCategory::System, None)
@@ -512,7 +514,7 @@ mod tests {
 
     #[test]
     fn built_in_command_count_matches_release_docs() {
-        assert_eq!(CommandRegistry::built_in_commands().len(), 104);
+        assert_eq!(CommandRegistry::built_in_commands().len(), 105);
     }
 
     #[test]

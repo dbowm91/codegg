@@ -413,7 +413,7 @@ Both are constructed in the App's `new` and the test constructor. They are owned
 - Native structured projectors (Phase 3) — landed
 - Configuration schema for projection policy (Phase 4)
 - RTK backend (Phase 5) — landed
-- TUI expansion panel (Phase 7)
+- TUI expansion panel (Phase 7) — landed in Phase 7
 - Redaction pipeline (Phase 8) — redaction hook placeholder exists in Phase 2
 
 ## Command Output Projection (Phase 2)
@@ -659,9 +659,60 @@ Raw → Native → RTK (if enabled) → ErrorRetention → Truncated
 
 ### What's NOT in Phase 5/6
 
-- TUI expansion panel (Phase 7)
 - Full redaction pipeline (Phase 8) — the hook site is in place, but the redaction rules are not implemented yet
 - Broad RTK coverage — Phase 6 is intentionally conservative, covering low-risk read-only commands only
+
+## Command Output Projection (Phase 7)
+
+Phase 7 adds user-facing and model-tool-facing affordances for expanding retained raw command output from projection handles. Users and tools can recover exact stdout/stderr ranges, omitted regions, failure regions, and full raw streams without rerunning commands.
+
+### Expansion API (`projection.rs`)
+
+`CommandOutputStore::expand()` and `expand_stream()` are the core expansion operations:
+
+- `ExpansionRequest` — command_id, stream, optional byte_range
+- `CommandOutputExpansion` — result with text, exactness, total_stream_bytes, returned_bytes, warnings
+- `ExpansionExactness` — `Exact`, `LossyUtf8`, `Unavailable` (with `label()` for UI display)
+
+Expansion handles eviction/missing streams/UTF-8 errors and clamps out-of-range byte offsets to available data.
+
+### `/shell-expand` Command
+
+New slash command: `/shell-expand <id|last> stdout|stderr [start..end]`
+
+- Resolves shell ID via `resolve_shell_id()` (supports `"last"` or numeric ID)
+- Parses optional byte range in `start..end` format
+- Calls `app.command_run_store.expand_stream()` for raw expansion
+- Displays result in `InfoDialog` with metadata (stream, range, exactness, bytes returned, warnings) and expanded output (truncated at 8192 chars)
+
+### TUI Shell Detail Panel Enhancement
+
+The `handle_shell_show()` dialog now includes a projection metadata section between capture policy and stdout:
+
+- Raw retention sizes (head + tail)
+- Observed vs retained bytes, partiality flag
+- Exit label and status
+- Projector name and exactness
+- Output size and omitted ranges with byte ranges
+- Expansion handles as `cmd://` URLs
+- Warnings from projection
+- Footer includes `e expand` keybinding
+
+### Promotion Semantics
+
+- `!command`: expansion remains local; model cannot read raw output unless user promotes
+- `!!command`: projection can enter model context; raw handles referenced; expansion may be model-accessible
+- `/shell-include`: includes projection/expansion into model context
+- `/shell-expand`: local TUI operation unless explicitly promoted
+
+### Tests
+
+Tests cover: handle parsing (full stream + range forms), range expansion exactness, clamping, eviction (unavailable not empty), partial stream partiality, UTF-8 safety, expansion request field preservation, and omitted-range-to-handle mapping.
+
+### What's NOT in Phase 7
+
+- Full redaction pipeline (Phase 8)
+- Model-accessible `command_output_read` tool (deferred; internal API is ready)
 
 ## Current Projection Pipeline Status
 
@@ -673,4 +724,5 @@ Raw → Native → RTK (if enabled) → ErrorRetention → Truncated
 | Phase 4 | **Partial** | Config schema and `ProjectionSelector::with_config()` present; per-command rules and escape hatches deferred |
 | Phase 5 | **Landed** | RTK discovery, eligibility classification, `RtkCapabilities`, `RtkProjector` skeleton |
 | Phase 6 | **Landed** | Real RTK invocation: `RtkInvocationMode` (PostProcess/Wrapper/Disabled), capability-driven dispatch, input capping, timeout enforcement, projection metadata |
-| Phase 7+ | **Pending** | TUI expansion panel, full redaction pipeline (Phase 8) |
+| Phase 7 | **Landed** | Expansion API (`CommandOutputExpansion`, `ExpansionExactness`, `ExpansionRequest`), `/shell-expand` command, TUI detail panel with projection metadata |
+| Phase 8 | **Pending** | Full redaction pipeline — hook site in Phase 2, rules not implemented yet |

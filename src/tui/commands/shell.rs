@@ -590,6 +590,86 @@ pub(crate) fn handle_shell_show(app: &mut app::App, id: u64) {
     ));
     lines.push(format!("Capture:  {:?}", entry.capture_policy));
 
+    // Projection metadata from the durable command-run store
+    let cmd_run_id = crate::shell::projection::CommandRunId(id);
+    if let Some(run) = app.command_run_store.get_run(cmd_run_id) {
+        lines.push(String::new());
+        lines.push("── projection ──".to_string());
+
+        // Raw retention info
+        let stdout_total = run.stdout.total_bytes;
+        let stdout_retained = run.stdout.retained_bytes;
+        let stderr_total = run.stderr.total_bytes;
+        let stderr_retained = run.stderr.retained_bytes;
+        lines.push(format!(
+            "Raw:      stdout {} / stderr {} (retained)",
+            crate::shell::projector::format_bytes(stdout_retained),
+            crate::shell::projector::format_bytes(stderr_retained)
+        ));
+        if stdout_total != stdout_retained || stderr_total != stderr_retained {
+            lines.push(format!(
+                "Observed: stdout {} / stderr {} (total)",
+                crate::shell::projector::format_bytes(stdout_total),
+                crate::shell::projector::format_bytes(stderr_total)
+            ));
+        }
+        if run.is_partial() {
+            lines.push("Partial:  yes (output exceeded retention cap)".to_string());
+        }
+        lines.push(format!("Exit:     {}", run.exit.label()));
+
+        // Projection result
+        let config = crate::config::schema::Config::load().unwrap_or_default();
+        let output_config = config.shell.as_ref().and_then(|s| s.output.as_ref());
+        let shell_output_config = output_config.cloned().unwrap_or_default();
+        let result = crate::shell::projector::config_command_projection(
+            run,
+            &app.command_run_store,
+            &shell_output_config,
+            crate::shell::projector::ProjectionTarget::TuiDetail,
+        );
+        lines.push(format!("Projector: {}", result.projector));
+        lines.push(format!("Exact:    {}", result.exactness.label()));
+        lines.push(format!(
+            "Output:   {}",
+            crate::shell::projector::format_bytes(result.output_bytes as u64)
+        ));
+
+        // Omitted ranges
+        if !result.omitted.is_empty() {
+            lines.push(format!("Omitted:  {} range(s)", result.omitted.len()));
+            for (i, omitted) in result.omitted.iter().enumerate() {
+                lines.push(format!(
+                    "  [{}] {} {}..{} ({} bytes total)",
+                    i,
+                    omitted.stream.as_str(),
+                    omitted.start_byte,
+                    omitted.end_byte,
+                    omitted.total_retained_bytes
+                ));
+            }
+        }
+
+        // Expansion handles
+        if !result.expansion_handles.is_empty() {
+            lines.push(format!(
+                "Handles: {}",
+                result.expansion_handles.len()
+            ));
+            for handle in &result.expansion_handles {
+                lines.push(format!("  {}", handle.as_url()));
+            }
+        }
+
+        // Warnings
+        if !result.warnings.is_empty() {
+            lines.push("Warnings:".to_string());
+            for w in &result.warnings {
+                lines.push(format!("  - {}", w));
+            }
+        }
+    }
+
     let stdout = entry.stdout.head_str_lossy();
     let stderr = entry.stderr.head_str_lossy();
     let stdout_omitted = entry.stdout.omitted_bytes;
@@ -628,7 +708,7 @@ pub(crate) fn handle_shell_show(app: &mut app::App, id: u64) {
 
     let info_type = crate::tui::components::dialogs::info::InfoType::ShellShow;
     let shell_footer =
-        "i include  |  a ask  |  r rerun  |  k kill  |  j/k scroll  |  Esc close".to_string();
+        "i include  |  a ask  |  r rerun  |  k kill  |  e expand  |  j/k scroll  |  Esc close".to_string();
     if app.dialog_state.shell_detail_dialog.is_none() {
         let mut dialog = crate::tui::components::dialogs::info::InfoDialog::new(
             std::sync::Arc::clone(&app.ui_state.theme),
@@ -666,5 +746,131 @@ pub(crate) fn format_shell_status(status: &crate::shell::types::ShellStatus) -> 
         crate::shell::types::ShellStatus::TimedOut => "timed out",
         crate::shell::types::ShellStatus::FailedToStart => "failed to start",
         crate::shell::types::ShellStatus::Killed => "killed",
+    }
+}
+
+pub(crate) fn handle_shell_expand(
+    app: &mut app::App,
+    id: u64,
+    stream: String,
+    range: Option<String>,
+) {
+    use crate::shell::projection::CommandRunId;
+
+    let cmd_id = CommandRunId(id);
+
+    // Check if the command exists in the legacy store for a friendly message
+    let has_legacy = app
+        .shell_store
+        .get(crate::shell::types::ShellCommandId(id))
+        .is_some();
+    if !has_legacy {
+        app.messages_state
+            .toasts
+            .warning(&format!("No shell command with id {}", id));
+        return;
+    }
+
+    // Parse optional byte range (e.g. "0..4096")
+    let byte_range: Option<std::ops::Range<usize>> = range.as_deref().and_then(|r| {
+        if let Some((start_s, end_s)) = r.split_once("..") {
+            let start = start_s.trim().parse::<usize>().ok()?;
+            let end = end_s.trim().parse::<usize>().ok()?;
+            Some(start..end)
+        } else {
+            None
+        }
+    });
+
+    // Try expansion from the durable command-run store
+    match app
+        .command_run_store
+        .expand_stream(cmd_id, &stream, byte_range)
+    {
+        Some(expansion) => {
+            let mut lines: Vec<String> = Vec::new();
+            lines.push("── Shell Output Expansion ──".to_string());
+            lines.push(format!("Command:  {}", id));
+            lines.push(format!("Stream:   {}", expansion.stream.as_str()));
+            lines.push(format!(
+                "Range:    {}",
+                match &expansion.byte_range {
+                    Some(r) => format!("{}..{}", r.start, r.end),
+                    None => "full".to_string(),
+                }
+            ));
+            lines.push(format!("Exact:    {}", expansion.exactness.label()));
+            lines.push(format!(
+                "Returned: {} of {} bytes",
+                expansion.returned_bytes, expansion.total_stream_bytes
+            ));
+            if !expansion.warnings.is_empty() {
+                lines.push(String::new());
+                lines.push("Warnings:".to_string());
+                for w in &expansion.warnings {
+                    lines.push(format!("  - {}", w));
+                }
+            }
+            lines.push(String::new());
+            lines.push("── expanded output ──".to_string());
+            lines.push(String::new());
+            // Show output, truncating if very large
+            let display = if expansion.text.len() > 8192 {
+                let truncated_len = 8192;
+                let mut truncated = expansion.text[..truncated_len].to_string();
+                truncated.push_str(&format!(
+                    "\n\n... (truncated, {} of {} bytes shown)",
+                    truncated_len,
+                    expansion.text.len()
+                ));
+                truncated
+            } else {
+                expansion.text.clone()
+            };
+            for line in display.lines() {
+                lines.push(format!("  {}", line));
+            }
+
+            let info_type =
+                crate::tui::components::dialogs::info::InfoType::ShellShow;
+            let footer =
+                "j/k scroll  |  / search  |  Esc close".to_string();
+            if app.dialog_state.shell_detail_dialog.is_none() {
+                let mut dialog =
+                    crate::tui::components::dialogs::info::InfoDialog::new(
+                        std::sync::Arc::clone(&app.ui_state.theme),
+                        info_type,
+                        lines,
+                    );
+                dialog.set_custom_footer(footer);
+                app.dialog_state.shell_detail_dialog = Some(dialog);
+            } else if let Some(ref mut dialog) = app.dialog_state.shell_detail_dialog {
+                dialog.set_info_type(info_type);
+                dialog.set_content(lines);
+                dialog.set_theme(&app.ui_state.theme);
+                dialog.set_custom_footer(footer);
+            }
+            if let Some(ref dialog) = app.dialog_state.shell_detail_dialog {
+                app.dialog_state.shell_detail_id = Some(id);
+                app.focus_manager.push(Box::new(dialog.clone()));
+                app.ui_state.dialog = crate::tui::Dialog::ShellShow;
+            }
+        }
+        None => {
+            // Command exists in legacy store but not in durable store
+            // This can happen if the bridge hasn't finalized yet
+            if app.command_run_store.get_run(cmd_id).is_none() {
+                app.messages_state.toasts.warning(&format!(
+                    "Command {} has no durable output yet (still running or not captured)",
+                    id
+                ));
+            } else {
+                // Run exists but stream name is invalid
+                app.messages_state.toasts.warning(&format!(
+                    "Invalid stream '{}' for command {}. Use stdout, stderr, or combined.",
+                    stream, id
+                ));
+            }
+        }
     }
 }
