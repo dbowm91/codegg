@@ -32,6 +32,10 @@ use crate::shell::projection::{
     RedactionState,
 };
 
+use codegg_config::schema::{ProjectionPolicyKind, ProjectionRedactPolicy, ShellOutputConfig};
+
+use crate::shell::rtk::RtkProjector;
+
 /// Where a projection will be consumed.
 ///
 /// This drives selection: model context is stricter about redaction and
@@ -121,6 +125,16 @@ impl ProjectionBudget {
     pub fn approx_tokens_from_bytes(bytes: usize) -> usize {
         bytes / APPROX_BYTES_PER_TOKEN
     }
+
+    /// Build a budget from shell output config.
+    pub fn from_config(config: &ShellOutputConfig) -> Self {
+        let max_tokens = config.max_model_output_tokens();
+        Self {
+            max_output_bytes: config.max_tui_output_bytes(),
+            max_output_tokens: Some(max_tokens),
+            preferred_output_tokens: Some(max_tokens * 3 / 4),
+        }
+    }
 }
 
 /// Default byte budget for [`ProjectionBudget::default`] and
@@ -163,6 +177,53 @@ impl ProjectionPolicy {
             allow_lossy: true,
             allow_external_backend: false,
             redact_model_visible: true,
+        }
+    }
+
+    /// Build a policy from shell output config.
+    ///
+    /// The `projection_kind` determines the base policy:
+    /// - `Off`: no lossy, no external, no redaction
+    /// - `Safe`: conservative (lossy allowed, no external, redaction on)
+    /// - `Rtk`: lossy allowed, external if rtk.enabled, redaction on
+    /// - `Aggressive`: lossy allowed, no external, redaction on
+    pub fn from_config(config: &ShellOutputConfig) -> Self {
+        match config.projection_kind() {
+            ProjectionPolicyKind::Off => Self {
+                allow_lossy: false,
+                allow_external_backend: false,
+                redact_model_visible: false,
+            },
+            ProjectionPolicyKind::Safe => Self::conservative(),
+            ProjectionPolicyKind::Rtk => {
+                let rtk_enabled = config
+                    .rtk
+                    .as_ref()
+                    .is_some_and(|r| r.enabled.unwrap_or(false));
+                Self {
+                    allow_lossy: true,
+                    allow_external_backend: rtk_enabled,
+                    redact_model_visible: true,
+                }
+            }
+            ProjectionPolicyKind::Aggressive => Self {
+                allow_lossy: true,
+                allow_external_backend: false,
+                redact_model_visible: true,
+            },
+        }
+    }
+
+    /// Apply redaction based on the config's redaction policy and the
+    /// given target.
+    pub fn should_redact(&self, config: &ShellOutputConfig, target: ProjectionTarget) -> bool {
+        if !self.redact_model_visible {
+            return false;
+        }
+        match config.redact_policy() {
+            ProjectionRedactPolicy::Off => false,
+            ProjectionRedactPolicy::ModelOnly => target == ProjectionTarget::ModelContext,
+            ProjectionRedactPolicy::All => true,
         }
     }
 }
@@ -466,6 +527,9 @@ pub enum ProjectionError {
     /// The projection requested a feature the projector does not
     /// implement (e.g. external backend while policy forbids it).
     Unsupported { feature: &'static str },
+    /// An external backend (e.g. RTK) was unavailable or failed.
+    /// The selector should fall back to safe native/generic projection.
+    BackendUnavailable { backend: &'static str, reason: String },
 }
 
 impl std::fmt::Display for ProjectionError {
@@ -476,6 +540,9 @@ impl std::fmt::Display for ProjectionError {
             }
             ProjectionError::Unsupported { feature } => {
                 write!(f, "projector does not support {feature}")
+            }
+            ProjectionError::BackendUnavailable { backend, reason } => {
+                write!(f, "backend {backend} unavailable: {reason}")
             }
         }
     }
@@ -2071,6 +2138,43 @@ impl ProjectionSelector {
         }
     }
 
+    /// Selector with RTK support optionally included.
+    ///
+    /// When `rtk_config` is `Some` and RTK is enabled, inserts the
+    /// [`RtkProjector`] into the priority list ahead of generic
+    /// fallbacks. RTK is placed after native projectors but before
+    /// `ErrorRetentionProjector` and `TruncatedProjector` so native
+    /// structured projectors still win when they match.
+    pub fn with_rtk(rtk_config: Option<codegg_config::schema::ShellOutputRtkConfig>) -> Self {
+        let mut projectors: Vec<Box<dyn CommandOutputProjector>> = vec![
+            Box::new(RawProjector),
+            Box::new(GitStatusProjector),
+            Box::new(GitDiffProjector),
+            Box::new(GitLogProjector),
+            Box::new(CargoCheckProjector),
+            Box::new(CargoTestProjector),
+        ];
+        if let Some(cfg) = rtk_config {
+            projectors.push(Box::new(RtkProjector::new(cfg)));
+        }
+        projectors.push(Box::new(ErrorRetentionProjector));
+        projectors.push(Box::new(TruncatedProjector));
+        Self { projectors }
+    }
+
+    /// Selector built from full shell output config.
+    ///
+    /// Reads `prefer_native_projectors` and RTK config to build the
+    /// appropriate projector priority list.
+    pub fn with_config(config: &ShellOutputConfig) -> Self {
+        let rtk = if config.projection_kind() == ProjectionPolicyKind::Rtk {
+            config.rtk.clone()
+        } else {
+            None
+        };
+        Self::with_rtk(rtk)
+    }
+
     /// Empty selector for tests.
     pub fn empty() -> Self {
         Self {
@@ -2233,6 +2337,107 @@ pub fn default_command_projection_with_budget(
     let selector = ProjectionSelector::with_defaults();
     let result = selector.project(request, store);
     result.text
+}
+
+/// Config-driven projection entry point.
+///
+/// Uses [`ShellOutputConfig`] to determine policy, budget, and redaction
+/// behavior. Returns the full [`ProjectionResult`] so callers can access
+/// metadata (projector name, exactness, expansion handles, etc.).
+pub fn config_command_projection(
+    run: &CommandRun,
+    store: &CommandOutputStore,
+    output_config: &ShellOutputConfig,
+    target: ProjectionTarget,
+) -> ProjectionResult {
+    let policy = ProjectionPolicy::from_config(output_config);
+    let budget = ProjectionBudget::from_config(output_config);
+    let request = ProjectionRequest {
+        run,
+        target,
+        policy: &policy,
+        budget,
+        exact_requested: false,
+        allow_lossy: policy.allow_lossy,
+        allow_external_backend: policy.allow_external_backend,
+    };
+    let selector = ProjectionSelector::with_defaults();
+    let mut result = selector.project(request, store);
+
+    // Apply redaction if the policy and target require it
+    if policy.should_redact(output_config, target) {
+        apply_redaction_hook(&mut result, target);
+    }
+
+    result
+}
+
+/// Render a metadata header for model-facing command output.
+///
+/// When `show_projection_metadata` is true, this prepends projection
+/// information to the model-visible text so the model knows which
+/// projector was used and whether the output is exact or lossy.
+pub fn render_metadata_header(
+    run: &CommandRun,
+    result: &ProjectionResult,
+    output_config: &ShellOutputConfig,
+) -> String {
+    if !output_config.show_projection_metadata() {
+        return String::new();
+    }
+
+    let mut header = String::new();
+    let _ = writeln!(header, "[command {}]", run.id);
+    let _ = writeln!(header, "command: {}", run.command);
+    let _ = writeln!(header, "exit: {}", run.exit.label());
+    let _ = writeln!(
+        header,
+        "duration: {:.2}s",
+        run.duration.as_secs_f64()
+    );
+
+    // Projection info
+    let raw_handle = result.expansion_handles.first().map(|h| h.as_url());
+    let _ = write!(
+        header,
+        "projection: {}; exactness: {}",
+        result.projector,
+        result.exactness.label()
+    );
+    if let Some(url) = raw_handle {
+        let _ = write!(header, "; raw: {}", url);
+    }
+    let _ = writeln!(header);
+
+    // Byte counts
+    let stdout_url = run.stdout_handle().map(|h| h.as_url());
+    let stderr_url = run.stderr_handle().map(|h| h.as_url());
+    let _ = write!(
+        header,
+        "stdout: {}; stderr: {}",
+        format_bytes(run.stdout.total_bytes),
+        format_bytes(run.stderr.total_bytes)
+    );
+    if let Some(url) = stdout_url {
+        let _ = write!(header, " [{}]", url);
+    }
+    if let Some(url) = stderr_url {
+        let _ = write!(header, " [{}]", url);
+    }
+    let _ = writeln!(header);
+
+    header
+}
+
+/// Format a byte count as a human-readable string (KiB, MiB).
+pub fn format_bytes(bytes: u64) -> String {
+    if bytes < 1024 {
+        format!("{} B", bytes)
+    } else if bytes < 1024 * 1024 {
+        format!("{:.1} KiB", bytes as f64 / 1024.0)
+    } else {
+        format!("{:.1} MiB", bytes as f64 / (1024.0 * 1024.0))
+    }
 }
 
 // --- helpers ---------------------------------------------------------
@@ -2543,6 +2748,7 @@ fn matches_error_pattern(line: &str) -> bool {
 mod tests {
     use super::*;
     use crate::shell::projection::{CommandExit, OutputCompleteness, OutputEncoding, RawStream};
+    use codegg_config::schema::*;
     use std::path::PathBuf;
     use std::time::{Duration, SystemTime};
 
@@ -3908,5 +4114,141 @@ mod tests {
             picked.name(),
             RawProjector::NAME | TruncatedProjector::NAME
         ));
+    }
+
+    // --- Phase 4 config conversion tests ---
+
+    #[test]
+    fn policy_from_config_off_disables_lossy_and_redaction() {
+        let config = ShellOutputConfig {
+            projection: Some(ProjectionPolicyKind::Off),
+            ..Default::default()
+        };
+        let policy = ProjectionPolicy::from_config(&config);
+        assert!(!policy.allow_lossy);
+        assert!(!policy.allow_external_backend);
+        assert!(!policy.redact_model_visible);
+    }
+
+    #[test]
+    fn policy_from_config_safe_matches_conservative() {
+        let config = ShellOutputConfig {
+            projection: Some(ProjectionPolicyKind::Safe),
+            ..Default::default()
+        };
+        let policy = ProjectionPolicy::from_config(&config);
+        let conservative = ProjectionPolicy::conservative();
+        assert_eq!(policy.allow_lossy, conservative.allow_lossy);
+        assert_eq!(
+            policy.allow_external_backend,
+            conservative.allow_external_backend
+        );
+        assert_eq!(
+            policy.redact_model_visible,
+            conservative.redact_model_visible
+        );
+    }
+
+    #[test]
+    fn policy_from_config_rtk_enables_external_when_rtk_enabled() {
+        let config = ShellOutputConfig {
+            projection: Some(ProjectionPolicyKind::Rtk),
+            rtk: Some(ShellOutputRtkConfig {
+                enabled: Some(true),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let policy = ProjectionPolicy::from_config(&config);
+        assert!(policy.allow_external_backend);
+    }
+
+    #[test]
+    fn policy_from_config_rtk_disables_external_when_rtk_disabled() {
+        let config = ShellOutputConfig {
+            projection: Some(ProjectionPolicyKind::Rtk),
+            rtk: Some(ShellOutputRtkConfig {
+                enabled: Some(false),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let policy = ProjectionPolicy::from_config(&config);
+        assert!(!policy.allow_external_backend);
+    }
+
+    #[test]
+    fn policy_from_config_aggressive_allows_lossy() {
+        let config = ShellOutputConfig {
+            projection: Some(ProjectionPolicyKind::Aggressive),
+            ..Default::default()
+        };
+        let policy = ProjectionPolicy::from_config(&config);
+        assert!(policy.allow_lossy);
+        assert!(!policy.allow_external_backend);
+        assert!(policy.redact_model_visible);
+    }
+
+    #[test]
+    fn budget_from_config_uses_config_values() {
+        let config = ShellOutputConfig {
+            max_model_output_tokens: Some(8000),
+            max_tui_output_bytes: Some(500_000),
+            ..Default::default()
+        };
+        let budget = ProjectionBudget::from_config(&config);
+        assert_eq!(budget.max_output_bytes, 500_000);
+        assert_eq!(budget.max_output_tokens, Some(8000));
+        assert_eq!(budget.preferred_output_tokens, Some(6000));
+    }
+
+    #[test]
+    fn budget_from_config_uses_defaults() {
+        let config = ShellOutputConfig::default();
+        let budget = ProjectionBudget::from_config(&config);
+        assert_eq!(budget.max_output_bytes, 200_000);
+        assert_eq!(budget.max_output_tokens, Some(4000));
+        assert_eq!(budget.preferred_output_tokens, Some(3000));
+    }
+
+    #[test]
+    fn should_redact_returns_false_when_policy_off() {
+        let config = ShellOutputConfig {
+            projection: Some(ProjectionPolicyKind::Off),
+            ..Default::default()
+        };
+        let policy = ProjectionPolicy::from_config(&config);
+        assert!(!policy.should_redact(&config, ProjectionTarget::ModelContext));
+    }
+
+    #[test]
+    fn should_redact_model_only_for_model_context() {
+        let config = ShellOutputConfig {
+            redact_model_visible_output: Some(ProjectionRedactPolicy::ModelOnly),
+            ..Default::default()
+        };
+        let policy = ProjectionPolicy::from_config(&config);
+        assert!(policy.should_redact(&config, ProjectionTarget::ModelContext));
+        assert!(!policy.should_redact(&config, ProjectionTarget::TuiTranscript));
+    }
+
+    #[test]
+    fn should_redact_all_targets_when_all() {
+        let config = ShellOutputConfig {
+            redact_model_visible_output: Some(ProjectionRedactPolicy::All),
+            ..Default::default()
+        };
+        let policy = ProjectionPolicy::from_config(&config);
+        assert!(policy.should_redact(&config, ProjectionTarget::ModelContext));
+        assert!(policy.should_redact(&config, ProjectionTarget::TuiTranscript));
+    }
+
+    #[test]
+    fn format_bytes_produces_correct_output() {
+        assert_eq!(format_bytes(0), "0 B");
+        assert_eq!(format_bytes(512), "512 B");
+        assert_eq!(format_bytes(1024), "1.0 KiB");
+        assert_eq!(format_bytes(1536), "1.5 KiB");
+        assert_eq!(format_bytes(1048576), "1.0 MiB");
     }
 }

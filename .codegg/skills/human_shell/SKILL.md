@@ -1,7 +1,7 @@
 ---
 name: human-shell
-description: Human-initiated shell command execution, ephemeral transcript storage, projection pipeline (Phases 1 and 2), policy evaluation, and structured failure digest extraction
-version: 1.1.0
+description: Human-initiated shell command execution, ephemeral transcript storage, projection pipeline (Phases 1-3, 5), policy evaluation, and structured failure digest extraction
+version: 1.2.0
 tags:
   - shell
   - bash
@@ -44,6 +44,8 @@ prior command's output on demand.
 | `shell::projection` (Phase 1) | `CommandRun`, `CommandRunId`, `CommandExit`, `CommandOutputStore`, `OutputHandle`, `OutputStreamKind`, `default_command_projection` | Durable command-event model; raw stdout/stderr retention out-of-band from model context |
 | `shell::projection_bridge` (Phase 1) | `ShellCommandRunBridge` | Sidecar that mirrors `ShellEvent`s into `CommandOutputStore` |
 | `shell::projector` (Phase 2) | `CommandOutputProjector`, `ProjectionRequest`, `ProjectionResult`, `ProjectionKind`, `ProjectionExactness`, `OmittedRange`, `ExpansionHandle`, `ProjectionSupport`, `ProjectionTarget`, `ProjectionBudget`, `ProjectionPolicy`, `ProjectionError`, `ProjectionSelector`, `RawProjector`, `TruncatedProjector`, `ErrorRetentionProjector`, `apply_redaction_hook` | Projector trait + built-in projectors + selector + redaction hook site |
+| `shell::projector` (Phase 3) | `GitStatusProjector`, `GitDiffProjector`, `GitLogProjector`, `CargoCheckProjector`, `CargoTestProjector` | Native structured projectors for Git and Rust toolchains |
+| `shell::rtk` | `RtkDiscovery`, `RtkAvailability`, `RtkState`, `RtkCapabilities`, `CapabilityState`, `CompressionEligibility`, `RtkProjector`, `classify_command()` | RTK discovery, capability probing, eligibility classification, and RTK projector skeleton |
 
 ## What Phase 1 Adds
 
@@ -68,9 +70,9 @@ the projection pipeline.
 ### Phase 1 Non-Goals
 
 - Real projector selection (Phase 2) — landed
-- Native structured projectors (Phase 3)
+- Native structured projectors (Phase 3) — landed
 - Projection policy config (Phase 4)
-- RTK backend (Phase 5)
+- RTK backend (Phase 5) — landed
 - TUI expansion UI (Phase 7)
 - Redaction pipeline (Phase 8) — redaction hook site present
 
@@ -119,11 +121,117 @@ These are exactly the handles surfaced in the projection text and embedded in `P
 
 ### Phase 2 Non-Goals
 
-- Native structured projectors (Phase 3)
+- Native structured projectors (Phase 3) — landed
 - Configuration schema for projection policy (Phase 4)
-- RTK backend (Phase 5)
+- RTK backend (Phase 5) — landed
 - TUI expansion panel (Phase 7)
 - Full redaction pipeline (Phase 8) — only the call site is in place
+
+## What Phase 3 Adds
+
+Phase 3 adds native structured projectors that parse command-specific output into semantically meaningful, low-token summaries. These projectors are registered in `ProjectionSelector::with_defaults()` after `RawProjector` and before the generic fallback projectors.
+
+### Native Projectors
+
+| Projector | `name()` | Selects when | Output shape |
+|-----------|----------|--------------|--------------|
+| `GitStatusProjector` | `native-git-status` | `git status` with allowed flags (`--porcelain`, `--short`, `--branch`, etc.) | Structured summary: branch info, staged/unstaged/untracked/conflicted file counts with filenames |
+| `GitDiffProjector` | `native-git-diff` | `git diff`, `git diff --cached/--staged`, `git show` | File stats with hunk previews (≤5 files, ≤3 hunks each) |
+| `GitLogProjector` | `native-git-log` | `git log` with any flags | Compact commit list capped at 20 entries (hash, subject, author) |
+| `CargoCheckProjector` | `native-cargo-diagnostics` | `cargo check`, `cargo build`, `cargo clippy` | Parsed Rust diagnostics: error codes, file locations, notes/help |
+| `CargoTestProjector` | `native-cargo-test` | `cargo test` | Test result summary with failure details and panic output |
+
+### Selector Priority
+
+The updated selector order is:
+```
+RawProjector → GitStatus → GitDiff → GitLog → CargoCheck → CargoTest → ErrorRetention → Truncated
+```
+
+Native projectors return `ProjectionSupport::Preferred` when their command matches, and `Unsupported` otherwise. The selector picks the first `Preferred` projector, falling through to generic projectors for unrecognized commands.
+
+All native projectors produce `ProjectionKind::Structured` with `ProjectionExactness::Parsed` and include raw expansion handles for full output access.
+
+## What Phase 5 Adds
+
+Phase 5 adds RTK as an optional, detected command-output compressor backend
+without making it a hard dependency or default execution path.
+
+### RTK Discovery
+
+`RtkDiscovery` handles lazy detection of the RTK binary:
+
+- Probes on first use (not at startup)
+- Resolves configured path or searches `$PATH`
+- Runs `rtk --version` with configurable timeout
+- Caches availability state
+
+| State | Meaning |
+|-------|---------|
+| `Disabled` | Config has RTK disabled |
+| `Available` | RTK found and working |
+| `NotFound` | Binary not on PATH |
+| `Broken` | Found but version probe failed |
+| `TimedOut` | Version probe exceeded timeout |
+| `UnsupportedVersion` | Incompatible version |
+
+### Capability Probing
+
+`RtkCapabilities` tracks confirmed behavior:
+
+| Capability | States |
+|------------|--------|
+| `preserves_exit_code` | Yes / No / Unknown |
+| `preserves_stderr` | Yes / No / Unknown |
+| `supports_post_process` | Yes / No / Unknown |
+| `supports_wrapper_mode` | Yes / No / Unknown |
+| `utf8_output` | Yes / No / Unknown |
+
+### Eligibility Classification
+
+`classify_command()` classifies commands into:
+
+| Category | Example commands |
+|----------|-----------------|
+| `EligibleReadOnly` | `git status`, `git diff`, `git log`, `rg`, `ls`, `find`, `cat` |
+| `EligibleWithRawCapture` | (reserved for future use) |
+| `IneligibleSideEffecting` | `cargo build`, `git commit`, `npm install`, `rm` |
+| `IneligibleSecuritySensitive` | `curl`, `ssh`, `sudo`, `wget` |
+| `Unknown` | Unrecognized commands |
+
+### RtkProjector Skeleton
+
+`RtkProjector` implements the `CommandOutputProjector` trait:
+
+- Returns `Unsupported` when RTK is disabled, unavailable, or command is ineligible
+- Returns `Fallback` support level when RTK is available and command is eligible
+- Returns `ProjectionKind::ExternalCompressed` with `ProjectionExactness::Lossy`
+- Phase 5 skeleton does NOT invoke RTK — returns placeholder text
+- Raw expansion handles are included for stdout/stderr
+
+### Selector Integration
+
+`ProjectionSelector::with_rtk()` conditionally includes the RTK projector:
+
+```
+Raw → Native → RTK (if enabled) → ErrorRetention → Truncated
+```
+
+`ProjectionSelector::with_config()` reads `ShellOutputConfig` to build the appropriate selector.
+
+### Tests
+
+15 unit tests covering:
+- Disabled config returns `Disabled` state
+- Not-found state when path is missing
+- Eligibility classification for read-only, side-effecting, security-sensitive, and unknown commands
+- Projector rejection when external backend disallowed
+- Projector rejection when RTK unavailable
+- Projector acceptance for eligible commands
+- Projector rejection for ineligible commands
+- Skeleton returns `ExternalCompressed`/`Lossy`
+- `BackendUnavailable` error for unprobed discovery
+- Selector includes/excludes RTK projector
 
 ## Working Examples
 

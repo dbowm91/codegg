@@ -169,6 +169,38 @@ pub(crate) fn handle_shell_event(app: &mut app::App, event: crate::shell::ShellE
                 cell.truncated = Some(truncated);
             });
 
+            // Populate projection metadata from the command-run store
+            if let Some(run) = app.command_run_store.get_run(crate::shell::projection::CommandRunId(id.0)) {
+                let config = crate::config::schema::Config::load().unwrap_or_default();
+                let output_config = config.shell.as_ref().and_then(|s| s.output.as_ref());
+                let shell_output_config = output_config.cloned().unwrap_or_default();
+                let result = crate::shell::projector::config_command_projection(
+                    run,
+                    &app.command_run_store,
+                    &shell_output_config,
+                    crate::shell::projector::ProjectionTarget::ModelContext,
+                );
+                let omitted_summary = if result.omitted.is_empty() {
+                    None
+                } else {
+                    let total_omitted: usize = result.omitted.iter().map(|o| o.total_retained_bytes).sum();
+                    if total_omitted > 0 {
+                        Some(crate::shell::projector::format_bytes(total_omitted as u64))
+                    } else {
+                        None
+                    }
+                };
+                let raw_handle = result.expansion_handles.first().map(|h| h.as_url());
+                app.messages_state.messages.update_shell_cell(id.0, |cell| {
+                    cell.projection_projector = Some(result.projector);
+                    cell.projection_exactness = Some(result.exactness.label().to_string());
+                    cell.projection_input_bytes = Some(result.input_bytes);
+                    cell.projection_output_bytes = Some(result.output_bytes);
+                    cell.projection_omitted = omitted_summary;
+                    cell.projection_raw_handle = raw_handle;
+                });
+            }
+
             let should_promote = entry
                 .map(|e| e.promote_after && !e.promoted)
                 .unwrap_or(false);

@@ -259,6 +259,8 @@ pub struct Config {
     pub context_policy: Option<ContextPolicyConfig>,
     /// Human shell feature configuration.
     pub human_shell: Option<HumanShellConfig>,
+    /// Shell output projection configuration.
+    pub shell: Option<ShellConfig>,
 }
 
 /// Configuration for the context ledger and artifact projection system.
@@ -1410,6 +1412,14 @@ impl Config {
             }
         }
 
+        if let Some(ref shell) = self.shell {
+            if let Some(ref output) = shell.output {
+                if let Err(output_errors) = output.validate() {
+                    errors.extend(output_errors);
+                }
+            }
+        }
+
         if errors.is_empty() {
             Ok(())
         } else {
@@ -1719,6 +1729,166 @@ impl HumanShellConfig {
             Err(errors)
         }
     }
+}
+
+/// Projection policy for shell command output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectionPolicyKind {
+    /// Raw output only, minimal safety truncation, no redaction.
+    Off,
+    /// Native projectors + conservative fallbacks. Default.
+    #[default]
+    Safe,
+    /// RTK backend (config only for now, falls back to safe).
+    Rtk,
+    /// Smaller budgets, more truncation.
+    Aggressive,
+}
+
+/// Redaction policy for model-visible command output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectionRedactPolicy {
+    /// Never redact model-visible output.
+    Off,
+    /// Redact only for ModelContext target. Default.
+    #[default]
+    ModelOnly,
+    /// Redact for all targets.
+    All,
+}
+
+/// RTK sub-configuration (used when projection = "rtk").
+#[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq)]
+#[serde(default)]
+pub struct ShellOutputRtkConfig {
+    pub enabled: Option<bool>,
+    pub path: Option<String>,
+    pub eligible_only: Option<bool>,
+    pub timeout_ms: Option<u64>,
+    pub allow_side_effecting_commands: Option<bool>,
+}
+
+/// Per-command projection rule override.
+#[derive(Deserialize, Serialize, Debug, Clone, PartialEq)]
+pub struct ShellOutputRuleConfig {
+    /// Glob pattern to match commands (e.g., "cargo test*").
+    pub pattern: String,
+    /// Projector name to use for matching commands.
+    pub projector: Option<String>,
+    /// Override max tokens for model output.
+    pub max_model_output_tokens: Option<usize>,
+    /// Override max bytes for output.
+    pub max_output_bytes: Option<usize>,
+}
+
+/// Shell output projection configuration.
+#[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq)]
+#[serde(default)]
+pub struct ShellOutputConfig {
+    /// Projection policy: off | safe | rtk | aggressive (default: safe).
+    pub projection: Option<ProjectionPolicyKind>,
+    /// Whether to retain raw output for expansion handles (default: true).
+    pub retain_raw: Option<bool>,
+    /// Redaction policy for model-visible output (default: model_only).
+    pub redact_model_visible_output: Option<ProjectionRedactPolicy>,
+    /// Max tokens for model-facing projection (default: 4000).
+    pub max_model_output_tokens: Option<usize>,
+    /// Max bytes for TUI transcript projection (default: 200000).
+    pub max_tui_output_bytes: Option<usize>,
+    /// Show projection metadata in TUI (default: true).
+    pub show_projection_metadata: Option<bool>,
+    /// Prefer native projectors over generic fallbacks (default: true).
+    pub prefer_native_projectors: Option<bool>,
+    /// RTK sub-configuration (only used when projection = "rtk").
+    pub rtk: Option<ShellOutputRtkConfig>,
+    /// Per-command projection rules.
+    pub rules: Option<Vec<ShellOutputRuleConfig>>,
+}
+
+impl ShellOutputConfig {
+    pub fn projection_kind(&self) -> ProjectionPolicyKind {
+        self.projection.unwrap_or_default()
+    }
+
+    pub fn retain_raw(&self) -> bool {
+        self.retain_raw.unwrap_or(true)
+    }
+
+    pub fn redact_policy(&self) -> ProjectionRedactPolicy {
+        self.redact_model_visible_output.unwrap_or_default()
+    }
+
+    pub fn max_model_output_tokens(&self) -> usize {
+        self.max_model_output_tokens.unwrap_or(4000)
+    }
+
+    pub fn max_tui_output_bytes(&self) -> usize {
+        self.max_tui_output_bytes.unwrap_or(200_000)
+    }
+
+    pub fn show_projection_metadata(&self) -> bool {
+        self.show_projection_metadata.unwrap_or(true)
+    }
+
+    pub fn prefer_native_projectors(&self) -> bool {
+        self.prefer_native_projectors.unwrap_or(true)
+    }
+
+    pub fn validate(&self) -> Result<(), Vec<String>> {
+        let mut errors = Vec::new();
+
+        if let Some(0) = self.max_model_output_tokens {
+            errors.push("shell.output.max_model_output_tokens cannot be 0".to_string());
+        }
+        if let Some(t) = self.max_model_output_tokens {
+            if t > 100_000 {
+                errors.push("shell.output.max_model_output_tokens exceeds 100,000".to_string());
+            }
+        }
+        if let Some(0) = self.max_tui_output_bytes {
+            errors.push("shell.output.max_tui_output_bytes cannot be 0".to_string());
+        }
+        if let Some(b) = self.max_tui_output_bytes {
+            if b > 10_000_000 {
+                errors.push("shell.output.max_tui_output_bytes exceeds 10MB".to_string());
+            }
+        }
+        if let Some(ref rtk) = self.rtk {
+            if let Some(0) = rtk.timeout_ms {
+                errors.push("shell.output.rtk.timeout_ms cannot be 0".to_string());
+            }
+            if let Some(t) = rtk.timeout_ms {
+                if t > 60_000 {
+                    errors.push("shell.output.rtk.timeout_ms exceeds 60s".to_string());
+                }
+            }
+            if let Some(ref path) = rtk.path {
+                if path.is_empty() {
+                    errors.push("shell.output.rtk.path cannot be empty".to_string());
+                }
+            }
+        }
+        if self.projection == Some(ProjectionPolicyKind::Off) && self.retain_raw == Some(false) {
+            errors.push(
+                "shell.output: projection=off with retain_raw=false risks unbounded output".to_string(),
+            );
+        }
+
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors)
+        }
+    }
+}
+
+/// Top-level shell configuration.
+#[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq)]
+#[serde(default)]
+pub struct ShellConfig {
+    pub output: Option<ShellOutputConfig>,
 }
 
 /// User-facing theme configuration.
@@ -2051,5 +2221,127 @@ mod tests {
         let cfg = CommandConfig::default();
         assert_eq!(cfg.runtime, None);
         assert_eq!(cfg.command, None);
+    }
+
+    #[test]
+    fn shell_output_config_defaults_to_safe() {
+        let cfg = ShellOutputConfig::default();
+        assert_eq!(cfg.projection_kind(), ProjectionPolicyKind::Safe);
+        assert!(cfg.retain_raw());
+        assert_eq!(cfg.redact_policy(), ProjectionRedactPolicy::ModelOnly);
+        assert_eq!(cfg.max_model_output_tokens(), 4000);
+        assert_eq!(cfg.max_tui_output_bytes(), 200_000);
+        assert!(cfg.show_projection_metadata());
+        assert!(cfg.prefer_native_projectors());
+    }
+
+    #[test]
+    fn shell_output_config_deserializes_all_policies() {
+        for (json, expected) in [
+            (r#"{"projection": "off"}"#, ProjectionPolicyKind::Off),
+            (r#"{"projection": "safe"}"#, ProjectionPolicyKind::Safe),
+            (r#"{"projection": "rtk"}"#, ProjectionPolicyKind::Rtk),
+            (r#"{"projection": "aggressive"}"#, ProjectionPolicyKind::Aggressive),
+        ] {
+            let cfg: ShellOutputConfig = serde_json::from_str(json).unwrap();
+            assert_eq!(cfg.projection_kind(), expected);
+        }
+    }
+
+    #[test]
+    fn shell_output_config_invalid_projection_falls_back_to_default() {
+        let json = r#"{"projection": "invalid"}"#;
+        let result = serde_json::from_str::<ShellOutputConfig>(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn shell_output_config_validation_rejects_zero_tokens() {
+        let cfg = ShellOutputConfig {
+            max_model_output_tokens: Some(0),
+            ..Default::default()
+        };
+        let errs = cfg.validate().unwrap_err();
+        assert!(errs.iter().any(|e| e.contains("max_model_output_tokens")));
+    }
+
+    #[test]
+    fn shell_output_config_validation_rejects_zero_bytes() {
+        let cfg = ShellOutputConfig {
+            max_tui_output_bytes: Some(0),
+            ..Default::default()
+        };
+        let errs = cfg.validate().unwrap_err();
+        assert!(errs.iter().any(|e| e.contains("max_tui_output_bytes")));
+    }
+
+    #[test]
+    fn shell_output_config_validation_rejects_off_with_no_retain_raw() {
+        let cfg = ShellOutputConfig {
+            projection: Some(ProjectionPolicyKind::Off),
+            retain_raw: Some(false),
+            ..Default::default()
+        };
+        let errs = cfg.validate().unwrap_err();
+        assert!(errs.iter().any(|e| e.contains("retain_raw=false")));
+    }
+
+    #[test]
+    fn shell_output_config_validation_rejects_zero_rtk_timeout() {
+        let cfg = ShellOutputConfig {
+            rtk: Some(ShellOutputRtkConfig {
+                timeout_ms: Some(0),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let errs = cfg.validate().unwrap_err();
+        assert!(errs.iter().any(|e| e.contains("rtk.timeout_ms")));
+    }
+
+    #[test]
+    fn shell_output_config_validation_rejects_empty_rtk_path() {
+        let cfg = ShellOutputConfig {
+            rtk: Some(ShellOutputRtkConfig {
+                path: Some(String::new()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let errs = cfg.validate().unwrap_err();
+        assert!(errs.iter().any(|e| e.contains("rtk.path")));
+    }
+
+    #[test]
+    fn shell_output_config_passes_validation_with_valid_values() {
+        let cfg = ShellOutputConfig {
+            projection: Some(ProjectionPolicyKind::Safe),
+            max_model_output_tokens: Some(8000),
+            max_tui_output_bytes: Some(500_000),
+            rtk: Some(ShellOutputRtkConfig {
+                timeout_ms: Some(5000),
+                path: Some("rtk".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn shell_config_top_level_deserialization() {
+        let json = r#"{
+            "shell": {
+                "output": {
+                    "projection": "aggressive",
+                    "max_model_output_tokens": 2000
+                }
+            }
+        }"#;
+        let cfg: Config = serde_json::from_str(json).unwrap();
+        let shell = cfg.shell.unwrap();
+        let output = shell.output.unwrap();
+        assert_eq!(output.projection_kind(), ProjectionPolicyKind::Aggressive);
+        assert_eq!(output.max_model_output_tokens(), 2000);
     }
 }

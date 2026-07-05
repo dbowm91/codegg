@@ -350,10 +350,11 @@ CI runs on push/PR to dev/main: `agent-assets` → `fmt` → `check` → `clippy
 
 - **Central invariant**: A human `!` command is not model context unless the user explicitly promotes it.
 - **Syntax**: `!command` runs a shell command with output hidden from the model (ephemeral). `!!command` runs and auto-promotes output into the conversation.
-- **Module location**: `src/shell/` — `types.rs`, `runtime.rs`, `store.rs`, `policy.rs`, `digest.rs`, `projection.rs`, `projector.rs`, `projection_bridge.rs`.
+- **Module location**: `src/shell/` — `types.rs`, `runtime.rs`, `store.rs`, `policy.rs`, `digest.rs`, `projection.rs`, `projector.rs`, `projection_bridge.rs`, `rtk.rs`.
 - **Policy evaluation**: `evaluate_command()` blocks destructive commands (rm -rf /, mkfs, dd to device, fork bombs, shutdown/reboot/halt) and warns on risky ones (rm -rf ., git clean -f, sudo, curl|sh, chmod 777, recursive chown).
 - **Command-event projection (Phase 1)**: `CommandOutputStore` retains raw stdout/stderr out-of-band for the projection pipeline. `ShellCommandRunBridge` mirrors `ShellEvent`s into the store. Stable handles `cmd://<id>/<stream>` resolve raw output without rerunning commands. Caps: 32 MiB per stream, 64 MiB total, 100 history entries. Streams exceeding the cap are marked `OutputCompleteness::Partial` rather than silently truncated. The two stores (`ShellOutputStore` for TUI transcripts, `CommandOutputStore` for projection) run side by side — Phase 1 is additive, not a replacement.
 - **Projection trait and built-in projectors (Phase 2)**: `src/shell/projector.rs` defines the `CommandOutputProjector` trait, `ProjectionRequest`/`ProjectionResult`, `ProjectionTarget`/`ProjectionBudget`/`ProjectionPolicy`, `ProjectionKind`/`ProjectionExactness`, `OmittedRange`, `ExpansionHandle`, and the `RawProjector` / `TruncatedProjector` / `ErrorRetentionProjector` implementations. `ProjectionSelector::with_defaults()` is the centralised selector; `default_command_projection` is now a thin wrapper around it. `apply_redaction_hook` is the no-op placeholder for Phase 8; its call site lives in `ProjectionSelector::project` so the redaction contract cannot be bypassed by RTK or native projectors.
+- **RTK discovery and projection skeleton (Phase 5)**: `src/shell/rtk.rs` adds `RtkDiscovery` (lazy detection, version probe, availability state), `RtkAvailability` with `RtkState` enum (Disabled, Available, NotFound, Broken, TimedOut, UnsupportedVersion), `RtkCapabilities` with `CapabilityState` enum (Yes, No, Unknown), `CompressionEligibility` enum and `classify_command()`, and `RtkProjector` implementing `CommandOutputProjector` (skeleton). `ProjectionSelector::with_rtk()` conditionally includes the RTK projector; `with_config()` reads `ShellOutputConfig` to build the selector. `ProjectionError::BackendUnavailable` handles unprobed discovery. Phase 5 adds RTK discovery, capability probing, eligibility classification, and an RtkProjector skeleton behind the projection abstraction.
 
 ### Context Policy
 
@@ -370,7 +371,7 @@ CI runs on push/PR to dev/main: `agent-assets` → `fmt` → `check` → `clippy
 | `architecture/agent.md` | AgentLoop has ~49 fields |
 | `architecture/plugin.md` | No `wasm.rs`; `marketplace.rs` exists |
 | `architecture/lsp.md` | egglsp is authoritative; 39 servers |
-| `architecture/human_shell.md` | ! commands not in model context unless promoted; Phase 1 adds `CommandOutputStore` + projection seam; Phase 2 adds the projector trait, `RawProjector`/`TruncatedProjector`/`ErrorRetentionProjector`, and the centralised `ProjectionSelector` |
+| `architecture/human_shell.md` | ! commands not in model context unless promoted; Phase 1 adds `CommandOutputStore` + projection seam; Phase 2 adds the projector trait, `RawProjector`/`TruncatedProjector`/`ErrorRetentionProjector`, and the centralised `ProjectionSelector`; Phase 5 adds RTK discovery and skeleton projector |
 
 `.codegg/skills/*/SKILL.md` contain 44 module-specific skill guides loaded on-demand via `/skill:`.
 

@@ -30,6 +30,7 @@ The `shell` module provides human-initiated shell command execution with bounded
 | `digest.rs` | `ShellDigest` (structured failure extraction), `ShellFailure`, `TruncationReport` |
 | `projection.rs` | Phase 1 of the shell-output projection roadmap. Durable command event model: `CommandRun`, `CommandExit`, `CommandOutputStore`, `OutputHandle`, `default_command_projection` seam |
 | `projector.rs` | Phase 2+3 of the shell-output projection roadmap. `CommandOutputProjector` trait, `ProjectionRequest`/`ProjectionResult`, `RawProjector` / `TruncatedProjector` / `ErrorRetentionProjector` + Phase 3 native projectors (`GitStatusProjector`, `GitDiffProjector`, `GitLogProjector`, `CargoCheckProjector`, `CargoTestProjector`), `ProjectionSelector`, redaction hook |
+| `rtk.rs` | Phase 5: `RtkDiscovery`, `RtkAvailability`, `RtkState`, `RtkCapabilities`, `CapabilityState`, `CompressionEligibility`, `classify_command()`, `RtkProjector` |
 | `projection_bridge.rs` | `ShellCommandRunBridge` — sidecar accumulator that mirrors `ShellEvent`s into the `CommandOutputStore` |
 
 ## Key Types
@@ -411,7 +412,7 @@ Both are constructed in the App's `new` and the test constructor. They are owned
 - Real projector trait (Phase 2) — landed in Phase 2
 - Native structured projectors (Phase 3) — landed
 - Configuration schema for projection policy (Phase 4)
-- RTK backend (Phase 5)
+- RTK backend (Phase 5) — landed
 - TUI expansion panel (Phase 7)
 - Redaction pipeline (Phase 8) — redaction hook placeholder exists in Phase 2
 
@@ -494,7 +495,7 @@ The current implementation is a no-op that flips `RedactionState` to `Applied` s
 
 - Native structured projectors (Phase 3: Git, Rust, ...) — landed
 - Configuration schema for projection policy (Phase 4)
-- RTK backend (Phase 5)
+- RTK backend (Phase 5) — landed
 - TUI expansion panel (Phase 7)
 - Full redaction pipeline (Phase 8) — the hook site is in place, but the redaction rules are not implemented yet
 - Per-run `ProjectionHandle` carrying the resolved `ProjectionResult` (deferred; today the result lives in selector return values and any caller that wants to keep it can stash it on the run manually)
@@ -533,6 +534,73 @@ All native projectors produce `ProjectionKind::Structured` with `ProjectionExact
 ### What's NOT in Phase 3
 
 - Configuration schema for projection policy (Phase 4)
-- RTK backend (Phase 5)
+- RTK backend (Phase 5) — landed
+- TUI expansion panel (Phase 7)
+- Full redaction pipeline (Phase 8) — the hook site is in place, but the redaction rules are not implemented yet
+
+## Command Output Projection (Phase 5)
+
+Phase 5 adds RTK as an optional, detected command-output compressor backend behind the projection abstraction. It is implemented in `src/shell/rtk.rs` and integrated into the selector via `ProjectionSelector::with_rtk()` and `ProjectionSelector::with_config()`.
+
+### RTK Discovery
+
+`RtkDiscovery` handles lazy detection of the RTK binary:
+
+- Probes on first use (not at startup)
+- Resolves configured path or searches `$PATH`
+- Runs `rtk --version` with configurable timeout
+- Caches availability state
+
+`RtkAvailability` carries the probe result with a `RtkState` enum:
+
+| State | Meaning |
+|-------|---------|
+| `Disabled` | Config has RTK disabled |
+| `Available` | RTK found and working |
+| `NotFound` | Binary not on PATH |
+| `Broken` | Found but version probe failed |
+| `TimedOut` | Version probe exceeded timeout |
+| `UnsupportedVersion` | Incompatible version |
+
+`RtkDiscovery::probe_capabilities()` probes the available RTK for specific behavior, returning `RtkCapabilities` where each capability is `CapabilityState::Yes`, `No`, or `Unknown`.
+
+### Eligibility Classification
+
+`classify_command()` inspects command text and returns a `CompressionEligibility`:
+
+| Category | Meaning | Example commands |
+|----------|---------|-----------------|
+| `EligibleReadOnly` | Safe to compress; no side effects | `git status`, `git diff`, `git log`, `rg`, `ls`, `find`, `cat` |
+| `EligibleWithRawCapture` | Compressible but needs raw capture (reserved) | (future use) |
+| `IneligibleSideEffecting` | Has side effects; must not compress | `cargo build`, `git commit`, `npm install`, `rm` |
+| `IneligibleSecuritySensitive` | Network/security boundary; must not compress | `curl`, `ssh`, `sudo`, `wget` |
+| `Unknown` | Unrecognized command | — |
+
+### RtkProjector Skeleton
+
+`RtkProjector` implements the `CommandOutputProjector` trait:
+
+- Returns `Unsupported` when RTK is disabled, unavailable, or command is ineligible
+- Returns `Fallback` support level when RTK is available and command is eligible
+- Returns `ProjectionKind::ExternalCompressed` with `ProjectionExactness::Lossy`
+- Phase 5 skeleton does NOT invoke RTK — returns placeholder text
+- Raw expansion handles are included for stdout/stderr
+
+### Selector Integration
+
+`ProjectionSelector::with_rtk()` conditionally includes the RTK projector in the chain:
+
+```
+Raw → Native → RTK (if enabled) → ErrorRetention → Truncated
+```
+
+`ProjectionSelector::with_config()` reads `ShellOutputConfig` to build the appropriate selector, including RTK when enabled and available.
+
+`ProjectionError::BackendUnavailable` is returned when a caller requests an external backend (like RTK) but discovery has not yet been probed.
+
+### What's NOT in Phase 5
+
+- Actual RTK invocation (skeleton only — returns placeholder text)
+- Configuration schema for projection policy (Phase 4)
 - TUI expansion panel (Phase 7)
 - Full redaction pipeline (Phase 8) — the hook site is in place, but the redaction rules are not implemented yet

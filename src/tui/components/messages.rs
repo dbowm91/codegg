@@ -29,6 +29,16 @@ static FILE_PATH_REGEX: Lazy<regex::Regex> = Lazy::new(|| {
     regex::Regex::new(r#"(?:^|[\s])(\/(?:[a-zA-Z0-9._~-]+\/)*[a-zA-Z0-9._~-]+|~\/[a-zA-Z0-9._~-]+(?:\/[a-zA-Z0-9._~-]+)*|\.\.?\/[a-zA-Z0-9._~-]+(?:\/[a-zA-Z0-9._~-]+)*)"#).expect("invalid file path regex")
 });
 
+fn format_bytes(bytes: u64) -> String {
+    if bytes < 1024 {
+        format!("{} B", bytes)
+    } else if bytes < 1024 * 1024 {
+        format!("{:.1} KiB", bytes as f64 / 1024.0)
+    } else {
+        format!("{:.1} MiB", bytes as f64 / (1024.0 * 1024.0))
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct ShellCellUpdate {
     pub status: Option<String>,
@@ -38,6 +48,12 @@ pub struct ShellCellUpdate {
     pub exit_code: Option<i32>,
     pub truncated: Option<bool>,
     pub promoted: Option<bool>,
+    pub projection_projector: Option<String>,
+    pub projection_exactness: Option<String>,
+    pub projection_input_bytes: Option<u64>,
+    pub projection_output_bytes: Option<usize>,
+    pub projection_omitted: Option<String>,
+    pub projection_raw_handle: Option<String>,
 }
 static MARKDOWN_OPTIONS: Lazy<Options<'static>> = Lazy::new(|| {
     let mut options = Options::default();
@@ -112,6 +128,12 @@ pub enum MsgPart {
         truncated: bool,
         promoted: bool,
         expanded: bool,
+        projection_projector: Option<String>,
+        projection_exactness: Option<String>,
+        projection_input_bytes: Option<u64>,
+        projection_output_bytes: Option<usize>,
+        projection_omitted: Option<String>,
+        projection_raw_handle: Option<String>,
     },
 }
 
@@ -904,6 +926,12 @@ impl MessagesWidget {
                 truncated: false,
                 promoted: false,
                 expanded: false,
+                projection_projector: None,
+                projection_exactness: None,
+                projection_input_bytes: None,
+                projection_output_bytes: None,
+                projection_omitted: None,
+                projection_raw_handle: None,
             }],
             timestamp: Some(chrono::Local::now().timestamp()),
             is_plan_mode: None,
@@ -930,6 +958,12 @@ impl MessagesWidget {
                     exit_code,
                     truncated,
                     promoted,
+                    projection_projector,
+                    projection_exactness,
+                    projection_input_bytes,
+                    projection_output_bytes,
+                    projection_omitted,
+                    projection_raw_handle,
                     ..
                 } = part
                 {
@@ -954,6 +988,24 @@ impl MessagesWidget {
                         }
                         if let Some(p) = update.promoted {
                             *promoted = p;
+                        }
+                        if let Some(ref s) = update.projection_projector {
+                            *projection_projector = Some(s.clone());
+                        }
+                        if let Some(ref s) = update.projection_exactness {
+                            *projection_exactness = Some(s.clone());
+                        }
+                        if let Some(b) = update.projection_input_bytes {
+                            *projection_input_bytes = Some(b);
+                        }
+                        if let Some(b) = update.projection_output_bytes {
+                            *projection_output_bytes = Some(b);
+                        }
+                        if let Some(ref s) = update.projection_omitted {
+                            *projection_omitted = Some(s.clone());
+                        }
+                        if let Some(ref s) = update.projection_raw_handle {
+                            *projection_raw_handle = Some(s.clone());
                         }
                         updated = true;
                         break;
@@ -2103,6 +2155,12 @@ impl MessagesWidget {
                     truncated,
                     promoted,
                     expanded,
+                    projection_projector,
+                    projection_exactness,
+                    projection_input_bytes,
+                    projection_output_bytes,
+                    projection_omitted,
+                    projection_raw_handle,
                 } => {
                     let (icon, base_style) = match status.as_str() {
                         "running" => (
@@ -2150,6 +2208,34 @@ impl MessagesWidget {
                         format!("  {} $ {}{}", icon, command, summary_str),
                         base_style,
                     )]));
+                    // Projection metadata line
+                    if let Some(ref projector) = projection_projector {
+                        let mut meta_parts: Vec<String> = vec![format!("projection: {}", projector)];
+                        if let Some(ref exactness) = projection_exactness {
+                            meta_parts.push(exactness.clone());
+                        }
+                        if let (Some(in_bytes), Some(out_bytes)) =
+                            (projection_input_bytes, projection_output_bytes)
+                        {
+                            meta_parts
+                                .push(format!("{} -> {}", format_bytes(*in_bytes), format_bytes(*out_bytes as u64)));
+                        }
+                        if let Some(ref omitted) = projection_omitted {
+                            meta_parts.push(format!("omitted {}", omitted));
+                        }
+                        if let Some(ref handle) = projection_raw_handle {
+                            meta_parts.push(format!("raw: {}", handle));
+                        }
+                        lines.push(Line::from(vec![
+                            Span::raw("    "),
+                            Span::styled(
+                                meta_parts.join(" . "),
+                                Style::default()
+                                    .fg(self.theme.muted)
+                                    .add_modifier(Modifier::DIM),
+                            ),
+                        ]));
+                    }
                     if status == "running" && stdout_preview.is_empty() && stderr_preview.is_empty()
                     {
                         lines.push(Line::from(vec![
