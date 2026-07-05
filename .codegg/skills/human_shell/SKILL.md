@@ -1,7 +1,7 @@
 ---
 name: human-shell
-description: Human-initiated shell command execution, ephemeral transcript storage, projection pipeline (Phases 1-5), policy evaluation, and structured failure digest extraction
-version: 1.3.0
+description: Human-initiated shell command execution, ephemeral transcript storage, projection pipeline (Phases 1-6), policy evaluation, and structured failure digest extraction
+version: 1.4.0
 tags:
   - shell
   - bash
@@ -33,8 +33,9 @@ The roadmap is `plans/shell_output_projection_rtk_roadmap.md`.
 | Phase 2 | **Landed** | `CommandOutputProjector` trait, `RawProjector`/`TruncatedProjector`/`ErrorRetentionProjector`, `ProjectionSelector`, redaction hook placeholder |
 | Phase 3 | **Landed** | Native structured projectors: `GitStatusProjector`, `GitDiffProjector`, `GitLogProjector`, `CargoCheckProjector`, `CargoTestProjector` |
 | Phase 4 | **Partial** | Config schema and `ProjectionSelector::with_config()` present; per-command rules and escape hatches deferred |
-| Phase 5 | **Skeleton landed** | RTK discovery, eligibility classification, `RtkProjector` skeleton — returns `BackendUnavailable` error, does NOT perform RTK compression |
-| Phase 6+ | **Pending** | Real RTK invocation, TUI expansion panel (Phase 7), full redaction pipeline (Phase 8) |
+| Phase 5 | **Landed** | RTK discovery, eligibility classification, `RtkCapabilities`, `RtkProjector` skeleton |
+| Phase 6 | **Landed** | Real RTK invocation: `RtkInvocationMode` (PostProcess/Wrapper/Disabled), capability-driven dispatch, input capping, timeout enforcement, projection metadata |
+| Phase 7+ | **Pending** | TUI expansion panel, full redaction pipeline (Phase 8) |
 
 ## Central Invariant
 
@@ -163,10 +164,11 @@ Native projectors return `ProjectionSupport::Preferred` when their command match
 
 All native projectors produce `ProjectionKind::Structured` with `ProjectionExactness::Parsed` and include raw expansion handles for full output access.
 
-## What Phase 5 Adds
+## What Phase 5 + 6 Adds
 
 Phase 5 adds RTK as an optional, detected command-output compressor backend
-without making it a hard dependency or default execution path.
+without making it a hard dependency or default execution path. Phase 6
+replaces the skeleton with real invocation logic.
 
 ### RTK Discovery
 
@@ -198,6 +200,18 @@ without making it a hard dependency or default execution path.
 | `supports_wrapper_mode` | Yes / No / Unknown |
 | `utf8_output` | Yes / No / Unknown |
 
+### Invocation Mode (Phase 6)
+
+`RtkInvocationMode` enum selects how RTK processes output:
+
+| Mode | Behavior |
+|------|----------|
+| `PostProcess` | Pipes captured stdout/stderr to RTK via stdin. 1 MiB input cap, configurable timeout. |
+| `Wrapper` | Runs `rtk <command>` for eligible read-only commands only. |
+| `Disabled` | No invocation; returns `BackendUnavailable`. |
+
+`RtkCapabilities::invocation_mode()` prefers PostProcess, falls back to Wrapper, defaults to Disabled.
+
 ### Eligibility Classification
 
 `classify_command()` classifies commands into:
@@ -210,13 +224,14 @@ without making it a hard dependency or default execution path.
 | `IneligibleSecuritySensitive` | `curl`, `ssh`, `sudo`, `wget` |
 | `Unknown` | Unrecognized commands |
 
-### RtkProjector Skeleton
+### RtkProjector (Phase 6)
 
-`RtkProjector` implements the `CommandOutputProjector` trait:
+`RtkProjector` implements the `CommandOutputProjector` trait with real invocation:
 
 - Returns `Unsupported` when RTK is disabled, unavailable, or command is ineligible
 - Returns `Fallback` support level when RTK is available and command is eligible
-- Returns `ProjectionError::BackendUnavailable` — the skeleton does NOT produce fake placeholder output
+- Dispatches to `project_post_process()` or `project_wrapper()` based on `invocation_mode()`
+- Returns `ProjectionError::BackendUnavailable` when invocation fails or mode is disabled
 - The selector falls back to safe projection on error and records a warning
 - Raw expansion handles are included for stdout/stderr
 
@@ -232,16 +247,14 @@ Raw → Native → RTK (if enabled) → ErrorRetention → Truncated
 
 ### Tests
 
-15 unit tests covering:
-- Disabled config returns `Disabled` state
-- Not-found state when path is missing
-- Eligibility classification for read-only, side-effecting, security-sensitive, and unknown commands
-- Projector rejection when external backend disallowed
-- Projector rejection when RTK unavailable
-- Projector acceptance for eligible commands
-- Projector rejection for ineligible commands
-- Skeleton returns `BackendUnavailable` error (no fake output)
-- Selector falls back to safe projection on RTK error with warning
+22 unit tests covering:
+- Discovery: disabled config, not-found state, available/broken/timed-out states, capability probing
+- Eligibility: read-only, side-effecting, security-sensitive, and unknown commands
+- Projector: rejection when external backend disallowed, when RTK unavailable, when command ineligible
+- Projector: acceptance for eligible commands
+- Invocation: PostProcess and Wrapper mode dispatch, disabled mode fallback
+- Skeleton: returns `BackendUnavailable` when invocation disabled
+- Selector: falls back to safe projection on RTK error with warning
 
 ## Working Examples
 
@@ -343,6 +356,6 @@ assert_eq!(handle.as_url(), "cmd://42/stderr#0-1024");
 - **Phase 1 does not synthesize combined output.** `get_stream` returns `None` for `CommandOutputStream::Combined` unless the execution layer supplies it explicitly. Downstream code must label any synthesized combined output.
 - **Stream caps mark `Partial`.** Code that consumes a `RawStream` MUST check `OutputCompleteness` and surface the partial state to the user/model rather than silently truncating.
 - **Bridge is additive.** It does NOT modify the existing `ShellOutputStore`, the `ShellEvent` enum, or `ShellRuntime`. Removing or altering those would break Phase 1.
-- **Built-in projectors are conservative.** `RawProjector`, `TruncatedProjector`, and `ErrorRetentionProjector` do not parse command shape, do not invoke RTK, and do not produce model-generated summaries. Native structured projectors (Phase 3) and the RTK backend (Phase 5) plug into the same selector without changing the public API.
+- **Built-in projectors are conservative.** `RawProjector`, `TruncatedProjector`, and `ErrorRetentionProjector` do not parse command shape, do not invoke RTK, and do not produce model-generated summaries. Native structured projectors (Phase 3) and the RTK backend (Phase 5+6) plug into the same selector without changing the public API.
 - **Redaction hook is a placeholder.** `apply_redaction_hook` sets `RedactionState::HookAppliedNoRules` for `ModelContext` and `ToolExpansion` targets but does not actually rewrite any text. Phase 8 will replace the body; the call site in `ProjectionSelector::project` is the contract.
 - **`ProjectionResult` owns the metadata.** The model-facing text is the `text` field; consumers MUST also surface `projector`, `kind`, `exactness`, `redaction`, and `omitted` (or the rendered banner) so the model knows what it is looking at.

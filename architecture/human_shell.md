@@ -578,7 +578,7 @@ allow_side_effecting_commands = false
 - Escape hatches and rule-based projector selection
 - Full TUI metadata panel (Phase 7)
 
-## Command Output Projection (Phase 5)
+## Command Output Projection (Phase 5 + Phase 6)
 
 Phase 5 adds RTK as an optional, detected command-output compressor backend behind the projection abstraction. It is implemented in `src/shell/rtk.rs` and integrated into the selector via `ProjectionSelector::with_rtk()` and `ProjectionSelector::with_config()`.
 
@@ -616,15 +616,34 @@ Phase 5 adds RTK as an optional, detected command-output compressor backend behi
 | `IneligibleSecuritySensitive` | Network/security boundary; must not compress | `curl`, `ssh`, `sudo`, `wget` |
 | `Unknown` | Unrecognized command | — |
 
-### RtkProjector Skeleton
+### RtkProjector (Phase 6 — Real Invocation)
 
-`RtkProjector` implements the `CommandOutputProjector` trait:
+`RtkProjector` implements the `CommandOutputProjector` trait with real RTK invocation:
 
 - Returns `Unsupported` when RTK is disabled, unavailable, or command is ineligible
 - Returns `Fallback` support level when RTK is available and command is eligible
-- Returns `ProjectionError::BackendUnavailable` — the skeleton does NOT produce fake placeholder output
+- Selects invocation mode via `RtkCapabilities::invocation_mode()`: prefers `PostProcess`, falls back to `Wrapper`, defaults to `Disabled`
+- Returns `ProjectionError::BackendUnavailable` when invocation mode is disabled or RTK fails
 - The selector falls back to safe projection on error and records a warning
 - Raw expansion handles are included for stdout/stderr
+
+#### `RtkInvocationMode`
+
+| Mode | Behavior |
+|------|----------|
+| `PostProcess` | Pipes captured stdout/stderr to RTK via stdin. 1 MiB input cap, configurable timeout. Returns `ExternalCompressed` / `Lossy`. |
+| `Wrapper` | Runs `rtk <command>` for eligible read-only commands only. Same timeout/error handling. |
+| `Disabled` | No invocation; returns `BackendUnavailable`. |
+
+#### Projection Metadata
+
+Projection results include:
+- RTK version and binary path
+- Invocation mode used
+- Input/output byte counts
+- Timeout configured
+- Raw expansion handles for stdout/stderr
+- Warnings when streams were merged, RTK failed, or mode was unsupported
 
 ### Selector Integration
 
@@ -638,11 +657,11 @@ Raw → Native → RTK (if enabled) → ErrorRetention → Truncated
 
 `ProjectionError::BackendUnavailable` is returned when a caller requests an external backend (like RTK) but discovery has not yet been probed.
 
-### What's NOT in Phase 5
+### What's NOT in Phase 5/6
 
-- Actual RTK invocation (skeleton only — returns `BackendUnavailable` error)
 - TUI expansion panel (Phase 7)
 - Full redaction pipeline (Phase 8) — the hook site is in place, but the redaction rules are not implemented yet
+- Broad RTK coverage — Phase 6 is intentionally conservative, covering low-risk read-only commands only
 
 ## Current Projection Pipeline Status
 
@@ -652,5 +671,6 @@ Raw → Native → RTK (if enabled) → ErrorRetention → Truncated
 | Phase 2 | **Landed** | `CommandOutputProjector` trait, `RawProjector`/`TruncatedProjector`/`ErrorRetentionProjector`, `ProjectionSelector`, redaction hook placeholder |
 | Phase 3 | **Landed** | Native structured projectors: `GitStatusProjector`, `GitDiffProjector`, `GitLogProjector`, `CargoCheckProjector`, `CargoTestProjector` |
 | Phase 4 | **Partial** | Config schema and `ProjectionSelector::with_config()` present; per-command rules and escape hatches deferred |
-| Phase 5 | **Skeleton landed** | RTK discovery, eligibility classification, `RtkProjector` skeleton — returns `BackendUnavailable` error, does NOT perform RTK compression |
-| Phase 6+ | **Pending** | Real RTK invocation, TUI expansion panel (Phase 7), full redaction pipeline (Phase 8) |
+| Phase 5 | **Landed** | RTK discovery, eligibility classification, `RtkCapabilities`, `RtkProjector` skeleton |
+| Phase 6 | **Landed** | Real RTK invocation: `RtkInvocationMode` (PostProcess/Wrapper/Disabled), capability-driven dispatch, input capping, timeout enforcement, projection metadata |
+| Phase 7+ | **Pending** | TUI expansion panel, full redaction pipeline (Phase 8) |
