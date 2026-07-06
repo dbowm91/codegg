@@ -11,6 +11,81 @@ use crate::shell::projector::{
     ProjectionResult, ProjectionSupport,
 };
 
+// ---------------------------------------------------------------------------
+// Workstream 2: Structured capability probe diagnostics
+// ---------------------------------------------------------------------------
+
+/// Outcome category for a single probe attempt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProbeOutcome {
+    /// Probe succeeded and capability is confirmed.
+    Confirmed,
+    /// Probe ran but capability is not supported.
+    Denied,
+    /// Probe did not complete (timeout or spawn failure).
+    Failed,
+    /// Probe was not attempted (dependency not met).
+    Skipped,
+}
+
+/// Diagnostic detail for a single capability probe.
+#[derive(Debug, Clone)]
+pub struct ProbeDiagnostic {
+    /// Human-readable probe name (e.g. "post-process stdin pipe").
+    pub name: &'static str,
+    /// Command shape used for the probe (no secrets or raw output).
+    pub command_shape: String,
+    /// Timeout applied to the probe.
+    pub timeout_ms: u64,
+    /// Outcome of the probe.
+    pub outcome: ProbeOutcome,
+    /// Byte length of stdout returned by the probe (0 if not captured).
+    pub output_bytes: usize,
+    /// Reason for the outcome (e.g. "non-empty output", "exit code 2").
+    pub reason: String,
+}
+
+impl ProbeDiagnostic {
+    fn new(name: &'static str, command_shape: &str, timeout_ms: u64) -> Self {
+        Self {
+            name,
+            command_shape: command_shape.to_string(),
+            timeout_ms,
+            outcome: ProbeOutcome::Skipped,
+            output_bytes: 0,
+            reason: String::new(),
+        }
+    }
+}
+
+/// Aggregated diagnostics from all capability probes.
+#[derive(Debug, Clone)]
+pub struct RtkCapabilityDiagnostics {
+    pub post_process_probe: ProbeDiagnostic,
+    pub wrapper_probe: ProbeDiagnostic,
+    pub exit_code_probe: ProbeDiagnostic,
+    pub utf8_probe: ProbeDiagnostic,
+}
+
+impl RtkCapabilityDiagnostics {
+    fn all_skipped(timeout_ms: u64) -> Self {
+        Self {
+            post_process_probe: ProbeDiagnostic::new(
+                "post-process stdin pipe",
+                "rtk <stdin>",
+                timeout_ms,
+            ),
+            wrapper_probe: ProbeDiagnostic::new("wrapper command", "rtk echo hello", timeout_ms),
+            exit_code_probe: ProbeDiagnostic::new(
+                "exit code passthrough",
+                "rtk sh -c 'exit 7'",
+                timeout_ms,
+            ),
+            utf8_probe: ProbeDiagnostic::new("utf-8 output", "rtk printf 'hello\\n'", timeout_ms),
+        }
+    }
+}
+
 /// How RTK should be invoked for a given projection request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RtkInvocationMode {
@@ -158,6 +233,8 @@ pub struct RtkCapabilities {
     pub supports_post_process: CapabilityState,
     pub supports_wrapper_mode: CapabilityState,
     pub utf8_output: CapabilityState,
+    /// Per-probe diagnostic detail for maintainers.
+    pub diagnostics: RtkCapabilityDiagnostics,
 }
 
 impl RtkCapabilities {
@@ -168,6 +245,7 @@ impl RtkCapabilities {
             supports_post_process: CapabilityState::Unknown,
             supports_wrapper_mode: CapabilityState::Unknown,
             utf8_output: CapabilityState::Unknown,
+            diagnostics: RtkCapabilityDiagnostics::all_skipped(5000),
         }
     }
 
@@ -181,11 +259,42 @@ impl RtkCapabilities {
             },
         }
     }
+
+    /// Human-readable summary of the selected invocation mode and why.
+    pub fn mode_summary(&self) -> String {
+        match self.invocation_mode() {
+            RtkInvocationMode::PostProcess => "PostProcess: stdin pipe supported".to_string(),
+            RtkInvocationMode::Wrapper => {
+                let reason = match self.supports_post_process {
+                    CapabilityState::No => "post-process not supported",
+                    CapabilityState::Unknown => "post-process unknown",
+                    _ => "wrapper preferred",
+                };
+                format!("Wrapper: {reason}")
+            }
+            RtkInvocationMode::Disabled => {
+                let pp = match self.supports_post_process {
+                    CapabilityState::No => "post-process=no",
+                    CapabilityState::Unknown => "post-process=unknown",
+                    _ => "",
+                };
+                let wm = match self.supports_wrapper_mode {
+                    CapabilityState::No => "wrapper=no",
+                    CapabilityState::Unknown => "wrapper=unknown",
+                    _ => "",
+                };
+                let parts: Vec<&str> = [pp, wm].into_iter().filter(|s| !s.is_empty()).collect();
+                format!("Disabled: {}", parts.join(", "))
+            }
+        }
+    }
 }
 
 impl RtkDiscovery {
     pub fn probe_capabilities(&self) -> RtkCapabilities {
-        let mut caps = RtkCapabilities::all_unknown();
+        let timeout_ms = self.config.timeout_ms.unwrap_or(5000);
+        let timeout = Duration::from_millis(timeout_ms);
+        let mut diags = RtkCapabilityDiagnostics::all_skipped(timeout_ms);
 
         let Some(rtk_path) = self.availability.as_ref().and_then(|a| {
             if a.state == RtkState::Available {
@@ -194,71 +303,234 @@ impl RtkDiscovery {
                 None
             }
         }) else {
-            return caps;
+            return RtkCapabilities::all_unknown();
         };
 
-        let timeout = Duration::from_millis(self.config.timeout_ms.unwrap_or(5000));
+        let mut caps = RtkCapabilities {
+            preserves_exit_code: CapabilityState::Unknown,
+            preserves_stderr: CapabilityState::Unknown,
+            supports_post_process: CapabilityState::Unknown,
+            supports_wrapper_mode: CapabilityState::Unknown,
+            utf8_output: CapabilityState::Unknown,
+            diagnostics: diags.clone(),
+        };
 
+        // --- Exit code probe ---
+        diags.exit_code_probe.outcome = ProbeOutcome::Failed;
         match run_with_timeout(rtk_path, &["sh", "-c", "exit 7"], timeout) {
             Err(TimedOutError::Other(ref e)) if e.to_string().contains("exit status: 7") => {
                 caps.preserves_exit_code = CapabilityState::Yes;
+                diags.exit_code_probe.outcome = ProbeOutcome::Confirmed;
+                diags.exit_code_probe.reason = "exit code 7 propagated".into();
             }
-            Err(TimedOutError::TimedOut) => {}
-            _ => {}
-        }
-
-        match run_with_timeout(rtk_path, &["sh", "-c", "echo err >&2"], timeout) {
-            Ok(_) => {}
-            Err(TimedOutError::TimedOut) => {}
-            Err(TimedOutError::Other(_)) => {}
-        }
-
-        match run_with_timeout(rtk_path, &["printf", "hello\n"], timeout) {
+            Err(TimedOutError::TimedOut) => {
+                diags.exit_code_probe.reason = "timed out".into();
+            }
+            Err(TimedOutError::Other(e)) => {
+                diags.exit_code_probe.reason = format!("unexpected: {e}");
+            }
             Ok(_) => {
-                caps.utf8_output = CapabilityState::Yes;
+                diags.exit_code_probe.reason = "exit code 0 (expected non-zero)".into();
+            }
+        }
+
+        // --- Stderr preservation probe (informational, not acted on) ---
+        match run_with_timeout(rtk_path, &["sh", "-c", "echo err >&2"], timeout) {
+            Ok(_) => {
+                caps.preserves_stderr = CapabilityState::Unknown;
             }
             Err(TimedOutError::TimedOut) => {}
             Err(TimedOutError::Other(_)) => {}
         }
 
-        // Probe post-process mode: pipe data to RTK via stdin.
-        // RTK should read from stdin and write compressed output to stdout.
-        // We check that output is non-empty AND non-trivial (not just a
-        // bare newline from a binary that ignores stdin like /bin/echo).
-        match run_with_stdin_timeout(rtk_path, &[], b"hello world\n", timeout) {
+        // --- UTF-8 output probe ---
+        diags.utf8_probe.outcome = ProbeOutcome::Failed;
+        match run_with_timeout(rtk_path, &["printf", "hello\n"], timeout) {
+            Ok(ref output) => {
+                caps.utf8_output = CapabilityState::Yes;
+                diags.utf8_probe.outcome = ProbeOutcome::Confirmed;
+                diags.utf8_probe.output_bytes = output.len();
+                diags.utf8_probe.reason = format!("{} bytes of valid UTF-8", output.len());
+            }
+            Err(TimedOutError::TimedOut) => {
+                diags.utf8_probe.reason = "timed out".into();
+            }
+            Err(TimedOutError::Other(e)) => {
+                diags.utf8_probe.reason = format!("failed: {e}");
+            }
+        }
+
+        // --- Post-process mode probe ---
+        // Pipe data to RTK via stdin. RTK should read from stdin and write
+        // compressed output to stdout. We check that output is non-empty AND
+        // non-trivial (not just a bare newline from a binary that ignores
+        // stdin like /bin/echo, or help text from a binary that rejects
+        // stdin like the real RTK CLI).
+        diags.post_process_probe.outcome = ProbeOutcome::Failed;
+        let stdin_data = b"hello world\n";
+        match run_with_stdin_timeout(rtk_path, &[], stdin_data, timeout) {
             Ok(ref output) if !output.trim().is_empty() => {
-                caps.supports_post_process = CapabilityState::Yes;
+                // Additional heuristic: reject if output looks like help text
+                // (real RTK prints help when invoked without a subcommand).
+                let lower = output.to_lowercase();
+                let looks_like_help = lower.contains("usage:")
+                    || lower.contains("available subcommands")
+                    || lower.contains("try ")
+                    || lower.contains("for more information");
+                if looks_like_help {
+                    caps.supports_post_process = CapabilityState::No;
+                    diags.post_process_probe.outcome = ProbeOutcome::Denied;
+                    diags.post_process_probe.output_bytes = output.len();
+                    diags.post_process_probe.reason = format!(
+                        "RTK returned help text ({} bytes) — requires subcommand, not stdin pipe",
+                        output.len()
+                    );
+                } else {
+                    caps.supports_post_process = CapabilityState::Yes;
+                    diags.post_process_probe.outcome = ProbeOutcome::Confirmed;
+                    diags.post_process_probe.output_bytes = output.len();
+                    diags.post_process_probe.reason = format!(
+                        "{} bytes of compressed output from {} stdin bytes",
+                        output.len(),
+                        stdin_data.len()
+                    );
+                }
             }
             Ok(_) => {
                 caps.supports_post_process = CapabilityState::No;
+                diags.post_process_probe.outcome = ProbeOutcome::Denied;
+                diags.post_process_probe.reason = "empty output from stdin pipe".into();
             }
             Err(TimedOutError::TimedOut) => {
                 caps.supports_post_process = CapabilityState::No;
+                diags.post_process_probe.outcome = ProbeOutcome::Failed;
+                diags.post_process_probe.reason = "timed out".into();
             }
-            Err(TimedOutError::Other(_)) => {
+            Err(TimedOutError::Other(ref e)) => {
                 caps.supports_post_process = CapabilityState::No;
+                diags.post_process_probe.outcome = ProbeOutcome::Failed;
+                diags.post_process_probe.reason = format!("spawn/exit error: {e}");
             }
         }
 
-        // Probe wrapper mode: run `rtk echo hello` as a wrapped command.
+        // --- Wrapper mode probe ---
+        // Run `rtk echo hello` as a wrapped command.
         // RTK should execute the command and return its output.
-        // We check that output is non-empty (the wrapped command produced output).
+        diags.wrapper_probe.outcome = ProbeOutcome::Failed;
         match run_with_timeout(rtk_path, &["echo", "hello"], timeout) {
             Ok(ref output) if !output.trim().is_empty() => {
                 caps.supports_wrapper_mode = CapabilityState::Yes;
+                diags.wrapper_probe.outcome = ProbeOutcome::Confirmed;
+                diags.wrapper_probe.output_bytes = output.len();
+                diags.wrapper_probe.reason = format!("{} bytes from wrapped command", output.len());
             }
             Ok(_) => {
                 caps.supports_wrapper_mode = CapabilityState::No;
+                diags.wrapper_probe.outcome = ProbeOutcome::Denied;
+                diags.wrapper_probe.reason = "empty output from wrapped command".into();
             }
             Err(TimedOutError::TimedOut) => {
                 caps.supports_wrapper_mode = CapabilityState::No;
+                diags.wrapper_probe.outcome = ProbeOutcome::Failed;
+                diags.wrapper_probe.reason = "timed out".into();
             }
-            Err(TimedOutError::Other(_)) => {
+            Err(TimedOutError::Other(ref e)) => {
                 caps.supports_wrapper_mode = CapabilityState::No;
+                diags.wrapper_probe.outcome = ProbeOutcome::Failed;
+                diags.wrapper_probe.reason = format!("spawn/exit error: {e}");
             }
         }
 
+        caps.diagnostics = diags;
         caps
+    }
+
+    /// Human-readable status summary for user-facing display (Workstream 5).
+    pub fn status_summary(&self) -> RtkStatusSummary {
+        let config_enabled = self.config.enabled != Some(false) && self.config.enabled.is_some();
+        let availability = self.availability.clone();
+        let capabilities = self.probe_capabilities();
+
+        RtkStatusSummary {
+            config_enabled,
+            availability,
+            capabilities,
+        }
+    }
+}
+
+/// Workstream 5: User-facing RTK status summary.
+#[derive(Debug, Clone)]
+pub struct RtkStatusSummary {
+    pub config_enabled: bool,
+    pub availability: Option<RtkAvailability>,
+    pub capabilities: RtkCapabilities,
+}
+
+impl RtkStatusSummary {
+    /// Format a concise human-readable status block.
+    pub fn display(&self) -> String {
+        let mut lines = Vec::new();
+        lines.push("RTK Status".to_string());
+        lines.push(format!(
+            "  config: {}",
+            if self.config_enabled {
+                "enabled"
+            } else {
+                "disabled"
+            }
+        ));
+
+        match &self.availability {
+            Some(avail) => {
+                lines.push(format!("  state: {:?}", avail.state));
+                if let Some(ref path) = avail.path {
+                    lines.push(format!("  path: {}", path.display()));
+                }
+                if let Some(ref version) = avail.version {
+                    lines.push(format!("  version: {version}"));
+                }
+                for diag in &avail.diagnostics {
+                    lines.push(format!("  diagnostic: {diag}"));
+                }
+            }
+            None => {
+                lines.push("  state: not probed".to_string());
+            }
+        }
+
+        lines.push(format!("  mode: {}", self.capabilities.mode_summary()));
+        lines.push(format!(
+            "  post-process: {:?}",
+            self.capabilities.supports_post_process
+        ));
+        lines.push(format!(
+            "  wrapper: {:?}",
+            self.capabilities.supports_wrapper_mode
+        ));
+        lines.push(format!(
+            "  exit-code: {:?}",
+            self.capabilities.preserves_exit_code
+        ));
+        lines.push(format!("  utf8: {:?}", self.capabilities.utf8_output));
+
+        // Per-probe diagnostics
+        let probes = [
+            &self.capabilities.diagnostics.post_process_probe,
+            &self.capabilities.diagnostics.wrapper_probe,
+            &self.capabilities.diagnostics.exit_code_probe,
+            &self.capabilities.diagnostics.utf8_probe,
+        ];
+        for probe in &probes {
+            if probe.outcome != ProbeOutcome::Skipped {
+                lines.push(format!(
+                    "  probe {}: {:?} — {}",
+                    probe.name, probe.outcome, probe.reason
+                ));
+            }
+        }
+
+        lines.join("\n")
     }
 }
 
@@ -335,6 +607,9 @@ pub struct RtkProjector {
 impl RtkProjector {
     pub const NAME: &'static str = "rtk";
 
+    /// Maximum bytes of RTK stderr to include in warnings (Workstream 7).
+    const MAX_STDERR_WARNING_BYTES: usize = 512;
+
     pub fn new(config: ShellOutputRtkConfig) -> Self {
         Self {
             discovery: RtkDiscovery::new(config),
@@ -347,6 +622,11 @@ impl RtkProjector {
 
     pub fn discovery_mut(&mut self) -> &mut RtkDiscovery {
         &mut self.discovery
+    }
+
+    /// Workstream 5: Return a user-facing status summary.
+    pub fn status_summary(&self) -> RtkStatusSummary {
+        self.discovery.status_summary()
     }
 }
 
@@ -533,7 +813,16 @@ impl RtkProjector {
 
                 let mut warnings = Vec::new();
                 if !stderr_text.is_empty() {
-                    warnings.push(format!("RTK stderr: {}", stderr_text.trim()));
+                    let truncated = if stderr_text.len() > Self::MAX_STDERR_WARNING_BYTES {
+                        format!(
+                            "{}... ({} bytes truncated)",
+                            &stderr_text[..Self::MAX_STDERR_WARNING_BYTES],
+                            stderr_text.len() - Self::MAX_STDERR_WARNING_BYTES
+                        )
+                    } else {
+                        stderr_text.trim().to_string()
+                    };
+                    warnings.push(format!("RTK stderr: {truncated}"));
                 }
                 warnings.push(format!(
                     "RTK post-process: {} input bytes -> {} output bytes",
@@ -680,7 +969,16 @@ impl RtkProjector {
 
                 let mut warnings = Vec::new();
                 if !stderr_text.is_empty() {
-                    warnings.push(format!("RTK stderr: {}", stderr_text.trim()));
+                    let truncated = if stderr_text.len() > Self::MAX_STDERR_WARNING_BYTES {
+                        format!(
+                            "{}... ({} bytes truncated)",
+                            &stderr_text[..Self::MAX_STDERR_WARNING_BYTES],
+                            stderr_text.len() - Self::MAX_STDERR_WARNING_BYTES
+                        )
+                    } else {
+                        stderr_text.trim().to_string()
+                    };
+                    warnings.push(format!("RTK stderr: {truncated}"));
                 }
                 warnings.push(format!(
                     "RTK wrapper: {} input bytes -> {} output bytes",
@@ -1341,6 +1639,50 @@ mod tests {
         assert_eq!(caps.supports_post_process, CapabilityState::Unknown);
         assert_eq!(caps.supports_wrapper_mode, CapabilityState::Unknown);
         assert_eq!(caps.utf8_output, CapabilityState::Unknown);
+        // Diagnostics should be present with all-skipped state
+        assert_eq!(
+            caps.diagnostics.post_process_probe.outcome,
+            ProbeOutcome::Skipped
+        );
+        assert_eq!(
+            caps.diagnostics.wrapper_probe.outcome,
+            ProbeOutcome::Skipped
+        );
+    }
+
+    #[test]
+    fn rtk_mode_summary_post_process() {
+        let caps = RtkCapabilities {
+            supports_post_process: CapabilityState::Yes,
+            supports_wrapper_mode: CapabilityState::Yes,
+            ..RtkCapabilities::all_unknown()
+        };
+        assert!(caps.mode_summary().contains("PostProcess"));
+    }
+
+    #[test]
+    fn rtk_mode_summary_wrapper_fallback() {
+        let caps = RtkCapabilities {
+            supports_post_process: CapabilityState::No,
+            supports_wrapper_mode: CapabilityState::Yes,
+            ..RtkCapabilities::all_unknown()
+        };
+        let summary = caps.mode_summary();
+        assert!(summary.contains("Wrapper"));
+        assert!(summary.contains("post-process not supported"));
+    }
+
+    #[test]
+    fn rtk_mode_summary_disabled() {
+        let caps = RtkCapabilities {
+            supports_post_process: CapabilityState::No,
+            supports_wrapper_mode: CapabilityState::No,
+            ..RtkCapabilities::all_unknown()
+        };
+        let summary = caps.mode_summary();
+        assert!(summary.contains("Disabled"));
+        assert!(summary.contains("post-process=no"));
+        assert!(summary.contains("wrapper=no"));
     }
 
     #[test]
@@ -1652,6 +1994,11 @@ mod tests {
 
         // /bin/echo doesn't read stdin, so post-process should be No.
         assert_eq!(caps.supports_post_process, CapabilityState::No);
+        // Diagnostic should explain the denial.
+        assert_eq!(
+            caps.diagnostics.post_process_probe.outcome,
+            ProbeOutcome::Denied
+        );
     }
 
     #[test]
@@ -1673,6 +2020,31 @@ mod tests {
     }
 
     #[test]
+    fn rtk_probe_rejects_post_process_when_output_looks_like_help() {
+        // Simulate the behavior of real RTK CLI (v0.43.0) which prints
+        // help text instead of compressing stdin input.
+        // We verify the probe diagnostic captures this correctly.
+        let config = ShellOutputRtkConfig {
+            enabled: Some(true),
+            path: Some("/bin/echo".to_string()),
+            eligible_only: Some(true),
+            timeout_ms: Some(5000),
+            allow_side_effecting_commands: None,
+        };
+        let mut discovery = RtkDiscovery::new(config);
+        discovery.probe();
+        let caps = discovery.probe_capabilities();
+
+        // /bin/echo doesn't read stdin, so post-process = No.
+        // The diagnostic should explain why.
+        assert_eq!(caps.supports_post_process, CapabilityState::No);
+        assert_eq!(
+            caps.diagnostics.post_process_probe.outcome,
+            ProbeOutcome::Denied
+        );
+    }
+
+    #[test]
     fn rtk_probe_capabilities_with_unavailable_path_returns_all_unknown() {
         let config = ShellOutputRtkConfig {
             enabled: Some(true),
@@ -1685,6 +2057,11 @@ mod tests {
         let caps = discovery.probe_capabilities();
         assert_eq!(caps.supports_post_process, CapabilityState::Unknown);
         assert_eq!(caps.supports_wrapper_mode, CapabilityState::Unknown);
+        // All diagnostics should be Skipped since no binary was available.
+        assert_eq!(
+            caps.diagnostics.post_process_probe.outcome,
+            ProbeOutcome::Skipped
+        );
     }
 
     #[test]
@@ -1693,6 +2070,11 @@ mod tests {
         let caps = discovery.probe_capabilities();
         assert_eq!(caps.supports_post_process, CapabilityState::Unknown);
         assert_eq!(caps.supports_wrapper_mode, CapabilityState::Unknown);
+        // Diagnostics should all be Skipped when disabled.
+        assert_eq!(
+            caps.diagnostics.wrapper_probe.outcome,
+            ProbeOutcome::Skipped
+        );
     }
 
     #[test]
@@ -2255,6 +2637,32 @@ mod tests {
             result.raw_semantics,
             ProjectionRawSemantics::OriginalCommandRaw
         );
+    }
+
+    #[test]
+    fn rtk_status_summary_disabled_config() {
+        let mut discovery = RtkDiscovery::new(disabled_config());
+        let _ = discovery.probe();
+        let summary = discovery.status_summary();
+        assert!(!summary.config_enabled);
+        let display = summary.display();
+        assert!(display.contains("disabled"));
+    }
+
+    #[test]
+    fn rtk_status_summary_not_found() {
+        let config = ShellOutputRtkConfig {
+            enabled: Some(true),
+            path: Some("/nonexistent/rtk".to_string()),
+            eligible_only: None,
+            timeout_ms: Some(1000),
+            allow_side_effecting_commands: None,
+        };
+        let mut discovery = RtkDiscovery::new(config);
+        let _ = discovery.probe();
+        let summary = discovery.status_summary();
+        let display = summary.display();
+        assert!(display.contains("NotFound"));
     }
 }
 

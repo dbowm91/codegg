@@ -689,7 +689,7 @@ Phase 5 adds RTK as an optional, detected command-output compressor backend behi
 | `TimedOut` | Version probe exceeded timeout |
 | `UnsupportedVersion` | Incompatible version |
 
-`RtkDiscovery::probe_capabilities()` probes the available RTK for specific behavior, returning `RtkCapabilities` where each capability is `CapabilityState::Yes`, `No`, or `Unknown`. It now probes both stdin-pipe (PostProcess) and wrapped-command (Wrapper) invocation modes.
+`RtkDiscovery::probe_capabilities()` probes the available RTK for specific behavior, returning `RtkCapabilities` where each capability is `CapabilityState::Yes`, `No`, or `Unknown`, plus structured `RtkCapabilityDiagnostics` for each probe. It probes both stdin-pipe (PostProcess) and wrapped-command (Wrapper) invocation modes. The PostProcess probe includes help-text detection to catch RTK versions that lack stdin support.
 
 ### Eligibility Classification
 
@@ -771,6 +771,38 @@ CODEGG_RTK_INTEGRATION=1 cargo test --all-features rtk_integration
 
 Tests cover: PostProcess contract, wrapper contract, and skip-without-env behavior. Standard CI validation (`cargo test --workspace --all-features`) does not require RTK to be installed.
 
+### Structured Probe Diagnostics
+
+`probe_capabilities()` now collects structured diagnostics per probe via `RtkCapabilityDiagnostics`:
+
+| Type | Purpose |
+|------|---------|
+| `ProbeOutcome` | `Confirmed`, `Denied`, `Failed`, `Skipped` — per-probe result |
+| `ProbeDiagnostic` | `name`, `command_shape`, `timeout_ms`, `outcome`, `output_bytes`, `reason` |
+| `RtkCapabilityDiagnostics` | 4 probe diagnostic fields (exit_code, post_process, wrapper, stderr) |
+
+Key probe: the PostProcess probe includes a **help-text detection heuristic** that checks for `usage:`, `available subcommands`, `try `, or `for more information` in output. This catches RTK v0.43.0+ which does NOT support stdin post-process mode (prints help + exit 2).
+
+`RtkCapabilities::mode_summary()` returns a human-readable string summarizing the selected invocation mode and reason (e.g. "wrapper — post-process not supported by this RTK version").
+
+### User-Facing RTK Status
+
+`RtkStatusSummary` provides a multi-line status display:
+
+```rust
+pub struct RtkStatusSummary {
+    pub config_enabled: bool,
+    pub availability: RtkAvailability,
+    pub capabilities: Option<RtkCapabilities>,
+}
+```
+
+Accessed via `RtkDiscovery::status_summary()` or `RtkProjector::status_summary()`. Displays config state, binary path, version, selected invocation mode, and per-capability results.
+
+### Stderr Warning Cap
+
+`RtkProjector::MAX_STDERR_WARNING_BYTES = 512` caps RTK stderr content in `ProjectionResult.warnings` to prevent excessive context bloat from verbose error output.
+
 ### CI Coverage
 
 The main CI pipeline (`ci.yml`) runs explicit shell projection validation steps after the full workspace test suite:
@@ -780,7 +812,7 @@ The main CI pipeline (`ci.yml`) runs explicit shell projection validation steps 
 | Evaluation harness | `cargo test --test shell_projection_harness` | 11 invariant tests over fixture corpus: raw retention, selector chain, truncation, error retention, native projectors, RTK fallback, redaction, expansion handles, context metadata |
 | Context budget | `cargo test --test shell_projection_phase10` | 33 tests: model-tier budgets, compaction metadata, double-compression prevention, fact extraction, expansion round-trips |
 | Redactor unit tests | `cargo test -p codegg --lib shell::redactor` | 33 tests: all six RedactRule implementations, false positives, long lines, edge cases |
-| RTK unit tests | `cargo test -p codegg --lib shell::rtk` | 53 tests: discovery states, capability probing, invocation mode selection, eligibility classification, wrapper grammar parsing |
+| RTK unit tests | `cargo test -p codegg --lib shell::rtk` | 62 tests: discovery states, capability probing with diagnostics, invocation mode selection, eligibility classification, wrapper grammar parsing, status summary |
 
 RTK integration tests (`rtk_integration`) are env-gated and not part of standard CI. They require `CODEGG_RTK_INTEGRATION=1` and RTK installed on PATH.
 

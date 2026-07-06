@@ -218,7 +218,21 @@ replaces the skeleton with real invocation logic.
 | `supports_wrapper_mode` | Yes / No / Unknown |
 | `utf8_output` | Yes / No / Unknown |
 
-`probe_capabilities()` probes both PostProcess mode (piping data via stdin) and Wrapper mode (`rtk echo hello`) to determine which invocation modes are supported.
+`probe_capabilities()` probes both PostProcess mode (piping data via stdin) and Wrapper mode (`rtk echo hello`) to determine which invocation modes are supported. Results include structured `RtkCapabilityDiagnostics` per probe.
+
+### Structured Probe Diagnostics
+
+| Type | Purpose |
+|------|---------|
+| `ProbeOutcome` | `Confirmed`, `Denied`, `Failed`, `Skipped` — per-probe result |
+| `ProbeDiagnostic` | `name`, `command_shape`, `timeout_ms`, `outcome`, `output_bytes`, `reason` |
+| `RtkCapabilityDiagnostics` | 4 probe diagnostic fields (exit_code, post_process, wrapper, stderr) |
+
+The PostProcess probe includes a **help-text detection heuristic** that catches RTK versions lacking stdin support (e.g., RTK v0.43.0 prints help + exit 2).
+
+### User-Facing RTK Status
+
+`RtkStatusSummary` provides a multi-line status display via `RtkDiscovery::status_summary()` or `RtkProjector::status_summary()`. Shows config state, binary path, version, selected invocation mode, and per-capability results.
 
 ### Invocation Mode (Phase 6)
 
@@ -284,8 +298,10 @@ This makes raw-handle truthfulness structured rather than a warning string.
 
 ### Tests
 
-22 unit tests covering:
+62 unit tests covering:
 - Discovery: disabled config, not-found state, available/broken/timed-out states, capability probing
+- Capability diagnostics: help-text detection, Skipped/Confirmed/Denied outcomes, mode summary
+- Status summary: disabled config display, not-found display
 - Eligibility: read-only, side-effecting, security-sensitive, and unknown commands
 - Projector: rejection when external backend disallowed, when RTK unavailable, when command ineligible
 - Projector: acceptance for eligible commands
