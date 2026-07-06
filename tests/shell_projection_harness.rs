@@ -108,8 +108,13 @@ fn discover_fixtures() -> Vec<(String, PathBuf)> {
 fn load_fixture(_name: &str, toml_path: &Path) -> (FixtureMetadata, Vec<u8>) {
     let content = std::fs::read_to_string(toml_path)
         .unwrap_or_else(|e| panic!("Failed to read fixture TOML {}: {}", toml_path.display(), e));
-    let metadata: FixtureMetadata = toml::from_str(&content)
-        .unwrap_or_else(|e| panic!("Failed to parse fixture TOML {}: {}", toml_path.display(), e));
+    let metadata: FixtureMetadata = toml::from_str(&content).unwrap_or_else(|e| {
+        panic!(
+            "Failed to parse fixture TOML {}: {}",
+            toml_path.display(),
+            e
+        )
+    });
 
     let dir = toml_path.parent().expect("TOML has parent dir");
     let output = match metadata.fixture.stream.as_str() {
@@ -229,7 +234,11 @@ fn approx_tokens(text: &str) -> usize {
 #[test]
 fn test_fixture_metadata_parses() {
     let fixtures = discover_fixtures();
-    assert!(!fixtures.is_empty(), "No fixtures found in {:?}", fixture_dir());
+    assert!(
+        !fixtures.is_empty(),
+        "No fixtures found in {:?}",
+        fixture_dir()
+    );
 
     for (name, path) in &fixtures {
         let (metadata, _output) = load_fixture(name, path);
@@ -255,19 +264,13 @@ fn test_fixture_metadata_parses() {
             let stdout_path = dir.join(format!("{}.stdout", metadata.fixture.name));
             // stdout file is optional — empty is fine
             if !stdout_path.exists() {
-                eprintln!(
-                    "  info: fixture {} has no stdout file (acceptable)",
-                    name
-                );
+                eprintln!("  info: fixture {} has no stdout file (acceptable)", name);
             }
         }
         if stream == "stderr" || stream == "combined" {
             let stderr_path = dir.join(format!("{}.stderr", metadata.fixture.name));
             if !stderr_path.exists() {
-                eprintln!(
-                    "  info: fixture {} has no stderr file (acceptable)",
-                    name
-                );
+                eprintln!("  info: fixture {} has no stderr file (acceptable)", name);
             }
         }
     }
@@ -454,11 +457,7 @@ fn test_native_projectors_match_command_pattern() {
         CommandRun {
             id,
             command: "git status --porcelain".into(),
-            argv: Some(vec![
-                "git".into(),
-                "status".into(),
-                "--porcelain".into(),
-            ]),
+            argv: Some(vec!["git".into(), "status".into(), "--porcelain".into()]),
             cwd: std::path::PathBuf::from("/tmp"),
             started_at: SystemTime::now(),
             duration: Duration::from_millis(10),
@@ -487,10 +486,14 @@ fn test_native_projectors_match_command_pattern() {
             redaction: RedactionState::NotApplied,
         }
     };
-    let request_git = ProjectionRequest::for_target(&run_git, ProjectionTarget::ModelContext, &policy);
+    let request_git =
+        ProjectionRequest::for_target(&run_git, ProjectionTarget::ModelContext, &policy);
     let git_projector = GitStatusProjector;
     assert!(
-        !matches!(git_projector.supports(&request_git), ProjectionSupport::Unsupported),
+        !matches!(
+            git_projector.supports(&request_git),
+            ProjectionSupport::Unsupported
+        ),
         "GitStatusProjector should support 'git status --porcelain'"
     );
 
@@ -529,10 +532,14 @@ fn test_native_projectors_match_command_pattern() {
             redaction: RedactionState::NotApplied,
         }
     };
-    let request_diff = ProjectionRequest::for_target(&run_diff, ProjectionTarget::ModelContext, &policy);
+    let request_diff =
+        ProjectionRequest::for_target(&run_diff, ProjectionTarget::ModelContext, &policy);
     let diff_projector = GitDiffProjector;
     assert!(
-        !matches!(diff_projector.supports(&request_diff), ProjectionSupport::Unsupported),
+        !matches!(
+            diff_projector.supports(&request_diff),
+            ProjectionSupport::Unsupported
+        ),
         "GitDiffProjector should support 'git diff'"
     );
 
@@ -576,10 +583,14 @@ fn test_native_projectors_match_command_pattern() {
             redaction: RedactionState::NotApplied,
         }
     };
-    let request_log = ProjectionRequest::for_target(&run_log, ProjectionTarget::ModelContext, &policy);
+    let request_log =
+        ProjectionRequest::for_target(&run_log, ProjectionTarget::ModelContext, &policy);
     let log_projector = GitLogProjector;
     assert!(
-        !matches!(log_projector.supports(&request_log), ProjectionSupport::Unsupported),
+        !matches!(
+            log_projector.supports(&request_log),
+            ProjectionSupport::Unsupported
+        ),
         "GitLogProjector should support 'git log --oneline -5'"
     );
 
@@ -618,10 +629,14 @@ fn test_native_projectors_match_command_pattern() {
             redaction: RedactionState::NotApplied,
         }
     };
-    let request_fail = ProjectionRequest::for_target(&run_fail, ProjectionTarget::ModelContext, &policy);
+    let request_fail =
+        ProjectionRequest::for_target(&run_fail, ProjectionTarget::ModelContext, &policy);
     let err_projector = ErrorRetentionProjector;
     assert!(
-        !matches!(err_projector.supports(&request_fail), ProjectionSupport::Unsupported),
+        !matches!(
+            err_projector.supports(&request_fail),
+            ProjectionSupport::Unsupported
+        ),
         "ErrorRetentionProjector should support failing runs"
     );
 
@@ -629,7 +644,10 @@ fn test_native_projectors_match_command_pattern() {
     let request_any = ProjectionRequest::for_target(&run, ProjectionTarget::ModelContext, &policy);
     let trunc_projector = TruncatedProjector;
     assert!(
-        !matches!(trunc_projector.supports(&request_any), ProjectionSupport::Unsupported),
+        !matches!(
+            trunc_projector.supports(&request_any),
+            ProjectionSupport::Unsupported
+        ),
         "TruncatedProjector should always be available as a fallback"
     );
 
@@ -637,7 +655,10 @@ fn test_native_projectors_match_command_pattern() {
     let selector = ProjectionSelector::with_defaults();
     let names = selector.projector_names();
     assert!(names.contains(&"raw"), "Selector should contain 'raw'");
-    assert!(names.contains(&"truncated"), "Selector should contain 'truncated'");
+    assert!(
+        names.contains(&"truncated"),
+        "Selector should contain 'truncated'"
+    );
     assert!(
         names.contains(&"error-retention"),
         "Selector should contain 'error-retention'"
@@ -766,16 +787,16 @@ fn test_token_estimates_monotonic() {
         let (metadata, output) = load_fixture(name, path);
         let result = run_projection_for_fixture(&metadata, &output, &policy, budget);
 
-            // Both token estimates should be present when both streams have data
-            if let (Some(input_tok), Some(output_tok)) = (
-                result.estimated_input_tokens,
-                result.estimated_output_tokens,
-            ) {
-                // For small outputs, the projected text includes headers/metadata
-                // not counted in input_bytes, so output_tokens may exceed
-                // input_tokens. Verify the estimates are non-negative and the
-                // output estimate is reasonable (within 5x of input).
-                //
+        // Both token estimates should be present when both streams have data
+        if let (Some(input_tok), Some(output_tok)) = (
+            result.estimated_input_tokens,
+            result.estimated_output_tokens,
+        ) {
+            // For small outputs, the projected text includes headers/metadata
+            // not counted in input_bytes, so output_tokens may exceed
+            // input_tokens. Verify the estimates are non-negative and the
+            // output estimate is reasonable (within 5x of input).
+            //
 
             // For large inputs (>500 tokens), output should not exceed
             // input by more than 50% (to account for header/metadata overhead).
@@ -858,10 +879,6 @@ fn test_metrics_report() {
             name, result.projector, input_tok, output_tok, reduction, status
         );
 
-        assert!(
-            all_pass,
-            "Fixture '{}': invariant check failed",
-            name
-        );
+        assert!(all_pass, "Fixture '{}': invariant check failed", name);
     }
 }

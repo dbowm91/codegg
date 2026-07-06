@@ -325,7 +325,7 @@ impl ProjectionKind {
 
 /// How much of the original raw output the projection faithfully
 /// represents.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ProjectionExactness {
     /// The projection is byte-identical to the retained raw output
     /// (modulo lossy UTF-8 decoding for non-UTF-8 streams).
@@ -401,7 +401,7 @@ impl OmittedRange {
 /// The URL form is the same `cmd://<id>/<stream>` URL used by
 /// [`crate::shell::projection::OutputHandle`], optionally extended with
 /// a byte range fragment (`#start-end`).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ExpansionHandle {
     /// Command run being expanded.
     pub command_id: CommandRunId,
@@ -531,6 +531,388 @@ impl ProjectionResult {
             },
         )
     }
+
+    /// Extract context metadata for compaction preservation.
+    ///
+    /// This method inspects the projection result and extracts critical
+    /// facts (failed tests, error codes, diagnostics, file changes) that
+    /// the compaction system should preserve during context window
+    /// management. The metadata also carries a flag indicating whether
+    /// this output has already been projected, preventing double
+    /// compression.
+    pub fn to_context_metadata(
+        &self,
+        command: &str,
+        command_id: &str,
+        run: &CommandRun,
+    ) -> ProjectionContextMetadata {
+        let mut critical_facts = Vec::new();
+
+        // Extract facts from the projected text
+        extract_critical_facts(&self.text, &mut critical_facts);
+
+        // Record redaction state as a fact
+        if let RedactionState::Applied { replacements } = self.redaction {
+            critical_facts.push(ProjectionFact::RedactionApplied {
+                rule_count: replacements,
+            });
+        }
+
+        let token_budget_used = self
+            .estimated_output_tokens
+            .unwrap_or_else(|| ProjectionBudget::approx_tokens_from_bytes(self.output_bytes));
+
+        ProjectionContextMetadata {
+            command_id: command_id.to_string(),
+            command: command.to_string(),
+            exit_label: run.exit.label(),
+            projector: self.projector.clone(),
+            exactness: self.exactness,
+            raw_available: self.expansion_handles.iter().any(|h| {
+                h.stream == CommandOutputStream::Stdout || h.stream == CommandOutputStream::Stderr
+            }),
+            expansion_handles: self.expansion_handles.clone(),
+            critical_facts,
+            warnings: self.warnings.clone(),
+            token_budget_used,
+            is_already_projected: !matches!(self.kind, ProjectionKind::Raw),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Phase 10 — Context budget and compaction integration
+// ---------------------------------------------------------------------------
+
+/// Critical facts extracted from command output for compaction
+/// preservation.
+///
+/// These facts represent the minimal information that must survive
+/// compaction cycles so that the model retains actionable command
+/// evidence across long sessions.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum ProjectionFact {
+    /// A test that failed, with optional source location.
+    FailedTest {
+        name: String,
+        location: Option<String>,
+    },
+    /// A diagnostic span (file, line, column) from error output.
+    DiagnosticSpan {
+        file: String,
+        line: usize,
+        column: usize,
+    },
+    /// A file that was changed (e.g. by git or cargo).
+    ChangedFile { path: String },
+    /// A summary of a diff hunk with addition/deletion counts.
+    HunkSummary {
+        file: String,
+        additions: usize,
+        deletions: usize,
+    },
+    /// An error code (e.g. E0308, ESLINT).
+    ErrorCode { code: String },
+    /// A captured stderr excerpt when no other fact matches.
+    StderrExcerpt { text: String },
+    /// Redaction was applied, replacing sensitive content.
+    RedactionApplied { rule_count: usize },
+}
+
+impl ProjectionFact {
+    /// Short label for diagnostics.
+    pub fn label(&self) -> &'static str {
+        match self {
+            ProjectionFact::FailedTest { .. } => "failed-test",
+            ProjectionFact::DiagnosticSpan { .. } => "diagnostic-span",
+            ProjectionFact::ChangedFile { .. } => "changed-file",
+            ProjectionFact::HunkSummary { .. } => "hunk-summary",
+            ProjectionFact::ErrorCode { .. } => "error-code",
+            ProjectionFact::StderrExcerpt { .. } => "stderr-excerpt",
+            ProjectionFact::RedactionApplied { .. } => "redaction-applied",
+        }
+    }
+}
+
+/// Metadata for context packing and compaction.
+///
+/// Produced by [`ProjectionResult::to_context_metadata`], this struct
+/// carries everything the compaction system needs to make informed
+/// decisions about what to preserve, what to compress, and how to
+/// prevent duplicate or excessive compression of already-projected output.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ProjectionContextMetadata {
+    /// Stable command run identifier.
+    pub command_id: String,
+    /// The original command string.
+    pub command: String,
+    /// Exit label (e.g. "exit 0", "timeout", "spawn failed").
+    pub exit_label: String,
+    /// Name of the projector that produced the output.
+    pub projector: String,
+    /// How faithfully the projection represents raw output.
+    pub exactness: ProjectionExactness,
+    /// Whether raw output handles are available for expansion.
+    pub raw_available: bool,
+    /// Handles for expanding omitted ranges.
+    pub expansion_handles: Vec<ExpansionHandle>,
+    /// Critical facts the compaction system must preserve.
+    pub critical_facts: Vec<ProjectionFact>,
+    /// Non-fatal warnings from the projection.
+    pub warnings: Vec<String>,
+    /// Approximate tokens consumed by this projection.
+    pub token_budget_used: usize,
+    /// Whether this output was already projected (not raw).
+    ///
+    /// When `true`, compaction should not re-truncate or re-project
+    /// this output — it has already been compressed once.
+    pub is_already_projected: bool,
+}
+
+impl ProjectionContextMetadata {
+    /// Whether this command failed (non-zero exit, timeout, etc.).
+    pub fn is_failure(&self) -> bool {
+        self.exit_label != "exit 0"
+    }
+
+    /// Whether the output has critical facts worth preserving.
+    pub fn has_critical_facts(&self) -> bool {
+        !self.critical_facts.is_empty()
+    }
+
+    /// Total number of critical facts.
+    pub fn fact_count(&self) -> usize {
+        self.critical_facts.len()
+    }
+
+    /// Whether raw expansion is available.
+    pub fn can_expand(&self) -> bool {
+        self.raw_available && !self.expansion_handles.is_empty()
+    }
+}
+
+/// Model tier for budget selection.
+///
+/// Different model tiers have different context window sizes and
+/// processing costs. The tier determines the preferred and maximum
+/// token budgets for command output projections.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ModelTier {
+    /// Small/cheap model with limited context (e.g. 8K-16K tokens).
+    Mini,
+    /// Mid-range model with moderate context (e.g. 32K-64K tokens).
+    Workhorse,
+    /// Large/frontier model with ample context (e.g. 128K+ tokens).
+    Frontier,
+}
+
+impl ModelTier {
+    /// Short label for diagnostics.
+    pub fn label(self) -> &'static str {
+        match self {
+            ModelTier::Mini => "mini",
+            ModelTier::Workhorse => "workhorse",
+            ModelTier::Frontier => "frontier",
+        }
+    }
+}
+
+/// Budget configuration derived from model tier and context state.
+///
+/// This struct translates model tier and shell output config into
+/// concrete token budgets and behavioral flags that the projection
+/// selector uses to choose projectors and set truncation limits.
+#[derive(Debug, Clone)]
+pub struct ContextAwareBudget {
+    /// Preferred token count for projected output.
+    pub preferred_tokens: usize,
+    /// Maximum token count before the projector must truncate.
+    pub max_tokens: usize,
+    /// Whether lossy projectors are acceptable.
+    pub allow_lossy: bool,
+    /// Whether to prefer structured/projected output over raw.
+    pub prefer_structured: bool,
+    /// Whether to preserve failure details even at higher cost.
+    pub preserve_failure_details: bool,
+    /// Whether to include raw expansion handles in output.
+    pub include_raw_handles: bool,
+}
+
+impl ContextAwareBudget {
+    /// Build a budget from a model tier, applying config overrides.
+    ///
+    /// The tier sets baseline values; the config can adjust the max
+    /// token cap and redaction policy.
+    pub fn from_model_tier(tier: ModelTier, config: &ShellOutputConfig) -> Self {
+        let config_max = config.max_model_output_tokens();
+        match tier {
+            ModelTier::Mini => Self {
+                preferred_tokens: 200.min(config_max),
+                max_tokens: 400.min(config_max),
+                allow_lossy: true,
+                prefer_structured: true,
+                preserve_failure_details: true,
+                include_raw_handles: true,
+            },
+            ModelTier::Workhorse => Self {
+                preferred_tokens: 500.min(config_max),
+                max_tokens: 1000.min(config_max),
+                allow_lossy: true,
+                prefer_structured: false,
+                preserve_failure_details: true,
+                include_raw_handles: true,
+            },
+            ModelTier::Frontier => Self {
+                preferred_tokens: 800.min(config_max),
+                max_tokens: 1500.min(config_max),
+                allow_lossy: false,
+                prefer_structured: false,
+                preserve_failure_details: true,
+                include_raw_handles: true,
+            },
+        }
+    }
+
+    /// Convert to a [`ProjectionBudget`] for use in projection requests.
+    pub fn to_projection_budget(&self) -> ProjectionBudget {
+        let max_output_bytes = self.max_tokens * APPROX_BYTES_PER_TOKEN;
+        ProjectionBudget {
+            max_output_bytes,
+            max_output_tokens: Some(self.max_tokens),
+            preferred_output_tokens: Some(self.preferred_tokens),
+        }
+    }
+}
+
+/// Extract critical facts from projected text.
+///
+/// Scans for common patterns: failed tests, error codes, file paths,
+/// diagnostic spans, and stderr excerpts. Handles the `L0:` line
+/// prefix format used by the error-retention projector.
+fn extract_critical_facts(text: &str, facts: &mut Vec<ProjectionFact>) {
+    // Check for failed test patterns
+    for line in text.lines() {
+        // Strip optional line number prefix (e.g., "L0: ", "L42: ")
+        let stripped = if let Some(rest) = line.strip_prefix('L') {
+            if let Some(colon_pos) = rest.find(':') {
+                let after_colon = &rest[colon_pos + 1..];
+                // Verify the part before colon is all digits
+                if rest[..colon_pos].chars().all(|c| c.is_ascii_digit()) {
+                    after_colon.trim_start()
+                } else {
+                    line.trim()
+                }
+            } else {
+                line.trim()
+            }
+        } else {
+            line.trim()
+        };
+        let trimmed = stripped;
+
+        // cargo test failure: "test parser::handles_nested_blocks ... FAILED"
+        if trimmed.contains(" ... FAILED") {
+            if let Some(test_name) = trimmed.split(" ... FAILED").next() {
+                let test_name = test_name.trim().to_string();
+                facts.push(ProjectionFact::FailedTest {
+                    name: test_name,
+                    location: None,
+                });
+            }
+        }
+
+        // pytest failure: "FAILED tests/test_foo.py::test_bar"
+        if let Some(rest) = trimmed.strip_prefix("FAILED ") {
+            let parts: Vec<&str> = rest.splitn(2, " - ").collect();
+            let test_name = parts[0].trim().to_string();
+            let location = if parts.len() > 1 {
+                Some(parts[1].trim().to_string())
+            } else {
+                None
+            };
+            facts.push(ProjectionFact::FailedTest {
+                name: test_name,
+                location,
+            });
+        }
+
+        // Rust error code: "error[E0308]"
+        if let Some(rest) = trimmed.strip_prefix("error[") {
+            if let Some(idx) = rest.find(']') {
+                let code = rest[..idx].to_string();
+                facts.push(ProjectionFact::ErrorCode { code });
+            }
+        }
+
+        // Diagnostic span: "--> src/main.rs:42:10"
+        if let Some(rest) = trimmed.strip_prefix("--> ") {
+            let parts: Vec<&str> = rest.splitn(3, ':').collect();
+            if parts.len() >= 2 {
+                let file = parts[0].to_string();
+                let line = parts[1].parse().unwrap_or(0);
+                let column = parts.get(2).and_then(|s| s.parse().ok()).unwrap_or(0);
+                facts.push(ProjectionFact::DiagnosticSpan { file, line, column });
+            }
+        }
+
+        // Git changed file: "modified: src/foo.rs" or "new file: src/bar.rs"
+        for prefix in &["modified:", "new file:", "deleted:", "renamed:", "copied:"] {
+            if let Some(path) = trimmed.strip_prefix(prefix) {
+                let path = path.trim().to_string();
+                if !path.is_empty() {
+                    facts.push(ProjectionFact::ChangedFile { path });
+                }
+            }
+        }
+
+        // Diff hunk header: "@@ -10,5 +15,7 @@"
+        if let Some(rest) = trimmed.strip_prefix("@@ ") {
+            if let Some(rest) = rest.split(" @@@").next() {
+                let parts: Vec<&str> = rest.split(" +").collect();
+                if parts.len() == 2 {
+                    let additions = parts[1]
+                        .split(',')
+                        .next()
+                        .and_then(|s| s.parse::<usize>().ok())
+                        .unwrap_or(0);
+                    let deletions = parts[0]
+                        .split(',')
+                        .next()
+                        .and_then(|s| {
+                            let s = s.strip_prefix('-')?;
+                            s.parse::<usize>().ok()
+                        })
+                        .unwrap_or(0);
+                    // The file name is typically after "@@" on the same line
+                    // or the next line, but we don't extract it here
+                    facts.push(ProjectionFact::HunkSummary {
+                        file: String::new(),
+                        additions,
+                        deletions,
+                    });
+                }
+            }
+        }
+    }
+
+    // If no specific facts were found but there's stderr content, capture excerpt
+    if facts.is_empty() && text.contains("stderr") {
+        // Look for content after "--- stderr ---" markers
+        if let Some(start) = text.find("--- stderr") {
+            let excerpt: String = text.chars().skip(start).take(200).collect();
+            if !excerpt.is_empty() {
+                facts.push(ProjectionFact::StderrExcerpt { text: excerpt });
+            }
+        }
+    }
+}
+
+/// Public wrapper for `extract_critical_facts` for use in tests.
+///
+/// This allows integration tests to verify fact extraction without
+/// going through the full projection pipeline.
+pub fn extract_critical_facts_for_test(text: &str, facts: &mut Vec<ProjectionFact>) {
+    extract_critical_facts(text, facts);
 }
 
 /// Errors raised by projectors.

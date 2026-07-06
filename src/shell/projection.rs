@@ -37,7 +37,9 @@ use std::time::{Duration, SystemTime};
 /// IDs are assigned by [`CommandOutputStore::alloc_id`] and are unique and
 /// monotonically increasing within a single store instance. They are not
 /// required to be globally unique across processes or sessions.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub struct CommandRunId(pub u64);
 
 impl std::fmt::Display for CommandRunId {
@@ -65,7 +67,7 @@ impl From<crate::shell::types::ShellCommandId> for CommandRunId {
 }
 
 /// Which captured output stream a handle refers to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum CommandOutputStream {
     Stdout,
     Stderr,
@@ -680,8 +682,7 @@ impl CommandOutputStore {
             Ok(s) => (s.to_string(), ExpansionExactness::Exact, Vec::new()),
             Err(e) => {
                 let valid_up_to = e.valid_up_to();
-                let decoded =
-                    String::from_utf8_lossy(&slice[..valid_up_to]).into_owned();
+                let decoded = String::from_utf8_lossy(&slice[..valid_up_to]).into_owned();
                 let remaining = &slice[valid_up_to..];
                 let mut full = decoded;
                 full.push_str(&String::from_utf8_lossy(remaining));
@@ -699,9 +700,7 @@ impl CommandOutputStore {
             if range.end > total_stream_bytes {
                 warnings.push(format!(
                     "requested range {}-{} exceeds stream length {}; clamped to available bytes",
-                    range.start,
-                    range.end,
-                    total_stream_bytes
+                    range.start, range.end, total_stream_bytes
                 ));
             }
         }
@@ -1525,7 +1524,14 @@ mod tests {
     fn parse_handle_with_range_full() {
         let mut store = CommandOutputStore::new();
         let id = store.alloc_id();
-        store.insert(id, "c".to_string(), cwd(), now(), b"hello".to_vec(), Vec::new());
+        store.insert(
+            id,
+            "c".to_string(),
+            cwd(),
+            now(),
+            b"hello".to_vec(),
+            Vec::new(),
+        );
         let req = store.parse_handle_with_range("cmd://1/stdout").unwrap();
         assert_eq!(req.command_id, id);
         assert_eq!(req.stream, CommandOutputStream::Stdout);
@@ -1536,8 +1542,17 @@ mod tests {
     fn parse_handle_with_range_bounded() {
         let mut store = CommandOutputStore::new();
         let id = store.alloc_id();
-        store.insert(id, "c".to_string(), cwd(), now(), b"hello world".to_vec(), Vec::new());
-        let req = store.parse_handle_with_range(&format!("cmd://{}/stdout#0-5", id.0)).unwrap();
+        store.insert(
+            id,
+            "c".to_string(),
+            cwd(),
+            now(),
+            b"hello world".to_vec(),
+            Vec::new(),
+        );
+        let req = store
+            .parse_handle_with_range(&format!("cmd://{}/stdout#0-5", id.0))
+            .unwrap();
         assert_eq!(req.byte_range, Some(0..5));
     }
 
@@ -1628,7 +1643,9 @@ mod tests {
     #[test]
     fn expand_evicted_command_returns_unavailable() {
         let store = CommandOutputStore::new();
-        let result = store.expand_stream(CommandRunId(9999), "stdout", None).unwrap();
+        let result = store
+            .expand_stream(CommandRunId(9999), "stdout", None)
+            .unwrap();
         assert_eq!(result.exactness, ExpansionExactness::Unavailable);
         assert!(result.text.is_empty());
         assert!(!result.warnings.is_empty());
@@ -1720,7 +1737,14 @@ mod tests {
     fn expand_start_beyond_len_returns_empty() {
         let mut store = CommandOutputStore::new();
         let id = store.alloc_id();
-        store.insert(id, "c".to_string(), cwd(), now(), b"hi".to_vec(), Vec::new());
+        store.insert(
+            id,
+            "c".to_string(),
+            cwd(),
+            now(),
+            b"hi".to_vec(),
+            Vec::new(),
+        );
         let result = store.expand_stream(id, "stdout", Some(100..200)).unwrap();
         assert_eq!(result.returned_bytes, 0);
         assert_eq!(result.exactness, ExpansionExactness::Unavailable);
@@ -1754,7 +1778,14 @@ mod tests {
     fn expansion_request_fields_preserved() {
         let mut store = CommandOutputStore::new();
         let id = store.alloc_id();
-        store.insert(id, "c".to_string(), cwd(), now(), b"abcdef".to_vec(), Vec::new());
+        store.insert(
+            id,
+            "c".to_string(),
+            cwd(),
+            now(),
+            b"abcdef".to_vec(),
+            Vec::new(),
+        );
         let req = ExpansionRequest {
             command_id: id,
             stream: CommandOutputStream::Stderr,

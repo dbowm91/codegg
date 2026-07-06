@@ -60,17 +60,19 @@ impl RedactRule for AuthorizationRule {
 
     fn redact(&self, text: &str) -> (String, usize) {
         let mut count = 0usize;
-        let mut out = BEARER_RE.replace_all(text, |caps: &regex::Captures| {
-            count += 1;
-            format!("{}[REDACTED:bearer-token]", &caps[1])
-        })
-        .into_owned();
+        let mut out = BEARER_RE
+            .replace_all(text, |caps: &regex::Captures| {
+                count += 1;
+                format!("{}[REDACTED:bearer-token]", &caps[1])
+            })
+            .into_owned();
 
-        out = BASIC_RE.replace_all(&out, |caps: &regex::Captures| {
-            count += 1;
-            format!("{}[REDACTED:basic-creds]", &caps[1])
-        })
-        .into_owned();
+        out = BASIC_RE
+            .replace_all(&out, |caps: &regex::Captures| {
+                count += 1;
+                format!("{}[REDACTED:basic-creds]", &caps[1])
+            })
+            .into_owned();
 
         out = API_KEY_RE
             .replace_all(&out, |caps: &regex::Captures| {
@@ -301,8 +303,7 @@ static PEM_RE: LazyLock<Regex> = LazyLock::new(|| {
 
 /// AWS access key ID: 4 uppercase chars + 16 alphanumeric.
 static AWS_ACCESS_KEY_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"([\s"']|^)(AKIA[0-9A-Z]{16})([\s"']|$)"#)
-        .expect("valid aws access key regex")
+    Regex::new(r#"([\s"']|^)(AKIA[0-9A-Z]{16})([\s"']|$)"#).expect("valid aws access key regex")
 });
 
 /// AWS secret access key in assignment context.
@@ -313,8 +314,7 @@ static AWS_SECRET_KEY_RE: LazyLock<Regex> = LazyLock::new(|| {
 
 /// GCP private_key field in JSON.
 static GCP_PRIVATE_KEY_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"("private_key"\s*:\s*")([^"]{20,})""#)
-        .expect("valid gcp private key regex")
+    Regex::new(r#"("private_key"\s*:\s*")([^"]{20,})""#).expect("valid gcp private key regex")
 });
 
 /// Azure connection string.
@@ -331,8 +331,7 @@ static EMBEDDED_CRED_URL_RE: LazyLock<Regex> = LazyLock::new(|| {
 
 /// Cookie / Set-Cookie header values.
 static COOKIE_HEADER_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(?i)((?:Set-)?Cookie:\s*)(\S+)"#)
-        .expect("valid cookie header regex")
+    Regex::new(r#"(?i)((?:Set-)?Cookie:\s*)(\S+)"#).expect("valid cookie header regex")
 });
 
 /// session_id or sid assignment.
@@ -467,7 +466,9 @@ mod tests {
         let input = "api_key=sk-proj-abcdefghijklmnopqrstuvwxyz123456";
         let result = redactor.redact(input);
         assert!(result.text.contains("[REDACTED:api-key]"));
-        assert!(!result.text.contains("sk-proj-abcdefghijklmnopqrstuvwxyz123456"));
+        assert!(!result
+            .text
+            .contains("sk-proj-abcdefghijklmnopqrstuvwxyz123456"));
     }
 
     #[test]
@@ -550,10 +551,13 @@ mod tests {
     #[test]
     fn embedded_cred_url_is_redacted() {
         let redactor = Redactor::new();
-        let input = "git clone https://user:ghp_abc123def456ghi789jkl012mno345pqr@github.com/repo.git";
+        let input =
+            "git clone https://user:ghp_abc123def456ghi789jkl012mno345pqr@github.com/repo.git";
         let result = redactor.redact(input);
         assert!(result.text.contains("[REDACTED:embedded-cred]@"));
-        assert!(!result.text.contains("ghp_abc123def456ghi789jkl012mno345pqr"));
+        assert!(!result
+            .text
+            .contains("ghp_abc123def456ghi789jkl012mno345pqr"));
     }
 
     #[test]
@@ -592,7 +596,9 @@ mod tests {
         assert!(result.replacements >= 3);
         assert!(result.applied_rules.contains(&"api-key".to_owned()));
         assert!(result.applied_rules.contains(&"env-secret".to_owned()));
-        assert!(result.applied_rules.contains(&"embedded-cred-url".to_owned()));
+        assert!(result
+            .applied_rules
+            .contains(&"embedded-cred-url".to_owned()));
     }
 
     #[test]

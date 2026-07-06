@@ -652,10 +652,7 @@ pub(crate) fn handle_shell_show(app: &mut app::App, id: u64) {
 
         // Expansion handles
         if !result.expansion_handles.is_empty() {
-            lines.push(format!(
-                "Handles: {}",
-                result.expansion_handles.len()
-            ));
+            lines.push(format!("Handles: {}", result.expansion_handles.len()));
             for handle in &result.expansion_handles {
                 lines.push(format!("  {}", handle.as_url()));
             }
@@ -708,7 +705,8 @@ pub(crate) fn handle_shell_show(app: &mut app::App, id: u64) {
 
     let info_type = crate::tui::components::dialogs::info::InfoType::ShellShow;
     let shell_footer =
-        "i include  |  a ask  |  r rerun  |  k kill  |  e expand  |  j/k scroll  |  Esc close".to_string();
+        "i include  |  a ask  |  r rerun  |  k kill  |  e expand  |  j/k scroll  |  Esc close"
+            .to_string();
     if app.dialog_state.shell_detail_dialog.is_none() {
         let mut dialog = crate::tui::components::dialogs::info::InfoDialog::new(
             std::sync::Arc::clone(&app.ui_state.theme),
@@ -831,17 +829,14 @@ pub(crate) fn handle_shell_expand(
                 lines.push(format!("  {}", line));
             }
 
-            let info_type =
-                crate::tui::components::dialogs::info::InfoType::ShellShow;
-            let footer =
-                "j/k scroll  |  / search  |  Esc close".to_string();
+            let info_type = crate::tui::components::dialogs::info::InfoType::ShellShow;
+            let footer = "j/k scroll  |  / search  |  Esc close".to_string();
             if app.dialog_state.shell_detail_dialog.is_none() {
-                let mut dialog =
-                    crate::tui::components::dialogs::info::InfoDialog::new(
-                        std::sync::Arc::clone(&app.ui_state.theme),
-                        info_type,
-                        lines,
-                    );
+                let mut dialog = crate::tui::components::dialogs::info::InfoDialog::new(
+                    std::sync::Arc::clone(&app.ui_state.theme),
+                    info_type,
+                    lines,
+                );
                 dialog.set_custom_footer(footer);
                 app.dialog_state.shell_detail_dialog = Some(dialog);
             } else if let Some(ref mut dialog) = app.dialog_state.shell_detail_dialog {

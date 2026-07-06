@@ -6521,9 +6521,9 @@ impl App {
                         }
                     }
                     None => {
-                        self.messages_state.toasts.warning(
-                            "Usage: /shell-expand <id|last> stdout|stderr [start..end]",
-                        );
+                        self.messages_state
+                            .toasts
+                            .warning("Usage: /shell-expand <id|last> stdout|stderr [start..end]");
                     }
                 }
             }

@@ -1,7 +1,7 @@
 ---
 name: human-shell
-description: Human-initiated shell command execution, ephemeral transcript storage, projection pipeline (Phases 1-8), policy evaluation, and structured failure digest extraction
-version: 1.5.0
+description: Human-initiated shell command execution, ephemeral transcript storage, projection pipeline (Phases 1-10), policy evaluation, and structured failure digest extraction
+version: 1.6.0
 tags:
   - shell
   - bash
@@ -20,7 +20,7 @@ path. It owns the human-shell ephemeral transcript, the policy
 gatekeeper that blocks destructive commands, the structured failure
 digest, and the Phase 1+2 command-event projection pipeline that
 becomes the substrate for later expansion, redaction, and TUI
-features. Phase 8 adds the deterministic redaction pipeline. Phase 9 adds the evaluation harness.
+features. Phase 8 adds the deterministic redaction pipeline. Phase 9 adds the evaluation harness. Phase 10 integrates projection with context budgeting and compaction.
 
 A detailed architecture document lives at `architecture/human_shell.md`.
 The roadmap is `plans/shell_output_projection_rtk_roadmap.md`.
@@ -38,6 +38,7 @@ The roadmap is `plans/shell_output_projection_rtk_roadmap.md`.
 | Phase 7 | **Landed** | Expansion API (`CommandOutputExpansion`, `ExpansionExactness`, `ExpansionRequest`), `/shell-expand` command, TUI detail panel with projection metadata |
 | Phase 8 | **Landed** | Redaction pipeline: `Redactor` with six `RedactRule` implementations, `apply_redaction_hook` entry point, `RedactionState::Applied { replacements }` |
 | Phase 9 | **Landed** | Evaluation harness: `tests/shell_projection_harness.rs` (11 invariant tests), fixture corpus in `tests/fixtures/shell_projection/` |
+| Phase 10 | **Landed** | Context budget and compaction integration: `ProjectionContextMetadata`, `ProjectionFact`, `ModelTier`, `ContextAwareBudget`, double-compression prevention, critical fact extraction |
 
 ## Central Invariant
 
