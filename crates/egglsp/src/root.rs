@@ -196,7 +196,41 @@ fn profile_for_language(lang: &str) -> Option<&'static str> {
 mod tests {
     use super::*;
     use std::fs;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use tempfile::TempDir;
+
+    /// Build a tempdir in a location whose ancestors are guaranteed to
+    /// contain no LSP root markers.
+    ///
+    /// The default `tempfile::TempDir::new()` places temp dirs under
+    /// `std::env::temp_dir()`, which on some sandboxed hosts contains a
+    /// `.git` directory above the tempdir itself. The root-diagnosis
+    /// logic walks upward past the tempdir boundary looking for root
+    /// markers, which would falsely accept such ancestors. To keep these
+    /// tests hermetic, prefer `/dev/shm` on Linux (typically empty)
+    /// and fall back to the standard temp location elsewhere.
+    fn marker_free_tempdir() -> TempDir {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let pid = std::process::id();
+        let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let label = format!("egglsp-root-test-{pid}-{seq}-");
+        #[cfg(target_os = "linux")]
+        {
+            let candidate = std::path::Path::new("/dev/shm");
+            if candidate.is_dir() {
+                if let Ok(t) = tempfile::Builder::new()
+                    .prefix(&label)
+                    .tempdir_in(candidate)
+                {
+                    return t;
+                }
+            }
+        }
+        tempfile::Builder::new()
+            .prefix(&label)
+            .tempdir()
+            .expect("tempdir")
+    }
 
     #[test]
     fn test_diagnose_root_with_cargo_toml() {
@@ -217,7 +251,7 @@ mod tests {
 
     #[test]
     fn test_diagnose_root_no_markers() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = marker_free_tempdir();
         let file = tmp.path().join("orphan.py");
         fs::write(&file, "print('hello')").unwrap();
 

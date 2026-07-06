@@ -170,6 +170,7 @@ pub async fn execute_wasm_hook(plugin_id: &str, ctx: HookContext) -> HookResult 
 }
 
 /// Synchronous WASM file finder (for use in blocking contexts).
+#[cfg(feature = "plugins")]
 fn find_wasm_sync(plugin_dir: &Path) -> Result<PathBuf, LoadError> {
     let wasm_extensions = ["wasm", "wasm32-wasi.wasm"];
 

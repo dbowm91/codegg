@@ -1203,16 +1203,16 @@ mod tests {
     #[test]
     fn register_api_key_provider_rejects_bearer_credentials() {
         let _guard = crate::auth_types::test_support::lock_env();
-        let prev_xai = std::env::var("XAI_API_KEY").ok();
-        std::env::remove_var("XAI_API_KEY");
+        let prev_minimax = std::env::var("MINIMAX_API_KEY").ok();
+        std::env::remove_var("MINIMAX_API_KEY");
         // No env, no config: resolution should not find a key at all,
         // and the provider should not be registered.
         let config = Config::default();
         let mut registry = ProviderRegistry::new();
         register_builtin_with_config(&mut registry, &config);
         assert!(registry.get("minimax").is_none());
-        if let Some(v) = prev_xai {
-            std::env::set_var("XAI_API_KEY", v);
+        if let Some(v) = prev_minimax {
+            std::env::set_var("MINIMAX_API_KEY", v);
         }
     }
 

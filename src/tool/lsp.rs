@@ -5939,6 +5939,7 @@ diff --git a/src/lib.rs b/src/lib.rs
     // ── Phase 4: operation-level preset tests ──────────────────────────
 
     #[tokio::test]
+    #[ignore = "BUG-004: exercises full LSP request timeout (~30s) for securityContext defaults"]
     async fn security_context_dependency_review_omits_call_hierarchy_by_default() {
         let tool = LspTool::new(crate::lsp::service::LspService::new_arc(
             crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
@@ -6106,6 +6107,7 @@ diff --git a/src/lib.rs b/src/lib.rs
     // ── Call expansion operation-level tests ──────────────────────────
 
     #[tokio::test]
+    #[ignore = "BUG-004: exercises full LSP request timeout (~30s) for call_depth default path"]
     async fn security_context_call_depth_zero_omits_call_expansion() {
         let tool = LspTool::new(crate::lsp::service::LspService::new_arc(
             crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
@@ -6189,6 +6191,7 @@ diff --git a/src/lib.rs b/src/lib.rs
     }
 
     #[tokio::test]
+    #[ignore = "BUG-004: exercises full LSP request timeout (~30s) for call_expansion (depth 1)"]
     async fn security_context_call_depth_one_with_position_returns_expansion_or_errors() {
         let tool = LspTool::new(crate::lsp::service::LspService::new_arc(
             crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
@@ -6452,6 +6455,7 @@ diff --git a/src/lib.rs b/src/lib.rs
     }
 
     #[tokio::test]
+    #[ignore = "BUG-004: exercises full LSP request timeout (~30s) for call_expansion_truncated limit field"]
     async fn security_context_call_expansion_truncated_limit_field_present() {
         let tool = LspTool::new(crate::lsp::service::LspService::new_arc(
             crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),

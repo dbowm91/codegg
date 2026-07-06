@@ -347,7 +347,34 @@ fn render_caps_brief(caps: &crate::tui_summary::ServerCapabilitySummary) -> Stri
 mod tests {
     use super::*;
     use std::fs;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use tempfile::TempDir;
+
+    /// Build a tempdir in a location whose ancestors are guaranteed to
+    /// contain no LSP root markers. See `crate::root::tests` for the
+    /// rationale behind this hermetic helper.
+    fn marker_free_tempdir() -> TempDir {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let pid = std::process::id();
+        let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let label = format!("egglsp-doctor-test-{pid}-{seq}-");
+        #[cfg(target_os = "linux")]
+        {
+            let candidate = std::path::Path::new("/dev/shm");
+            if candidate.is_dir() {
+                if let Ok(t) = tempfile::Builder::new()
+                    .prefix(&label)
+                    .tempdir_in(candidate)
+                {
+                    return t;
+                }
+            }
+        }
+        tempfile::Builder::new()
+            .prefix(&label)
+            .tempdir()
+            .expect("tempdir")
+    }
 
     #[test]
     fn doctor_report_missing_file() {
@@ -408,7 +435,7 @@ mod tests {
 
     #[test]
     fn doctor_report_no_root_marker() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = marker_free_tempdir();
         let file = tmp.path().join("orphan.py");
         fs::write(&file, "print('hello')").unwrap();
 
