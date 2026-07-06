@@ -323,6 +323,38 @@ impl ProjectionKind {
     }
 }
 
+/// Describes which raw bytes the expansion handles refer to.
+///
+/// Native projectors and RTK post-process mode retain the original
+/// command's raw stdout/stderr; wrapper mode may or may not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum ProjectionRawSemantics {
+    /// Expansion handles point to the original command's raw output.
+    /// Used by native projectors and RTK post-process mode.
+    OriginalCommandRaw,
+    /// RTK wrapper mode where original output was retained before
+    /// wrapper invocation (i.e. `CommandRun.is_partial()` is false).
+    WrappedCommandRaw,
+    /// RTK wrapper mode where original output was NOT retained
+    /// (i.e. `CommandRun.is_partial()` is true).
+    OriginalRawUnavailable,
+    /// Semantics not yet determined.
+    #[default]
+    Unknown,
+}
+
+impl ProjectionRawSemantics {
+    /// Short label for diagnostics and metadata.
+    pub fn label(&self) -> &'static str {
+        match self {
+            ProjectionRawSemantics::OriginalCommandRaw => "original-command-raw",
+            ProjectionRawSemantics::WrappedCommandRaw => "wrapped-command-raw",
+            ProjectionRawSemantics::OriginalRawUnavailable => "original-raw-unavailable",
+            ProjectionRawSemantics::Unknown => "unknown",
+        }
+    }
+}
+
 /// How much of the original raw output the projection faithfully
 /// represents.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -471,6 +503,8 @@ pub struct ProjectionResult {
     pub estimated_output_tokens: Option<usize>,
     /// Non-fatal warnings emitted by the projector.
     pub warnings: Vec<String>,
+    /// Describes which raw bytes the expansion handles refer to.
+    pub raw_semantics: ProjectionRawSemantics,
 }
 
 impl ProjectionResult {
@@ -489,7 +523,14 @@ impl ProjectionResult {
             estimated_input_tokens: None,
             estimated_output_tokens: None,
             warnings: Vec::new(),
+            raw_semantics: ProjectionRawSemantics::Unknown,
         }
+    }
+
+    /// Builder helper to set raw semantics on a result.
+    pub fn with_raw_semantics(mut self, semantics: ProjectionRawSemantics) -> Self {
+        self.raw_semantics = semantics;
+        self
     }
 
     /// Stable metadata banner suitable for prefixing model-visible text.
@@ -1109,6 +1150,7 @@ impl CommandOutputProjector for RawProjector {
             expansion_handles,
             input_bytes,
             warnings,
+            raw_semantics: ProjectionRawSemantics::OriginalCommandRaw,
         })
     }
 }
@@ -1227,6 +1269,7 @@ impl CommandOutputProjector for TruncatedProjector {
             )),
             estimated_output_tokens: Some(ProjectionBudget::approx_tokens_from_bytes(output_bytes)),
             warnings,
+            raw_semantics: ProjectionRawSemantics::OriginalCommandRaw,
         })
     }
 }
@@ -1343,6 +1386,7 @@ impl CommandOutputProjector for ErrorRetentionProjector {
             )),
             estimated_output_tokens: Some(ProjectionBudget::approx_tokens_from_bytes(output_bytes)),
             warnings,
+            raw_semantics: ProjectionRawSemantics::OriginalCommandRaw,
         })
     }
 }
@@ -1409,6 +1453,7 @@ fn make_native_result(
         )),
         estimated_output_tokens: Some(ProjectionBudget::approx_tokens_from_bytes(output_bytes)),
         warnings,
+        raw_semantics: ProjectionRawSemantics::OriginalCommandRaw,
     }
 }
 
@@ -2655,6 +2700,7 @@ impl ProjectionSelector {
                 estimated_input_tokens: None,
                 estimated_output_tokens: None,
                 warnings: vec!["no projector supports this request".to_string()],
+                raw_semantics: ProjectionRawSemantics::Unknown,
             };
         }
 
@@ -2692,6 +2738,7 @@ impl ProjectionSelector {
             estimated_input_tokens: None,
             estimated_output_tokens: None,
             warnings,
+            raw_semantics: ProjectionRawSemantics::Unknown,
         }
     }
 }

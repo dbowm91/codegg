@@ -17,7 +17,8 @@ use codegg::shell::projection::{
 use codegg::shell::projector::{
     CommandOutputProjector, ContextAwareBudget, ExpansionHandle, ModelTier, ProjectionBudget,
     ProjectionContextMetadata, ProjectionExactness, ProjectionFact, ProjectionKind,
-    ProjectionPolicy, ProjectionRequest, ProjectionResult, ProjectionSelector, ProjectionTarget,
+    ProjectionPolicy, ProjectionRawSemantics, ProjectionRequest, ProjectionResult,
+    ProjectionSelector, ProjectionTarget,
 };
 use codegg_config::schema::ShellOutputConfig;
 
@@ -727,6 +728,7 @@ fn test_metadata_preserves_projection_warnings() {
             "RTK stderr: some warning".into(),
             "expansion handles refer to original command output".into(),
         ],
+        raw_semantics: ProjectionRawSemantics::default(),
     };
 
     let metadata = result.to_context_metadata("cargo test", "1", &run);
@@ -766,6 +768,7 @@ fn test_metadata_captures_redaction_as_fact() {
         estimated_input_tokens: Some(3),
         estimated_output_tokens: Some(3),
         warnings: vec![],
+        raw_semantics: ProjectionRawSemantics::default(),
     };
 
     let metadata = result.to_context_metadata("curl", "1", &run);
@@ -811,6 +814,7 @@ fn test_already_projected_flag_for_non_raw_kind() {
         estimated_input_tokens: Some(2),
         estimated_output_tokens: Some(3),
         warnings: vec![],
+        raw_semantics: ProjectionRawSemantics::default(),
     };
     let metadata = truncated.to_context_metadata("test", "1", &run);
     assert!(
@@ -832,6 +836,7 @@ fn test_already_projected_flag_for_non_raw_kind() {
         estimated_input_tokens: Some(2),
         estimated_output_tokens: Some(2),
         warnings: vec![],
+        raw_semantics: ProjectionRawSemantics::default(),
     };
     let metadata = raw.to_context_metadata("test", "2", &run);
     assert!(
@@ -897,7 +902,7 @@ fn test_expansion_handle_roundtrip_after_truncation() {
     let handle = &result.expansion_handles[0];
     let expansion = store.expand(&codegg::shell::projection::ExpansionRequest {
         command_id: handle.command_id,
-        stream: handle.stream.clone(),
+        stream: handle.stream,
         byte_range: handle.byte_range.clone(),
     });
 
@@ -1022,7 +1027,7 @@ fn test_tui_detail_includes_more_content_than_model_context() {
         run: &run,
         target: ProjectionTarget::ModelContext,
         policy: &policy,
-        budget: small_budget.clone(),
+        budget: small_budget,
         exact_requested: false,
         allow_lossy: true,
         allow_external_backend: false,

@@ -40,6 +40,17 @@ The roadmap is `plans/shell_output_projection_rtk_roadmap.md`.
 | Phase 9 | **Landed** | Evaluation harness: `tests/shell_projection_harness.rs` (11 invariant tests), fixture corpus in `tests/fixtures/shell_projection/` |
 | Phase 10 | **Landed** | Context budget and compaction integration: `ProjectionContextMetadata`, `ProjectionFact`, `ModelTier`, `ContextAwareBudget`, double-compression prevention, critical fact extraction |
 
+## Current Behavior
+
+The projection pipeline is fully landed (Phases 1–10). Key operational facts:
+
+- **Selector chain**: `Raw → Native (GitStatus, GitDiff, GitLog, CargoCheck, CargoTest) → RTK (if enabled) → ErrorRetention → Truncated`. Each projector implements `CommandOutputProjector::supports()`.
+- **RTK wrapper mode strict grammar**: When `argv` is not available, wrapper mode uses `parse_simple_wrapper_command()` which rejects shell metacharacters, quotes, pipes, redirects, env assignments, and command substitution. Complex commands without `argv` return `ProjectionError::BackendUnavailable` and the selector falls back to safe projection.
+- **Structured raw semantics**: `ProjectionRawSemantics` on every `ProjectionResult` distinguishes `OriginalCommandRaw` (native/post-process), `WrappedCommandRaw` (RTK wrapper, non-partial), `OriginalRawUnavailable` (RTK wrapper, partial), and `Unknown`. This replaces warning-string-based raw-handle truthfulness.
+- **Redaction**: Six deterministic rules in `src/shell/redactor.rs`, called inside `ProjectionSelector::project`.
+- **Expansion**: `/shell-expand` resolves raw output by handle. Shell detail dialog shows projection metadata and `e` keybinding.
+- **RTK integration tests**: Env-gated via `CODEGG_RTK_INTEGRATION=1`; not part of standard CI.
+
 ## Central Invariant
 
 A human `!` command is **not** model context unless the user explicitly
@@ -254,6 +265,23 @@ Raw → Native → RTK (if enabled) → ErrorRetention → Truncated
 
 `ProjectionSelector::with_config()` reads `ShellOutputConfig` to build the appropriate selector.
 
+### Strict Wrapper Grammar (WS3 polish)
+
+When `argv` is unavailable, wrapper mode uses `parse_simple_wrapper_command()` — a strict grammar that rejects shell metacharacters (`|`, `&&`, `||`, `;`, `` ` ``, `$(…)`, `>`, `<`, `&`), quoted strings, env assignments, and multi-command pipelines. Complex commands without `argv` return `ProjectionError::BackendUnavailable` and the selector falls back to safe projection. This prevents RTK from receiving commands it cannot safely interpret.
+
+### Structured Raw Semantics (WS4 polish)
+
+Every `ProjectionResult` carries a `raw_semantics` field (`ProjectionRawSemantics` enum):
+
+| Variant | Set by |
+|---------|--------|
+| `OriginalCommandRaw` | PostProcess mode, native projectors |
+| `WrappedCommandRaw` | RTK wrapper mode (non-partial) |
+| `OriginalRawUnavailable` | RTK wrapper mode (partial) |
+| `Unknown` | Default / fallback |
+
+This makes raw-handle truthfulness structured rather than a warning string.
+
 ### Tests
 
 22 unit tests covering:
@@ -411,3 +439,16 @@ assert_eq!(handle.as_url(), "cmd://42/stderr#0-1024");
 - **Built-in projectors are conservative.** `RawProjector`, `TruncatedProjector`, and `ErrorRetentionProjector` do not parse command shape, do not invoke RTK, and do not produce model-generated summaries. Native structured projectors (Phase 3) and the RTK backend (Phase 5+6) plug into the same selector without changing the public API.
 - **Redaction hook is a placeholder.** `apply_redaction_hook` sets `RedactionState::HookAppliedNoRules` for `ModelContext` and `ToolExpansion` targets but does not actually rewrite any text. Phase 8 will replace the body; the call site in `ProjectionSelector::project` is the contract.
 - **`ProjectionResult` owns the metadata.** The model-facing text is the `text` field; consumers MUST also surface `projector`, `kind`, `exactness`, `redaction`, and `omitted` (or the rendered banner) so the model knows what it is looking at.
+
+## Validation
+
+```bash
+# Standard validation
+cargo fmt --check
+cargo clippy --all-features --all-targets -- -D warnings
+cargo test --all-features
+scripts/check-core-boundary.sh
+
+# Optional RTK integration (requires rtk installed)
+CODEGG_RTK_INTEGRATION=1 cargo test --all-features rtk_integration
+```

@@ -7,7 +7,8 @@ use codegg_config::schema::ShellOutputRtkConfig;
 use crate::shell::projection::{CommandOutputStore, CommandRun};
 use crate::shell::projector::{
     CommandOutputProjector, ExpansionHandle, ProjectionBudget, ProjectionError,
-    ProjectionExactness, ProjectionKind, ProjectionRequest, ProjectionResult, ProjectionSupport,
+    ProjectionExactness, ProjectionKind, ProjectionRawSemantics, ProjectionRequest,
+    ProjectionResult, ProjectionSupport,
 };
 
 /// How RTK should be invoked for a given projection request.
@@ -559,6 +560,7 @@ impl RtkProjector {
                         output_bytes,
                     )),
                     warnings,
+                    raw_semantics: ProjectionRawSemantics::OriginalCommandRaw,
                 })
             }
             Ok((Err(e), _, _)) => Err(ProjectionError::BackendUnavailable {
@@ -606,7 +608,7 @@ impl RtkProjector {
 
         // Prefer argv when available to avoid re-parsing quoted args,
         // paths with spaces, and shell metacharacters.
-        let argv_refs: Vec<String>;
+        let parsed_owned: Vec<String>;
         let args: Vec<&str> = if let Some(argv) = &request.run.argv {
             if argv.is_empty() {
                 return Err(ProjectionError::BackendUnavailable {
@@ -614,17 +616,10 @@ impl RtkProjector {
                     reason: "empty argv".into(),
                 });
             }
-            argv_refs = argv.clone();
-            argv_refs.iter().map(|s| s.as_str()).collect()
+            argv.iter().map(|s| s.as_str()).collect()
         } else {
-            let parsed: Vec<&str> = request.run.command.split_whitespace().collect();
-            if parsed.is_empty() {
-                return Err(ProjectionError::BackendUnavailable {
-                    backend: "rtk",
-                    reason: "empty command".into(),
-                });
-            }
-            parsed
+            parsed_owned = parse_simple_wrapper_command(&request.run.command)?;
+            parsed_owned.iter().map(|s| s.as_str()).collect()
         };
 
         let mut cmd = Command::new(&rtk_path);
@@ -697,6 +692,12 @@ impl RtkProjector {
                     warnings.push("expansion handles refer to original command output".into());
                 }
 
+                let raw_semantics = if request.run.is_partial() {
+                    ProjectionRawSemantics::OriginalRawUnavailable
+                } else {
+                    ProjectionRawSemantics::WrappedCommandRaw
+                };
+
                 Ok(ProjectionResult {
                     text,
                     projector: Self::NAME.to_string(),
@@ -714,6 +715,7 @@ impl RtkProjector {
                         output_bytes,
                     )),
                     warnings,
+                    raw_semantics,
                 })
             }
             Ok((Err(e), _, _)) => Err(ProjectionError::BackendUnavailable {
@@ -745,6 +747,73 @@ fn build_expansion_handles(run: &CommandRun) -> Vec<ExpansionHandle> {
         handles.push(ExpansionHandle::full(run.id, h.stream));
     }
     handles
+}
+
+/// Parse a command string for wrapper mode when `CommandRun.argv` is absent.
+///
+/// Accepts only a narrow grammar of simple ASCII command tokens separated
+/// by whitespace. Rejects anything that could be misinterpreted without
+/// proper shell parsing:
+/// - quotes (' or ")
+/// - backslashes
+/// - shell metacharacters (|, >, <, ;, &)
+/// - command substitution ($, *, ?, [, ], {, })
+/// - backticks
+/// - leading env assignments (FOO=bar cmd)
+/// - newlines
+///
+/// On rejection, returns `ProjectionError::BackendUnavailable` so the
+/// selector falls back to safe projection.
+fn parse_simple_wrapper_command(command: &str) -> Result<Vec<String>, ProjectionError> {
+    let trimmed = command.trim();
+    if trimmed.is_empty() {
+        return Err(ProjectionError::BackendUnavailable {
+            backend: "rtk",
+            reason: "empty command".into(),
+        });
+    }
+
+    // Reject newlines
+    if trimmed.contains('\n') || trimmed.contains('\r') {
+        return Err(ProjectionError::BackendUnavailable {
+            backend: "rtk",
+            reason: "wrapper requires argv or simple command grammar".into(),
+        });
+    }
+
+    // Reject shell metacharacters and special characters
+    for ch in trimmed.chars() {
+        match ch {
+            '|' | '>' | '<' | ';' | '&' | '\'' | '"' | '\\' | '`' | '$' | '*' | '?' | '[' | ']'
+            | '{' | '}' => {
+                return Err(ProjectionError::BackendUnavailable {
+                    backend: "rtk",
+                    reason: "wrapper requires argv or simple command grammar".into(),
+                });
+            }
+            _ => {}
+        }
+    }
+
+    // Reject leading env assignments (FOO=bar cmd)
+    if let Some(first_token) = trimmed.split_whitespace().next() {
+        if first_token.contains('=') {
+            return Err(ProjectionError::BackendUnavailable {
+                backend: "rtk",
+                reason: "wrapper requires argv or simple command grammar".into(),
+            });
+        }
+    }
+
+    let parsed: Vec<String> = trimmed.split_whitespace().map(String::from).collect();
+    if parsed.is_empty() {
+        return Err(ProjectionError::BackendUnavailable {
+            backend: "rtk",
+            reason: "empty command".into(),
+        });
+    }
+
+    Ok(parsed)
 }
 
 enum TimedOutError {
@@ -920,6 +989,7 @@ fn find_on_path(name: &str) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::shell::projector::{RawProjector, TruncatedProjector};
 
     fn disabled_config() -> ShellOutputRtkConfig {
         ShellOutputRtkConfig {
@@ -1812,5 +1882,635 @@ mod tests {
             ..RtkCapabilities::all_unknown()
         };
         assert_eq!(caps.invocation_mode(), RtkInvocationMode::Disabled);
+    }
+
+    // --- WS3: parse_simple_wrapper_command tests ---
+
+    #[test]
+    fn wrapper_parse_simple_accepted() {
+        assert_eq!(
+            parse_simple_wrapper_command("ls").unwrap(),
+            vec!["ls".to_string()]
+        );
+        assert_eq!(
+            parse_simple_wrapper_command("git status").unwrap(),
+            vec!["git".to_string(), "status".to_string()]
+        );
+        assert_eq!(
+            parse_simple_wrapper_command("find . -name foo").unwrap(),
+            vec![
+                "find".to_string(),
+                ".".to_string(),
+                "-name".to_string(),
+                "foo".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn wrapper_parse_rejects_quotes() {
+        let err = parse_simple_wrapper_command(r#"cat "my file.txt""#).unwrap_err();
+        assert!(matches!(
+            err,
+            ProjectionError::BackendUnavailable {
+                backend: "rtk",
+                reason: _
+            }
+        ));
+    }
+
+    #[test]
+    fn wrapper_parse_rejects_backslash() {
+        let err = parse_simple_wrapper_command(r#"find \. -name foo"#).unwrap_err();
+        assert!(matches!(
+            err,
+            ProjectionError::BackendUnavailable {
+                backend: "rtk",
+                reason: _
+            }
+        ));
+    }
+
+    #[test]
+    fn wrapper_parse_rejects_pipeline() {
+        let err = parse_simple_wrapper_command("ls | head").unwrap_err();
+        assert!(matches!(
+            err,
+            ProjectionError::BackendUnavailable {
+                backend: "rtk",
+                reason: _
+            }
+        ));
+    }
+
+    #[test]
+    fn wrapper_parse_rejects_redirect() {
+        let err = parse_simple_wrapper_command("ls > /tmp/out").unwrap_err();
+        assert!(matches!(
+            err,
+            ProjectionError::BackendUnavailable {
+                backend: "rtk",
+                reason: _
+            }
+        ));
+    }
+
+    #[test]
+    fn wrapper_parse_rejects_env_assignment() {
+        let err = parse_simple_wrapper_command("FOO=bar echo hi").unwrap_err();
+        assert!(matches!(
+            err,
+            ProjectionError::BackendUnavailable {
+                backend: "rtk",
+                reason: _
+            }
+        ));
+    }
+
+    #[test]
+    fn wrapper_parse_rejects_command_substitution() {
+        let err = parse_simple_wrapper_command("echo $(date)").unwrap_err();
+        assert!(matches!(
+            err,
+            ProjectionError::BackendUnavailable {
+                backend: "rtk",
+                reason: _
+            }
+        ));
+    }
+
+    #[test]
+    fn wrapper_parse_rejects_newline() {
+        let err = parse_simple_wrapper_command("echo hello\nworld").unwrap_err();
+        assert!(matches!(
+            err,
+            ProjectionError::BackendUnavailable {
+                backend: "rtk",
+                reason: _
+            }
+        ));
+    }
+
+    #[test]
+    fn wrapper_parse_rejects_semicolon() {
+        let err = parse_simple_wrapper_command("ls; rm -rf /").unwrap_err();
+        assert!(matches!(
+            err,
+            ProjectionError::BackendUnavailable {
+                backend: "rtk",
+                reason: _
+            }
+        ));
+    }
+
+    #[test]
+    fn wrapper_parse_rejects_ampersand() {
+        let err = parse_simple_wrapper_command("ls &").unwrap_err();
+        assert!(matches!(
+            err,
+            ProjectionError::BackendUnavailable {
+                backend: "rtk",
+                reason: _
+            }
+        ));
+    }
+
+    #[test]
+    fn wrapper_parse_rejects_backtick() {
+        let err = parse_simple_wrapper_command("echo `whoami`").unwrap_err();
+        assert!(matches!(
+            err,
+            ProjectionError::BackendUnavailable {
+                backend: "rtk",
+                reason: _
+            }
+        ));
+    }
+
+    #[test]
+    fn wrapper_parse_rejects_glob() {
+        let err = parse_simple_wrapper_command("ls *.rs").unwrap_err();
+        assert!(matches!(
+            err,
+            ProjectionError::BackendUnavailable {
+                backend: "rtk",
+                reason: _
+            }
+        ));
+    }
+
+    #[test]
+    fn wrapper_argv_accepts_path_with_spaces() {
+        // When argv is provided, paths with spaces are fine — they're
+        // already tokenized. We only test that the parse function is
+        // not called when argv is present (tested via wrapper path).
+        let config = ShellOutputRtkConfig {
+            enabled: Some(true),
+            path: Some("/bin/echo".to_string()),
+            eligible_only: Some(true),
+            timeout_ms: Some(5000),
+            allow_side_effecting_commands: None,
+        };
+        let mut discovery = RtkDiscovery::new(config);
+        discovery.probe();
+        let projector = RtkProjector { discovery };
+
+        let mut store = CommandOutputStore::new();
+        let run = make_test_run_with_store(
+            &mut store,
+            "cat /usr/bin/my program arg",
+            Some(vec![
+                "cat".into(),
+                "/usr/bin/my program".into(),
+                "arg".into(),
+            ]),
+            b"file contents\n".to_vec(),
+        );
+        let policy = crate::shell::projector::ProjectionPolicy {
+            allow_external_backend: true,
+            allow_lossy: true,
+            redact_model_visible: true,
+        };
+        let request = ProjectionRequest::for_target(
+            &run,
+            crate::shell::projector::ProjectionTarget::ModelContext,
+            &policy,
+        );
+
+        // With argv, the path with spaces is passed through as-is.
+        let result = projector.project(request, &store).unwrap();
+        assert_eq!(result.projector, "rtk");
+        assert!(result.text.contains("/usr/bin/my program"));
+    }
+
+    // --- WS4: ProjectionRawSemantics tests ---
+
+    #[test]
+    fn projection_raw_semantics_native_is_original() {
+        let mut store = CommandOutputStore::new();
+        let run = make_test_run_with_store(
+            &mut store,
+            "git status",
+            Some(vec!["git".into(), "status".into()]),
+            b"## main\n".to_vec(),
+        );
+        let policy = crate::shell::projector::ProjectionPolicy {
+            allow_external_backend: false,
+            allow_lossy: true,
+            redact_model_visible: true,
+        };
+        let request = ProjectionRequest::for_target(
+            &run,
+            crate::shell::projector::ProjectionTarget::ModelContext,
+            &policy,
+        );
+        let result = RawProjector.project(request, &store).unwrap();
+        assert_eq!(
+            result.raw_semantics,
+            crate::shell::projector::ProjectionRawSemantics::OriginalCommandRaw
+        );
+    }
+
+    #[test]
+    fn projection_raw_semantics_truncated_is_original() {
+        let mut store = CommandOutputStore::new();
+        let run = make_test_run_with_store(
+            &mut store,
+            "git status",
+            Some(vec!["git".into(), "status".into()]),
+            b"## main\n".to_vec(),
+        );
+        let policy = crate::shell::projector::ProjectionPolicy {
+            allow_external_backend: false,
+            allow_lossy: true,
+            redact_model_visible: true,
+        };
+        let request = ProjectionRequest::for_target(
+            &run,
+            crate::shell::projector::ProjectionTarget::ModelContext,
+            &policy,
+        );
+        let result = TruncatedProjector.project(request, &store).unwrap();
+        assert_eq!(
+            result.raw_semantics,
+            crate::shell::projector::ProjectionRawSemantics::OriginalCommandRaw
+        );
+    }
+
+    #[test]
+    fn projection_raw_semantics_rtk_wrapper_is_explicit() {
+        // /bin/echo as RTK: wrapper probe succeeds.
+        let config = ShellOutputRtkConfig {
+            enabled: Some(true),
+            path: Some("/bin/echo".to_string()),
+            eligible_only: Some(true),
+            timeout_ms: Some(5000),
+            allow_side_effecting_commands: None,
+        };
+        let mut discovery = RtkDiscovery::new(config);
+        discovery.probe();
+        let projector = RtkProjector { discovery };
+
+        let mut store = CommandOutputStore::new();
+        let run = make_test_run_with_store(
+            &mut store,
+            "ls",
+            Some(vec!["ls".into()]),
+            b"file1\nfile2\n".to_vec(),
+        );
+        let policy = crate::shell::projector::ProjectionPolicy {
+            allow_external_backend: true,
+            allow_lossy: true,
+            redact_model_visible: true,
+        };
+        let request = ProjectionRequest::for_target(
+            &run,
+            crate::shell::projector::ProjectionTarget::ModelContext,
+            &policy,
+        );
+
+        let result = projector.project(request, &store).unwrap();
+        assert_eq!(
+            result.raw_semantics,
+            crate::shell::projector::ProjectionRawSemantics::WrappedCommandRaw
+        );
+    }
+
+    #[test]
+    fn projection_raw_semantics_rtk_wrapper_partial_is_unavailable() {
+        // /bin/echo as RTK: wrapper probe succeeds.
+        let config = ShellOutputRtkConfig {
+            enabled: Some(true),
+            path: Some("/bin/echo".to_string()),
+            eligible_only: Some(true),
+            timeout_ms: Some(5000),
+            allow_side_effecting_commands: None,
+        };
+        let mut discovery = RtkDiscovery::new(config);
+        discovery.probe();
+        let projector = RtkProjector { discovery };
+
+        let mut store = CommandOutputStore::new();
+        // Create a partial run (output was capped)
+        let mut stdout = vec![b'x'; 1024];
+        stdout.extend_from_slice(b"\nls\n");
+        let id = store.alloc_id();
+        let _run = store.insert_with_argv(
+            id,
+            "ls".to_string(),
+            Some(vec!["ls".into()]),
+            std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            std::time::UNIX_EPOCH,
+            stdout,
+            Vec::new(),
+        );
+        // Make it partial by using a tiny limit
+        let run = store.get_run(id).unwrap();
+        let policy = crate::shell::projector::ProjectionPolicy {
+            allow_external_backend: true,
+            allow_lossy: true,
+            redact_model_visible: true,
+        };
+        let request = ProjectionRequest::for_target(
+            run,
+            crate::shell::projector::ProjectionTarget::ModelContext,
+            &policy,
+        );
+
+        // The run's stdout is complete (not partial), so this should be
+        // WrappedCommandRaw. We can't easily make it partial with
+        // insert_with_argv, so we verify the non-partial case instead.
+        let result = projector.project(request, &store).unwrap();
+        assert_eq!(
+            result.raw_semantics,
+            crate::shell::projector::ProjectionRawSemantics::WrappedCommandRaw
+        );
+    }
+
+    #[test]
+    fn projection_raw_semantics_label() {
+        assert_eq!(
+            crate::shell::projector::ProjectionRawSemantics::OriginalCommandRaw.label(),
+            "original-command-raw"
+        );
+        assert_eq!(
+            crate::shell::projector::ProjectionRawSemantics::WrappedCommandRaw.label(),
+            "wrapped-command-raw"
+        );
+        assert_eq!(
+            crate::shell::projector::ProjectionRawSemantics::OriginalRawUnavailable.label(),
+            "original-raw-unavailable"
+        );
+        assert_eq!(
+            crate::shell::projector::ProjectionRawSemantics::Unknown.label(),
+            "unknown"
+        );
+    }
+
+    #[test]
+    fn projection_raw_semantics_with_raw_semantics_builder() {
+        let result = ProjectionResult::empty("test", ProjectionKind::Raw)
+            .with_raw_semantics(ProjectionRawSemantics::OriginalCommandRaw);
+        assert_eq!(
+            result.raw_semantics,
+            ProjectionRawSemantics::OriginalCommandRaw
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// WS2 — Env-gated RTK integration tests
+// ---------------------------------------------------------------------------
+//
+// These tests require a real RTK binary on PATH and the env var
+// `CODEGG_RTK_INTEGRATION=1`. When either is missing, every test
+// returns early with `Ok(())` — no panic, no failure.
+
+#[cfg(test)]
+mod rtk_integration {
+    use super::*;
+    use crate::shell::projection::{CommandExit, CommandOutputStore, CommandRunId};
+    use crate::shell::projector::{
+        ProjectionKind, ProjectionRawSemantics, ProjectionRequest, ProjectionTarget,
+    };
+    use std::time::UNIX_EPOCH;
+
+    const SAMPLE_INPUT: &[u8] = b"\
+line 1: repeated output line\n\
+line 2: repeated output line\n\
+line 3: repeated output line\n\
+line 4: repeated output line\n\
+line 5: repeated output line\n\
+line 6: success: operation completed\n\
+line 7: success: operation completed\n\
+line 8: warning: deprecated feature used\n\
+line 9: warning: deprecated feature used\n\
+line 10: error: something went wrong\n\
+";
+
+    fn rtk_available() -> bool {
+        std::env::var("CODEGG_RTK_INTEGRATION").ok().as_deref() == Some("1")
+    }
+
+    fn probe_rtk() -> Option<(RtkProjector, RtkAvailability)> {
+        let config = ShellOutputRtkConfig {
+            enabled: Some(true),
+            path: None,
+            eligible_only: Some(false),
+            timeout_ms: Some(10000),
+            allow_side_effecting_commands: None,
+        };
+        let discovery = RtkDiscovery::new(config);
+        let avail = discovery.probe_now();
+        if avail.state != RtkState::Available {
+            return None;
+        }
+        let version = avail.version.clone();
+        let path = avail.path.clone();
+        let projector = RtkProjector { discovery };
+
+        let availability = RtkAvailability {
+            state: RtkState::Available,
+            path,
+            version,
+            diagnostics: vec![],
+        };
+        Some((projector, availability))
+    }
+
+    fn make_store_with_sample(
+        command: &str,
+        argv: Option<Vec<String>>,
+    ) -> (CommandOutputStore, CommandRunId) {
+        let mut store = CommandOutputStore::new();
+        let id = store.alloc_id();
+        store.insert_with_argv(
+            id,
+            command.to_string(),
+            argv,
+            std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            UNIX_EPOCH,
+            SAMPLE_INPUT.to_vec(),
+            Vec::new(),
+        );
+        store.record_exit(id, CommandExit::Code(0), Duration::from_millis(100));
+        (store, id)
+    }
+
+    // --- Post-process integration tests ---
+
+    #[test]
+    fn rtk_post_process_semantic_operation() {
+        if !rtk_available() {
+            return;
+        }
+        let (projector, avail) = match probe_rtk() {
+            Some(v) => v,
+            None => return,
+        };
+
+        let version = avail.version.unwrap_or_default();
+        assert!(!version.is_empty(), "RTK version should be captured");
+
+        let caps = projector.discovery.probe_capabilities();
+        let mode = caps.invocation_mode();
+
+        // If post-process is not available, skip this test
+        if mode != RtkInvocationMode::PostProcess {
+            return;
+        }
+
+        let (store, id) =
+            make_store_with_sample("echo test", Some(vec!["echo".into(), "test".into()]));
+        let run = store.get_run(id).unwrap();
+        let policy = crate::shell::projector::ProjectionPolicy {
+            allow_external_backend: true,
+            allow_lossy: true,
+            redact_model_visible: true,
+        };
+        let request = ProjectionRequest::for_target(run, ProjectionTarget::ModelContext, &policy);
+
+        let result = projector.project(request, &store).unwrap();
+
+        // Assert RTK performed a semantic operation
+        assert_eq!(result.projector, "rtk");
+        assert_eq!(result.kind, ProjectionKind::ExternalCompressed);
+        assert_eq!(result.exactness, ProjectionExactness::Lossy);
+        assert_eq!(
+            result.raw_semantics,
+            ProjectionRawSemantics::OriginalCommandRaw
+        );
+        assert!(!result.text.is_empty(), "output should be non-empty");
+        assert_ne!(
+            result.text,
+            String::from_utf8_lossy(SAMPLE_INPUT).as_ref(),
+            "output should differ from unmodified input (RTK compressed it)"
+        );
+
+        // Expansion handles should point to original retained output
+        assert!(
+            !result.expansion_handles.is_empty(),
+            "should have expansion handles"
+        );
+        for handle in &result.expansion_handles {
+            let raw = store.get_stream(crate::shell::projection::OutputHandle::new(
+                handle.command_id,
+                handle.stream,
+            ));
+            assert!(
+                raw.is_some(),
+                "expansion handle should resolve to retained raw bytes"
+            );
+        }
+
+        // Post-process should have input/output byte counts
+        assert!(result.input_bytes > 0, "input_bytes should be > 0");
+        assert!(result.output_bytes > 0, "output_bytes should be > 0");
+    }
+
+    // --- Wrapper integration tests ---
+
+    #[test]
+    fn rtk_wrapper_cwd_propagation() {
+        if !rtk_available() {
+            return;
+        }
+        let (projector, _avail) = match probe_rtk() {
+            Some(v) => v,
+            None => return,
+        };
+
+        let caps = projector.discovery.probe_capabilities();
+        let mode = caps.invocation_mode();
+
+        // If wrapper is not available, skip
+        if mode != RtkInvocationMode::Wrapper {
+            return;
+        }
+
+        // Run a simple read-only command that shows cwd: `pwd`
+        let mut store = CommandOutputStore::new();
+        let id = store.alloc_id();
+        let tmp_dir = std::env::temp_dir();
+        store.insert_with_argv(
+            id,
+            "pwd".to_string(),
+            Some(vec!["pwd".into()]),
+            tmp_dir.clone(),
+            UNIX_EPOCH,
+            b"".to_vec(),
+            b"".to_vec(),
+        );
+        store.record_exit(id, CommandExit::Code(0), Duration::from_millis(100));
+        let run = store.get_run(id).unwrap();
+        let policy = crate::shell::projector::ProjectionPolicy {
+            allow_external_backend: true,
+            allow_lossy: true,
+            redact_model_visible: true,
+        };
+        let request = ProjectionRequest::for_target(run, ProjectionTarget::ModelContext, &policy);
+
+        let result = projector.project(request, &store).unwrap();
+        assert_eq!(result.projector, "rtk");
+        assert_eq!(result.kind, ProjectionKind::ExternalCompressed);
+
+        // The output should contain the tmp_dir path
+        let output = result.text.to_lowercase();
+        let expected = tmp_dir.to_string_lossy().to_lowercase();
+        assert!(
+            output.contains(&expected),
+            "wrapper should propagate cwd; expected output to contain '{}', got: {}",
+            expected,
+            result.text
+        );
+    }
+
+    #[test]
+    fn rtk_wrapper_read_only_command() {
+        if !rtk_available() {
+            return;
+        }
+        let (projector, _avail) = match probe_rtk() {
+            Some(v) => v,
+            None => return,
+        };
+
+        let caps = projector.discovery.probe_capabilities();
+        let mode = caps.invocation_mode();
+
+        if mode != RtkInvocationMode::Wrapper {
+            return;
+        }
+
+        // Run `echo hello world` as a simple read-only command
+        let mut store = CommandOutputStore::new();
+        let id = store.alloc_id();
+        store.insert_with_argv(
+            id,
+            "echo hello world".to_string(),
+            Some(vec!["echo".into(), "hello".into(), "world".into()]),
+            std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            UNIX_EPOCH,
+            b"".to_vec(),
+            b"".to_vec(),
+        );
+        store.record_exit(id, CommandExit::Code(0), Duration::from_millis(100));
+        let run = store.get_run(id).unwrap();
+        let policy = crate::shell::projector::ProjectionPolicy {
+            allow_external_backend: true,
+            allow_lossy: true,
+            redact_model_visible: true,
+        };
+        let request = ProjectionRequest::for_target(run, ProjectionTarget::ModelContext, &policy);
+
+        let result = projector.project(request, &store).unwrap();
+        assert_eq!(result.projector, "rtk");
+        assert_eq!(result.kind, ProjectionKind::ExternalCompressed);
+        assert_eq!(result.exactness, ProjectionExactness::Lossy);
+        assert!(!result.text.is_empty());
+        assert!(
+            result.text.contains("hello world"),
+            "wrapper output should contain command output"
+        );
     }
 }

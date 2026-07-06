@@ -303,6 +303,80 @@ Shell status labels use theme-aware colors for visual distinction:
 - [shell_output_projection_phase_02_projection_trait.md](../plans/shell_output_projection_phase_02_projection_trait.md) — Phase 2 plan (projector trait + built-ins)
 - [shell_output_projection_rtk_roadmap.md](../plans/shell_output_projection_rtk_roadmap.md) — Full roadmap
 
+## Current Shell Projection Behavior
+
+This section describes the projection pipeline as it stands today, after Phases 1–10 are landed. It is the source-of-truth for current behavior; the phase-by-phase history below is archival context.
+
+### Raw Output Retention
+
+`CommandOutputStore` retains raw stdout/stderr out-of-band from the model. `ShellCommandRunBridge` mirrors every `ShellEvent` into the store as events arrive. Stable `cmd://<id>/<stream>` handles resolve raw output without rerunning commands. Caps: 32 MiB per stream, 64 MiB total, 100 history entries. Streams exceeding the cap are marked `OutputCompleteness::Partial` rather than silently truncated. The legacy `ShellOutputStore` (TUI transcript, digests, `/shell-include`) runs alongside and is not replaced.
+
+### Projection Selector
+
+`ProjectionSelector` is the single entry point for producing model-visible command text. Three constructors are available:
+
+- `with_defaults()` — conservative chain, no RTK
+- `with_rtk(discovery)` — adds RTK projector when discovery reports availability
+- `with_config(config)` — builds from `ShellOutputConfig`, including RTK when enabled
+
+The default selector chain is:
+
+```
+Raw → Native (GitStatus, GitDiff, GitLog, CargoCheck, CargoTest) → RTK (if enabled) → ErrorRetention → Truncated
+```
+
+Each projector implements `CommandOutputProjector::supports()` returning `Preferred`, `Supported`, `Fallback`, or `Unsupported`. The selector picks the first non-`Unsupported` result.
+
+### Native Projectors
+
+Five command-specific projectors parse structured output into low-token summaries: `GitStatusProjector`, `GitDiffProjector`, `GitLogProjector`, `CargoCheckProjector`, `CargoTestProjector`. All return `ProjectionKind::Structured` with `ProjectionExactness::Parsed` and include raw expansion handles.
+
+### Config Modes
+
+`ShellOutputConfig` (`[shell.output]` in config) controls projection policy:
+
+| Field | Values | Default |
+|-------|--------|---------|
+| `projection` | `off`, `safe`, `rtk`, `aggressive` | `safe` |
+| `retain_raw` | bool | `true` |
+| `redact_model_visible_output` | `off`, `model_only`, `all` | `model_only` |
+| `max_model_output_tokens` | int | `4000` |
+| `show_projection_metadata` | bool | `true` |
+| `prefer_native_projectors` | bool | `true` |
+
+RTK sub-config (`[shell.output.rtk]`) controls `enabled`, `path`, `eligible_only`, `timeout_ms`, and `allow_side_effecting_commands`. Redaction is always-on for model-facing targets via six deterministic rules (Authorization, EnvSecret, PemBlock, CloudCredential, EmbeddedCredentialUrl, SessionMaterial).
+
+### RTK Optional Behavior
+
+RTK is disabled by default. When enabled via config:
+
+1. **Discovery** — Lazy probe on first use; resolves `$PATH` or configured binary; runs `rtk --version` with timeout.
+2. **Capability probing** — `probe_capabilities()` tests PostProcess (stdin pipe) and Wrapper (`rtk <command>`) modes.
+3. **Invocation modes** — `RtkInvocationMode::PostProcess` pipes captured output via stdin (1 MiB cap); `RtkInvocationMode::Wrapper` runs `rtk <command>` for eligible read-only commands only.
+4. **Strict wrapper grammar** — When `argv` is not available, wrapper mode uses `parse_simple_wrapper_command()` which rejects shell metacharacters (`|`, `&&`, `;`, `` ` ``, `$(…)`, `>`, `<`, etc.), quoted strings, env assignments, and multi-command pipelines. Complex commands without `argv` return `ProjectionError::BackendUnavailable` and the selector falls back to safe projection.
+5. **Structured raw semantics** — Every `ProjectionResult` carries a `raw_semantics` field (`ProjectionRawSemantics` enum): `OriginalCommandRaw` (post-process, native projectors), `WrappedCommandRaw` (RTK wrapper, non-partial), `OriginalRawUnavailable` (RTK wrapper, partial), or `Unknown`. This makes raw-handle truthfulness structured rather than relying on a warning string.
+6. **Env-gated integration tests** — RTK integration tests run only when `CODEGG_RTK_INTEGRATION=1` is set. Run with `CODEGG_RTK_INTEGRATION=1 cargo test --all-features rtk_integration`. Standard CI runs `cargo test --workspace --all-features` without RTK installed.
+
+### Expansion UX
+
+`/shell-expand <id|last> stdout|stderr [start..end]` resolves raw output via expansion handles. `CommandOutputStore::expand()` and `expand_stream()` return `CommandOutputExpansion` with text, exactness (`Exact`, `LossyUtf8`, `Unavailable`), byte counts, and warnings. The TUI shell detail dialog (`/shell-show`) displays projection metadata — projector, exactness, omitted ranges, expansion handles as `cmd://` URLs, and the `e` keybinding for expand. Expansion remains local unless explicitly promoted.
+
+### Redaction
+
+Six deterministic `RedactRule` implementations in `src/shell/redactor.rs`: `AuthorizationRule`, `EnvSecretRule`, `PemBlockRule`, `CloudCredentialRule`, `EmbeddedCredentialUrlRule`, `SessionMaterialRule`. `apply_redaction_hook` is called inside `ProjectionSelector::project` so redaction cannot be bypassed by RTK or native projectors. Replacement markers are stable strings (e.g. `[REDACTED:bearer-token]`).
+
+### Evaluation Harness
+
+`tests/shell_projection_harness.rs` provides 11 invariant tests over a fixture corpus in `tests/fixtures/shell_projection/`. Tests cover: raw retention round-trips, selector chain ordering, truncation bounds, error retention pattern matching, native projector parsing, RTK fallback behavior, redaction correctness, expansion handle resolution, and context metadata extraction.
+
+### Context Metadata (Compaction Integration)
+
+`ProjectionResult::to_context_metadata()` extracts `ProjectionContextMetadata` carrying `ProjectionFact` values (failed tests, error codes, diagnostic spans, changed files, redaction state) for compaction preservation. `ModelTier` (Mini/Workhorse/Frontier) and `ContextAwareBudget` provide model-tier-aware token budgets. The `is_already_projected` flag prevents double compression.
+
+## Historical Roadmap Status
+
+> The sections below are archival phase-by-phase descriptions. For current behavior, see [Current Shell Projection Behavior](#current-shell-projection-behavior) above.
+
 ## Command Output Projection (Phase 1)
 
 Phase 1 of the [shell output projection roadmap](../plans/shell_output_projection_rtk_roadmap.md) introduces a structured command event that becomes the durable substrate for projection, expansion, redaction, and TUI expansion. It is implemented in `src/shell/projection.rs` and `src/shell/projection_bridge.rs`. The system runs **alongside** the existing `ShellOutputStore` — it does not replace it.
@@ -670,6 +744,33 @@ Raw → Native → RTK (if enabled) → ErrorRetention → Truncated
 
 `ProjectionError::BackendUnavailable` is returned when a caller requests an external backend (like RTK) but discovery has not yet been probed.
 
+### Strict Wrapper Grammar (WS3 polish)
+
+When `argv` is not available on the `CommandRun`, the wrapper invocation path uses `parse_simple_wrapper_command()` — a strict grammar that rejects shell metacharacters (`|`, `&&`, `||`, `;`, `` ` ``, `$(…)`, `$((…))`, `>`, `>>`, `<`, `&`), single/double-quoted strings, env assignments (`VAR=value`), and multi-command pipelines. If the command string does not parse as a simple command, `project_wrapper()` returns `ProjectionError::BackendUnavailable` and the selector falls back to safe projection. This prevents RTK from receiving commands it cannot safely interpret.
+
+### Structured Raw Semantics (WS4 polish)
+
+Every `ProjectionResult` now carries a `raw_semantics` field of type `ProjectionRawSemantics`:
+
+| Variant | Meaning | Set by |
+|---------|---------|--------|
+| `OriginalCommandRaw` | Expansion handles refer to the original command's raw output | PostProcess mode, native projectors |
+| `WrappedCommandRaw` | Expansion handles refer to RTK-wrapped command output (non-partial) | RTK wrapper mode (full output) |
+| `OriginalRawUnavailable` | Original command raw output is unavailable; handles may refer to wrapped output | RTK wrapper mode (partial output) |
+| `Unknown` | Raw semantics not determined | Default / fallback |
+
+This replaces the previous approach of relying solely on a warning string to communicate raw-handle truthfulness. Callers can now branch on a structured enum rather than parsing free-form text.
+
+### RTK Integration Tests
+
+RTK integration tests are env-gated and do not run in standard CI:
+
+```bash
+CODEGG_RTK_INTEGRATION=1 cargo test --all-features rtk_integration
+```
+
+Tests cover: PostProcess contract, wrapper contract, and skip-without-env behavior. Standard CI validation (`cargo test --workspace --all-features`) does not require RTK to be installed.
+
 ### What's NOT in Phase 5/6
 
 - Full redaction pipeline (Phase 8) — implemented in `src/shell/redactor.rs`
@@ -741,3 +842,13 @@ Tests cover: handle parsing (full stream + range forms), range expansion exactne
 | Phase 8 | **Landed** | Redaction pipeline: `Redactor` with six `RedactRule` implementations, `apply_redaction_hook` entry point, `RedactionState::Applied { replacements }` |
 | Phase 9 | **Landed** | Evaluation harness: `tests/shell_projection_harness.rs` (11 invariant tests), fixture corpus in `tests/fixtures/shell_projection/` |
 | Phase 10 | **Landed** | Context budget and compaction integration: `ProjectionContextMetadata`, `ProjectionFact`, `ModelTier`, `ContextAwareBudget`, double-compression prevention, critical fact extraction, warning preservation tests |
+
+### RTK Integration Tests
+
+Env-gated RTK integration tests verify PostProcess and Wrapper invocation contracts:
+
+```bash
+CODEGG_RTK_INTEGRATION=1 cargo test --all-features rtk_integration
+```
+
+These tests require RTK to be installed and are not part of standard CI. They verify: PostProcess stdin-pipe contract, wrapper command construction, and skip-without-env behavior.

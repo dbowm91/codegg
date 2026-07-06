@@ -25,9 +25,9 @@ pub use projector::{
     CargoTestProjector, CommandOutputProjector, ContextAwareBudget, ErrorRetentionProjector,
     ExpansionHandle, GitDiffProjector, GitLogProjector, GitStatusProjector, ModelTier,
     OmittedRange, ProjectionBudget, ProjectionContextMetadata, ProjectionError,
-    ProjectionExactness, ProjectionFact, ProjectionKind, ProjectionPolicy, ProjectionRequest,
-    ProjectionResult, ProjectionSelector, ProjectionSupport, ProjectionTarget, RawProjector,
-    TruncatedProjector, APPROX_BYTES_PER_TOKEN,
+    ProjectionExactness, ProjectionFact, ProjectionKind, ProjectionPolicy, ProjectionRawSemantics,
+    ProjectionRequest, ProjectionResult, ProjectionSelector, ProjectionSupport, ProjectionTarget,
+    RawProjector, TruncatedProjector, APPROX_BYTES_PER_TOKEN,
 };
 pub use runtime::{ShellHandle, ShellRuntime};
 pub use store::{BoundedOutput, ShellOutputEntry, ShellOutputStore};
