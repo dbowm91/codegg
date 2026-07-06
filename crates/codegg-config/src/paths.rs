@@ -593,25 +593,21 @@ mod tests {
 
     #[test]
     fn test_find_project_config() {
-        let tmp = std::env::temp_dir();
-        let project_dir = tmp.join("codegg_test_project");
-        let config_dir = project_dir.join(".codegg");
+        let project_dir = tempfile::tempdir().unwrap();
+        let config_dir = project_dir.path().join(".codegg");
         std::fs::create_dir_all(&config_dir).unwrap();
         let config_file = config_dir.join("codegg.json");
         std::fs::write(&config_file, "{}").unwrap();
 
-        let found = find_project_config_from(&project_dir);
+        let found = find_project_config_from(project_dir.path());
         assert_eq!(found, Some(config_file));
-
-        std::fs::remove_dir_all(&project_dir).ok();
     }
 
     #[test]
     fn test_find_project_config_walks_up() {
-        let tmp = std::env::temp_dir();
-        let project_dir = tmp.join("codegg_test_walkup");
-        let config_dir = project_dir.join(".codegg");
-        let nested = project_dir.join("subdir").join("deep");
+        let project_dir = tempfile::tempdir().unwrap();
+        let config_dir = project_dir.path().join(".codegg");
+        let nested = project_dir.path().join("subdir").join("deep");
         std::fs::create_dir_all(&nested).unwrap();
         std::fs::create_dir_all(&config_dir).unwrap();
         let config_file = config_dir.join("codegg.json");
@@ -619,8 +615,6 @@ mod tests {
 
         let found = find_project_config_from(&nested);
         assert_eq!(found, Some(config_file));
-
-        std::fs::remove_dir_all(&project_dir).ok();
     }
 
     #[test]

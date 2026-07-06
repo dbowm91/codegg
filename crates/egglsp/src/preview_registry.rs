@@ -810,9 +810,8 @@ mod tests {
     fn test_refresh_staleness_missing_file_becomes_stale() {
         use std::io::Write;
 
-        let dir = std::env::temp_dir().join("codegg_preview_staleness_test");
-        std::fs::create_dir_all(&dir).unwrap();
-        let file_path = dir.join("target.rs");
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("target.rs");
         let content = b"fn main() {}";
         {
             let mut f = std::fs::File::create(&file_path).unwrap();
@@ -846,16 +845,12 @@ mod tests {
         assert_eq!(entry.stale_files.len(), 1);
         assert_eq!(entry.stale_files[0].actual_hash, "missing");
         assert_eq!(entry.stale_files[0].expected_hash, actual_hash);
-
-        // Cleanup.
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn test_refresh_staleness_unchanged_file_remains_fresh_with_sha256() {
-        let dir = std::env::temp_dir().join("codegg_preview_sha256_staleness_test");
-        std::fs::create_dir_all(&dir).unwrap();
-        let file_path = dir.join("target.rs");
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("target.rs");
         let content = b"fn main() {}";
         {
             let mut f = std::fs::File::create(&file_path).unwrap();
@@ -886,15 +881,12 @@ mod tests {
         assert_eq!(result, Some(false));
         assert!(!reg.get(&id).unwrap().stale_base);
         assert!(reg.get(&id).unwrap().stale_files.is_empty());
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn test_refresh_staleness_changed_file_becomes_stale_sha256() {
-        let dir = std::env::temp_dir().join("codegg_preview_sha256_changed_test");
-        std::fs::create_dir_all(&dir).unwrap();
-        let file_path = dir.join("target.rs");
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("target.rs");
         let original_content = b"fn main() {}";
         {
             let mut f = std::fs::File::create(&file_path).unwrap();
@@ -929,8 +921,6 @@ mod tests {
         // Actual hash should be SHA-256 of new content, not DefaultHasher.
         let new_hash = crate::edit::sha256_hex(b"fn main() { changed(); }");
         assert_eq!(entry.stale_files[0].actual_hash, new_hash);
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

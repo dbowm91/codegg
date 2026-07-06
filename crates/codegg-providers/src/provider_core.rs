@@ -375,11 +375,36 @@ pub(crate) fn resolve_provider_credential(
     store: Option<&std::sync::Arc<CredentialStore>>,
 ) -> Result<Option<ResolvedAuth>, crate::auth_types::AuthError> {
     let resolver = AuthResolver::new();
+    // Decrypt any legacy `encrypted_api_key` so the resolver can prefer it
+    // over a plaintext `api_key` when no env var or typed auth is configured.
+    let legacy_decrypted = match cfg.and_then(|c| c.encrypted_api_key.as_deref()) {
+        Some(enc) if !enc.is_empty() => match codegg_config::encryption::get_master_key() {
+            Some(master) => match crate::crypto::decrypt_from_string(enc, &master) {
+                Ok(plain) => Some(plain),
+                Err(e) => {
+                    tracing::warn!(
+                            "resolve_provider_credential: failed to decrypt encrypted_api_key for provider '{}': {}",
+                            provider_id,
+                            e
+                        );
+                    None
+                }
+            },
+            None => {
+                tracing::warn!(
+                        "resolve_provider_credential: encrypted_api_key present for provider '{}' but CODEGG_MASTER_KEY is not set; ignoring",
+                        provider_id
+                    );
+                None
+            }
+        },
+        _ => None,
+    };
     let ctx = ResolverContext {
         provider_id: provider_id.to_string(),
         account_id: cfg.and_then(|c| c.account_id.clone()),
         legacy_api_key: cfg.and_then(|c| c.api_key.clone()),
-        legacy_decrypted: None,
+        legacy_decrypted,
         env_override: env_var.map(|s| s.to_string()),
         store: store.cloned(),
     };
@@ -1327,5 +1352,70 @@ mod tests {
         );
         assert_eq!(provider2.config.credential.kind, CredentialKind::ApiKey);
         assert_eq!(provider2.config.credential.secret, "sk-static-key");
+    }
+
+    #[test]
+    fn resolve_provider_credential_decrypts_legacy_encrypted_api_key() {
+        let _guard = crate::auth_types::test_support::lock_env();
+        let prev_master = std::env::var("CODEGG_MASTER_KEY").ok();
+        let prev_env = std::env::var("LEGACY_ENC_TEST_API_KEY").ok();
+        std::env::set_var("CODEGG_MASTER_KEY", "legacy-encrypted-test-master");
+        std::env::remove_var("LEGACY_ENC_TEST_API_KEY");
+
+        let encrypted = crate::crypto::encrypt_to_string(
+            "decrypted-legacy-key",
+            "legacy-encrypted-test-master",
+        )
+        .expect("encrypt");
+
+        let cfg = ProviderConfig {
+            encrypted_api_key: Some(encrypted),
+            ..Default::default()
+        };
+        let resolved = resolve_provider_credential("legacy_enc_test", Some(&cfg), None, None)
+            .expect("ok")
+            .expect("some");
+        assert_eq!(resolved.credential.secret, "decrypted-legacy-key");
+        assert_eq!(resolved.source, ResolvedAuthSource::LegacyDecrypted);
+
+        // Restore env
+        if let Some(v) = prev_master {
+            std::env::set_var("CODEGG_MASTER_KEY", v);
+        } else {
+            std::env::remove_var("CODEGG_MASTER_KEY");
+        }
+        if let Some(v) = prev_env {
+            std::env::set_var("LEGACY_ENC_TEST_API_KEY", v);
+        }
+    }
+
+    #[test]
+    fn resolve_provider_credential_skips_encrypted_api_key_without_master_key() {
+        let _guard = crate::auth_types::test_support::lock_env();
+        let prev_master = std::env::var("CODEGG_MASTER_KEY").ok();
+        let prev_enc = std::env::var("CODEGG_ENCRYPTION_KEY").ok();
+        let prev_opencode = std::env::var("OPENCODE_ENCRYPTION_KEY").ok();
+        std::env::remove_var("CODEGG_MASTER_KEY");
+        std::env::remove_var("CODEGG_ENCRYPTION_KEY");
+        std::env::remove_var("OPENCODE_ENCRYPTION_KEY");
+
+        let cfg = ProviderConfig {
+            encrypted_api_key: Some("v2:deadbeef".to_string()),
+            ..Default::default()
+        };
+        // No master key, no env override -> no credential resolved.
+        let resolved =
+            resolve_provider_credential("no_master_test", Some(&cfg), None, None).expect("ok");
+        assert!(resolved.is_none());
+
+        if let Some(v) = prev_master {
+            std::env::set_var("CODEGG_MASTER_KEY", v);
+        }
+        if let Some(v) = prev_enc {
+            std::env::set_var("CODEGG_ENCRYPTION_KEY", v);
+        }
+        if let Some(v) = prev_opencode {
+            std::env::set_var("OPENCODE_ENCRYPTION_KEY", v);
+        }
     }
 }

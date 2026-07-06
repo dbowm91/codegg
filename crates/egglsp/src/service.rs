@@ -6574,8 +6574,8 @@ mod tests {
         // Seed a test-stub client so the runtime-aware path is
         // taken (with a real client handle).
         let shutdown_count = std::sync::Arc::new(AtomicUsize::new(0));
-        let dir = std::env::temp_dir().join("egglsp_pass2_hung");
-        let _ = std::fs::create_dir_all(&dir);
+        let tmpdir = tempfile::tempdir().unwrap();
+        let dir = tmpdir.path().to_path_buf();
         let client = Arc::new(
             crate::client::LspClient::test_stub(
                 "rust-analyzer",
@@ -6645,8 +6645,8 @@ mod tests {
         // map, not by the client map.
         {
             let mut clients = svc.clients.write().await;
-            let dir = std::env::temp_dir().join("egglsp_pass2_no_live");
-            let _ = std::fs::create_dir_all(&dir);
+            let tmpdir = tempfile::tempdir().unwrap();
+            let dir = tmpdir.path().to_path_buf();
             for key in ["key1", "key2"] {
                 let sc = std::sync::Arc::new(AtomicUsize::new(0));
                 let client = Arc::new(
@@ -7131,8 +7131,8 @@ mod tests {
         // Install a test-stub client in the clients map so the
         // manual teardown takes the runtime-aware branch.
         let shutdown_count = std::sync::Arc::new(AtomicUsize::new(0));
-        let dir = std::env::temp_dir().join("egglsp_pass2_timeout_preserves");
-        let _ = std::fs::create_dir_all(&dir);
+        let tmpdir = tempfile::tempdir().unwrap();
+        let dir = tmpdir.path().to_path_buf();
         let client = Arc::new(
             crate::client::LspClient::test_stub(
                 "rust-analyzer",
@@ -7323,8 +7323,8 @@ mod tests {
         // Install a test-stub client in the clients map so
         // the manual path takes the runtime-aware branch.
         let shutdown_count = std::sync::Arc::new(AtomicUsize::new(0));
-        let dir = std::env::temp_dir().join("egglsp_pass4_one_runtime");
-        let _ = std::fs::create_dir_all(&dir);
+        let tmpdir = tempfile::tempdir().unwrap();
+        let dir = tmpdir.path().to_path_buf();
         let client = Arc::new(
             crate::client::LspClient::test_stub(
                 "rust-analyzer",
@@ -7739,10 +7739,9 @@ mod tests {
 
     // ── wait_for_readiness tests ────────────────────────────────────────
 
-    fn temp_dir_path(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("wait_for_readiness_{name}"));
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+    fn temp_dir_path(_name: &str) -> PathBuf {
+        let dir = tempfile::tempdir().unwrap();
+        dir.path().to_path_buf()
     }
 
     fn build_minimal_service() -> (LspService, String) {

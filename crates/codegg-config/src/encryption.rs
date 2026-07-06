@@ -1,3 +1,15 @@
+// The encryption helpers here are intentionally no-ops. The real encryption
+// pipeline lives in `codegg-providers` (root crate's `crypto` module) and is
+// driven by the credential store and typed `AuthConfig::ApiKey.encrypted_value`
+// fields during credential resolution. The legacy
+// `ProviderConfig::encrypted_api_key` field is decrypted inside
+// `resolve_provider_credential`, never here.
+//
+// Call sites that previously invoked `encrypt_provider_keys` /
+// `decrypt_provider_keys` to migrate plaintext keys before persisting config
+// have been removed; callers should use the credential store or typed auth
+// instead.
+
 use crate::error::AppError;
 use crate::schema::Config;
 
@@ -9,15 +21,11 @@ pub fn get_master_key() -> Option<String> {
 }
 
 pub fn decrypt_provider_keys(_config: &mut Config) -> Result<(), AppError> {
-    // TODO: Wire up to root crate's crypto module.
-    // The actual decryption is done in the root crate's crypto module.
-    // For now, this is a no-op stub.
+    // Intentionally a no-op: see the file header.
     Ok(())
 }
 
 pub fn encrypt_provider_keys(_config: &mut Config) -> Result<(), AppError> {
-    // TODO: Wire up to root crate's crypto module.
-    // The actual encryption is done in the root crate's crypto module.
-    // For now, this is a no-op stub.
+    // Intentionally a no-op: see the file header.
     Ok(())
 }

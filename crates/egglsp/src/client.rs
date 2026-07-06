@@ -2479,8 +2479,8 @@ mod tests {
     /// take only once and then proceed.
     #[tokio::test]
     async fn take_child_and_stderr_are_idempotent() {
-        let dir = std::env::temp_dir().join("egglsp_pass9_take");
-        let _ = std::fs::create_dir_all(&dir);
+        let tmpdir = tempfile::tempdir().unwrap();
+        let dir = tmpdir.path().to_path_buf();
         let shutdown_count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let client =
             LspClient::test_stub("pass9", &dir, shutdown_count, LspClientOptions::default())
@@ -4102,8 +4102,8 @@ mod tests {
 
     #[tokio::test]
     async fn progress_tracker_records_begin_and_end() {
-        let dir = std::env::temp_dir().join("progress_tracker_basic");
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmpdir = tempfile::tempdir().unwrap();
+        let dir = tmpdir.path().to_path_buf();
         let shutdown_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let client = LspClient::test_stub(
             "progress_basic",
@@ -4141,8 +4141,8 @@ mod tests {
 
     #[tokio::test]
     async fn progress_tracker_report_does_not_remove_token() {
-        let dir = std::env::temp_dir().join("progress_tracker_report");
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmpdir = tempfile::tempdir().unwrap();
+        let dir = tmpdir.path().to_path_buf();
         let shutdown_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let client = LspClient::test_stub(
             "progress_report",
@@ -4180,8 +4180,8 @@ mod tests {
 
     #[tokio::test]
     async fn wait_for_progress_end_returns_true_when_all_complete() {
-        let dir = std::env::temp_dir().join("progress_tracker_wait");
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmpdir = tempfile::tempdir().unwrap();
+        let dir = tmpdir.path().to_path_buf();
         let shutdown_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let client = LspClient::test_stub(
             "progress_wait",
@@ -4247,8 +4247,8 @@ mod tests {
     /// `wait_for_progress_end`, even with a generous timeout.
     #[tokio::test]
     async fn progress_wait_does_not_succeed_before_begin() {
-        let dir = std::env::temp_dir().join("progress_wait_no_begin");
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmpdir = tempfile::tempdir().unwrap();
+        let dir = tmpdir.path().to_path_buf();
         let shutdown_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let client = LspClient::test_stub(
             "progress_no_begin",
@@ -4277,8 +4277,8 @@ mod tests {
     /// every active token has observed a matching end.
     #[tokio::test]
     async fn progress_report_without_begin_does_not_complete_cycle() {
-        let dir = std::env::temp_dir().join("progress_no_begin_only_end");
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmpdir = tempfile::tempdir().unwrap();
+        let dir = tmpdir.path().to_path_buf();
         let shutdown_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let client = LspClient::test_stub(
             "progress_no_begin_only_end",
@@ -4309,8 +4309,8 @@ mod tests {
     /// cycle and `wait_for_progress_end` succeeds.
     #[tokio::test]
     async fn progress_wait_succeeds_after_begin_end() {
-        let dir = std::env::temp_dir().join("progress_begin_end");
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmpdir = tempfile::tempdir().unwrap();
+        let dir = tmpdir.path().to_path_buf();
         let shutdown_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let client = LspClient::test_stub(
             "progress_begin_end",
@@ -4349,8 +4349,8 @@ mod tests {
 
     #[tokio::test]
     async fn wait_for_first_diagnostics_returns_true_after_publish() {
-        let dir = std::env::temp_dir().join("diagnostics_wait_basic");
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmpdir = tempfile::tempdir().unwrap();
+        let dir = tmpdir.path().to_path_buf();
         let shutdown_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let client = LspClient::test_stub(
             "diag_wait",
@@ -4394,8 +4394,8 @@ mod tests {
 
     #[tokio::test]
     async fn operational_summary_reports_progress_and_diagnostics() {
-        let dir = std::env::temp_dir().join("operational_summary");
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmpdir = tempfile::tempdir().unwrap();
+        let dir = tmpdir.path().to_path_buf();
         let shutdown_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let client = LspClient::test_stub(
             "op_summary",

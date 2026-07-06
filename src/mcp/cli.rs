@@ -40,8 +40,9 @@ impl McpCli {
             std::fs::create_dir_all(parent)
                 .map_err(|e| AppError::Config(crate::error::ConfigError::Invalid(e.to_string())))?;
         }
-        let mut to_save = config.clone();
-        crate::config::encryption::encrypt_provider_keys(&mut to_save)?;
+        // Provider credentials are not managed here. Callers should use the
+        // user credential store or the typed `provider.<id>.auth.*` field.
+        let to_save = config.clone();
 
         let json = serde_json::to_string_pretty(&to_save)
             .map_err(|e| AppError::Config(crate::error::ConfigError::Parse(e.to_string())))?;

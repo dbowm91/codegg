@@ -17,3 +17,6 @@ dirs = "6"
 tokio = { version = "1", features = ["rt", "macros", "sync", "time"] }
 notify = "7"
 tracing = "0.1"
+
+[dev-dependencies]
+tempfile = "3"

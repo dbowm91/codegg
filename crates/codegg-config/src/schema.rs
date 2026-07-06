@@ -1172,8 +1172,11 @@ impl Config {
         let configs = configs?;
         let mut config = crate::paths::merge_configs(&configs);
 
-        crate::encryption::decrypt_provider_keys(&mut config)
-            .map_err(|e| crate::error::ConfigError::Invalid(e.to_string()))?;
+        // Decryption of `provider.<id>.encrypted_api_key` happens during
+        // credential resolution in the providers crate via
+        // `resolve_provider_credential`. The config crate intentionally
+        // does not own the encryption pipeline, so this load hook is a
+        // no-op.
 
         config.migrate();
 
@@ -1198,13 +1201,12 @@ impl Config {
             })?;
         }
 
-        let mut to_save = self.clone();
-        crate::encryption::encrypt_provider_keys(&mut to_save).map_err(|e| {
-            crate::error::ConfigError::Invalid(format!(
-                "Failed to encrypt/migrate provider keys before save: {}",
-                e
-            ))
-        })?;
+        // Provider credentials are persisted via the user credential store or
+        // the typed `provider.<id>.auth.encrypted_value` field (handled by
+        // the providers crate). The legacy `api_key` / `encrypted_api_key`
+        // fields on `ProviderConfig` are surfaced as-is; the config crate
+        // intentionally does not own the encryption pipeline.
+        let to_save = self.clone();
 
         let content = serde_json::to_string_pretty(&to_save).map_err(|e| {
             crate::error::ConfigError::Parse(format!("Failed to serialize config: {}", e))

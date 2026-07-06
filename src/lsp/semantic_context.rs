@@ -978,9 +978,8 @@ mod tests {
 
     #[test]
     fn test_build_source_excerpt_basic() {
-        let dir = std::env::temp_dir().join("semantic_context_test");
-        std::fs::create_dir_all(&dir).unwrap();
-        let file = dir.join("excerpt_test.rs");
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("excerpt_test.rs");
 
         let mut f = std::fs::File::create(&file).unwrap();
         for i in 1..=20 {
@@ -1001,8 +1000,6 @@ mod tests {
         assert!(!truncated_all);
         assert_eq!(excerpt_all.start_line, 1);
         assert_eq!(excerpt_all.end_line, 5);
-
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
@@ -1252,20 +1249,17 @@ mod tests {
 
     #[tokio::test]
     async fn test_resolve_overlay_content_reads_disk_when_request_missing() {
-        let dir = std::env::temp_dir().join("semantic_context_overlay_test");
-        std::fs::create_dir_all(&dir).unwrap();
-        let file = dir.join("overlay.rs");
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("overlay.rs");
         std::fs::write(&file, "disk overlay").unwrap();
 
         let request = SemanticContextRequest::new("test.rs", egglsp::SemanticContextIntent::Review)
             .with_overlay(true);
 
-        let content = resolve_overlay_content(&request, &file, &dir)
+        let content = resolve_overlay_content(&request, &file, dir.path())
             .await
             .unwrap();
         assert_eq!(content, "disk overlay");
-
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
@@ -1283,9 +1277,8 @@ mod tests {
 
     #[test]
     fn test_build_source_excerpt_edge_cases() {
-        let dir = std::env::temp_dir().join("semantic_context_edge_test");
-        std::fs::create_dir_all(&dir).unwrap();
-        let file = dir.join("edge.rs");
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("edge.rs");
 
         let mut f = std::fs::File::create(&file).unwrap();
         writeln!(f, "single line").unwrap();
@@ -1298,8 +1291,6 @@ mod tests {
         let (excerpt, _) = build_source_excerpt(&file, None, 100).unwrap();
         assert_eq!(excerpt.start_line, 1);
         assert_eq!(excerpt.end_line, 1);
-
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

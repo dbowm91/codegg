@@ -693,7 +693,8 @@ mod tests {
         let new = "y".repeat(60000);
         let p = generate_unified_patch_for_test(&old, &new, "big.txt");
         assert!(p.len() > MAX_PATCH_CHARS_PER_FILE || p.contains("omitted"));
-        let tmp = std::env::temp_dir().join("egglsp_test_big.txt");
+        let tmpdir = tempfile::tempdir().unwrap();
+        let tmp = tmpdir.path().join("egglsp_test_big.txt");
         std::fs::write(&tmp, &old).unwrap();
         let title = "big";
         let te = TextEdit {
@@ -713,7 +714,6 @@ mod tests {
         let wp = preview.unwrap();
         assert!(wp.truncated);
         assert!(wp.files[0].patch_omitted);
-        let _ = std::fs::remove_file(&tmp);
     }
 
     #[test]
