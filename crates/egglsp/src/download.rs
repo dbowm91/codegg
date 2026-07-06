@@ -152,6 +152,27 @@ fn resolve_url(spec: &DownloadSpec) -> String {
         .replace("{os}", os)
 }
 
+/// Lexically validate a path extracted from an archive.
+///
+/// Only `Normal` and `CurDir` components are allowed. `ParentDir`,
+/// `RootDir`, and `Prefix` components are rejected as traversal.
+fn validate_archive_member_path(rel: &Path) -> Result<(), String> {
+    for component in rel.components() {
+        match component {
+            std::path::Component::Normal(_) | std::path::Component::CurDir => {}
+            std::path::Component::ParentDir
+            | std::path::Component::RootDir
+            | std::path::Component::Prefix(_) => {
+                return Err(format!(
+                    "path traversal or absolute component not allowed: {}",
+                    rel.display()
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 fn extract_zip(
     data: &[u8],
     dest: &Path,
@@ -171,20 +192,35 @@ fn extract_zip(
         let mut file = archive
             .by_index(i)
             .map_err(|e| LspError::DownloadFailed(format!("failed to read zip entry: {}", e)))?;
+
+        // Reject symlink entries up front: copying their target bytes
+        // would silently turn an LSP binary into an arbitrary file.
+        if file.is_symlink() {
+            return Err(LspError::DownloadFailed(format!(
+                "symlinks are not allowed in zip archive: {}",
+                file.name()
+            )));
+        }
+
         let name = file.name().to_string();
 
         if name.contains(binary_name) || name.ends_with(binary_name) {
             let file_name = std::path::Path::new(&name)
                 .file_name()
-                .unwrap_or(std::ffi::OsStr::new(binary_name));
+                .ok_or_else(|| LspError::DownloadFailed("invalid zip entry name".into()))?;
             let out_path = dest.join(file_name);
 
-            if !out_path
-                .canonicalize()
-                .map(|p| p.starts_with(&dest))
-                .unwrap_or(false)
-            {
+            // Lexical containment check on the entry path itself.
+            let entry_path = std::path::Path::new(&name);
+            validate_archive_member_path(entry_path).map_err(LspError::DownloadFailed)?;
+
+            // Lexical containment check on the resolved output path
+            // (the file does not exist yet, so we cannot canonicalize).
+            if !out_path.starts_with(&dest) {
                 return Err(LspError::DownloadFailed("path traversal blocked".into()));
+            }
+            if let Some(parent) = out_path.parent() {
+                std::fs::create_dir_all(parent)?;
             }
 
             let mut out = std::fs::File::create(&out_path)?;
@@ -217,9 +253,17 @@ fn extract_tar_gz(
 
     for entry_result in archive.entries()? {
         let mut entry = entry_result?;
+        let header = entry.header().clone();
+        if header.entry_type().is_symlink() || header.entry_type().is_hard_link() {
+            return Err(LspError::DownloadFailed(format!(
+                "symlinks and hard links are not allowed in tar.gz archive: {:?}",
+                entry.path().ok().map(|p| p.to_path_buf())
+            )));
+        }
         let path = entry.path()?.to_path_buf();
-        let full_path = dest.join(&path);
+        validate_archive_member_path(&path).map_err(LspError::DownloadFailed)?;
 
+        let full_path = dest.join(&path);
         if !full_path.starts_with(&dest) {
             return Err(LspError::DownloadFailed("path traversal blocked".into()));
         }
@@ -254,13 +298,24 @@ fn extract_tar_xz(
 
     for entry in archive.entries()? {
         let mut entry = entry?;
+        let header = entry.header().clone();
+        if header.entry_type().is_symlink() || header.entry_type().is_hard_link() {
+            return Err(LspError::DownloadFailed(format!(
+                "symlinks and hard links are not allowed in tar.xz archive: {:?}",
+                entry.path().ok().map(|p| p.to_path_buf())
+            )));
+        }
         let path = entry.path()?.to_path_buf();
-        let full_path = dest.join(&path);
+        validate_archive_member_path(&path).map_err(LspError::DownloadFailed)?;
 
+        let full_path = dest.join(&path);
         if !full_path.starts_with(&dest) {
             return Err(LspError::DownloadFailed("path traversal blocked".into()));
         }
 
+        if let Some(parent) = full_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
         entry.unpack(&full_path)?;
     }
 
@@ -278,4 +333,237 @@ fn extract_tar_xz(
         "binary '{}' not found in tar.xz archive",
         binary_name
     )))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    /// Build a raw tar entry header. `name` may contain malicious
+    /// components to test rejection. `entry_type` follows the tar
+    /// typeflag byte (b'0' = regular file, b'2' = symlink, b'1' = hardlink).
+    fn build_tar_entry(name: &str, data: &[u8], entry_type: u8) -> Vec<u8> {
+        let mut header = [0u8; 512];
+        let name_bytes = name.as_bytes();
+        let name_len = name_bytes.len().min(100);
+        header[..name_len].copy_from_slice(&name_bytes[..name_len]);
+
+        let mode = b"0000644\0";
+        header[100..108].copy_from_slice(mode);
+        let uid = b"0000000\0";
+        header[108..116].copy_from_slice(uid);
+        let gid = b"0000000\0";
+        header[116..124].copy_from_slice(gid);
+        let size_str = format!("{:011o}", data.len());
+        header[124..124 + size_str.len()].copy_from_slice(size_str.as_bytes());
+        header[136..148].copy_from_slice(b"00000000000\0");
+        header[156] = entry_type;
+        header[257..263].copy_from_slice(b"ustar\0");
+        header[263..265].copy_from_slice(b"00");
+
+        for item in header.iter_mut().take(156).skip(148) {
+            *item = b' ';
+        }
+        let chksum: u32 = header.iter().map(|&b| b as u32).sum();
+        let chksum_str = format!("{:06o}\0 ", chksum);
+        header[148..156].copy_from_slice(chksum_str.as_bytes());
+
+        let mut out = Vec::new();
+        out.extend_from_slice(&header);
+        out.extend_from_slice(data);
+        let padding = (512 - (data.len() % 512)) % 512;
+        out.extend(std::iter::repeat(0u8).take(padding));
+        out.extend(std::iter::repeat(0u8).take(1024));
+        out
+    }
+
+    fn gzip_bytes(tar_bytes: Vec<u8>) -> Vec<u8> {
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder.write_all(&tar_bytes).unwrap();
+        encoder.finish().unwrap()
+    }
+
+    fn xz_bytes(tar_bytes: Vec<u8>) -> Vec<u8> {
+        let mut encoder = xz2::write::XzEncoder::new(Vec::new(), 6);
+        encoder.write_all(&tar_bytes).unwrap();
+        encoder.finish().unwrap()
+    }
+
+    #[test]
+    fn validate_archive_member_path_accepts_relative() {
+        assert!(validate_archive_member_path(Path::new("foo/bar.txt")).is_ok());
+        assert!(validate_archive_member_path(Path::new("./foo")).is_ok());
+    }
+
+    #[test]
+    fn validate_archive_member_path_rejects_parent() {
+        assert!(validate_archive_member_path(Path::new("../foo")).is_err());
+        assert!(validate_archive_member_path(Path::new("a/../../b")).is_err());
+    }
+
+    #[test]
+    fn validate_archive_member_path_rejects_absolute() {
+        assert!(validate_archive_member_path(Path::new("/etc/passwd")).is_err());
+    }
+
+    #[test]
+    fn tar_gz_extracts_valid_entry() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().join("out");
+        std::fs::create_dir_all(&dest).unwrap();
+
+        let tar_bytes = build_tar_entry("mybin", b"binary contents", b'0');
+        let gz = gzip_bytes(tar_bytes);
+
+        let result = extract_tar_gz(&gz, &dest, "mybin").expect("should extract");
+        assert!(result.exists());
+        assert_eq!(std::fs::read(&result).unwrap(), b"binary contents");
+    }
+
+    #[test]
+    fn tar_gz_rejects_parent_traversal_entry() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().join("out");
+        std::fs::create_dir_all(&dest).unwrap();
+
+        let tar_bytes = build_tar_entry("../escape", b"bad", b'0');
+        let gz = gzip_bytes(tar_bytes);
+
+        let err = extract_tar_gz(&gz, &dest, "escape").unwrap_err();
+        assert!(matches!(err, LspError::DownloadFailed(_)));
+    }
+
+    #[test]
+    fn tar_gz_rejects_absolute_path_entry() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().join("out");
+        std::fs::create_dir_all(&dest).unwrap();
+
+        let tar_bytes = build_tar_entry("/etc/passwd", b"bad", b'0');
+        let gz = gzip_bytes(tar_bytes);
+
+        let err = extract_tar_gz(&gz, &dest, "passwd").unwrap_err();
+        assert!(matches!(err, LspError::DownloadFailed(_)));
+    }
+
+    #[test]
+    fn tar_gz_rejects_symlink_entry() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().join("out");
+        std::fs::create_dir_all(&dest).unwrap();
+
+        let tar_bytes = build_tar_entry("link_to_passwd", b"/etc/passwd", b'2');
+        let gz = gzip_bytes(tar_bytes);
+
+        let err = extract_tar_gz(&gz, &dest, "link_to_passwd").unwrap_err();
+        assert!(matches!(err, LspError::DownloadFailed(_)));
+    }
+
+    #[test]
+    fn tar_gz_rejects_hardlink_entry() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().join("out");
+        std::fs::create_dir_all(&dest).unwrap();
+
+        let tar_bytes = build_tar_entry("hardlink", b"other", b'1');
+        let gz = gzip_bytes(tar_bytes);
+
+        let err = extract_tar_gz(&gz, &dest, "hardlink").unwrap_err();
+        assert!(matches!(err, LspError::DownloadFailed(_)));
+    }
+
+    #[test]
+    fn tar_xz_rejects_parent_traversal_entry() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().join("out");
+        std::fs::create_dir_all(&dest).unwrap();
+
+        let tar_bytes = build_tar_entry("../escape", b"bad", b'0');
+        let xz = xz_bytes(tar_bytes);
+
+        let err = extract_tar_xz(&xz, &dest, "escape").unwrap_err();
+        assert!(matches!(err, LspError::DownloadFailed(_)));
+    }
+
+    #[test]
+    fn tar_xz_rejects_symlink_entry() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().join("out");
+        std::fs::create_dir_all(&dest).unwrap();
+
+        let tar_bytes = build_tar_entry("link_to_passwd", b"/etc/passwd", b'2');
+        let xz = xz_bytes(tar_bytes);
+
+        let err = extract_tar_xz(&xz, &dest, "link_to_passwd").unwrap_err();
+        assert!(matches!(err, LspError::DownloadFailed(_)));
+    }
+
+    #[test]
+    fn zip_extracts_valid_entry() {
+        use std::io::Cursor;
+        use zip::write::SimpleFileOptions;
+        use zip::ZipWriter;
+
+        let buf: Vec<u8> = Vec::new();
+        let mut writer = ZipWriter::new(Cursor::new(buf));
+        let opts = SimpleFileOptions::default();
+        writer.start_file("mybin", opts).unwrap();
+        use std::io::Write as _;
+        writer.write_all(b"binary contents").unwrap();
+        let inner = writer.finish().unwrap();
+        let zip_bytes = inner.into_inner();
+
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().join("out");
+        std::fs::create_dir_all(&dest).unwrap();
+
+        let result = extract_zip(&zip_bytes, &dest, "mybin").expect("should extract");
+        assert!(result.exists());
+        assert_eq!(std::fs::read(&result).unwrap(), b"binary contents");
+    }
+
+    #[test]
+    fn zip_rejects_symlink_entry() {
+        use std::io::Cursor;
+        use zip::write::SimpleFileOptions;
+        use zip::ZipWriter;
+
+        let buf: Vec<u8> = Vec::new();
+        let mut writer = ZipWriter::new(Cursor::new(buf));
+        let opts = SimpleFileOptions::default();
+        writer.add_symlink("linkname", "/etc/passwd", opts).unwrap();
+        let inner = writer.finish().unwrap();
+        let zip_bytes = inner.into_inner();
+
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().join("out");
+        std::fs::create_dir_all(&dest).unwrap();
+
+        let err = extract_zip(&zip_bytes, &dest, "linkname").unwrap_err();
+        assert!(matches!(err, LspError::DownloadFailed(_)));
+    }
+
+    #[test]
+    fn zip_rejects_traversal_entry_name() {
+        use std::io::Cursor;
+        use zip::write::SimpleFileOptions;
+        use zip::ZipWriter;
+
+        let buf: Vec<u8> = Vec::new();
+        let mut writer = ZipWriter::new(Cursor::new(buf));
+        let opts = SimpleFileOptions::default();
+        writer.start_file("good/../mybin", opts).unwrap();
+        use std::io::Write as _;
+        writer.write_all(b"binary contents").unwrap();
+        let inner = writer.finish().unwrap();
+        let zip_bytes = inner.into_inner();
+
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().join("out");
+        std::fs::create_dir_all(&dest).unwrap();
+
+        let err = extract_zip(&zip_bytes, &dest, "mybin").unwrap_err();
+        assert!(matches!(err, LspError::DownloadFailed(_)));
+    }
 }

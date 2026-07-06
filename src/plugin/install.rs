@@ -106,6 +106,20 @@ pub fn validate_local_install_source(
 }
 
 pub async fn install_from_path(path: &Path) -> Result<PathBuf, InstallError> {
+    install_from_path_into(path, &plugins_dir()).await
+}
+
+/// Install a plugin from a local filesystem path into a caller-supplied
+/// destination root.
+///
+/// The source directory must contain a `manifest.toml`. The plugin is
+/// copied into `<dest_root>/<plugin_name>`. Exposing the destination
+/// explicitly keeps tests hermetic and gives callers (e.g. sandboxes)
+/// control over the install root.
+pub async fn install_from_path_into(
+    path: &Path,
+    dest_root: &Path,
+) -> Result<PathBuf, InstallError> {
     // Validate the user-supplied local install source. This accepts
     // absolute paths and paths containing `..` as long as the canonical
     // target exists, is a directory, and contains a `manifest.toml`.
@@ -117,15 +131,14 @@ pub async fn install_from_path(path: &Path) -> Result<PathBuf, InstallError> {
     let _manifest: PluginManifest =
         toml::from_str(&manifest_content).map_err(|e| InstallError::Manifest(e.to_string()))?;
 
-    let plugins_dir = plugins_dir();
-    tokio::fs::create_dir_all(&plugins_dir).await?;
+    tokio::fs::create_dir_all(dest_root).await?;
 
     let plugin_name = path
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| "unknown".to_string());
 
-    let dest = plugins_dir.join(&plugin_name);
+    let dest = dest_root.join(&plugin_name);
     if dest.exists() {
         return Err(InstallError::AlreadyInstalled(plugin_name));
     }
@@ -801,6 +814,7 @@ api_version = 1
     #[tokio::test]
     async fn install_creates_nested_valid_plugin() {
         let src = make_temp_dir("nested_valid");
+        let dest_root = make_temp_dir("nested_valid_root");
         fs::create_dir_all(src.join("subdir")).unwrap();
         fs::write(src.join("subdir").join("file.txt"), "nested content").unwrap();
         fs::write(
@@ -813,7 +827,7 @@ api_version = 1
         )
         .unwrap();
 
-        let result = install_from_path(&src).await;
+        let result = install_from_path_into(&src, &dest_root).await;
         assert!(
             result.is_ok(),
             "install should succeed for nested valid plugin: {result:?}"
@@ -830,6 +844,7 @@ api_version = 1
         }
 
         let _ = fs::remove_dir_all(&src);
+        let _ = fs::remove_dir_all(&dest_root);
     }
 
     // ---- validate_local_install_source tests (Workstream B) ----

@@ -23,8 +23,9 @@ pub use api::{ApiVersion, Stability, API_VERSION};
 pub use event_bus::{PluginEventBus, PluginEventSubscription};
 pub use hooks::{HookContext, HookResult, HookType};
 pub use install::{
-    install_from_path, install_from_url, uninstall, validate_install_source,
-    validate_local_install_source, validate_uninstall_target, validate_wasm_module_path,
+    install_from_path, install_from_path_into, install_from_url, uninstall,
+    validate_install_source, validate_local_install_source, validate_uninstall_target,
+    validate_wasm_module_path,
 };
 pub use lifecycle::{
     EventHookInput, LifecycleHooks, MessageTransformInput, MessageTransformOutput,
