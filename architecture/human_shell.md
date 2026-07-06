@@ -771,6 +771,19 @@ CODEGG_RTK_INTEGRATION=1 cargo test --all-features rtk_integration
 
 Tests cover: PostProcess contract, wrapper contract, and skip-without-env behavior. Standard CI validation (`cargo test --workspace --all-features`) does not require RTK to be installed.
 
+### CI Coverage
+
+The main CI pipeline (`ci.yml`) runs explicit shell projection validation steps after the full workspace test suite:
+
+| Step | Command | What it validates |
+|------|---------|-------------------|
+| Evaluation harness | `cargo test --test shell_projection_harness` | 11 invariant tests over fixture corpus: raw retention, selector chain, truncation, error retention, native projectors, RTK fallback, redaction, expansion handles, context metadata |
+| Context budget | `cargo test --test shell_projection_phase10` | 33 tests: model-tier budgets, compaction metadata, double-compression prevention, fact extraction, expansion round-trips |
+| Redactor unit tests | `cargo test -p codegg --lib shell::redactor` | 33 tests: all six RedactRule implementations, false positives, long lines, edge cases |
+| RTK unit tests | `cargo test -p codegg --lib shell::rtk` | 53 tests: discovery states, capability probing, invocation mode selection, eligibility classification, wrapper grammar parsing |
+
+RTK integration tests (`rtk_integration`) are env-gated and not part of standard CI. They require `CODEGG_RTK_INTEGRATION=1` and RTK installed on PATH.
+
 ### What's NOT in Phase 5/6
 
 - Full redaction pipeline (Phase 8) — implemented in `src/shell/redactor.rs`
@@ -840,7 +853,7 @@ Tests cover: handle parsing (full stream + range forms), range expansion exactne
 | Phase 6 | **Landed** | Real RTK invocation: `RtkInvocationMode` (PostProcess/Wrapper/Disabled), capability-driven dispatch, input capping, timeout enforcement, projection metadata |
 | Phase 7 | **Landed** | Expansion API (`CommandOutputExpansion`, `ExpansionExactness`, `ExpansionRequest`), `/shell-expand` command, TUI detail panel with projection metadata |
 | Phase 8 | **Landed** | Redaction pipeline: `Redactor` with six `RedactRule` implementations, `apply_redaction_hook` entry point, `RedactionState::Applied { replacements }` |
-| Phase 9 | **Landed** | Evaluation harness: `tests/shell_projection_harness.rs` (11 invariant tests), fixture corpus in `tests/fixtures/shell_projection/` |
+| Phase 9 | **Landed** | Evaluation harness: `tests/shell_projection_harness.rs` (11 invariant tests), fixture corpus in `tests/fixtures/shell_projection/`, explicit CI validation steps |
 | Phase 10 | **Landed** | Context budget and compaction integration: `ProjectionContextMetadata`, `ProjectionFact`, `ModelTier`, `ContextAwareBudget`, double-compression prevention, critical fact extraction, warning preservation tests |
 
 ### RTK Integration Tests
@@ -851,4 +864,4 @@ Env-gated RTK integration tests verify PostProcess and Wrapper invocation contra
 CODEGG_RTK_INTEGRATION=1 cargo test --all-features rtk_integration
 ```
 
-These tests require RTK to be installed and are not part of standard CI. They verify: PostProcess stdin-pipe contract, wrapper command construction, and skip-without-env behavior.
+These tests require RTK to be installed and are not part of standard CI. They verify: PostProcess stdin-pipe contract, wrapper command construction, and skip-without-env behavior. CI validates RTK unit tests (discovery, capabilities, eligibility, wrapper grammar) separately via `cargo test -p codegg --lib shell::rtk`.

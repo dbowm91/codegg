@@ -449,6 +449,12 @@ cargo clippy --all-features --all-targets -- -D warnings
 cargo test --all-features
 scripts/check-core-boundary.sh
 
-# Optional RTK integration (requires rtk installed)
+# Shell projection tests (also run explicitly in CI)
+cargo test --test shell_projection_harness         # 11 invariant tests (fixture corpus)
+cargo test --test shell_projection_phase10         # 33 context budget/compaction tests
+cargo test -p codegg --lib shell::redactor         # 33 redactor unit tests
+cargo test -p codegg --lib shell::rtk              # 53 RTK unit tests (no binary required)
+
+# Optional RTK integration (requires rtk installed, env-gated)
 CODEGG_RTK_INTEGRATION=1 cargo test --all-features rtk_integration
 ```

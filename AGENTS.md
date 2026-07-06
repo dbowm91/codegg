@@ -93,6 +93,15 @@ cargo test --test tui
 # Shell output projection evaluation harness (fixture corpus, 11 invariant tests)
 cargo test --test shell_projection_harness
 
+# Shell projection context budget and compaction tests (33 tests)
+cargo test --test shell_projection_phase10
+
+# Shell projection redactor unit tests
+cargo test -p codegg --lib shell::redactor
+
+# Shell projection RTK unit tests (no RTK binary required)
+cargo test -p codegg --lib shell::rtk
+
 # LSP integration (fake server, no network, needs lsp-test-support)
 cargo test -p egglsp --features lsp-test-support --test scenario_engine
 cargo test --features lsp-test-support --test lsp_composite_stdio
@@ -271,7 +280,7 @@ Project files override global files. Config overrides file-based agents.
 
 ## CI Pipeline
 
-CI runs on push/PR to dev/main: `agent-assets` → `fmt` → `check` → `clippy` → `test` → `plugin-focused` → `examples`. The `agent-assets` job validates built-in agent TOML schemas and checks for stale generated output. The `plugin-focused` job runs plugin install/management/registry/TUI tests and the core boundary check. `examples` tests SDKs and WASM builds. Local equivalent: `scripts/validate_plugin_ui.sh`.
+CI runs on push/PR to dev/main: `agent-assets` → `fmt` → `check` → `clippy` → `test` → `plugin-focused` → `examples`. The `agent-assets` job validates built-in agent TOML schemas and checks for stale generated output. The `test` job runs the full workspace test suite plus explicit shell projection validation steps (harness, context budget, redactor, RTK unit tests). The `plugin-focused` job runs plugin install/management/registry/TUI tests and the core boundary check. `examples` tests SDKs and WASM builds. Local equivalent: `scripts/validate_plugin_ui.sh`.
 
 ## Critical Gotchas
 
