@@ -73,13 +73,13 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Plugin install path / policy tests
-        run: cargo test -p codegg --lib plugin::install:: --all-features
+        run: cargo test -p codegg --lib plugin::install --all-features
       - name: Plugin management tests
-        run: cargo test -p codegg --lib plugin::management:: --all-features
+        run: cargo test -p codegg --lib plugin::management --all-features
       - name: Plugin registry tests
-        run: cargo test -p codegg --lib plugin::registry:: --all-features
+        run: cargo test -p codegg --lib plugin::registry --all-features
       - name: Plugin TUI command tests
-        run: cargo test -p codegg --lib tui::commands::plugin_management:: --all-features
+        run: cargo test -p codegg --lib tui::commands::plugin_management --all-features
       - name: Core boundary check
         run: ./scripts/check-core-boundary.sh
 
@@ -98,11 +98,11 @@ jobs:
         run: PYTHONPATH=examples/plugins/sdk-python python3 -m unittest discover examples/plugins/sdk-python/tests -v
       - name: Install wasm32 target
         run: rustup target add wasm32-unknown-unknown
-      - name: WASM example: command-table
+      - name: "WASM example: command-table"
         run: cargo check --manifest-path examples/plugins/wasm-command-table/Cargo.toml --target wasm32-unknown-unknown
-      - name: WASM example: hook-message-transform
+      - name: "WASM example: hook-message-transform"
         run: cargo check --manifest-path examples/plugins/wasm-hook-message-transform/Cargo.toml --target wasm32-unknown-unknown
-      - name: WASM example: status-widget
+      - name: "WASM example: status-widget"
         run: cargo check --manifest-path examples/plugins/wasm-status-widget/Cargo.toml --target wasm32-unknown-unknown
 
   audit:

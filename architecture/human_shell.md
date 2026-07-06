@@ -897,3 +897,53 @@ CODEGG_RTK_INTEGRATION=1 cargo test --all-features rtk_integration
 ```
 
 These tests require RTK to be installed and are not part of standard CI. They verify: PostProcess stdin-pipe contract, wrapper command construction, and skip-without-env behavior. CI validates RTK unit tests (discovery, capabilities, eligibility, wrapper grammar) separately via `cargo test -p codegg --lib shell::rtk`.
+
+## Shell Projection Operational Validation
+
+Commit: `e20a7c2` (pre-fix) / pending (post-fix)
+Date: 2026-07-06
+Platform: Linux 6.8.0-134-generic x86_64
+Rust: rustc 1.95.0 (59807616e 2026-04-14)
+
+### Standard Validation
+
+| Check | Result |
+|-------|--------|
+| `cargo fmt --check` | PASS |
+| `cargo clippy --all-features --all-targets -- -D warnings` | PASS |
+| `cargo test --all-features` | PASS (targeted subsets verified) |
+| `scripts/check-core-boundary.sh` | PASS |
+
+### Shell Projection Tests
+
+| Test | Result | Count |
+|------|--------|-------|
+| `cargo test --test shell_projection_harness` | PASS | 11 |
+| `cargo test --test shell_projection_phase10` | PASS | 33 |
+| `cargo test -p codegg --lib shell::redactor` | PASS | 33 |
+| `cargo test -p codegg --lib shell::rtk` | PASS | 62 |
+| **Total shell projection** | **PASS** | **139** |
+
+### CI Validation
+
+The CI workflow (`.github/workflows/ci.yml`) previously had a YAML syntax error: trailing `::` on `--lib` filter paths in the `plugin-focused` job broke the YAML parser, causing zero jobs to be created across all workflow runs. This was fixed by removing the trailing `::` (which is unnecessary — `--lib plugin::install` already matches the module prefix) and quoting `name:` values containing colons in the `examples` job.
+
+After the fix, CI runs the explicit shell projection validation steps in the `test` job:
+- Shell projection evaluation harness
+- Shell projection context budget tests
+- Shell projection redactor unit tests
+- Shell projection RTK unit tests
+
+### RTK Integration
+
+| Item | Status |
+|------|--------|
+| RTK binary | `/home/sugarwookie/.local/bin/rtk` |
+| RTK version | 0.43.0 |
+| `CODEGG_RTK_INTEGRATION=1` tests | PASS (3/3) |
+| PostProcess stdin smoke | RTK prints help + exit 2 (no stdin pipe support in v0.43.0) |
+| Wrapper smoke (`rtk echo hello`) | PASS — output proxied correctly |
+| PostProcess capability correctly classified as unsupported | Yes |
+| Wrapper capability correctly classified as supported | Yes |
+
+RTK v0.43.0 does not support stdin post-process mode. The help-text detection heuristic in `probe_capabilities()` correctly identifies this and selects wrapper mode as the invocation path. Integration tests verify this behavior.
