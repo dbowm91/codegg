@@ -1,0 +1,15 @@
+[fixture]
+name = "long_line_cred"
+command = "curl -v https://api.example.com"
+exit_code = 0
+stream = "stdout"
+redaction_fixture = true
+
+[expect]
+must_contain = ["Authorization"]
+must_not_contain = []
+must_redact = ["sk-longtest-99999999999999999999999999999999"]
+source_spans = []
+failed_tests = []
+max_projected_tokens_safe = 5000
+max_projected_tokens_aggressive = 5000

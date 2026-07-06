@@ -123,6 +123,8 @@ The selector (`ProjectionSelector::with_defaults()`) tries projectors in priorit
 
 `apply_redaction_hook(result, target)` is invoked for `ModelContext` and `ToolExpansion` targets when the policy allows it. Phase 2 ships a no-op placeholder that sets `RedactionState::HookAppliedNoRules` (not `Applied`) to make it clear no actual secret filtering occurs; Phase 8 will replace the body with a real implementation. The call site lives in `ProjectionSelector::project` so future redaction cannot be bypassed by RTK or native projectors. `RedactionState` has four variants: `NotApplied`, `HookAppliedNoRules`, `Applied` (Phase 8+), `Skipped`.
 
+Test coverage includes false-positive checks (compiler diagnostics, prose with sensitive words), long-line and multiple-credentials-per-line edge cases, PEM certificate vs private key disambiguation, and embedded credential URLs with ports.
+
 ### Expansion Handles
 
 `ExpansionHandle::as_url()` extends the existing `cmd://<id>/<stream>` URL form with an optional byte range fragment:
@@ -133,6 +135,8 @@ cmd://42/stderr#0-1024        # first KiB of stderr
 ```
 
 These are exactly the handles surfaced in the projection text and embedded in `ProjectionResult::expansion_handles`.
+
+Round-trip tests verify that `OutputHandle::as_url()` URLs parse back to identical handles, and that expansion via `expand_stream` returns correct bytes for full streams, bounded ranges, and out-of-range clamping.
 
 ### Phase 2 Non-Goals
 
@@ -203,6 +207,8 @@ replaces the skeleton with real invocation logic.
 | `supports_wrapper_mode` | Yes / No / Unknown |
 | `utf8_output` | Yes / No / Unknown |
 
+`probe_capabilities()` probes both PostProcess mode (piping data via stdin) and Wrapper mode (`rtk echo hello`) to determine which invocation modes are supported.
+
 ### Invocation Mode (Phase 6)
 
 `RtkInvocationMode` enum selects how RTK processes output:
@@ -210,7 +216,7 @@ replaces the skeleton with real invocation logic.
 | Mode | Behavior |
 |------|----------|
 | `PostProcess` | Pipes captured stdout/stderr to RTK via stdin. 1 MiB input cap, configurable timeout. |
-| `Wrapper` | Runs `rtk <command>` for eligible read-only commands only. |
+| `Wrapper` | Runs `rtk <command>` for eligible read-only commands only. Uses `argv` when available to avoid shell re-parsing. |
 | `Disabled` | No invocation; returns `BackendUnavailable`. |
 
 `RtkCapabilities::invocation_mode()` prefers PostProcess, falls back to Wrapper, defaults to Disabled.

@@ -641,4 +641,111 @@ mod tests {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<Redactor>();
     }
+
+    #[test]
+    fn long_line_with_embedded_credential_is_redacted() {
+        let redactor = Redactor::new();
+        let prefix = "a".repeat(500);
+        let suffix = "b".repeat(500);
+        let input = format!(
+            "{prefix} Authorization: Bearer sk-test-abcdef1234567890abcdef1234567890 {suffix}"
+        );
+        let result = redactor.redact(&input);
+        assert!(
+            result.replacements >= 1,
+            "should redact credential in long line"
+        );
+        assert!(!result
+            .text
+            .contains("sk-test-abcdef1234567890abcdef1234567890"));
+    }
+
+    #[test]
+    fn multiple_credentials_on_one_line_all_redacted() {
+        let redactor = Redactor::new();
+        let input =
+            "Authorization: Bearer token_aaa111111111 && Authorization: Bearer token_bbb222222222";
+        let result = redactor.redact(input);
+        assert!(
+            result.replacements >= 2,
+            "should redact both tokens, got {}",
+            result.replacements
+        );
+        assert!(!result.text.contains("token_aaa111111111"));
+        assert!(!result.text.contains("token_bbb222222222"));
+    }
+
+    #[test]
+    fn prose_with_sensitive_words_not_false_positived() {
+        let redactor = Redactor::new();
+        let input = "The secret key was rotated yesterday. Please update the password in the documentation.";
+        let result = redactor.redact(input);
+        assert_eq!(result.replacements, 0);
+        assert_eq!(result.text, input);
+    }
+
+    #[test]
+    fn empty_env_value_not_redacted() {
+        let redactor = Redactor::new();
+        let input = "SECRET_KEY=";
+        let result = redactor.redact(input);
+        assert_eq!(result.replacements, 0);
+    }
+
+    #[test]
+    fn short_env_value_not_redacted() {
+        let redactor = Redactor::new();
+        let input = "TOKEN=ab";
+        let result = redactor.redact(input);
+        assert_eq!(result.replacements, 0);
+    }
+
+    #[test]
+    fn pem_certificate_block_not_redacted_by_private_key_rule() {
+        let redactor = Redactor::new();
+        let input = "-----BEGIN CERTIFICATE-----\nMIIBkTCB+wIJAL...\n-----END CERTIFICATE-----";
+        let result = redactor.redact(input);
+        // The rule only matches PRIVATE KEY blocks, not CERTIFICATE blocks
+        assert_eq!(result.replacements, 0);
+    }
+
+    #[test]
+    fn truncated_pem_block_without_end_marker_not_redacted() {
+        let redactor = Redactor::new();
+        let input =
+            "-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA0Z3VS5JJcds3xfn/ygWyF8PbnGy4AH...";
+        let result = redactor.redact(input);
+        // Truncated PEM without END marker should not match
+        assert_eq!(result.replacements, 0);
+    }
+
+    #[test]
+    fn embedded_url_with_port_is_redacted() {
+        let redactor = Redactor::new();
+        let input = "Connecting to https://admin:secretpass123@db.internal:5432/api";
+        let result = redactor.redact(input);
+        assert!(result.replacements >= 1);
+        assert!(!result.text.contains("secretpass123"));
+    }
+
+    #[test]
+    fn mixed_case_env_var_not_redacted() {
+        let redactor = Redactor::new();
+        let input = "Db_Password=mysecrethere12345";
+        let result = redactor.redact(input);
+        // ALL UPPERCASE requirement means mixed case is not matched
+        assert_eq!(result.replacements, 0);
+    }
+
+    #[test]
+    fn session_id_in_url_query_not_redacted() {
+        let redactor = Redactor::new();
+        let input = "GET /api/data?session_id=abcdefghijklmnop&page=1";
+        let result = redactor.redact(input);
+        assert!(
+            result.replacements >= 1,
+            "session_id with long value should be redacted"
+        );
+        assert!(!result.text.contains("abcdefghijklmnop"));
+    }
 }

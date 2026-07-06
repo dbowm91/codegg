@@ -12,14 +12,14 @@ use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
 
 use codegg::shell::projection::{
-    CommandExit, CommandOutputStore, CommandOutputStream, CommandRun, CommandRunId,
+    CommandExit, CommandOutputStore, CommandOutputStream, CommandRunId,
 };
 use codegg::shell::projector::{
-    ContextAwareBudget, ExpansionHandle, ModelTier, ProjectionBudget, ProjectionContextMetadata,
-    ProjectionExactness, ProjectionFact, ProjectionKind, ProjectionPolicy, ProjectionRequest,
-    ProjectionResult, ProjectionSelector, ProjectionTarget,
+    CommandOutputProjector, ContextAwareBudget, ExpansionHandle, ModelTier, ProjectionBudget,
+    ProjectionContextMetadata, ProjectionExactness, ProjectionFact, ProjectionKind,
+    ProjectionPolicy, ProjectionRequest, ProjectionResult, ProjectionSelector, ProjectionTarget,
 };
-use codegg_config::schema::{ProjectionPolicyKind, ShellOutputConfig};
+use codegg_config::schema::ShellOutputConfig;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -690,4 +690,363 @@ fn test_model_tier_labels() {
     assert_eq!(ModelTier::Mini.label(), "mini");
     assert_eq!(ModelTier::Workhorse.label(), "workhorse");
     assert_eq!(ModelTier::Frontier.label(), "frontier");
+}
+
+// ---------------------------------------------------------------------------
+// Compaction-warning preservation: warnings and redaction facts from
+// ProjectionResult must survive into ProjectionContextMetadata so that
+// compaction heuristics can preserve them.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_metadata_preserves_projection_warnings() {
+    let mut store = CommandOutputStore::new();
+    let run = store.insert_with_argv(
+        CommandRunId(1),
+        "cargo test".into(),
+        Some(vec!["cargo".into(), "test".into()]),
+        PathBuf::from("."),
+        SystemTime::UNIX_EPOCH,
+        b"test output\n".to_vec(),
+        Vec::new(),
+    );
+
+    let result = ProjectionResult {
+        text: "test output\n".into(),
+        projector: "rtk".into(),
+        kind: ProjectionKind::ExternalCompressed,
+        exactness: ProjectionExactness::Lossy,
+        redaction: codegg::shell::projection::RedactionState::Applied { replacements: 1 },
+        omitted: vec![],
+        expansion_handles: vec![],
+        input_bytes: 12,
+        output_bytes: 12,
+        estimated_input_tokens: Some(3),
+        estimated_output_tokens: Some(3),
+        warnings: vec![
+            "RTK stderr: some warning".into(),
+            "expansion handles refer to original command output".into(),
+        ],
+    };
+
+    let metadata = result.to_context_metadata("cargo test", "1", &run);
+
+    // Both warnings must survive the round-trip
+    assert_eq!(metadata.warnings.len(), 2);
+    assert!(metadata.warnings.iter().any(|w| w.contains("RTK stderr")));
+    assert!(metadata
+        .warnings
+        .iter()
+        .any(|w| w.contains("expansion handles")));
+}
+
+#[test]
+fn test_metadata_captures_redaction_as_fact() {
+    let mut store = CommandOutputStore::new();
+    let run = store.insert_with_argv(
+        CommandRunId(1),
+        "curl https://api.example.com".into(),
+        Some(vec!["curl".into(), "https://api.example.com".into()]),
+        PathBuf::from("."),
+        SystemTime::UNIX_EPOCH,
+        b"secret data\n".to_vec(),
+        Vec::new(),
+    );
+
+    let result = ProjectionResult {
+        text: "secret data\n".into(),
+        projector: "raw".into(),
+        kind: ProjectionKind::Raw,
+        exactness: ProjectionExactness::Exact,
+        redaction: codegg::shell::projection::RedactionState::Applied { replacements: 3 },
+        omitted: vec![],
+        expansion_handles: vec![],
+        input_bytes: 11,
+        output_bytes: 11,
+        estimated_input_tokens: Some(3),
+        estimated_output_tokens: Some(3),
+        warnings: vec![],
+    };
+
+    let metadata = result.to_context_metadata("curl", "1", &run);
+
+    // RedactionApplied fact should be present with the correct count
+    let redaction_fact = metadata
+        .critical_facts
+        .iter()
+        .find(|f| matches!(f, ProjectionFact::RedactionApplied { .. }));
+    assert!(
+        redaction_fact.is_some(),
+        "RedactionApplied fact should be present when redaction occurred"
+    );
+    if let Some(ProjectionFact::RedactionApplied { rule_count }) = redaction_fact {
+        assert_eq!(*rule_count, 3);
+    }
+}
+
+#[test]
+fn test_already_projected_flag_for_non_raw_kind() {
+    let mut store = CommandOutputStore::new();
+    let run = store.insert_with_argv(
+        CommandRunId(1),
+        "test".into(),
+        Some(vec!["test".into()]),
+        PathBuf::from("."),
+        SystemTime::UNIX_EPOCH,
+        b"output".to_vec(),
+        Vec::new(),
+    );
+
+    // Non-raw kind → is_already_projected = true
+    let truncated = ProjectionResult {
+        text: "truncated".into(),
+        projector: "truncated".into(),
+        kind: ProjectionKind::Truncated,
+        exactness: ProjectionExactness::Truncated,
+        redaction: codegg::shell::projection::RedactionState::NotApplied,
+        omitted: vec![],
+        expansion_handles: vec![],
+        input_bytes: 6,
+        output_bytes: 9,
+        estimated_input_tokens: Some(2),
+        estimated_output_tokens: Some(3),
+        warnings: vec![],
+    };
+    let metadata = truncated.to_context_metadata("test", "1", &run);
+    assert!(
+        metadata.is_already_projected,
+        "Truncated kind should set is_already_projected"
+    );
+
+    // Raw kind → is_already_projected = false
+    let raw = ProjectionResult {
+        text: "output".into(),
+        projector: "raw".into(),
+        kind: ProjectionKind::Raw,
+        exactness: ProjectionExactness::Exact,
+        redaction: codegg::shell::projection::RedactionState::NotApplied,
+        omitted: vec![],
+        expansion_handles: vec![],
+        input_bytes: 6,
+        output_bytes: 6,
+        estimated_input_tokens: Some(2),
+        estimated_output_tokens: Some(2),
+        warnings: vec![],
+    };
+    let metadata = raw.to_context_metadata("test", "2", &run);
+    assert!(
+        !metadata.is_already_projected,
+        "Raw kind should not set is_already_projected"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Expansion handle round-trip: truncated output produces handles that
+// resolve back to the correct raw bytes in CommandOutputStore.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_expansion_handle_roundtrip_after_truncation() {
+    let mut store = CommandOutputStore::new();
+    let line = "x".repeat(100);
+    let num_lines = 200;
+    let stdout: Vec<u8> = (0..num_lines)
+        .map(|i| format!("{line}{i}\n"))
+        .collect::<String>()
+        .into_bytes();
+    let run = store.insert_with_argv(
+        CommandRunId(1),
+        "big_output".into(),
+        Some(vec!["big_output".into()]),
+        PathBuf::from("."),
+        SystemTime::UNIX_EPOCH,
+        stdout.clone(),
+        Vec::new(),
+    );
+
+    let policy = ProjectionPolicy {
+        allow_external_backend: false,
+        allow_lossy: true,
+        redact_model_visible: false,
+    };
+    let budget = ProjectionBudget {
+        max_output_bytes: 1000,
+        max_output_tokens: Some(250),
+        preferred_output_tokens: Some(200),
+    };
+    let request = ProjectionRequest {
+        run: &run,
+        target: ProjectionTarget::ModelContext,
+        policy: &policy,
+        budget,
+        exact_requested: false,
+        allow_lossy: true,
+        allow_external_backend: false,
+    };
+
+    let raw = codegg::shell::projector::RawProjector;
+    let result = raw.project(request, &store).unwrap();
+
+    // Truncation should produce expansion handles
+    assert!(
+        !result.expansion_handles.is_empty(),
+        "truncated output must have expansion handles"
+    );
+
+    // Round-trip: expand via the first handle and verify we get raw bytes
+    let handle = &result.expansion_handles[0];
+    let expansion = store.expand(&codegg::shell::projection::ExpansionRequest {
+        command_id: handle.command_id,
+        stream: handle.stream.clone(),
+        byte_range: handle.byte_range.clone(),
+    });
+
+    assert_eq!(
+        expansion.exactness,
+        codegg::shell::projection::ExpansionExactness::Exact
+    );
+    assert!(
+        expansion.returned_bytes > 0,
+        "expansion should return bytes"
+    );
+    // The expanded text should be a valid substring of the original stdout
+    let expanded_str = &expansion.text;
+    let original_str = String::from_utf8_lossy(&stdout);
+    assert!(
+        original_str.contains(expanded_str),
+        "expanded text should be contained within original stdout"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Model context text should NOT contain raw bytes beyond the budget.
+// The model sees projected text, not the full raw output.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_model_context_text_excludes_omitted_content() {
+    let mut store = CommandOutputStore::new();
+    let secret_line = "SECRET_VALUE=supersecret123456789";
+    let fill_line = "padding_data_padding_data_padding_data_padding_data";
+    let stdout = format!(
+        "{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n",
+        fill_line,
+        fill_line,
+        fill_line,
+        fill_line,
+        fill_line,
+        fill_line,
+        fill_line,
+        fill_line,
+        fill_line,
+        secret_line,
+    )
+    .into_bytes();
+    let run = store.insert_with_argv(
+        CommandRunId(1),
+        "mixed_output".into(),
+        Some(vec!["mixed_output".into()]),
+        PathBuf::from("."),
+        SystemTime::UNIX_EPOCH,
+        stdout,
+        Vec::new(),
+    );
+
+    let policy = ProjectionPolicy {
+        allow_external_backend: false,
+        allow_lossy: true,
+        redact_model_visible: false,
+    };
+    let budget = ProjectionBudget {
+        max_output_bytes: 200,
+        max_output_tokens: Some(50),
+        preferred_output_tokens: Some(40),
+    };
+    let request = ProjectionRequest {
+        run: &run,
+        target: ProjectionTarget::ModelContext,
+        policy: &policy,
+        budget,
+        exact_requested: false,
+        allow_lossy: true,
+        allow_external_backend: false,
+    };
+
+    let raw = codegg::shell::projector::RawProjector;
+    let result = raw.project(request, &store).unwrap();
+
+    // The projected text should NOT contain the secret line from the end
+    if !result.omitted.is_empty() {
+        assert!(
+            !result.text.contains(secret_line),
+            "model context text should not contain omitted secret: {secret_line}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// TuiDetail target with exact_requested should produce more content than
+// a budget-constrained ModelContext projection of the same output.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_tui_detail_includes_more_content_than_model_context() {
+    let mut store = CommandOutputStore::new();
+    let stdout: Vec<u8> = (0..100)
+        .map(|i| format!("line_{i:04} data_data_data_data_data_data\n"))
+        .collect::<String>()
+        .into_bytes();
+    let run = store.insert_with_argv(
+        CommandRunId(1),
+        "multi_line".into(),
+        Some(vec!["multi_line".into()]),
+        PathBuf::from("."),
+        SystemTime::UNIX_EPOCH,
+        stdout,
+        Vec::new(),
+    );
+
+    let policy = ProjectionPolicy {
+        allow_external_backend: false,
+        allow_lossy: true,
+        redact_model_visible: false,
+    };
+    let small_budget = ProjectionBudget {
+        max_output_bytes: 500,
+        max_output_tokens: Some(125),
+        preferred_output_tokens: Some(100),
+    };
+
+    // ModelContext: budget-constrained
+    let model_request = ProjectionRequest {
+        run: &run,
+        target: ProjectionTarget::ModelContext,
+        policy: &policy,
+        budget: small_budget.clone(),
+        exact_requested: false,
+        allow_lossy: true,
+        allow_external_backend: false,
+    };
+    let raw = codegg::shell::projector::RawProjector;
+    let model_result = raw.project(model_request, &store).unwrap();
+
+    // TuiDetail: exact_requested = true, no budget constraint
+    let detail_request = ProjectionRequest {
+        run: &run,
+        target: ProjectionTarget::TuiDetail,
+        policy: &policy,
+        budget: small_budget,
+        exact_requested: true,
+        allow_lossy: false,
+        allow_external_backend: false,
+    };
+    let detail_result = raw.project(detail_request, &store).unwrap();
+
+    // TuiDetail should have more content
+    assert!(
+        detail_result.text.len() >= model_result.text.len(),
+        "TuiDetail ({}) should have >= content than ModelContext ({})",
+        detail_result.text.len(),
+        model_result.text.len(),
+    );
 }

@@ -220,6 +220,43 @@ impl RtkDiscovery {
             Err(TimedOutError::Other(_)) => {}
         }
 
+        // Probe post-process mode: pipe data to RTK via stdin.
+        // RTK should read from stdin and write compressed output to stdout.
+        // We check that output is non-empty AND non-trivial (not just a
+        // bare newline from a binary that ignores stdin like /bin/echo).
+        match run_with_stdin_timeout(rtk_path, &[], b"hello world\n", timeout) {
+            Ok(ref output) if !output.trim().is_empty() => {
+                caps.supports_post_process = CapabilityState::Yes;
+            }
+            Ok(_) => {
+                caps.supports_post_process = CapabilityState::No;
+            }
+            Err(TimedOutError::TimedOut) => {
+                caps.supports_post_process = CapabilityState::No;
+            }
+            Err(TimedOutError::Other(_)) => {
+                caps.supports_post_process = CapabilityState::No;
+            }
+        }
+
+        // Probe wrapper mode: run `rtk echo hello` as a wrapped command.
+        // RTK should execute the command and return its output.
+        // We check that output is non-empty (the wrapped command produced output).
+        match run_with_timeout(rtk_path, &["echo", "hello"], timeout) {
+            Ok(ref output) if !output.trim().is_empty() => {
+                caps.supports_wrapper_mode = CapabilityState::Yes;
+            }
+            Ok(_) => {
+                caps.supports_wrapper_mode = CapabilityState::No;
+            }
+            Err(TimedOutError::TimedOut) => {
+                caps.supports_wrapper_mode = CapabilityState::No;
+            }
+            Err(TimedOutError::Other(_)) => {
+                caps.supports_wrapper_mode = CapabilityState::No;
+            }
+        }
+
         caps
     }
 }
@@ -567,16 +604,37 @@ impl RtkProjector {
 
         let timeout = Duration::from_millis(self.discovery.config.timeout_ms.unwrap_or(5000));
 
-        let args: Vec<&str> = request.run.command.split_whitespace().collect();
-        if args.is_empty() {
-            return Err(ProjectionError::BackendUnavailable {
-                backend: "rtk",
-                reason: "empty command".into(),
-            });
-        }
+        // Prefer argv when available to avoid re-parsing quoted args,
+        // paths with spaces, and shell metacharacters.
+        let argv_refs: Vec<String>;
+        let args: Vec<&str> = if let Some(argv) = &request.run.argv {
+            if argv.is_empty() {
+                return Err(ProjectionError::BackendUnavailable {
+                    backend: "rtk",
+                    reason: "empty argv".into(),
+                });
+            }
+            argv_refs = argv.clone();
+            argv_refs.iter().map(|s| s.as_str()).collect()
+        } else {
+            let parsed: Vec<&str> = request.run.command.split_whitespace().collect();
+            if parsed.is_empty() {
+                return Err(ProjectionError::BackendUnavailable {
+                    backend: "rtk",
+                    reason: "empty command".into(),
+                });
+            }
+            parsed
+        };
 
         let mut cmd = Command::new(&rtk_path);
         cmd.args(&args);
+
+        // Propagate the original command's working directory so RTK
+        // resolves relative paths the same way the original process did.
+        if !request.run.cwd.as_os_str().is_empty() {
+            cmd.current_dir(&request.run.cwd);
+        }
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
 
@@ -633,6 +691,11 @@ impl RtkProjector {
                     "RTK wrapper: {} input bytes -> {} output bytes",
                     input_bytes, output_bytes
                 ));
+                // Expansion handles in wrapper mode refer to the original
+                // command's raw stdout/stderr, not RTK's compressed output.
+                if !request.run.is_partial() {
+                    warnings.push("expansion handles refer to original command output".into());
+                }
 
                 Ok(ProjectionResult {
                     text,
@@ -728,6 +791,82 @@ fn run_with_timeout(
             .unwrap_or_default();
         let _ = tx.send((status, stdout_bytes));
     });
+
+    match rx.recv_timeout(timeout) {
+        Ok((Ok(status), stdout_bytes)) => {
+            let stdout = String::from_utf8_lossy(&stdout_bytes).to_string();
+            if status.success() {
+                Ok(stdout)
+            } else {
+                Err(TimedOutError::Other(std::io::Error::other(format!(
+                    "exit status: {}",
+                    status
+                ))))
+            }
+        }
+        Ok((Err(e), _)) => Err(TimedOutError::Other(e)),
+        Err(_) => {
+            #[cfg(unix)]
+            {
+                let _ = std::process::Command::new("kill")
+                    .arg(pid.to_string())
+                    .output();
+            }
+            Err(TimedOutError::TimedOut)
+        }
+    }
+}
+
+fn run_with_stdin_timeout(
+    binary: &Path,
+    args: &[&str],
+    stdin_data: &[u8],
+    timeout: Duration,
+) -> Result<String, TimedOutError> {
+    let mut cmd = Command::new(binary);
+    cmd.args(args);
+    cmd.stdin(std::process::Stdio::piped());
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => return Err(TimedOutError::Other(e)),
+    };
+
+    let pid = child.id();
+    let stdin = child.stdin.take();
+    let stdin_data = stdin_data.to_vec();
+    let write_handle = std::thread::spawn(move || {
+        if let Some(mut stdin) = stdin {
+            let _ = std::io::Write::write_all(&mut stdin, &stdin_data);
+        }
+    });
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    let child_stdout = child.stdout.take();
+    let child_stderr = child.stderr.take();
+
+    std::thread::spawn(move || {
+        let status = child.wait();
+        let stdout_bytes = child_stdout
+            .map(|mut s| {
+                let mut buf = Vec::new();
+                let _ = std::io::Read::read_to_end(&mut s, &mut buf);
+                buf
+            })
+            .unwrap_or_default();
+        let _stderr_bytes = child_stderr
+            .map(|mut s| {
+                let mut buf = Vec::new();
+                let _ = std::io::Read::read_to_end(&mut s, &mut buf);
+                buf
+            })
+            .unwrap_or_default();
+        let _ = tx.send((status, stdout_bytes));
+    });
+
+    let _ = write_handle.join();
 
     match rx.recv_timeout(timeout) {
         Ok((Ok(status), stdout_bytes)) => {
@@ -1413,5 +1552,265 @@ mod tests {
                 feature: "rtk: ineligible command"
             }
         ));
+    }
+
+    #[test]
+    fn rtk_capabilities_unknown_modes_disable_invocation() {
+        let caps = RtkCapabilities::all_unknown();
+        assert_eq!(caps.invocation_mode(), RtkInvocationMode::Disabled);
+    }
+
+    #[test]
+    fn rtk_probe_sets_post_process_yes_only_when_cli_contract_works() {
+        // When post-process probe gets non-empty output, it should be Yes.
+        // We can't easily fake a real RTK binary in unit tests, so we verify
+        // the probe logic by checking that /bin/echo (which echoes stdin)
+        // would set Yes if it were used as RTK for post-process.
+        //
+        // /bin/echo does NOT read from stdin — it echoes its args. So piping
+        // stdin to /bin/echo produces empty stdout → post-process = No.
+        let config = ShellOutputRtkConfig {
+            enabled: Some(true),
+            path: Some("/bin/echo".to_string()),
+            eligible_only: Some(true),
+            timeout_ms: Some(5000),
+            allow_side_effecting_commands: None,
+        };
+        let mut discovery = RtkDiscovery::new(config);
+        discovery.probe();
+        let caps = discovery.probe_capabilities();
+
+        // /bin/echo doesn't read stdin, so post-process should be No.
+        assert_eq!(caps.supports_post_process, CapabilityState::No);
+    }
+
+    #[test]
+    fn rtk_probe_sets_wrapper_yes_only_when_wrapper_contract_works() {
+        // /bin/echo "hello" works as a wrapper — it echoes its args.
+        let config = ShellOutputRtkConfig {
+            enabled: Some(true),
+            path: Some("/bin/echo".to_string()),
+            eligible_only: Some(true),
+            timeout_ms: Some(5000),
+            allow_side_effecting_commands: None,
+        };
+        let mut discovery = RtkDiscovery::new(config);
+        discovery.probe();
+        let caps = discovery.probe_capabilities();
+
+        // /bin/echo accepts args and echoes them → wrapper = Yes.
+        assert_eq!(caps.supports_wrapper_mode, CapabilityState::Yes);
+    }
+
+    #[test]
+    fn rtk_probe_capabilities_with_unavailable_path_returns_all_unknown() {
+        let config = ShellOutputRtkConfig {
+            enabled: Some(true),
+            path: Some("/nonexistent/rtk".to_string()),
+            eligible_only: Some(true),
+            timeout_ms: Some(1000),
+            allow_side_effecting_commands: None,
+        };
+        let discovery = RtkDiscovery::new(config);
+        let caps = discovery.probe_capabilities();
+        assert_eq!(caps.supports_post_process, CapabilityState::Unknown);
+        assert_eq!(caps.supports_wrapper_mode, CapabilityState::Unknown);
+    }
+
+    #[test]
+    fn rtk_probe_capabilities_with_disabled_config_returns_all_unknown() {
+        let discovery = RtkDiscovery::new(disabled_config());
+        let caps = discovery.probe_capabilities();
+        assert_eq!(caps.supports_post_process, CapabilityState::Unknown);
+        assert_eq!(caps.supports_wrapper_mode, CapabilityState::Unknown);
+    }
+
+    #[test]
+    fn rtk_wrapper_uses_argv_when_available() {
+        // /bin/echo as RTK: wrapper probe succeeds (echoes args),
+        // post-process probe fails (doesn't read stdin).
+        // So invocation_mode() → Wrapper.
+        let config = ShellOutputRtkConfig {
+            enabled: Some(true),
+            path: Some("/bin/echo".to_string()),
+            eligible_only: Some(true),
+            timeout_ms: Some(5000),
+            allow_side_effecting_commands: None,
+        };
+        let mut discovery = RtkDiscovery::new(config);
+        discovery.probe();
+        let projector = RtkProjector { discovery };
+
+        let mut store = CommandOutputStore::new();
+        let run = make_test_run_with_store(
+            &mut store,
+            "git status",
+            Some(vec!["git".into(), "status".into()]),
+            b"## main\n".to_vec(),
+        );
+        let policy = crate::shell::projector::ProjectionPolicy {
+            allow_external_backend: true,
+            allow_lossy: true,
+            redact_model_visible: true,
+        };
+        let request = ProjectionRequest::for_target(
+            &run,
+            crate::shell::projector::ProjectionTarget::ModelContext,
+            &policy,
+        );
+
+        let result = projector.project(request, &store).unwrap();
+        assert_eq!(result.projector, "rtk");
+        assert_eq!(result.kind, ProjectionKind::ExternalCompressed);
+        // /bin/echo echoes the args: "git status"
+        assert!(result.text.contains("git status"));
+    }
+
+    #[test]
+    fn rtk_wrapper_falls_back_to_split_whitespace_when_no_argv() {
+        let config = ShellOutputRtkConfig {
+            enabled: Some(true),
+            path: Some("/bin/echo".to_string()),
+            eligible_only: Some(true),
+            timeout_ms: Some(5000),
+            allow_side_effecting_commands: None,
+        };
+        let mut discovery = RtkDiscovery::new(config);
+        discovery.probe();
+        let projector = RtkProjector { discovery };
+
+        let mut store = CommandOutputStore::new();
+        let run = make_test_run_with_store(
+            &mut store,
+            "git status",
+            None, // no argv
+            b"## main\n".to_vec(),
+        );
+        let policy = crate::shell::projector::ProjectionPolicy {
+            allow_external_backend: true,
+            allow_lossy: true,
+            redact_model_visible: true,
+        };
+        let request = ProjectionRequest::for_target(
+            &run,
+            crate::shell::projector::ProjectionTarget::ModelContext,
+            &policy,
+        );
+
+        let result = projector.project(request, &store).unwrap();
+        assert_eq!(result.projector, "rtk");
+        // Falls back to split_whitespace, /bin/echo echoes "git status"
+        assert!(result.text.contains("git"));
+        assert!(result.text.contains("status"));
+    }
+
+    #[test]
+    fn rtk_wrapper_empty_argv_returns_backend_unavailable() {
+        let config = ShellOutputRtkConfig {
+            enabled: Some(true),
+            path: Some("/bin/echo".to_string()),
+            eligible_only: Some(true),
+            timeout_ms: Some(5000),
+            allow_side_effecting_commands: None,
+        };
+        let mut discovery = RtkDiscovery::new(config);
+        discovery.probe();
+        let projector = RtkProjector { discovery };
+
+        let mut store = CommandOutputStore::new();
+        let run = make_test_run_with_store(
+            &mut store,
+            "git status",
+            Some(vec![]), // empty argv
+            b"## main\n".to_vec(),
+        );
+        let policy = crate::shell::projector::ProjectionPolicy {
+            allow_external_backend: true,
+            allow_lossy: true,
+            redact_model_visible: true,
+        };
+        let request = ProjectionRequest::for_target(
+            &run,
+            crate::shell::projector::ProjectionTarget::ModelContext,
+            &policy,
+        );
+
+        let err = projector.project(request, &store).unwrap_err();
+        assert!(matches!(
+            err,
+            ProjectionError::BackendUnavailable {
+                backend: "rtk",
+                reason: _
+            }
+        ));
+    }
+
+    #[test]
+    fn rtk_wrapper_includes_expansion_handle_warning() {
+        let config = ShellOutputRtkConfig {
+            enabled: Some(true),
+            path: Some("/bin/echo".to_string()),
+            eligible_only: Some(true),
+            timeout_ms: Some(5000),
+            allow_side_effecting_commands: None,
+        };
+        let mut discovery = RtkDiscovery::new(config);
+        discovery.probe();
+        let projector = RtkProjector { discovery };
+
+        let mut store = CommandOutputStore::new();
+        let run = make_test_run_with_store(
+            &mut store,
+            "ls",
+            Some(vec!["ls".into()]),
+            b"file1\nfile2\n".to_vec(),
+        );
+        let policy = crate::shell::projector::ProjectionPolicy {
+            allow_external_backend: true,
+            allow_lossy: true,
+            redact_model_visible: true,
+        };
+        let request = ProjectionRequest::for_target(
+            &run,
+            crate::shell::projector::ProjectionTarget::ModelContext,
+            &policy,
+        );
+
+        let result = projector.project(request, &store).unwrap();
+        // Non-partial run should include the expansion handle warning
+        assert!(result
+            .warnings
+            .iter()
+            .any(|w| w.contains("expansion handles refer to original command output")));
+    }
+
+    #[test]
+    fn rtk_invocation_mode_post_process_only() {
+        let caps = RtkCapabilities {
+            supports_post_process: CapabilityState::Yes,
+            supports_wrapper_mode: CapabilityState::No,
+            ..RtkCapabilities::all_unknown()
+        };
+        assert_eq!(caps.invocation_mode(), RtkInvocationMode::PostProcess);
+    }
+
+    #[test]
+    fn rtk_invocation_mode_wrapper_only() {
+        let caps = RtkCapabilities {
+            supports_post_process: CapabilityState::No,
+            supports_wrapper_mode: CapabilityState::Yes,
+            ..RtkCapabilities::all_unknown()
+        };
+        assert_eq!(caps.invocation_mode(), RtkInvocationMode::Wrapper);
+    }
+
+    #[test]
+    fn rtk_invocation_mode_neither_supported() {
+        let caps = RtkCapabilities {
+            supports_post_process: CapabilityState::No,
+            supports_wrapper_mode: CapabilityState::No,
+            ..RtkCapabilities::all_unknown()
+        };
+        assert_eq!(caps.invocation_mode(), RtkInvocationMode::Disabled);
     }
 }

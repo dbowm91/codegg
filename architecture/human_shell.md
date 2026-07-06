@@ -496,7 +496,7 @@ pub fn apply_redaction_hook(result: &mut ProjectionResult, _target: ProjectionTa
 }
 ```
 
-The call site exists in `ProjectionSelector::project`, so redaction cannot be bypassed by RTK or native projectors. Replacement markers are stable strings like `[REDACTED:bearer-token]`, `[REDACTED:env-secret]`, `[REDACTED:pem-block]`, etc. Original sensitive values are never logged or exposed.
+The call site exists in `ProjectionSelector::project`, so redaction cannot be bypassed by RTK or native projectors. Replacement markers are stable strings like `[REDACTED:bearer-token]`, `[REDACTED:env-secret]`, `[REDACTED:pem-block]`, etc. Original sensitive values are never logged or exposed. Test coverage includes false positives, long lines, multi-credential lines, and edge cases.
 
 ### Stability Guarantees (Phase 2)
 
@@ -615,7 +615,7 @@ Phase 5 adds RTK as an optional, detected command-output compressor backend behi
 | `TimedOut` | Version probe exceeded timeout |
 | `UnsupportedVersion` | Incompatible version |
 
-`RtkDiscovery::probe_capabilities()` probes the available RTK for specific behavior, returning `RtkCapabilities` where each capability is `CapabilityState::Yes`, `No`, or `Unknown`.
+`RtkDiscovery::probe_capabilities()` probes the available RTK for specific behavior, returning `RtkCapabilities` where each capability is `CapabilityState::Yes`, `No`, or `Unknown`. It now probes both stdin-pipe (PostProcess) and wrapped-command (Wrapper) invocation modes.
 
 ### Eligibility Classification
 
@@ -645,7 +645,7 @@ Phase 5 adds RTK as an optional, detected command-output compressor backend behi
 | Mode | Behavior |
 |------|----------|
 | `PostProcess` | Pipes captured stdout/stderr to RTK via stdin. 1 MiB input cap, configurable timeout. Returns `ExternalCompressed` / `Lossy`. |
-| `Wrapper` | Runs `rtk <command>` for eligible read-only commands only. Same timeout/error handling. |
+| `Wrapper` | Runs `rtk <command>` for eligible read-only commands only. Uses `request.run.argv` when available (argv-aware parsing) and propagates `cwd` from the original command. Same timeout/error handling. |
 | `Disabled` | No invocation; returns `BackendUnavailable`. |
 
 #### Projection Metadata
@@ -720,7 +720,7 @@ The `handle_shell_show()` dialog now includes a projection metadata section betw
 
 ### Tests
 
-Tests cover: handle parsing (full stream + range forms), range expansion exactness, clamping, eviction (unavailable not empty), partial stream partiality, UTF-8 safety, expansion request field preservation, and omitted-range-to-handle mapping.
+Tests cover: handle parsing (full stream + range forms), range expansion exactness, clamping, eviction (unavailable not empty), partial stream partiality, UTF-8 safety, expansion request field preservation, omitted-range-to-handle mapping, and round-trip tests verifying handles resolve to correct raw bytes.
 
 ### What's NOT in Phase 7
 
@@ -740,4 +740,4 @@ Tests cover: handle parsing (full stream + range forms), range expansion exactne
 | Phase 7 | **Landed** | Expansion API (`CommandOutputExpansion`, `ExpansionExactness`, `ExpansionRequest`), `/shell-expand` command, TUI detail panel with projection metadata |
 | Phase 8 | **Landed** | Redaction pipeline: `Redactor` with six `RedactRule` implementations, `apply_redaction_hook` entry point, `RedactionState::Applied { replacements }` |
 | Phase 9 | **Landed** | Evaluation harness: `tests/shell_projection_harness.rs` (11 invariant tests), fixture corpus in `tests/fixtures/shell_projection/` |
-| Phase 10 | **Landed** | Context budget and compaction integration: `ProjectionContextMetadata`, `ProjectionFact`, `ModelTier`, `ContextAwareBudget`, double-compression prevention, critical fact extraction |
+| Phase 10 | **Landed** | Context budget and compaction integration: `ProjectionContextMetadata`, `ProjectionFact`, `ModelTier`, `ContextAwareBudget`, double-compression prevention, critical fact extraction, warning preservation tests |

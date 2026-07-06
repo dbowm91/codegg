@@ -1,0 +1,15 @@
+[fixture]
+name = "multi_cred_one_line"
+command = "curl https://api.example.com"
+exit_code = 0
+stream = "stdout"
+redaction_fixture = true
+
+[expect]
+must_contain = ["Authorization"]
+must_not_contain = []
+must_redact = ["sk-first-token-aaaaaaaa11111111", "sk-second-token-bbbbbbbb22222222"]
+source_spans = []
+failed_tests = []
+max_projected_tokens_safe = 500
+max_projected_tokens_aggressive = 500
