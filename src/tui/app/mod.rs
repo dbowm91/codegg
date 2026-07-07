@@ -7503,6 +7503,7 @@ impl App {
             }
             Dialog::ShellShow => {
                 self.dialog_state.shell_detail_id = None;
+                self.dialog_state.shell_detail_dialog = None;
             }
             _ => {}
         }
@@ -7856,6 +7857,13 @@ impl App {
             dialog.set_info_type(info_type);
             dialog.set_content(lines);
             dialog.set_theme(&self.ui_state.theme);
+            // The focus stack holds a clone rendered separately; sync it
+            // so the on-screen component reflects the new content.
+            let dialog_type = dialog.dialog_type_for_info_type();
+            if let Some(ref updated) = self.dialog_state.info_dialog {
+                self.focus_manager
+                    .replace_top_dialog(dialog_type, Box::new(updated.clone()));
+            }
         } else {
             self.dialog_state.info_dialog = Some(InfoDialog::new(
                 Arc::clone(&self.ui_state.theme),
@@ -7971,6 +7979,13 @@ impl App {
                     if let Some(ref info_dialog) = self.dialog_state.info_dialog {
                         self.focus_manager.push(Box::new(info_dialog.clone()));
                     }
+                } else if let Some(ref updated) = self.dialog_state.info_dialog {
+                    // The focus stack holds a stale clone; sync it so
+                    // re-opening Cost/Usage/Context in the same session
+                    // does not show the previous report.
+                    let dialog_type = updated.dialog_type_for_info_type();
+                    self.focus_manager
+                        .replace_top_dialog(dialog_type, Box::new(updated.clone()));
                 }
             }
             Dialog::Tree => {

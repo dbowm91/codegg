@@ -46,6 +46,27 @@ impl FocusManager {
         None
     }
 
+    /// Replace the topmost stack entry whose `dialog_type()` matches the
+    /// given type with a new component. Used when the caller mutates a
+    /// dialog stored separately (e.g. `dialog_state.info_dialog`) and
+    /// needs the rendered component in the focus stack to reflect the
+    /// new content. Returns `true` when a replacement was made.
+    pub fn replace_top_dialog(
+        &mut self,
+        dialog_type: DialogType,
+        component: Box<dyn Component>,
+    ) -> bool {
+        let pos = self
+            .stack
+            .iter()
+            .rposition(|c| c.dialog_type() == dialog_type);
+        if let Some(idx) = pos {
+            self.stack[idx] = component;
+            return true;
+        }
+        false
+    }
+
     pub fn top(&self) -> Option<&dyn Component> {
         self.stack.back().map(|v| &**v)
     }
@@ -187,5 +208,35 @@ mod tests {
         assert!(focus.pop_dialog(DialogType::Theme).is_none());
         assert_eq!(focus.len(), 1);
         assert_eq!(focus.focus_index, 0);
+    }
+
+    #[test]
+    fn replace_top_dialog_swaps_matching_top_component() {
+        let mut focus = FocusManager::new();
+        focus.push(stub(DialogType::Help));
+        focus.push(stub(DialogType::Stats));
+        focus.focus_index = 1;
+
+        let replaced = focus.replace_top_dialog(DialogType::Stats, stub(DialogType::Stats));
+
+        assert!(replaced);
+        assert_eq!(focus.len(), 2);
+        // Top component is still the Stats entry; its identity changed
+        // but the dialog type is preserved so the focus stack stays
+        // consistent for future lookups.
+        assert_eq!(focus.active_dialog_type(), DialogType::Stats);
+        assert_eq!(focus.focus_index, 1);
+    }
+
+    #[test]
+    fn replace_top_dialog_returns_false_when_missing() {
+        let mut focus = FocusManager::new();
+        focus.push(stub(DialogType::Help));
+
+        let replaced = focus.replace_top_dialog(DialogType::Stats, stub(DialogType::Stats));
+
+        assert!(!replaced);
+        assert_eq!(focus.len(), 1);
+        assert_eq!(focus.active_dialog_type(), DialogType::Help);
     }
 }

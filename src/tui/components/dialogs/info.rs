@@ -70,7 +70,7 @@ impl InfoDialog {
         }
     }
 
-    fn dialog_type_for_info_type(&self) -> DialogType {
+    pub fn dialog_type_for_info_type(&self) -> DialogType {
         match self.info_type {
             InfoType::Context => DialogType::Context,
             InfoType::Cost => DialogType::Cost,

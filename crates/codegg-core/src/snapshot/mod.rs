@@ -140,11 +140,14 @@ impl SnapshotManager {
                 continue;
             };
             let path_buf = PathBuf::from(&path);
-            let abs_path = if path_buf.is_absolute() {
-                path_buf
-            } else {
-                self.project_root.join(&path)
-            };
+            // Reject absolute paths and any path whose components
+            // include `..` so we never store a traversal key that
+            // could later escape the project root during restore.
+            if path_buf.is_absolute() || !is_safe_relative_path(&path_buf) {
+                tracing::warn!("capture_incremental: rejecting unsafe path '{}'", path);
+                continue;
+            }
+            let abs_path = self.project_root.join(&path_buf);
             if !abs_path.starts_with(&self.project_root) {
                 continue;
             }
@@ -279,6 +282,16 @@ impl SnapshotManager {
         let files: Vec<(String, FileSnapshot)> = snapshot
             .files
             .iter()
+            .filter(|(k, _)| {
+                let safe = is_safe_relative_path(Path::new(k));
+                if !safe {
+                    tracing::warn!(
+                        "restore: rejecting snapshot path '{}' that contains traversal components",
+                        k
+                    );
+                }
+                safe
+            })
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
 
@@ -294,6 +307,25 @@ impl SnapshotManager {
             let result: Result<(), String> = (|| {
                 for (rel_path, file_snapshot) in files {
                     let full_path = project_root.join(&rel_path);
+                    if let Some(parent) = full_path.parent() {
+                        if !parent.exists() {
+                            std::fs::create_dir_all(parent).map_err(|e| {
+                                format!("failed to create directory {}: {}", parent.display(), e)
+                            })?;
+                        }
+                        // After mkdir, re-canonicalize the parent and
+                        // confirm we are still inside the project root.
+                        // This blocks `..` paths that bypass the lexical
+                        // filter (e.g. symlinked parents).
+                        if let Ok(canonical_parent) = parent.canonicalize() {
+                            if !canonical_parent.starts_with(&canonical_project_root) {
+                                return Err(format!(
+                                    "path traversal attempt detected: {}",
+                                    full_path.display()
+                                ));
+                            }
+                        }
+                    }
                     let canonical_path = full_path
                         .canonicalize()
                         .unwrap_or_else(|_| full_path.clone());
@@ -302,13 +334,6 @@ impl SnapshotManager {
                             "path traversal attempt detected: {}",
                             full_path.display()
                         ));
-                    }
-                    if let Some(parent) = full_path.parent() {
-                        if !parent.exists() {
-                            std::fs::create_dir_all(parent).map_err(|e| {
-                                format!("failed to create directory {}: {}", parent.display(), e)
-                            })?;
-                        }
                     }
                     let temp_path = full_path.with_extension("tmp");
                     if let Err(e) = std::fs::write(&temp_path, &file_snapshot.content) {
@@ -335,6 +360,16 @@ impl SnapshotManager {
         let files: Vec<(String, FileSnapshot)> = snapshot
             .files
             .iter()
+            .filter(|(k, _)| {
+                let safe = is_safe_relative_path(Path::new(k));
+                if !safe {
+                    tracing::warn!(
+                        "restore_to_path: rejecting snapshot path '{}' that contains traversal components",
+                        k
+                    );
+                }
+                safe
+            })
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
         let target = target_path.to_path_buf();
@@ -347,6 +382,21 @@ impl SnapshotManager {
             let result: Result<(), String> = (|| {
                 for (rel_path, file_snapshot) in files {
                     let full_path = target.join(&rel_path);
+                    if let Some(parent) = full_path.parent() {
+                        if !parent.exists() {
+                            std::fs::create_dir_all(parent).map_err(|e| {
+                                format!("failed to create directory {}: {}", parent.display(), e)
+                            })?;
+                        }
+                        if let Ok(canonical_parent) = parent.canonicalize() {
+                            if !canonical_parent.starts_with(&canonical_target) {
+                                return Err(format!(
+                                    "path traversal attempt detected: {}",
+                                    full_path.display()
+                                ));
+                            }
+                        }
+                    }
                     let canonical_path = full_path
                         .canonicalize()
                         .unwrap_or_else(|_| full_path.clone());
@@ -355,13 +405,6 @@ impl SnapshotManager {
                             "path traversal attempt detected: {}",
                             full_path.display()
                         ));
-                    }
-                    if let Some(parent) = full_path.parent() {
-                        if !parent.exists() {
-                            std::fs::create_dir_all(parent).map_err(|e| {
-                                format!("failed to create directory {}: {}", parent.display(), e)
-                            })?;
-                        }
                     }
                     let temp_path = full_path.with_extension("tmp");
                     std::fs::write(&temp_path, &file_snapshot.content)
@@ -395,6 +438,26 @@ impl SnapshotManager {
             .map_err(|e| e.to_string())?;
         Ok(())
     }
+}
+
+/// Reject paths whose components include `..`, Windows drive
+/// prefixes, the root directory, or any other non-normal segment.
+/// Empty paths are also rejected. This is the first line of
+/// defence against snapshot paths escaping the project root
+/// during restore.
+fn is_safe_relative_path(path: &Path) -> bool {
+    if path.as_os_str().is_empty() {
+        return false;
+    }
+    for component in path.components() {
+        match component {
+            std::path::Component::Normal(_) | std::path::Component::CurDir => {}
+            std::path::Component::ParentDir
+            | std::path::Component::RootDir
+            | std::path::Component::Prefix(_) => return false,
+        }
+    }
+    true
 }
 
 fn collect_files_sync(

@@ -2074,3 +2074,107 @@ fn render_memory_and_doctor_toasts() {
         "expected memory or doctor text in buffer"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Regression: Bug 1 — info dialog content must update when reopened while
+// the previous instance is still mounted in the focus stack.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn info_dialog_reopen_updates_focus_stack_content() {
+    use codegg::tui::components::component::DialogType;
+    use codegg::tui::components::dialogs::info::{InfoDialog, InfoType};
+    use std::any::Any;
+    use std::sync::Arc;
+
+    let mut app = test_app();
+
+    // Drive the same update logic `open_info_dialog` performs, using
+    // the public dialog state and focus manager. This mirrors the
+    // flow when `/doctor` is invoked twice in succession.
+    fn mount_info(app: &mut codegg::tui::app::App, lines: Vec<String>) {
+        let theme = Arc::clone(&app.ui_state.theme);
+        if let Some(ref mut dialog) = app.dialog_state.info_dialog {
+            dialog.set_info_type(InfoType::DoctorReport);
+            dialog.set_content(lines);
+            dialog.set_theme(&theme);
+            let dialog_type = dialog.dialog_type_for_info_type();
+            if let Some(ref updated) = app.dialog_state.info_dialog {
+                app.focus_manager
+                    .replace_top_dialog(dialog_type, Box::new(updated.clone()));
+            }
+        } else {
+            let dialog = InfoDialog::new(theme, InfoType::DoctorReport, lines);
+            app.dialog_state.info_dialog = Some(dialog.clone());
+            app.focus_manager.push(Box::new(dialog));
+        }
+    }
+
+    mount_info(&mut app, vec!["alpha".to_string(), "1234".to_string()]);
+    {
+        let cached = app
+            .dialog_state
+            .info_dialog
+            .as_ref()
+            .unwrap()
+            .content_lines();
+        assert!(cached.contains(&"1234".to_string()));
+        let top = app
+            .focus_manager
+            .top()
+            .expect("focus stack should have a top component");
+        let any = top as &dyn Any;
+        let focus_dlg = any
+            .downcast_ref::<InfoDialog>()
+            .expect("top should be InfoDialog");
+        assert!(focus_dlg.content_lines().contains(&"1234".to_string()));
+    }
+
+    // Re-mount with new content while the previous InfoDialog is still
+    // on the focus stack. Pre-fix, the focus stack held the stale
+    // clone and continued to render the old report.
+    mount_info(&mut app, vec!["beta".to_string(), "9876".to_string()]);
+
+    let cached = app
+        .dialog_state
+        .info_dialog
+        .as_ref()
+        .unwrap()
+        .content_lines()
+        .to_vec();
+    assert!(
+        cached.contains(&"9876".to_string()),
+        "dialog_state.info_dialog should have new content, got {:?}",
+        cached
+    );
+    assert!(
+        !cached.contains(&"1234".to_string()),
+        "dialog_state should no longer hold the old content, got {:?}",
+        cached
+    );
+
+    let top = app
+        .focus_manager
+        .top()
+        .expect("focus stack should still have a top component");
+    let any = top as &dyn Any;
+    let focus_dlg = any
+        .downcast_ref::<InfoDialog>()
+        .expect("top should still be InfoDialog");
+    let rendered = focus_dlg.content_lines();
+    assert!(
+        rendered.contains(&"9876".to_string()),
+        "focus-stack component should reflect the new content, got {:?}",
+        rendered
+    );
+    assert!(
+        !rendered.contains(&"1234".to_string()),
+        "focus-stack component should no longer show the old content, got {:?}",
+        rendered
+    );
+    assert_eq!(
+        app.focus_manager.active_dialog_type(),
+        DialogType::DoctorReport,
+        "focus stack should still report DoctorReport"
+    );
+}

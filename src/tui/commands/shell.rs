@@ -726,6 +726,12 @@ pub(crate) fn handle_shell_show(app: &mut app::App, id: u64) {
         app.dialog_state.shell_detail_id = Some(id);
         if just_created {
             app.focus_manager.push(Box::new(dialog.clone()));
+        } else {
+            // Sync the focus stack's clone with the freshly updated
+            // shell detail dialog.
+            let dialog_type = dialog.dialog_type_for_info_type();
+            app.focus_manager
+                .replace_top_dialog(dialog_type, Box::new(dialog.clone()));
         }
         app.ui_state.dialog = crate::tui::Dialog::ShellShow;
     }
@@ -853,6 +859,10 @@ pub(crate) fn handle_shell_expand(
                 app.dialog_state.shell_detail_id = Some(id);
                 if just_created {
                     app.focus_manager.push(Box::new(dialog.clone()));
+                } else {
+                    let dialog_type = dialog.dialog_type_for_info_type();
+                    app.focus_manager
+                        .replace_top_dialog(dialog_type, Box::new(dialog.clone()));
                 }
                 app.ui_state.dialog = crate::tui::Dialog::ShellShow;
             }
