@@ -2258,6 +2258,28 @@ impl LspService {
         self.get_or_create_client(file_path).await
     }
 
+    /// Fast readiness probe for `file_path` without launching an
+    /// LSP client. Returns `None` when no client has been
+    /// published yet for the inferred server key, or
+    /// `Some(state)` with the current [`LspOperationalState`]
+    /// when a client exists.
+    ///
+    /// Callers that need a structured capability decision before
+    /// issuing hierarchy/security-context requests should use
+    /// this in preference to [`get_or_create_client`], which
+    /// would otherwise launch the server (potentially waiting
+    /// the full request timeout).
+    pub async fn operational_state_for_file(
+        &self,
+        file_path: &Path,
+    ) -> Option<LspOperationalState> {
+        let lang = detect_language(file_path.to_str().unwrap_or(""))?;
+        let server_id = language_id_to_server_id(lang)?;
+        let project_root = super::root::find_project_root(file_path)?;
+        let key = format!("{}:{}", project_root.display(), server_id);
+        self.operational_state_for_key(&key).await
+    }
+
     pub async fn find_existing_client_for_root_hint(
         &self,
         root_hint: Option<&Path>,

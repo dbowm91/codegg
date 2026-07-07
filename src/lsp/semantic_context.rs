@@ -55,6 +55,33 @@ impl SemanticContextCollector {
         let mut response = SemanticContextResponse::new(&file_str);
         let mut limits = egglsp::semantic_context::SemanticContextLimits::default();
 
+        // Phase 0a: fast readiness probe. If the LSP server that
+        // would service this file has not been published yet, skip
+        // the expensive LSP request path entirely. The caller will
+        // receive a structured partial response (excerpt only,
+        // empty symbols/references/diagnostics/call-hierarchy)
+        // instead of waiting for the LSP request timeout.
+        let readiness = self.service.operational_state_for_file(&file).await;
+        if !readiness.as_ref().map(|s| s.is_usable()).unwrap_or(false) {
+            let (excerpt, excerpt_truncated) = if let Some((line, _column)) = position {
+                build_source_excerpt(&file, Some(line), request.excerpt_radius)?
+            } else {
+                build_source_excerpt(&file, None, request.excerpt_radius)?
+            };
+            limits.excerpt_truncated = excerpt_truncated;
+            response.source_excerpt = Some(excerpt);
+            if let Some(state) = readiness.as_ref() {
+                if let Some(note) = state.context_note() {
+                    response.push_note(note);
+                }
+            } else {
+                response.push_note("LSP server not initialized; semantic context unavailable");
+            }
+            response.limits = limits;
+            response.truncated = response.limits.excerpt_truncated;
+            return Ok(response);
+        }
+
         // Phase 0: consult the operational state for the file's
         // server key. The note (if any) is attached first so the
         // rest of the response carries explicit context. Terminal

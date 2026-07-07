@@ -249,6 +249,10 @@ impl CompletionOverlay {
         let compl_h = max_h + 2;
         let compl_w = 40.min(prompt_area.width.saturating_sub(2));
 
+        if compl_w < 3 {
+            return;
+        }
+
         let x = self.trigger_x;
 
         let compl_area = Rect {
@@ -263,17 +267,18 @@ impl CompletionOverlay {
             .border_style(Style::default().fg(theme.border))
             .style(Style::default().bg(theme.background));
 
+        let inner_w = compl_w.saturating_sub(2);
         let list_area = Rect {
             x: compl_area.x + 1,
             y: compl_area.y + 1,
-            width: compl_w - 2,
+            width: inner_w,
             height: max_h,
         };
 
         let hint_area = Rect {
             x: compl_area.x + 1,
             y: compl_area.y + 1 + max_h,
-            width: compl_w - 2,
+            width: inner_w,
             height: 1,
         };
 

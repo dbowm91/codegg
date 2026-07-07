@@ -1826,7 +1826,6 @@ fn semanticContext_hierarchy_rejects_column_without_line() {
 }
 
 #[test]
-#[ignore = "BUG-004: exercises full LSP request timeout (~30s) for semanticContext hierarchy flags"]
 #[allow(non_snake_case)]
 fn semanticContext_hierarchy_with_position_accepts_flags() {
     let tool = make_tool();
@@ -2147,7 +2146,6 @@ async fn security_context_result_count_includes_markers() {
 }
 
 #[tokio::test]
-#[ignore = "BUG-004: exercises full LSP request timeout (~30s) for security category filter"]
 async fn security_context_filters_by_category() {
     let tool = make_tool();
     let result = tool
@@ -2172,7 +2170,6 @@ async fn security_context_filters_by_category() {
 }
 
 #[tokio::test]
-#[ignore = "BUG-004: exercises full LSP request timeout (~30s) for risk marker limit"]
 async fn security_context_limits_risk_markers_precise() {
     let tool = make_tool();
     let result = tool

@@ -424,14 +424,14 @@ impl From<ResearchMetadataRow> for ResearchMetadata {
 async fn append_jsonl(path: &Path, record: &impl serde::Serialize) -> Result<()> {
     let mut line = serde_json::to_string(record)?;
     line.push('\n');
-    fs::OpenOptions::new()
+    let mut file = fs::OpenOptions::new()
         .create(true)
         .append(true)
         .truncate(false)
         .open(path)
-        .await?
-        .write_all(line.as_bytes())
         .await?;
+    file.write_all(line.as_bytes()).await?;
+    file.flush().await?;
     Ok(())
 }
 

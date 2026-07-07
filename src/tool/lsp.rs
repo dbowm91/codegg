@@ -1072,6 +1072,19 @@ impl LspTool {
         &self,
         file: &std::path::Path,
     ) -> Option<egglsp::LspCapabilitySnapshot> {
+        // Fast path: consult the operational state without
+        // launching a client. If no client has been published
+        // yet, callers will treat capabilities as unknown and
+        // can short-circuit before issuing any LSP requests.
+        if self
+            .service
+            .operational_state_for_file(file)
+            .await
+            .map(|s| !s.is_usable())
+            .unwrap_or(true)
+        {
+            return None;
+        }
         let (key, _) = self.service.get_or_create_client(file).await.ok()?;
         // Prefer the stored override-aware snapshot.
         if let Some(snap) = self.service.normalized_capabilities_for_key(&key).await {
@@ -1102,6 +1115,22 @@ impl LspTool {
         let key = key_result.0;
         let state = self.service.operational_state_for_key(&key).await?;
         state.context_note()
+    }
+
+    /// Fast readiness probe for `file` that does NOT launch an
+    /// LSP client. Returns `Some(reason)` when the server is
+    /// absent, failed, or otherwise not safe to issue a
+    /// hierarchy/security-context request against, or `None`
+    /// when a client has been published and is usable.
+    async fn lsp_readiness_reason_for_file(&self, file: &std::path::Path) -> Option<&'static str> {
+        let state = self.service.operational_state_for_file(file).await?;
+        if state.is_usable() {
+            None
+        } else if state.is_terminal() {
+            Some("LSP server terminated")
+        } else {
+            Some("LSP server not yet ready")
+        }
     }
 
     /// Construct a [`HunkSourceNavigationCollector`] with explicit per-hunk
@@ -1679,6 +1708,23 @@ impl LspTool {
         max_nodes: usize,
     ) -> CallExpansionSummary {
         use std::collections::{HashSet, VecDeque};
+
+        // Fast readiness gate: do not launch the LSP server
+        // here. When no client is initialized we return a
+        // structured partial summary immediately so callers
+        // observe the same shape they would when the server is
+        // simply slow.
+        if let Some(reason) = self.lsp_readiness_reason_for_file(file).await {
+            return CallExpansionSummary {
+                root: None,
+                direction: format_direction(direction),
+                depth: max_depth,
+                nodes: Vec::new(),
+                edges: Vec::new(),
+                truncated: false,
+                errors: vec![reason.to_string()],
+            };
+        }
 
         let root_items = match ops.prepare_call_hierarchy(file, line, column).await {
             Ok(items) => items,
@@ -3381,11 +3427,14 @@ impl Tool for LspTool {
                     );
                 }
 
+                let readiness_reason = self.lsp_readiness_reason_for_file(&file).await;
+                let lsp_usable = readiness_reason.is_none();
+
                 let call_hierarchy = if settings.include_call_hierarchy && has_position {
                     let supported = caps_snapshot
                         .as_ref()
                         .map(|c| c.supports(egglsp::LspSemanticOperation::CallHierarchy))
-                        .unwrap_or(true);
+                        .unwrap_or(lsp_usable);
                     if supported {
                         shared_call_hierarchy
                     } else {
@@ -3397,36 +3446,23 @@ impl Tool for LspTool {
                 };
 
                 let call_expansion = if settings.call_depth > 0 {
-                    let supported = caps_snapshot
-                        .as_ref()
-                        .map(|c| c.supports(egglsp::LspSemanticOperation::CallHierarchy))
-                        .unwrap_or(true);
-                    if supported {
-                        let Some(target) = target.as_ref() else {
-                            return Err(ToolError::Execution(
-                                "securityContext call_depth requires both line and column"
-                                    .to_string(),
-                            ));
-                        };
-                        Some(
-                            self.build_call_expansion_summary(
-                                &ops,
-                                &file,
-                                target.line,
-                                target.column,
-                                settings.call_direction,
-                                settings.call_depth,
-                                settings.max_call_nodes,
-                            )
-                            .await,
+                    let Some(target) = target.as_ref() else {
+                        return Err(ToolError::Execution(
+                            "securityContext call_depth requires both line and column".to_string(),
+                        ));
+                    };
+                    Some(
+                        self.build_call_expansion_summary(
+                            &ops,
+                            &file,
+                            target.line,
+                            target.column,
+                            settings.call_direction,
+                            settings.call_depth,
+                            settings.max_call_nodes,
                         )
-                    } else {
-                        notes.push(
-                            "call expansion not supported by server (call hierarchy required)"
-                                .to_string(),
-                        );
-                        None
-                    }
+                        .await,
+                    )
                 } else {
                     None
                 };
@@ -5939,7 +5975,6 @@ diff --git a/src/lib.rs b/src/lib.rs
     // ── Phase 4: operation-level preset tests ──────────────────────────
 
     #[tokio::test]
-    #[ignore = "BUG-004: exercises full LSP request timeout (~30s) for securityContext defaults"]
     async fn security_context_dependency_review_omits_call_hierarchy_by_default() {
         let tool = LspTool::new(crate::lsp::service::LspService::new_arc(
             crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
@@ -6107,7 +6142,6 @@ diff --git a/src/lib.rs b/src/lib.rs
     // ── Call expansion operation-level tests ──────────────────────────
 
     #[tokio::test]
-    #[ignore = "BUG-004: exercises full LSP request timeout (~30s) for call_depth default path"]
     async fn security_context_call_depth_zero_omits_call_expansion() {
         let tool = LspTool::new(crate::lsp::service::LspService::new_arc(
             crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
@@ -6191,7 +6225,6 @@ diff --git a/src/lib.rs b/src/lib.rs
     }
 
     #[tokio::test]
-    #[ignore = "BUG-004: exercises full LSP request timeout (~30s) for call_expansion (depth 1)"]
     async fn security_context_call_depth_one_with_position_returns_expansion_or_errors() {
         let tool = LspTool::new(crate::lsp::service::LspService::new_arc(
             crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
@@ -6455,7 +6488,6 @@ diff --git a/src/lib.rs b/src/lib.rs
     }
 
     #[tokio::test]
-    #[ignore = "BUG-004: exercises full LSP request timeout (~30s) for call_expansion_truncated limit field"]
     async fn security_context_call_expansion_truncated_limit_field_present() {
         let tool = LspTool::new(crate::lsp::service::LspService::new_arc(
             crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
