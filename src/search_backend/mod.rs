@@ -104,6 +104,175 @@ pub async fn dispatch_web_fetch(input: &Value) -> Result<String, ToolError> {
     }
 }
 
+/// Run a `repo_search` call against the eggsearch backend.
+/// Requires `backend = "eggsearch"` — no builtin fallback.
+pub async fn dispatch_repo_search(input: &Value) -> Result<String, ToolError> {
+    let cfg = state::search_config();
+    match cfg.backend() {
+        SearchBackendConfig::Disabled => Err(ToolError::Execution(
+            "repo_search is disabled ([search].backend = \"disabled\")".to_string(),
+        )),
+        SearchBackendConfig::Builtin => Err(ToolError::Execution(
+            "repo_search requires the eggsearch backend ([search].backend = \"eggsearch\")"
+                .to_string(),
+        )),
+        SearchBackendConfig::Eggsearch => match state::mcp_service() {
+            None => Err(eggsearch::eggsearch_unavailable(
+                "McpService is not initialized",
+            )),
+            Some(_) => {
+                let server = effective_server_name(&cfg);
+                let max_chars = cfg.max_repo_output_chars();
+                eggsearch::call_repo_search(&server, input, max_chars).await
+            }
+        },
+    }
+}
+
+/// Run a `repo_fetch` call against the eggsearch backend.
+pub async fn dispatch_repo_fetch(input: &Value) -> Result<String, ToolError> {
+    let cfg = state::search_config();
+    match cfg.backend() {
+        SearchBackendConfig::Disabled => Err(ToolError::Execution(
+            "repo_fetch is disabled ([search].backend = \"disabled\")".to_string(),
+        )),
+        SearchBackendConfig::Builtin => Err(ToolError::Execution(
+            "repo_fetch requires the eggsearch backend ([search].backend = \"eggsearch\")"
+                .to_string(),
+        )),
+        SearchBackendConfig::Eggsearch => match state::mcp_service() {
+            None => Err(eggsearch::eggsearch_unavailable(
+                "McpService is not initialized",
+            )),
+            Some(_) => {
+                let server = effective_server_name(&cfg);
+                let max_chars = cfg.max_repo_output_chars();
+                eggsearch::call_repo_fetch(&server, input, max_chars).await
+            }
+        },
+    }
+}
+
+/// Run a `repo_map` call against the eggsearch backend.
+pub async fn dispatch_repo_map(input: &Value) -> Result<String, ToolError> {
+    let cfg = state::search_config();
+    match cfg.backend() {
+        SearchBackendConfig::Disabled => Err(ToolError::Execution(
+            "repo_map is disabled ([search].backend = \"disabled\")".to_string(),
+        )),
+        SearchBackendConfig::Builtin => Err(ToolError::Execution(
+            "repo_map requires the eggsearch backend ([search].backend = \"eggsearch\")"
+                .to_string(),
+        )),
+        SearchBackendConfig::Eggsearch => match state::mcp_service() {
+            None => Err(eggsearch::eggsearch_unavailable(
+                "McpService is not initialized",
+            )),
+            Some(_) => {
+                let server = effective_server_name(&cfg);
+                let max_chars = cfg.max_repo_output_chars();
+                eggsearch::call_repo_map(&server, input, max_chars).await
+            }
+        },
+    }
+}
+
+/// Run a `security_search` call against the eggsearch backend.
+pub async fn dispatch_security_search(input: &Value) -> Result<String, ToolError> {
+    let cfg = state::search_config();
+    match cfg.backend() {
+        SearchBackendConfig::Disabled => Err(ToolError::Execution(
+            "security_search is disabled ([search].backend = \"disabled\")".to_string(),
+        )),
+        SearchBackendConfig::Builtin => Err(ToolError::Execution(
+            "security_search requires the eggsearch backend ([search].backend = \"eggsearch\")"
+                .to_string(),
+        )),
+        SearchBackendConfig::Eggsearch => match state::mcp_service() {
+            None => Err(eggsearch::eggsearch_unavailable(
+                "McpService is not initialized",
+            )),
+            Some(_) => {
+                let server = effective_server_name(&cfg);
+                let max_chars = cfg.max_security_output_chars();
+                eggsearch::call_security_search(&server, input, max_chars).await
+            }
+        },
+    }
+}
+
+/// Run a `research_search` call against the eggsearch backend.
+pub async fn dispatch_research_search(input: &Value) -> Result<String, ToolError> {
+    let cfg = state::search_config();
+    match cfg.backend() {
+        SearchBackendConfig::Disabled => Err(ToolError::Execution(
+            "research_search is disabled ([search].backend = \"disabled\")".to_string(),
+        )),
+        SearchBackendConfig::Builtin => Err(ToolError::Execution(
+            "research_search requires the eggsearch backend ([search].backend = \"eggsearch\")"
+                .to_string(),
+        )),
+        SearchBackendConfig::Eggsearch => match state::mcp_service() {
+            None => Err(eggsearch::eggsearch_unavailable(
+                "McpService is not initialized",
+            )),
+            Some(_) => {
+                let server = effective_server_name(&cfg);
+                let max_chars = cfg.max_research_output_chars();
+                eggsearch::call_research_search(&server, input, max_chars).await
+            }
+        },
+    }
+}
+
+/// Run a `batch_fetch` call against the eggsearch backend.
+pub async fn dispatch_batch_fetch(input: &Value) -> Result<String, ToolError> {
+    let cfg = state::search_config();
+    match cfg.backend() {
+        SearchBackendConfig::Disabled => Err(ToolError::Execution(
+            "batch_fetch is disabled ([search].backend = \"disabled\")".to_string(),
+        )),
+        SearchBackendConfig::Builtin => Err(ToolError::Execution(
+            "batch_fetch requires the eggsearch backend ([search].backend = \"eggsearch\")"
+                .to_string(),
+        )),
+        SearchBackendConfig::Eggsearch => match state::mcp_service() {
+            None => Err(eggsearch::eggsearch_unavailable(
+                "McpService is not initialized",
+            )),
+            Some(_) => {
+                let server = effective_server_name(&cfg);
+                let max_chars = cfg.max_batch_output_chars();
+                eggsearch::call_batch_fetch(&server, input, max_chars).await
+            }
+        },
+    }
+}
+
+/// Run a `build_evidence_bundle` call against the eggsearch backend.
+pub async fn dispatch_evidence_bundle(input: &Value) -> Result<String, ToolError> {
+    let cfg = state::search_config();
+    match cfg.backend() {
+        SearchBackendConfig::Disabled => Err(ToolError::Execution(
+            "evidence_bundle is disabled ([search].backend = \"disabled\")".to_string(),
+        )),
+        SearchBackendConfig::Builtin => Err(ToolError::Execution(
+            "evidence_bundle requires the eggsearch backend ([search].backend = \"eggsearch\")"
+                .to_string(),
+        )),
+        SearchBackendConfig::Eggsearch => match state::mcp_service() {
+            None => Err(eggsearch::eggsearch_unavailable(
+                "McpService is not initialized",
+            )),
+            Some(_) => {
+                let server = effective_server_name(&cfg);
+                let max_chars = cfg.max_evidence_output_chars();
+                eggsearch::call_build_evidence_bundle(&server, input, max_chars).await
+            }
+        },
+    }
+}
+
 fn effective_server_name(cfg: &SearchConfig) -> String {
     cfg.eggsearch
         .as_ref()
@@ -122,6 +291,48 @@ pub fn provenance_for_search() -> Option<crate::tool::ToolProvenance> {
 /// backend.
 pub fn provenance_for_fetch() -> Option<crate::tool::ToolProvenance> {
     Some(provenance_for_backend("webfetch", None))
+}
+
+/// Build a `ToolProvenance` describing the current `repo_search`
+/// backend.
+pub fn provenance_for_repo_search() -> Option<crate::tool::ToolProvenance> {
+    Some(provenance_for_backend("repo_search", None))
+}
+
+/// Build a `ToolProvenance` describing the current `repo_fetch`
+/// backend.
+pub fn provenance_for_repo_fetch() -> Option<crate::tool::ToolProvenance> {
+    Some(provenance_for_backend("repo_fetch", None))
+}
+
+/// Build a `ToolProvenance` describing the current `repo_map`
+/// backend.
+pub fn provenance_for_repo_map() -> Option<crate::tool::ToolProvenance> {
+    Some(provenance_for_backend("repo_map", None))
+}
+
+/// Build a `ToolProvenance` describing the current `security_search`
+/// backend.
+pub fn provenance_for_security_search() -> Option<crate::tool::ToolProvenance> {
+    Some(provenance_for_backend("security_search", None))
+}
+
+/// Build a `ToolProvenance` describing the current `research_search`
+/// backend.
+pub fn provenance_for_research_search() -> Option<crate::tool::ToolProvenance> {
+    Some(provenance_for_backend("research_search", None))
+}
+
+/// Build a `ToolProvenance` describing the current `batch_fetch`
+/// backend.
+pub fn provenance_for_batch_fetch() -> Option<crate::tool::ToolProvenance> {
+    Some(provenance_for_backend("batch_fetch", None))
+}
+
+/// Build a `ToolProvenance` describing the current
+/// `build_evidence_bundle` backend.
+pub fn provenance_for_evidence_bundle() -> Option<crate::tool::ToolProvenance> {
+    Some(provenance_for_backend("build_evidence_bundle", None))
 }
 
 fn provenance_for_backend(_tool: &str, elapsed_ms: Option<u64>) -> crate::tool::ToolProvenance {

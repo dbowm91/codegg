@@ -10,7 +10,11 @@ use serde_json::{json, Value};
 
 use crate::error::ToolError;
 
-use super::framing::{clamp_output, frame_fetched_page, frame_search_results};
+use super::framing::{
+    clamp_output, frame_batch_results, frame_evidence_bundle, frame_fetched_page, frame_repo_file,
+    frame_repo_map, frame_repo_results, frame_research_results, frame_search_results,
+    frame_security_results,
+};
 
 /// Translate a native `websearch` call into an eggsearch `web_search`
 /// call and execute it.
@@ -111,6 +115,329 @@ pub async fn call_web_fetch(
 
     let capped = clamp_output(&raw, max_output_chars, "max_fetch_output_chars");
     Ok(frame_fetched_page(&capped))
+}
+
+/// Translate a native `repo_search` call into an eggsearch `repo_search`
+/// call and execute it.
+pub async fn call_repo_search(
+    mcp_server: &str,
+    input: &Value,
+    max_output_chars: usize,
+) -> Result<String, ToolError> {
+    let query = input
+        .get("query")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .ok_or_else(|| ToolError::Execution("missing 'query' parameter".to_string()))?;
+    if query.is_empty() {
+        return Err(ToolError::Execution(
+            "'query' must not be empty".to_string(),
+        ));
+    }
+
+    let mut args = json!({
+        "query": query,
+    });
+
+    if let Some(repo) = input.get("repo").and_then(Value::as_str) {
+        args["repo"] = Value::String(repo.to_string());
+    }
+    if let Some(language) = input.get("language").and_then(Value::as_str) {
+        args["language"] = Value::String(language.to_string());
+    }
+
+    let max_results = input
+        .get("max_results")
+        .and_then(Value::as_u64)
+        .unwrap_or(10)
+        .min(30) as usize;
+    args["max_results"] = json!(max_results);
+
+    if let Some(include_snippets) = input.get("include_snippets").and_then(Value::as_bool) {
+        args["include_snippets"] = json!(include_snippets);
+    }
+
+    let svc = super::state::mcp_service()
+        .ok_or_else(|| eggsearch_unavailable("McpService is not initialized"))?;
+    let raw = tokio::time::timeout(std::time::Duration::from_secs(60), async {
+        let guard = svc.read().await;
+        guard.call_tool(mcp_server, "repo_search", args).await
+    })
+    .await
+    .map_err(|_| ToolError::Timeout("eggsearch repo_search timed out after 60s".to_string()))?
+    .map_err(|e| ToolError::Execution(format!("eggsearch repo_search: {e}")))?;
+
+    let capped = clamp_output(&raw, max_output_chars, "max_repo_output_chars");
+    Ok(frame_repo_results(&capped))
+}
+
+/// Translate a native `repo_fetch` call into an eggsearch `repo_fetch`
+/// call and execute it.
+pub async fn call_repo_fetch(
+    mcp_server: &str,
+    input: &Value,
+    max_output_chars: usize,
+) -> Result<String, ToolError> {
+    let path = input
+        .get("path")
+        .and_then(Value::as_str)
+        .ok_or_else(|| ToolError::Execution("missing 'path' parameter".to_string()))?;
+
+    let mut args = json!({
+        "path": path,
+    });
+
+    if let Some(repo) = input.get("repo").and_then(Value::as_str) {
+        args["repo"] = Value::String(repo.to_string());
+    }
+    if let Some(start_line) = input.get("start_line").and_then(Value::as_i64) {
+        args["start_line"] = json!(start_line);
+    }
+    if let Some(end_line) = input.get("end_line").and_then(Value::as_i64) {
+        args["end_line"] = json!(end_line);
+    }
+    if let Some(symbol) = input.get("symbol").and_then(Value::as_str) {
+        args["symbol"] = Value::String(symbol.to_string());
+    }
+
+    let svc = super::state::mcp_service()
+        .ok_or_else(|| eggsearch_unavailable("McpService is not initialized"))?;
+    let raw = tokio::time::timeout(std::time::Duration::from_secs(60), async {
+        let guard = svc.read().await;
+        guard.call_tool(mcp_server, "repo_fetch", args).await
+    })
+    .await
+    .map_err(|_| ToolError::Timeout("eggsearch repo_fetch timed out after 60s".to_string()))?
+    .map_err(|e| ToolError::Execution(format!("eggsearch repo_fetch: {e}")))?;
+
+    let capped = clamp_output(&raw, max_output_chars, "max_repo_output_chars");
+    Ok(frame_repo_file(&capped))
+}
+
+/// Translate a native `repo_map` call into an eggsearch `repo_map`
+/// call and execute it.
+pub async fn call_repo_map(
+    mcp_server: &str,
+    input: &Value,
+    max_output_chars: usize,
+) -> Result<String, ToolError> {
+    let repo = input
+        .get("repo")
+        .and_then(Value::as_str)
+        .ok_or_else(|| ToolError::Execution("missing 'repo' parameter".to_string()))?;
+
+    let mut args = json!({
+        "repo": repo,
+    });
+
+    if let Some(path) = input.get("path").and_then(Value::as_str) {
+        args["path"] = Value::String(path.to_string());
+    }
+    if let Some(depth) = input.get("depth").and_then(Value::as_i64) {
+        args["depth"] = json!(depth.min(3));
+    }
+
+    let svc = super::state::mcp_service()
+        .ok_or_else(|| eggsearch_unavailable("McpService is not initialized"))?;
+    let raw = tokio::time::timeout(std::time::Duration::from_secs(60), async {
+        let guard = svc.read().await;
+        guard.call_tool(mcp_server, "repo_map", args).await
+    })
+    .await
+    .map_err(|_| ToolError::Timeout("eggsearch repo_map timed out after 60s".to_string()))?
+    .map_err(|e| ToolError::Execution(format!("eggsearch repo_map: {e}")))?;
+
+    let capped = clamp_output(&raw, max_output_chars, "max_repo_output_chars");
+    Ok(frame_repo_map(&capped))
+}
+
+/// Translate a native `security_search` call into an eggsearch
+/// `security_search` call and execute it.
+pub async fn call_security_search(
+    mcp_server: &str,
+    input: &Value,
+    max_output_chars: usize,
+) -> Result<String, ToolError> {
+    let query = input
+        .get("query")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .ok_or_else(|| ToolError::Execution("missing 'query' parameter".to_string()))?;
+    if query.is_empty() {
+        return Err(ToolError::Execution(
+            "'query' must not be empty".to_string(),
+        ));
+    }
+
+    let mut args = json!({
+        "query": query,
+    });
+
+    if let Some(ecosystem) = input.get("ecosystem").and_then(Value::as_str) {
+        args["ecosystem"] = Value::String(ecosystem.to_string());
+    }
+    if let Some(package) = input.get("package").and_then(Value::as_str) {
+        args["package"] = Value::String(package.to_string());
+    }
+    if let Some(cve) = input.get("cve").and_then(Value::as_str) {
+        args["cve"] = Value::String(cve.to_string());
+    }
+
+    let max_results = input
+        .get("max_results")
+        .and_then(Value::as_u64)
+        .unwrap_or(10)
+        .min(20) as usize;
+    args["max_results"] = json!(max_results);
+
+    let svc = super::state::mcp_service()
+        .ok_or_else(|| eggsearch_unavailable("McpService is not initialized"))?;
+    let raw = tokio::time::timeout(std::time::Duration::from_secs(60), async {
+        let guard = svc.read().await;
+        guard.call_tool(mcp_server, "security_search", args).await
+    })
+    .await
+    .map_err(|_| ToolError::Timeout("eggsearch security_search timed out after 60s".to_string()))?
+    .map_err(|e| ToolError::Execution(format!("eggsearch security_search: {e}")))?;
+
+    let capped = clamp_output(&raw, max_output_chars, "max_security_output_chars");
+    Ok(frame_security_results(&capped))
+}
+
+/// Translate a native `research_search` call into an eggsearch
+/// `research_search` call and execute it.
+pub async fn call_research_search(
+    mcp_server: &str,
+    input: &Value,
+    max_output_chars: usize,
+) -> Result<String, ToolError> {
+    let query = input
+        .get("query")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .ok_or_else(|| ToolError::Execution("missing 'query' parameter".to_string()))?;
+    if query.is_empty() {
+        return Err(ToolError::Execution(
+            "'query' must not be empty".to_string(),
+        ));
+    }
+
+    let mut args = json!({
+        "query": query,
+    });
+
+    if let Some(domains) = input.get("domains").and_then(Value::as_array) {
+        let domain_strs: Vec<Value> = domains
+            .iter()
+            .filter_map(|v| v.as_str().map(|s| Value::String(s.to_string())))
+            .collect();
+        if !domain_strs.is_empty() {
+            args["domains"] = Value::Array(domain_strs);
+        }
+    }
+
+    let max_results = input
+        .get("max_results")
+        .and_then(Value::as_u64)
+        .unwrap_or(10)
+        .min(15) as usize;
+    args["max_results"] = json!(max_results);
+
+    let svc = super::state::mcp_service()
+        .ok_or_else(|| eggsearch_unavailable("McpService is not initialized"))?;
+    let raw = tokio::time::timeout(std::time::Duration::from_secs(60), async {
+        let guard = svc.read().await;
+        guard.call_tool(mcp_server, "research_search", args).await
+    })
+    .await
+    .map_err(|_| ToolError::Timeout("eggsearch research_search timed out after 60s".to_string()))?
+    .map_err(|e| ToolError::Execution(format!("eggsearch research_search: {e}")))?;
+
+    let capped = clamp_output(&raw, max_output_chars, "max_research_output_chars");
+    Ok(frame_research_results(&capped))
+}
+
+/// Translate a native `batch_fetch` call into an eggsearch
+/// `batch_fetch` call and execute it.
+pub async fn call_batch_fetch(
+    mcp_server: &str,
+    input: &Value,
+    max_output_chars: usize,
+) -> Result<String, ToolError> {
+    let mut args = json!({});
+
+    if let Some(urls) = input.get("urls").and_then(Value::as_array) {
+        args["urls"] = Value::Array(urls.clone());
+    }
+    if let Some(items) = input.get("items").and_then(Value::as_array) {
+        args["items"] = Value::Array(items.clone());
+    }
+
+    let max_chars_per_item = input
+        .get("max_chars_per_item")
+        .and_then(Value::as_u64)
+        .unwrap_or(10_000)
+        .min(50_000) as usize;
+    args["max_chars_per_item"] = json!(max_chars_per_item);
+
+    let svc = super::state::mcp_service()
+        .ok_or_else(|| eggsearch_unavailable("McpService is not initialized"))?;
+    let raw = tokio::time::timeout(std::time::Duration::from_secs(60), async {
+        let guard = svc.read().await;
+        guard.call_tool(mcp_server, "batch_fetch", args).await
+    })
+    .await
+    .map_err(|_| ToolError::Timeout("eggsearch batch_fetch timed out after 60s".to_string()))?
+    .map_err(|e| ToolError::Execution(format!("eggsearch batch_fetch: {e}")))?;
+
+    let capped = clamp_output(&raw, max_output_chars, "max_batch_output_chars");
+    Ok(frame_batch_results(&capped))
+}
+
+/// Translate a native `build_evidence_bundle` call into an eggsearch
+/// `build_evidence_bundle` call and execute it.
+pub async fn call_build_evidence_bundle(
+    mcp_server: &str,
+    input: &Value,
+    max_output_chars: usize,
+) -> Result<String, ToolError> {
+    let sources = input
+        .get("sources")
+        .and_then(Value::as_array)
+        .ok_or_else(|| ToolError::Execution("missing 'sources' parameter".to_string()))?;
+    if sources.is_empty() {
+        return Err(ToolError::Execution(
+            "'sources' must not be empty".to_string(),
+        ));
+    }
+
+    let mut args = json!({
+        "sources": sources,
+    });
+
+    let max_total_chars = input
+        .get("max_total_chars")
+        .and_then(Value::as_u64)
+        .unwrap_or(50_000)
+        .min(100_000) as usize;
+    args["max_total_chars"] = json!(max_total_chars);
+
+    let svc = super::state::mcp_service()
+        .ok_or_else(|| eggsearch_unavailable("McpService is not initialized"))?;
+    let raw = tokio::time::timeout(std::time::Duration::from_secs(60), async {
+        let guard = svc.read().await;
+        guard
+            .call_tool(mcp_server, "build_evidence_bundle", args)
+            .await
+    })
+    .await
+    .map_err(|_| {
+        ToolError::Timeout("eggsearch build_evidence_bundle timed out after 60s".to_string())
+    })?
+    .map_err(|e| ToolError::Execution(format!("eggsearch build_evidence_bundle: {e}")))?;
+
+    let capped = clamp_output(&raw, max_output_chars, "max_evidence_output_chars");
+    Ok(frame_evidence_bundle(&capped))
 }
 
 /// Best-effort translation of the historical Codegg `provider` hint to

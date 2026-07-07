@@ -400,12 +400,12 @@ CI runs on push/PR to dev/main: `agent-assets` → `fmt` → `check` → `clippy
 
 | Document | Key Gotchas |
 |----------|-------------|
-| `architecture/overview.md` | Module map, verified counts (105 commands, 42 events, 39 LSP servers, ~30 tools, 9 agents) |
+| `architecture/overview.md` | Module map, verified counts (105 commands, 42 events, 39 LSP servers, ~37 tools, 9 agents) |
 | `architecture/agent.md` | AgentLoop has ~49 fields at `src/agent/loop.rs:1380` |
 | `architecture/bus.md` | 42 AppEvent variants; PermissionRegistry/QuestionRegistry are synchronous |
 | `architecture/lsp.md` | egglsp is authoritative; 39 servers; `src/lsp/` is thin re-export shim |
 | `architecture/plugin.md` | No `wasm.rs`; `marketplace.rs` exists; PluginRuntime trait with Process/Wasm/Builtin |
-| `architecture/tool.md` | ~30 tools in default registry; `ToolCatalog::register()` takes `&dyn Tool` |
+| `architecture/tool.md` | ~37 tools in default registry; `ToolCatalog::register()` takes `&dyn Tool` |
 | `architecture/tui.md` | `src/tui/app/mod.rs` ~13K lines; async command pattern; TuiTaskRegistry lifecycle |
 | `architecture/human_shell.md` | ! commands not in model context unless promoted; Phases 1-10 projection pipeline |
 | `architecture/command.md` | 105 built-in slash commands |

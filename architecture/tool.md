@@ -91,7 +91,7 @@ pub struct ToolResult {
 }
 ```
 
-## Built-in Tools (30 total in default registry)
+## Built-in Tools (37 total in default registry)
 
 ### File Operations
 
@@ -126,11 +126,27 @@ pub struct ToolResult {
 | **research** | `research.rs` | Deep research tool. May invoke `websearch` and `webfetch` internally. |
 | **image** | `image.rs` | Generate images using OpenAI's DALL-E model. Supports dall-e-3, size, quality parameters. Requires OPENAI_API_KEY. |
 
+### Eggsearch Wrapper Tools
+
+Native wrappers for additional eggsearch MCP tools. These dispatch
+through `search_backend` with `backend = "eggsearch"` only (no builtin
+fallback). Raw `mcp__eggsearch__*` equivalents are hidden by default.
+
+| Tool | File | Description |
+|------|------|-------------|
+| **repo_search** | `repo_search.rs` | Search repositories via eggsearch. Wraps `repo_search` MCP tool. |
+| **repo_fetch** | `repo_fetch.rs` | Fetch repository file content via eggsearch. Wraps `repo_fetch` MCP tool. |
+| **repo_map** | `repo_map.rs` | Get repository directory structure via eggsearch. Wraps `repo_map` MCP tool. |
+| **security_search** | `security_search.rs` | Search security advisories via eggsearch. Wraps `security_search` MCP tool. |
+| **research_search** | `research_search.rs` | Search academic/research sources via eggsearch. Wraps `research_search` MCP tool. |
+| **batch_fetch** | `batch_fetch.rs` | Fetch multiple URLs in parallel via eggsearch. Wraps `batch_fetch` MCP tool. |
+| **evidence_bundle** | `evidence_bundle.rs` | Build evidence bundles from multiple sources via eggsearch. Wraps `build_evidence_bundle` MCP tool. |
+
 `websearch` and `webfetch` always present the stable native tool
 names to the model. The raw `mcp__eggsearch__*` tools are hidden
 from the model by default (`expose_raw_mcp_tools = false`). Set
 that flag to `true` to expose them. See
-[`search_backend/`](../.opencode/skills/search_backend/SKILL.md) for
+`architecture/search_backend.md` for
 the dispatch logic, config schema, and trust framing.
 
 ### Task Management
@@ -515,12 +531,19 @@ pre-installed context (e.g. eggsearch availability from
 `search_backend::state`) and renders it as a toast. The report shape:
 
 ```
-Tool         Backend   Implementation    Status       Raw MCP exposed
-websearch    MCP       eggsearch          ready        no
-webfetch     MCP       eggsearch          ready        no
-lsp          Native    egglsp             ready        n/a
-security     Native    eggsentry             ready        n/a
-git          Native    codegg/egggit      ready        n/a
+Tool              Backend   Implementation    Status       Raw MCP exposed
+websearch         MCP       eggsearch          ready        no
+webfetch          MCP       eggsearch          ready        no
+repo_search       MCP       eggsearch          ready        no
+repo_fetch        MCP       eggsearch          ready        no
+repo_map          MCP       eggsearch          ready        no
+security_search   MCP       eggsearch          ready        no
+research_search   MCP       eggsearch          ready        no
+batch_fetch       MCP       eggsearch          ready        no
+evidence_bundle   MCP       eggsearch          ready        no
+lsp               Native    egglsp             ready        n/a
+security          Native    eggsentry          ready        n/a
+git               Native    codegg/egggit      ready        n/a
 ```
 
 Status values are: `ready`, `disabled`, `unavailable`, `error(<msg>)`.
@@ -554,6 +577,13 @@ src/tool/
 ├── todo.rs         # Todo list management
 ├── webfetch.rs     # URL content fetching (dispatches to search_backend)
 ├── websearch.rs    # Web search (dispatches to search_backend)
+├── repo_search.rs  # Repository search (dispatches to search_backend)
+├── repo_fetch.rs   # Repository file fetch (dispatches to search_backend)
+├── repo_map.rs     # Repository directory map (dispatches to search_backend)
+├── security_search.rs  # Security advisory search (dispatches to search_backend)
+├── research_search.rs  # Academic/research search (dispatches to search_backend)
+├── batch_fetch.rs  # Batch URL fetch (dispatches to search_backend)
+├── evidence_bundle.rs  # Evidence bundle builder (dispatches to search_backend)
 ├── codesearch.rs   # Code search via Exa
 ├── question.rs     # User question asking
 ├── skill.rs        # Skill loading

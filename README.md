@@ -951,7 +951,7 @@ src/
 ├── skills/       # Skill system (re-exports from codegg-config)
 ├── snapshot/     # State snapshots (re-exports from codegg-core)
 ├── storage/      # SQLite storage layer (re-exports from codegg-core)
-├── tool/         # ~30 built-in tools (bash, read, edit, grep, glob, lsp, git, etc.)
+├── tool/         # ~37 built-in tools (bash, read, edit, grep, glob, lsp, git, websearch, webfetch, repo_search, etc.)
 ├── tui/          # Terminal UI (app, components, runtime, commands)
 ├── upgrade/      # Self-upgrade functionality
 ├── util/         # Utilities (clipboard, fuzzy search, pricing, metrics)

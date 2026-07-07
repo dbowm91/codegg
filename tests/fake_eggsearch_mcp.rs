@@ -57,6 +57,7 @@ fn eggsearch_config(expose_raw: bool, fallback: bool) -> SearchConfig {
             server_name: Some("eggsearch".to_string()),
             ..Default::default()
         }),
+        ..Default::default()
     }
 }
 

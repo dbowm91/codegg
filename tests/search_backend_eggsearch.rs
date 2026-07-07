@@ -73,6 +73,7 @@ mod agent_loop_filtering_tests {
                 server_name: Some("eggsearch".to_string()),
                 ..Default::default()
             }),
+            ..Default::default()
         };
         state::install_search_config(cfg);
 
@@ -110,6 +111,7 @@ mod agent_loop_filtering_tests {
                 server_name: Some("eggsearch".to_string()),
                 ..Default::default()
             }),
+            ..Default::default()
         };
         state::install_search_config(cfg);
 
@@ -161,6 +163,7 @@ mod agent_loop_filtering_tests {
                 server_name: None,
                 ..Default::default()
             }),
+            ..Default::default()
         };
         state::install_search_config(cfg);
 
@@ -190,6 +193,7 @@ mod agent_loop_filtering_tests {
                 server_name: Some("myegg".to_string()),
                 ..Default::default()
             }),
+            ..Default::default()
         };
         state::install_search_config(cfg);
 
@@ -280,6 +284,7 @@ mod real_build_tool_definitions_tests {
                 server_name: Some("eggsearch".to_string()),
                 ..Default::default()
             }),
+            ..Default::default()
         }
     }
 

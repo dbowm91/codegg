@@ -426,6 +426,16 @@ pub struct SearchConfig {
     pub max_search_output_chars: Option<usize>,
     /// Output cap for `webfetch` results, in characters.
     pub max_fetch_output_chars: Option<usize>,
+    /// Output cap for repo search/fetch/map results, in characters.
+    pub max_repo_output_chars: Option<usize>,
+    /// Output cap for security search results, in characters.
+    pub max_security_output_chars: Option<usize>,
+    /// Output cap for research search results, in characters.
+    pub max_research_output_chars: Option<usize>,
+    /// Output cap for batch fetch results, in characters.
+    pub max_batch_output_chars: Option<usize>,
+    /// Output cap for evidence bundle results, in characters.
+    pub max_evidence_output_chars: Option<usize>,
     /// Eggsearch-specific configuration.
     pub eggsearch: Option<EggsearchConfig>,
 }
@@ -449,6 +459,26 @@ impl SearchConfig {
 
     pub fn max_fetch_output_chars(&self) -> usize {
         self.max_fetch_output_chars.unwrap_or(20_000)
+    }
+
+    pub fn max_repo_output_chars(&self) -> usize {
+        self.max_repo_output_chars.unwrap_or(15_000)
+    }
+
+    pub fn max_security_output_chars(&self) -> usize {
+        self.max_security_output_chars.unwrap_or(10_000)
+    }
+
+    pub fn max_research_output_chars(&self) -> usize {
+        self.max_research_output_chars.unwrap_or(15_000)
+    }
+
+    pub fn max_batch_output_chars(&self) -> usize {
+        self.max_batch_output_chars.unwrap_or(50_000)
+    }
+
+    pub fn max_evidence_output_chars(&self) -> usize {
+        self.max_evidence_output_chars.unwrap_or(100_000)
     }
 }
 

@@ -24,12 +24,25 @@ src/search_backend/
 // src/search_backend/mod.rs
 pub async fn dispatch_web_search(input: &Value) -> Result<String, ToolError>;
 pub async fn dispatch_web_fetch(input: &Value) -> Result<String, ToolError>;
+pub async fn dispatch_repo_search(input: &Value) -> Result<String, ToolError>;
+pub async fn dispatch_repo_fetch(input: &Value) -> Result<String, ToolError>;
+pub async fn dispatch_repo_map(input: &Value) -> Result<String, ToolError>;
+pub async fn dispatch_security_search(input: &Value) -> Result<String, ToolError>;
+pub async fn dispatch_research_search(input: &Value) -> Result<String, ToolError>;
+pub async fn dispatch_batch_fetch(input: &Value) -> Result<String, ToolError>;
+pub async fn dispatch_evidence_bundle(input: &Value) -> Result<String, ToolError>;
 ```
 
-The two native tools at `src/tool/websearch.rs` and
-`src/tool/webfetch.rs` call these directly. The dispatch resolves
-the configured `SearchConfig` from `state::search_config()` and
-forwards to the right adapter.
+The native tools at `src/tool/websearch.rs`,
+`src/tool/webfetch.rs`, and the seven eggsearch wrapper tools
+(`repo_search`, `repo_fetch`, `repo_map`, `security_search`,
+`research_search`, `batch_fetch`, `evidence_bundle`) call these
+directly. The dispatch resolves the configured `SearchConfig` from
+`state::search_config()` and forwards to the eggsearch adapter.
+
+The original two (`dispatch_web_search`, `dispatch_web_fetch`) support
+`backend = "builtin"` fallback. The seven new dispatch functions
+require `backend = "eggsearch"` and return an error otherwise.
 
 ## State management
 
@@ -94,6 +107,58 @@ The returned `BootstrapReport` is consumed by the doctor command
 - Clamps output to `max_fetch_output_chars` and wraps in
   `frame_fetched_page`.
 
+### `eggsearch::call_repo_search(server, input, max_chars)`
+
+- Reads `query` (required, non-empty).
+- Reads optional `num_results` (default 8, max 30).
+- Calls `call_tool(server, "repo_search", args)` with 60s timeout.
+- Clamps to `max_repo_output_chars` (default 15k), frames with
+  `frame_repo_results`.
+
+### `eggsearch::call_repo_fetch(server, input, max_chars)`
+
+- Reads `url` or `repo`+`path` (required).
+- Reads optional `max_length` (default 10k).
+- Calls `call_tool(server, "repo_fetch", args)` with 60s timeout.
+- Clamps to `max_repo_output_chars`, frames with `frame_repo_file`.
+
+### `eggsearch::call_repo_map(server, input, max_chars)`
+
+- Reads `repo` (required).
+- Reads optional `path` (default root).
+- Calls `call_tool(server, "repo_map", args)` with 60s timeout.
+- Clamps to `max_repo_output_chars`, frames with `frame_repo_map`.
+
+### `eggsearch::call_security_search(server, input, max_chars)`
+
+- Reads `query` (required, non-empty).
+- Calls `call_tool(server, "security_search", args)` with 60s timeout.
+- Clamps to `max_security_output_chars` (default 10k), frames with
+  `frame_security_results`.
+
+### `eggsearch::call_research_search(server, input, max_chars)`
+
+- Reads `query` (required, non-empty).
+- Reads optional `num_results` (default 8, max 30).
+- Calls `call_tool(server, "research_search", args)` with 60s timeout.
+- Clamps to `max_research_output_chars` (default 15k), frames with
+  `frame_research_results`.
+
+### `eggsearch::call_batch_fetch(server, input, max_chars)`
+
+- Reads `urls` (required, non-empty array).
+- Reads optional `max_length_per_url` (default 10k).
+- Calls `call_tool(server, "batch_fetch", args)` with 60s timeout.
+- Clamps to `max_batch_output_chars` (default 50k), frames with
+  `frame_batch_results`.
+
+### `eggsearch::call_build_evidence_bundle(server, input, max_chars)`
+
+- Reads `sources` (required, array of source descriptors).
+- Calls `call_tool(server, "build_evidence_bundle", args)` with 60s timeout.
+- Clamps to `max_evidence_output_chars` (default 100k), frames with
+  `frame_evidence_bundle`.
+
 ### `legacy::call_web_search_legacy(registry, input, max_chars, timeout)`
 
 - Uses `SearchProviderRegistry::from_env()` to pick a provider.
@@ -139,6 +204,11 @@ expose_raw_mcp_tools = false
 fallback_to_builtin = false
 max_search_output_chars = 12000
 max_fetch_output_chars = 20000
+max_repo_output_chars = 15000
+max_security_output_chars = 10000
+max_research_output_chars = 15000
+max_batch_output_chars = 50000
+max_evidence_output_chars = 100000
 
 [search.eggsearch]
 enabled = true
@@ -194,7 +264,7 @@ lives in eggsearch.
 
 ## See also
 
-- [tool.md](tool.md) – the `websearch` and `webfetch` tools
+- [tool.md](tool.md) – the `websearch`, `webfetch`, and eggsearch wrapper tools
 - [mcp.md](mcp.md) – the `McpService` plumbing
 - [config.md](config.md) – config loading and validation
 - [security.md](security.md) – SSRF protection
