@@ -7,7 +7,7 @@ Rust 1.81+ required. Edition 2021. Tokio async runtime.
 ```bash
 cargo build --all-features           # build
 cargo clippy --all-features -- -D warnings  # lint (errors in CI)
-cargo test --all-features            # test everything
+CARGO_BUILD_JOBS=1 cargo test --workspace --all-features -- --test-threads=1  # full suite, capped
 cargo fmt                            # format
 ```
 
@@ -68,6 +68,22 @@ Run this after touching `codegg-core` or adding workspace crate dependencies.
 | `arboard` | Clipboard support (default) |
 
 Changes to server/plugin modules need `--all-features` testing. LSP integration tests need `lsp-test-support`.
+
+## Test Resource Budget
+
+The workspace test matrix is large. Prefer the narrowest crate, test file, or test name that covers a change before reaching for a workspace-wide run.
+
+When you do need the full suite locally, cap Cargo's build parallelism and keep the test harness serial:
+
+```bash
+CARGO_BUILD_JOBS=1 cargo test --workspace --all-features -- --test-threads=1
+```
+
+`--test-threads=1` only serializes cases inside each test binary. `CARGO_BUILD_JOBS=1` is what prevents the compile/link fan-out that drives the RAM and iowait spikes.
+
+Run `--all-features` and `lsp-test-support` paths as separate capped invocations when possible; those are the heaviest test paths in this repo.
+
+Follow `.codegg/skills/testing/SKILL.md` for the test selection pattern and the capped full-suite command.
 
 ## Testing
 
@@ -141,7 +157,7 @@ python3 scripts/generate_builtin_agents.py --check      # staleness + schema val
 python3 scripts/check_builtin_agents.py                 # verify TOML matches generated.rs
 cargo fmt --check                                        # formatting check
 cargo check --workspace                                  # compilation check
-cargo test --workspace                                   # all tests
+CARGO_BUILD_JOBS=1 cargo test --workspace -- --test-threads=1  # all tests, capped
 ```
 
 ## User/Project Agent Customization
@@ -380,17 +396,23 @@ CI runs on push/PR to dev/main: `agent-assets` → `fmt` → `check` → `clippy
 
 ## Architecture Docs
 
-`architecture/` has 44 docs covering every module. See the directory for full index. Key ones:
+`architecture/` has 44 docs covering every module. See `architecture/overview.md` for the full module map and navigation index. Key ones:
 
 | Document | Key Gotchas |
 |----------|-------------|
-| `architecture/overview.md` | Counts drift — verify against source |
-| `architecture/agent.md` | AgentLoop has ~49 fields |
-| `architecture/plugin.md` | No `wasm.rs`; `marketplace.rs` exists |
-| `architecture/lsp.md` | egglsp is authoritative; 39 servers |
-| `architecture/human_shell.md` | ! commands not in model context unless promoted; current behavior section summarizes full pipeline; Phase 1 adds `CommandOutputStore` + projection seam; Phase 2 adds the projector trait, `RawProjector`/`TruncatedProjector`/`ErrorRetentionProjector`, and the centralised `ProjectionSelector`; Phase 5+6 adds RTK discovery, strict wrapper grammar, real RTK invocation (PostProcess/Wrapper modes), and `ProjectionRawSemantics`; Phase 7 adds expansion API, `/shell-expand` command, and TUI detail panel with projection metadata |
+| `architecture/overview.md` | Module map, verified counts (105 commands, 42 events, 39 LSP servers, ~30 tools, 9 agents) |
+| `architecture/agent.md` | AgentLoop has ~49 fields at `src/agent/loop.rs:1380` |
+| `architecture/bus.md` | 42 AppEvent variants; PermissionRegistry/QuestionRegistry are synchronous |
+| `architecture/lsp.md` | egglsp is authoritative; 39 servers; `src/lsp/` is thin re-export shim |
+| `architecture/plugin.md` | No `wasm.rs`; `marketplace.rs` exists; PluginRuntime trait with Process/Wasm/Builtin |
+| `architecture/tool.md` | ~30 tools in default registry; `ToolCatalog::register()` takes `&dyn Tool` |
+| `architecture/tui.md` | `src/tui/app/mod.rs` ~13K lines; async command pattern; TuiTaskRegistry lifecycle |
+| `architecture/human_shell.md` | ! commands not in model context unless promoted; Phases 1-10 projection pipeline |
+| `architecture/command.md` | 105 built-in slash commands |
+| `architecture/config.md` | Config schema in `crates/codegg-config/src/schema.rs` |
+| `architecture/provider.md` | 16 auto-registered providers via env vars; CircuitBreaker pattern |
 
-`.codegg/skills/*/SKILL.md` contain 44 module-specific skill guides loaded on-demand via `/skill:`.
+`.agents/skills/*/SKILL.md` contain 45 module-specific skill guides loaded on-demand via `/skill:`.
 
 ## Key Lessons
 

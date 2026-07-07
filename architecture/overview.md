@@ -125,7 +125,7 @@ hidden by default — see [MCP](mcp.md)).
 ### Tools
 - `Tool` trait - All tools implement `name()`, `description()`, `parameters()`, `execute()`
 - Optional `execute_structured()` (default impl wraps `execute()`) — see `src/tool/backend.rs`
-- 30 built-in tools in default registry (bash, read, edit, write, glob, grep, task, webfetch, etc.)
+- ~30 built-in tools in default registry (bash, read, edit, write, glob, grep, task, webfetch, etc.)
 - `ToolCatalog::register()` takes `&dyn Tool` (not `Box<dyn Tool>`)
 - `ToolRegistry::with_options(ToolRegistryOptions)` is the authoritative registration sequence; `with_defaults()` and the two session constructors `with_session_config_defaults(&Config, ...)` / `with_session_defaults(...)` are thin wrappers (production session code uses the config-aware one to preserve `[tool_backends]`)
 - `Tool::expose_in_definitions()` (default `true`, overridden to `false` by `DisabledTool`) is the model-facing predicate; `ToolRegistry::definitions()` and `AgentLoop::build_tool_definitions()` both filter through it
@@ -164,7 +164,7 @@ hidden by default — see [MCP](mcp.md)).
 | Native tool crates | 9 | `crates/` (codegg-core, codegg-config, codegg-protocol, codegg-providers, egglsp, egggit, eggsentry, eggcontext, egglsp-test-server) |
 | UiState fields | 30 | `tui/app/state/ui.rs:40-98` |
 | AppEvent variants | 42 | `crates/codegg-core/src/bus/events.rs:61-265` |
-| Built-in commands | 96 | `tui/command.rs` |
+| Built-in commands | 105 | `tui/command.rs` (assertion at line 517) |
 | Built-in agents | 9 | `agent/mod.rs:154-423` |
 
 ## Feature Gates

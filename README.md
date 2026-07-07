@@ -933,29 +933,28 @@ Control specific bash commands with patterns:
 
 ```
 src/
-├── agent/        # Agent loop and state management
+├── agent/        # Agent loop, compaction, routing, team coordination
 ├── auth/         # AuthConfig, Credential, AuthResolver, user credential store (re-exports from codegg-providers)
-├── bus/          # Event bus for internal messaging
+├── bus/          # Event bus for internal messaging (re-exports from codegg-core)
 ├── client/       # Client for server mode
 ├── command/      # CLI command implementations
 ├── config/       # Configuration (re-exports from codegg-config)
-├── lsp/          # Language Server Protocol support
+├── lsp/          # Language Server Protocol support (thin shim; authoritative impl in crates/egglsp)
 ├── mcp/          # Model Context Protocol client
-├── permission/   # Permission checking
-├── plugin/       # WASM plugin system
+├── permission/   # Permission checking, DoomLoop detection, mode system
+├── plugin/       # WASM plugin system with process/wasm/builtin runtimes
 ├── provider/     # LLM providers (re-exports from codegg-providers)
-├── examples/     # Reference plugins and SDKs (process, wasm, Python, Rust)
-├── pty/          # Pseudo-terminal support
-├── server/       # HTTP server
-├── session/      # Session management and storage
-├── skills/       # Skill system
-├── snapshot/     # State snapshots
-├── storage/      # SQLite storage layer
-├── tool/         # Built-in tools (bash, read, edit, etc.)
-├── tui/          # Terminal UI
+├── security/     # SSRF protection, Landlock sandboxing, security review workflow
+├── server/       # HTTP/WebSocket server (feature-gated behind `server`)
+├── session/      # Session management and storage (re-exports from codegg-core)
+├── shell/        # Human shell (! commands), projection pipeline, RTK integration
+├── skills/       # Skill system (re-exports from codegg-config)
+├── snapshot/     # State snapshots (re-exports from codegg-core)
+├── storage/      # SQLite storage layer (re-exports from codegg-core)
+├── tool/         # ~30 built-in tools (bash, read, edit, grep, glob, lsp, git, etc.)
+├── tui/          # Terminal UI (app, components, runtime, commands)
 ├── upgrade/      # Self-upgrade functionality
-├── util/         # Utilities
-└── research/     # Research pipeline
+├── util/         # Utilities (clipboard, fuzzy search, pricing, metrics)
 
 crates/
 ├── codegg-config/      # Configuration schema, paths, loading, validation, watching
@@ -965,8 +964,8 @@ crates/
 ├── eggsentry/          # Security scanning (secrets, commands, deps, profiles)
 ├── eggcontext/         # Token counting and context utilities
 ├── egggit/             # Read-only git facts (status, diff, changed files)
-├── egglsp/             # Language Server Protocol client/service/operations
-└── egglsp-test-server/ # Fake LSP server source tree used by egglsp integration tests
+├── egglsp/             # Language Server Protocol client/service/operations (39 servers)
+└── egglsp-test-server/ # Fake LSP server binary for integration tests
 ```
 
 ## Security

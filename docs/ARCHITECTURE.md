@@ -6,11 +6,42 @@ codegg is a high-performance AI coding agent built in Rust. It uses Tokio for as
 
 ## Module Structure
 
+### Workspace Crates (`crates/`)
+
+Core logic is extracted into workspace crates. The root `src/` re-exports many of these.
+
+```
+crates/
+├── codegg-config/       # Configuration schema, paths, loading, validation, file watching
+├── codegg-core/         # Domain types: bus, error, goal, memory, session, storage, snapshot, worktree, resilience
+│   ├── src/bus/         #   GlobalEventBus, PermissionRegistry, QuestionRegistry (42 AppEvent variants)
+│   ├── src/error.rs     #   AppError, ToolError, ProviderError, is_retryable
+│   ├── src/goal/        #   Goal tracking and management
+│   ├── src/memory/      #   Persistent memory for session-to-session learning
+│   ├── src/session/     #   Session storage, MessageStore, schema migrations (v1-v12)
+│   ├── src/storage/     #   SQLite storage abstractions
+│   ├── src/snapshot/    #   File state capture and restore
+│   ├── src/worktree/    #   Git worktree management
+│   └── src/resilience/  #   CircuitBreaker, retry logic
+├── codegg-protocol/     # Core protocol types (CoreRequest, CoreResponse, CoreEvent, TuiMessage)
+├── codegg-providers/    # LLM provider implementations, auth types, CircuitBreaker (16+ providers)
+├── eggsentry/           # Security scanning (secrets, commands, dependency auditing)
+├── eggcontext/          # Token counting and context utilities
+├── egggit/              # Read-only git facts (status, diff, changed files)
+├── egglsp/              # Language Server Protocol client/service/operations (39 servers)
+└── egglsp-test-server/  # Fake LSP server binary for integration tests
+```
+
+### Application (`src/`)
+
+Root `src/` is the application layer: agent loop, TUI, tools, server, auth, plugins.
+
 ```
 src/
-├── agent/              # Main agent loop, message processing, worker pool, task scheduling
-│   ├── mod.rs           # Agent struct, builtin_agents(), resolve_agents()
-│   ├── loop.rs          # AgentLoop - main execution flow
+├── agent/               # Agent loop, compaction, routing, team coordination
+│   ├── mod.rs           # Agent struct, builtin_agents(), resolve_agents(), AgentRegistry
+│   ├── loop.rs          # AgentLoop (~49 fields) - main execution flow
+│   ├── loop_factory.rs  # AgentLoopFactory - build-only seam
 │   ├── worker.rs        # SubAgentPool, run_subagent_task, bounded concurrency (5)
 │   ├── compaction.rs    # Context tracking, auto-compaction, adaptive strategies
 │   ├── task.rs          # BackgroundScheduler, task persistence (load/save/update)
@@ -18,181 +49,63 @@ src/
 │   ├── prompt.rs        # Prompt building, system prompts, agent config application
 │   ├── processor.rs     # Message processing utilities
 │   ├── mention.rs       # @ mention subagent parsing
-│   └── prompts/         # Prompt templates directory
-├── bus/                # Event bus system (GlobalEventBus)
-│   ├── mod.rs           # GlobalEventBus, PermissionRegistry, QuestionRegistry
-│   ├── events.rs        # AppEvent definitions (TextDelta, ToolCallStarted, etc.)
-│   └── global.rs        # Global event bus singleton
-├── client/             # API client utilities
-├── command/            # Slash command registry and routing
-├── config/             # Configuration loading and validation
-│   ├── mod.rs           # Config struct, loading logic
-│   └── schema.rs        # JSON schema definitions (agents, skills, permissions)
-├── error.rs            # Central error types (AppError, ToolError, ProviderError, etc.)
-├── hooks/              # Hooks system for agent loop lifecycle events
-│   └── mod.rs          # HookEvent enum (PreToolExecute, PostToolExecute, SessionStart, etc.)
-├── ide/                # IDE integration (VS Code, JetBrains diff viewing)
-│   └── mod.rs          # IDE MCP server for openDiff tool
-├── lsp/                # Language Server Protocol support
-├── mcp/                # MCP (Model Context Protocol) client/server
-│   ├── mod.rs           # McpService, ToolRegistry integration
-│   ├── local.rs         # Local MCP server connections (stdio)
-│   ├── remote.rs        # Remote MCP with OAuth, DNS rebinding protection
-│   ├── ide_server.rs    # IDE MCP server for diff viewing
-│   └── auth.rs          # OAuth flow for MCP
-├── memory/             # Persistent memory system for session-to-session learning
-│   └── mod.rs          # MemoryStore, save() persistence, superseded_by field
-├── model/              # Model definitions and flags (if separate from provider)
-├── permission/         # Access control and path restrictions
-│   ├── mod.rs           # PermissionChecker, PathCache, PATH_CANONICALIZE_CACHE_TTL_SECS=1
-│   └── rule.rs         # ToolRule pattern matching (glob patterns like "git *")
-├── plugin/             # Plugin system with WASM/process/builtin runtimes
-│   ├── mod.rs           # Plugin module exports
+│   ├── router.rs        # Model auto-routing by task complexity
+│   ├── team.rs          # Multi-agent teams via file-based inbox
+│   └── prompts/         # Prompt templates (default.txt, anthropic.txt, etc.)
+├── auth/                # AuthConfig, Credential, AuthResolver (re-exports from codegg-providers)
+├── command/             # Slash command registry and routing (105 built-in commands)
+├── error.rs             # Central error types + AxumAppError (feature-gated)
+├── hooks/               # Hooks system for agent loop lifecycle events
+├── ide/                 # IDE integration (VS Code, JetBrains diff viewing)
+├── lsp/                 # LSP shim (authoritative impl in crates/egglsp)
+├── mcp/                 # MCP (Model Context Protocol) client/server
+├── permission/          # Access control, DoomLoop detection, mode system
+│   ├── mod.rs           # PermissionChecker, PathCache
+│   └── rule.rs          # ToolRule pattern matching (glob patterns)
+├── plugin/              # Plugin system with WASM/process/builtin runtimes
 │   ├── registry.rs      # PluginRegistry, capability indexing
 │   ├── management.rs    # PluginManager (install/enable/disable/remove)
 │   ├── lifecycle.rs     # Plugin lifecycle management
 │   ├── service.rs       # PluginService, hook dispatch
-│   ├── loader.rs        # Module caching with DashMap, mtime-based invalidation
-│   ├── marketplace.rs   # Plugin marketplace integration
-│   ├── install.rs       # Plugin install validation, path traversal checks
-│   ├── manifest.rs      # Manifest parsing and validation
-│   ├── permission.rs    # Plugin permission system
 │   ├── policy.rs        # PluginPolicy (lifecycle, UI, permission, install, runtime)
-│   ├── api.rs           # Plugin API surface
-│   ├── hooks.rs         # Hook dispatch system
-│   ├── event_bus.rs     # Plugin event bus integration
-│   ├── management_ui.rs # Management UI rendering
-│   ├── tui.rs           # TUI integration (legacy)
 │   ├── builtin/         # Built-in plugins (poe, gitlab, copilot, codex)
-│   └── runtime/         # Runtime implementations
-│       ├── mod.rs       # Runtime trait and dispatch
-│       ├── process.rs   # ProcessRuntime (subprocess execution)
-│       ├── wasm.rs      # WasmRuntime (WASM execution via wasmtime)
-│       ├── wasm_cache.rs # WASM module caching
-│       └── builtin.rs   # BuiltinRuntime (in-process execution)
-├── provider/           # LLM providers — re-export from `crates/codegg-providers`
-│   └── (see crates/codegg-providers/src/)  # anthropic, openai, google, azure, bedrock, etc.
-├── pty/                # PTY (pseudo-terminal) support
-├── resilience/         # Circuit breaker and resilience patterns
-│   └── mod.rs          # CircuitBreaker, retry logic
-├── server/             # HTTP server (Axum, feature-gated)
-│   ├── http.rs          # Route setup, CORS (localhost defaults, never permissive), security headers
-│   ├── ws.rs            # WebSocket handler, returns 500 for missing config
+│   └── runtime/         # ProcessRuntime, WasmRuntime, BuiltinRuntime
+├── provider/            # LLM providers — re-export from crates/codegg-providers
+├── security/            # SSRF protection, Landlock sandboxing, security review workflow
+├── server/              # HTTP server (Axum, feature-gated behind `server` feature)
+│   ├── http.rs          # Route setup, CORS (localhost defaults), security headers
+│   ├── ws.rs            # WebSocket handler
 │   ├── routes/          # Route handlers (events, auth)
-│   └── middleware/      # Auth middleware (applied to /api routes), rate limiting
-├── session/            # Session storage and management (split module)
-│   ├── mod.rs           # Re-exports, core types
-│   ├── store.rs         # SessionStore (68KB), MessageStore, bulk operations
-│   ├── models.rs        # Session, Message, SessionRow structs
-│   ├── row.rs            # Row conversion utilities
-│   ├── import.rs        # Session import/export (Codegg, Claude, etc.)
-│   ├── schema.rs        # Database migrations (v1-v12), task table
-│   ├── status.rs        # SessionStatus, Analytics
-│   ├── message.rs       # Message types, ToolStatus
-│   └── checkpoint.rs    # Session checkpointing
-├── skills/             # Skill system for agent capabilities
-│   └── mod.rs          # Skill loading from markdown files with YAML frontmatter
-├── snapshot/           # Snapshot support for file state
-├── storage/            # Storage abstractions
-├── tts/                # Text-to-speech module
-│   └── mod.rs          # Tts struct, TtsEngine trait, Ctrl+Y toggle, Ctrl+Shift+Y stop
-├── tool/               # Built-in tools
+│   └── middleware/      # Auth middleware, rate limiting
+├── session/             # Session storage — re-export from codegg-core
+├── shell/               # Human shell (! commands), projection pipeline, RTK integration
+├── skills/              # Skill system — re-export from codegg-config
+├── snapshot/            # File state capture — re-export from codegg-core
+├── storage/             # Storage abstractions — re-export from codegg-core
+├── tool/                # ~30 built-in tools and backend abstractions
 │   ├── mod.rs           # Tool trait, ToolRegistry, tool definition caching
-│   ├── bash.rs          # BashTool, BLOCKED_PATTERNS (52 regex), env_clear(), &&/|| blocking
-│   ├── read.rs          # ReadTool, symlink check, unrestricted bypass
-│   ├── write.rs         # WriteTool, unrestricted bypass
-│   ├── edit.rs          # EditTool, unrestricted bypass
-│   ├── replace.rs       # ReplaceTool, unrestricted bypass
-│   ├── multiedit.rs     # MultiEditTool, unrestricted bypass
-│   ├── apply_patch.rs   # ApplyPatchTool, unrestricted bypass
-│   ├── glob.rs          # GlobTool, symlink skipping
-│   ├── grep.rs          # GrepTool, symlink skipping
-│   ├── list.rs          # ListTool, symlink skipping
-│   ├── webfetch.rs      # WebFetchTool, SSRF protection, DNS revalidation
-│   ├── websearch.rs     # WebSearchTool
-│   ├── codesearch.rs    # CodeSearchTool
-│   ├── commit.rs        # CommitTool, LLM-generated commit messages
-│   ├── diff.rs          # DiffTool
+│   ├── bash.rs          # BashTool, BLOCKED_PATTERNS, env_clear()
+│   ├── read.rs          # ReadTool, symlink check
+│   ├── write.rs         # WriteTool
+│   ├── edit.rs          # EditTool
+│   ├── apply_patch.rs   # ApplyPatchTool
+│   ├── glob.rs          # GlobTool
+│   ├── grep.rs          # GrepTool
+│   ├── webfetch.rs      # WebFetchTool, SSRF protection
 │   ├── lsp.rs           # LspTool, Language Server Protocol integration
-│   ├── task.rs          # TaskTool, TaskStore (in-memory HashMap, no persistence)
 │   ├── terminal.rs      # TerminalTool, PTY-based terminal
-│   ├── todo.rs          # TodoTool
-│   ├── plan.rs          # PlanTool
-│   ├── question.rs      # QuestionTool
-│   ├── skill.rs         # SkillTool
-│   ├── batch.rs         # BatchTool, parallel tool execution
-│   ├── git.rs           # Git utilities
-│   ├── formatter.rs     # Output formatting
-│   ├── executor.rs      # Tool execution utilities
-│   ├── invalid.rs       # Invalid tool placeholder
-│   └── util.rs          # validate_path(), canonicalize_path(), symlink checking
-├── tui/                # Terminal user interface
-│   ├── app/              # Main TUI application
-│   │   ├── mod.rs         # App struct, event handling, state management (~13K lines)
-│   │   ├── types.rs       # CompletionType, Dialog, HistoryEntry, SessionStatus, TodoEntry
-│   │   └── state/         # UiState, SessionState, and other UI state management
-│   ├── components/       # UI widgets
-│   │   ├── mod.rs         # Component exports
-│   │   ├── messages.rs    # Message display widget (47KB)
-│   │   ├── sidebar.rs     # Sidebar widget with tooltips
-│   │   ├── prompt.rs      # Prompt input widget
-│   │   ├── status_bar.rs   # Bottom status bar (status, transient indicators, token usage)
-│   │   ├── dialogs/       # Dialog implementations
-│   │   │   ├── mod.rs     # Dialog exports
-│   │   │   ├── session.rs # SessionDialog with bulk mode (b key), sort/filter
-│   │   │   ├── model.rs   # Model selection dialog (Ctrl+L)
-│   │   │   ├── agent.rs   # Agent selection dialog
-│   │   │   ├── permission.rs # Permission dialog (Allow/Deny/Ask)
-│   │   │   ├── question.rs  # Question dialog
-│   │   │   ├── plan.rs      # Plan dialog
-│   │   │   ├── goto.rs      # GotoDialog (jump-to-message)
-│   │   │   ├── import.rs    # Import dialog
-│   │   │   ├── connect.rs   # Connection dialog (MCP)
-│   │   │   ├── confirm.rs   # Confirmation dialog
-│   │   │   ├── keybind.rs   # Keybind dialog
-│   │   │   ├── mcp.rs       # MCP browser dialog
-│   │   │   ├── share.rs     # Share dialog
-│   │   │   ├── template.rs # Template dialog
-│   │   │   ├── theme.rs     # Theme picker dialog
-│   │   │   ├── tree.rs      # Tree dialog
-│   │   │   ├── help.rs      # Help overlay
-│   │   │   ├── command.rs   # Command palette dialog
-│   │   │   ├── diff.rs      # Diff viewer dialog
-│   │   │   ├── info.rs      # Scrollable info dialog
-│   │   │   ├── plugin.rs    # Plugin dialog (generic)
-│   │   │   ├── research.rs  # Research results dialog
-│   │   │   ├── review.rs    # Code review dialog
-│   │   │   ├── security_review.rs # Security review dialog
-│   │   │   ├── source_preview.rs # Source preview dialog
-│   │   │   └── ui_node.rs   # Plugin UI node renderer
-│   │   ├── completion_overlay.rs # Completion popup (path detection, file/dir icons)
-│   │   ├── toast.rs       # Toast notification manager
-│   │   ├── spinner.rs     # Spinner widget
-│   │   ├── scroll.rs      # Scroll utilities
-│   │   └── tool_output.rs # Tool output display
-│   ├── runtime/          # TUI runtime (async command dispatch, event loop)
-│   │   ├── mod.rs        # Runtime module exports
-│   │   ├── command_dispatch.rs # TuiCommand dispatch handlers
-│   │   ├── event_loop.rs # Main event loop
-│   │   ├── app_events.rs # Application event processing
-│   │   └── render_recovery.rs # Render panic recovery
-│   ├── input.rs         # Input handling, keybindings (InputAction, KeybindConfig)
-│   ├── layout.rs        # Layout configuration (LayoutConfig, TuiLayout)
-│   ├── theme.rs         # Theme definitions (uses Arc<Theme> to avoid cloning)
-│   └── route.rs         # Route management (Route, RouteManager)
-├── upgrade/            # Self-upgrade functionality
-├── util/               # Utility functions
-│   ├── fuzzy.rs        # Fuzzy matching for search
-│   └── time.rs         # Time utilities
+│   └── ...              # ~20 more tools (commit, diff, task, todo, plan, etc.)
+├── tui/                 # Terminal user interface
+│   ├── app/             # Main TUI application (~13K lines)
+│   │   ├── mod.rs       # App struct, event handling, state management
+│   │   ├── types.rs     # Dialog, CompletionType, HistoryEntry, SessionStatus
+│   │   └── state/       # UiState, SessionState, UI state management
+│   ├── commands/        # TuiCommand dispatch handlers (12+ submodules)
+│   ├── components/      # UI widgets (messages, sidebar, prompt, dialogs/, etc.)
+│   └── runtime/         # Async command dispatch, event loop, render recovery
+├── upgrade/             # Self-upgrade functionality
+└── util/                # Utility functions (clipboard, fuzzy matching, pricing, metrics)
 ```
-
-**Note**: Several modules have been extracted to workspace crates:
-- `bus/`, `memory/`, `session/`, `storage/`, `snapshot/`, `worktree/`, `resilience/` → `crates/codegg-core/`
-- `config/` → `crates/codegg-config/`
-- `provider/` → `crates/codegg-providers/` (re-exported at root as `codegg::provider`)
-- `error/` → `crates/codegg-core/src/error.rs` (re-exported at root)
-- `lsp/` → `crates/egglsp/` (src/lsp/ is now a thin shim)
-- `git/` → `crates/egggit/` (src/git/ removed, src/tool/git.rs remains)
 
 ## Key Architectural Patterns
 
