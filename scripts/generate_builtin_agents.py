@@ -254,8 +254,8 @@ def _build_generated_rs(agents: list[tuple[str, str]]) -> str:
     return (
         f"{HEADER}\n"
         "\n"
-        "use std::collections::HashMap;\n"
         "use crate::agent::{Agent, AgentMode, AgentRuntimeKind};\n"
+        "use std::collections::HashMap;\n"
         "\n"
         "pub fn generated_builtin_agents() -> Vec<Agent> {\n"
         "    vec![\n"

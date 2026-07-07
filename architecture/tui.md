@@ -972,7 +972,7 @@ The following Phase 8 items are defined in the plan but deferred for future work
 
 ## Testing
 
-TUI render regression tests live in `tests/tui_render.rs` (95 tests). They use `ratatui::backend::TestBackend` to exercise `App::render()` across multiple terminal sizes without requiring an interactive terminal. Component-level panic injection tests verify fallback behavior for messages, sidebar, dialog, completions, and timeline surfaces.
+TUI render regression tests live in `tests/tui_render.rs` (97 tests). They use `ratatui::backend::TestBackend` to exercise `App::render()` across multiple terminal sizes without requiring an interactive terminal. Component-level panic injection tests verify fallback behavior for messages, sidebar, dialog, completions, and timeline surfaces.
 
 **Run all render regression tests:**
 

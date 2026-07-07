@@ -314,7 +314,7 @@ CI runs on push/PR to dev/main: `agent-assets` → `fmt` → `check` → `clippy
 
 ### TUI
 
-- **TUI render.rs doesn't exist**: `src/tui/app/` contains `mod.rs` (~13K lines) and `types.rs`. Command handlers are in `src/tui/commands/` (12 submodules). Runtime is in `src/tui/runtime/` (event_loop, command_dispatch, app_events, render_recovery).
+- **TUI render.rs doesn't exist**: `src/tui/app/` contains `mod.rs` (~13K lines) and `types.rs`. Command handlers are in `src/tui/commands/` (13 submodules). Runtime is in `src/tui/runtime/` (event_loop, command_dispatch, app_events, render_recovery).
 - **Dialog::Info doesn't exist**: Despite `src/tui/components/dialogs/info.rs` existing, `Dialog::Info` is NOT in the Dialog enum (`src/tui/app/types.rs`).
 - **DialogType is in component.rs**, not `types.rs`. FocusManager is in `component/focus.rs`.
 - **Dialog::Plugin is generic**: A single `Dialog::Plugin` variant handles all plugin dialogs. Plugin dialog content is stored in `PluginUiState.dialogs` and rendered via `PluginDialog` component.
