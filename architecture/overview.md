@@ -87,6 +87,7 @@ hidden by default — see [MCP](mcp.md)).
 | [client/](client.md) | Remote TUI WebSocket client with resume/replay | `attach.rs` |
 | [command/](command.md) | Slash command registry from markdown files | `mod.rs` |
 | [config/](config.md) | Configuration loading, validation, file watching — in `crates/codegg-config` | `schema.rs`, `paths.rs`, `watcher.rs` |
+| [context/](context-ledger.md) | Token counting and context utilities (tiktoken) — in `crates/eggcontext` | `lib.rs` |
 | [core/](core.md) | Core facade, transport adapters, request handling | `mod.rs`, `transport/` |
 | [crypto/](crypto.md) | AES-256-GCM encryption, Argon2id key derivation | `mod.rs` |
 | [error/](error.md) | Centralized AppError enum with error classification | `mod.rs` |
@@ -96,19 +97,25 @@ hidden by default — see [MCP](mcp.md)).
 | [lsp/](lsp.md) | LSP wrapper (implementation in `crates/egglsp`) | `mod.rs` (re-exports) |
 | [mcp/](mcp.md) | Model Context Protocol client (local/remote) | `local.rs`, `remote.rs`, `auth.rs` |
 | [memory/](memory.md) | Persistent memory across sessions | `mod.rs` |
+| [model_profile/](model_profile_task_state.md) | Model behavioral profiles and task state policy — in `crates/codegg-core` | `types.rs`, `resolve.rs`, `policy.rs` |
 | [permission/](permission.md) | Access control, DoomLoop detection, mode system | `mod.rs`, `modes.rs` |
 | [plugin/](plugin.md) | WASM plugin system with hooks and fuel tracking | `loader.rs`, `service.rs`, `manifest.rs` |
 | [provider/](provider.md) | LLM providers — in `crates/codegg-providers` | `mod.rs`, `anthropic.rs`, `fallback.rs` |
 | [protocol/](protocol.md) | Shared request/response envelopes — in `crates/codegg-protocol` | `core.rs`, `tui.rs` |
+| [research/](research.md) | Structured research pipeline: source collection → evidence → claims → verification | `coordinator.rs`, `types.rs`, `store.rs`, `claims.rs`, `verify.rs` |
 | [resilience/](resilience.md) | Circuit breaker, retry mechanisms | `circuit.rs` |
+| [search/](search_backend.md) | Web search and fetch tools (builtin + MCP backend) | `mod.rs`, `websearch.rs`, `webfetch.rs` |
 | [security/](security.md) | SSRF protection, Landlock sandboxing; scanning core in `crates/eggsentry` | `ssrf.rs`, `sandbox.rs` |
 | [server/](server.md) | HTTP/WebSocket server for remote TUI | `http.rs`, `ws.rs`, `routes/` |
 | [session/](session.md) | SQLite session storage, message history | `store.rs`, `schema.rs`, `message.rs` |
+| [shell/](human_shell.md) | Human shell commands, projection pipeline (Phases 1–10), policy evaluation | `mod.rs`, `runtime.rs`, `projector.rs`, `redactor.rs`, `rtk.rs` |
 | [shell_session/](shell_session.md) | Shell session metadata (no PTY) | `mod.rs` |
 | [skills/](skills.md) | Runtime skill loader and activation | `mod.rs` |
 | [snapshot/](snapshot.md) | File state capture and restore | `mod.rs` |
 | [storage/](storage.md) | SQLite initialization and connection pooling | `mod.rs` |
-| [tool/](tool.md) | Built-in tools (30 tools in default registry) and backend abstractions | `mod.rs`, `backend.rs`, `bash.rs`, `read.rs`, etc. |
+| [task_state/](model_profile_task_state.md) | Todo/task state machine, injection, and projection | `mod.rs` |
+| [theme/](theme.md) | Frontend-neutral theme system (SemanticTheme → ratatui) | `schema.rs`, `registry.rs`, `native.rs`, `halloy.rs`, `target/` |
+| [tool/](tool.md) | Built-in tools (~38 tools in default registry) and backend abstractions | `mod.rs`, `backend.rs`, `bash.rs`, `read.rs`, etc. |
 | [tts/](tts.md) | Text-to-speech (macOS `say` command) | `mod.rs` |
 | [tui/](tui.md) | Terminal user interface (Ratatui) | `app/mod.rs`, `components/` |
 | [upgrade/](upgrade.md) | Self-upgrade via GitHub releases | `mod.rs` |
@@ -125,7 +132,7 @@ hidden by default — see [MCP](mcp.md)).
 ### Tools
 - `Tool` trait - All tools implement `name()`, `description()`, `parameters()`, `execute()`
 - Optional `execute_structured()` (default impl wraps `execute()`) — see `src/tool/backend.rs`
-- ~30 built-in tools in default registry (bash, read, edit, write, glob, grep, task, webfetch, etc.)
+- ~38 built-in tools in default registry (bash, read, edit, write, glob, grep, task, webfetch, etc.)
 - `ToolCatalog::register()` takes `&dyn Tool` (not `Box<dyn Tool>`)
 - `ToolRegistry::with_options(ToolRegistryOptions)` is the authoritative registration sequence; `with_defaults()` and the two session constructors `with_session_config_defaults(&Config, ...)` / `with_session_defaults(...)` are thin wrappers (production session code uses the config-aware one to preserve `[tool_backends]`)
 - `Tool::expose_in_definitions()` (default `true`, overridden to `false` by `DisabledTool`) is the model-facing predicate; `ToolRegistry::definitions()` and `AgentLoop::build_tool_definitions()` both filter through it
@@ -159,7 +166,7 @@ hidden by default — see [MCP](mcp.md)).
 
 | Item | Count | Location |
 |------|-------|----------|
-| Tools (default registry) | ~30 | `tool/mod.rs:234-406` |
+| Tools (default registry) | ~38 | `tool/mod.rs:with_options()` |
 | LSP servers | 39 | `crates/egglsp/src/server.rs` |
 | Native tool crates | 9 | `crates/` (codegg-core, codegg-config, codegg-protocol, codegg-providers, egglsp, egggit, eggsentry, eggcontext, egglsp-test-server) |
 | UiState fields | 30 | `tui/app/state/ui.rs:40-98` |
@@ -234,21 +241,25 @@ User Input → TUI Event Loop → App::on_key() → State Mutation → Render
 - [Command](command.md) - Slash command registry
 - [Compaction](compaction.md) - Context window overflow management
 - [Config](config.md) - Configuration loading and validation
+- [Context](context-ledger.md) - Token counting and context utilities
 - [Core](core.md) - CoreClient facade and transports
 - [Crypto](crypto.md) - API key encryption
 - [Error](error.md) - Centralized error handling
 - [Exec](exec.md) - Non-interactive execution mode
 - [Git](git.md) - Git session management
 - [Hooks](hooks.md) - Lifecycle hooks
+- [Human Shell](human_shell.md) - Shell command execution and projection pipeline
 - [IDE](ide.md) - VS Code/JetBrains integration
 - [LSP](lsp.md) - Language Server Protocol
 - [MCP](mcp.md) - Model Context Protocol
 - [Memory](memory.md) - Persistent memory system
+- [Model Profile & Task State](model_profile_task_state.md) - Model behavioral profiles, todo/task state machine
 - [Native Crates](native_crates.md) — Workspace crates (egglsp, egggit, eggsentry, eggcontext, codegg-config, codegg-protocol, codegg-providers), backend contract, raw MCP exposure policy, diagnostics
 - [Permission](permission.md) - Access control and modes
 - [Plugin](plugin.md) - WASM plugin system
 - [Protocol](protocol.md) - Shared request/response envelopes
 - [Provider](provider.md) - LLM provider implementations
+- [Research](research.md) - Structured research pipeline
 - [Resilience](resilience.md) - Circuit breaker patterns
 - [Security](security.md) - SSRF, sandboxing
 - [Server](server.md) - HTTP/WebSocket for remote TUI
@@ -257,6 +268,7 @@ User Input → TUI Event Loop → App::on_key() → State Mutation → Render
 - [Skills](skills.md) - Runtime skill loader
 - [Snapshot](snapshot.md) - File state capture and restore
 - [Storage](storage.md) - SQLite initialization
+- [Theme](theme.md) - Frontend-neutral theme system
 - [Tool](tool.md) - Tool system and registry
 - [TTS](tts.md) - Text-to-speech
 - [TUI](tui.md) - Terminal user interface
