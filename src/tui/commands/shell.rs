@@ -707,7 +707,8 @@ pub(crate) fn handle_shell_show(app: &mut app::App, id: u64) {
     let shell_footer =
         "i include  |  a ask  |  r rerun  |  k kill  |  e expand  |  j/k scroll  |  Esc close"
             .to_string();
-    if app.dialog_state.shell_detail_dialog.is_none() {
+    let just_created = app.dialog_state.shell_detail_dialog.is_none();
+    if just_created {
         let mut dialog = crate::tui::components::dialogs::info::InfoDialog::new(
             std::sync::Arc::clone(&app.ui_state.theme),
             info_type,
@@ -723,7 +724,9 @@ pub(crate) fn handle_shell_show(app: &mut app::App, id: u64) {
     }
     if let Some(ref dialog) = app.dialog_state.shell_detail_dialog {
         app.dialog_state.shell_detail_id = Some(id);
-        app.focus_manager.push(Box::new(dialog.clone()));
+        if just_created {
+            app.focus_manager.push(Box::new(dialog.clone()));
+        }
         app.ui_state.dialog = crate::tui::Dialog::ShellShow;
     }
 }
@@ -831,7 +834,8 @@ pub(crate) fn handle_shell_expand(
 
             let info_type = crate::tui::components::dialogs::info::InfoType::ShellShow;
             let footer = "j/k scroll  |  / search  |  Esc close".to_string();
-            if app.dialog_state.shell_detail_dialog.is_none() {
+            let just_created = app.dialog_state.shell_detail_dialog.is_none();
+            if just_created {
                 let mut dialog = crate::tui::components::dialogs::info::InfoDialog::new(
                     std::sync::Arc::clone(&app.ui_state.theme),
                     info_type,
@@ -847,7 +851,9 @@ pub(crate) fn handle_shell_expand(
             }
             if let Some(ref dialog) = app.dialog_state.shell_detail_dialog {
                 app.dialog_state.shell_detail_id = Some(id);
-                app.focus_manager.push(Box::new(dialog.clone()));
+                if just_created {
+                    app.focus_manager.push(Box::new(dialog.clone()));
+                }
                 app.ui_state.dialog = crate::tui::Dialog::ShellShow;
             }
         }

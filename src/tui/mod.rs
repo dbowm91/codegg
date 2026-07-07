@@ -646,6 +646,31 @@ mod shell_dispatch_tests {
             "should show no-output message, got: {text}"
         );
     }
+
+    #[test]
+    fn shell_show_repeated_does_not_stack_focus_entries() {
+        let mut app = make_test_app();
+        insert_completed_entry(
+            &mut app,
+            5,
+            "cargo test",
+            b"running 1 test\nok\n",
+            b"",
+            Some(0),
+        );
+        handle_shell_show(&mut app, 5);
+        let len_after_first = app.focus_manager.len();
+        assert_eq!(
+            len_after_first, 1,
+            "first /shell-show should push exactly one focus entry"
+        );
+        handle_shell_show(&mut app, 5);
+        assert_eq!(
+            app.focus_manager.len(),
+            len_after_first,
+            "subsequent /shell-show must reuse the existing focus entry, not stack duplicates"
+        );
+    }
 }
 
 #[cfg(test)]

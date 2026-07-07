@@ -2153,6 +2153,7 @@ impl App {
                     .diagnostics
                     .record_component_render_panic("dialog");
                 self.ui_state.dialog = Dialog::None;
+                self.focus_manager.pop();
             }
         } else {
             self.dialog_area = None;
@@ -2397,7 +2398,7 @@ impl App {
                 1,
             ));
         }
-        if header_area.height > 0 {
+        if header_area.height > 0 && footer_area.height > 0 && content_area.width > 0 {
             // Corner cells: top-left, top-right, bottom-left, bottom-right.
             // Drawn after the header and footer widgets (which supply the
             // horizontal lines) so the corner glyphs overwrite the line
@@ -2942,17 +2943,13 @@ impl App {
             TuiMsg::OpenSessionDialog => self.open_dialog(Dialog::Session),
             TuiMsg::OpenHelpDialog => self.open_dialog(Dialog::Help),
             TuiMsg::OpenTreeDialog => {
-                if let Some(ref tx) = self.tui_cmd_tx {
-                    let _ = tx.try_send(TuiCommand::OpenTreeDialog);
-                }
+                self.enqueue_tui_command(TuiCommand::OpenTreeDialog);
             }
             TuiMsg::OpenThemeDialog => self.open_dialog(Dialog::Theme),
             TuiMsg::OpenShareDialog => {
                 if let Some(ref session) = self.session_state.session {
                     let session_id = session.id.clone();
-                    if let Some(ref tx) = self.tui_cmd_tx {
-                        let _ = tx.try_send(TuiCommand::ShareSession { session_id });
-                    }
+                    self.enqueue_tui_command(TuiCommand::ShareSession { session_id });
                 }
             }
             TuiMsg::OpenImportDialog => self.open_dialog(Dialog::Import),
@@ -2961,13 +2958,11 @@ impl App {
                 new_content,
                 title,
             } => {
-                if let Some(ref tx) = self.tui_cmd_tx {
-                    let _ = tx.try_send(TuiCommand::OpenDiffDialog {
-                        old_content,
-                        new_content,
-                        title,
-                    });
-                }
+                self.enqueue_tui_command(TuiCommand::OpenDiffDialog {
+                    old_content,
+                    new_content,
+                    title,
+                });
             }
             TuiMsg::SelectModel { model } => {
                 self.agent_state.current_model = model.clone();
@@ -3058,32 +3053,29 @@ impl App {
                 if confirmed == Some(true) {
                     if let Some(session_id) = self.dialog_state.pending_delete_session.take() {
                         let undo_id = session_id.clone();
-                        if let Some(ref tx) = self.tui_cmd_tx {
-                            let _ = tx.try_send(TuiCommand::DeleteSession { session_id });
+                        if self.enqueue_tui_command(TuiCommand::DeleteSession { session_id }) {
+                            self.undo_session_id = Some(undo_id);
+                            self.undo_until =
+                                Some(Instant::now() + std::time::Duration::from_secs(30));
+                            self.status_bar
+                                .set_undo_message("Session deleted — press U to undo");
                         }
-                        self.undo_session_id = Some(undo_id);
-                        self.undo_until = Some(Instant::now() + std::time::Duration::from_secs(30));
-                        self.status_bar
-                            .set_undo_message("Session deleted — press U to undo");
                     } else if let Some((session_id, unarchive)) =
                         self.dialog_state.pending_archive_session.take()
                     {
-                        if let Some(ref tx) = self.tui_cmd_tx {
-                            let _ = tx.try_send(TuiCommand::ArchiveSession {
-                                session_id,
-                                unarchive,
-                            });
-                        }
+                        self.enqueue_tui_command(TuiCommand::ArchiveSession {
+                            session_id,
+                            unarchive,
+                        });
                     } else if let Some(_count) = self.dialog_state.pending_bulk_delete.take() {
                         let ids = self
                             .dialog_state
                             .pending_bulk_delete_ids
                             .take()
                             .unwrap_or_default();
-                        if let Some(ref tx) = self.tui_cmd_tx {
-                            let _ = tx.try_send(TuiCommand::BulkDelete { session_ids: ids });
+                        if self.enqueue_tui_command(TuiCommand::BulkDelete { session_ids: ids }) {
+                            self.dialog_state.session_dialog.toggle_bulk_mode();
                         }
-                        self.dialog_state.session_dialog.toggle_bulk_mode();
                     } else if let Some((_count, unarchive)) =
                         self.dialog_state.pending_bulk_archive.take()
                     {
@@ -3092,22 +3084,19 @@ impl App {
                             .pending_bulk_archive_ids
                             .take()
                             .unwrap_or_default();
-                        if let Some(ref tx) = self.tui_cmd_tx {
-                            let _ = tx.try_send(TuiCommand::BulkArchive {
-                                session_ids: ids,
-                                unarchive,
-                            });
+                        if self.enqueue_tui_command(TuiCommand::BulkArchive {
+                            session_ids: ids,
+                            unarchive,
+                        }) {
+                            self.dialog_state.session_dialog.toggle_bulk_mode();
                         }
-                        self.dialog_state.session_dialog.toggle_bulk_mode();
                     } else if let Some((command, promote_after)) =
                         self.dialog_state.pending_shell_command.take()
                     {
-                        if let Some(ref tx) = self.tui_cmd_tx {
-                            let _ = tx.try_send(TuiCommand::RunHumanShell {
-                                command,
-                                promote_after,
-                            });
-                        }
+                        self.enqueue_tui_command(TuiCommand::RunHumanShell {
+                            command,
+                            promote_after,
+                        });
                     }
                 } else {
                     self.dialog_state.pending_delete_session = None;
@@ -3507,18 +3496,14 @@ impl App {
                 self.ui_state.command_mode = true;
             }
             TuiMsg::ShellRerun { id } => {
-                if let Some(ref tx) = self.tui_cmd_tx {
-                    let _ = tx.try_send(TuiCommand::ShellRerun {
-                        id: id.parse().unwrap_or(0),
-                    });
-                }
+                self.enqueue_tui_command(TuiCommand::ShellRerun {
+                    id: id.parse().unwrap_or(0),
+                });
             }
             TuiMsg::ShellKill { id } => {
-                if let Some(ref tx) = self.tui_cmd_tx {
-                    let _ = tx.try_send(TuiCommand::ShellKill {
-                        id: id.parse().unwrap_or(0),
-                    });
-                }
+                self.enqueue_tui_command(TuiCommand::ShellKill {
+                    id: id.parse().unwrap_or(0),
+                });
             }
             _ => {}
         }
@@ -7440,6 +7425,36 @@ impl App {
         self.focus_manager.push(component);
     }
 
+    /// Enqueue a [`TuiCommand`] on the bounded command channel. On
+    /// `TrySendError::Full` or `TrySendError::Closed`, surface a toast
+    /// and return `false` so the caller can avoid mutating UI state
+    /// that assumes the command ran (e.g. delete undo banners).
+    fn enqueue_tui_command(&mut self, cmd: TuiCommand) -> bool {
+        let Some(tx) = self.tui_cmd_tx.as_ref() else {
+            self.messages_state
+                .toasts
+                .error("Internal error: command channel unavailable");
+            return false;
+        };
+        match tx.try_send(cmd) {
+            Ok(()) => true,
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                tracing::warn!("TUI command channel full; dropping command");
+                self.messages_state
+                    .toasts
+                    .error("Command queue is full; please retry");
+                false
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                tracing::warn!("TUI command channel closed; dropping command");
+                self.messages_state
+                    .toasts
+                    .error("Command channel closed; please retry");
+                false
+            }
+        }
+    }
+
     pub(crate) fn close_dialog(&mut self) {
         // If the theme picker was live-previewing, revert to the
         // original theme before closing. Esc and Enter both fire
@@ -7580,25 +7595,31 @@ impl App {
         let result = self.plugin_ui_state.apply_effect(effect);
 
         // If a plugin dialog was just opened and no first-party modal
-        // is active, open it in the FocusManager.
+        // is active, open it in the FocusManager. Use the dialog ID
+        // captured by `apply_effect` (the one this effect just
+        // opened) rather than the lexicographically-last entry in
+        // `dialogs`, which may be a stale previously-opened dialog.
         if matches!(result, PluginUiApplyResult::Applied) {
-            if let Some(spec) = self.plugin_ui_state.dialogs.values().last() {
-                if !matches!(
-                    self.ui_state.dialog,
-                    Dialog::Permission | Dialog::Question | Dialog::SecurityReview
-                ) {
-                    let lines =
-                        crate::tui::components::ui_node_renderer::UiNodeRenderer::node_to_lines(
-                            &spec.body,
+            let opened_id = self.plugin_ui_state.last_opened_dialog_id.clone();
+            if let Some(id) = opened_id {
+                if let Some(spec) = self.plugin_ui_state.get_dialog(&id) {
+                    if !matches!(
+                        self.ui_state.dialog,
+                        Dialog::Permission | Dialog::Question | Dialog::SecurityReview
+                    ) {
+                        let lines =
+                            crate::tui::components::ui_node_renderer::UiNodeRenderer::node_to_lines(
+                                &spec.body,
+                            );
+                        let dialog = crate::tui::components::dialogs::plugin::PluginDialog::new(
+                            spec.id.clone(),
+                            spec.title.clone(),
+                            lines,
+                            Arc::clone(&self.ui_state.theme),
                         );
-                    let dialog = crate::tui::components::dialogs::plugin::PluginDialog::new(
-                        spec.id.clone(),
-                        spec.title.clone(),
-                        lines,
-                        Arc::clone(&self.ui_state.theme),
-                    );
-                    self.focus_manager.push(Box::new(dialog));
-                    self.ui_state.dialog = Dialog::Plugin;
+                        self.focus_manager.push(Box::new(dialog));
+                        self.ui_state.dialog = Dialog::Plugin;
+                    }
                 }
             }
         }
@@ -13495,5 +13516,54 @@ mod remote_protocol_tests {
             result,
             crate::tui::app::state::PluginUiApplyResult::Unsupported(_)
         ));
+    }
+}
+
+#[cfg(test)]
+mod enqueue_tui_command_tests {
+    use super::*;
+
+    fn toast_messages(app: &App) -> Vec<String> {
+        app.messages_state
+            .toasts
+            .iter()
+            .map(|t| t.message.clone())
+            .collect()
+    }
+
+    #[test]
+    fn missing_sender_returns_false_and_toasts() {
+        let mut app = App::new_for_testing("/tmp".into());
+        // Ensure no sender is configured.
+        app.tui_cmd_tx = None;
+        let before = toast_messages(&app);
+        let accepted = app.enqueue_tui_command(TuiCommand::OpenTreeDialog);
+        assert!(!accepted, "should return false when no sender exists");
+        let after = toast_messages(&app);
+        assert!(
+            after.len() > before.len(),
+            "should surface a toast when channel unavailable"
+        );
+    }
+
+    #[test]
+    fn full_channel_returns_false_and_toasts() {
+        let mut app = App::new_for_testing("/tmp".into());
+        // Build a sender whose receiver is dropped so try_send fails
+        // with `Closed` (the smallest, deterministic TrySendError
+        // variant for a one-shot test). The point is the helper must
+        // observe the failure, surface a toast, and not pretend the
+        // command was accepted.
+        let (tx, rx) = mpsc::channel::<TuiCommand>(1);
+        drop(rx);
+        app.tui_cmd_tx = Some(tx);
+        let before = toast_messages(&app);
+        let accepted = app.enqueue_tui_command(TuiCommand::OpenTreeDialog);
+        assert!(!accepted, "should return false when the channel is closed");
+        let after = toast_messages(&app);
+        assert!(
+            after.len() > before.len(),
+            "should surface a toast on closed channel"
+        );
     }
 }

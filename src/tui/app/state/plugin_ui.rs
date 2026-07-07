@@ -8,6 +8,10 @@ pub struct PluginUiState {
     pub panels: BTreeMap<String, PanelSpec>,
     pub status_items: BTreeMap<String, StatusItemSpec>,
     pub last_effect_error: Option<String>,
+    /// ID of the dialog most recently opened via `UiEffect::OpenDialog`,
+    /// captured so renderers can focus on the dialog from the current
+    /// effect rather than the lexicographically-last entry in `dialogs`.
+    pub last_opened_dialog_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -32,6 +36,7 @@ impl PluginUiState {
             UiEffect::EmitChat { .. } => PluginUiApplyResult::ChatRequested,
             UiEffect::ShowToast { .. } => PluginUiApplyResult::ToastRequested,
             UiEffect::OpenDialog { dialog } => {
+                self.last_opened_dialog_id = Some(dialog.id.clone());
                 self.dialogs.insert(dialog.id.clone(), dialog);
                 PluginUiApplyResult::Applied
             }
@@ -360,5 +365,28 @@ mod tests {
         assert!(state.panels.is_empty());
         assert!(state.status_items.is_empty());
         assert!(state.last_effect_error.is_none());
+    }
+
+    #[test]
+    fn open_dialog_captures_last_opened_id() {
+        let mut state = PluginUiState::default();
+
+        state.apply_effect(UiEffect::OpenDialog {
+            dialog: make_dialog("z-dialog"),
+        });
+        assert_eq!(state.last_opened_dialog_id.as_deref(), Some("z-dialog"));
+
+        state.apply_effect(UiEffect::OpenDialog {
+            dialog: make_dialog("a-dialog"),
+        });
+        assert_eq!(
+            state.last_opened_dialog_id.as_deref(),
+            Some("a-dialog"),
+            "last_opened_dialog_id must reflect the dialog just opened, not the lex-last entry"
+        );
+        assert!(
+            state.get_dialog("a-dialog").is_some(),
+            "the most recently opened dialog must be retrievable by id"
+        );
     }
 }

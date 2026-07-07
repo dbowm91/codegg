@@ -612,6 +612,22 @@ fn render_completions_tiny_terminal() {
     );
 }
 
+#[test]
+fn render_outer_border_at_extreme_small_sizes() {
+    // Cover widths/heights near 1 so the corner rendering math
+    // (header_bottom_y, footer_bottom_y, right_x = ... - 1) does
+    // not underflow when layout produces a non-empty header but
+    // zero-height footer or zero-width content.
+    for &(w, h) in &[(1u16, 12u16), (40, 1), (1, 1), (2, 2), (3, 3)] {
+        let mut app = test_app();
+        let buf = assert_render_ok(&mut app, w, h);
+        assert!(
+            !buffer_contains(&buf, "Rendering Error"),
+            "unexpected render error with outer border at {w}x{h}"
+        );
+    }
+}
+
 // ===========================================================================
 // 8. Search / timeline / toasts
 // ===========================================================================
@@ -1204,7 +1220,7 @@ fn panic_injection_sidebar_increments_diagnostics_and_shows_fallback() {
 #[test]
 fn panic_injection_dialog_closes_dialog() {
     let mut app = test_app();
-    app.ui_state.dialog = Dialog::Help;
+    app.open_dialog(Dialog::Help);
     app.render_panic_injection.dialog = true;
     let initial = app.ui_state.diagnostics.component_render_panic_count;
     assert_render_ok(&mut app, 100, 32);
@@ -1217,6 +1233,10 @@ fn panic_injection_dialog_closes_dialog() {
         app.ui_state.dialog,
         Dialog::None,
         "dialog panic should close the dialog to Dialog::None"
+    );
+    assert!(
+        app.focus_manager.is_empty(),
+        "dialog panic should clear stale focus_manager entries"
     );
 }
 
@@ -1258,7 +1278,7 @@ fn panic_injection_timeline_hides_timeline() {
 #[test]
 fn panic_injection_multiple_components_in_single_render() {
     let mut app = app_with_sidebar();
-    app.ui_state.dialog = Dialog::Help;
+    app.open_dialog(Dialog::Help);
     app.prompt_state.show_completions = true;
     app.ui_state.timeline_visible = true;
     app.render_panic_injection.messages = true;
