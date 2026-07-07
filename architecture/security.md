@@ -197,8 +197,12 @@ SSRF protection is applied in two places:
   ```
 - The default `eggsearch` backend delegates SSRF protection to
   the eggsearch subprocess. Codegg does not duplicate the
-  check on the eggsearch path; the eggsearch binary is
-  responsible for refusing internal targets.
+  full IP-range check on the eggsearch path. However, the
+  eggsearch adapter (`search_backend/eggsearch.rs`) now performs
+  basic URL validation in `validate_fetch_url()`: rejects empty
+  URLs, URLs exceeding 2048 bytes, and non-http/https schemes.
+  This validation is applied in `call_web_fetch()` and
+  `call_batch_fetch()` before the request reaches eggsearch.
 
 ### Path Safety Validation
 

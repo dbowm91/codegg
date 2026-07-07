@@ -204,6 +204,57 @@ pub fn merge_configs(configs: &[Config]) -> Config {
             context_packer,
             context_policy
         );
+        if let Some(ref search) = config.search {
+            match &mut merged.search {
+                Some(ref mut existing) => {
+                    if search.backend.is_some() {
+                        existing.backend = search.backend;
+                    }
+                    if search.expose_raw_mcp_tools.is_some() {
+                        existing.expose_raw_mcp_tools = search.expose_raw_mcp_tools;
+                    }
+                    if search.fallback_to_builtin.is_some() {
+                        existing.fallback_to_builtin = search.fallback_to_builtin;
+                    }
+                    if search.max_search_output_chars.is_some() {
+                        existing.max_search_output_chars = search.max_search_output_chars;
+                    }
+                    if search.max_fetch_output_chars.is_some() {
+                        existing.max_fetch_output_chars = search.max_fetch_output_chars;
+                    }
+                    if search.max_repo_output_chars.is_some() {
+                        existing.max_repo_output_chars = search.max_repo_output_chars;
+                    }
+                    if search.max_security_output_chars.is_some() {
+                        existing.max_security_output_chars = search.max_security_output_chars;
+                    }
+                    if search.max_research_output_chars.is_some() {
+                        existing.max_research_output_chars = search.max_research_output_chars;
+                    }
+                    if search.max_batch_output_chars.is_some() {
+                        existing.max_batch_output_chars = search.max_batch_output_chars;
+                    }
+                    if search.max_evidence_output_chars.is_some() {
+                        existing.max_evidence_output_chars = search.max_evidence_output_chars;
+                    }
+                    if search.max_repo_search_output_chars.is_some() {
+                        existing.max_repo_search_output_chars =
+                            search.max_repo_search_output_chars;
+                    }
+                    if search.max_repo_fetch_output_chars.is_some() {
+                        existing.max_repo_fetch_output_chars =
+                            search.max_repo_fetch_output_chars;
+                    }
+                    if search.max_repo_map_output_chars.is_some() {
+                        existing.max_repo_map_output_chars = search.max_repo_map_output_chars;
+                    }
+                    if search.eggsearch.is_some() {
+                        existing.eggsearch = search.eggsearch.clone();
+                    }
+                }
+                None => merged.search = Some(search.clone()),
+            }
+        }
         if let Some(ref server) = config.server {
             match &mut merged.server {
                 Some(ref mut existing) => existing.merge(server),

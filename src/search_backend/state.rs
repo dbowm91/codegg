@@ -23,6 +23,7 @@ use crate::mcp::McpService;
 
 static MCP_SERVICE: StdRwLock<Option<Arc<RwLock<McpService>>>> = StdRwLock::new(None);
 static SEARCH_CONFIG: StdRwLock<Option<SearchConfig>> = StdRwLock::new(None);
+static LAST_TRUNCATED: StdRwLock<bool> = StdRwLock::new(false);
 
 /// Install the process-wide `McpService` reference. Called once at
 /// startup after the service is constructed and eggsearch is
@@ -73,4 +74,19 @@ pub fn reset_for_tests() {
     if let Ok(mut cfg) = SEARCH_CONFIG.write() {
         *cfg = None;
     }
+    if let Ok(mut flag) = LAST_TRUNCATED.write() {
+        *flag = false;
+    }
+}
+
+/// Record whether the most recent tool output was truncated.
+pub fn set_last_truncated(truncated: bool) {
+    if let Ok(mut flag) = LAST_TRUNCATED.write() {
+        *flag = truncated;
+    }
+}
+
+/// Returns whether the most recent tool output was truncated.
+pub fn last_truncated() -> bool {
+    LAST_TRUNCATED.read().map(|g| *g).unwrap_or(false)
 }

@@ -29,8 +29,16 @@ pub mod test_support;
 
 use serde_json::Value;
 
-use crate::config::schema::{SearchBackendConfig, SearchConfig};
+use crate::config::schema::{SearchBackendConfig, SearchConfig, ToolTimeoutKind};
 use crate::error::ToolError;
+
+/// Resolve the timeout for a tool kind from the effective eggsearch config.
+fn eggsearch_timeout_ms(cfg: &SearchConfig, kind: ToolTimeoutKind) -> u64 {
+    cfg.eggsearch
+        .as_ref()
+        .map(|e| e.timeout_ms_for(kind))
+        .unwrap_or(60_000)
+}
 
 /// Run a native `websearch` call against the configured backend.
 ///
@@ -39,6 +47,7 @@ use crate::error::ToolError;
 pub async fn dispatch_web_search(input: &Value) -> Result<String, ToolError> {
     let cfg = state::search_config();
     let max_chars = cfg.max_search_output_chars();
+    let timeout = eggsearch_timeout_ms(&cfg, ToolTimeoutKind::Default);
     match cfg.backend() {
         SearchBackendConfig::Disabled => Err(ToolError::Execution(
             "web search is disabled ([search].backend = \"disabled\")".to_string(),
@@ -53,7 +62,8 @@ pub async fn dispatch_web_search(input: &Value) -> Result<String, ToolError> {
             )),
             Some(_) => {
                 let server = effective_server_name(&cfg);
-                match eggsearch::call_web_search(&server, input, max_chars).await {
+                eggsearch::ensure_tool_available(&server, "websearch", "web_search")?;
+                match eggsearch::call_web_search(&server, input, max_chars, timeout).await {
                     Ok(s) => Ok(s),
                     Err(e) if cfg.fallback_to_builtin() => {
                         tracing::warn!(
@@ -74,6 +84,7 @@ pub async fn dispatch_web_search(input: &Value) -> Result<String, ToolError> {
 pub async fn dispatch_web_fetch(input: &Value) -> Result<String, ToolError> {
     let cfg = state::search_config();
     let max_chars = cfg.max_fetch_output_chars();
+    let timeout = eggsearch_timeout_ms(&cfg, ToolTimeoutKind::Default);
     match cfg.backend() {
         SearchBackendConfig::Disabled => Err(ToolError::Execution(
             "web fetch is disabled ([search].backend = \"disabled\")".to_string(),
@@ -88,7 +99,8 @@ pub async fn dispatch_web_fetch(input: &Value) -> Result<String, ToolError> {
             )),
             Some(_) => {
                 let server = effective_server_name(&cfg);
-                match eggsearch::call_web_fetch(&server, input, max_chars).await {
+                eggsearch::ensure_tool_available(&server, "webfetch", "web_fetch")?;
+                match eggsearch::call_web_fetch(&server, input, max_chars, timeout).await {
                     Ok(s) => Ok(s),
                     Err(e) if cfg.fallback_to_builtin() => {
                         tracing::warn!(
@@ -122,8 +134,10 @@ pub async fn dispatch_repo_search(input: &Value) -> Result<String, ToolError> {
             )),
             Some(_) => {
                 let server = effective_server_name(&cfg);
-                let max_chars = cfg.max_repo_output_chars();
-                eggsearch::call_repo_search(&server, input, max_chars).await
+                let max_chars = cfg.max_repo_search_output_chars();
+                let timeout = eggsearch_timeout_ms(&cfg, ToolTimeoutKind::Default);
+                eggsearch::ensure_tool_available(&server, "repo_search", "repo_search")?;
+                eggsearch::call_repo_search(&server, input, max_chars, timeout).await
             }
         },
     }
@@ -146,8 +160,10 @@ pub async fn dispatch_repo_fetch(input: &Value) -> Result<String, ToolError> {
             )),
             Some(_) => {
                 let server = effective_server_name(&cfg);
-                let max_chars = cfg.max_repo_output_chars();
-                eggsearch::call_repo_fetch(&server, input, max_chars).await
+                let max_chars = cfg.max_repo_fetch_output_chars();
+                let timeout = eggsearch_timeout_ms(&cfg, ToolTimeoutKind::Default);
+                eggsearch::ensure_tool_available(&server, "repo_fetch", "repo_fetch")?;
+                eggsearch::call_repo_fetch(&server, input, max_chars, timeout).await
             }
         },
     }
@@ -170,8 +186,10 @@ pub async fn dispatch_repo_map(input: &Value) -> Result<String, ToolError> {
             )),
             Some(_) => {
                 let server = effective_server_name(&cfg);
-                let max_chars = cfg.max_repo_output_chars();
-                eggsearch::call_repo_map(&server, input, max_chars).await
+                let max_chars = cfg.max_repo_map_output_chars();
+                let timeout = eggsearch_timeout_ms(&cfg, ToolTimeoutKind::Default);
+                eggsearch::ensure_tool_available(&server, "repo_map", "repo_map")?;
+                eggsearch::call_repo_map(&server, input, max_chars, timeout).await
             }
         },
     }
@@ -195,7 +213,9 @@ pub async fn dispatch_security_search(input: &Value) -> Result<String, ToolError
             Some(_) => {
                 let server = effective_server_name(&cfg);
                 let max_chars = cfg.max_security_output_chars();
-                eggsearch::call_security_search(&server, input, max_chars).await
+                let timeout = eggsearch_timeout_ms(&cfg, ToolTimeoutKind::Security);
+                eggsearch::ensure_tool_available(&server, "security_search", "security_search")?;
+                eggsearch::call_security_search(&server, input, max_chars, timeout).await
             }
         },
     }
@@ -219,7 +239,9 @@ pub async fn dispatch_research_search(input: &Value) -> Result<String, ToolError
             Some(_) => {
                 let server = effective_server_name(&cfg);
                 let max_chars = cfg.max_research_output_chars();
-                eggsearch::call_research_search(&server, input, max_chars).await
+                let timeout = eggsearch_timeout_ms(&cfg, ToolTimeoutKind::Research);
+                eggsearch::ensure_tool_available(&server, "research_search", "research_search")?;
+                eggsearch::call_research_search(&server, input, max_chars, timeout).await
             }
         },
     }
@@ -243,7 +265,9 @@ pub async fn dispatch_batch_fetch(input: &Value) -> Result<String, ToolError> {
             Some(_) => {
                 let server = effective_server_name(&cfg);
                 let max_chars = cfg.max_batch_output_chars();
-                eggsearch::call_batch_fetch(&server, input, max_chars).await
+                let timeout = eggsearch_timeout_ms(&cfg, ToolTimeoutKind::BatchFetch);
+                eggsearch::ensure_tool_available(&server, "batch_fetch", "batch_fetch")?;
+                eggsearch::call_batch_fetch(&server, input, max_chars, timeout).await
             }
         },
     }
@@ -267,7 +291,9 @@ pub async fn dispatch_evidence_bundle(input: &Value) -> Result<String, ToolError
             Some(_) => {
                 let server = effective_server_name(&cfg);
                 let max_chars = cfg.max_evidence_output_chars();
-                eggsearch::call_build_evidence_bundle(&server, input, max_chars).await
+                let timeout = eggsearch_timeout_ms(&cfg, ToolTimeoutKind::Default);
+                eggsearch::ensure_tool_available(&server, "evidence_bundle", "build_evidence_bundle")?;
+                eggsearch::call_build_evidence_bundle(&server, input, max_chars, timeout).await
             }
         },
     }
@@ -339,6 +365,7 @@ fn provenance_for_backend(_tool: &str, elapsed_ms: Option<u64>) -> crate::tool::
     use crate::tool::{ToolBackendKind, ToolProvenance, ToolTrust};
     let cfg = state::search_config();
     let server = effective_server_name(&cfg);
+    let truncated = state::last_truncated();
     let (backend, implementation, trust) = match cfg.backend() {
         SearchBackendConfig::Disabled => (
             ToolBackendKind::BuiltinLegacy.label().to_lowercase(),
@@ -374,7 +401,7 @@ fn provenance_for_backend(_tool: &str, elapsed_ms: Option<u64>) -> crate::tool::
         implementation,
         version: None,
         elapsed_ms,
-        truncated: false,
+        truncated,
         trust,
     }
 }

@@ -51,7 +51,7 @@ fn eggsearch_config() -> SearchConfig {
 
 #[test]
 fn search_frame_marks_trust_external_untrusted() {
-    let out = framing::frame_search_results("hello world");
+    let out = framing::frame_search_results("hello world", "eggsearch");
     assert!(out.contains("trust=external_untrusted"));
     assert!(out.contains("tool=websearch"));
     assert!(out.contains("hello world"));
@@ -60,7 +60,7 @@ fn search_frame_marks_trust_external_untrusted() {
 
 #[test]
 fn fetch_frame_marks_trust_external_untrusted() {
-    let out = framing::frame_fetched_page("body");
+    let out = framing::frame_fetched_page("body", "eggsearch");
     assert!(out.contains("trust=external_untrusted"));
     assert!(out.contains("tool=webfetch"));
     assert!(out.contains("EXTERNAL, UNTRUSTED DATA"));
@@ -69,15 +69,17 @@ fn fetch_frame_marks_trust_external_untrusted() {
 
 #[test]
 fn clamp_output_passthrough_for_short_input() {
-    let out = framing::clamp_output("hi", 100, "max");
+    let (out, truncated) = framing::clamp_output("hi", 100, "max");
     assert_eq!(out, "hi");
+    assert!(!truncated);
 }
 
 #[test]
 fn clamp_output_truncates_long_input() {
-    let out = framing::clamp_output(&"x".repeat(50), 10, "max_chars");
+    let (out, truncated) = framing::clamp_output(&"x".repeat(50), 10, "max_chars");
     assert!(out.starts_with("xxxxxxxxxx"));
     assert!(out.contains("[truncated by Codegg"));
+    assert!(truncated);
 }
 
 // ---- Argument-mapping tests (with mock MCP) ----

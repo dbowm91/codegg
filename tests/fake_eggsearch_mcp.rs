@@ -205,7 +205,7 @@ async fn provider_status_dispatches_via_doctor_helper() {
     state::install_mcp_service(svc);
     state::install_search_config(eggsearch_config(false, false));
 
-    let out = codegg::search_backend::eggsearch::call_provider_status("eggsearch")
+    let out = codegg::search_backend::eggsearch::call_provider_status("eggsearch", 15_000)
         .await
         .expect("provider_status ok");
     assert!(out.contains("mock"));
@@ -217,7 +217,8 @@ async fn provider_status_dispatches_via_doctor_helper() {
 
 /// When the eggsearch backend is selected but the service has no
 /// `eggsearch` server registered, dispatch must surface a clear
-/// failure (an `eggsearch_unavailable`-style error).
+/// failure (an `eggsearch_unavailable`-style error or a missing-tool
+/// error from `ensure_tool_available`).
 #[tokio::test]
 async fn dispatch_eggsearch_server_missing_returns_actionable_error() {
     state::reset_for_tests();
@@ -232,7 +233,10 @@ async fn dispatch_eggsearch_server_missing_returns_actionable_error() {
     let err = res.expect_err("should fail when no eggsearch server registered");
     let msg = err.to_string();
     assert!(
-        msg.contains("eggsearch") && (msg.contains("unavailable") || msg.contains("not found")),
+        msg.contains("eggsearch")
+            && (msg.contains("unavailable")
+                || msg.contains("not found")
+                || msg.contains("not advertised")),
         "expected actionable eggsearch error, got: {msg}"
     );
 }

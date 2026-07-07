@@ -40,6 +40,14 @@ pub async fn bootstrap_search_backend(
             fallback_to_builtin: effective.fallback_to_builtin(),
             max_search_output_chars: effective.max_search_output_chars(),
             max_fetch_output_chars: effective.max_fetch_output_chars(),
+            max_repo_output_chars: effective.max_repo_output_chars(),
+            max_repo_search_output_chars: effective.max_repo_search_output_chars(),
+            max_repo_fetch_output_chars: effective.max_repo_fetch_output_chars(),
+            max_repo_map_output_chars: effective.max_repo_map_output_chars(),
+            max_security_output_chars: effective.max_security_output_chars(),
+            max_research_output_chars: effective.max_research_output_chars(),
+            max_batch_output_chars: effective.max_batch_output_chars(),
+            max_evidence_output_chars: effective.max_evidence_output_chars(),
             note: Some("McpService already installed; reusing".to_string()),
             ..Default::default()
         };
@@ -65,6 +73,14 @@ pub async fn bootstrap_eggsearch(config: &Config) -> BootstrapReport {
     report.fallback_to_builtin = effective.fallback_to_builtin();
     report.max_search_output_chars = effective.max_search_output_chars();
     report.max_fetch_output_chars = effective.max_fetch_output_chars();
+    report.max_repo_output_chars = effective.max_repo_output_chars();
+    report.max_repo_search_output_chars = effective.max_repo_search_output_chars();
+    report.max_repo_fetch_output_chars = effective.max_repo_fetch_output_chars();
+    report.max_repo_map_output_chars = effective.max_repo_map_output_chars();
+    report.max_security_output_chars = effective.max_security_output_chars();
+    report.max_research_output_chars = effective.max_research_output_chars();
+    report.max_batch_output_chars = effective.max_batch_output_chars();
+    report.max_evidence_output_chars = effective.max_evidence_output_chars();
 
     if !matches!(effective.backend(), SearchBackendConfig::Eggsearch) {
         report.note = Some(format!(
@@ -104,6 +120,52 @@ pub async fn bootstrap_eggsearch(config: &Config) -> BootstrapReport {
             Err(e) => {
                 report.connection_error = Some(format!("{e}"));
             }
+        }
+    }
+
+    // Step 3: record the effective default timeout.
+    report.timeout_ms = Some(effective.eggsearch.as_ref().map(|e| e.timeout_ms()).unwrap_or(60_000));
+
+    // Step 4: best-effort provider_status call (never break startup).
+    if report.connected {
+        let server = effective_server_name(&effective);
+        let ps_timeout = effective
+            .eggsearch
+            .as_ref()
+            .map(|e| e.timeout_ms_for(crate::config::schema::ToolTimeoutKind::ProviderStatus))
+            .unwrap_or(15_000);
+        match super::eggsearch::call_provider_status(&server, ps_timeout).await {
+            Ok(raw) => {
+                report.provider_status_ok = true;
+                // Truncate to a reasonable size for doctor output.
+                let display = if raw.len() > 512 {
+                    format!("{}... (truncated)", &raw[..512])
+                } else {
+                    raw
+                };
+                report.provider_status_summary = Some(display);
+            }
+            Err(e) => {
+                report.provider_status_summary = Some(format!("unavailable: {e}"));
+            }
+        }
+
+        // Step 5: required/recommended tool coverage.
+        let required = ["web_search", "web_fetch"];
+        let recommended = [
+            "repo_search",
+            "repo_fetch",
+            "repo_map",
+            "security_search",
+            "research_search",
+            "batch_fetch",
+            "build_evidence_bundle",
+        ];
+        let discovered: Vec<String> = report.tools.clone();
+        for tool in required.iter().chain(recommended.iter()) {
+            report
+                .required_tool_coverage
+                .push((tool.to_string(), discovered.iter().any(|t| t == tool)));
         }
     }
 
@@ -182,6 +244,13 @@ pub fn effective_search_config(config: &Config) -> SearchConfig {
     config.search.clone().unwrap_or_default()
 }
 
+fn effective_server_name(cfg: &SearchConfig) -> String {
+    cfg.eggsearch
+        .as_ref()
+        .and_then(|e| e.server_name.clone())
+        .unwrap_or_else(|| "eggsearch".to_string())
+}
+
 #[derive(Debug, Default, Clone)]
 pub struct BootstrapReport {
     pub search_backend: Option<String>,
@@ -189,6 +258,14 @@ pub struct BootstrapReport {
     pub fallback_to_builtin: bool,
     pub max_search_output_chars: usize,
     pub max_fetch_output_chars: usize,
+    pub max_repo_output_chars: usize,
+    pub max_repo_search_output_chars: usize,
+    pub max_repo_fetch_output_chars: usize,
+    pub max_repo_map_output_chars: usize,
+    pub max_security_output_chars: usize,
+    pub max_research_output_chars: usize,
+    pub max_batch_output_chars: usize,
+    pub max_evidence_output_chars: usize,
     pub server_name: Option<String>,
     pub command: Option<String>,
     pub connected: bool,
@@ -196,6 +273,15 @@ pub struct BootstrapReport {
     pub connection_error: Option<String>,
     pub tools: Vec<String>,
     pub note: Option<String>,
+    /// Default timeout in milliseconds for tool calls.
+    pub timeout_ms: Option<u64>,
+    /// Best-effort provider_status summary (JSON string).
+    pub provider_status_summary: Option<String>,
+    /// Whether provider_status call succeeded.
+    pub provider_status_ok: bool,
+    /// List of required upstream tools (web_search, web_fetch) and whether
+    /// they were discovered on the server.
+    pub required_tool_coverage: Vec<(String, bool)>,
 }
 
 impl BootstrapReport {
@@ -207,6 +293,9 @@ impl BootstrapReport {
         ));
         if let Some(cmd) = &self.command {
             lines.push(format!("Command: {cmd}"));
+        }
+        if let Some(name) = &self.server_name {
+            lines.push(format!("Server name: {name}"));
         }
         lines.push(format!(
             "Eggsearch MCP: {}",
@@ -227,6 +316,24 @@ impl BootstrapReport {
         } else if self.connected {
             lines.push("Tools: (none discovered)".to_string());
         }
+        // Required/recommended tool coverage.
+        if !self.required_tool_coverage.is_empty() {
+            let missing: Vec<&str> = self
+                .required_tool_coverage
+                .iter()
+                .filter(|(_, found)| !found)
+                .map(|(name, _)| name.as_str())
+                .collect();
+            if missing.is_empty() {
+                lines.push("Tool coverage: all required and recommended tools present".to_string());
+            } else {
+                lines.push(format!(
+                    "Tool coverage: missing {} ({})",
+                    missing.len(),
+                    missing.join(", ")
+                ));
+            }
+        }
         lines.push(format!(
             "Raw MCP tools exposed to model: {}",
             if self.expose_raw_mcp_tools {
@@ -243,10 +350,31 @@ impl BootstrapReport {
                 "no"
             }
         ));
+        if let Some(timeout) = self.timeout_ms {
+            lines.push(format!("Default timeout: {timeout}ms"));
+        }
         lines.push(format!(
-            "Output caps: search={} chars, fetch={} chars",
-            self.max_search_output_chars, self.max_fetch_output_chars
+            "Output caps: search={} fetch={} repo_search={} repo_fetch={} repo_map={} \
+             security={} research={} batch={} evidence={}",
+            self.max_search_output_chars,
+            self.max_fetch_output_chars,
+            self.max_repo_search_output_chars,
+            self.max_repo_fetch_output_chars,
+            self.max_repo_map_output_chars,
+            self.max_security_output_chars,
+            self.max_research_output_chars,
+            self.max_batch_output_chars,
+            self.max_evidence_output_chars,
         ));
+        // Provider status (best-effort).
+        if self.provider_status_ok {
+            lines.push("Provider status: available".to_string());
+            if let Some(summary) = &self.provider_status_summary {
+                lines.push(format!("Provider details: {summary}"));
+            }
+        } else if let Some(detail) = &self.provider_status_summary {
+            lines.push(format!("Provider status: {detail}"));
+        }
         if let Some(note) = &self.note {
             lines.push(format!("Note: {note}"));
         }
@@ -271,23 +399,52 @@ mod tests {
         let report = BootstrapReport {
             search_backend: Some("eggsearch".to_string()),
             command: Some("eggsearch mcp stdio".to_string()),
+            server_name: Some("eggsearch".to_string()),
             connected: true,
             tools: vec!["web_search".to_string(), "web_fetch".to_string()],
             expose_raw_mcp_tools: false,
             fallback_to_builtin: false,
             max_search_output_chars: 12_000,
             max_fetch_output_chars: 20_000,
+            max_repo_search_output_chars: 16_000,
+            max_repo_fetch_output_chars: 24_000,
+            max_repo_map_output_chars: 16_000,
+            max_security_output_chars: 18_000,
+            max_research_output_chars: 22_000,
+            max_batch_output_chars: 30_000,
+            max_evidence_output_chars: 30_000,
+            timeout_ms: Some(60_000),
+            provider_status_ok: true,
+            provider_status_summary: Some(r#"{"duckduckgo":"ok"}"#.to_string()),
+            required_tool_coverage: vec![
+                ("web_search".to_string(), true),
+                ("web_fetch".to_string(), true),
+                ("repo_search".to_string(), false),
+            ],
             ..Default::default()
         };
         let lines = report.summary_lines();
         let joined = lines.join("\n");
         assert!(joined.contains("Search backend: eggsearch"));
         assert!(joined.contains("Command: eggsearch mcp stdio"));
+        assert!(joined.contains("Server name: eggsearch"));
         assert!(joined.contains("connected"));
         assert!(joined.contains("web_search, web_fetch"));
+        assert!(joined.contains("Tool coverage: missing 1 (repo_search)"));
         assert!(joined.contains("Raw MCP tools exposed to model: no"));
         assert!(joined.contains("Fallback to built-in: no"));
-        assert!(joined.contains("Output caps: search=12000 chars, fetch=20000 chars"));
+        assert!(joined.contains("Default timeout: 60000ms"));
+        assert!(joined.contains("search=12000"));
+        assert!(joined.contains("fetch=20000"));
+        assert!(joined.contains("repo_search=16000"));
+        assert!(joined.contains("repo_fetch=24000"));
+        assert!(joined.contains("repo_map=16000"));
+        assert!(joined.contains("security=18000"));
+        assert!(joined.contains("research=22000"));
+        assert!(joined.contains("batch=30000"));
+        assert!(joined.contains("evidence=30000"));
+        assert!(joined.contains("Provider status: available"));
+        assert!(joined.contains("Provider details:"));
     }
 
     #[test]

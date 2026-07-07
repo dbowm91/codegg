@@ -352,13 +352,26 @@ expose_raw_mcp_tools = false    # default false; set true to expose mcp__eggsear
 fallback_to_builtin = false     # default false
 max_search_output_chars = 12000 # cap on websearch output
 max_fetch_output_chars = 20000  # cap on webfetch output
+max_repo_output_chars = 15000   # fallback for repo_* caps below
+max_repo_search_output_chars = 15000   # optional, falls back to max_repo_output_chars
+max_repo_fetch_output_chars = 15000    # optional, falls back to max_repo_output_chars
+max_repo_map_output_chars = 15000      # optional, falls back to max_repo_output_chars
+max_security_output_chars = 10000
+max_research_output_chars = 15000
+max_batch_output_chars = 50000
+max_evidence_output_chars = 100000
 
 [search.eggsearch]
 enabled = true                  # if false, behaves as backend = "disabled"
 server_name = "eggsearch"       # MCP server name; default "eggsearch"
 command = "eggsearch"           # binary to spawn
 args = ["mcp", "stdio"]         # default args
-timeout_ms = 60000              # call timeout
+timeout_ms = 60000              # default call timeout for all tools
+repo_timeout_ms = 60000         # optional per-domain overrides
+security_timeout_ms = 60000
+research_timeout_ms = 60000
+batch_fetch_timeout_ms = 60000
+provider_status_timeout_ms = 15000  # health check timeout (shorter)
 
 [search.eggsearch.env]
 # Optional provider keys passed only to the eggsearch subprocess.

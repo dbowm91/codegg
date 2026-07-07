@@ -436,6 +436,15 @@ pub struct SearchConfig {
     pub max_batch_output_chars: Option<usize>,
     /// Output cap for evidence bundle results, in characters.
     pub max_evidence_output_chars: Option<usize>,
+    /// Output cap for repo_search results, in characters.
+    /// Falls back to `max_repo_output_chars` when unset.
+    pub max_repo_search_output_chars: Option<usize>,
+    /// Output cap for repo_fetch results, in characters.
+    /// Falls back to `max_repo_output_chars` when unset.
+    pub max_repo_fetch_output_chars: Option<usize>,
+    /// Output cap for repo_map results, in characters.
+    /// Falls back to `max_repo_output_chars` when unset.
+    pub max_repo_map_output_chars: Option<usize>,
     /// Eggsearch-specific configuration.
     pub eggsearch: Option<EggsearchConfig>,
 }
@@ -480,6 +489,21 @@ impl SearchConfig {
     pub fn max_evidence_output_chars(&self) -> usize {
         self.max_evidence_output_chars.unwrap_or(100_000)
     }
+
+    pub fn max_repo_search_output_chars(&self) -> usize {
+        self.max_repo_search_output_chars
+            .unwrap_or_else(|| self.max_repo_output_chars())
+    }
+
+    pub fn max_repo_fetch_output_chars(&self) -> usize {
+        self.max_repo_fetch_output_chars
+            .unwrap_or_else(|| self.max_repo_output_chars())
+    }
+
+    pub fn max_repo_map_output_chars(&self) -> usize {
+        self.max_repo_map_output_chars
+            .unwrap_or_else(|| self.max_repo_output_chars())
+    }
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, Copy, PartialEq, Eq)]
@@ -501,7 +525,27 @@ pub struct EggsearchConfig {
     pub command: Option<String>,
     pub args: Option<Vec<String>>,
     pub timeout_ms: Option<u64>,
+    pub repo_timeout_ms: Option<u64>,
+    pub security_timeout_ms: Option<u64>,
+    pub research_timeout_ms: Option<u64>,
+    pub batch_fetch_timeout_ms: Option<u64>,
+    pub provider_status_timeout_ms: Option<u64>,
     pub env: Option<HashMap<String, String>>,
+}
+
+/// Categorizes tool types for timeout lookup.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolTimeoutKind {
+    /// Default timeout for web_search, web_fetch, repo_search, repo_fetch, repo_map.
+    Default,
+    /// Timeout for security_search.
+    Security,
+    /// Timeout for research_search.
+    Research,
+    /// Timeout for batch_fetch.
+    BatchFetch,
+    /// Timeout for provider_status (best-effort diagnostic).
+    ProviderStatus,
 }
 
 impl EggsearchConfig {
@@ -521,6 +565,26 @@ impl EggsearchConfig {
 
     pub fn timeout_ms(&self) -> u64 {
         self.timeout_ms.unwrap_or(60_000)
+    }
+
+    /// Return the timeout in milliseconds for the given tool kind.
+    /// Falls back to the base `timeout_ms` when the specific field is unset.
+    pub fn timeout_ms_for(&self, kind: ToolTimeoutKind) -> u64 {
+        match kind {
+            ToolTimeoutKind::Default => self.timeout_ms(),
+            ToolTimeoutKind::Security => {
+                self.security_timeout_ms.unwrap_or(self.timeout_ms())
+            }
+            ToolTimeoutKind::Research => {
+                self.research_timeout_ms.unwrap_or(self.timeout_ms())
+            }
+            ToolTimeoutKind::BatchFetch => {
+                self.batch_fetch_timeout_ms.unwrap_or(self.timeout_ms())
+            }
+            ToolTimeoutKind::ProviderStatus => {
+                self.provider_status_timeout_ms.unwrap_or(15_000)
+            }
+        }
     }
 
     pub fn env(&self) -> HashMap<String, String> {
@@ -2001,6 +2065,11 @@ mod tests {
             command: Some("/usr/local/bin/eggsearch".to_string()),
             args: Some(vec!["serve".to_string()]),
             timeout_ms: Some(15_000),
+            repo_timeout_ms: None,
+            security_timeout_ms: None,
+            research_timeout_ms: None,
+            batch_fetch_timeout_ms: None,
+            provider_status_timeout_ms: None,
             env: Some(Default::default()),
         };
         assert_eq!(egg.server_name(), "alt");
