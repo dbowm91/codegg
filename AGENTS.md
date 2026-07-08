@@ -118,7 +118,7 @@ cargo test -p codegg --lib shell::redactor
 # Shell projection RTK unit tests (no RTK binary required)
 cargo test -p codegg --lib shell::rtk
 
-# Test runner module (resolver, parser, report formatter)
+# Test runner module (resolver, parser with failure extraction, report formatter)
 cargo test -p codegg --lib test_runner
 
 # Test tool (model-facing wrapper for supervised test runner)

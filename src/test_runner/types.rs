@@ -1,3 +1,4 @@
+use std::fmt;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -34,6 +35,82 @@ pub enum TimeoutKind {
     NoProgress,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum FailureClass {
+    Passed,
+    RustTestFailure,
+    RustPanic,
+    RustCompileError,
+    RustDoctestFailure,
+    PytestFailure,
+    PytestError,
+    PytestCollectionError,
+    NonzeroExit,
+    TimeoutWallClock,
+    TimeoutNoOutput,
+    SpawnError,
+    UnknownFailure,
+}
+
+impl fmt::Display for FailureClass {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Passed => write!(f, "passed"),
+            Self::RustTestFailure => write!(f, "rust_test_failure"),
+            Self::RustPanic => write!(f, "rust_panic"),
+            Self::RustCompileError => write!(f, "rust_compile_error"),
+            Self::RustDoctestFailure => write!(f, "rust_doctest_failure"),
+            Self::PytestFailure => write!(f, "pytest_failure"),
+            Self::PytestError => write!(f, "pytest_error"),
+            Self::PytestCollectionError => write!(f, "pytest_collection_error"),
+            Self::NonzeroExit => write!(f, "nonzero_exit"),
+            Self::TimeoutWallClock => write!(f, "timeout_wall_clock"),
+            Self::TimeoutNoOutput => write!(f, "timeout_no_output"),
+            Self::SpawnError => write!(f, "spawn_error"),
+            Self::UnknownFailure => write!(f, "unknown_failure"),
+        }
+    }
+}
+
+impl FailureClass {
+    pub fn from_display_str(s: &str) -> Option<Self> {
+        match s {
+            "passed" => Some(Self::Passed),
+            "rust_test_failure" => Some(Self::RustTestFailure),
+            "rust_panic" => Some(Self::RustPanic),
+            "rust_compile_error" => Some(Self::RustCompileError),
+            "rust_doctest_failure" => Some(Self::RustDoctestFailure),
+            "pytest_failure" => Some(Self::PytestFailure),
+            "pytest_error" => Some(Self::PytestError),
+            "pytest_collection_error" => Some(Self::PytestCollectionError),
+            "nonzero_exit" => Some(Self::NonzeroExit),
+            "timeout_wall_clock" => Some(Self::TimeoutWallClock),
+            "timeout_no_output" => Some(Self::TimeoutNoOutput),
+            "spawn_error" => Some(Self::SpawnError),
+            "unknown_failure" => Some(Self::UnknownFailure),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Passed => "passed",
+            Self::RustTestFailure => "rust_test_failure",
+            Self::RustPanic => "rust_panic",
+            Self::RustCompileError => "rust_compile_error",
+            Self::RustDoctestFailure => "rust_doctest_failure",
+            Self::PytestFailure => "pytest_failure",
+            Self::PytestError => "pytest_error",
+            Self::PytestCollectionError => "pytest_collection_error",
+            Self::NonzeroExit => "nonzero_exit",
+            Self::TimeoutWallClock => "timeout_wall_clock",
+            Self::TimeoutNoOutput => "timeout_no_output",
+            Self::SpawnError => "spawn_error",
+            Self::UnknownFailure => "unknown_failure",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct TestRunRequest {
     pub scope: TestScope,
@@ -57,7 +134,8 @@ pub struct TestFailure {
     pub file: Option<String>,
     pub line: Option<u32>,
     pub message: String,
-    pub failure_class: String,
+    #[serde(rename = "failure_class")]
+    pub failure_class: FailureClass,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

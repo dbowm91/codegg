@@ -7,7 +7,9 @@ use crate::error::ToolError;
 use crate::test_runner::{
     format_test_report, resolve_and_run_test, TestRunRequest, TestScope, TestStatus,
 };
-use crate::tool::backend::{StructuredToolResult, ToolBackendKind, ToolExecutionContext, ToolProvenance, ToolTrust};
+use crate::tool::backend::{
+    StructuredToolResult, ToolBackendKind, ToolExecutionContext, ToolProvenance, ToolTrust,
+};
 use crate::tool::{Tool, ToolCategory};
 
 /// Run project tests through codegg's supervised test runner. Prefer this
@@ -101,7 +103,9 @@ impl Tool for TestTool {
             trust: ToolTrust::LocalTrusted,
         };
 
-        Ok(StructuredToolResult::with_provenance(output, success, provenance))
+        Ok(StructuredToolResult::with_provenance(
+            output, success, provenance,
+        ))
     }
 }
 
@@ -132,11 +136,9 @@ fn parse_test_request(input: &serde_json::Value) -> Result<TestRunRequest, ToolE
         "workspace" => TestScope::Workspace,
         "changed" => TestScope::Changed,
         "package" => {
-            let pkg = input["package"]
-                .as_str()
-                .ok_or_else(|| {
-                    ToolError::Execution("package scope requires 'package' parameter".to_string())
-                })?;
+            let pkg = input["package"].as_str().ok_or_else(|| {
+                ToolError::Execution("package scope requires 'package' parameter".to_string())
+            })?;
             if pkg.trim().is_empty() {
                 return Err(ToolError::Execution(
                     "package parameter must not be empty".to_string(),
@@ -145,11 +147,9 @@ fn parse_test_request(input: &serde_json::Value) -> Result<TestRunRequest, ToolE
             TestScope::Package(pkg.to_string())
         }
         "file" => {
-            let path = input["path"]
-                .as_str()
-                .ok_or_else(|| {
-                    ToolError::Execution("file scope requires 'path' parameter".to_string())
-                })?;
+            let path = input["path"].as_str().ok_or_else(|| {
+                ToolError::Execution("file scope requires 'path' parameter".to_string())
+            })?;
             if path.trim().is_empty() {
                 return Err(ToolError::Execution(
                     "path parameter must not be empty".to_string(),
@@ -159,11 +159,9 @@ fn parse_test_request(input: &serde_json::Value) -> Result<TestRunRequest, ToolE
         }
         "previous_failures" => TestScope::PreviousFailures,
         "custom" => {
-            let cmd = input["command"]
-                .as_str()
-                .ok_or_else(|| {
-                    ToolError::Execution("custom scope requires 'command' parameter".to_string())
-                })?;
+            let cmd = input["command"].as_str().ok_or_else(|| {
+                ToolError::Execution("custom scope requires 'command' parameter".to_string())
+            })?;
             if cmd.trim().is_empty() {
                 return Err(ToolError::Execution(
                     "command parameter must not be empty".to_string(),
@@ -359,7 +357,10 @@ mod tests {
         let params = tool.parameters();
         assert_eq!(params["type"], "object");
         assert!(params["properties"]["scope"].is_object());
-        assert!(params["required"].as_array().unwrap().contains(&json!("scope")));
+        assert!(params["required"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("scope")));
     }
 
     #[test]
@@ -394,7 +395,10 @@ mod tests {
     fn test_parse_request_custom_scope() {
         let input = json!({"scope": "custom", "command": "cargo test --lib"});
         let req = parse_test_request(&input).unwrap();
-        assert_eq!(req.scope, TestScope::CustomCommand("cargo test --lib".to_string()));
+        assert_eq!(
+            req.scope,
+            TestScope::CustomCommand("cargo test --lib".to_string())
+        );
     }
 
     #[test]

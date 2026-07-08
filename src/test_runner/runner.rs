@@ -13,7 +13,8 @@ use uuid::Uuid;
 use crate::test_runner::parse::{ingest_stderr_line, ingest_stdout_line, TestParseState};
 use crate::test_runner::resolve::{resolve_test_command, TestResolveError};
 use crate::test_runner::types::{
-    ResolvedTestCommand, TestReport, TestRunRequest, TestStatus, TestTimeout, TimeoutKind,
+    FailureClass, ResolvedTestCommand, TestReport, TestRunRequest, TestStatus, TestTimeout,
+    TimeoutKind,
 };
 
 const DEFAULT_TIMEOUT_SECS: u64 = 300;
@@ -376,26 +377,20 @@ fn build_report(
         }
     };
 
-    let failure_class = if exit_code != Some(0) {
-        if parse_state.compile_error_seen {
-            "compile_error"
-        } else if !parse_state.failures.is_empty() {
-            "test_failed"
-        } else {
-            "nonzero_exit"
-        }
-    } else {
-        ""
-    };
+    let mut failures: Vec<_> = parse_state
+        .failures
+        .iter()
+        .chain(parse_state.compile_errors.iter())
+        .cloned()
+        .collect();
 
-    let mut failures = parse_state.failures.clone();
-    if !failure_class.is_empty() && failures.is_empty() && exit_code != Some(0) {
+    if failures.is_empty() && exit_code != Some(0) && status != TestStatus::Passed {
         failures.push(crate::test_runner::types::TestFailure {
             name: None,
             file: None,
             line: None,
             message: format!("process exited with code {}", exit_code.unwrap_or(-1)),
-            failure_class: failure_class.to_string(),
+            failure_class: FailureClass::NonzeroExit,
         });
     }
 
@@ -513,7 +508,7 @@ mod tests {
         assert_eq!(result.status, TestStatus::Failed);
         assert_eq!(result.exit_code, Some(1));
         assert!(!result.failures.is_empty());
-        assert_eq!(result.failures[0].failure_class, "nonzero_exit");
+        assert_eq!(result.failures[0].failure_class, FailureClass::NonzeroExit);
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -645,5 +640,57 @@ mod tests {
         let state = TestParseState::default();
         assert_eq!(build_summary(&state, Some(0)), "completed successfully");
         assert_eq!(build_summary(&state, Some(1)), "process exited with code 1");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn runner_report_uses_parser_failures_for_nonzero_exit() {
+        let dir = temp_dir_with_files("runner-fail", &[]);
+        let resolved = ResolvedTestCommand {
+            language: crate::test_runner::types::TestLanguage::Generic,
+            argv: vec![
+                "/bin/sh".into(),
+                "-c".into(),
+                "echo 'FAIL: bad test' && exit 1".into(),
+            ],
+            cwd: dir.path().to_path_buf(),
+            scope_label: "test".into(),
+        };
+        let request = TestRunRequest {
+            scope: TestScope::Auto,
+            workdir: dir.path().to_path_buf(),
+            timeout_secs: Some(10),
+            stall_timeout_secs: None,
+            max_report_bytes: None,
+        };
+        let result = run_resolved_test(&request, resolved).await.unwrap();
+        assert_eq!(result.status, TestStatus::Failed);
+        assert_eq!(result.exit_code, Some(1));
+        assert_eq!(result.failures[0].failure_class, FailureClass::NonzeroExit);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn runner_timeout_report_includes_last_output_excerpt() {
+        let dir = temp_dir_with_files("runner-timeout", &[]);
+        let resolved = ResolvedTestCommand {
+            language: crate::test_runner::types::TestLanguage::Generic,
+            argv: vec![
+                "/bin/sh".into(),
+                "-c".into(),
+                "echo 'starting tests...' && sleep 10".into(),
+            ],
+            cwd: dir.path().to_path_buf(),
+            scope_label: "test".into(),
+        };
+        let request = TestRunRequest {
+            scope: TestScope::Auto,
+            workdir: dir.path().to_path_buf(),
+            timeout_secs: Some(1),
+            stall_timeout_secs: None,
+            max_report_bytes: None,
+        };
+        let result = run_resolved_test(&request, resolved).await.unwrap();
+        assert_eq!(result.status, TestStatus::TimedOut);
+        let timeout = result.timeout.unwrap();
+        assert!(timeout.last_output.is_some());
     }
 }

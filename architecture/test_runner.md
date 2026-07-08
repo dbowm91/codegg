@@ -19,14 +19,36 @@ The `test_runner` module provides test command resolution, output parsing, repor
 **Key Responsibilities**:
 - Resolve `TestScope` into platform-specific shell commands
 - Spawn and supervise test processes with streaming stdout/stderr capture
-- Parse stdout/stderr into structured results
+- Parse stdout/stderr into structured results with failure-class taxonomy
 - Capture raw logs to `.codegg/test-runs/` directory
-- Classify exit codes and build `TestReport`
-- Format `TestReport` into human-readable text
+- Classify exit codes, panics, compile errors, and pytest failures
+- Format `TestReport` into bounded, stable, model-facing text
 
-**Phase**: 2 (Streaming Runner + Log Capture)
+**Phase**: 4 (Failure Extraction and Report Quality)
 
 ## Key Types
+
+### FailureClass
+
+```rust
+pub enum FailureClass {
+    Passed,
+    RustTestFailure,
+    RustPanic,
+    RustCompileError,
+    RustDoctestFailure,
+    PytestFailure,
+    PytestError,
+    PytestCollectionError,
+    NonzeroExit,
+    TimeoutWallClock,
+    TimeoutNoOutput,
+    SpawnError,
+    UnknownFailure,
+}
+```
+
+Implements `Display` with snake_case strings. Has `from_str()` and `as_str()` helpers.
 
 ### TestScope
 
@@ -105,7 +127,7 @@ pub struct TestFailure {
     pub file: Option<String>,
     pub line: Option<u32>,
     pub message: String,
-    pub failure_class: String,
+    pub failure_class: FailureClass,
 }
 ```
 
@@ -183,7 +205,8 @@ pub struct TestParseState {
     pub tests_failed: usize,
     pub last_progress_line: Option<String>,
     pub failures: Vec<TestFailure>,
-    pub compile_error_seen: bool,
+    pub compile_errors: Vec<TestFailure>,
+    pub collection_error_seen: bool,
 }
 ```
 
@@ -192,15 +215,19 @@ pub struct TestParseState {
 ```rust
 pub fn ingest_stdout_line(state: &mut TestParseState, line: &str)
 pub fn ingest_stderr_line(state: &mut TestParseState, line: &str)
+pub fn failure_class_summary(failures: &[TestFailure], compile_errors: &[TestFailure]) -> FailureClass
 ```
 
 Parses test output line-by-line. Recognizes:
-- **Rust**: `running N tests`, `test ... ok/FAILED`, `panicked at`, `error[E`, `failures:`
-- **Python/pytest**: `collected N items`, `PASSED/FAILED/ERROR`, `E   message`
 
-Uses a `rust_matched` flag to prevent Python patterns from matching Rust output.
+- **Rust**: `running N tests`, `test ... ok/FAILED`, `panicked at`, `error[E`, `--> file:line:col` (compile error location), doctest failures (`test file - func (line N) ... FAILED`)
+- **Python/pytest**: `collected N items`, `PASSED/FAILED/ERROR`, `ERROR collecting`, `E   message`
+- **Panic extraction**: Extracts message, file, and line from `panicked at 'msg', file:line:col` and `panicked at 'msg' (file:line)` formats. Handles messages containing commas, colons, and backticks.
+- **Compile error extraction**: Extracts error code (e.g. `E0432`), message, file:line from `error[E0432]: msg` and `--> file:line:col` lines.
+- **Pytest distinction**: `ERROR` lines with `::` are `PytestError`. Lines with `ERROR` but no `::` are `PytestCollectionError`. Lines with `FAILED` are `PytestFailure`.
+- **`failure_class_summary`**: Returns the most severe failure class from a list of failures.
 
-## Runner API (Phase 2)
+## Runner API
 
 ### TestRunError
 
@@ -235,7 +262,7 @@ pub async fn run_resolved_test(
 ) -> Result<TestReport, TestRunError>
 ```
 
-Spawns a tokio process with piped stdout/stderr and reads lines concurrently via `BufReader`. Raw bytes are written to log files. Decoded lines are fed to `TestParseState` via `Arc<Mutex<>>`. A `tokio::select!` supervisor enforces wall-clock timeout (default 300s) and no-output/stall timeout (default 120s). On completion, classifies exit code (0 → Passed, nonzero with failures → Failed, nonzero with compile error → Failed) and writes `report.json` to the log directory.
+Spawns a tokio process with piped stdout/stderr and reads lines concurrently via `BufReader`. Raw bytes are written to log files. Decoded lines are fed to `TestParseState` via `Arc<Mutex<>>`. A `tokio::select!` supervisor enforces wall-clock timeout (default 300s) and no-output/stall timeout (default 120s). On completion, classifies exit code and builds `TestReport` with `FailureClass` from parsed results.
 
 ## Log Directory Layout
 
@@ -255,15 +282,51 @@ Logs are written to `.codegg/test-runs/<utc-timestamp>-<short-uuid>/`:
 pub fn format_test_report(report: &TestReport) -> String
 ```
 
-Formats a `TestReport` into a human-readable string. Shows status, argv, cwd, duration, exit code, failure/timeout info, up to 5 failures, log dir, and truncation note.
+Formats a `TestReport` into a bounded, stable, model-facing string with these sections:
+
+```
+Test run <passed|failed|timed out|errored>.
+
+Command:
+<command>
+
+Duration:
+<duration>
+
+Exit code:
+<exit code or unavailable>
+
+Failure class:
+<class>
+
+Summary:
+<one short paragraph>
+
+Primary failures:
+1. <test/file/line/message>
+...
+
+Logs:
+stdout: <path>
+stderr: <path>
+report: <path>
+```
+
+**Bounds**:
+- Max primary failures displayed: 5 (extra omitted with note)
+- Max failure message bytes: 2000 (truncated with `...`)
+- Max timeout excerpt bytes: 2000
+- Total report controlled by `max_report_bytes`
+
+Empty sections are suppressed. Full logs always available under `.codegg/test-runs/`.
 
 ## Tests
 
-28 tests total:
+46 parser + formatter + runner tests:
 - 7 resolver tests (auto rust, auto python, mixed ambiguity, package, file, changed fallback, custom command)
-- 7 parser tests (rust running count, ok/failed, panic file/line, compile error, pytest collected, pytest failed, pytest assertion)
-- 4 formatter tests (status/command/duration, failure limit, timeout class, log path)
-- 10 runner tests (pass, fail, wall-clock timeout, stall timeout, empty command, zero timeout, log layout, UTF-8 truncation, summary building)
+- 18 parser tests (rust count, ok/failed, panic file/line, assertion message with file:line:col, compile error code, compile error location, doctest failure, pytest collected, pytest failed, pytest file, pytest assertion, pytest collection error, pytest error vs failure)
+- 10 formatter tests (stable sections, passed suppression, timeout details, failure limit, max bytes, log paths, truncation note, error status, compile error display)
+- 11 runner tests (pass, fail, wall-clock timeout, stall timeout, empty command, zero timeout, log layout, UTF-8 truncation, summary building, parser failures for nonzero exit, timeout excerpt)
 
 ```bash
 cargo test -p codegg --lib test_runner
