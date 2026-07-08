@@ -50,6 +50,7 @@ pub mod security_search;
 pub mod skill;
 pub mod task;
 pub mod terminal;
+pub mod test;
 pub mod todo;
 pub mod tool_search;
 pub mod util;
@@ -327,6 +328,7 @@ impl ToolRegistry {
         registry.register(crate::tool::replace::ReplaceTool::default());
         registry.register(crate::tool::review::ReviewTool::default());
         registry.register(crate::tool::terminal::TerminalTool::default());
+        registry.register(crate::tool::test::TestTool::default());
         registry.register(crate::tool::git::GitTool::default());
 
         // --- LSP: consult resolved backend config. ---

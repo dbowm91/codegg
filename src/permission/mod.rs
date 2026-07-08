@@ -106,7 +106,7 @@ pub fn tool_category_for_name(name: &str) -> ToolCategory {
         // Safe-mutating (in-app state only)
         "todowrite" | "todoread" | "question" | "invalid" => ToolCategory::SafeMutating,
         // Shell
-        "bash" | "terminal" => ToolCategory::ShellExec,
+        "bash" | "terminal" | "test" => ToolCategory::ShellExec,
         // Everything else mutates the filesystem or external systems
         _ => ToolCategory::Mutating,
     }
@@ -1778,6 +1778,7 @@ mod tests {
             "replace",
             "review",
             "terminal",
+            "test",
             "git",
             "lsp",
             "commit",

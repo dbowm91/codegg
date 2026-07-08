@@ -121,6 +121,9 @@ cargo test -p codegg --lib shell::rtk
 # Test runner module (resolver, parser, report formatter)
 cargo test -p codegg --lib test_runner
 
+# Test tool (model-facing wrapper for supervised test runner)
+cargo test -p codegg --lib tool::test
+
 # LSP integration (fake server, no network, needs lsp-test-support)
 cargo test -p egglsp --features lsp-test-support --test scenario_engine
 cargo test --features lsp-test-support --test lsp_composite_stdio
@@ -366,7 +369,7 @@ CI runs on push/PR to dev/main: `agent-assets` → `fmt` → `check` → `clippy
 
 - **ToolCatalog::register() takes `&dyn Tool`**, not `Box<dyn Tool>`.
 - **multiedit tool exists but NOT in default registry**: `src/tool/multiedit.rs` exists, `pub mod multiedit` is registered, but it's NOT in `ToolRegistry::with_defaults()`.
-- **~36 tools** in `ToolRegistry::with_options()` (`src/tool/mod.rs`). Count varies by config (conditional LSP, security, todo, context_read tools). Includes 8 always-visible eggsact deterministic tools.
+- **~37 tools** in `ToolRegistry::with_options()` (`src/tool/mod.rs`). Count varies by config (conditional LSP, security, todo, context_read tools). Includes 8 always-visible eggsact deterministic tools.
 - **Tool session constructor**: `with_session_config_defaults(&Config, ...)` is the production constructor. `with_session_defaults(...)` is the legacy all-native fallback.
 - **Integrated tool config (Phase 6)**: `src/tool/integrated_config.rs` resolves evidence/deterministic/preflight runtime configs once from `Config` via `resolve_integrated_config()`. Passed through `ToolRegistryOptions` to `with_options()`. Subagents now use `with_config(&config)` (`src/agent/worker.rs:698`) to inherit backend config — previously used `with_defaults()` which dropped it.
 - **patch_util.rs shared utilities**: `src/tool/patch_util.rs` is used by both `apply_patch` tool and LSP preview operations.

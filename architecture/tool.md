@@ -8,7 +8,7 @@ The `tool` module provides the built-in tools that the agent can use to interact
 
 **Key Responsibilities**:
 - Tool registry management
-- Built-in tool implementations (30 tools in `with_defaults()`)
+- Built-in tool implementations (40 tools in `with_options()`)
 - Tool execution with permission checking
 - Parameter validation
 - On-demand tool discovery via ToolCatalog
@@ -91,7 +91,7 @@ pub struct ToolResult {
 }
 ```
 
-## Built-in Tools (39 total in default registry)
+## Built-in Tools (40 total in default registry)
 
 ### File Operations
 
@@ -113,6 +113,7 @@ pub struct ToolResult {
 |------|------|-------------|
 | **bash** | `bash.rs` | Execute shell commands with extensive security (blocked commands, blocked patterns regex, allowlist support, Landlock sandboxing). 120s default timeout. |
 | **terminal** | `terminal.rs` | Run commands in interactive terminal session. Similar security to bash but with env var filtering. 60s default timeout. |
+| **test** | `test.rs` | Run project tests through supervised test runner. Wraps `test_runner::resolve_and_run_test()`. Streams stdout/stderr to logs, classifies timeouts/failures, returns compact report. Custom commands require allowlist (cargo test, pytest, etc.). Category: ShellExec. |
 | **git** | `git.rs` | Execute git commands with subcommand/args model. 30s default timeout. |
 | **commit** | `commit.rs` | Generate commit messages from diff using LLM. Stages all changes, generates message, commits with optional Co-Authored-By. |
 
@@ -305,7 +306,7 @@ pub struct ToolRegistry {
 |--------|-------------|
 | `new()` | Create empty registry |
 | `with_options(ToolRegistryOptions)` | Authoritative registration sequence; the other constructors are thin wrappers |
-| `with_defaults()` | Create registry with all 30 built-in tools, all-native backend defaults |
+| `with_defaults()` | Create registry with all built-in tools, all-native backend defaults |
 | `with_config(&Config)` | Resolves `ToolBackendConfig::from_config` + `IntegratedToolRuntimeConfig::resolve_integrated_config` and passes both through `with_options`. Used by CLI exec/chat and subagents. |
 | `with_session_config_defaults(&Config, todo_state, policy, pool, session_id)` | **Production session constructor.** Resolves both `ToolBackendConfig::from_config(&Config)` and `IntegratedToolRuntimeConfig` and threads them through `with_options`, so resolved `[tool_backends]`, `[deterministic_tools]`, `[preflight]`, and `[search]` configs are preserved. |
 | `with_session_defaults(todo_state, policy, pool, session_id)` | Session registry with **all-native backend defaults** — drops any loaded `[tool_backends]` and integrated config. Kept for tests and non-config-aware callers; the doc comment warns against using it in production paths. |
@@ -705,6 +706,7 @@ src/tool/
 ├── review.rs       # LLM-based code review (uses egggit::diff_summary)
 ├── batch.rs        # Parallel tool execution
 ├── terminal.rs     # Terminal command execution
+├── test.rs         # Supervised test runner (wraps test_runner module)
 ├── git.rs          # Git command execution (low-level wrapper)
 ├── commit.rs       # LLM-generated commit messages
 ├── plan.rs         # plan_enter and plan_exit tools

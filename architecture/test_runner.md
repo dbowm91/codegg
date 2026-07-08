@@ -268,3 +268,21 @@ Formats a `TestReport` into a human-readable string. Shows status, argv, cwd, du
 ```bash
 cargo test -p codegg --lib test_runner
 ```
+
+## Model-Facing Tool Integration
+
+The `test` tool (`src/tool/test.rs`) wraps the test runner for model consumption:
+
+- **Tool name**: `test`
+- **Category**: `ShellExec` (conservative permission gating)
+- **Input**: JSON with `scope` (required), plus optional `package`, `path`, `command`, `workdir`, `timeout`, `stall_timeout`
+- **Output**: Compact text report via `format_test_report()`
+- **Custom commands**: Allowlisted (cargo test, pytest, go test, etc.)
+- **Failing tests**: Return success tool result with failure report; only infrastructure failures return `ToolError`
+- **Provenance**: Native backend, `test_runner` implementation, `LocalTrusted`
+
+The tool is registered in `ToolRegistry::with_options()` and categorized in `tool_category_for_name()`.
+
+```bash
+cargo test -p codegg --lib tool::test
+```
