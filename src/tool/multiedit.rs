@@ -107,6 +107,8 @@ impl Tool for MultiEditTool {
         let parsed: MultiEditInput = serde_json::from_value(input)
             .map_err(|e| ToolError::Execution(format!("invalid multiedit input: {e}")))?;
 
+        let path_str_for_config = parsed.path.clone();
+
         let path = if parsed.path.starts_with('/') {
             std::path::PathBuf::from(&parsed.path)
         } else {
@@ -135,10 +137,25 @@ impl Tool for MultiEditTool {
         if let Some(ref svc) = self.preflight {
             let mut current = content.clone();
             for (i, edit) in parsed.edits.iter().enumerate() {
+                // Text replacement check
                 match svc
                     .check_text_replace(&current, &edit.old_string, &edit.new_string)
                     .await
                 {
+                    PreflightDecision::Block { findings } => {
+                        return Err(ToolError::Execution(format!(
+                            "preflight blocked edit {}: {}",
+                            i,
+                            PreflightDecision::Block { findings }.summary()
+                        )));
+                    }
+                    PreflightDecision::Warn { findings } => {
+                        preflight_warnings.push(PreflightDecision::Warn { findings }.summary());
+                    }
+                    _ => {}
+                }
+                // Unicode safety check on new text
+                match svc.check_text_security(&edit.new_string).await {
                     PreflightDecision::Block { findings } => {
                         return Err(ToolError::Execution(format!(
                             "preflight blocked edit {}: {}",
@@ -162,6 +179,7 @@ impl Tool for MultiEditTool {
 
         let allowed_root = self.allowed_root.clone();
         let unrestricted = self.unrestricted;
+        let path_for_display = path_str_for_config.clone();
 
         let result = tokio::task::spawn_blocking(move || {
             let canonical = if unrestricted {
@@ -195,11 +213,38 @@ impl Tool for MultiEditTool {
             Ok::<_, ToolError>(format!(
                 "Applied {} edits to {}",
                 parsed.edits.len(),
-                parsed.path
+                path_for_display
             ))
         })
         .await
         .map_err(|e| ToolError::Execution(format!("join error: {}", e)))??;
+
+        // Config format validation after write
+        if let Some(ref svc) = self.preflight {
+            let path_str = path_str_for_config;
+            if is_config_file(&path_str) {
+                let content_after = std::fs::read_to_string(&path_str).unwrap_or_default();
+                let ext = std::path::Path::new(&path_str)
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("");
+                let config_decision = match ext {
+                    "json" | "jsonc" | "json5" => svc.check_json_valid(&content_after).await,
+                    "toml" => svc.check_toml_valid(&content_after).await,
+                    _ => svc.check_config(&content_after).await,
+                };
+                match config_decision {
+                    PreflightDecision::Block { findings } => {
+                        return Err(ToolError::Execution(format!(
+                            "preflight blocked config write: {}",
+                            PreflightDecision::Block { findings }.summary()
+                        )));
+                    }
+                    w @ PreflightDecision::Warn { .. } => preflight_warnings.push(w.summary()),
+                    _ => {}
+                }
+            }
+        }
 
         if preflight_warnings.is_empty() {
             Ok(result)
@@ -207,4 +252,18 @@ impl Tool for MultiEditTool {
             Ok(format!("{}\n\n{}", preflight_warnings.join("\n"), result))
         }
     }
+}
+
+/// Returns true if the path looks like a structured config file.
+fn is_config_file(path: &str) -> bool {
+    let lower = path.to_lowercase();
+    lower.ends_with(".json")
+        || lower.ends_with(".jsonc")
+        || lower.ends_with(".json5")
+        || lower.ends_with(".toml")
+        || lower.ends_with(".yaml")
+        || lower.ends_with(".yml")
+        || lower.ends_with(".env")
+        || lower.ends_with("cargo.toml")
+        || lower.ends_with("package.json")
 }

@@ -1,5 +1,5 @@
 use crate::error::ToolError;
-use crate::preflight::PreflightService;
+use crate::preflight::{PreflightDecision, PreflightService};
 use crate::tool::patch_util::apply_unified_diff;
 use crate::tool::util::{canonicalize_path, check_path_for_symlinks, validate_path};
 use crate::tool::{Tool, ToolCategory};
@@ -144,6 +144,35 @@ impl ApplyPatchTool {
     }
 
     async fn apply_create(&self, path: &str, content: &str) -> Result<String, ToolError> {
+        // Config format validation for create mode
+        if let Some(ref svc) = self.preflight {
+            if is_config_file(path) {
+                let ext = Path::new(path)
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("");
+                let config_decision = match ext {
+                    "json" | "jsonc" | "json5" => svc.check_json_valid(content).await,
+                    "toml" => svc.check_toml_valid(content).await,
+                    _ => svc.check_config(content).await,
+                };
+                if let PreflightDecision::Block { findings } = config_decision {
+                    return Err(ToolError::Execution(format!(
+                        "preflight blocked config create: {}",
+                        PreflightDecision::Block { findings }.summary()
+                    )));
+                }
+            }
+            // Unicode safety check on new content
+            let unicode_decision = svc.check_text_security(content).await;
+            if let PreflightDecision::Block { findings } = unicode_decision {
+                return Err(ToolError::Execution(format!(
+                    "preflight blocked create: {}",
+                    PreflightDecision::Block { findings }.summary()
+                )));
+            }
+        }
+
         let path_owned = path.to_string();
         let content_owned = content.to_string();
         let allowed_root = self.allowed_root.clone();
@@ -228,7 +257,7 @@ impl ApplyPatchTool {
         let allowed_root = self.allowed_root.clone();
         let unrestricted = self.unrestricted;
 
-        let (_result, preview) = tokio::task::spawn_blocking(move || {
+        let (result, preview) = tokio::task::spawn_blocking(move || {
             let original_path = Path::new(&path_owned);
             let validated_path = if unrestricted {
                 canonicalize_path(original_path)?
@@ -252,7 +281,50 @@ impl ApplyPatchTool {
         .await
         .map_err(|e| ToolError::Execution(format!("join error: {}", e)))??;
 
-        Ok(format!("Applied patch to: {path}\n\n{preview}"))
+        // Post-patch validation on the result
+        let mut warnings = Vec::new();
+        if let Some(ref svc) = self.preflight {
+            // Config format validation for config files
+            if is_config_file(path) {
+                let ext = Path::new(path)
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("");
+                let config_decision = match ext {
+                    "json" | "jsonc" | "json5" => svc.check_json_valid(&result).await,
+                    "toml" => svc.check_toml_valid(&result).await,
+                    _ => svc.check_config(&result).await,
+                };
+                match config_decision {
+                    PreflightDecision::Block { findings } => {
+                        return Err(ToolError::Execution(format!(
+                            "preflight blocked config write: {}",
+                            PreflightDecision::Block { findings }.summary()
+                        )));
+                    }
+                    w @ PreflightDecision::Warn { .. } => warnings.push(w.summary()),
+                    _ => {}
+                }
+            }
+            // Unicode safety check on result
+            let unicode_decision = svc.check_text_security(&result).await;
+            match unicode_decision {
+                PreflightDecision::Block { findings } => {
+                    return Err(ToolError::Execution(format!(
+                        "preflight blocked patch result: {}",
+                        PreflightDecision::Block { findings }.summary()
+                    )));
+                }
+                w @ PreflightDecision::Warn { .. } => warnings.push(w.summary()),
+                _ => {}
+            }
+        }
+
+        let mut output = format!("Applied patch to: {path}\n\n{preview}");
+        if !warnings.is_empty() {
+            output = format!("{}\n\n{}", warnings.join("\n"), output);
+        }
+        Ok(output)
     }
 }
 
@@ -347,6 +419,20 @@ fn validate_target_path_unrestricted(path: &Path) -> Result<PathBuf, ToolError> 
         .file_name()
         .ok_or_else(|| ToolError::Execution("invalid path".to_string()))?;
     Ok(parent_canonical.join(file_name))
+}
+
+/// Returns true if the path looks like a structured config file.
+fn is_config_file(path: &str) -> bool {
+    let lower = path.to_lowercase();
+    lower.ends_with(".json")
+        || lower.ends_with(".jsonc")
+        || lower.ends_with(".json5")
+        || lower.ends_with(".toml")
+        || lower.ends_with(".yaml")
+        || lower.ends_with(".yml")
+        || lower.ends_with(".env")
+        || lower.ends_with("cargo.toml")
+        || lower.ends_with("package.json")
 }
 
 #[cfg(test)]

@@ -140,7 +140,9 @@ impl Tool for ReplaceTool {
         .await
         .map_err(|e| ToolError::Execution(format!("join error: {}", e)))??;
 
-        let preflight_warning = if let Some(ref svc) = self.preflight {
+        let mut preflight_warnings = Vec::new();
+        if let Some(ref svc) = self.preflight {
+            // Text replacement check
             match svc
                 .check_text_replace(&content, &pattern, &replacement)
                 .await
@@ -151,12 +153,21 @@ impl Tool for ReplaceTool {
                         PreflightDecision::Block { findings }.summary()
                     )));
                 }
-                w @ PreflightDecision::Warn { .. } => Some(w.summary()),
-                _ => None,
+                w @ PreflightDecision::Warn { .. } => preflight_warnings.push(w.summary()),
+                _ => {}
             }
-        } else {
-            None
-        };
+            // Unicode safety check on replacement text
+            match svc.check_text_security(&replacement).await {
+                PreflightDecision::Block { findings } => {
+                    return Err(ToolError::Execution(format!(
+                        "preflight blocked replace: {}",
+                        PreflightDecision::Block { findings }.summary()
+                    )));
+                }
+                w @ PreflightDecision::Warn { .. } => preflight_warnings.push(w.summary()),
+                _ => {}
+            }
+        }
 
         let allowed_root = self.allowed_root.clone();
         let unrestricted = self.unrestricted;
@@ -246,15 +257,55 @@ impl Tool for ReplaceTool {
             old_content: Some(old_content),
         });
 
+        // Config format validation after write
+        if let Some(ref svc) = self.preflight {
+            if is_config_file(&path_str_out) {
+                let content_after = std::fs::read_to_string(&path_str_out).unwrap_or_default();
+                let ext = std::path::Path::new(&path_str_out)
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("");
+                let config_decision = match ext {
+                    "json" | "jsonc" | "json5" => svc.check_json_valid(&content_after).await,
+                    "toml" => svc.check_toml_valid(&content_after).await,
+                    _ => svc.check_config(&content_after).await,
+                };
+                match config_decision {
+                    PreflightDecision::Block { findings } => {
+                        return Err(ToolError::Execution(format!(
+                            "preflight blocked config write: {}",
+                            PreflightDecision::Block { findings }.summary()
+                        )));
+                    }
+                    w @ PreflightDecision::Warn { .. } => preflight_warnings.push(w.summary()),
+                    _ => {}
+                }
+            }
+        }
+
         let mut output = format!(
             "Replaced {} occurrence(s) in {} with pattern '{}'",
             matches_len, path_str, pattern
         );
-        if let Some(warning) = preflight_warning {
-            output = format!("{}\n\n{}", warning, output);
+        if !preflight_warnings.is_empty() {
+            output = format!("{}\n\n{}", preflight_warnings.join("\n"), output);
         }
         Ok(output)
     }
+}
+
+/// Returns true if the path looks like a structured config file.
+fn is_config_file(path: &str) -> bool {
+    let lower = path.to_lowercase();
+    lower.ends_with(".json")
+        || lower.ends_with(".jsonc")
+        || lower.ends_with(".json5")
+        || lower.ends_with(".toml")
+        || lower.ends_with(".yaml")
+        || lower.ends_with(".yml")
+        || lower.ends_with(".env")
+        || lower.ends_with("cargo.toml")
+        || lower.ends_with("package.json")
 }
 
 #[cfg(test)]

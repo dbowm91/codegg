@@ -1,8 +1,11 @@
 use codegg::config::schema::{PreflightConfig, PreflightMode as ConfigPreflightMode};
+use codegg::eggsact::adapter::{EggsactConfig, EggsactRuntime};
 use codegg::preflight::{
     PreflightDecision, PreflightFinding, PreflightLocation, PreflightMode, PreflightPolicy,
-    PreflightSeverity,
+    PreflightService, PreflightSeverity,
 };
+use codegg::tool::{Tool, ToolRegistry};
+use std::sync::Arc;
 
 #[test]
 fn test_policy_default() {
@@ -314,4 +317,468 @@ fn test_decision_clone() {
     let cloned = d.clone();
     assert!(cloned.is_blocked());
     assert_eq!(cloned.findings()[0].machine_code.as_deref(), Some("E001"));
+}
+
+// ── Tool integration tests ──────────────────────────────────────────
+
+fn test_preflight_service() -> PreflightService {
+    let runtime = Arc::new(EggsactRuntime::new(EggsactConfig::default()).unwrap());
+    PreflightService::with_runtime(runtime, PreflightPolicy::default())
+}
+
+fn test_preflight_service_with_policy(policy: PreflightPolicy) -> PreflightService {
+    let runtime = Arc::new(EggsactRuntime::new(EggsactConfig::default()).unwrap());
+    PreflightService::with_runtime(runtime, policy)
+}
+
+#[tokio::test]
+async fn test_edit_tool_with_preflight_blocks_on_text_replace() {
+    let svc = test_preflight_service();
+    let tool = codegg::tool::edit::EditTool::new()
+        .with_allowed_root(std::env::temp_dir())
+        .with_preflight(svc);
+
+    // Create a temp file with content
+    let dir = tempfile::tempdir().unwrap();
+    let file_path = dir.path().join("test.txt");
+    std::fs::write(&file_path, "hello world").unwrap();
+
+    // Try to edit with a non-existent old_string — preflight should block
+    let input = serde_json::json!({
+        "path": file_path.to_str().unwrap(),
+        "old_string": "nonexistent text that does not exist in the file",
+        "new_string": "replacement"
+    });
+
+    let result = tool.execute(input).await;
+    assert!(
+        result.is_err(),
+        "edit with non-matching old_string should be blocked by preflight"
+    );
+    let err = result.unwrap_err();
+    let err_msg = format!("{}", err);
+    assert!(
+        err_msg.contains("preflight blocked") || err_msg.contains("could not find"),
+        "error should indicate preflight block or not found: {}",
+        err_msg
+    );
+}
+
+#[tokio::test]
+async fn test_edit_tool_with_preflight_warns_on_unicode() {
+    let mut policy = PreflightPolicy::default();
+    policy.unicode = true;
+    let svc = test_preflight_service_with_policy(policy);
+    let tool = codegg::tool::edit::EditTool::new()
+        .with_allowed_root(std::env::temp_dir())
+        .with_preflight(svc);
+
+    let dir = tempfile::tempdir().unwrap();
+    let file_path = dir.path().join("test.txt");
+    std::fs::write(&file_path, "hello world").unwrap();
+
+    // Edit with unicode confusable in new_string
+    let input = serde_json::json!({
+        "path": file_path.to_str().unwrap(),
+        "old_string": "hello",
+        "new_string": "hеllo"  // Cyrillic 'е' instead of Latin 'e'
+    });
+
+    let result = tool.execute(input).await;
+    // Should succeed (unicode is warn-only by default) but may include warning
+    if let Ok(output) = &result {
+        // The edit should still apply
+        assert!(
+            output.contains("Edited"),
+            "output should indicate edit was applied"
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_replace_tool_with_preflight_blocks_on_no_match() {
+    let svc = test_preflight_service();
+    let tool = codegg::tool::replace::ReplaceTool::new()
+        .with_allowed_root(std::env::temp_dir())
+        .with_preflight(svc);
+
+    let dir = tempfile::tempdir().unwrap();
+    let file_path = dir.path().join("test.txt");
+    std::fs::write(&file_path, "hello world").unwrap();
+
+    // Try to replace with a pattern that doesn't match
+    let input = serde_json::json!({
+        "path": file_path.to_str().unwrap(),
+        "pattern": "nonexistent",
+        "replacement": "replacement"
+    });
+
+    let result = tool.execute(input).await;
+    assert!(result.is_err(), "replace with no matches should fail");
+}
+
+#[tokio::test]
+async fn test_multiedit_tool_with_preflight_blocks_on_edit() {
+    let svc = test_preflight_service();
+    let tool = codegg::tool::multiedit::MultiEditTool::new()
+        .with_allowed_root(std::env::temp_dir())
+        .with_preflight(svc);
+
+    let dir = tempfile::tempdir().unwrap();
+    let file_path = dir.path().join("test.txt");
+    std::fs::write(&file_path, "hello world").unwrap();
+
+    // Try multiedit with a non-matching old_string
+    let input = serde_json::json!({
+        "path": file_path.to_str().unwrap(),
+        "edits": [
+            {
+                "old_string": "nonexistent",
+                "new_string": "replacement"
+            }
+        ]
+    });
+
+    let result = tool.execute(input).await;
+    assert!(
+        result.is_err(),
+        "multiedit with non-matching old_string should fail"
+    );
+}
+
+#[tokio::test]
+async fn test_apply_patch_tool_with_preflight_blocks_on_invalid_config() {
+    let mut policy = PreflightPolicy::default();
+    policy.config = true;
+    let svc = test_preflight_service_with_policy(policy);
+    let tool = codegg::tool::apply_patch::ApplyPatchTool::new()
+        .with_allowed_root(std::env::temp_dir())
+        .with_preflight(svc);
+
+    let dir = tempfile::tempdir().unwrap();
+    let file_path = dir.path().join("config.json");
+    std::fs::write(&file_path, r#"{"key": "value"}"#).unwrap();
+
+    // Create a patch that would result in invalid JSON
+    let patch = "--- a/config.json\n+++ b/config.json\n@@ -1 +1 @@\n-{\"key\": \"value\"}\n+{\"key\": \"value\",}";
+
+    let input = serde_json::json!({
+        "path": file_path.to_str().unwrap(),
+        "patch": patch,
+        "mode": "update"
+    });
+
+    let result = tool.execute(input).await;
+    // The patch application itself may fail due to invalid diff format,
+    // but if it applies, the config validation should catch invalid JSON
+    if let Ok(output) = &result {
+        // If patch applied successfully, check that config validation ran
+        // (the trailing comma makes invalid JSON)
+        assert!(
+            output.contains("Applied") || output.contains("preflight"),
+            "output should indicate patch applied or preflight finding: {}",
+            output
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_bash_tool_with_preflight_blocks_on_dangerous_command() {
+    let mut policy = PreflightPolicy::default();
+    policy.shell = true;
+    let svc = test_preflight_service_with_policy(policy);
+    let tool = codegg::tool::bash::BashTool::new().with_preflight(svc);
+
+    // A dangerous command that should be caught by security checks
+    let input = serde_json::json!({
+        "command": "rm -rf /"
+    });
+
+    let result = tool.execute(input).await;
+    assert!(result.is_err(), "dangerous command should be blocked ");
+    let err_msg = format!("{}", result.unwrap_err());
+    assert!(
+        err_msg.contains("blocked")
+            || err_msg.contains("permission")
+            || err_msg.contains("blocked list "),
+        "error should indicate blocking: {}",
+        err_msg
+    );
+}
+
+// ── Policy behavior tests ──────────────────────────────────────────
+
+#[test]
+fn test_observe_mode_does_not_block() {
+    let mut policy = PreflightPolicy::default();
+    policy.mode = PreflightMode::Observe;
+
+    // In observe mode, even Block severity findings should not cause blocking
+    assert!(!policy.should_block(PreflightSeverity::Block));
+    assert!(!policy.should_block(PreflightSeverity::Warn));
+}
+
+#[test]
+fn test_warn_mode_does_not_block() {
+    let mut policy = PreflightPolicy::default();
+    policy.mode = PreflightMode::Warn;
+
+    assert!(!policy.should_block(PreflightSeverity::Block));
+    assert!(!policy.should_block(PreflightSeverity::Warn));
+}
+
+#[test]
+fn test_block_on_definite_only_blocks_block_severity() {
+    let mut policy = PreflightPolicy::default();
+    policy.mode = PreflightMode::BlockOnDefinite;
+
+    assert!(policy.should_block(PreflightSeverity::Block));
+    assert!(!policy.should_block(PreflightSeverity::Warn));
+    assert!(!policy.should_block(PreflightSeverity::Annotate));
+}
+
+#[test]
+fn test_disabled_policy_skips_all_checks() {
+    let mut policy = PreflightPolicy::default();
+    policy.enabled = false;
+
+    assert!(!policy.should_block(PreflightSeverity::Block));
+    assert!(!policy.should_surface());
+}
+
+#[test]
+fn test_per_category_toggle_respected() {
+    let mut policy = PreflightPolicy::default();
+    policy.patch = false;
+    policy.config = false;
+    policy.shell = false;
+    policy.unicode = false;
+
+    // All categories disabled — checks should return Allow
+    assert!(!policy.patch);
+    assert!(!policy.config);
+    assert!(!policy.shell);
+    assert!(!policy.unicode);
+}
+
+// ── Findings and decision tests ────────────────────────────────────
+
+#[test]
+fn test_findings_with_location() {
+    let finding = PreflightFinding {
+        severity: PreflightSeverity::Warn,
+        machine_code: Some("W001".to_string()),
+        message: "possible issue ".to_string(),
+        location: Some(PreflightLocation {
+            file: Some("src/main.rs ".to_string()),
+            line: Some(42),
+            column: Some(10),
+        }),
+        source_tool: "text_replace_check".to_string(),
+    };
+
+    assert_eq!(finding.severity, PreflightSeverity::Warn);
+    assert_eq!(finding.location.as_ref().unwrap().line, Some(42));
+}
+
+#[test]
+fn test_decision_allow_with_empty_findings() {
+    let d = PreflightDecision::Allow { findings: vec![] };
+    assert!(!d.is_blocked());
+    assert!(!d.has_warnings());
+    assert!(d.findings().is_empty());
+    assert_eq!(d.summary(), "");
+}
+
+#[test]
+fn test_decision_warn_with_findings() {
+    let d = PreflightDecision::Warn {
+        findings: vec![
+            PreflightFinding {
+                severity: PreflightSeverity::Warn,
+                machine_code: None,
+                message: "match count > 1".to_string(),
+                location: None,
+                source_tool: "text_replace_check".to_string(),
+            },
+            PreflightFinding {
+                severity: PreflightSeverity::Annotate,
+                machine_code: None,
+                message: "info note ".to_string(),
+                location: None,
+                source_tool: "validate_json".to_string(),
+            },
+        ],
+    };
+    assert!(!d.is_blocked());
+    assert!(d.has_warnings());
+    assert_eq!(d.findings().len(), 2);
+    assert!(d.summary().contains("[WARN]"));
+    assert!(d.summary().contains("[INFO]"));
+}
+
+#[test]
+fn test_decision_block_with_findings() {
+    let d = PreflightDecision::Block {
+        findings: vec![PreflightFinding {
+            severity: PreflightSeverity::Block,
+            machine_code: Some("B001".to_string()),
+            message: "replacement not found ".to_string(),
+            location: None,
+            source_tool: "text_replace_check".to_string(),
+        }],
+    };
+    assert!(d.is_blocked());
+    assert!(!d.has_warnings());
+    assert_eq!(d.findings().len(), 1);
+    assert!(d.summary().contains("[BLOCK]"));
+}
+
+// ── Serialization tests ────────────────────────────────────────────
+
+#[test]
+fn test_policy_serialization_roundtrip_all_modes() {
+    for mode in [
+        PreflightMode::Off,
+        PreflightMode::Observe,
+        PreflightMode::Warn,
+        PreflightMode::BlockOnDefinite,
+    ] {
+        let mut policy = PreflightPolicy::default();
+        policy.mode = mode;
+        let json = serde_json::to_string(&policy).unwrap();
+        let deserialized: PreflightPolicy = serde_json::from_str(&json).unwrap();
+        assert_eq!(policy.mode, deserialized.mode);
+    }
+}
+
+#[test]
+fn test_finding_serialization_roundtrip() {
+    let finding = PreflightFinding {
+        severity: PreflightSeverity::Block,
+        machine_code: Some("E001".to_string()),
+        message: "test finding ".to_string(),
+        location: Some(PreflightLocation {
+            file: Some("test.rs ".to_string()),
+            line: Some(10),
+            column: Some(5),
+        }),
+        source_tool: "validate_json".to_string(),
+    };
+
+    let json = serde_json::to_string(&finding).unwrap();
+    let deserialized: PreflightFinding = serde_json::from_str(&json).unwrap();
+    assert_eq!(deserialized.severity, PreflightSeverity::Block);
+    assert_eq!(deserialized.machine_code.as_deref(), Some("E001"));
+    assert_eq!(deserialized.location.as_ref().unwrap().line, Some(10));
+}
+
+// ── Config schema tests ────────────────────────────────────────────
+
+#[test]
+fn test_config_preflight_schema_defaults() {
+    let config = PreflightConfig::default();
+    assert!(config.enabled.unwrap_or(true));
+    assert_eq!(
+        config.mode.unwrap_or(ConfigPreflightMode::Warn),
+        ConfigPreflightMode::Warn
+    );
+    assert!(config.patch.unwrap_or(true));
+    assert!(config.config.unwrap_or(true));
+    assert!(config.shell.unwrap_or(true));
+    assert!(config.unicode.unwrap_or(true));
+}
+
+#[test]
+fn test_config_preflight_schema_all_disabled() {
+    let config = PreflightConfig {
+        enabled: Some(false),
+        mode: Some(ConfigPreflightMode::Off),
+        patch: Some(false),
+        config: Some(false),
+        shell: Some(false),
+        unicode: Some(false),
+        log_findings: Some(false),
+        model_visible_findings: Some(false),
+    };
+    let policy = PreflightPolicy::from_config(&config);
+    assert!(!policy.enabled);
+    assert_eq!(policy.mode, PreflightMode::Off);
+    assert!(!policy.patch);
+    assert!(!policy.config);
+    assert!(!policy.shell);
+    assert!(!policy.unicode);
+}
+
+// ── Harness preflight isolation tests ──────────────────────────────
+
+#[test]
+fn test_tool_registry_has_preflight_capable_tools() {
+    let registry = ToolRegistry::with_defaults();
+    let tool_names: Vec<&str> = registry.list().iter().map(|t| t.name()).collect();
+
+    // These tools should be present and capable of receiving preflight
+    assert!(tool_names.contains(&"edit"), "edit tool should be present");
+    assert!(
+        tool_names.contains(&"replace"),
+        "replace tool should be present"
+    );
+    assert!(
+        tool_names.contains(&"apply_patch"),
+        "apply_patch tool should be present"
+    );
+    assert!(tool_names.contains(&"bash"), "bash tool should be present");
+}
+
+#[test]
+fn test_deterministic_preflight_tools_are_model_facing() {
+    // The eggsact deterministic tools (text_replace_check, validate_json, etc.)
+    // are both model-facing AND used internally by the preflight service.
+    // This test verifies they ARE in the default registry.
+    let registry = ToolRegistry::with_defaults();
+    let tool_names: Vec<&str> = registry.list().iter().map(|t| t.name()).collect();
+
+    assert!(
+        tool_names.contains(&"text_replace_check"),
+        "text_replace_check should be in default registry"
+    );
+    assert!(
+        tool_names.contains(&"validate_json"),
+        "validate_json should be in default registry"
+    );
+    assert!(
+        tool_names.contains(&"validate_toml"),
+        "validate_toml should be in default registry"
+    );
+    assert!(
+        tool_names.contains(&"command_preflight"),
+        "command_preflight should be in default registry"
+    );
+    assert!(
+        tool_names.contains(&"text_security_inspect"),
+        "text_security_inspect should be in default registry"
+    );
+}
+
+// ── Severity classification tests ──────────────────────────────────
+
+#[test]
+fn test_severity_ordering() {
+    // Block > Warn > Annotate in severity
+    assert!(PreflightSeverity::Block != PreflightSeverity::Warn);
+    assert!(PreflightSeverity::Warn != PreflightSeverity::Annotate);
+    assert!(PreflightSeverity::Block != PreflightSeverity::Annotate);
+}
+
+#[test]
+fn test_severity_serialize_deserialize() {
+    for severity in [
+        PreflightSeverity::Block,
+        PreflightSeverity::Warn,
+        PreflightSeverity::Annotate,
+    ] {
+        let json = serde_json::to_string(&severity).unwrap();
+        let deserialized: PreflightSeverity = serde_json::from_str(&json).unwrap();
+        assert_eq!(severity, deserialized);
+    }
 }

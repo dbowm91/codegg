@@ -134,7 +134,9 @@ impl Tool for EditTool {
         .await
         .map_err(|e| ToolError::Execution(format!("join error: {}", e)))??;
 
-        let preflight_warning = if let Some(ref svc) = self.preflight {
+        let mut preflight_warnings = Vec::new();
+        if let Some(ref svc) = self.preflight {
+            // Text replacement check
             match svc
                 .check_text_replace(&content, &old_string, &new_string)
                 .await
@@ -145,12 +147,21 @@ impl Tool for EditTool {
                         PreflightDecision::Block { findings }.summary()
                     )));
                 }
-                w @ PreflightDecision::Warn { .. } => Some(w.summary()),
-                _ => None,
+                w @ PreflightDecision::Warn { .. } => preflight_warnings.push(w.summary()),
+                _ => {}
             }
-        } else {
-            None
-        };
+            // Unicode safety check on new text
+            match svc.check_text_security(&new_string).await {
+                PreflightDecision::Block { findings } => {
+                    return Err(ToolError::Execution(format!(
+                        "preflight blocked edit: {}",
+                        PreflightDecision::Block { findings }.summary()
+                    )));
+                }
+                w @ PreflightDecision::Warn { .. } => preflight_warnings.push(w.summary()),
+                _ => {}
+            }
+        }
 
         let allowed_root = self.allowed_root.clone();
         let unrestricted = self.unrestricted;
@@ -187,10 +198,35 @@ impl Tool for EditTool {
         .map_err(|e| ToolError::Execution(format!("join error: {}", e)))??;
 
         GlobalEventBus::publish(AppEvent::FileChanged {
-            path: path_str,
+            path: path_str.clone(),
             action: "Modified".to_string(),
             old_content: Some(old_content),
         });
+
+        // Config format validation after write
+        if let Some(ref svc) = self.preflight {
+            if is_config_file(&path_str) {
+                let ext = std::path::Path::new(&path_str)
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("");
+                let config_decision = match ext {
+                    "json" | "jsonc" | "json5" => svc.check_json_valid(&_result).await,
+                    "toml" => svc.check_toml_valid(&_result).await,
+                    _ => svc.check_config(&_result).await,
+                };
+                match config_decision {
+                    PreflightDecision::Block { findings } => {
+                        return Err(ToolError::Execution(format!(
+                            "preflight blocked config write: {}",
+                            PreflightDecision::Block { findings }.summary()
+                        )));
+                    }
+                    w @ PreflightDecision::Warn { .. } => preflight_warnings.push(w.summary()),
+                    _ => {}
+                }
+            }
+        }
 
         let mut output = format!(
             "Edited {}\n\n- {}\n+ {}",
@@ -198,8 +234,8 @@ impl Tool for EditTool {
             old_string.lines().count(),
             new_string.lines().count()
         );
-        if let Some(warning) = preflight_warning {
-            output = format!("{}\n\n{}", warning, output);
+        if !preflight_warnings.is_empty() {
+            output = format!("{}\n\n{}", preflight_warnings.join("\n"), output);
         }
         Ok(output)
     }
@@ -591,6 +627,20 @@ fn context_aware_match(content: &str, old_string: &str, new_string: &str) -> Opt
     }
 
     None
+}
+
+/// Returns true if the path looks like a structured config file.
+fn is_config_file(path: &str) -> bool {
+    let lower = path.to_lowercase();
+    lower.ends_with(".json")
+        || lower.ends_with(".jsonc")
+        || lower.ends_with(".json5")
+        || lower.ends_with(".toml")
+        || lower.ends_with(".yaml")
+        || lower.ends_with(".yml")
+        || lower.ends_with(".env")
+        || lower.ends_with("cargo.toml")
+        || lower.ends_with("package.json")
 }
 
 fn find_similar_block(content: &str, old_string: &str) -> String {
