@@ -379,6 +379,17 @@ pub enum TuiCommand {
         command: String,
         promote_after: bool,
     },
+    /// Run supervised tests from the /test slash command.
+    TestRun {
+        scope: String,
+        args: String,
+    },
+    /// Completion: a supervised test run has finished.
+    TestRunFinished {
+        request_id: u64,
+        report: Option<Box<crate::test_runner::TestReport>>,
+        error: Option<String>,
+    },
     ShellEvent(crate::shell::ShellEvent),
     ShellInclude {
         id: u64,
@@ -6212,6 +6223,24 @@ impl App {
                 let subcmd = query.trim_start_matches("/tests").trim();
                 self.ui_state.command_mode = false;
                 self.handle_tests_command(subcmd);
+            }
+            "/test" => {
+                let query = self.dialog_state.command_palette.query.trim().to_string();
+                let raw_args = query
+                    .strip_prefix("test")
+                    .map(|s| s.trim())
+                    .unwrap_or("")
+                    .to_string();
+                let (scope, args) = crate::tui::commands::test::parse_test_slash_args(&raw_args);
+                self.ui_state.command_mode = false;
+                self.prompt_state.prompt.clear();
+                self.prompt_state.show_completions = false;
+                if let Some(ref tx) = self.tui_cmd_tx {
+                    let _ = tx.try_send(TuiCommand::TestRun { scope, args });
+                }
+                self.messages_state
+                    .toasts
+                    .info("Starting supervised test run...");
             }
             "/revert" => {
                 let query = self.dialog_state.command_palette.query.clone();

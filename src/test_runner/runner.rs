@@ -13,7 +13,8 @@ use uuid::Uuid;
 use crate::test_runner::parse::{ingest_stderr_line, ingest_stdout_line, TestParseState};
 use crate::test_runner::resolve::{resolve_test_command, TestResolveError};
 use crate::test_runner::types::{
-    FailureClass, ResolvedTestCommand, TestReport, TestRunRequest, TestStatus, TestTimeout,
+    FailureClass, ResolvedTestCommand, TestEventSink, TestReport, TestRunCompletedSnapshot,
+    TestRunProgressSnapshot, TestRunRequest, TestRunStartedSnapshot, TestStatus, TestTimeout,
     TimeoutKind,
 };
 
@@ -51,6 +52,13 @@ pub enum TestRunError {
 
     #[error("invalid request: {0}")]
     InvalidRequest(String),
+}
+
+/// Context for event publishing during test supervision.
+struct SupervisorContext<'a> {
+    sink: Option<&'a dyn TestEventSink>,
+    job_id: &'a str,
+    session_id: &'a str,
 }
 
 #[derive(Debug, Clone)]
@@ -106,6 +114,7 @@ fn create_log_dir(workdir: &Path) -> Result<PathBuf, TestRunError> {
 pub async fn run_resolved_test(
     request: &TestRunRequest,
     resolved: ResolvedTestCommand,
+    sink: Option<&dyn TestEventSink>,
 ) -> Result<TestReport, TestRunError> {
     let timeout_secs = request.timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS);
     if timeout_secs == 0 {
@@ -125,6 +134,18 @@ pub async fn run_resolved_test(
     let log_dir = create_log_dir(&request.workdir)?;
     let stdout_log_path = log_dir.join("stdout.log");
     let stderr_log_path = log_dir.join("stderr.log");
+
+    let job_id = Uuid::new_v4().to_string();
+    let command_display = resolved.argv.join(" ");
+
+    if let Some(sink) = sink {
+        sink.started(TestRunStartedSnapshot {
+            session_id: request.session_id.clone().unwrap_or_default(),
+            job_id: job_id.clone(),
+            command: command_display,
+            cwd: resolved.cwd.to_string_lossy().to_string(),
+        });
+    }
 
     let start = Instant::now();
     let shared = SharedState::new();
@@ -154,6 +175,11 @@ pub async fn run_resolved_test(
     };
     let stall_deadline_secs = stall_timeout_secs;
 
+    let ctx = SupervisorContext {
+        sink,
+        job_id: &job_id,
+        session_id: request.session_id.as_deref().unwrap_or(""),
+    };
     let result = supervisor_loop(
         &mut child,
         stdout_task,
@@ -163,6 +189,7 @@ pub async fn run_resolved_test(
         stall_interval,
         stall_deadline_secs,
         start,
+        &ctx,
     )
     .await;
 
@@ -179,6 +206,19 @@ pub async fn run_resolved_test(
         &stderr_log_path,
         max_report_bytes,
     );
+
+    if let Some(sink) = sink {
+        sink.completed(TestRunCompletedSnapshot {
+            session_id: request.session_id.clone().unwrap_or_default(),
+            job_id,
+            status: format!("{:?}", report.status).to_lowercase(),
+            summary: report.summary.clone(),
+            log_dir: report
+                .log_dir
+                .as_ref()
+                .map(|p| p.to_string_lossy().to_string()),
+        });
+    }
 
     let report_json = serde_json::to_string_pretty(&report).unwrap_or_default();
     let report_path = log_dir.join("report.json");
@@ -253,6 +293,7 @@ enum SupervisorResult {
     ChildFailed(String),
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn supervisor_loop(
     child: &mut Child,
     mut stdout_task: tokio::task::JoinHandle<()>,
@@ -262,9 +303,15 @@ async fn supervisor_loop(
     stall_interval: Duration,
     stall_deadline_secs: u64,
     start: Instant,
+    ctx: &SupervisorContext<'_>,
 ) -> SupervisorResult {
     let mut stdout_done = false;
     let mut stderr_done = false;
+    let mut last_progress = Instant::now();
+    let mut last_tests_seen: u64 = 0;
+    let mut last_tests_failed: u64 = 0;
+    let mut had_failure = false;
+    let progress_throttle = Duration::from_millis(500);
 
     loop {
         tokio::select! {
@@ -315,6 +362,48 @@ async fn supervisor_loop(
                         elapsed_ms: elapsed,
                         last_output: excerpt,
                     };
+                }
+
+                // Emit throttled progress event
+                if let Some(sink) = ctx.sink {
+                    if last_progress.elapsed() >= progress_throttle {
+                        let state = shared.parse_state.lock().await;
+                        let tests_seen = state.tests_seen as u64;
+                        let tests_failed = state.tests_failed as u64;
+                        let tests_passed = state.tests_passed as u64;
+                        drop(state);
+
+                        let changed = tests_seen != last_tests_seen
+                            || tests_failed != last_tests_failed
+                            || (tests_failed > 0 && !had_failure);
+
+                        if changed {
+                            let mut parts = Vec::new();
+                            if tests_seen > 0 {
+                                parts.push(format!("{tests_seen} tests seen"));
+                            }
+                            if tests_passed > 0 {
+                                parts.push(format!("{tests_passed} passed"));
+                            }
+                            if tests_failed > 0 {
+                                parts.push(format!("{tests_failed} failed"));
+                            }
+                            if parts.is_empty() {
+                                parts.push("running tests...".into());
+                            }
+                            let message = parts.join(", ");
+
+                            sink.progress(TestRunProgressSnapshot {
+                                session_id: ctx.session_id.to_string(),
+                                job_id: ctx.job_id.to_string(),
+                                message,
+                            });
+                            last_tests_seen = tests_seen;
+                            last_tests_failed = tests_failed;
+                            had_failure = tests_failed > 0;
+                            last_progress = Instant::now();
+                        }
+                    }
                 }
             }
         }
@@ -442,9 +531,12 @@ fn build_summary(parse_state: &TestParseState, exit_code: Option<i32>) -> String
     }
 }
 
-pub async fn resolve_and_run_test(request: TestRunRequest) -> Result<TestReport, TestRunError> {
+pub async fn resolve_and_run_test(
+    request: TestRunRequest,
+    sink: Option<&dyn TestEventSink>,
+) -> Result<TestReport, TestRunError> {
     let resolved = resolve_test_command(&request)?;
-    run_resolved_test(&request, resolved).await
+    run_resolved_test(&request, resolved, sink).await
 }
 
 #[cfg(test)]
@@ -480,8 +572,9 @@ mod tests {
             timeout_secs: Some(60),
             stall_timeout_secs: Some(30),
             max_report_bytes: None,
+            session_id: None,
         };
-        let result = run_resolved_test(&request, resolved).await.unwrap();
+        let result = run_resolved_test(&request, resolved, None).await.unwrap();
         assert_eq!(result.status, TestStatus::Passed);
         assert_eq!(result.exit_code, Some(0));
         assert!(result.log_dir.is_some());
@@ -503,8 +596,9 @@ mod tests {
             timeout_secs: Some(10),
             stall_timeout_secs: None,
             max_report_bytes: None,
+            session_id: None,
         };
-        let result = resolve_and_run_test(request).await.unwrap();
+        let result = resolve_and_run_test(request, None).await.unwrap();
         assert_eq!(result.status, TestStatus::Failed);
         assert_eq!(result.exit_code, Some(1));
         assert!(!result.failures.is_empty());
@@ -526,8 +620,9 @@ mod tests {
             timeout_secs: Some(1),
             stall_timeout_secs: None,
             max_report_bytes: None,
+            session_id: None,
         };
-        let result = run_resolved_test(&request, resolved).await.unwrap();
+        let result = run_resolved_test(&request, resolved, None).await.unwrap();
         assert_eq!(result.status, TestStatus::TimedOut);
         assert!(result.timeout.is_some());
         let timeout = result.timeout.unwrap();
@@ -549,8 +644,9 @@ mod tests {
             timeout_secs: Some(30),
             stall_timeout_secs: Some(1),
             max_report_bytes: None,
+            session_id: None,
         };
-        let result = run_resolved_test(&request, resolved).await.unwrap();
+        let result = run_resolved_test(&request, resolved, None).await.unwrap();
         assert_eq!(result.status, TestStatus::TimedOut);
         assert!(result.timeout.is_some());
         let timeout = result.timeout.unwrap();
@@ -566,6 +662,7 @@ mod tests {
             timeout_secs: Some(10),
             stall_timeout_secs: None,
             max_report_bytes: None,
+            session_id: None,
         };
         let resolved = ResolvedTestCommand {
             language: crate::test_runner::types::TestLanguage::Generic,
@@ -574,7 +671,7 @@ mod tests {
             scope_label: "test".into(),
         };
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let err = rt.block_on(run_resolved_test(&request, resolved));
+        let err = rt.block_on(run_resolved_test(&request, resolved, None));
         assert!(matches!(err, Err(TestRunError::EmptyCommand)));
     }
 
@@ -587,6 +684,7 @@ mod tests {
             timeout_secs: Some(0),
             stall_timeout_secs: None,
             max_report_bytes: None,
+            session_id: None,
         };
         let resolved = ResolvedTestCommand {
             language: crate::test_runner::types::TestLanguage::Generic,
@@ -595,7 +693,7 @@ mod tests {
             scope_label: "test".into(),
         };
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let err = rt.block_on(run_resolved_test(&request, resolved));
+        let err = rt.block_on(run_resolved_test(&request, resolved, None));
         assert!(matches!(err, Err(TestRunError::InvalidRequest(_))));
     }
 
@@ -661,8 +759,9 @@ mod tests {
             timeout_secs: Some(10),
             stall_timeout_secs: None,
             max_report_bytes: None,
+            session_id: None,
         };
-        let result = run_resolved_test(&request, resolved).await.unwrap();
+        let result = run_resolved_test(&request, resolved, None).await.unwrap();
         assert_eq!(result.status, TestStatus::Failed);
         assert_eq!(result.exit_code, Some(1));
         assert_eq!(result.failures[0].failure_class, FailureClass::NonzeroExit);
@@ -687,10 +786,89 @@ mod tests {
             timeout_secs: Some(1),
             stall_timeout_secs: None,
             max_report_bytes: None,
+            session_id: None,
         };
-        let result = run_resolved_test(&request, resolved).await.unwrap();
+        let result = run_resolved_test(&request, resolved, None).await.unwrap();
         assert_eq!(result.status, TestStatus::TimedOut);
         let timeout = result.timeout.unwrap();
         assert!(timeout.last_output.is_some());
+    }
+
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    struct TestSink {
+        started_called: AtomicBool,
+        progress_count: AtomicUsize,
+        completed_called: AtomicBool,
+    }
+
+    impl TestSink {
+        fn new() -> Self {
+            Self {
+                started_called: AtomicBool::new(false),
+                progress_count: AtomicUsize::new(0),
+                completed_called: AtomicBool::new(false),
+            }
+        }
+    }
+
+    impl crate::test_runner::types::TestEventSink for TestSink {
+        fn started(&self, _snapshot: crate::test_runner::types::TestRunStartedSnapshot) {
+            self.started_called.store(true, Ordering::SeqCst);
+        }
+        fn progress(&self, _snapshot: crate::test_runner::types::TestRunProgressSnapshot) {
+            self.progress_count.fetch_add(1, Ordering::SeqCst);
+        }
+        fn completed(&self, _snapshot: crate::test_runner::types::TestRunCompletedSnapshot) {
+            self.completed_called.store(true, Ordering::SeqCst);
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn runner_publishes_started_and_completed_when_sink_present() {
+        let dir = temp_dir_with_files("sink-present", &[]);
+        let resolved = ResolvedTestCommand {
+            language: crate::test_runner::types::TestLanguage::Generic,
+            argv: vec!["true".into()],
+            cwd: dir.path().to_path_buf(),
+            scope_label: "test".into(),
+        };
+        let request = TestRunRequest {
+            scope: TestScope::Auto,
+            workdir: dir.path().to_path_buf(),
+            timeout_secs: Some(60),
+            stall_timeout_secs: Some(30),
+            max_report_bytes: None,
+            session_id: Some("test-session".into()),
+        };
+        let sink = TestSink::new();
+        let result = run_resolved_test(&request, resolved, Some(&sink))
+            .await
+            .unwrap();
+        assert_eq!(result.status, TestStatus::Passed);
+        assert!(sink.started_called.load(Ordering::SeqCst));
+        assert!(sink.completed_called.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn runner_does_not_require_sink() {
+        let dir = temp_dir_with_files("no-sink", &[]);
+        let resolved = ResolvedTestCommand {
+            language: crate::test_runner::types::TestLanguage::Generic,
+            argv: vec!["true".into()],
+            cwd: dir.path().to_path_buf(),
+            scope_label: "test".into(),
+        };
+        let request = TestRunRequest {
+            scope: TestScope::Auto,
+            workdir: dir.path().to_path_buf(),
+            timeout_secs: Some(60),
+            stall_timeout_secs: Some(30),
+            max_report_bytes: None,
+            session_id: None,
+        };
+        let result = run_resolved_test(&request, resolved, None).await;
+        assert!(result.is_ok());
     }
 }

@@ -113,7 +113,7 @@ pub struct ToolResult {
 |------|------|-------------|
 | **bash** | `bash.rs` | Execute shell commands with extensive security (blocked commands, blocked patterns regex, allowlist support, Landlock sandboxing). 120s default timeout. |
 | **terminal** | `terminal.rs` | Run commands in interactive terminal session. Similar security to bash but with env var filtering. 60s default timeout. |
-| **test** | `test.rs` | Run project tests through supervised test runner. Wraps `test_runner::resolve_and_run_test()`. Streams stdout/stderr to logs, classifies timeouts/failures, returns compact report. Custom commands require allowlist (cargo test, pytest, etc.). Category: ShellExec. |
+| **test** | `test.rs` | Run project tests through supervised test runner. Wraps `test_runner::resolve_and_run_test()`. Streams stdout/stderr to logs, classifies timeouts/failures, returns compact report. Custom commands require allowlist (cargo test, pytest, etc.). Category: ShellExec. When session context is available, the test tool can publish lifecycle events (started/progress/completed) through an optional TestEventSink. Events are throttled and do not include raw output. Full test output remains in `.codegg/test-runs/` log directories. |
 | **git** | `git.rs` | Execute git commands with subcommand/args model. 30s default timeout. |
 | **commit** | `commit.rs` | Generate commit messages from diff using LLM. Stages all changes, generates message, commits with optional Co-Authored-By. |
 

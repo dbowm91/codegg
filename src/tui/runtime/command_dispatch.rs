@@ -52,6 +52,8 @@ use super::super::commands::tasks::{
     start_delete_task, start_list_tasks, start_send_notification, start_task_schedule,
     start_worktree_list,
 };
+#[allow(unused_imports)]
+use super::super::commands::test::{apply_test_run_finished, start_test_run};
 
 use crate::protocol::core::CoreRequest;
 use crate::tui::components::toast::Toast;
@@ -430,6 +432,16 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
             promote_after,
         } => {
             handle_run_human_shell(app, command, promote_after);
+        }
+        TuiCommand::TestRun { scope, args } => {
+            start_test_run(app, scope, args);
+        }
+        TuiCommand::TestRunFinished {
+            request_id: _,
+            report,
+            error,
+        } => {
+            apply_test_run_finished(app, report, error);
         }
         TuiCommand::ShellEvent(event) => {
             handle_shell_event(app, event);

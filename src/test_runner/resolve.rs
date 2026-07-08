@@ -204,6 +204,7 @@ mod tests {
             timeout_secs: None,
             stall_timeout_secs: None,
             max_report_bytes: None,
+            session_id: None,
         }
     }
 

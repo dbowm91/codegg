@@ -11,3 +11,4 @@ pub(super) mod security;
 pub(super) mod sessions;
 pub(super) mod shell;
 pub(super) mod tasks;
+pub(super) mod test;

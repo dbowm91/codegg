@@ -208,6 +208,7 @@ Representative built-ins:
 | `/tool-backends` | `/tools`, `/backends` | Show resolved backend for each model-facing tool |
 | `/security-review` | | Security review of changed files |
 | `/shell-list` | | List recent shell commands |
+| `/test` | | Run supervised tests (/test, /test workspace, /test changed, /test package <name>, /test file <path>, /test previous, /test custom <command>) |
 | `/tui-stats` | | Show TUI runtime diagnostics |
 
 ### Dynamic Commands
@@ -245,6 +246,16 @@ When a command is executed:
    - Render template with `{args}` variable
    - Add rendered text as user message
    - Trigger agent processing
+
+### Test Lifecycle Events
+
+The `/test` command publishes lifecycle events through the AppEvent bus:
+
+- `test_run:started` — A supervised test run began. Includes job ID, command, and working directory.
+- `test_run:progress` — Throttled progress updates (test counts, failures detected).
+- `test_run:completed` — The run finished with status, summary, and log directory path.
+
+Events are throttled to at most one progress event per 500ms to avoid flooding the bus.
 
 ## Error Handling
 

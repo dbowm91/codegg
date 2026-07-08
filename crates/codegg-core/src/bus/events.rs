@@ -256,6 +256,27 @@ pub enum AppEvent {
         agent: String,
         error: String,
     },
+    /// A supervised test run started.
+    TestRunStarted {
+        session_id: String,
+        job_id: String,
+        command: String,
+        cwd: String,
+    },
+    /// Progress during a supervised test run.
+    TestRunProgress {
+        session_id: String,
+        job_id: String,
+        message: String,
+    },
+    /// A supervised test run completed.
+    TestRunCompleted {
+        session_id: String,
+        job_id: String,
+        status: String,
+        summary: String,
+        log_dir: Option<String>,
+    },
     /// Context window usage updated.
     ContextUpdated {
         session_id: String,
@@ -308,7 +329,48 @@ impl AppEvent {
             AppEvent::SubagentProgress { .. } => "subagent:progress",
             AppEvent::SubagentCompleted { .. } => "subagent:completed",
             AppEvent::SubagentFailed { .. } => "subagent:failed",
+            AppEvent::TestRunStarted { .. } => "test_run:started",
+            AppEvent::TestRunProgress { .. } => "test_run:progress",
+            AppEvent::TestRunCompleted { .. } => "test_run:completed",
             AppEvent::ContextUpdated { .. } => "context:updated",
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_run_started_event_has_event_type() {
+        let event = AppEvent::TestRunStarted {
+            session_id: "s1".into(),
+            job_id: "j1".into(),
+            command: "cargo test".into(),
+            cwd: "/tmp".into(),
+        };
+        assert_eq!(event.event_type(), "test_run:started");
+    }
+
+    #[test]
+    fn test_run_progress_event_has_event_type() {
+        let event = AppEvent::TestRunProgress {
+            session_id: "s1".into(),
+            job_id: "j1".into(),
+            message: "running tests...".into(),
+        };
+        assert_eq!(event.event_type(), "test_run:progress");
+    }
+
+    #[test]
+    fn test_run_completed_event_has_event_type() {
+        let event = AppEvent::TestRunCompleted {
+            session_id: "s1".into(),
+            job_id: "j1".into(),
+            status: "passed".into(),
+            summary: "42 passed, 0 failed".into(),
+            log_dir: Some("/tmp/test-runs".into()),
+        };
+        assert_eq!(event.event_type(), "test_run:completed");
     }
 }

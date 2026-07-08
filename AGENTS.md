@@ -124,6 +124,15 @@ cargo test -p codegg --lib test_runner
 # Test tool (model-facing wrapper for supervised test runner)
 cargo test -p codegg --lib tool::test
 
+# Run supervised tests via TUI slash command
+# /test, /test workspace, /test changed, /test package <name>, /test file <path>, /test previous, /test custom <command>
+
+# Test runner event sink tests
+cargo test -p codegg --lib test_runner::runner::tests
+
+# Test command parser tests
+cargo test -p codegg --lib tui::commands::test
+
 # LSP integration (fake server, no network, needs lsp-test-support)
 cargo test -p egglsp --features lsp-test-support --test scenario_engine
 cargo test --features lsp-test-support --test lsp_composite_stdio

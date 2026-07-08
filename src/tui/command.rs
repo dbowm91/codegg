@@ -211,6 +211,8 @@ impl CommandRegistry {
                 .with_description("Show diff for a file (/diff <path>)"),
             Command::new("/tests", CommandCategory::Session, None)
                 .with_description("Show test state (/tests, /tests last, /tests failed)"),
+            Command::new("/test", CommandCategory::Session, None)
+                .with_description("Run supervised tests (/test, /test workspace, /test changed, /test package <name>, /test file <path>, /test previous, /test custom <command>)"),
             Command::new("/revert", CommandCategory::Agent, None)
                 .with_description("Revert a file change (/revert <path>)"),
             Command::new("/research", CommandCategory::Agent, None)
@@ -514,7 +516,7 @@ mod tests {
 
     #[test]
     fn built_in_command_count_matches_release_docs() {
-        assert_eq!(CommandRegistry::built_in_commands().len(), 105);
+        assert_eq!(CommandRegistry::built_in_commands().len(), 106);
     }
 
     #[test]

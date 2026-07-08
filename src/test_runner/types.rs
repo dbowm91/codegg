@@ -118,6 +118,7 @@ pub struct TestRunRequest {
     pub timeout_secs: Option<u64>,
     pub stall_timeout_secs: Option<u64>,
     pub max_report_bytes: Option<usize>,
+    pub session_id: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -159,4 +160,39 @@ pub struct TestReport {
     pub stdout_log: Option<PathBuf>,
     pub stderr_log: Option<PathBuf>,
     pub output_truncated: bool,
+}
+
+/// Snapshot types for test lifecycle events.
+#[derive(Debug, Clone)]
+pub struct TestRunStartedSnapshot {
+    pub session_id: String,
+    pub job_id: String,
+    pub command: String,
+    pub cwd: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct TestRunProgressSnapshot {
+    pub session_id: String,
+    pub job_id: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct TestRunCompletedSnapshot {
+    pub session_id: String,
+    pub job_id: String,
+    pub status: String,
+    pub summary: String,
+    pub log_dir: Option<String>,
+}
+
+/// Sink for test lifecycle events. Implementations can publish to an
+/// event bus, log events, or aggregate progress. The runner calls these
+/// methods at key lifecycle points; implementations should be cheap
+/// (the runner does not await return values).
+pub trait TestEventSink: Send + Sync {
+    fn started(&self, snapshot: TestRunStartedSnapshot);
+    fn progress(&self, snapshot: TestRunProgressSnapshot);
+    fn completed(&self, snapshot: TestRunCompletedSnapshot);
 }
