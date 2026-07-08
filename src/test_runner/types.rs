@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum TestScope {
     Auto,
     Workspace,
@@ -18,7 +18,7 @@ pub enum TestLanguage {
     Generic,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum TestStatus {
     Passed,
     Failed,
@@ -27,7 +27,7 @@ pub enum TestStatus {
     Error,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum TimeoutKind {
     WallClock,
     NoOutput,
@@ -51,7 +51,7 @@ pub struct ResolvedTestCommand {
     pub scope_label: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct TestFailure {
     pub name: Option<String>,
     pub file: Option<String>,
@@ -60,14 +60,14 @@ pub struct TestFailure {
     pub failure_class: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct TestTimeout {
     pub kind: TimeoutKind,
     pub elapsed_ms: u64,
     pub last_output: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct TestReport {
     pub status: TestStatus,
     pub argv: Vec<String>,

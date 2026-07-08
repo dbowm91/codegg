@@ -1,17 +1,30 @@
 # Test Runner Module
 
-The `test_runner` module provides test command resolution, output parsing, and report formatting for supervised test execution.
+The `test_runner` module provides test command resolution, output parsing, report formatting, and streaming process execution for supervised test runs.
 
 ## Overview
 
 **Location**: `src/test_runner/`
 
+**Files**:
+| File | Purpose |
+|------|---------|
+| `mod.rs` | Re-exports |
+| `types.rs` | Core types with serde derives |
+| `resolve.rs` | Command resolver |
+| `parse.rs` | Line-by-line output parser |
+| `report.rs` | Text formatter |
+| `runner.rs` | Streaming runner with log capture |
+
 **Key Responsibilities**:
 - Resolve `TestScope` into platform-specific shell commands
-- Parse stdout/stderr from test executions into structured results
+- Spawn and supervise test processes with streaming stdout/stderr capture
+- Parse stdout/stderr into structured results
+- Capture raw logs to `.codegg/test-runs/` directory
+- Classify exit codes and build `TestReport`
 - Format `TestReport` into human-readable text
 
-**Phase**: 1 (Types + Resolver + Parser Skeleton + Formatter). No process spawning.
+**Phase**: 2 (Streaming Runner + Log Capture)
 
 ## Key Types
 
@@ -23,7 +36,7 @@ pub enum TestScope {
     Workspace,
     Changed,
     Package(String),
-    File(String),
+    File(PathBuf),
     PreviousFailures,
     CustomCommand(String),
 }
@@ -66,12 +79,10 @@ pub enum TimeoutKind {
 ```rust
 pub struct TestRunRequest {
     pub scope: TestScope,
-    pub language: Option<TestLanguage>,
-    pub package: Option<String>,
-    pub file: Option<String>,
+    pub workdir: PathBuf,
     pub timeout_secs: Option<u64>,
-    pub retries: Option<u8>,
-    pub extra_args: Vec<String>,
+    pub stall_timeout_secs: Option<u64>,
+    pub max_report_bytes: Option<usize>,
 }
 ```
 
@@ -79,10 +90,10 @@ pub struct TestRunRequest {
 
 ```rust
 pub struct ResolvedTestCommand {
-    pub command: String,
     pub language: TestLanguage,
+    pub argv: Vec<String>,
     pub cwd: PathBuf,
-    pub timeout_secs: u64,
+    pub scope_label: String,
 }
 ```
 
@@ -90,10 +101,11 @@ pub struct ResolvedTestCommand {
 
 ```rust
 pub struct TestFailure {
-    pub name: String,
-    pub message: String,
+    pub name: Option<String>,
     pub file: Option<String>,
     pub line: Option<u32>,
+    pub message: String,
+    pub failure_class: String,
 }
 ```
 
@@ -102,7 +114,8 @@ pub struct TestFailure {
 ```rust
 pub struct TestTimeout {
     pub kind: TimeoutKind,
-    pub after_secs: u64,
+    pub elapsed_ms: u64,
+    pub last_output: Option<String>,
 }
 ```
 
@@ -111,22 +124,21 @@ pub struct TestTimeout {
 ```rust
 pub struct TestReport {
     pub status: TestStatus,
-    pub command: String,
+    pub argv: Vec<String>,
     pub cwd: PathBuf,
     pub duration_ms: u64,
     pub exit_code: Option<i32>,
-    pub total: u32,
-    pub passed: u32,
-    pub failed: u32,
-    pub ignored: u32,
+    pub summary: String,
     pub failures: Vec<TestFailure>,
     pub timeout: Option<TestTimeout>,
-    pub log_path: Option<PathBuf>,
-    pub truncated_output: bool,
+    pub log_dir: Option<PathBuf>,
+    pub stdout_log: Option<PathBuf>,
+    pub stderr_log: Option<PathBuf>,
+    pub output_truncated: bool,
 }
 ```
 
-## Key Functions
+## Resolver API
 
 ### resolve_test_command
 
@@ -134,19 +146,52 @@ pub struct TestReport {
 pub fn resolve_test_command(request: &TestRunRequest) -> Result<ResolvedTestCommand, TestResolveError>
 ```
 
-Resolves a `TestScope` into a concrete shell command. For `Auto` scope, detects language by checking for `Cargo.toml` (Rust) or Python test markers (`pyproject.toml`, `pytest.ini`, `tox.ini`, `noxfile.py`, `tests/`). Returns `AmbiguousLanguage` if both ecosystems are detected.
+Resolves a `TestScope` into a concrete command (`argv` + `cwd`). For `Auto` scope, detects language via `detect_language_for_auto`.
+
+### Helper functions
+
+```rust
+pub fn has_cargo_manifest(workdir: &Path) -> bool
+pub fn has_python_test_markers(workdir: &Path) -> bool
+pub fn detect_language_for_auto(workdir: &Path) -> Result<TestLanguage, TestResolveError>
+```
+
+### TestResolveError
+
+```rust
+pub enum TestResolveError {
+    MissingWorkdir,
+    MissingPackageName,
+    MissingFilePath,
+    EmptyCustomCommand,
+    AmbiguousEcosystem,
+    UnsupportedEcosystem(String),
+    UnsupportedScopeForEcosystem { scope: &'static str, language: TestLanguage },
+    PreviousFailuresUnsupported,
+}
+```
+
+## Parser API
 
 ### TestParseState
 
 ```rust
-pub struct TestParseState { /* private fields */ }
-
-impl TestParseState {
-    pub fn new() -> Self;
-    pub fn ingest_stdout_line(&mut self, line: &str);
-    pub fn ingest_stderr_line(&mut self, line: &str);
-    pub fn finish(self, exit_code: Option<i32>) -> TestReport;
+pub struct TestParseState {
+    pub language: Option<TestLanguage>,
+    pub tests_seen: usize,
+    pub tests_passed: usize,
+    pub tests_failed: usize,
+    pub last_progress_line: Option<String>,
+    pub failures: Vec<TestFailure>,
+    pub compile_error_seen: bool,
 }
+```
+
+### Free functions
+
+```rust
+pub fn ingest_stdout_line(state: &mut TestParseState, line: &str)
+pub fn ingest_stderr_line(state: &mut TestParseState, line: &str)
 ```
 
 Parses test output line-by-line. Recognizes:
@@ -155,38 +200,70 @@ Parses test output line-by-line. Recognizes:
 
 Uses a `rust_matched` flag to prevent Python patterns from matching Rust output.
 
-### format_test_report
+## Runner API (Phase 2)
+
+### TestRunError
+
+```rust
+pub enum TestRunError {
+    Resolve(TestResolveError),
+    LogDir(io::Error),
+    Spawn(io::Error),
+    StdoutPipe(io::Error),
+    StderrPipe(io::Error),
+    LogWrite(io::Error),
+    ProcessWait(String),
+    EmptyCommand,
+    InvalidRequest(String),
+}
+```
+
+### resolve_and_run_test
+
+```rust
+pub async fn resolve_and_run_test(request: TestRunRequest) -> Result<TestReport, TestRunError>
+```
+
+Convenience wrapper: resolves the request, then delegates to `run_resolved_test`.
+
+### run_resolved_test
+
+```rust
+pub async fn run_resolved_test(
+    request: &TestRunRequest,
+    resolved: ResolvedTestCommand,
+) -> Result<TestReport, TestRunError>
+```
+
+Spawns a tokio process with piped stdout/stderr and reads lines concurrently via `BufReader`. Raw bytes are written to log files. Decoded lines are fed to `TestParseState` via `Arc<Mutex<>>`. A `tokio::select!` supervisor enforces wall-clock timeout (default 300s) and no-output/stall timeout (default 120s). On completion, classifies exit code (0 → Passed, nonzero with failures → Failed, nonzero with compile error → Failed) and writes `report.json` to the log directory.
+
+## Log Directory Layout
+
+Logs are written to `.codegg/test-runs/<utc-timestamp>-<short-uuid>/`:
+
+```
+.codegg/test-runs/
+  20260708T123456Z-a1b2c3/
+    stdout.log      # raw stdout bytes
+    stderr.log      # raw stderr bytes
+    report.json     # serialized TestReport
+```
+
+## Formatter API
 
 ```rust
 pub fn format_test_report(report: &TestReport) -> String
 ```
 
-Formats a `TestReport` into a human-readable string. Shows status, command, cwd, duration, exit code, failure/timeout info, up to 5 failures, log path, and truncation note.
-
-## Error Types
-
-### TestResolveError
-
-```rust
-#[derive(Error, Debug)]
-pub enum TestResolveError {
-    #[error("working directory not found: {0}")]
-    CwdNotFound(PathBuf),
-    #[error("cannot detect language: no Cargo.toml or Python test markers found in {0}")]
-    NoLanguageDetected(PathBuf),
-    #[error("ambiguous language: both Cargo.toml and Python test markers found in {0}")]
-    AmbiguousLanguage(PathBuf),
-    #[error("unsupported language for scope: {scope:?} with {language:?}")]
-    UnsupportedScope { scope: TestScope, language: TestLanguage },
-}
-```
+Formats a `TestReport` into a human-readable string. Shows status, argv, cwd, duration, exit code, failure/timeout info, up to 5 failures, log dir, and truncation note.
 
 ## Tests
 
-18 tests total:
+28 tests total:
 - 7 resolver tests (auto rust, auto python, mixed ambiguity, package, file, changed fallback, custom command)
 - 7 parser tests (rust running count, ok/failed, panic file/line, compile error, pytest collected, pytest failed, pytest assertion)
 - 4 formatter tests (status/command/duration, failure limit, timeout class, log path)
+- 10 runner tests (pass, fail, wall-clock timeout, stall timeout, empty command, zero timeout, log layout, UTF-8 truncation, summary building)
 
 ```bash
 cargo test -p codegg --lib test_runner
