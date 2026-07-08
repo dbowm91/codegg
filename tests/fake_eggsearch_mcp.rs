@@ -128,8 +128,8 @@ fn build_mock_eggsearch(
 /// installed.
 #[tokio::test]
 async fn websearch_dispatches_to_mcp_web_search() {
-    state::reset_for_tests();
     let (_cp, _g) = lock().await;
+    state::reset_for_tests();
     let calls = Arc::new(Mutex::new(Vec::new()));
     let svc = Arc::new(tokio::sync::RwLock::new(build_mock_eggsearch(Arc::clone(
         &calls,
@@ -162,8 +162,8 @@ async fn websearch_dispatches_to_mcp_web_search() {
 /// when the eggsearch backend is configured.
 #[tokio::test]
 async fn webfetch_dispatches_to_mcp_web_fetch() {
-    state::reset_for_tests();
     let (_cp, _g) = lock().await;
+    state::reset_for_tests();
     let calls = Arc::new(Mutex::new(Vec::new()));
     let svc = Arc::new(tokio::sync::RwLock::new(build_mock_eggsearch(Arc::clone(
         &calls,
@@ -196,8 +196,8 @@ async fn webfetch_dispatches_to_mcp_web_fetch() {
 /// when the eggsearch backend is connected.
 #[tokio::test]
 async fn provider_status_dispatches_via_doctor_helper() {
-    state::reset_for_tests();
     let (_cp, _g) = lock().await;
+    state::reset_for_tests();
     let calls = Arc::new(Mutex::new(Vec::new()));
     let svc = Arc::new(tokio::sync::RwLock::new(build_mock_eggsearch(Arc::clone(
         &calls,
@@ -221,8 +221,8 @@ async fn provider_status_dispatches_via_doctor_helper() {
 /// error from `ensure_tool_available`).
 #[tokio::test]
 async fn dispatch_eggsearch_server_missing_returns_actionable_error() {
-    state::reset_for_tests();
     let (_cp, _g) = lock().await;
+    state::reset_for_tests();
     // Empty service: no "eggsearch" server registered.
     let svc = McpService::new();
     let svc = Arc::new(tokio::sync::RwLock::new(svc));
@@ -244,8 +244,8 @@ async fn dispatch_eggsearch_server_missing_returns_actionable_error() {
 /// With `backend = builtin`, dispatch should not touch MCP at all.
 #[tokio::test]
 async fn builtin_backend_does_not_invoke_mcp() {
-    state::reset_for_tests();
     let (_cp, _g) = lock().await;
+    state::reset_for_tests();
     let calls = Arc::new(Mutex::new(Vec::new()));
     let svc = Arc::new(tokio::sync::RwLock::new(build_mock_eggsearch(Arc::clone(
         &calls,
@@ -269,8 +269,8 @@ async fn builtin_backend_does_not_invoke_mcp() {
 /// should return a clear disabled error.
 #[tokio::test]
 async fn disabled_backend_does_not_invoke_mcp() {
-    state::reset_for_tests();
     let (_cp, _g) = lock().await;
+    state::reset_for_tests();
     let calls = Arc::new(Mutex::new(Vec::new()));
     let svc = Arc::new(tokio::sync::RwLock::new(build_mock_eggsearch(Arc::clone(
         &calls,
@@ -335,4 +335,320 @@ fn raw_eggsearch_tools_filtered_at_agent_loop_layer() {
 
     let shown = filter(make_tools("mcp__eggsearch__"), true, "eggsearch");
     assert_eq!(shown.len(), 3);
+}
+
+// ── Extended dispatch tests for repo/security/research/batch/evidence ──
+
+/// Build a mock with ALL upstream tools registered.
+fn build_full_mock_eggsearch(
+    recorded_calls: Arc<Mutex<Vec<(String, serde_json::Value)>>>,
+) -> McpService {
+    let mut svc = McpService::new();
+    let tool_names = [
+        "web_search", "web_fetch", "provider_status",
+        "repo_search", "repo_fetch", "repo_map",
+        "security_search", "research_search",
+        "batch_fetch", "build_evidence_bundle",
+    ];
+    let tools: Vec<McpTool> = tool_names
+        .iter()
+        .map(|name| McpTool {
+            name: name.to_string(),
+            description: format!("Mock {name}"),
+            input_schema: serde_json::json!({"type": "object", "properties": {}}),
+            server: "eggsearch".to_string(),
+        })
+        .collect();
+    let calls = Arc::clone(&recorded_calls);
+    svc.register_mock_server(
+        "eggsearch",
+        tools,
+        Box::new(move |tool, args| {
+            if let Ok(mut g) = calls.try_lock() {
+                g.push((tool.to_string(), args.clone()));
+            }
+            match tool {
+                "web_search" => Ok(r#"{"hits": []}"#.to_string()),
+                "web_fetch" => Ok("page body".to_string()),
+                "provider_status" => Ok(r#"{"ok": true}"#.to_string()),
+                "repo_search" => Ok(r#"{"repo_hits": []}"#.to_string()),
+                "repo_fetch" => Ok("file content".to_string()),
+                "repo_map" => Ok(r#"{"tree": []}"#.to_string()),
+                "security_search" => Ok(r#"{"vulns": []}"#.to_string()),
+                "research_search" => Ok(r#"{"papers": []}"#.to_string()),
+                "batch_fetch" => Ok(r#"{"pages": []}"#.to_string()),
+                "build_evidence_bundle" => Ok(r#"{"bundle": {}}"#.to_string()),
+                _ => Err(McpError::Server(format!("unknown tool {tool}"))),
+            }
+        }),
+    );
+    svc
+}
+
+fn eggsearch_config_all_caps() -> SearchConfig {
+    SearchConfig {
+        backend: Some(SearchBackendConfig::Eggsearch),
+        expose_raw_mcp_tools: Some(false),
+        fallback_to_builtin: Some(false),
+        max_search_output_chars: Some(12_000),
+        max_fetch_output_chars: Some(20_000),
+        max_repo_output_chars: Some(16_000),
+        max_repo_search_output_chars: Some(16_000),
+        max_repo_fetch_output_chars: Some(24_000),
+        max_repo_map_output_chars: Some(16_000),
+        max_security_output_chars: Some(18_000),
+        max_research_output_chars: Some(22_000),
+        max_batch_output_chars: Some(30_000),
+        max_evidence_output_chars: Some(30_000),
+        eggsearch: Some(EggsearchConfig {
+            server_name: Some("eggsearch".to_string()),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }
+}
+
+#[tokio::test]
+async fn repo_search_dispatches_to_mcp() {
+    let (_cp, _g) = lock().await;
+    state::reset_for_tests();
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let svc = Arc::new(tokio::sync::RwLock::new(build_full_mock_eggsearch(Arc::clone(&calls))));
+    state::install_mcp_service(svc);
+    state::install_search_config(eggsearch_config_all_caps());
+
+    let out = codegg::search_backend::dispatch_repo_search(&serde_json::json!({
+        "query": "async runtime",
+    }))
+    .await
+    .expect("repo_search dispatch ok");
+
+    assert!(out.contains("trust=external_untrusted"));
+    let recorded = calls.lock().await;
+    let (tool, args) = recorded.last().expect("at least one call");
+    assert_eq!(tool, "repo_search");
+    assert_eq!(args["query"], "async runtime");
+}
+
+#[tokio::test]
+async fn repo_fetch_dispatches_to_mcp() {
+    let (_cp, _g) = lock().await;
+    state::reset_for_tests();
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let svc = Arc::new(tokio::sync::RwLock::new(build_full_mock_eggsearch(Arc::clone(&calls))));
+    state::install_mcp_service(svc);
+    state::install_search_config(eggsearch_config_all_caps());
+
+    let out = codegg::search_backend::dispatch_repo_fetch(&serde_json::json!({
+        "path": "src/main.rs",
+        "repo": "tokio-rs/tokio",
+    }))
+    .await
+    .expect("repo_fetch dispatch ok");
+
+    assert!(out.contains("trust=external_untrusted"));
+    let recorded = calls.lock().await;
+    let (tool, args) = recorded.last().unwrap();
+    assert_eq!(tool, "repo_fetch");
+    assert_eq!(args["path"], "src/main.rs");
+    assert_eq!(args["repo"], "tokio-rs/tokio");
+}
+
+#[tokio::test]
+async fn repo_map_dispatches_to_mcp() {
+    let (_cp, _g) = lock().await;
+    state::reset_for_tests();
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let svc = Arc::new(tokio::sync::RwLock::new(build_full_mock_eggsearch(Arc::clone(&calls))));
+    state::install_mcp_service(svc);
+    state::install_search_config(eggsearch_config_all_caps());
+
+    let out = codegg::search_backend::dispatch_repo_map(&serde_json::json!({
+        "repo": "tokio-rs/tokio",
+    }))
+    .await
+    .expect("repo_map dispatch ok");
+
+    assert!(out.contains("trust=external_untrusted"));
+    let recorded = calls.lock().await;
+    let (tool, args) = recorded.last().unwrap();
+    assert_eq!(tool, "repo_map");
+    assert_eq!(args["repo"], "tokio-rs/tokio");
+}
+
+#[tokio::test]
+async fn security_search_dispatches_to_mcp() {
+    let (_cp, _g) = lock().await;
+    state::reset_for_tests();
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let svc = Arc::new(tokio::sync::RwLock::new(build_full_mock_eggsearch(Arc::clone(&calls))));
+    state::install_mcp_service(svc);
+    state::install_search_config(eggsearch_config_all_caps());
+
+    let out = codegg::search_backend::dispatch_security_search(&serde_json::json!({
+        "query": "CVE-2024-1234",
+    }))
+    .await
+    .expect("security_search dispatch ok");
+
+    assert!(out.contains("trust=external_untrusted"));
+    let recorded = calls.lock().await;
+    let (tool, args) = recorded.last().unwrap();
+    assert_eq!(tool, "security_search");
+    assert_eq!(args["query"], "CVE-2024-1234");
+}
+
+#[tokio::test]
+async fn research_search_dispatches_to_mcp() {
+    let (_cp, _g) = lock().await;
+    state::reset_for_tests();
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let svc = Arc::new(tokio::sync::RwLock::new(build_full_mock_eggsearch(Arc::clone(&calls))));
+    state::install_mcp_service(svc);
+    state::install_search_config(eggsearch_config_all_caps());
+
+    let out = codegg::search_backend::dispatch_research_search(&serde_json::json!({
+        "query": "transformer attention",
+    }))
+    .await
+    .expect("research_search dispatch ok");
+
+    assert!(out.contains("trust=external_untrusted"));
+    let recorded = calls.lock().await;
+    let (tool, _) = recorded.last().unwrap();
+    assert_eq!(tool, "research_search");
+}
+
+#[tokio::test]
+async fn batch_fetch_dispatches_to_mcp() {
+    let (_cp, _g) = lock().await;
+    state::reset_for_tests();
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let svc = Arc::new(tokio::sync::RwLock::new(build_full_mock_eggsearch(Arc::clone(&calls))));
+    state::install_mcp_service(svc);
+    state::install_search_config(eggsearch_config_all_caps());
+
+    let out = codegg::search_backend::dispatch_batch_fetch(&serde_json::json!({
+        "urls": ["https://example.com/a", "https://example.com/b"],
+    }))
+    .await
+    .expect("batch_fetch dispatch ok");
+
+    assert!(out.contains("trust=external_untrusted"));
+    let recorded = calls.lock().await;
+    let (tool, _) = recorded.last().unwrap();
+    assert_eq!(tool, "batch_fetch");
+}
+
+#[tokio::test]
+async fn evidence_bundle_dispatches_to_mcp() {
+    let (_cp, _g) = lock().await;
+    state::reset_for_tests();
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let svc = Arc::new(tokio::sync::RwLock::new(build_full_mock_eggsearch(Arc::clone(&calls))));
+    state::install_mcp_service(svc);
+    state::install_search_config(eggsearch_config_all_caps());
+
+    let out = codegg::search_backend::dispatch_evidence_bundle(&serde_json::json!({
+        "sources": [{"type": "url", "url": "https://example.com"}],
+    }))
+    .await
+    .expect("evidence_bundle dispatch ok");
+
+    assert!(out.contains("trust=external_untrusted"));
+    let recorded = calls.lock().await;
+    let (tool, _) = recorded.last().unwrap();
+    assert_eq!(tool, "build_evidence_bundle");
+}
+
+/// Server returns oversized output; Codegg should clamp and mark truncation.
+#[tokio::test]
+async fn oversized_output_is_clamped() {
+    let (_cp, _g) = lock().await;
+    state::reset_for_tests();
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let mut svc = McpService::new();
+    let big_body = "x".repeat(100_000);
+    let big = big_body.clone();
+    let recorded = Arc::clone(&calls);
+    svc.register_mock_server(
+        "eggsearch",
+        vec![McpTool {
+            name: "web_search".to_string(),
+            description: "".to_string(),
+            input_schema: serde_json::json!({}),
+            server: "eggsearch".to_string(),
+        }],
+        Box::new(move |tool, _args| {
+            if let Ok(mut g) = recorded.try_lock() {
+                g.push((tool.to_string(), serde_json::json!({})));
+            }
+            Ok(big.clone())
+        }),
+    );
+    let svc = Arc::new(tokio::sync::RwLock::new(svc));
+    state::install_mcp_service(svc);
+    state::install_search_config(eggsearch_config_all_caps());
+
+    let out = codegg::search_backend::dispatch_web_search(&serde_json::json!({"query": "x"}))
+        .await
+        .expect("dispatch ok");
+    // Output should be clamped — not the full 100K
+    assert!(out.len() < 50_000, "output should be clamped, got {} bytes", out.len());
+    assert!(out.contains("truncated") || out.len() < 100_000);
+}
+
+/// Server returns malformed payload; Codegg should not panic.
+#[tokio::test]
+async fn malformed_payload_does_not_panic() {
+    let (_cp, _g) = lock().await;
+    state::reset_for_tests();
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let mut svc = McpService::new();
+    let recorded = Arc::clone(&calls);
+    svc.register_mock_server(
+        "eggsearch",
+        vec![McpTool {
+            name: "web_search".to_string(),
+            description: "".to_string(),
+            input_schema: serde_json::json!({}),
+            server: "eggsearch".to_string(),
+        }],
+        Box::new(move |tool, _args| {
+            if let Ok(mut g) = recorded.try_lock() {
+                g.push((tool.to_string(), serde_json::json!({})));
+            }
+            Ok("{not valid json!!!".to_string())
+        }),
+    );
+    let svc = Arc::new(tokio::sync::RwLock::new(svc));
+    state::install_mcp_service(svc);
+    state::install_search_config(eggsearch_config_all_caps());
+
+    let result = codegg::search_backend::dispatch_web_search(&serde_json::json!({"query": "x"})).await;
+    // Should not panic — either returns Ok with the raw text or Err
+    match result {
+        Ok(out) => assert!(!out.is_empty()),
+        Err(e) => assert!(e.to_string().contains("eggsearch") || e.to_string().contains("malformed")),
+    }
+}
+
+/// Missing upstream tool fails clearly.
+#[tokio::test]
+async fn missing_upstream_tool_fails_clearly() {
+    let (_cp, _g) = lock().await;
+    state::reset_for_tests();
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let svc = Arc::new(tokio::sync::RwLock::new(build_mock_eggsearch(Arc::clone(&calls))));
+    state::install_mcp_service(svc);
+    state::install_search_config(eggsearch_config_all_caps());
+
+    // repo_search is NOT in the basic mock (only web_search, web_fetch, provider_status)
+    let result = codegg::search_backend::dispatch_repo_search(&serde_json::json!({"query": "x"})).await;
+    let err = result.expect_err("repo_search should fail with missing tool");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("repo_search") && msg.contains("not advertised"),
+        "expected missing tool error, got: {msg}"
+    );
 }

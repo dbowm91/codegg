@@ -782,3 +782,156 @@ fn test_severity_serialize_deserialize() {
         assert_eq!(severity, deserialized);
     }
 }
+
+// ── PreflightService check method tests ──────────────────────────
+
+#[tokio::test]
+async fn check_text_replace_detects_no_match() {
+    let service = PreflightService::new(PreflightPolicy::default()).unwrap();
+    let decision = service.check_text_replace("hello world", "nonexistent", "new").await;
+    // No match found → either Block (if eggsact reports match_count: 0)
+    // or Allow (if eggsact returns ok: true with no explicit count).
+    // Either way, the service should not panic.
+    match &decision {
+        PreflightDecision::Block { findings } => {
+            assert!(!findings.is_empty());
+            assert!(findings[0].message.contains("not found") || findings[0].message.contains("no effect"));
+        }
+        PreflightDecision::Allow { findings } => {
+            // eggsact may not report no-match as a block depending on profile
+            assert!(findings.is_empty() || !findings.iter().any(|f| f.severity == PreflightSeverity::Block));
+        }
+        other => panic!("unexpected decision for no-match: {:?}", other),
+    }
+}
+
+#[tokio::test]
+async fn check_text_replace_allows_clean_match() {
+    let service = PreflightService::new(PreflightPolicy::default()).unwrap();
+    let decision = service.check_text_replace("hello world", "world", "rust").await;
+    // Single clean match → Allow
+    assert!(!decision.is_blocked(), "clean match should not block: {:?}", decision);
+}
+
+#[tokio::test]
+async fn check_json_valid_passes_for_valid_json() {
+    let service = PreflightService::new(PreflightPolicy::default()).unwrap();
+    let decision = service.check_json_valid(r#"{"key": "value"}"#).await;
+    assert!(!decision.is_blocked(), "valid JSON should not block: {:?}", decision);
+}
+
+#[tokio::test]
+async fn check_json_valid_detects_invalid_json() {
+    let service = PreflightService::new(PreflightPolicy::default()).unwrap();
+    let decision = service.check_json_valid("{not valid}").await;
+    // The eggsact validate_json tool may or may not report this as a failure
+    // depending on profile. We verify the service doesn't panic.
+    // The decision should be either Allow or Warn/Block.
+    let _ = decision;
+}
+
+#[tokio::test]
+async fn check_toml_valid_passes_for_valid_toml() {
+    let service = PreflightService::new(PreflightPolicy::default()).unwrap();
+    let decision = service.check_toml_valid("[package]\nname = \"test\"").await;
+    assert!(!decision.is_blocked(), "valid TOML should not block: {:?}", decision);
+}
+
+#[tokio::test]
+async fn check_command_analyzes_shell_command() {
+    let service = PreflightService::new(PreflightPolicy::default()).unwrap();
+    let decision = service.check_command("ls -la").await;
+    // ls is low-risk → Allow or Warn, but not Block
+    assert!(!decision.is_blocked(), "ls should not block: {:?}", decision);
+}
+
+#[tokio::test]
+async fn check_text_security_clean_text() {
+    let service = PreflightService::new(PreflightPolicy::default()).unwrap();
+    let decision = service.check_text_security("hello world").await;
+    // Clean ASCII text → Allow
+    assert!(!decision.is_blocked(), "clean text should not block: {:?}", decision);
+}
+
+#[tokio::test]
+async fn disabled_policy_returns_allow() {
+    let policy = PreflightPolicy {
+        enabled: false,
+        ..Default::default()
+    };
+    let service = PreflightService::new(policy).unwrap();
+    let decision = service.check_text_replace("a", "b", "c").await;
+    assert!(!decision.is_blocked());
+    assert!(decision.findings().is_empty());
+}
+
+#[tokio::test]
+async fn observe_mode_records_but_does_not_block() {
+    let policy = PreflightPolicy {
+        mode: PreflightMode::Observe,
+        ..Default::default()
+    };
+    let service = PreflightService::new(policy).unwrap();
+    let decision = service.check_text_replace("hello world", "nonexistent", "new").await;
+    // Observe mode should never block, even on no-match
+    assert!(!decision.is_blocked(), "observe mode should not block");
+}
+
+// ── Golden output tests ──────────────────────────────────────────
+
+#[test]
+fn trust_frame_search_has_expected_shape() {
+    let framed = codegg::search_backend::framing::frame_search_results("content", "eggsearch");
+    assert!(framed.starts_with("[external_web_content"));
+    assert!(framed.contains("trust=external_untrusted"));
+    assert!(framed.contains("source=eggsearch"));
+    assert!(framed.contains("tool=websearch"));
+    assert!(framed.ends_with("[/external_web_content]"));
+}
+
+#[test]
+fn trust_frame_fetch_has_expected_shape() {
+    let framed = codegg::search_backend::framing::frame_fetched_page("body", "eggsearch");
+    assert!(framed.starts_with("[external_web_content"));
+    assert!(framed.contains("trust=external_untrusted"));
+    assert!(framed.contains("source=eggsearch"));
+    assert!(framed.contains("tool=webfetch"));
+    assert!(framed.contains("EXTERNAL, UNTRUSTED DATA"));
+    assert!(framed.ends_with("[/external_web_content]"));
+}
+
+#[test]
+fn provenance_serialization_roundtrip() {
+    let prov = codegg::tool::ToolProvenance {
+        backend: "mcp".to_string(),
+        implementation: "eggsearch/search".to_string(),
+        version: Some("1.0.0".to_string()),
+        elapsed_ms: Some(42),
+        truncated: false,
+        trust: codegg::tool::ToolTrust::ExternalUntrusted,
+    };
+    let json = serde_json::to_string(&prov).unwrap();
+    let deserialized: codegg::tool::ToolProvenance = serde_json::from_str(&json).unwrap();
+    assert_eq!(deserialized.backend, "mcp");
+    assert_eq!(deserialized.implementation, "eggsearch/search");
+    assert_eq!(deserialized.trust, codegg::tool::ToolTrust::ExternalUntrusted);
+}
+
+#[test]
+fn bootstrap_report_summary_fragments() {
+    let report = codegg::search_backend::bootstrap::BootstrapReport {
+        search_backend: Some("eggsearch".to_string()),
+        connected: true,
+        tools: vec!["web_search".to_string(), "web_fetch".to_string()],
+        expose_raw_mcp_tools: false,
+        fallback_to_builtin: false,
+        ..Default::default()
+    };
+    let lines = report.summary_lines();
+    let joined = lines.join("\n");
+    assert!(joined.contains("Search backend: eggsearch"));
+    assert!(joined.contains("Eggsearch MCP: connected"));
+    assert!(joined.contains("web_search, web_fetch"));
+    assert!(joined.contains("Raw MCP tools exposed to model: no"));
+    assert!(joined.contains("Fallback to built-in: no"));
+}

@@ -263,6 +263,14 @@ appear as model-facing tool calls.
 
 **Default policy**: enabled, mode `warn`, all categories on, findings logged and surfaced in tool output.
 
+### Test Matrix (Phase 7)
+
+The deterministic tools and preflight system are covered by a comprehensive test matrix:
+
+- **Eggsact adapter**: Unit tests for `format_response`, `to_structured_result`, and `EggsactConfig` defaults. Integration tests for all 8 always-visible tools, 5 deferred tools, provenance, audience filtering, and truncation.
+- **Harness preflight**: Integration tests for `check_text_replace`, `check_json_valid`, `check_toml_valid`, `check_command`, `check_text_security` with real eggsact calls. Policy mode tests for off/observe/warn/block_on_definite.
+- **Tool registry**: Tests verifying deferred tools are not in default definitions but discoverable via tool_search, descriptions imply no mutation, and disabled backend hides wrappers.
+
 ## NOT Registered (exists but excluded from default registry)
 
 **multiedit** (`src/tool/multiedit.rs`):

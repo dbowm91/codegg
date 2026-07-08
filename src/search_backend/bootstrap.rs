@@ -539,4 +539,127 @@ mod tests {
         let note = report.note.as_deref().unwrap_or("");
         assert!(!note.contains("no [search.eggsearch]"), "report.note should not be 'no [search.eggsearch] section configured' when default config is used. Got: {note}");
     }
+
+    #[tokio::test]
+    async fn reentrant_bootstrap_returns_existing_service() {
+        let _cp = crate::search_backend::test_support::acquire_cross_process_lock();
+        let _g = crate::search_backend::test_support::SHARED_TEST_LOCK
+            .lock()
+            .await;
+        state::reset_for_tests();
+
+        let cfg = Config::default();
+        let (svc1, _report1) = bootstrap_search_backend(&cfg).await;
+        assert!(svc1.is_some(), "first bootstrap should install McpService");
+
+        let (svc2, report2) = bootstrap_search_backend(&cfg).await;
+        assert!(svc2.is_some());
+        assert!(
+            report2.note.as_deref().unwrap_or("").contains("already installed")
+                || report2.note.as_deref().unwrap_or("").contains("reusing"),
+            "re-entrant bootstrap should note reuse, got: {:?}",
+            report2.note
+        );
+    }
+
+    #[tokio::test]
+    async fn enabled_false_skips_eggsearch_connection() {
+        let _cp = crate::search_backend::test_support::acquire_cross_process_lock();
+        let _g = crate::search_backend::test_support::SHARED_TEST_LOCK
+            .lock()
+            .await;
+        state::reset_for_tests();
+
+        let mut cfg = Config::default();
+        cfg.search = Some(SearchConfig {
+            backend: Some(SearchBackendConfig::Eggsearch),
+            eggsearch: Some(EggsearchConfig {
+                enabled: Some(false),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+
+        let report = bootstrap_eggsearch(&cfg).await;
+        assert!(!report.connected);
+        assert!(
+            report.note.as_deref().unwrap_or("").contains("enabled = false"),
+            "expected enabled=false note, got: {:?}",
+            report.note
+        );
+    }
+
+    #[test]
+    fn builtin_backend_skips_eggsearch_bootstrap() {
+        let cfg = Config {
+            search: Some(SearchConfig {
+                backend: Some(SearchBackendConfig::Builtin),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let effective = effective_search_config(&cfg);
+        assert_eq!(effective.backend(), SearchBackendConfig::Builtin);
+    }
+
+    #[test]
+    fn disabled_backend_skips_eggsearch_bootstrap() {
+        let cfg = Config {
+            search: Some(SearchConfig {
+                backend: Some(SearchBackendConfig::Disabled),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let effective = effective_search_config(&cfg);
+        assert_eq!(effective.backend(), SearchBackendConfig::Disabled);
+    }
+
+    #[test]
+    fn bootstrap_report_includes_all_caps() {
+        let report = BootstrapReport {
+            search_backend: Some("eggsearch".to_string()),
+            max_search_output_chars: 12_000,
+            max_fetch_output_chars: 20_000,
+            max_repo_output_chars: 16_000,
+            max_repo_search_output_chars: 16_000,
+            max_repo_fetch_output_chars: 24_000,
+            max_repo_map_output_chars: 16_000,
+            max_security_output_chars: 18_000,
+            max_research_output_chars: 22_000,
+            max_batch_output_chars: 30_000,
+            max_evidence_output_chars: 30_000,
+            ..Default::default()
+        };
+        let lines = report.summary_lines();
+        let joined = lines.join("\n");
+        assert!(joined.contains("Output caps:"));
+        assert!(joined.contains("search=12000"));
+        assert!(joined.contains("fetch=20000"));
+    }
+
+    #[test]
+    fn report_summary_includes_provider_status_when_failed() {
+        let report = BootstrapReport {
+            search_backend: Some("eggsearch".to_string()),
+            provider_status_ok: false,
+            provider_status_summary: Some("unavailable: timeout".to_string()),
+            ..Default::default()
+        };
+        let lines = report.summary_lines();
+        let joined = lines.join("\n");
+        assert!(joined.contains("Provider status: unavailable: timeout"));
+    }
+
+    #[test]
+    fn report_summary_always_connected_shows_explicit() {
+        let report = BootstrapReport {
+            connected: true,
+            already_connected: true,
+            ..Default::default()
+        };
+        let lines = report.summary_lines();
+        let joined = lines.join("\n");
+        assert!(joined.contains("explicit [mcp.eggsearch]"));
+    }
 }

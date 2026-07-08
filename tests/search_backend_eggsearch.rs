@@ -512,3 +512,69 @@ mod real_build_tool_definitions_tests {
         // assertion above is the meaningful one.
     }
 }
+
+/// Verify that raw MCP tools for ALL expanded eggsearch tools
+/// (not just web_search/web_fetch) are hidden when expose_raw is false.
+#[test]
+fn raw_mcp_hiding_works_for_all_expanded_tools() {
+    use codegg::provider::ToolDefinition;
+
+    let all_expanded = [
+        "mcp__eggsearch__web_search",
+        "mcp__eggsearch__web_fetch",
+        "mcp__eggsearch__repo_search",
+        "mcp__eggsearch__repo_fetch",
+        "mcp__eggsearch__repo_map",
+        "mcp__eggsearch__security_search",
+        "mcp__eggsearch__research_search",
+        "mcp__eggsearch__batch_fetch",
+        "mcp__eggsearch__build_evidence_bundle",
+        "mcp__eggsearch__provider_status",
+    ];
+    let tools: Vec<ToolDefinition> = all_expanded
+        .iter()
+        .map(|name| ToolDefinition {
+            name: name.to_string(),
+            description: "".to_string(),
+            parameters: serde_json::json!({}),
+            defer_loading: None,
+        })
+        .chain(std::iter::once(ToolDefinition {
+            name: "native_tool".to_string(),
+            description: "".to_string(),
+            parameters: serde_json::json!({}),
+            defer_loading: None,
+        }))
+        .collect();
+
+    let filter = |tools: Vec<ToolDefinition>, expose: bool| {
+        let raw_prefix = "mcp__eggsearch__";
+        tools
+            .into_iter()
+            .filter(|t| expose || !t.name.starts_with(raw_prefix))
+            .collect::<Vec<_>>()
+    };
+
+    let hidden = filter(tools.clone(), false);
+    assert_eq!(hidden.len(), 1, "only native_tool should remain when raw hidden");
+    assert_eq!(hidden[0].name, "native_tool");
+
+    let shown = filter(tools, true);
+    assert_eq!(shown.len(), all_expanded.len() + 1, "all tools shown when expose=true");
+}
+
+/// Native Codegg wrappers remain registered regardless of raw MCP exposure.
+#[test]
+fn native_wrappers_always_registered() {
+    use codegg::tool::ToolRegistry;
+
+    let registry = ToolRegistry::with_defaults();
+    let defs: Vec<String> = registry.definitions().into_iter().map(|d| d.name).collect();
+    for name in &["websearch", "webfetch"] {
+        assert!(
+            defs.contains(&name.to_string()),
+            "Native wrapper '{}' should always be in definitions()",
+            name
+        );
+    }
+}

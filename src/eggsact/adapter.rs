@@ -137,3 +137,77 @@ fn format_response(response: &eggsact::mcp::response::ToolResponse, max_chars: u
         output
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ok_response(result: Option<serde_json::Value>) -> eggsact::mcp::response::ToolResponse {
+        eggsact::mcp::response::ToolResponse {
+            ok: true,
+            tool: None,
+            result,
+            error_type: None,
+            error: None,
+            hints: None,
+            warnings: None,
+            limits_applied: None,
+            findings: None,
+            machine_code: None,
+            recommended_next_tool: None,
+        }
+    }
+
+    #[test]
+    fn format_response_ok_with_result() {
+        let response = ok_response(Some(serde_json::json!("hello")));
+        let output = format_response(&response, 1000);
+        assert!(output.contains("ok: true"));
+        assert!(output.contains("result:"));
+        assert!(output.contains("hello"));
+    }
+
+    #[test]
+    fn format_response_with_machine_code() {
+        let mut response = ok_response(None);
+        response.machine_code = Some("JSON_PARSE_ERROR".to_string());
+        let output = format_response(&response, 1000);
+        assert!(output.contains("machine_code: JSON_PARSE_ERROR"));
+    }
+
+    #[test]
+    fn format_response_truncates_long_output() {
+        let long_result = "x".repeat(500);
+        let response = ok_response(Some(serde_json::Value::String(long_result)));
+        let output = format_response(&response, 100);
+        assert!(output.len() < 200);
+        assert!(output.contains("truncated"));
+    }
+
+    #[test]
+    fn to_structured_result_has_correct_provenance() {
+        let result = EggsactCallResult {
+            output: "test output".to_string(),
+            success: true,
+            elapsed_ms: 42,
+            truncated: false,
+            machine_code: None,
+        };
+        let structured = to_structured_result("text_equal", result);
+        assert!(structured.success);
+        let prov = structured.provenance.unwrap();
+        assert_eq!(prov.backend, "native");
+        assert_eq!(prov.implementation, "eggsact/text_equal");
+        assert_eq!(prov.trust, ToolTrust::LocalTrusted);
+        assert_eq!(prov.elapsed_ms, Some(42));
+        assert!(!prov.truncated);
+    }
+
+    #[test]
+    fn eggsact_config_default_values() {
+        let config = EggsactConfig::default();
+        assert_eq!(config.profile, "codegg_core");
+        assert_eq!(config.audience, "model");
+        assert_eq!(config.max_output_chars, 12_000);
+    }
+}

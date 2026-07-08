@@ -354,4 +354,53 @@ mod tests {
         assert!(framed.contains("external_evidence_bundle"));
         assert!(framed.contains("compiled evidence"));
     }
+
+    #[test]
+    fn frame_repo_results_has_trust() {
+        let out = frame_repo_results("repo data", "eggsearch");
+        assert!(out.contains("trust=external_untrusted"));
+        assert!(out.contains("tool=repo_search"));
+    }
+
+    #[test]
+    fn frame_repo_file_has_trust() {
+        let out = frame_repo_file("file content", "eggsearch");
+        assert!(out.contains("trust=external_untrusted"));
+        assert!(out.contains("tool=repo_fetch"));
+    }
+
+    #[test]
+    fn frame_repo_map_has_trust() {
+        let out = frame_repo_map("tree data", "eggsearch");
+        assert!(out.contains("trust=external_untrusted"));
+        assert!(out.contains("tool=repo_map"));
+    }
+
+    #[test]
+    fn frame_security_results_has_trust() {
+        let out = frame_security_results("sec data", "eggsearch");
+        assert!(out.contains("trust=external_untrusted"));
+        assert!(out.contains("tool=security_search"));
+    }
+
+    #[test]
+    fn frame_research_results_has_trust() {
+        let out = frame_research_results("research data", "eggsearch");
+        assert!(out.contains("trust=external_untrusted"));
+        assert!(out.contains("tool=research_search"));
+    }
+
+    #[test]
+    fn frame_batch_results_has_trust() {
+        let out = frame_batch_results("batch data", "eggsearch");
+        assert!(out.contains("trust=external_untrusted"));
+        assert!(out.contains("tool=batch_fetch"));
+    }
+
+    #[test]
+    fn frame_evidence_bundle_has_trust() {
+        let out = frame_evidence_bundle("evidence data", "eggsearch");
+        assert!(out.contains("trust=external_untrusted"));
+        assert!(out.contains("tool=build_evidence_bundle"));
+    }
 }

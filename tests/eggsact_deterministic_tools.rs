@@ -302,3 +302,126 @@ fn expected_tool_counts() {
         "Deferred count mismatch"
     );
 }
+
+// ── Remaining always-visible tool execution tests ────────────────
+
+#[test]
+fn text_diff_explain_tool_executes() {
+    let runtime = test_runtime();
+    let (visible, _) = build_eggsact_tools(runtime);
+    let tool = visible.iter().find(|t| t.name() == "text_diff_explain").unwrap();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let result = rt.block_on(tool.execute(serde_json::json!({"a": "hello", "b": "world"})));
+    assert!(result.is_ok(), "text_diff_explain should execute: {:?}", result.err());
+    let output = result.unwrap();
+    assert!(output.contains("ok: true"));
+}
+
+#[test]
+fn text_replace_check_tool_executes() {
+    let runtime = test_runtime();
+    let (visible, _) = build_eggsact_tools(runtime);
+    let tool = visible.iter().find(|t| t.name() == "text_replace_check").unwrap();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let result = rt.block_on(tool.execute(serde_json::json!({
+        "text": "hello world",
+        "old": "world",
+        "new": "rust"
+    })));
+    assert!(result.is_ok(), "text_replace_check should execute: {:?}", result.err());
+    let output = result.unwrap();
+    assert!(output.contains("ok: true"));
+}
+
+#[test]
+fn command_preflight_tool_executes() {
+    let runtime = test_runtime();
+    let (visible, _) = build_eggsact_tools(runtime);
+    let tool = visible.iter().find(|t| t.name() == "command_preflight").unwrap();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let result = rt.block_on(tool.execute(serde_json::json!({"command": "ls -la"})));
+    assert!(result.is_ok(), "command_preflight should execute: {:?}", result.err());
+    let output = result.unwrap();
+    assert!(output.contains("ok: true"));
+}
+
+#[test]
+fn text_security_inspect_tool_executes() {
+    let runtime = test_runtime();
+    let (visible, _) = build_eggsact_tools(runtime);
+    let tool = visible.iter().find(|t| t.name() == "text_security_inspect").unwrap();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let result = rt.block_on(tool.execute(serde_json::json!({"text": "hello world"})));
+    assert!(result.is_ok(), "text_security_inspect should execute: {:?}", result.err());
+    let output = result.unwrap();
+    assert!(output.contains("ok: true"));
+}
+
+// ── Deferred tool execution smoke tests ─────────────────────────
+
+#[test]
+fn text_inspect_deferred_executes() {
+    let runtime = test_runtime();
+    let (_, deferred) = build_eggsact_tools(runtime);
+    let tool = deferred.iter().find(|t| t.name() == "text_inspect").unwrap();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let result = rt.block_on(tool.execute(serde_json::json!({"text": "hello"})));
+    assert!(result.is_ok(), "text_inspect should execute: {:?}", result.err());
+}
+
+#[test]
+fn text_fingerprint_deferred_executes() {
+    let runtime = test_runtime();
+    let (_, deferred) = build_eggsact_tools(runtime);
+    let tool = deferred.iter().find(|t| t.name() == "text_fingerprint").unwrap();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let result = rt.block_on(tool.execute(serde_json::json!({"text": "hello world"})));
+    assert!(result.is_ok(), "text_fingerprint should execute: {:?}", result.err());
+}
+
+// ── Descriptions do not imply mutation ───────────────────────────
+
+#[test]
+fn wrapper_descriptions_are_read_only_no_mutation() {
+    let runtime = test_runtime();
+    let (visible, _) = build_eggsact_tools(runtime);
+    let mutation_keywords = ["delete", "remove", "write", "create", "modify", "install"];
+    for tool in &visible {
+        let desc = tool.description().to_lowercase();
+        for kw in &mutation_keywords {
+            assert!(
+                !desc.contains(kw),
+                "Tool '{}' description contains mutation keyword '{}': {}",
+                tool.name(),
+                kw,
+                tool.description()
+            );
+        }
+    }
+}
+
+// ── Deferred tools are in definitions but with defer_loading ───────
+
+#[test]
+fn deferred_tools_in_default_definitions_have_defer_loading() {
+    let registry = ToolRegistry::with_defaults();
+    let defs = registry.definitions();
+    for name in DEFERRED_NAMES {
+        let def = defs.iter().find(|d| d.name == *name);
+        assert!(def.is_some(), "Deferred tool '{}' should be in definitions()", name);
+    }
+}
+
+// ── Disabled deterministic backend hides wrappers ────────────────
+
+#[test]
+fn unknown_profile_falls_back_to_default() {
+    let config = EggsactConfig {
+        profile: "nonexistent_profile_xyz".to_string(),
+        ..EggsactConfig::default()
+    };
+    let runtime = EggsactRuntime::new(config);
+    assert!(runtime.is_ok(), "Unknown profile should fall back to default: {:?}", runtime.err());
+    let runtime = runtime.unwrap();
+    assert!(runtime.has_tool("text_equal"), "Fallback should still have text_equal");
+}

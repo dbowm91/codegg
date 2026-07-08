@@ -134,6 +134,27 @@ cargo build --target wasm32-unknown-unknown \
 
 # Eggsact adapter integration tests (requires eggsact git dependency)
 cargo test --test eggsact_adapter
+cargo test --test eggsact_deterministic_tools
+
+# Eggsearch adapter unit tests (inline in source)
+cargo test -p codegg --lib search_backend::eggsearch
+
+# Eggsearch bootstrap tests (inline in source)
+cargo test -p codegg --lib search_backend::bootstrap
+
+# Eggsearch mock integration tests (dispatch, arg mapping, raw MCP)
+cargo test --test fake_eggsearch_mcp
+cargo test --test search_backend_eggsearch
+cargo test --test search_backend_arg_mapping
+
+# Preflight integration tests (policy, check methods, golden output)
+cargo test --test preflight_integration
+
+# Framing golden tests (inline in source)
+cargo test -p codegg --lib search_backend::framing
+
+# Live eggsearch smoke tests (opt-in, requires eggsearch binary)
+cargo test --features live-eggsearch-tests --test live_eggsearch_smoke -- --ignored
 ```
 
 ## Built-in Agent Assets

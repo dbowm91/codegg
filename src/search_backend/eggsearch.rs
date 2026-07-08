@@ -726,4 +726,63 @@ mod tests {
             "expected actionable eggsearch error, got: {msg}"
         );
     }
+
+    #[test]
+    fn validate_fetch_url_rejects_empty() {
+        let err = super::validate_fetch_url("").unwrap_err();
+        assert!(err.to_string().contains("must not be empty"));
+    }
+
+    #[test]
+    fn validate_fetch_url_rejects_non_http_scheme() {
+        let err = super::validate_fetch_url("ftp://example.com/file").unwrap_err();
+        assert!(err.to_string().contains("http or https scheme"));
+    }
+
+    #[test]
+    fn validate_fetch_url_rejects_overlong_url() {
+        let long_url = format!("https://example.com/{}", "x".repeat(2100));
+        let err = super::validate_fetch_url(&long_url).unwrap_err();
+        assert!(err.to_string().contains("too long"));
+    }
+
+    #[test]
+    fn validate_fetch_url_accepts_valid_http() {
+        assert!(super::validate_fetch_url("http://example.com").is_ok());
+    }
+
+    #[test]
+    fn validate_fetch_url_accepts_valid_https() {
+        assert!(super::validate_fetch_url("https://example.com/path?q=1").is_ok());
+    }
+
+    #[test]
+    fn eggsearch_tool_missing_includes_upstream_name() {
+        let err = super::eggsearch_tool_missing(
+            "eggsearch",
+            "websearch",
+            "web_search",
+            &["web_fetch".to_string()],
+        );
+        let msg = err.to_string();
+        assert!(msg.contains("web_search"));
+        assert!(msg.contains("websearch"));
+        assert!(msg.contains("web_fetch"));
+    }
+
+    #[test]
+    fn eggsearch_tool_missing_empty_tools_list() {
+        let err = super::eggsearch_tool_missing("eggsearch", "repo_search", "repo_search", &[]);
+        let msg = err.to_string();
+        assert!(msg.contains("(none discovered)"));
+    }
+
+    #[test]
+    fn eggsearch_unavailable_message_contains_actionable_hint() {
+        let err = super::eggsearch_unavailable("test detail");
+        let msg = err.to_string();
+        assert!(msg.contains("eggsearch"));
+        assert!(msg.contains("test detail"));
+        assert!(msg.contains("builtin") || msg.contains("disabled"));
+    }
 }
