@@ -1,5 +1,6 @@
 //! /test slash command handler for supervised test execution.
 
+use crate::test_runner::custom::is_allowed_custom_command;
 use crate::tui::app::App;
 use crate::tui::app::TuiCommand;
 use crate::tui::async_cmd::spawn_registered_tui_task;
@@ -56,24 +57,10 @@ fn build_test_request(
                 return Err("custom scope requires a command".into());
             }
             let cmd = args.trim();
-            let allowed = [
-                "cargo test",
-                "cargo nextest",
-                "pytest",
-                "uv run pytest",
-                "go test",
-                "zig build test",
-                "make test",
-                "make check",
-                "npm test",
-                "pnpm test",
-                "yarn test",
-                "bun test",
-            ];
-            if !allowed.iter().any(|prefix| cmd.starts_with(prefix)) {
+            if !is_allowed_custom_command(cmd) {
                 return Err(format!(
                     "custom command not in allowlist: '{cmd}'. Allowed: {}",
-                    allowed.join(", ")
+                    crate::test_runner::custom::CUSTOM_COMMAND_ALLOWLIST.join(", ")
                 ));
             }
             TestScope::CustomCommand(cmd.to_string())
@@ -96,6 +83,7 @@ fn build_test_request(
 /// Start a supervised test run from the /test slash command.
 pub(crate) fn start_test_run(app: &mut App, scope: String, args: String) {
     let tx = app.tui_cmd_tx.clone();
+    let request_id = app.dialog_state.test_run_request.begin();
 
     spawn_registered_tui_task(
         tx,
@@ -107,7 +95,7 @@ pub(crate) fn start_test_run(app: &mut App, scope: String, args: String) {
                 Ok(r) => r,
                 Err(e) => {
                     return Some(TuiCommand::TestRunFinished {
-                        request_id: 0,
+                        request_id,
                         report: None,
                         error: Some(e),
                     });
@@ -120,12 +108,12 @@ pub(crate) fn start_test_run(app: &mut App, scope: String, args: String) {
 
             match report {
                 Ok(report) => Some(TuiCommand::TestRunFinished {
-                    request_id: 0,
+                    request_id,
                     report: Some(Box::new(report)),
                     error: None,
                 }),
                 Err(e) => Some(TuiCommand::TestRunFinished {
-                    request_id: 0,
+                    request_id,
                     report: None,
                     error: Some(e),
                 }),
@@ -137,9 +125,13 @@ pub(crate) fn start_test_run(app: &mut App, scope: String, args: String) {
 /// Handle the TestRunFinished completion: display the report in the UI.
 pub(crate) fn apply_test_run_finished(
     app: &mut App,
+    request_id: u64,
     report: Option<Box<crate::test_runner::TestReport>>,
     error: Option<String>,
 ) {
+    if !app.dialog_state.test_run_request.finish(request_id) {
+        return;
+    }
     if let Some(err) = error {
         app.messages_state.toasts.error(&err);
         return;

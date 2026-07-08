@@ -1,4 +1,7 @@
 use std::io;
+#[cfg(unix)]
+#[allow(unused_imports)]
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -227,6 +230,7 @@ pub async fn run_resolved_test(
     Ok(report)
 }
 
+#[allow(unsafe_code)]
 fn spawn_child(resolved: &ResolvedTestCommand) -> Result<Child, TestRunError> {
     let mut cmd = Command::new(&resolved.argv[0]);
     if resolved.argv.len() > 1 {
@@ -235,6 +239,22 @@ fn spawn_child(resolved: &ResolvedTestCommand) -> Result<Child, TestRunError> {
     cmd.current_dir(&resolved.cwd)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
+
+    // On Unix, put the child in its own process group so we can kill
+    // the entire tree (grandchildren included) on timeout or stall.
+    #[cfg(unix)]
+    {
+        unsafe {
+            cmd.pre_exec(|| {
+                // Create a new session and process group. The child becomes
+                // the session leader with PGID == its own PID.
+                nix::unistd::setsid().map_err(|e| {
+                    io::Error::new(io::ErrorKind::Other, format!("setsid failed: {e}"))
+                })?;
+                Ok(())
+            });
+        }
+    }
 
     cmd.spawn().map_err(TestRunError::Spawn)
 }
@@ -410,8 +430,24 @@ async fn supervisor_loop(
     }
 }
 
+#[allow(unsafe_code)]
 async fn kill_child(child: &mut Child) {
-    let _ = child.kill().await;
+    // On Unix, kill the entire process group (negative PID = group kill).
+    // The child was placed in its own group via setsid() in spawn_child().
+    #[cfg(unix)]
+    {
+        if let Some(pid) = child.id() {
+            let pgid = pid as i32;
+            // Safety: -pgid targets the process group led by this child.
+            unsafe {
+                libc::kill(-pgid, libc::SIGKILL);
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = child.kill().await;
+    }
     let _ = tokio::time::timeout(GRACEFUL_KILL_TIMEOUT, child.wait()).await;
 }
 

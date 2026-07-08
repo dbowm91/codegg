@@ -437,11 +437,11 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
             start_test_run(app, scope, args);
         }
         TuiCommand::TestRunFinished {
-            request_id: _,
+            request_id,
             report,
             error,
         } => {
-            apply_test_run_finished(app, report, error);
+            apply_test_run_finished(app, request_id, report, error);
         }
         TuiCommand::ShellEvent(event) => {
             handle_shell_event(app, event);

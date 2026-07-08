@@ -1,5 +1,24 @@
 use crate::test_runner::types::{FailureClass, TestFailure, TestLanguage};
 
+fn strip_ansi_escapes(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut chars = line.chars();
+    while let Some(ch) = chars.next() {
+        if ch == '\x1b' {
+            if chars.next() == Some('[') {
+                for esc_ch in chars.by_ref() {
+                    if esc_ch.is_ascii_alphabetic() {
+                        break;
+                    }
+                }
+                continue;
+            }
+        }
+        out.push(ch);
+    }
+    out
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct TestParseState {
     pub language: Option<TestLanguage>,
@@ -13,6 +32,8 @@ pub struct TestParseState {
 }
 
 pub fn ingest_stdout_line(state: &mut TestParseState, line: &str) {
+    let line = strip_ansi_escapes(line);
+    let line = line.as_str();
     let mut rust_matched = false;
 
     if line.contains("running ") && line.contains(" test") {
@@ -162,6 +183,8 @@ pub fn ingest_stdout_line(state: &mut TestParseState, line: &str) {
 }
 
 pub fn ingest_stderr_line(state: &mut TestParseState, line: &str) {
+    let line = strip_ansi_escapes(line);
+    let line = line.as_str();
     if let Some(rest) = line.strip_prefix("E   ") {
         let msg = rest.trim().to_string();
         if let Some(last) = state.failures.last_mut() {
@@ -637,5 +660,34 @@ mod tests {
         ingest_stdout_line(&mut state, "FAILED tests/test_x.py::test_y");
         ingest_stderr_line(&mut state, "E   AssertionError: expected 1, got 2");
         assert!(state.failures[0].message.contains("expected 1, got 2"));
+    }
+
+    #[test]
+    fn strip_ansi_removes_color_codes() {
+        let input = "\x1b[31mtest foo::bar ... FAILED\x1b[0m";
+        let stripped = strip_ansi_escapes(input);
+        assert_eq!(stripped, "test foo::bar ... FAILED");
+    }
+
+    #[test]
+    fn strip_ansi_handles_no_escapes() {
+        let input = "test foo::bar ... ok";
+        let stripped = strip_ansi_escapes(input);
+        assert_eq!(stripped, "test foo::bar ... ok");
+    }
+
+    #[test]
+    fn strip_ansi_handles_multiple_codes() {
+        let input = "\x1b[1m\x1b[31mFAILED\x1b[0m \x1b[32mok\x1b[0m";
+        let stripped = strip_ansi_escapes(input);
+        assert_eq!(stripped, "FAILED ok");
+    }
+
+    #[test]
+    fn ansi_wrapped_failure_detected() {
+        let mut state = TestParseState::default();
+        ingest_stdout_line(&mut state, "\x1b[31mtest foo::bar ... FAILED\x1b[0m");
+        assert_eq!(state.tests_failed, 1);
+        assert_eq!(state.failures[0].name.as_deref(), Some("foo::bar"));
     }
 }

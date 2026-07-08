@@ -1018,6 +1018,7 @@ impl App {
                 template_create_request: crate::tui::app::state::AsyncUiRequestState::new(),
                 session_mutation_request: crate::tui::app::state::AsyncUiRequestState::new(),
                 session_messages_request: crate::tui::app::state::AsyncUiRequestState::new(),
+                test_run_request: crate::tui::app::state::AsyncUiRequestState::new(),
             },
             agent_state: AgentState {
                 agents,
@@ -1439,6 +1440,7 @@ impl App {
                 template_create_request: crate::tui::app::state::AsyncUiRequestState::new(),
                 session_mutation_request: crate::tui::app::state::AsyncUiRequestState::new(),
                 session_messages_request: crate::tui::app::state::AsyncUiRequestState::new(),
+                test_run_request: crate::tui::app::state::AsyncUiRequestState::new(),
             },
             agent_state: AgentState {
                 agents,

@@ -162,6 +162,10 @@ once_cell = "1"
 qrcode = "0.14.1"
 clap_complete = "4.6.2"
 
+# Process group management (Unix only)
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.29", features = ["signal", "process"] }
+
 # Image support (optional)
 ratatui-image = { version = "10", default-features = false, features = ["crossterm", "image-defaults"], optional = true }
 image = { version = "0.25", optional = true, features = ["png", "jpeg", "gif", "webp"] }

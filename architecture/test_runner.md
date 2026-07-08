@@ -12,9 +12,10 @@ The `test_runner` module provides test command resolution, output parsing, repor
 | `mod.rs` | Re-exports |
 | `types.rs` | Core types with serde derives |
 | `resolve.rs` | Command resolver |
-| `parse.rs` | Line-by-line output parser |
+| `custom.rs` | Shared custom command allowlist |
+| `parse.rs` | Line-by-line output parser with ANSI escape stripping |
 | `report.rs` | Text formatter |
-| `runner.rs` | Streaming runner with log capture |
+| `runner.rs` | Streaming runner with process-group-aware log capture |
 
 **Key Responsibilities**:
 - Resolve `TestScope` into platform-specific shell commands
@@ -105,6 +106,7 @@ pub struct TestRunRequest {
     pub timeout_secs: Option<u64>,
     pub stall_timeout_secs: Option<u64>,
     pub max_report_bytes: Option<usize>,
+    pub session_id: Option<String>,
 }
 ```
 
@@ -193,6 +195,22 @@ pub enum TestResolveError {
 }
 ```
 
+## Custom Command Allowlist
+
+The `custom.rs` module defines the shared allowlist used by both the model-facing `test` tool and the `/test` slash command:
+
+```rust
+pub const CUSTOM_COMMAND_ALLOWLIST: &[&str] = &[
+    "cargo test", "cargo nextest", "pytest", "uv run pytest",
+    "go test", "zig build test", "make test", "make check",
+    "npm test", "pnpm test", "yarn test", "bun test",
+];
+
+pub fn is_allowed_custom_command(cmd: &str) -> bool
+```
+
+Custom commands not in the allowlist are rejected at the tool and TUI layers. The resolver itself does not enforce the allowlist — it only rejects empty commands. This layered design allows the resolver to remain reusable while security enforcement happens at the presentation boundaries.
+
 ## Parser API
 
 ### TestParseState
@@ -218,7 +236,7 @@ pub fn ingest_stderr_line(state: &mut TestParseState, line: &str)
 pub fn failure_class_summary(failures: &[TestFailure], compile_errors: &[TestFailure]) -> FailureClass
 ```
 
-Parses test output line-by-line. Recognizes:
+Parses test output line-by-line. Lines are first stripped of ANSI escape sequences (CSI codes) before pattern matching, ensuring color-enabled test output is parsed correctly. Recognizes:
 
 - **Rust**: `running N tests`, `test ... ok/FAILED`, `panicked at`, `error[E`, `--> file:line:col` (compile error location), doctest failures (`test file - func (line N) ... FAILED`)
 - **Python/pytest**: `collected N items`, `PASSED/FAILED/ERROR`, `ERROR collecting`, `E   message`
@@ -262,7 +280,7 @@ pub async fn run_resolved_test(
 ) -> Result<TestReport, TestRunError>
 ```
 
-Spawns a tokio process with piped stdout/stderr and reads lines concurrently via `BufReader`. Raw bytes are written to log files. Decoded lines are fed to `TestParseState` via `Arc<Mutex<>>`. A `tokio::select!` supervisor enforces wall-clock timeout (default 300s) and no-output/stall timeout (default 120s). On completion, classifies exit code and builds `TestReport` with `FailureClass` from parsed results.
+Spawns a tokio process with piped stdout/stderr and reads lines concurrently via `BufReader`. On Unix, the child is placed in its own session/process group via `setsid()` so that timeout kills target the entire process tree (`libc::kill(-pgid, SIGKILL)`), preventing grandchild process leaks. Raw bytes are written to log files. Decoded lines are fed to `TestParseState` via `Arc<Mutex<>>`. A `tokio::select!` supervisor enforces wall-clock timeout (default 300s) and no-output/stall timeout (default 120s). On completion, classifies exit code and builds `TestReport` with `FailureClass` from parsed results.
 
 ## Log Directory Layout
 
@@ -322,11 +340,12 @@ Empty sections are suppressed. Full logs always available under `.codegg/test-ru
 
 ## Tests
 
-46 parser + formatter + runner tests:
+56+ parser + formatter + runner + custom-allowlist tests:
 - 7 resolver tests (auto rust, auto python, mixed ambiguity, package, file, changed fallback, custom command)
-- 18 parser tests (rust count, ok/failed, panic file/line, assertion message with file:line:col, compile error code, compile error location, doctest failure, pytest collected, pytest failed, pytest file, pytest assertion, pytest collection error, pytest error vs failure)
+- 4 custom command allowlist tests (allowed, disallowed, empty, nonempty)
+- 22 parser tests (rust count, ok/failed, panic file/line, assertion message with file:line:col, compile error code, compile error location, doctest failure, pytest collected, pytest failed, pytest file, pytest assertion, pytest collection error, pytest error vs failure, ANSI stripping)
 - 10 formatter tests (stable sections, passed suppression, timeout details, failure limit, max bytes, log paths, truncation note, error status, compile error display)
-- 11 runner tests (pass, fail, wall-clock timeout, stall timeout, empty command, zero timeout, log layout, UTF-8 truncation, summary building, parser failures for nonzero exit, timeout excerpt)
+- 11+ runner tests (pass, fail, wall-clock timeout, stall timeout, empty command, zero timeout, log layout, UTF-8 truncation, summary building, parser failures for nonzero exit, timeout excerpt)
 
 ```bash
 cargo test -p codegg --lib test_runner
@@ -340,9 +359,10 @@ The `test` tool (`src/tool/test.rs`) wraps the test runner for model consumption
 - **Category**: `ShellExec` (conservative permission gating)
 - **Input**: JSON with `scope` (required), plus optional `package`, `path`, `command`, `workdir`, `timeout`, `stall_timeout`
 - **Output**: Compact text report via `format_test_report()`
-- **Custom commands**: Allowlisted (cargo test, pytest, go test, etc.)
+- **Custom commands**: Allowlisted via `custom.rs` (cargo test, pytest, go test, etc.)
 - **Failing tests**: Return success tool result with failure report; only infrastructure failures return `ToolError`
 - **Provenance**: Native backend, `test_runner` implementation, `LocalTrusted`
+- **No LLM involvement**: The test tool runs the resolved command directly via the supervised runner. No LLM call is made to interpret, summarize, or augment the output. The compact report is produced deterministically by `format_test_report()`.
 
 The tool is registered in `ToolRegistry::with_options()` and categorized in `tool_category_for_name()`.
 

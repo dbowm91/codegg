@@ -168,7 +168,7 @@ hidden by default — see [MCP](mcp.md)).
 
 | Item | Count | Location |
 |------|-------|----------|
-| Tools (default registry) | ~38 | `tool/mod.rs:with_options()` |
+| Tools (default registry) | ~40 | `tool/mod.rs:with_options()` |
 | LSP servers | 39 | `crates/egglsp/src/server.rs` |
 | Native tool crates | 9 | `crates/` (codegg-core, codegg-config, codegg-protocol, codegg-providers, egglsp, egggit, eggsentry, eggcontext, egglsp-test-server) |
 | UiState fields | 30 | `tui/app/state/ui.rs:40-98` |
