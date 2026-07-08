@@ -25,7 +25,7 @@ The workspace mixes cheap pure-logic tests with heavyweight subprocess-spawning 
 
 - **LSP tests** spawn fake language-server subprocesses per test, create temp Rust workspaces, write scenario files, and exercise async shutdown/restart. A single test binary (`tests/lsp.rs`) has 84 tests that each spawn a subprocess.
 - **Plugin tests** may instantiate Wasmtime runtime state.
-- **Tokio default flavor** is multi-threaded. 1,219 bare `#[tokio::test]` attributes each create a multi-threaded runtime with default worker threads. Converting to `current_thread` eliminates this overhead for tests that don't need concurrent workers.
+- **Tokio default flavor** is multi-threaded. Bare `#[tokio::test]` creates a multi-threaded runtime with default worker threads. `check-tokio-test-flavors.py` enforces explicit flavor on all tests; `audit_tokio_tests.py` identifies concurrency-sensitive tests. Converting to `current_thread` eliminates overhead for tests that don't need concurrent workers.
 - **SQLite migration churn** — `isolated_pool()` runs full migrations on every call. Some test files add redundant `migrate()` calls on top.
 
 ## Tokio Runtime Flavor Rules
@@ -108,6 +108,21 @@ Process-wide shared in-memory DB (`?cache=shared`). Migrations run once via `Onc
 7. **Keep timeouts as failure bounds only** — don't use `sleep` as synchronization.
 8. **For multi-threaded tests**, set explicit `worker_threads = 2` rather than using the default.
 
+## Resource-Class Checklist
+
+Classify every new test against these resource classes before writing it:
+
+| Class | Runtime | Pool | Parallelism | CI Lane | Triggers |
+|-------|---------|------|-------------|---------|----------|
+| `fast` | `current_thread` | `shared_pool()` or none | Safe | Default | Pure logic, parsing, config, in-memory registries |
+| `storage` | `current_thread` | `isolated_pool()` | Serial or low | Default | SQLite CRUD, session, snapshot, goal store |
+| `process-heavy` | `current_thread` or `multi_thread` | `shared_pool()` | Serial (`--test-threads=1`) | Default | Fake LSP stdio, supervisor, daemon, subprocess spawn |
+| `plugin-heavy` | `current_thread` | none | Serial | Default | Wasmtime runtime, plugin install/registry |
+| `real-lsp` | `multi_thread` with bounded workers | none | Manual/scheduled | Separate | Actual language server subprocesses |
+| `release-full` | varies | varies | Serial | Default | Full workspace `--all-features` sweep |
+
+**Quick decision**: If the test spawns `tokio::process::Command` or `tokio::spawn`, use `multi_thread`. If it touches SQLite, use `isolated_pool()`. If it needs installed binaries, it's `real-lsp` (never in default CI).
+
 ## Local Commands
 
 ```bash
@@ -156,12 +171,13 @@ cargo nextest run --workspace --profile ci-heavy --all-features
 # Run specific crate with timing
 cargo nextest run -p codegg-core --profile ci-heavy
 
-# Generate timing report (slowest tests first)
+# Capture timing report via helper script
+scripts/capture-nextest-timing.sh --top 20
+scripts/capture-nextest-timing.sh --profile ci-heavy --top 30
+
+# Manual timing report (slowest tests first)
 cargo nextest run --workspace --profile ci-heavy --all-features --json | \
   python3 -c "import sys,json; data=json.load(sys.stdin); tests=data.get('test',{}).get('executed',[]); tests.sort(key=lambda t: t.get('time',{}).get('duration',0), reverse=True); [print(f\"{t['time']['duration']:.2f}s  {t['name']}\") for t in tests[:20]]"
-
-# Find tests exceeding timeout threshold
-cargo nextest run --workspace --profile ci-heavy --all-features 2>&1 | grep -E " TIMEOUT|slow"
 ```
 
 ### Baseline Metrics

@@ -11,21 +11,17 @@ Exit codes:
   1 — bare tests found (CI failure)
 
 Usage:
-    python3 scripts/check-tokio-test-flavors.py [--allowlist FILE]
+    python3 scripts/check-tokio-test-flavors.py [--allowlist FILE] [--self-test]
 """
 
 import argparse
 import re
 import sys
+import textwrap
 from pathlib import Path
 
 # Files that are allowed to have bare #[tokio::test] (one per line)
-DEFAULT_ALLOWLIST = """
-# Tests that legitimately use multi-thread runtime:
-# - real_server_smoke.rs: spawns actual language server subprocesses
-# - tests that use default multi-thread for compatibility verification
-crates/egglsp/tests/real_server_smoke.rs
-""".strip()
+DEFAULT_ALLOWLIST = ""
 
 SKIP_PATHS = {
     "target",
@@ -33,6 +29,16 @@ SKIP_PATHS = {
     "node_modules",
     "examples",
 }
+
+# Regex to match a bare #[tokio::test] without arguments.
+# This matches the exact string with flexible whitespace.
+BARE_TOKIO_TEST_RE = re.compile(r"#\s*\[\s*tokio::test\s*\]$")
+
+# Regex to match a tokio::test with explicit flavor (NOT bare).
+FLAVORED_TOKIO_TEST_RE = re.compile(r"#\s*\[\s*tokio::test\s*\(")
+
+# Regex to match cfg attributes that may precede #[tokio::test]
+CFG_LINE_RE = re.compile(r"^\s*#\[cfg\(")
 
 
 def find_rust_files(root: Path) -> list[Path]:
@@ -49,27 +55,38 @@ def find_rust_files(root: Path) -> list[Path]:
 def check_file(filepath: Path, allowlist: set[str]) -> list[dict]:
     """Check a file for bare #[tokio::test] annotations.
 
-    Returns list of {line, line_number} for bare tests.
+    Handles multiline patterns where #[cfg(...)] or #[cfg(all(...))]
+    may precede #[tokio::test]. Returns list of {line, line_number}
+    for bare tests.
     """
     content = filepath.read_text(errors="replace")
     lines = content.split("\n")
     results = []
 
-    for i, line in enumerate(lines):
+    rel_path = str(filepath)
+    if rel_path in allowlist:
+        return results
+
+    i = 0
+    while i < len(lines):
+        line = lines[i]
         stripped = line.strip()
 
-        # Match bare #[tokio::test] without flavor
-        if stripped == "#[tokio::test]":
-            # Check if this file is in the allowlist
-            rel_path = str(filepath)
-            if rel_path in allowlist:
-                continue
+        # Check if this line is a bare #[tokio::test]
+        if BARE_TOKIO_TEST_RE.search(stripped):
+            # Look back to find preceding #[cfg(...)] lines
+            # The bare tokio::test is the violation line
             results.append(
                 {
                     "line": stripped,
                     "line_number": i + 1,
                 }
             )
+        elif FLAVORED_TOKIO_TEST_RE.search(stripped):
+            # This has explicit flavor — skip
+            pass
+
+        i += 1
 
     return results
 
@@ -93,6 +110,108 @@ def load_allowlist(allowlist_path: Path | None) -> set[str]:
     return allowlist
 
 
+def run_self_test() -> int:
+    """Validate the script can detect both bare and non-bare patterns.
+
+    Returns 0 if all tests pass, 1 if any test fails.
+    """
+    test_cases = [
+        # (description, source_lines, expected_violations)
+        (
+            "bare #[tokio::test] alone",
+            ["#[tokio::test]", "async fn test1() {}"],
+            [1],
+        ),
+        (
+            "bare #[tokio::test] after blank lines",
+            ["", "", "#[tokio::test]", "async fn test2() {}"],
+            [3],
+        ),
+        (
+            "bare #[tokio::test] after #[cfg(test)]",
+            ["#[cfg(test)]", "#[tokio::test]", "async fn test3() {}"],
+            [2],
+        ),
+        (
+            "bare #[tokio::test] after #[cfg(all(...))]",
+            ["#[cfg(all(test, feature = \"x\"))]", "#[tokio::test]", "async fn test4() {}"],
+            [2],
+        ),
+        (
+            "flavored #[tokio::test(flavor = \"current_thread\")]",
+            ["#[tokio::test(flavor = \"current_thread\")]", "async fn test5() {}"],
+            [],
+        ),
+        (
+            "flavored #[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]",
+            ["#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]", "async fn test6() {}"],
+            [],
+        ),
+        (
+            "bare after flavored (only bare detected)",
+            [
+                "#[tokio::test(flavor = \"current_thread\")]",
+                "async fn test7() {}",
+                "#[tokio::test]",
+                "async fn test8() {}",
+            ],
+            [3],
+        ),
+        (
+            "multiple bare tests",
+            ["#[tokio::test]", "async fn test9() {}", "#[tokio::test]", "async fn test10() {}"],
+            [1, 3],
+        ),
+        (
+            "bare with extra whitespace",
+            ["#[ tokio::test ]", "async fn test11() {}"],
+            [1],
+        ),
+        (
+            "not a test attribute (#[tokio::main])",
+            ["#[tokio::main]", "async fn test12() {}"],
+            [],
+        ),
+    ]
+
+    passed = 0
+    failed = 0
+
+    print("Running self-test...\n")
+
+    for desc, source_lines, expected_violations in test_cases:
+        # Write test content to temp file and check it
+        import tempfile
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".rs", delete=False) as f:
+            f.write("\n".join(source_lines))
+            temp_path = Path(f.name)
+
+        try:
+            results = check_file(temp_path, set())
+            actual_line_numbers = [r["line_number"] for r in results]
+
+            if actual_line_numbers == expected_violations:
+                print(f"  PASS: {desc}")
+                passed += 1
+            else:
+                print(f"  FAIL: {desc}")
+                print(f"    Expected: {expected_violations}")
+                print(f"    Got:      {actual_line_numbers}")
+                failed += 1
+        finally:
+            temp_path.unlink()
+
+    print(f"\nSelf-test results: {passed} passed, {failed} failed")
+
+    if failed > 0:
+        print("\nSelf-test FAILED")
+        return 1
+    else:
+        print("\nSelf-test PASSED")
+        return 0
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Check for bare #[tokio::test] annotations"
@@ -104,12 +223,20 @@ def main():
         help="Path to allowlist file (one path per line)",
     )
     parser.add_argument(
+        "--self-test",
+        action="store_true",
+        help="Run self-test to validate detection logic",
+    )
+    parser.add_argument(
         "paths",
         nargs="*",
         default=["."],
         help="Paths to scan (default: current directory)",
     )
     args = parser.parse_args()
+
+    if args.self_test:
+        return run_self_test()
 
     root = Path.cwd()
     allowlist = load_allowlist(args.allowlist)

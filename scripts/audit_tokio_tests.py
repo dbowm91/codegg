@@ -6,11 +6,11 @@ concurrency-sensitive patterns (tokio::spawn, channels, subprocesses, etc.).
 These tests may need `multi_thread` to avoid deadlocks or race conditions.
 
 Exit codes:
-  0 — no candidates found
+  0 — no candidates found (or --no-fail specified)
   1 — candidates found (informational, not a failure)
 
 Usage:
-    python3 scripts/audit_tokio_tests.py [--json]
+    python3 scripts/audit_tokio_tests.py [--json] [--no-fail] [--summary]
 """
 
 import argparse
@@ -164,6 +164,14 @@ def main():
         "--json", action="store_true", help="Output results as JSON"
     )
     parser.add_argument(
+        "--no-fail", action="store_true",
+        help="Always exit 0 regardless of candidates found (advisory mode)",
+    )
+    parser.add_argument(
+        "--summary", action="store_true",
+        help="Print only a count summary instead of full listing",
+    )
+    parser.add_argument(
         "paths",
         nargs="*",
         default=["."],
@@ -190,22 +198,28 @@ def main():
     if args.json:
         import json
         print(json.dumps(candidates, indent=2))
+    elif args.summary:
+        if not candidates:
+            print("No concurrency-sensitive current_thread tests found.")
+        else:
+            print(f"Found {len(candidates)} current_thread test(s) with concurrency patterns.")
     else:
         if not candidates:
             print("No concurrency-sensitive current_thread tests found.")
-            return 0
+        else:
+            print(f"Found {len(candidates)} current_thread test(s) with concurrency patterns:\n")
+            for c in candidates:
+                rel_path = Path(c["file"]).relative_to(root) if Path(c["file"]).is_relative_to(root) else c["file"]
+                print(f"  {rel_path}:{c['start_line']}-{c['end_line']}")
+                for p in c["patterns"]:
+                    print(f"    - {p}")
+                print()
 
-        print(f"Found {len(candidates)} current_thread test(s) with concurrency patterns:\n")
-        for c in candidates:
-            rel_path = Path(c["file"]).relative_to(root) if Path(c["file"]).is_relative_to(root) else c["file"]
-            print(f"  {rel_path}:{c['start_line']}-{c['end_line']}")
-            for p in c["patterns"]:
-                print(f"    - {p}")
-            print()
+            print("These tests may need `multi_thread` runtime to avoid deadlocks.")
+            print("Review each candidate and restore multi_thread where needed.")
 
-        print("These tests may need `multi_thread` runtime to avoid deadlocks.")
-        print("Review each candidate and restore multi_thread where needed.")
-
+    if args.no_fail:
+        return 0
     return 1 if candidates else 0
 
 

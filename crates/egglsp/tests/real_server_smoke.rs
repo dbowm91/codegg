@@ -6520,7 +6520,7 @@ fn assert_required_checks(report: &LspCompatibilityReport) {
 
 // ── Rust Analyzer Tests ────────────────────────────────────────────
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn rust_analyzer_smoke() {
     let bin = match require_server_binary("CODEGG_RA_BIN", &["rust-analyzer"]) {
         Some(b) => b,
@@ -6557,7 +6557,7 @@ async fn rust_analyzer_smoke() {
 
 // ── Pyright/Basedpyright Tests ─────────────────────────────────────
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn basedpyright_smoke() {
     let bin = match require_server_binary(
         "CODEGG_PYRIGHT_BIN",
@@ -6613,7 +6613,7 @@ async fn basedpyright_smoke() {
 //   4. Write the JSON report under `target/lsp-compatibility/`.
 //   5. Assert that required checks passed.
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn gopls_smoke() {
     let bin = match require_server_binary("CODEGG_GOPLS_BIN", &["gopls"]) {
         Some(b) => b,
@@ -6648,7 +6648,7 @@ async fn gopls_smoke() {
     assert_required_checks(&report);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn typescript_smoke() {
     let bin = match require_server_binary("CODEGG_TS_LS_BIN", &["typescript-language-server"]) {
         Some(b) => b,
@@ -6685,7 +6685,7 @@ async fn typescript_smoke() {
     assert_required_checks(&report);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn clangd_smoke() {
     let bin = match require_server_binary("CODEGG_CLANGD_BIN", &["clangd"]) {
         Some(b) => b,
@@ -6817,7 +6817,7 @@ fn update_matrix_manifest(
 /// `RealServerHarness`, and verifies that `shutdown_and_collect`
 /// produces a `HarnessShutdownResult` whose `stderr_tail` contains
 /// the expected output.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn smoke_harness_captures_stderr() {
     // Use a simple shell command that writes to stderr and exits.
     let bin = if cfg!(windows) {
@@ -6905,7 +6905,7 @@ async fn smoke_harness_captures_stderr() {
 /// the `RealServerHarness`, and verifies that `shutdown_and_collect`
 /// with a short graceful deadline produces a `ForceKilled` or
 /// `TimeoutExpired` result.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn smoke_harness_force_kills_hung_server() {
     // Use `sleep` to create a hung process.
     let bin = if cfg!(windows) {
@@ -6985,7 +6985,7 @@ async fn smoke_harness_force_kills_hung_server() {
 /// ignores SIGTERM, ensuring the process can only be terminated
 /// by SIGKILL. This validates the force-kill path deterministically.
 #[cfg(unix)]
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn smoke_harness_force_kills_process_that_ignores_stdin_close() {
     let spec = egglsp::LspLaunchSpec::new(
         "harness-sigterm-ignorer",
@@ -7079,7 +7079,7 @@ async fn smoke_harness_force_kills_process_that_ignores_stdin_close() {
 /// This is a direct test of the production readiness primitive
 /// without requiring a full LSP server — it uses a process that
 /// never produces progress events.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn progress_readiness_failure_is_reported() {
     // Use a simple process that stays alive but does not speak LSP.
     let bin = if cfg!(windows) {
@@ -7145,7 +7145,7 @@ async fn progress_readiness_failure_is_reported() {
 /// it implies readiness passes when diagnostics are empty, but the
 /// test was actually verifying the *missing-diagnostics* branch.
 /// Renamed per the Phase 3 final-closure audit.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn missing_diagnostics_readiness_times_out() {
     // Use a simple process that stays alive but does not speak LSP.
     let bin = if cfg!(windows) {
