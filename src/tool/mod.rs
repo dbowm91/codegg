@@ -412,12 +412,13 @@ impl ToolRegistry {
             crate::eggsact::adapter::EggsactConfig::default(),
         ) {
             let runtime = std::sync::Arc::new(eggsact_runtime);
-            registry.register(crate::tool::deterministic::DeterministicTextEqual::new(
-                runtime.clone(),
-            ));
-            registry.register(crate::tool::deterministic::DeterministicValidateJson::new(
-                runtime,
-            ));
+            let (visible, deferred) = crate::tool::deterministic::build_eggsact_tools(runtime);
+            for tool in visible {
+                registry.register(tool);
+            }
+            for tool in deferred {
+                registry.register(tool);
+            }
         }
 
         registry.register(crate::tool::invalid::InvalidTool);

@@ -332,11 +332,11 @@ CI runs on push/PR to dev/main: `agent-assets` → `fmt` → `check` → `clippy
 
 - **ToolCatalog::register() takes `&dyn Tool`**, not `Box<dyn Tool>`.
 - **multiedit tool exists but NOT in default registry**: `src/tool/multiedit.rs` exists, `pub mod multiedit` is registered, but it's NOT in `ToolRegistry::with_defaults()`.
-- **~28 tools** in `ToolRegistry::with_options()` (`src/tool/mod.rs`). Count varies by config (conditional LSP, security, todo, context_read tools).
+- **~36 tools** in `ToolRegistry::with_options()` (`src/tool/mod.rs`). Count varies by config (conditional LSP, security, todo, context_read tools). Includes 8 always-visible eggsact deterministic tools.
 - **Tool session constructor**: `with_session_config_defaults(&Config, ...)` is the production constructor. `with_session_defaults(...)` is the legacy all-native fallback.
 - **patch_util.rs shared utilities**: `src/tool/patch_util.rs` is used by both `apply_patch` tool and LSP preview operations.
 - **eggsact is in-process, not MCP**: The `eggsact` dependency is consumed as a direct Rust dependency (`src/eggsact/adapter.rs`), not via MCP server. `EggsactRuntime` wraps `eggsact::agent::ToolRegistry` in-process. Provenance must tag `backend = "native"`, `implementation = "eggsact/<tool_name>"`, `trust = LocalTrusted`.
-- **Deterministic tools are hidden by default**: `DeterministicTextEqual` and `DeterministicValidateJson` in `src/tool/deterministic.rs` set `expose_in_definitions() -> false`. They are registered best-effort; if `EggsactRuntime::new()` fails, the tools are silently skipped.
+- **Deterministic tools (Phase 4)**: `EggsactTool` generic wrapper in `src/tool/deterministic.rs` exposes a conservative subset of eggsact tools to the model. 8 always-visible tools (`text_equal`, `text_diff_explain`, `text_replace_check`, `validate_json`, `validate_toml`, `command_preflight`, `path_normalize`, `text_security_inspect`) plus 5 deferred tools discoverable via `tool_search`. All use `ToolCategory::ReadOnly` and are registered best-effort; if `EggsactRuntime::new()` fails, the tools are silently skipped.
 
 ### Agent Runtime
 

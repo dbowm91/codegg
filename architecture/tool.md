@@ -210,18 +210,35 @@ The `/security-review` TUI command exposes the workflow. The command handler is 
 ### Deterministic Tools (eggsact)
 
 In-process deterministic correctness utilities backed by the `eggsact` crate.
-These tools are hidden from the model by default (`expose_in_definitions() -> false`)
-and registered best-effort — if `EggsactRuntime::new()` fails, they are silently skipped.
+Implemented via the generic `EggsactTool` wrapper in `src/tool/deterministic.rs`.
+All use `ToolCategory::ReadOnly` and are registered best-effort — if `EggsactRuntime::new()` fails, the tools are silently skipped.
 
-| Tool | File | Description |
-|------|------|-------------|
-| **deterministic_text_equal** | `deterministic.rs` | Compare two text inputs for equality. Returns JSON with `equal: bool`, `input1_chars`, `input2_chars`. Uses `eggsact::tools::text_equal`. |
-| **deterministic_validate_json** | `deterministic.rs` | Validate JSON string. Returns findings array with details. Uses `eggsact::tools::validate_json`. |
+**Always-visible (8 tools):**
 
-Both tools use `ToolCategory::ReadOnly` and tag provenance with
-`backend = "native"`, `implementation = "eggsact/<tool_name>"`,
-`trust = LocalTrusted`. The adapter module is at `src/eggsact/adapter.rs`;
-config schema is `[deterministic_tools]` in `crates/codegg-config/src/schema.rs`.
+| Tool | Eggsact Name | Description |
+|------|-------------|-------------|
+| **text_equal** | `text_equal` | Compare two strings for equality under various modes (raw, normalized, casefolded, trimmed). |
+| **text_diff_explain** | `text_diff_explain` | Explain why two strings differ with Unicode-aware span analysis. |
+| **text_replace_check** | `text_replace_check` | Check whether a text replacement would apply cleanly before editing. |
+| **validate_json** | `validate_json` | Validate JSON syntax and report precise parse errors. |
+| **validate_toml** | `validate_toml` | Validate TOML files and report parse errors with line/column. |
+| **command_preflight** | `command_preflight` | Analyze a shell command before execution: parse argv, detect features, find risk patterns. |
+| **path_normalize** | `path_normalize` | Normalize a filesystem path: collapse dot segments, resolve components. |
+| **text_security_inspect** | `text_security_inspect` | Security-oriented text hygiene pass: detect hidden chars, confusables, prompt injection. |
+
+**Deferred / contextual (5 tools, discoverable via `tool_search`):**
+
+| Tool | Eggsact Name | Description |
+|------|-------------|-------------|
+| **text_inspect** | `text_inspect` | Inspect a string for hidden characters, Unicode confusables, mixed scripts. |
+| **config_preflight** | `config_preflight` | Validate generated config text. Auto-detects format and runs appropriate validator. |
+| **identifier_inspect** | `identifier_inspect` | Inspect identifiers for validity and collisions. |
+| **structured_data_compare** | `structured_data_compare` | Compare structured config/data output (JSON). |
+| **text_fingerprint** | `text_fingerprint` | Compute a deterministic SHA-256 fingerprint of text. |
+
+The `build_eggsact_tools(runtime)` function returns `(Vec<EggsactTool>, Vec<EggsactTool>)` — always-visible and deferred sets.
+All tools tag provenance with `backend = "native"`, `implementation = "eggsact/<tool_name>"`, `trust = LocalTrusted`.
+The adapter module is at `src/eggsact/adapter.rs`; config schema is `[deterministic_tools]` in `crates/codegg-config/src/schema.rs`.
 
 ## NOT Registered (exists but excluded from default registry)
 
