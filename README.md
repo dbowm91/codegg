@@ -1018,7 +1018,7 @@ timeout_ms = 60000
 Install `eggsearch` separately — it is not bundled with Codegg:
 
 ```bash
-cargo install eggsearch
+cargo install eggsearch --version 0.3.4
 ```
 
 #### Deterministic Tools (eggsact)
@@ -1099,7 +1099,7 @@ deterministic tool operations:
   tools.
 - **After:** Codegg defaults to `eggsearch`, an external MCP server that
   provides web search, repository search, and evidence gathering.
-- **Migration:** Install `eggsearch` (`cargo install eggsearch`). Codegg
+- **Migration:** Install `eggsearch` (`cargo install eggsearch --version 0.3.4`). Codegg
   auto-detects it on startup.
 - **Fallback:** If `eggsearch` is unavailable, Codegg falls back to the
   legacy built-in providers when `[search].fallback_to_builtin = true`.

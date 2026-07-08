@@ -132,7 +132,7 @@ PYTHONPATH=examples/plugins/sdk-python \
 cargo build --target wasm32-unknown-unknown \
   --manifest-path examples/plugins/wasm-command-table/Cargo.toml --release  # WASM build
 
-# Eggsact adapter integration tests (requires eggsact git dependency)
+# Eggsact adapter integration tests
 cargo test --test eggsact_adapter
 cargo test --test eggsact_deterministic_tools
 
