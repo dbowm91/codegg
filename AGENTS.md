@@ -155,6 +155,16 @@ cargo test -p codegg --lib search_backend::framing
 
 # Live eggsearch smoke tests (opt-in, requires eggsearch binary)
 cargo test --features live-eggsearch-tests --test live_eggsearch_smoke -- --ignored
+
+# Test timing with nextest (install: cargo install cargo-nextest)
+cargo nextest run --workspace --profile ci-heavy --all-features
+cargo nextest run -p codegg-core --profile ci-heavy
+
+# Audit tokio test flavors (finds current_thread tests with concurrency patterns)
+python3 scripts/audit_tokio_tests.py
+
+# Check for bare #[tokio::test] annotations (regression guard)
+python3 scripts/check-tokio-test-flavors.py
 ```
 
 ## Built-in Agent Assets

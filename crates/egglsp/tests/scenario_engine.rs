@@ -1,3 +1,8 @@
+//! LSP scenario engine integration tests.
+//!
+//! **Resource class: process-heavy** — each test spawns the fake LSP server
+//! subprocess. Must run serially (`--test-threads=1`).
+
 use std::path::PathBuf;
 use std::time::Duration;
 

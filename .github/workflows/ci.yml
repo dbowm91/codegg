@@ -67,14 +67,15 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      # Plugin tests run serially — plugin paths may instantiate Wasmtime runtime state.
       - name: Plugin install path / policy tests
-        run: cargo test -p codegg --lib plugin::install --all-features
+        run: cargo test -p codegg --lib plugin::install --all-features -- --test-threads=1
       - name: Plugin management tests
-        run: cargo test -p codegg --lib plugin::management --all-features
+        run: cargo test -p codegg --lib plugin::management --all-features -- --test-threads=1
       - name: Plugin registry tests
-        run: cargo test -p codegg --lib plugin::registry --all-features
+        run: cargo test -p codegg --lib plugin::registry --all-features -- --test-threads=1
       - name: Plugin TUI command tests
-        run: cargo test -p codegg --lib tui::commands::plugin_management --all-features
+        run: cargo test -p codegg --lib tui::commands::plugin_management --all-features -- --test-threads=1
       - name: Core boundary check
         run: ./scripts/check-core-boundary.sh
 

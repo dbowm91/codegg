@@ -131,10 +131,115 @@ cargo test -p codegg --lib plugin --all-features
 cargo test -p egglsp --features lsp-real-server-tests --test real_server_smoke -- rust_analyzer
 ```
 
+## Test Timing with Nextest
+
+Nextest is configured in `.config/nextest.toml` with profiles for different workloads. Use it to identify slow tests and capture baseline timing data.
+
+### Profiles
+
+| Profile | Timeout | Threads | Use Case |
+|---------|---------|---------|----------|
+| `default` | 30s | Auto | Local development |
+| `ci-fast` | 20s | Auto | Quick CI validation |
+| `ci-heavy` | 60s | Serial | Full workspace timing |
+| `ci-release` | 120s | Serial | Release validation |
+
+### Local Timing Commands
+
+```bash
+# Install nextest (one-time)
+cargo install cargo-nextest
+
+# Run full workspace with timing
+cargo nextest run --workspace --profile ci-heavy --all-features
+
+# Run specific crate with timing
+cargo nextest run -p codegg-core --profile ci-heavy
+
+# Generate timing report (slowest tests first)
+cargo nextest run --workspace --profile ci-heavy --all-features --json | \
+  python3 -c "import sys,json; data=json.load(sys.stdin); tests=data.get('test',{}).get('executed',[]); tests.sort(key=lambda t: t.get('time',{}).get('duration',0), reverse=True); [print(f\"{t['time']['duration']:.2f}s  {t['name']}\") for t in tests[:20]]"
+
+# Find tests exceeding timeout threshold
+cargo nextest run --workspace --profile ci-heavy --all-features 2>&1 | grep -E " TIMEOUT|slow"
+```
+
+### Baseline Metrics
+
+To capture baseline timing data for comparison:
+
+```bash
+# Full workspace timing (single run)
+cargo nextest run --workspace --profile ci-heavy --all-features 2>&1 | \
+  grep -E "^test result:|slow test" > /tmp/nextest-baseline.txt
+
+# Compare against future runs
+diff /tmp/nextest-baseline.txt <(cargo nextest run --workspace --profile ci-heavy --all-features 2>&1 | grep -E "^test result:|slow test")
+```
+
 ## CI Structure
 
 The CI pipeline runs jobs in sequence: `agent-assets` → `fmt` → `check` → `clippy` → `test` → `plugin-focused` → `examples`.
 
-The `test` job runs the full serial workspace suite. The `plugin-focused` job runs targeted plugin tests. Real LSP tests are in a separate weekly workflow (`lsp-real-server.yml`).
+### `test` job
+
+Runs the full serial workspace suite:
+
+```bash
+cargo test --workspace --all-features -- --test-threads=1
+```
+
+This is the primary validation gate. All test resource classes are covered here.
+
+### `plugin-focused` job
+
+Runs targeted plugin tests with explicit serial flags (`-- --test-threads=1`). **This job is duplicate-by-design**: the `test` job already runs `--workspace --all-features` which includes plugin tests. The `plugin-focused` job exists for:
+
+1. **Focused diagnostic logs** — easier to identify plugin-specific failures in CI logs
+2. **Core boundary validation** — runs `scripts/check-core-boundary.sh` to enforce the codegg-core isolation contract
+3. **Defense-in-depth** — if the broad test lane is narrowed in the future, plugin coverage is already isolated
+
+All plugin test commands run serially because plugin paths may instantiate Wasmtime runtime state.
+
+### Real LSP tests
+
+Real-server compatibility tests live in a separate workflow (`lsp-real-server.yml`) and are **not part of routine PR validation**. The workflow triggers on:
+
+- **Manual dispatch** (`workflow_dispatch`)
+- **Weekly schedule** — Monday 6am UTC
+- **Push to `main`** touching `crates/egglsp/**`, `src/lsp/**`, or `.github/workflows/lsp-real-server.yml`
+
+Real-server tests must not be pulled into routine PR validation. They verify compatibility with actual language server binaries (rust-analyzer, basedpyright, gopls, typescript-language-server, clangd) and require installed server binaries.
+
+### `--all-features` and real-server tests
+
+The root `--all-features` flag enables the `lsp-real-server-tests` feature, which compiles `crates/egglsp/tests/real_server_smoke.rs`. This is safe because:
+
+1. **Tests skip at runtime** — each test calls `require_server_binary()` which returns `None` when the server binary is not installed, causing the test to skip with `eprintln!("SKIP: ...")`
+2. **No subprocess launched** — skipped tests never spawn a language server process
+3. **CI does not install real servers** — the default `test` job does not set `CODEGG_RA_BIN` or similar env vars
+
+The separate `lsp-real-server.yml` workflow explicitly installs server binaries and runs with `--features lsp-real-server-tests` to exercise the real compatibility path.
 
 See `AGENTS.md` for the full test command catalog.
+
+## CI Lane Roadmap Decision
+
+**Decision: Conservative keep** — maintain the current monolithic serial test lane.
+
+The closure pass evaluation determined that splitting the CI into resource lanes (fast, storage, process-heavy, plugin-heavy) would add complexity without sufficient benefit at the current test count (~1,219 tests). The conservative approach is retained because:
+
+1. **Documentation is sufficient** — the test resource taxonomy, process-heavy file headers, and audit scripts provide visibility into resource usage without CI complexity.
+2. **Regression guards are in place** — `check-tokio-test-flavors.py` prevents new bare tokio tests, and `audit_tokio_tests.py` identifies concurrency-sensitive tests.
+3. **Serial execution is reliable** — `--test-threads=1` eliminates resource contention issues entirely.
+4. **Wall-clock is acceptable** — the full serial suite completes within CI timeout limits.
+
+### Future Considerations
+
+If test count grows significantly or wall-clock becomes problematic, consider:
+
+1. **Nextest adoption** — use `.config/nextest.toml` profiles for timing data and potential parallelism.
+2. **Resource-aware splitting** — split into sequential lanes: fast/default → storage → process-heavy → plugin-heavy.
+3. **Selective feature flags** — use `--features` instead of `--all-features` for targeted CI runs.
+
+These changes should be driven by measured regressions, not speculative optimization.

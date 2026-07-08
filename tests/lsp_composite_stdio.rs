@@ -1,5 +1,9 @@
 //! Root-level composite LSP integration test harness.
 //!
+//! **Resource class: process-heavy** — each test spawns a fake LSP server
+//! subprocess via stdio. Must run serially (`--test-threads=1`).
+//! Do not broaden coverage here if a mock/in-process test can cover the behavior.
+//!
 //! Exercises the root-crate collectors (`SemanticContextCollector`,
 //! `DiagnosticsCollector`, `LspOperations`) against the fake LSP server
 //! binary built by the `egglsp` package. This bridges the gap between

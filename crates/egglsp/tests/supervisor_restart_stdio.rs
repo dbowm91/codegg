@@ -1,5 +1,9 @@
 //! Deterministic scripted supervisor and restart tests for LSP Phase 3.
 //!
+//! **Resource class: process-heavy** — each test spawns a fake LSP server
+//! subprocess via stdio. Must run serially (`--test-threads=1`).
+//! Do not broaden coverage here if a mock/in-process test can cover the behavior.
+//!
 //! These tests use the fake LSP server (scenario engine) to drive the
 //! [`LspService`] process-supervisor, restart coordinator, and
 //! per-client generation safety. They are gated behind the

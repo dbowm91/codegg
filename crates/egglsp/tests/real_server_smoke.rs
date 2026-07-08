@@ -1,5 +1,9 @@
 //! Real-server smoke tests for Tier 1 LSP compatibility.
 //!
+//! **Resource class: real-lsp** — launches actual language server
+//! subprocesses. Must run serially (`--test-threads=1`). Opt-in via
+//! `lsp-real-server-tests` feature. Not part of routine PR validation.
+//!
 //! These tests launch actual language servers and verify basic
 //! protocol operations. They are opt-in via the
 //! `lsp-real-server-tests` feature and skip automatically when
