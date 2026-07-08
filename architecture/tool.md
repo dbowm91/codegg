@@ -91,7 +91,7 @@ pub struct ToolResult {
 }
 ```
 
-## Built-in Tools (37 total in default registry)
+## Built-in Tools (39 total in default registry)
 
 ### File Operations
 
@@ -206,6 +206,22 @@ The `/security-review` TUI command exposes the workflow. The command handler is 
 | **batch** | `batch.rs` | Execute up to 25 tool calls in parallel. Each call limited to 100KB input, total output limited to 500KB. |
 | **tool_search** | `tool_search.rs` | On-demand tool discovery. Searches catalog by name/description. Registered with catalog (not as a regular tool). |
 | **invalid** | `invalid.rs` | Catch-all for malformed tool calls. Returns tool name and error message. |
+
+### Deterministic Tools (eggsact)
+
+In-process deterministic correctness utilities backed by the `eggsact` crate.
+These tools are hidden from the model by default (`expose_in_definitions() -> false`)
+and registered best-effort — if `EggsactRuntime::new()` fails, they are silently skipped.
+
+| Tool | File | Description |
+|------|------|-------------|
+| **deterministic_text_equal** | `deterministic.rs` | Compare two text inputs for equality. Returns JSON with `equal: bool`, `input1_chars`, `input2_chars`. Uses `eggsact::tools::text_equal`. |
+| **deterministic_validate_json** | `deterministic.rs` | Validate JSON string. Returns findings array with details. Uses `eggsact::tools::validate_json`. |
+
+Both tools use `ToolCategory::ReadOnly` and tag provenance with
+`backend = "native"`, `implementation = "eggsact/<tool_name>"`,
+`trust = LocalTrusted`. The adapter module is at `src/eggsact/adapter.rs`;
+config schema is `[deterministic_tools]` in `crates/codegg-config/src/schema.rs`.
 
 ## NOT Registered (exists but excluded from default registry)
 

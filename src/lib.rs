@@ -15,6 +15,7 @@ pub mod auth;
 pub mod command;
 pub mod context;
 pub mod core;
+pub mod eggsact;
 pub mod error;
 pub mod exec;
 pub mod hooks;

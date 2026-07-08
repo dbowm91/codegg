@@ -15,6 +15,7 @@ pub mod catalog;
 pub mod codesearch;
 pub mod commit;
 pub mod destructive;
+pub mod deterministic;
 pub mod diff;
 pub mod disabled;
 pub mod edit;
@@ -405,6 +406,20 @@ impl ToolRegistry {
         }
         registry.register(crate::tool::plan::PlanEnterTool);
         registry.register(crate::tool::plan::PlanExitTool);
+
+        // --- Deterministic tools (eggsact-backed) ---
+        if let Ok(eggsact_runtime) = crate::eggsact::adapter::EggsactRuntime::new(
+            crate::eggsact::adapter::EggsactConfig::default(),
+        ) {
+            let runtime = std::sync::Arc::new(eggsact_runtime);
+            registry.register(crate::tool::deterministic::DeterministicTextEqual::new(
+                runtime.clone(),
+            ));
+            registry.register(crate::tool::deterministic::DeterministicValidateJson::new(
+                runtime,
+            ));
+        }
+
         registry.register(crate::tool::invalid::InvalidTool);
 
         // Register tool_search with catalog for on-demand tool discovery.

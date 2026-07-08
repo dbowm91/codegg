@@ -315,6 +315,11 @@ relevant module (no glob-re-exports across the boundary). For example:
   (`create_worktree`, `remove_worktree`) and re-exports
   `list_worktrees` from `egggit` after wrapping the result in the
   legacy `Worktree` shape used by callers.
+- `src/eggsact/adapter.rs` wraps `eggsact::agent::ToolRegistry`
+  as an in-process dependency (not MCP). `EggsactRuntime` owns the
+  registry and exposes `call()` for tool invocation. Config flows
+  from `DeterministicToolsConfig` in `codegg-config` to
+  `EggsactConfig` at the adapter boundary.
 
 ## Test strategy
 

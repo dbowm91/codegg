@@ -175,6 +175,7 @@ eggcontext = { path = "crates/eggcontext" }
 egggit = { path = "crates/egggit" }
 egglsp = { path = "crates/egglsp" }
 codegg-core = { path = "crates/codegg-core" }
+eggsact = { git = "https://github.com/eggstack/eggsact" }
 
 [dev-dependencies]
 proptest = "1"

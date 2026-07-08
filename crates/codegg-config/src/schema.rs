@@ -261,6 +261,8 @@ pub struct Config {
     pub human_shell: Option<HumanShellConfig>,
     /// Shell output projection configuration.
     pub shell: Option<ShellConfig>,
+    /// Deterministic tools (eggsact-backed) configuration.
+    pub deterministic_tools: Option<DeterministicToolsConfig>,
 }
 
 /// Configuration for the context ledger and artifact projection system.
@@ -572,18 +574,10 @@ impl EggsearchConfig {
     pub fn timeout_ms_for(&self, kind: ToolTimeoutKind) -> u64 {
         match kind {
             ToolTimeoutKind::Default => self.timeout_ms(),
-            ToolTimeoutKind::Security => {
-                self.security_timeout_ms.unwrap_or(self.timeout_ms())
-            }
-            ToolTimeoutKind::Research => {
-                self.research_timeout_ms.unwrap_or(self.timeout_ms())
-            }
-            ToolTimeoutKind::BatchFetch => {
-                self.batch_fetch_timeout_ms.unwrap_or(self.timeout_ms())
-            }
-            ToolTimeoutKind::ProviderStatus => {
-                self.provider_status_timeout_ms.unwrap_or(15_000)
-            }
+            ToolTimeoutKind::Security => self.security_timeout_ms.unwrap_or(self.timeout_ms()),
+            ToolTimeoutKind::Research => self.research_timeout_ms.unwrap_or(self.timeout_ms()),
+            ToolTimeoutKind::BatchFetch => self.batch_fetch_timeout_ms.unwrap_or(self.timeout_ms()),
+            ToolTimeoutKind::ProviderStatus => self.provider_status_timeout_ms.unwrap_or(15_000),
         }
     }
 
@@ -1986,6 +1980,40 @@ impl ShellOutputConfig {
 #[serde(default)]
 pub struct ShellConfig {
     pub output: Option<ShellOutputConfig>,
+}
+
+/// Configuration for eggsact-backed deterministic tools.
+#[derive(Deserialize, Serialize, Debug, Clone, PartialEq)]
+#[serde(default)]
+pub struct DeterministicToolsConfig {
+    /// Enable deterministic tools.
+    pub enabled: bool,
+    /// Backend type: "native" or "disabled".
+    pub backend: String,
+    /// Eggsact profile name.
+    pub profile: String,
+    /// Tool audience for model-facing calls.
+    pub model_audience: String,
+    /// Tool audience for harness-side calls.
+    pub harness_audience: String,
+    /// Expose expert-tier tools to the model.
+    pub expose_expert_tools: bool,
+    /// Maximum output characters before truncation.
+    pub max_output_chars: usize,
+}
+
+impl Default for DeterministicToolsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            backend: "native".to_string(),
+            profile: "codegg_core".to_string(),
+            model_audience: "model".to_string(),
+            harness_audience: "harness".to_string(),
+            expose_expert_tools: false,
+            max_output_chars: 12_000,
+        }
+    }
 }
 
 /// User-facing theme configuration.
