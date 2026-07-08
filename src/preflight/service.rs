@@ -299,8 +299,8 @@ impl PreflightService {
                     findings.push(PreflightFinding {
                         severity: PreflightSeverity::Block,
                         machine_code: result.machine_code.clone(),
-                        message: format!("Invalid JSON: {}", truncate(&result.output, 200)),
-                        location: None,
+                        message: structured_error_message(&result, "Invalid JSON"),
+                        location: structured_location(&result),
                         source_tool: "validate_json".to_string(),
                     });
                 }
@@ -327,8 +327,8 @@ impl PreflightService {
                     findings.push(PreflightFinding {
                         severity: PreflightSeverity::Block,
                         machine_code: result.machine_code.clone(),
-                        message: format!("Invalid TOML: {}", truncate(&result.output, 200)),
-                        location: None,
+                        message: structured_error_message(&result, "Invalid TOML"),
+                        location: structured_location(&result),
                         source_tool: "validate_toml".to_string(),
                     });
                 }
@@ -355,11 +355,8 @@ impl PreflightService {
                     findings.push(PreflightFinding {
                         severity: PreflightSeverity::Block,
                         machine_code: result.machine_code.clone(),
-                        message: format!(
-                            "Config validation failed: {}",
-                            truncate(&result.output, 200)
-                        ),
-                        location: None,
+                        message: structured_error_message(&result, "Config validation failed"),
+                        location: structured_location(&result),
                         source_tool: "config_preflight".to_string(),
                     });
                 }
@@ -571,6 +568,50 @@ fn parse_match_count(output: &str) -> usize {
     0
 }
 
+/// Extract a human-readable error message from structured eggsact fields,
+/// falling back to `fallback_prefix` + truncated output.
+fn structured_error_message(result: &EggsactCallResult, fallback_prefix: &str) -> String {
+    // Prefer structured error field
+    if let Some(ref error) = result.error {
+        if !error.is_empty() {
+            return error.clone();
+        }
+    }
+    // Try structured result for a message field
+    if let Some(ref structured) = result.result {
+        if let Some(msg) = structured.get("message").and_then(|v| v.as_str()) {
+            if !msg.is_empty() {
+                return msg.to_string();
+            }
+        }
+    }
+    // Fallback to output
+    format!("{fallback_prefix}: {}", truncate(&result.output, 200))
+}
+
+/// Extract a `PreflightLocation` from structured eggsact fields.
+fn structured_location(result: &EggsactCallResult) -> Option<PreflightLocation> {
+    let structured = result.result.as_ref()?;
+    let line = structured
+        .get("line")
+        .and_then(|v| v.as_u64())
+        .map(|n| n as usize);
+    let column = structured
+        .get("column")
+        .and_then(|v| v.as_u64())
+        .map(|n| n as usize);
+    let file = structured
+        .get("file")
+        .or_else(|| structured.get("path"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    if line.is_some() || column.is_some() || file.is_some() {
+        Some(PreflightLocation { file, line, column })
+    } else {
+        None
+    }
+}
+
 /// Truncate a string to max chars with ellipsis (UTF-8 safe).
 fn truncate(s: &str, max: usize) -> String {
     truncate_utf8_safe(s, max, "...").text
@@ -654,5 +695,162 @@ mod tests {
         assert_eq!(truncate("hello", 10), "hello");
         // char-based: budget=5, marker=3 chars -> take 2 chars + "..."
         assert_eq!(truncate("hello world", 5), "he...");
+    }
+
+    #[test]
+    fn structured_error_message_prefers_error_field() {
+        let result = EggsactCallResult {
+            output: "ok: false\nsome output".to_string(),
+            success: false,
+            elapsed_ms: 10,
+            truncated: false,
+            machine_code: None,
+            result: None,
+            findings: None,
+            warnings: None,
+            error_type: None,
+            error: Some("unexpected token".to_string()),
+        };
+        let msg = structured_error_message(&result, "Invalid JSON");
+        assert_eq!(msg, "unexpected token");
+    }
+
+    #[test]
+    fn structured_error_message_falls_back_to_result_message() {
+        let result = EggsactCallResult {
+            output: "ok: false".to_string(),
+            success: false,
+            elapsed_ms: 10,
+            truncated: false,
+            machine_code: None,
+            result: Some(serde_json::json!({"message": "line 3: missing brace"})),
+            findings: None,
+            warnings: None,
+            error_type: None,
+            error: None,
+        };
+        let msg = structured_error_message(&result, "Invalid JSON");
+        assert_eq!(msg, "line 3: missing brace");
+    }
+
+    #[test]
+    fn structured_error_message_falls_back_to_output() {
+        let result = EggsactCallResult {
+            output: "ok: false\nparse error at col 5".to_string(),
+            success: false,
+            elapsed_ms: 10,
+            truncated: false,
+            machine_code: None,
+            result: None,
+            findings: None,
+            warnings: None,
+            error_type: None,
+            error: None,
+        };
+        let msg = structured_error_message(&result, "Invalid JSON");
+        assert!(msg.starts_with("Invalid JSON:"));
+        assert!(msg.contains("parse error"));
+    }
+
+    #[test]
+    fn structured_location_extracts_line_and_column() {
+        let result = EggsactCallResult {
+            output: "ok: false".to_string(),
+            success: false,
+            elapsed_ms: 10,
+            truncated: false,
+            machine_code: None,
+            result: Some(serde_json::json!({"line": 12, "column": 7})),
+            findings: None,
+            warnings: None,
+            error_type: None,
+            error: None,
+        };
+        let loc = structured_location(&result).expect("should have location");
+        assert_eq!(loc.line, Some(12));
+        assert_eq!(loc.column, Some(7));
+        assert!(loc.file.is_none());
+    }
+
+    #[test]
+    fn structured_location_extracts_file() {
+        let result = EggsactCallResult {
+            output: "ok: false".to_string(),
+            success: false,
+            elapsed_ms: 10,
+            truncated: false,
+            machine_code: None,
+            result: Some(serde_json::json!({"file": "config.toml", "line": 5})),
+            findings: None,
+            warnings: None,
+            error_type: None,
+            error: None,
+        };
+        let loc = structured_location(&result).expect("should have location");
+        assert_eq!(loc.file.as_deref(), Some("config.toml"));
+        assert_eq!(loc.line, Some(5));
+    }
+
+    #[test]
+    fn structured_location_returns_none_when_no_fields() {
+        let result = EggsactCallResult {
+            output: "ok: false".to_string(),
+            success: false,
+            elapsed_ms: 10,
+            truncated: false,
+            machine_code: None,
+            result: None,
+            findings: None,
+            warnings: None,
+            error_type: None,
+            error: None,
+        };
+        assert!(structured_location(&result).is_none());
+    }
+
+    #[test]
+    fn structured_location_uses_path_fallback() {
+        let result = EggsactCallResult {
+            output: "ok: false".to_string(),
+            success: false,
+            elapsed_ms: 10,
+            truncated: false,
+            machine_code: None,
+            result: Some(serde_json::json!({"path": "/tmp/test.json", "line": 1})),
+            findings: None,
+            warnings: None,
+            error_type: None,
+            error: None,
+        };
+        let loc = structured_location(&result).expect("should have location");
+        assert_eq!(loc.file.as_deref(), Some("/tmp/test.json"));
+    }
+
+    #[test]
+    fn parse_replace_check_result_uses_structured_fields() {
+        let service = PreflightService::with_runtime(
+            std::sync::Arc::new(
+                crate::eggsact::adapter::EggsactRuntime::new(
+                    crate::eggsact::adapter::EggsactConfig::default(),
+                )
+                .unwrap(),
+            ),
+            PreflightPolicy::default(),
+        );
+        let result = EggsactCallResult {
+            output: "ok: true\nmatch_count: 1".to_string(),
+            success: true,
+            elapsed_ms: 10,
+            truncated: false,
+            machine_code: None,
+            result: Some(serde_json::json!({"match_count": 1, "ambiguous": false})),
+            findings: None,
+            warnings: None,
+            error_type: None,
+            error: None,
+        };
+        let decision = service.parse_replace_check_result(result);
+        assert!(!decision.is_blocked());
+        assert!(decision.findings().is_empty());
     }
 }

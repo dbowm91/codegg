@@ -193,9 +193,9 @@ The preflight service avoids tool execution cycles through:
 
 ## Structured Parsing
 
-Preflight decision methods (`parse_replace_check_result`, `parse_command_result`, `parse_text_security_result`) use a two-tier approach:
+Preflight check methods use a two-tier approach:
 
-1. **Structured fields first**: Read `result`, `findings`, `warnings` from `EggsactCallResult` — these are typed JSON values from the eggsact response.
+1. **Structured fields first**: Read `result`, `findings`, `warnings`, `error`, `error_type` from `EggsactCallResult` — these are typed JSON values from the eggsact response. Helper functions `structured_error_message()` and `structured_location()` extract common patterns (error text, line/column/file location).
 2. **String parsing fallback**: If structured fields are absent or incomplete, fall back to parsing the `output` text for patterns like `"match_count: N"`, `"verdict: block"`, `"risk: high"`.
 
 This ensures correct behavior as eggsact evolves its response format, while maintaining backward compatibility.
@@ -213,6 +213,7 @@ Unit tests in `src/preflight/service.rs` cover:
 - `parse_match_count` for text_replace_check output
 - String truncation via `truncate_utf8_safe`
 - Structured-field parsing (synthetic `EggsactCallResult` with `result`/`findings`/`warnings`)
+- `structured_error_message` and `structured_location` helper functions
 - Fallback to string parsing when structured fields are absent
 
 ## See Also

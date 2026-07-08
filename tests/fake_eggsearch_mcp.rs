@@ -787,3 +787,39 @@ fn websearch_webfetch_always_registered() {
         );
     }
 }
+
+/// With evidence backend set to builtin, expanded evidence wrapper tools
+/// should NOT appear in model-facing definitions (they are eggsearch-only).
+#[test]
+fn builtin_evidence_backend_omits_expanded_tools() {
+    let registry = codegg::tool::ToolRegistry::with_options(codegg::tool::ToolRegistryOptions {
+        evidence_config: Some(
+            codegg::tool::integrated_config::EvidenceBackendRuntimeConfig {
+                enabled: true,
+                backend: "builtin".to_string(),
+                ..Default::default()
+            },
+        ),
+        ..Default::default()
+    });
+    let defs = registry.definitions();
+    let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
+
+    for tool in &[
+        "repo_search",
+        "repo_fetch",
+        "security_search",
+        "research_search",
+        "repo_map",
+        "batch_fetch",
+        "evidence_bundle",
+    ] {
+        assert!(
+            !names.contains(tool),
+            "tool '{tool}' should NOT be in definitions when evidence backend is builtin"
+        );
+    }
+    // websearch/webfetch are always present
+    assert!(names.contains(&"websearch"));
+    assert!(names.contains(&"webfetch"));
+}

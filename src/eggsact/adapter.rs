@@ -13,8 +13,8 @@ pub struct TruncatedText {
 
 /// Truncate a string to at most `max_chars` characters without splitting
 /// multibyte UTF-8 sequences. If the marker fits within the limit, it is
-/// appended; otherwise the marker is appended anyway (overflow is acceptable
-/// when the limit is very small).
+/// appended after the truncated input. If the marker alone exceeds the
+/// limit, the output is truncated to `max_chars` and the marker is omitted.
 pub fn truncate_utf8_safe(input: &str, max_chars: usize, marker: &str) -> TruncatedText {
     let char_count = input.chars().count();
     if char_count <= max_chars {
@@ -24,18 +24,31 @@ pub fn truncate_utf8_safe(input: &str, max_chars: usize, marker: &str) -> Trunca
         };
     }
 
-    let truncated_text: String = input.chars().take(max_chars).collect();
+    let marker_chars: usize = marker.chars().count();
 
-    let mut result = truncated_text;
-    if !marker.is_empty() {
-        let marker_chars: usize = marker.chars().count();
-        if marker_chars <= max_chars {
-            result = input.chars().take(max_chars - marker_chars).collect();
-            result.push_str(marker);
-        } else {
-            result.push_str(marker);
-        }
+    if marker.is_empty() || marker_chars >= max_chars {
+        // No marker, or marker alone exceeds cap — just truncate.
+        let text: String = input.chars().take(max_chars).collect();
+        return TruncatedText {
+            text,
+            truncated: true,
+        };
     }
+
+    // Reserve space for marker within the cap.
+    let budget = max_chars - marker_chars;
+    let text: String = input.chars().take(budget).collect();
+    let mut result = text;
+    result.push_str(marker);
+
+    // Safety: if marker_chars == 0 (handled above) or budget > 0 (ensured by
+    // marker_chars < max_chars), result chars == budget + marker_chars == max_chars.
+    debug_assert!(
+        result.chars().count() <= max_chars,
+        "truncate_utf8_safe: output {} chars exceeds cap {}",
+        result.chars().count(),
+        max_chars
+    );
 
     TruncatedText {
         text: result,
@@ -367,7 +380,8 @@ mod tests {
         assert_eq!(input.chars().count(), 3);
         let result = truncate_utf8_safe(input, 2, "...");
         assert!(result.truncated);
-        assert_eq!(result.text.chars().count(), 5);
+        // Marker (3 chars) exceeds cap (2) — marker omitted, hard cap enforced
+        assert_eq!(result.text.chars().count(), 2);
         assert!(result.text.starts_with("🌍"));
     }
 
@@ -377,7 +391,9 @@ mod tests {
         assert_eq!(input.chars().count(), 6);
         let result = truncate_utf8_safe(input, 3, "...");
         assert!(result.truncated);
-        assert_eq!(result.text, "...");
+        // Marker (3 chars) == cap (3) — marker omitted, truncate to 3 chars
+        assert_eq!(result.text, "ñéñ");
+        assert_eq!(result.text.chars().count(), 3);
         assert!(std::str::from_utf8(result.text.as_bytes()).is_ok());
     }
 
@@ -395,7 +411,30 @@ mod tests {
         let input = "hello world";
         let result = truncate_utf8_safe(input, 1, "...");
         assert!(result.truncated);
+        // Marker (3 chars) exceeds cap (1) — marker omitted, just truncate
+        assert_eq!(result.text, "h");
+        assert_eq!(result.text.chars().count(), 1);
         assert!(std::str::from_utf8(result.text.as_bytes()).is_ok());
+    }
+
+    #[test]
+    fn truncate_utf8_safe_marker_exceeds_cap_omits_marker() {
+        let input = "hello world";
+        let result = truncate_utf8_safe(input, 2, "...");
+        assert!(result.truncated);
+        // Marker (3 chars) > cap (2) — marker omitted
+        assert_eq!(result.text, "he");
+        assert_eq!(result.text.chars().count(), 2);
+    }
+
+    #[test]
+    fn truncate_utf8_safe_exact_cap_boundary() {
+        let input = "hello";
+        // cap=3, marker="..." is 3 chars — marker >= cap, so truncate only
+        let result = truncate_utf8_safe(input, 3, "...");
+        assert!(result.truncated);
+        assert_eq!(result.text, "hel");
+        assert_eq!(result.text.chars().count(), 3);
     }
 
     #[test]
@@ -428,6 +467,13 @@ mod tests {
                 assert!(
                     std::str::from_utf8(result.text.as_bytes()).is_ok(),
                     "Invalid UTF-8 for input={input:?}, limit={limit}"
+                );
+                // Hard cap: output never exceeds max_chars
+                assert!(
+                    result.text.chars().count() <= limit,
+                    "Output {} chars exceeds cap {} for input={input:?}",
+                    result.text.chars().count(),
+                    limit
                 );
             }
         }

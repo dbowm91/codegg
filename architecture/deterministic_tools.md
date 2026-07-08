@@ -177,7 +177,7 @@ The structured fields (`result`, `findings`, `warnings`) are populated from the 
 
 `truncate_utf8_safe()` (`src/eggsact/adapter.rs`) is a shared helper that truncates a string to at most `max_chars` characters without splitting multibyte UTF-8 sequences. Returns a `TruncatedText` struct with `text` and `truncated` fields.
 
-If a `marker` (e.g. `"..."`) is provided, it is appended after truncation. The marker's character count is subtracted from the budget when it fits; when the limit is very small (smaller than the marker), the marker is appended anyway (overflow is acceptable).
+If a `marker` (e.g. `"..."`) is provided, it is appended after truncation. The marker's character count is subtracted from the budget when it fits; when the marker alone meets or exceeds the limit, it is omitted and output is truncated to `max_chars` directly (hard cap — output never exceeds `max_chars`).
 
 Used by both the eggsact adapter (for tool output) and the preflight service (for finding summaries).
 
@@ -187,7 +187,7 @@ Used by both the eggsact adapter (for tool output) and the preflight service (fo
 - `format_response` — response formatting
 - `to_structured_result` — structured result conversion
 - `EggsactConfig` defaults
-- `truncate_utf8_safe` — multibyte boundary safety, empty markers, edge cases
+- `truncate_utf8_safe` — multibyte boundary safety, empty markers, hard-cap enforcement, edge cases
 
 ### Integration Tests
 - All 8 always-visible tools with real eggsact calls

@@ -15,6 +15,8 @@ use crate::config::schema::Config;
 pub struct EvidenceBackendRuntimeConfig {
     /// Whether the eggsearch MCP backend is enabled.
     pub enabled: bool,
+    /// Backend mode: "eggsearch", "builtin", or "disabled".
+    pub backend: String,
     /// Whether to expose raw `mcp__eggsearch__*` tools to the model.
     pub expose_raw_mcp_tools: bool,
     /// Whether to fall back to built-in when eggsearch is unavailable.
@@ -33,15 +35,16 @@ impl Default for EvidenceBackendRuntimeConfig {
     fn default() -> Self {
         Self {
             enabled: true,
+            backend: "eggsearch".to_string(),
             expose_raw_mcp_tools: false,
             fallback_to_builtin: false,
             max_search_output_chars: 12_000,
             max_fetch_output_chars: 20_000,
             max_repo_output_chars: 15_000,
-            max_security_output_chars: 12_000,
-            max_research_output_chars: 12_000,
-            max_batch_output_chars: 15_000,
-            max_evidence_output_chars: 20_000,
+            max_security_output_chars: 10_000,
+            max_research_output_chars: 15_000,
+            max_batch_output_chars: 50_000,
+            max_evidence_output_chars: 100_000,
         }
     }
 }
@@ -152,32 +155,26 @@ pub fn resolve_integrated_config(config: &Config) -> IntegratedToolRuntimeConfig
 fn resolve_evidence_config(config: &Config) -> EvidenceBackendRuntimeConfig {
     let search = &config.search;
     let sc = search.as_ref();
-    let enabled = sc
-        .map(|s| {
-            !matches!(
-                s.backend(),
-                crate::config::schema::SearchBackendConfig::Disabled
-            )
+    let backend = sc
+        .map(|s| match s.backend() {
+            crate::config::schema::SearchBackendConfig::Eggsearch => "eggsearch".to_string(),
+            crate::config::schema::SearchBackendConfig::Builtin => "builtin".to_string(),
+            crate::config::schema::SearchBackendConfig::Disabled => "disabled".to_string(),
         })
-        .unwrap_or(true);
+        .unwrap_or_else(|| "eggsearch".to_string());
+    let enabled = backend != "disabled";
 
     let expose_raw_mcp_tools = sc.map(|s| s.expose_raw_mcp_tools()).unwrap_or(false);
 
     let fallback_to_builtin = sc.map(|s| s.fallback_to_builtin()).unwrap_or(false);
 
-    let max_search_output_chars = sc.and_then(|s| s.max_search_output_chars).unwrap_or(12_000);
-    let max_fetch_output_chars = sc.and_then(|s| s.max_fetch_output_chars).unwrap_or(20_000);
-    let max_repo_output_chars = sc.and_then(|s| s.max_repo_output_chars).unwrap_or(15_000);
-    let max_security_output_chars = sc
-        .and_then(|s| s.max_security_output_chars)
-        .unwrap_or(12_000);
-    let max_research_output_chars = sc
-        .and_then(|s| s.max_research_output_chars)
-        .unwrap_or(12_000);
-    let max_batch_output_chars = sc.and_then(|s| s.max_batch_output_chars).unwrap_or(15_000);
-    let max_evidence_output_chars = sc
-        .and_then(|s| s.max_evidence_output_chars)
-        .unwrap_or(20_000);
+    let max_search_output_chars = sc.map(|s| s.max_search_output_chars()).unwrap_or(12_000);
+    let max_fetch_output_chars = sc.map(|s| s.max_fetch_output_chars()).unwrap_or(20_000);
+    let max_repo_output_chars = sc.map(|s| s.max_repo_output_chars()).unwrap_or(15_000);
+    let max_security_output_chars = sc.map(|s| s.max_security_output_chars()).unwrap_or(10_000);
+    let max_research_output_chars = sc.map(|s| s.max_research_output_chars()).unwrap_or(15_000);
+    let max_batch_output_chars = sc.map(|s| s.max_batch_output_chars()).unwrap_or(50_000);
+    let max_evidence_output_chars = sc.map(|s| s.max_evidence_output_chars()).unwrap_or(100_000);
 
     if !enabled {
         tracing::info!("evidence backend disabled via [search].backend");
@@ -185,6 +182,7 @@ fn resolve_evidence_config(config: &Config) -> EvidenceBackendRuntimeConfig {
 
     EvidenceBackendRuntimeConfig {
         enabled,
+        backend,
         expose_raw_mcp_tools,
         fallback_to_builtin,
         max_search_output_chars,
@@ -272,6 +270,7 @@ mod tests {
 
         let evidence = resolved.evidence.unwrap();
         assert!(evidence.enabled);
+        assert_eq!(evidence.backend, "eggsearch");
         assert!(!evidence.expose_raw_mcp_tools);
         assert_eq!(evidence.max_search_output_chars, 12_000);
 
@@ -318,6 +317,7 @@ mod tests {
 
         let evidence = resolved.evidence.unwrap();
         assert!(evidence.enabled);
+        assert_eq!(evidence.backend, "builtin");
         assert!(evidence.expose_raw_mcp_tools);
         assert_eq!(evidence.max_search_output_chars, 8_000);
 
@@ -346,6 +346,7 @@ mod tests {
         let resolved = resolve_integrated_config(&config);
         let evidence = resolved.evidence.unwrap();
         assert!(!evidence.enabled);
+        assert_eq!(evidence.backend, "disabled");
     }
 
     #[test]

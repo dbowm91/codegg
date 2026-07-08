@@ -159,7 +159,8 @@ fn truncate_utf8_safe_does_not_panic_on_multibyte() {
     let input = "🌍🌎🌏";
     let result = truncate_utf8_safe(input, 2, "...");
     assert!(result.truncated);
-    assert_eq!(result.text.chars().count(), 5);
+    // Hard cap: marker (3 chars) >= max_chars (2), so marker omitted, output = 2 chars
+    assert_eq!(result.text.chars().count(), 2);
     assert!(std::str::from_utf8(result.text.as_bytes()).is_ok());
 }
 

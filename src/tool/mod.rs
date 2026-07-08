@@ -267,9 +267,13 @@ impl ToolRegistry {
         registry.register(crate::tool::websearch::WebSearchTool::default());
         registry.register(crate::tool::research::ResearchTool::with_default_service());
 
-        // Evidence/search wrapper tools — only register when evidence backend is enabled
-        let evidence_enabled = options.evidence_config.as_ref().map_or(true, |c| c.enabled);
-        if evidence_enabled {
+        // Evidence/search wrapper tools — only register when evidence backend
+        // is enabled AND backend mode is "eggsearch" (these tools require
+        // the eggsearch MCP backend; they error in builtin/disabled modes).
+        let evidence_cfg = options.evidence_config.as_ref();
+        let evidence_enabled = evidence_cfg.map_or(true, |c| c.enabled);
+        let evidence_is_eggsearch = evidence_cfg.map_or(true, |c| c.backend == "eggsearch");
+        if evidence_enabled && evidence_is_eggsearch {
             registry.register(crate::tool::repo_search::RepoSearchTool);
             registry.register(crate::tool::repo_fetch::RepoFetchTool);
             registry.register(crate::tool::security_search::SecuritySearchTool);
@@ -279,7 +283,9 @@ impl ToolRegistry {
             registry.register(crate::tool::evidence_bundle::EvidenceBundleTool);
         } else {
             tracing::info!(
-                "Evidence/search backend disabled — expanded evidence wrappers omitted from registry"
+                evidence_enabled,
+                evidence_backend = evidence_cfg.map_or("default", |c| c.backend.as_str()),
+                "Evidence/search backend not eggsearch — expanded evidence wrappers omitted from registry"
             );
         }
         registry.register(crate::tool::image::ImageTool::default());
