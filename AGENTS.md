@@ -337,6 +337,7 @@ CI runs on push/PR to dev/main: `agent-assets` → `fmt` → `check` → `clippy
 - **patch_util.rs shared utilities**: `src/tool/patch_util.rs` is used by both `apply_patch` tool and LSP preview operations.
 - **eggsact is in-process, not MCP**: The `eggsact` dependency is consumed as a direct Rust dependency (`src/eggsact/adapter.rs`), not via MCP server. `EggsactRuntime` wraps `eggsact::agent::ToolRegistry` in-process. Provenance must tag `backend = "native"`, `implementation = "eggsact/<tool_name>"`, `trust = LocalTrusted`.
 - **Deterministic tools (Phase 4)**: `EggsactTool` generic wrapper in `src/tool/deterministic.rs` exposes a conservative subset of eggsact tools to the model. 8 always-visible tools (`text_equal`, `text_diff_explain`, `text_replace_check`, `validate_json`, `validate_toml`, `command_preflight`, `path_normalize`, `text_security_inspect`) plus 5 deferred tools discoverable via `tool_search`. All use `ToolCategory::ReadOnly` and are registered best-effort; if `EggsactRuntime::new()` fails, the tools are silently skipped.
+- **Preflight (Phase 5)**: `src/preflight/` provides harness-side automatic validation before mutating operations (edits, config writes, shell commands) using eggsact. Config: `[preflight]` section in opencode.json. Default mode: `warn`. Key types: `PreflightService`, `PreflightPolicy`, `PreflightDecision`, `PreflightFinding`. Integration points: edit, replace, apply_patch, multiedit, bash tools. **Harness-internal only** — preflight calls do not appear as model-facing tool calls. Findings are severity-classified (`Block`/`Warn`/`Annotate`) and can block, warn, or annotate depending on policy mode (`off`, `observe`, `warn`, `block_on_definite`).
 
 ### Agent Runtime
 
@@ -416,6 +417,7 @@ CI runs on push/PR to dev/main: `agent-assets` → `fmt` → `check` → `clippy
 | `architecture/command.md` | 105 built-in slash commands |
 | `architecture/config.md` | Config schema in `crates/codegg-config/src/schema.rs` |
 | `architecture/provider.md` | 16 auto-registered providers via env vars; CircuitBreaker pattern |
+| `architecture/preflight.md` | Harness-side eggsact preflight: types, policy config, tool integration, anti-recursion |
 
 `.agents/skills/*/SKILL.md` contain 45 module-specific skill guides loaded on-demand via `/skill:`.
 

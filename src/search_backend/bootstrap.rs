@@ -124,7 +124,13 @@ pub async fn bootstrap_eggsearch(config: &Config) -> BootstrapReport {
     }
 
     // Step 3: record the effective default timeout.
-    report.timeout_ms = Some(effective.eggsearch.as_ref().map(|e| e.timeout_ms()).unwrap_or(60_000));
+    report.timeout_ms = Some(
+        effective
+            .eggsearch
+            .as_ref()
+            .map(|e| e.timeout_ms())
+            .unwrap_or(60_000),
+    );
 
     // Step 4: best-effort provider_status call (never break startup).
     if report.connected {

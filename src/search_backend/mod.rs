@@ -292,7 +292,11 @@ pub async fn dispatch_evidence_bundle(input: &Value) -> Result<String, ToolError
                 let server = effective_server_name(&cfg);
                 let max_chars = cfg.max_evidence_output_chars();
                 let timeout = eggsearch_timeout_ms(&cfg, ToolTimeoutKind::Default);
-                eggsearch::ensure_tool_available(&server, "evidence_bundle", "build_evidence_bundle")?;
+                eggsearch::ensure_tool_available(
+                    &server,
+                    "evidence_bundle",
+                    "build_evidence_bundle",
+                )?;
                 eggsearch::call_build_evidence_bundle(&server, input, max_chars, timeout).await
             }
         },

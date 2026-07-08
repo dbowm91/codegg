@@ -238,12 +238,10 @@ pub fn merge_configs(configs: &[Config]) -> Config {
                         existing.max_evidence_output_chars = search.max_evidence_output_chars;
                     }
                     if search.max_repo_search_output_chars.is_some() {
-                        existing.max_repo_search_output_chars =
-                            search.max_repo_search_output_chars;
+                        existing.max_repo_search_output_chars = search.max_repo_search_output_chars;
                     }
                     if search.max_repo_fetch_output_chars.is_some() {
-                        existing.max_repo_fetch_output_chars =
-                            search.max_repo_fetch_output_chars;
+                        existing.max_repo_fetch_output_chars = search.max_repo_fetch_output_chars;
                     }
                     if search.max_repo_map_output_chars.is_some() {
                         existing.max_repo_map_output_chars = search.max_repo_map_output_chars;

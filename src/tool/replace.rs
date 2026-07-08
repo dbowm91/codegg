@@ -1,11 +1,13 @@
 use crate::bus::events::AppEvent;
 use crate::bus::global::GlobalEventBus;
 use crate::error::ToolError;
+use crate::preflight::{PreflightDecision, PreflightService};
 use crate::tool::util::{canonicalize_path, validate_path};
 use crate::tool::{Tool, ToolCategory};
 use async_trait::async_trait;
 use regex::Regex;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 const MAX_FILE_SIZE: usize = 10 * 1024 * 1024;
 const MAX_PATTERN_SIZE: usize = 4096;
@@ -14,6 +16,7 @@ const MAX_PATTERN_GROUPS: usize = 32;
 pub struct ReplaceTool {
     allowed_root: PathBuf,
     unrestricted: bool,
+    preflight: Option<Arc<PreflightService>>,
 }
 
 impl ReplaceTool {
@@ -21,11 +24,17 @@ impl ReplaceTool {
         Self {
             allowed_root: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             unrestricted: false,
+            preflight: None,
         }
     }
 
     pub fn with_allowed_root(mut self, root: PathBuf) -> Self {
         self.allowed_root = root;
+        self
+    }
+
+    pub fn with_preflight(mut self, service: PreflightService) -> Self {
+        self.preflight = Some(Arc::new(service));
         self
     }
 
@@ -107,6 +116,50 @@ impl Tool for ReplaceTool {
 
         let allowed_root = self.allowed_root.clone();
         let unrestricted = self.unrestricted;
+        let path_for_read = path_str.clone();
+
+        let content = tokio::task::spawn_blocking(move || {
+            let path = Path::new(&path_for_read);
+            let canonical = if unrestricted {
+                canonicalize_path(path)?
+            } else if !allowed_root.to_string_lossy().is_empty() {
+                validate_path(path, &allowed_root)?
+            } else {
+                path.to_path_buf()
+            };
+            if !canonical.exists() {
+                return Err(ToolError::Execution(format!(
+                    "file not found: {}",
+                    canonical.display()
+                )));
+            }
+            std::fs::read_to_string(&canonical).map_err(|e| {
+                ToolError::Execution(format!("read failed for '{}': {}", canonical.display(), e))
+            })
+        })
+        .await
+        .map_err(|e| ToolError::Execution(format!("join error: {}", e)))??;
+
+        let preflight_warning = if let Some(ref svc) = self.preflight {
+            match svc
+                .check_text_replace(&content, &pattern, &replacement)
+                .await
+            {
+                PreflightDecision::Block { findings } => {
+                    return Err(ToolError::Execution(format!(
+                        "preflight blocked replace: {}",
+                        PreflightDecision::Block { findings }.summary()
+                    )));
+                }
+                w @ PreflightDecision::Warn { .. } => Some(w.summary()),
+                _ => None,
+            }
+        } else {
+            None
+        };
+
+        let allowed_root = self.allowed_root.clone();
+        let unrestricted = self.unrestricted;
 
         let path_str_clone = path_str.clone();
         let pattern_clone = pattern.clone();
@@ -122,13 +175,6 @@ impl Tool for ReplaceTool {
             } else {
                 path.to_path_buf()
             };
-
-            if !canonical.exists() {
-                return Err(ToolError::Execution(format!(
-                    "file not found: {}",
-                    canonical.display()
-                )));
-            }
 
             if !global {
                 return Err(ToolError::Execution(
@@ -200,10 +246,14 @@ impl Tool for ReplaceTool {
             old_content: Some(old_content),
         });
 
-        Ok(format!(
+        let mut output = format!(
             "Replaced {} occurrence(s) in {} with pattern '{}'",
             matches_len, path_str, pattern
-        ))
+        );
+        if let Some(warning) = preflight_warning {
+            output = format!("{}\n\n{}", warning, output);
+        }
+        Ok(output)
     }
 }
 

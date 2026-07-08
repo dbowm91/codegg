@@ -263,6 +263,8 @@ pub struct Config {
     pub shell: Option<ShellConfig>,
     /// Deterministic tools (eggsact-backed) configuration.
     pub deterministic_tools: Option<DeterministicToolsConfig>,
+    /// Harness-side eggsact preflight configuration.
+    pub preflight: Option<PreflightConfig>,
 }
 
 /// Configuration for the context ledger and artifact projection system.
@@ -2014,6 +2016,53 @@ impl Default for DeterministicToolsConfig {
             max_output_chars: 12_000,
         }
     }
+}
+
+/// Configuration for harness-side eggsact preflight checks.
+#[derive(Deserialize, Serialize, Debug, Clone, PartialEq)]
+#[serde(default)]
+pub struct PreflightConfig {
+    /// Enable preflight checks.
+    pub enabled: Option<bool>,
+    /// Operating mode: off, observe, warn, block_on_definite.
+    pub mode: Option<PreflightMode>,
+    /// Enable patch/edit preflights.
+    pub patch: Option<bool>,
+    /// Enable config write preflights.
+    pub config: Option<bool>,
+    /// Enable shell command preflights.
+    pub shell: Option<bool>,
+    /// Enable unicode/identifier safety checks.
+    pub unicode: Option<bool>,
+    /// Log findings to tracing.
+    pub log_findings: Option<bool>,
+    /// Include findings in model-visible tool output.
+    pub model_visible_findings: Option<bool>,
+}
+
+impl Default for PreflightConfig {
+    fn default() -> Self {
+        Self {
+            enabled: Some(true),
+            mode: Some(PreflightMode::Warn),
+            patch: Some(true),
+            config: Some(true),
+            shell: Some(true),
+            unicode: Some(true),
+            log_findings: Some(true),
+            model_visible_findings: Some(true),
+        }
+    }
+}
+
+/// Preflight operating mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PreflightMode {
+    Off,
+    Observe,
+    Warn,
+    BlockOnDefinite,
 }
 
 /// User-facing theme configuration.

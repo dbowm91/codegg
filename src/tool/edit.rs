@@ -1,11 +1,13 @@
 use async_trait::async_trait;
 use serde_json::json;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use strsim::levenshtein;
 
 use crate::bus::events::AppEvent;
 use crate::bus::global::GlobalEventBus;
 use crate::error::ToolError;
+use crate::preflight::{PreflightDecision, PreflightService};
 use crate::tool::util::{canonicalize_path, validate_path};
 use crate::tool::{Tool, ToolCategory};
 
@@ -14,6 +16,7 @@ const MAX_INPUT_SIZE: usize = 100_000;
 pub struct EditTool {
     allowed_root: PathBuf,
     unrestricted: bool,
+    preflight: Option<Arc<PreflightService>>,
 }
 
 impl EditTool {
@@ -21,12 +24,18 @@ impl EditTool {
         Self {
             allowed_root: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             unrestricted: false,
+            preflight: None,
         }
     }
 
     pub fn with_allowed_root(mut self, root: PathBuf) -> Self {
         self.allowed_root = root;
         self.unrestricted = false;
+        self
+    }
+
+    pub fn with_preflight(mut self, service: PreflightService) -> Self {
+        self.preflight = Some(Arc::new(service));
         self
     }
 
@@ -109,6 +118,42 @@ impl Tool for EditTool {
 
         let allowed_root = self.allowed_root.clone();
         let unrestricted = self.unrestricted;
+        let path_for_read = path_str.clone();
+
+        let content = tokio::task::spawn_blocking(move || {
+            let path = Path::new(&path_for_read);
+            let canonical = if unrestricted {
+                canonicalize_path(path)?
+            } else {
+                validate_path(path, &allowed_root)?
+            };
+            std::fs::read_to_string(&canonical).map_err(|e| {
+                ToolError::Execution(format!("read failed for '{}': {}", canonical.display(), e))
+            })
+        })
+        .await
+        .map_err(|e| ToolError::Execution(format!("join error: {}", e)))??;
+
+        let preflight_warning = if let Some(ref svc) = self.preflight {
+            match svc
+                .check_text_replace(&content, &old_string, &new_string)
+                .await
+            {
+                PreflightDecision::Block { findings } => {
+                    return Err(ToolError::Execution(format!(
+                        "preflight blocked edit: {}",
+                        PreflightDecision::Block { findings }.summary()
+                    )));
+                }
+                w @ PreflightDecision::Warn { .. } => Some(w.summary()),
+                _ => None,
+            }
+        } else {
+            None
+        };
+
+        let allowed_root = self.allowed_root.clone();
+        let unrestricted = self.unrestricted;
 
         let path_str_for_closure = path_str.clone();
         let old_string_for_closure = old_string.clone();
@@ -122,10 +167,6 @@ impl Tool for EditTool {
             } else {
                 validate_path(path, &allowed_root)?
             };
-
-            let content = std::fs::read_to_string(&canonical).map_err(|e| {
-                ToolError::Execution(format!("read failed for '{}': {}", canonical.display(), e))
-            })?;
 
             let result = try_edit(&content, &old_string_for_closure, &new_string_for_closure)
                 .ok_or_else(|| {
@@ -151,12 +192,16 @@ impl Tool for EditTool {
             old_content: Some(old_content),
         });
 
-        Ok(format!(
+        let mut output = format!(
             "Edited {}\n\n- {}\n+ {}",
             path_display,
             old_string.lines().count(),
             new_string.lines().count()
-        ))
+        );
+        if let Some(warning) = preflight_warning {
+            output = format!("{}\n\n{}", warning, output);
+        }
+        Ok(output)
     }
 }
 

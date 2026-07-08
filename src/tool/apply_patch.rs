@@ -1,10 +1,12 @@
 use crate::error::ToolError;
+use crate::preflight::PreflightService;
 use crate::tool::patch_util::apply_unified_diff;
 use crate::tool::util::{canonicalize_path, check_path_for_symlinks, validate_path};
 use crate::tool::{Tool, ToolCategory};
 use async_trait::async_trait;
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 const MAX_PATCH_SIZE: usize = 100_000;
 
@@ -19,6 +21,7 @@ struct ApplyPatchInput {
 pub struct ApplyPatchTool {
     allowed_root: PathBuf,
     unrestricted: bool,
+    preflight: Option<Arc<PreflightService>>,
 }
 
 impl ApplyPatchTool {
@@ -26,11 +29,17 @@ impl ApplyPatchTool {
         Self {
             allowed_root: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             unrestricted: false,
+            preflight: None,
         }
     }
 
     pub fn with_allowed_root(mut self, root: PathBuf) -> Self {
         self.allowed_root = root;
+        self
+    }
+
+    pub fn with_preflight(mut self, service: PreflightService) -> Self {
+        self.preflight = Some(Arc::new(service));
         self
     }
 

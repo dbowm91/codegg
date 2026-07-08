@@ -240,6 +240,29 @@ The `build_eggsact_tools(runtime)` function returns `(Vec<EggsactTool>, Vec<Eggs
 All tools tag provenance with `backend = "native"`, `implementation = "eggsact/<tool_name>"`, `trust = LocalTrusted`.
 The adapter module is at `src/eggsact/adapter.rs`; config schema is `[deterministic_tools]` in `crates/codegg-config/src/schema.rs`.
 
+### Harness-Side Preflight Integration
+
+Mutating tools can optionally run preflight checks before executing. The preflight
+service (`src/preflight/service.rs`) wraps the same eggsact runtime used by the
+deterministic tools but operates **harness-internal only** — preflight calls never
+appear as model-facing tool calls.
+
+**Module**: `src/preflight/` (types in `mod.rs`, implementation in `service.rs`)
+
+**Config**: `[preflight]` in opencode.json (schema: `PreflightConfig` in `crates/codegg-config/src/schema.rs`)
+
+**Key types**:
+- `PreflightService` — wraps `EggsactRuntime` with a `PreflightPolicy`
+- `PreflightPolicy` — controls mode (`off`/`observe`/`warn`/`block_on_definite`), per-category toggles (patch, config, shell, unicode), and output options
+- `PreflightDecision` — `Allow`/`Warn`/`Block` with findings
+- `PreflightFinding` — severity-classified result with machine code, message, location, source tool
+
+**Integration points**: `check_text_replace` (edit/replace), `check_json_valid`/`check_toml_valid`/`check_config` (config writes), `check_command` (bash), `check_text_security` (unicode safety). Tool integration is opt-in — each tool calls the relevant check method before executing.
+
+**Anti-recursion**: Preflight uses the eggsact runtime directly (not through `ToolRegistry`), so it cannot trigger tool execution cycles. The service is constructed with `audience = "harness"` to distinguish it from model-facing tool calls.
+
+**Default policy**: enabled, mode `warn`, all categories on, findings logged and surfaced in tool output.
+
 ## NOT Registered (exists but excluded from default registry)
 
 **multiedit** (`src/tool/multiedit.rs`):

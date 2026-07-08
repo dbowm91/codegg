@@ -1,9 +1,11 @@
 use crate::error::ToolError;
+use crate::preflight::{PreflightDecision, PreflightService};
 use crate::tool::util::{canonicalize_path, validate_path};
 use crate::tool::{Tool, ToolCategory};
 use async_trait::async_trait;
 use serde::Deserialize;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 #[derive(Debug, Deserialize)]
 struct EditOp {
@@ -22,6 +24,7 @@ struct MultiEditInput {
 pub struct MultiEditTool {
     allowed_root: PathBuf,
     unrestricted: bool,
+    preflight: Option<Arc<PreflightService>>,
 }
 
 impl MultiEditTool {
@@ -29,12 +32,18 @@ impl MultiEditTool {
         Self {
             allowed_root: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             unrestricted: false,
+            preflight: None,
         }
     }
 
     pub fn with_allowed_root(mut self, root: PathBuf) -> Self {
         self.allowed_root = root;
         self.unrestricted = false;
+        self
+    }
+
+    pub fn with_preflight(mut self, service: PreflightService) -> Self {
+        self.preflight = Some(Arc::new(service));
         self
     }
 }
@@ -108,6 +117,51 @@ impl Tool for MultiEditTool {
 
         let allowed_root = self.allowed_root.clone();
         let unrestricted = self.unrestricted;
+        let path_for_read = path.clone();
+
+        let content = tokio::task::spawn_blocking(move || {
+            let canonical = if unrestricted {
+                canonicalize_path(&path_for_read)?
+            } else {
+                validate_path(&path_for_read, &allowed_root)?
+            };
+            std::fs::read_to_string(&canonical)
+                .map_err(|e| ToolError::Execution(format!("failed to read file: {e}")))
+        })
+        .await
+        .map_err(|e| ToolError::Execution(format!("join error: {}", e)))??;
+
+        let mut preflight_warnings = Vec::new();
+        if let Some(ref svc) = self.preflight {
+            let mut current = content.clone();
+            for (i, edit) in parsed.edits.iter().enumerate() {
+                match svc
+                    .check_text_replace(&current, &edit.old_string, &edit.new_string)
+                    .await
+                {
+                    PreflightDecision::Block { findings } => {
+                        return Err(ToolError::Execution(format!(
+                            "preflight blocked edit {}: {}",
+                            i,
+                            PreflightDecision::Block { findings }.summary()
+                        )));
+                    }
+                    PreflightDecision::Warn { findings } => {
+                        preflight_warnings.push(PreflightDecision::Warn { findings }.summary());
+                    }
+                    _ => {}
+                }
+                let replace_all = edit.replace_all.unwrap_or(false);
+                if replace_all {
+                    current = current.replace(&edit.old_string, &edit.new_string);
+                } else if let Some(pos) = current.find(&edit.old_string) {
+                    current.replace_range(pos..pos + edit.old_string.len(), &edit.new_string);
+                }
+            }
+        }
+
+        let allowed_root = self.allowed_root.clone();
+        let unrestricted = self.unrestricted;
 
         let result = tokio::task::spawn_blocking(move || {
             let canonical = if unrestricted {
@@ -147,6 +201,10 @@ impl Tool for MultiEditTool {
         .await
         .map_err(|e| ToolError::Execution(format!("join error: {}", e)))??;
 
-        Ok(result)
+        if preflight_warnings.is_empty() {
+            Ok(result)
+        } else {
+            Ok(format!("{}\n\n{}", preflight_warnings.join("\n"), result))
+        }
     }
 }

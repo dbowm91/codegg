@@ -4,11 +4,13 @@ use regex::Regex;
 use serde_json::json;
 use std::collections::HashSet;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use std::time::Duration;
 use tokio::process::Command;
 
 use crate::error::ToolError;
+use crate::preflight::{PreflightDecision, PreflightService};
 use crate::security::sandbox::{get_default_allowed_paths, get_sensitive_paths, SandboxConfig};
 use crate::tool::{Tool, ToolCategory};
 
@@ -153,6 +155,7 @@ pub struct BashTool {
     deny_all: bool,
     allowlist: Option<HashSet<&'static str>>,
     landlock_sandbox: Option<SandboxConfig>,
+    preflight: Option<Arc<PreflightService>>,
 }
 
 impl BashTool {
@@ -200,6 +203,7 @@ impl BashTool {
             deny_all: false,
             allowlist: None,
             landlock_sandbox: None,
+            preflight: None,
         }
     }
 
@@ -241,6 +245,11 @@ impl BashTool {
 
     pub fn with_landlock_sandbox_custom(mut self, config: SandboxConfig) -> Self {
         self.landlock_sandbox = Some(config);
+        self
+    }
+
+    pub fn with_preflight(mut self, service: PreflightService) -> Self {
+        self.preflight = Some(Arc::new(service));
         self
     }
 
@@ -395,6 +404,25 @@ impl Tool for BashTool {
         let parts: Vec<&str> = command.split_whitespace().collect();
         self.check_command_security(command, &parts)?;
 
+        let preflight_warning = if let Some(ref svc) = self.preflight {
+            match svc.check_command(command).await {
+                PreflightDecision::Block { findings } => {
+                    return Err(ToolError::Execution(format!(
+                        "preflight blocked command: {}",
+                        PreflightDecision::Block { findings }.summary()
+                    )));
+                }
+                PreflightDecision::Warn { findings } => {
+                    let warning = PreflightDecision::Warn { findings }.summary();
+                    tracing::warn!(target: "preflight", "{}", warning);
+                    Some(warning)
+                }
+                _ => None,
+            }
+        } else {
+            None
+        };
+
         let timeout_secs = input["timeout"].as_u64().unwrap_or(120);
         let timeout = Duration::from_secs(timeout_secs);
 
@@ -539,6 +567,10 @@ impl Tool for BashTool {
             "\n\n[exit code: {}]",
             output.status.code().unwrap_or(-1)
         ));
+
+        if let Some(warning) = preflight_warning {
+            result = format!("{}\n\n{}", warning, result);
+        }
 
         Ok(result)
     }

@@ -24,6 +24,7 @@ pub mod lsp;
 pub mod mcp;
 pub mod permission;
 pub mod plugin;
+pub mod preflight;
 pub mod protocol_conversions;
 pub mod research;
 pub mod search;

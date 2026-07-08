@@ -72,7 +72,11 @@ pub async fn call_web_search(
         guard.call_tool(mcp_server, "web_search", args).await
     })
     .await
-    .map_err(|_| ToolError::Timeout(format!("eggsearch web_search timed out after {timeout_ms}ms")))?
+    .map_err(|_| {
+        ToolError::Timeout(format!(
+            "eggsearch web_search timed out after {timeout_ms}ms"
+        ))
+    })?
     .map_err(|e| ToolError::Execution(format!("eggsearch web_search: {e}")))?;
 
     let (capped, truncated) = clamp_output(&raw, max_output_chars, "max_search_output_chars");
@@ -114,7 +118,11 @@ pub async fn call_web_fetch(
         guard.call_tool(mcp_server, "web_fetch", args).await
     })
     .await
-    .map_err(|_| ToolError::Timeout(format!("eggsearch web_fetch timed out after {timeout_ms}ms")))?
+    .map_err(|_| {
+        ToolError::Timeout(format!(
+            "eggsearch web_fetch timed out after {timeout_ms}ms"
+        ))
+    })?
     .map_err(|e| ToolError::Execution(format!("eggsearch web_fetch: {e}")))?;
 
     let (capped, truncated) = clamp_output(&raw, max_output_chars, "max_fetch_output_chars");
@@ -171,7 +179,9 @@ pub async fn call_repo_search(
     })
     .await
     .map_err(|_| {
-        ToolError::Timeout(format!("eggsearch repo_search timed out after {timeout_ms}ms"))
+        ToolError::Timeout(format!(
+            "eggsearch repo_search timed out after {timeout_ms}ms"
+        ))
     })?
     .map_err(|e| ToolError::Execution(format!("eggsearch repo_search: {e}")))?;
 
@@ -218,7 +228,9 @@ pub async fn call_repo_fetch(
     })
     .await
     .map_err(|_| {
-        ToolError::Timeout(format!("eggsearch repo_fetch timed out after {timeout_ms}ms"))
+        ToolError::Timeout(format!(
+            "eggsearch repo_fetch timed out after {timeout_ms}ms"
+        ))
     })?
     .map_err(|e| ToolError::Execution(format!("eggsearch repo_fetch: {e}")))?;
 
@@ -426,7 +438,9 @@ pub async fn call_batch_fetch(
     })
     .await
     .map_err(|_| {
-        ToolError::Timeout(format!("eggsearch batch_fetch timed out after {timeout_ms}ms"))
+        ToolError::Timeout(format!(
+            "eggsearch batch_fetch timed out after {timeout_ms}ms"
+        ))
     })?
     .map_err(|e| ToolError::Execution(format!("eggsearch batch_fetch: {e}")))?;
 
@@ -607,10 +621,7 @@ pub fn ensure_tool_available(
 }
 
 /// Best-effort provider_status query, used by the doctor command.
-pub async fn call_provider_status(
-    mcp_server: &str,
-    timeout_ms: u64,
-) -> Result<String, ToolError> {
+pub async fn call_provider_status(mcp_server: &str, timeout_ms: u64) -> Result<String, ToolError> {
     let svc = super::state::mcp_service()
         .ok_or_else(|| eggsearch_unavailable("McpService is not initialized"))?;
     let raw = tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), async {
@@ -621,7 +632,9 @@ pub async fn call_provider_status(
     })
     .await
     .map_err(|_| {
-        ToolError::Timeout(format!("eggsearch provider_status timed out after {timeout_ms}ms"))
+        ToolError::Timeout(format!(
+            "eggsearch provider_status timed out after {timeout_ms}ms"
+        ))
     })?
     .map_err(|e| ToolError::Execution(format!("eggsearch provider_status: {e}")))?;
     Ok(raw)
