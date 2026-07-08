@@ -234,7 +234,7 @@ mod tests {
         (HunkSourceNavigationCollector::new(sem_collector, nav), temp)
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn empty_hunks_returns_error() {
         let (collector, _temp) = make_collector();
         let request = HunkSourceNavigationRequest {
@@ -257,7 +257,7 @@ mod tests {
         assert!(result.unwrap_err().contains("no hunks"));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn patch_parsed_into_hunks() {
         let (collector, _temp) = make_collector();
         let patch = "\
@@ -304,7 +304,7 @@ diff --git a/src/main.rs b/src/main.rs
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn malformed_patch_returns_error() {
         let (collector, _temp) = make_collector();
         let request = HunkSourceNavigationRequest {
@@ -512,7 +512,7 @@ diff --git a/src/main.rs b/src/main.rs
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn multi_file_patch_rejected() {
         let (collector, _temp) = make_collector();
         let hunks = vec![
@@ -533,7 +533,7 @@ diff --git a/src/main.rs b/src/main.rs
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn single_file_patch_accepted() {
         let (collector, _temp) = make_collector();
         let hunks = vec![
@@ -554,7 +554,7 @@ diff --git a/src/main.rs b/src/main.rs
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn patch_with_a_b_prefix_matches_file_path() {
         let (collector, _temp) = make_collector();
         let patch = "\
@@ -595,7 +595,7 @@ diff --git a/src/main.rs b/src/main.rs
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn multi_file_multi_hunk_rejected_with_all_files_named() {
         let (collector, _temp) = make_collector();
         let hunks = vec![
@@ -615,7 +615,7 @@ diff --git a/src/main.rs b/src/main.rs
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn max_hunks_zero_coerced_to_one() {
         let (collector, _temp) = make_collector();
         let hunks = vec![make_hunk("h0", "src/main.rs", 1, 5)];
@@ -639,7 +639,7 @@ diff --git a/src/main.rs b/src/main.rs
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn collect_rejects_outside_root_path() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("project");

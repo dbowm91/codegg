@@ -187,7 +187,7 @@ mod tests {
         ProfileConfig::default()
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn ambient_inspects_supplied_files() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("main.rs");
@@ -207,7 +207,7 @@ mod tests {
         assert_eq!(unsafe_findings[0].file, Some(file));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn ambient_skips_missing_files() {
         let runner = ProfileRunner::new(default_config());
         let report = runner
@@ -229,7 +229,7 @@ mod tests {
             .contains("too large or unreadable"));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn dependency_delta_detects_manifest() {
         let dir = tempfile::tempdir().unwrap();
         let cargo = dir.path().join("Cargo.toml");
@@ -252,7 +252,7 @@ mod tests {
         assert_eq!(supply_findings[0].file, Some(cargo));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn dependency_delta_empty_for_non_manifest() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("main.rs");
@@ -266,7 +266,7 @@ mod tests {
         assert!(report.findings.is_empty());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn pre_commit_scans_files() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("secret.txt");
@@ -285,7 +285,7 @@ mod tests {
         assert_eq!(secret_findings.len(), 1);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn security_review_scans_files() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("tls.rs");
@@ -304,7 +304,7 @@ mod tests {
         assert_eq!(tls_findings.len(), 1);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn report_summary_is_populated() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("main.rs");
@@ -319,7 +319,7 @@ mod tests {
         assert!(report.summary.contains("total"));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn profile_serialization_roundtrip() {
         let profiles = [
             SecurityProfile::Ambient,
@@ -334,7 +334,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn ambient_ignores_max_file_size() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("big.rs");

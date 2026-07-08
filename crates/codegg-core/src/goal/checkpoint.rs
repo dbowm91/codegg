@@ -178,7 +178,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_create_checkpoint_file() {
         let dir = tempfile::tempdir().unwrap();
         let goal = test_goal();
@@ -191,7 +191,7 @@ mod tests {
         assert!(content.contains("No plan file provided."));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_read_checkpoint_excerpt() {
         let dir = tempfile::tempdir().unwrap();
         let goal = test_goal();
@@ -203,7 +203,7 @@ mod tests {
         assert!(excerpt.unwrap().contains("Plan excerpt here"));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_read_checkpoint_excerpt_max_chars() {
         let dir = tempfile::tempdir().unwrap();
         let goal = test_goal();
@@ -214,7 +214,7 @@ mod tests {
         assert!(excerpt.unwrap().len() <= 100);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_append_checkpoint_update() {
         let dir = tempfile::tempdir().unwrap();
         let goal = test_goal();
@@ -238,7 +238,7 @@ mod tests {
         assert!(content.contains("Testing"));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_read_checkpoint_not_found() {
         let result = read_checkpoint_excerpt("/nonexistent/path.md", 100)
             .await

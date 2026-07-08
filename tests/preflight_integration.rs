@@ -346,7 +346,7 @@ fn test_preflight_service_with_policy(policy: PreflightPolicy) -> PreflightServi
     PreflightService::with_runtime(runtime, policy)
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn test_edit_tool_with_preflight_blocks_on_text_replace() {
     let svc = test_preflight_service();
     let tool = codegg::tool::edit::EditTool::new()
@@ -379,7 +379,7 @@ async fn test_edit_tool_with_preflight_blocks_on_text_replace() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn test_edit_tool_with_preflight_warns_on_unicode() {
     let policy = PreflightPolicy {
         unicode: true,
@@ -412,7 +412,7 @@ async fn test_edit_tool_with_preflight_warns_on_unicode() {
     }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn test_replace_tool_with_preflight_blocks_on_no_match() {
     let svc = test_preflight_service();
     let tool = codegg::tool::replace::ReplaceTool::new()
@@ -434,7 +434,7 @@ async fn test_replace_tool_with_preflight_blocks_on_no_match() {
     assert!(result.is_err(), "replace with no matches should fail");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn test_multiedit_tool_with_preflight_blocks_on_edit() {
     let svc = test_preflight_service();
     let tool = codegg::tool::multiedit::MultiEditTool::new()
@@ -463,7 +463,7 @@ async fn test_multiedit_tool_with_preflight_blocks_on_edit() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn test_apply_patch_tool_with_preflight_blocks_on_invalid_config() {
     let policy = PreflightPolicy {
         config: true,
@@ -501,7 +501,7 @@ async fn test_apply_patch_tool_with_preflight_blocks_on_invalid_config() {
     }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn test_bash_tool_with_preflight_blocks_on_dangerous_command() {
     let policy = PreflightPolicy {
         shell: true,
@@ -818,7 +818,7 @@ fn test_severity_serialize_deserialize() {
 
 // ── PreflightService check method tests ──────────────────────────
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn check_text_replace_detects_no_match() {
     let service = PreflightService::new(PreflightPolicy::default()).unwrap();
     let decision = service
@@ -845,7 +845,7 @@ async fn check_text_replace_detects_no_match() {
     }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn check_text_replace_allows_clean_match() {
     let service = PreflightService::new(PreflightPolicy::default()).unwrap();
     let decision = service
@@ -859,7 +859,7 @@ async fn check_text_replace_allows_clean_match() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn check_json_valid_passes_for_valid_json() {
     let service = PreflightService::new(PreflightPolicy::default()).unwrap();
     let decision = service.check_json_valid(r#"{"key": "value"}"#).await;
@@ -870,7 +870,7 @@ async fn check_json_valid_passes_for_valid_json() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn check_json_valid_detects_invalid_json() {
     let service = PreflightService::new(PreflightPolicy::default()).unwrap();
     let decision = service.check_json_valid("{not valid}").await;
@@ -880,7 +880,7 @@ async fn check_json_valid_detects_invalid_json() {
     let _ = decision;
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn check_toml_valid_passes_for_valid_toml() {
     let service = PreflightService::new(PreflightPolicy::default()).unwrap();
     let decision = service.check_toml_valid("[package]\nname = \"test\"").await;
@@ -891,7 +891,7 @@ async fn check_toml_valid_passes_for_valid_toml() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn check_command_analyzes_shell_command() {
     let service = PreflightService::new(PreflightPolicy::default()).unwrap();
     let decision = service.check_command("ls -la").await;
@@ -903,7 +903,7 @@ async fn check_command_analyzes_shell_command() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn check_text_security_clean_text() {
     let service = PreflightService::new(PreflightPolicy::default()).unwrap();
     let decision = service.check_text_security("hello world").await;
@@ -915,7 +915,7 @@ async fn check_text_security_clean_text() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn disabled_policy_returns_allow() {
     let policy = PreflightPolicy {
         enabled: false,
@@ -927,7 +927,7 @@ async fn disabled_policy_returns_allow() {
     assert!(decision.findings().is_empty());
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn observe_mode_records_but_does_not_block() {
     let policy = PreflightPolicy {
         mode: PreflightMode::Observe,

@@ -479,7 +479,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn store_creates_run_directory() {
         let tmp = TempDir::new().unwrap();
         let store = ResearchStore::new(tmp.path().to_path_buf());
@@ -492,7 +492,7 @@ mod tests {
         assert!(tmp.path().join("test-run-1/run.json").exists());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn store_appends_and_reads_sources() {
         let tmp = TempDir::new().unwrap();
         let store = ResearchStore::new(tmp.path().to_path_buf());
@@ -525,7 +525,7 @@ mod tests {
         assert_eq!(sources[0].id, "src-1");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn store_appends_and_reads_evidence() {
         let tmp = TempDir::new().unwrap();
         let store = ResearchStore::new(tmp.path().to_path_buf());
@@ -552,7 +552,7 @@ mod tests {
         assert_eq!(evs[0].text, "some evidence");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn store_appends_and_reads_claims() {
         let tmp = TempDir::new().unwrap();
         let store = ResearchStore::new(tmp.path().to_path_buf());
@@ -578,7 +578,7 @@ mod tests {
         assert_eq!(claims[0].text, "a claim");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn store_writes_report() {
         let tmp = TempDir::new().unwrap();
         let store = ResearchStore::new(tmp.path().to_path_buf());
@@ -600,7 +600,7 @@ mod tests {
         assert!(content.contains("Hello"));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn store_list_runs() {
         let tmp = TempDir::new().unwrap();
         let store = ResearchStore::new(tmp.path().to_path_buf());
@@ -611,7 +611,7 @@ mod tests {
         assert_eq!(runs.len(), 2);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn store_load_run_bundle() {
         let tmp = TempDir::new().unwrap();
         let store = ResearchStore::new(tmp.path().to_path_buf());
@@ -640,7 +640,7 @@ mod tests {
         assert_eq!(bundle.sources.len(), 1);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn store_load_nonexistent_run() {
         let tmp = TempDir::new().unwrap();
         let store = ResearchStore::new(tmp.path().to_path_buf());

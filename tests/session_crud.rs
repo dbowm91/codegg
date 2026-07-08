@@ -32,7 +32,7 @@ async fn create_test_pool() -> SqlitePool {
     pool
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn test_session_create() {
     let pool = create_test_pool().await;
     let store = SessionStore::new(pool);
@@ -59,7 +59,7 @@ async fn test_session_create() {
     assert!(session.time_archived.is_none());
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn test_session_create_untitled() {
     let pool = create_test_pool().await;
     let store = SessionStore::new(pool);
@@ -82,7 +82,7 @@ async fn test_session_create_untitled() {
     assert_eq!(session.slug, "untitled");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn test_session_get() {
     let pool = create_test_pool().await;
     let store = SessionStore::new(pool);
@@ -106,7 +106,7 @@ async fn test_session_get() {
     assert_eq!(fetched.title, "Get Test");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn test_session_get_nonexistent() {
     let pool = create_test_pool().await;
     let store = SessionStore::new(pool);
@@ -115,7 +115,7 @@ async fn test_session_get_nonexistent() {
     assert!(result.is_none());
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn test_session_list() {
     let pool = create_test_pool().await;
     let store = SessionStore::new(pool);
@@ -152,7 +152,7 @@ async fn test_session_list() {
     assert_eq!(sessions.len(), 2);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn test_session_list_filters_archived() {
     let pool = create_test_pool().await;
     let store = SessionStore::new(pool);
@@ -192,7 +192,7 @@ async fn test_session_list_filters_archived() {
     assert_eq!(sessions[0].title, "Archived");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn test_session_list_limit() {
     let pool = create_test_pool().await;
     let store = SessionStore::new(pool);
@@ -217,7 +217,7 @@ async fn test_session_list_limit() {
     assert_eq!(sessions.len(), 2);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn test_session_update() {
     let pool = create_test_pool().await;
     let store = SessionStore::new(pool);
@@ -259,7 +259,7 @@ async fn test_session_update() {
     assert_eq!(updated.title, "Updated Title");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn test_session_update_partial() {
     let pool = create_test_pool().await;
     let store = SessionStore::new(pool);
@@ -305,7 +305,7 @@ async fn test_session_update_partial() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn test_session_delete() {
     let pool = create_test_pool().await;
     let store = SessionStore::new(pool);
@@ -330,7 +330,7 @@ async fn test_session_delete() {
     assert!(result.is_none());
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn test_session_fork() {
     let pool = create_test_pool().await;
     let store = SessionStore::new(pool);
@@ -358,7 +358,7 @@ async fn test_session_fork() {
     assert_eq!(fork.workspace_id, parent.workspace_id);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn test_session_archive() {
     let pool = create_test_pool().await;
     let store = SessionStore::new(pool);
@@ -384,7 +384,7 @@ async fn test_session_archive() {
     assert!(sessions.is_empty());
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn test_session_unarchive() {
     let pool = create_test_pool().await;
     let store = SessionStore::new(pool);
@@ -411,7 +411,7 @@ async fn test_session_unarchive() {
     assert_eq!(sessions.len(), 1);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn test_session_set_share_url() {
     let pool = create_test_pool().await;
     let store = SessionStore::new(pool);
@@ -441,7 +441,7 @@ async fn test_session_set_share_url() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn test_session_children() {
     let pool = create_test_pool().await;
     let store = SessionStore::new(pool);
@@ -492,7 +492,7 @@ async fn test_session_children() {
     assert_eq!(children.len(), 2);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn test_session_share_session() {
     let pool = create_test_pool().await;
     let store = SessionStore::new(pool);
@@ -521,7 +521,7 @@ async fn test_session_share_session() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn test_message_create_and_list() {
     let pool = create_test_pool().await;
     let session_store = SessionStore::new(pool.clone());
@@ -566,7 +566,7 @@ async fn test_message_create_and_list() {
     assert_eq!(messages[0].data.parts.len(), 1);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn test_message_get() {
     let pool = create_test_pool().await;
     let session_store = SessionStore::new(pool.clone());
@@ -603,7 +603,7 @@ async fn test_message_get() {
     assert_eq!(fetched.id, created.id);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn test_message_delete() {
     let pool = create_test_pool().await;
     let session_store = SessionStore::new(pool.clone());
@@ -638,7 +638,7 @@ async fn test_message_delete() {
     assert!(messages.is_empty());
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn test_part_create_and_list() {
     let pool = create_test_pool().await;
     let session_store = SessionStore::new(pool.clone());
@@ -683,7 +683,7 @@ async fn test_part_create_and_list() {
     assert_eq!(parts[0].id, part.id);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn test_todo_set_and_list() {
     let pool = create_test_pool().await;
     let session_store = SessionStore::new(pool.clone());
@@ -722,7 +722,7 @@ async fn test_todo_set_and_list() {
     assert_eq!(todos[1].content, "Task 2");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn test_todo_add() {
     let pool = create_test_pool().await;
     let session_store = SessionStore::new(pool.clone());
@@ -752,7 +752,7 @@ async fn test_todo_add() {
     assert_eq!(todo.content, "New task");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn test_todo_clear() {
     let pool = create_test_pool().await;
     let session_store = SessionStore::new(pool.clone());
@@ -785,7 +785,7 @@ async fn test_todo_clear() {
     assert!(todos.is_empty());
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn test_revert_to_message() {
     let pool = create_test_pool().await;
     let session_store = SessionStore::new(pool.clone());
@@ -863,7 +863,7 @@ async fn test_revert_to_message() {
     assert_eq!(messages_unreverted.len(), 3);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn test_revert_to_message_not_found() {
     let pool = create_test_pool().await;
     let session_store = SessionStore::new(pool.clone());
@@ -904,7 +904,7 @@ async fn test_revert_to_message_not_found() {
     assert!(result.is_err());
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn test_import_session() {
     let pool = create_test_pool().await;
     let session_store = SessionStore::new(pool.clone());
@@ -936,7 +936,7 @@ async fn test_import_session() {
     assert_eq!(imported.title, "Original Session");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn test_import_session_invalid_data() {
     let pool = create_test_pool().await;
     let session_store = SessionStore::new(pool.clone());

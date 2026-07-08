@@ -5602,7 +5602,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn context_packer_enabled_observe_only_false_does_not_mutate_request() {
         use crate::config::schema::{Config, ContextPackerConfig};
         use crate::provider::{ChatRequest, Message};

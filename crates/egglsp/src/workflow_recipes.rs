@@ -2300,7 +2300,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_repair_local_degraded_lsp() {
         let request = RepairLocalRequest {
             file: std::path::PathBuf::from("src/main.rs"),
@@ -2431,7 +2431,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_repair_local_disabled_mode_fallback() {
         let request = RepairLocalRequest {
             file: std::path::PathBuf::from("src/main.rs"),
@@ -2453,7 +2453,7 @@ mod tests {
         assert!(outcome.notes.iter().any(|n| n.contains("fallback")));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_repair_local_required_mode_fails_when_unavailable() {
         let request = RepairLocalRequest {
             file: std::path::PathBuf::from("src/main.rs"),
@@ -2574,7 +2574,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_repair_hunk_stale_diagnostics() {
         let request = RepairHunkRequest {
             file: std::path::PathBuf::from("src/main.rs"),
@@ -2613,7 +2613,7 @@ mod tests {
         assert_eq!(outcome.freshness_summary, "some evidence may be stale");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_review_diff_tier_defaults() {
         let small = default_settings_for_recipe(LspWorkflowRecipe::ReviewDiff, ModelTier::Small);
         assert_eq!(small.risk_mode, LspRiskMode::Conservative);
@@ -2631,7 +2631,7 @@ mod tests {
         assert!(frontier.include_preview_hints);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_security_review_enriched_always_aggressive() {
         let request = SecurityReviewEnrichedRequest {
             changed_files: vec![std::path::PathBuf::from("src/auth.rs")],
@@ -2674,7 +2674,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_hunk_source_navigation_tags_items_with_hunk_source() {
         let request = HunkSourceNavigationRecipeRequest {
             file: std::path::PathBuf::from("src/main.rs"),
@@ -2721,7 +2721,7 @@ mod tests {
             .any(|n| n.contains("hunk_source_navigation")));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_preview_suggestion_does_not_apply() {
         let request = PreviewSuggestionRequest {
             file: std::path::PathBuf::from("src/main.rs"),
@@ -2744,7 +2744,7 @@ mod tests {
         assert!(outcome.notes.iter().any(|n| n.contains("not applied")));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_review_file_captures_diagnostics() {
         let request = ReviewFileRequest {
             file: std::path::PathBuf::from("src/main.rs"),
@@ -2763,7 +2763,7 @@ mod tests {
         assert!(diag.is_some(), "review_file should capture diagnostics");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_repair_local_frontier_includes_preview_hints() {
         let settings =
             default_settings_for_recipe(LspWorkflowRecipe::RepairLocal, ModelTier::Frontier);
@@ -2771,7 +2771,7 @@ mod tests {
         assert!(settings.include_references);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_repair_local_small_omits_references() {
         let settings =
             default_settings_for_recipe(LspWorkflowRecipe::RepairLocal, ModelTier::Small);
@@ -2779,7 +2779,7 @@ mod tests {
         assert!(!settings.include_preview_hints);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_impact_analysis_with_degraded_provider() {
         let request = ImpactAnalysisRequest {
             symbol: crate::context::SymbolTarget {
@@ -2802,7 +2802,7 @@ mod tests {
         assert!(outcome.fallback_used);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_impact_analysis_with_unavail_provider() {
         let request = ImpactAnalysisRequest {
             symbol: crate::context::SymbolTarget {
@@ -2824,7 +2824,7 @@ mod tests {
         assert!(outcome.fallback_used);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_test_failure_repair_with_degraded_provider() {
         let request = TestFailureRepairRequest {
             test_file: std::path::PathBuf::from("tests/foo.rs"),
@@ -2841,7 +2841,7 @@ mod tests {
         assert!(!outcome.packet.items.is_empty());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_interface_boundary_with_degraded_provider() {
         let request = InterfaceBoundaryRequest {
             file: std::path::PathBuf::from("src/api.rs"),
@@ -2858,7 +2858,7 @@ mod tests {
         assert!(outcome.fallback_used);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_cross_file_repair_with_degraded_provider() {
         let request = CrossFileRepairRequest {
             primary_file: std::path::PathBuf::from("src/main.rs"),
@@ -2875,7 +2875,7 @@ mod tests {
         assert!(!outcome.packet.items.is_empty());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_call_neighborhood_with_unavail_provider() {
         let request = CallNeighborhoodRequest {
             file: std::path::PathBuf::from("src/main.rs"),
@@ -2894,7 +2894,7 @@ mod tests {
         assert!(outcome.fallback_used);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_impact_analysis_small_tier_caps() {
         let settings =
             default_settings_for_recipe(LspWorkflowRecipe::ImpactAnalysis, ModelTier::Small);
@@ -2902,7 +2902,7 @@ mod tests {
         assert_eq!(settings.max_files, 1);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_call_neighborhood_direction_incoming() {
         let request = CallNeighborhoodRequest {
             file: std::path::PathBuf::from("src/main.rs"),
@@ -3023,7 +3023,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_impact_analysis_ranks_same_and_changed_file_refs_first() {
         // refs arrive in deliberately-mixed order from the provider.
         let provider = RefsMockProvider {
@@ -3126,7 +3126,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_test_failure_repair_heuristic_label_present() {
         // Message mixes obvious identifiers with stopwords.
         // Note: the current extractor only retains lowercase-starting
@@ -3181,7 +3181,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_test_failure_repair_heuristic_when_no_symbols() {
         // All-stopword message should still produce a heuristic note.
         let provider = StaleProvider;
@@ -3212,7 +3212,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_interface_boundary_notes_unsupported_implementation() {
         // Custom mock: symbols succeed so the recipe reaches the
         // implementations() call, which we want to fail. That triggers
@@ -3358,7 +3358,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_interface_boundary_emits_implementations_unavailable_note() {
         // Custom mock: document_symbols succeeds, implementations fails.
         // The recipe must surface an operational note mentioning the
@@ -3520,7 +3520,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_cross_file_repair_enforces_related_file_cap() {
         // Cap related_files to 2 via RecipeSettings.max_files, then
         // pass 5 related files. Only 2 of them should be touched.
@@ -3673,7 +3673,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_call_neighborhood_enforces_depth_cap() {
         // Recipe hardcodes max_callers=10 / max_callees=10; depth is the
         // only request-controlled cap. Verify that requesting depth > 1
@@ -3760,7 +3760,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_call_neighborhood_caller_callee_caps() {
         // The recipe hardcodes max_callers=10 and max_callees=10.
         // Provide 20 highlights + 20 refs and verify caps are honored.
@@ -3807,7 +3807,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_impact_analysis_required_mode_fails_when_unusable() {
         let request = ImpactAnalysisRequest {
             symbol: crate::context::SymbolTarget {
@@ -3832,7 +3832,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_test_failure_repair_required_mode_fails_when_unusable() {
         let request = TestFailureRepairRequest {
             test_file: std::path::PathBuf::from("tests/foo.rs"),
@@ -3852,7 +3852,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_impact_analysis_opportunistic_mode_returns_notes() {
         let request = ImpactAnalysisRequest {
             symbol: crate::context::SymbolTarget {
@@ -3883,7 +3883,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_cross_file_repair_opportunistic_mode_returns_notes() {
         let request = CrossFileRepairRequest {
             primary_file: std::path::PathBuf::from("src/main.rs"),
@@ -3906,7 +3906,7 @@ mod tests {
     // Composed workflow tests — sub-recipe provenance, caps, skip reasons
     // -----------------------------------------------------------------------
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_composed_security_review_records_sub_recipes() {
         let settings = RecipeSettings::for_tier(ModelTier::Workhorse);
         let outcome = execute_composed_security_review(
@@ -3950,7 +3950,7 @@ mod tests {
         assert_eq!(outcome.freshness_summary, "composed security review");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_composed_security_review_skips_call_neighborhood_when_no_params() {
         let settings = RecipeSettings::for_tier(ModelTier::Workhorse);
         let outcome = execute_composed_security_review(
@@ -3983,7 +3983,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_composed_security_review_records_skip_reason_on_failure() {
         let settings = RecipeSettings::for_tier(ModelTier::Workhorse);
         // UnavailProvider: security_review_enriched may still succeed (it uses diagnostics),
@@ -4023,7 +4023,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_composed_repair_failing_test_records_sub_recipes_and_caps() {
         let settings = RecipeSettings::for_tier(ModelTier::Workhorse);
         let outcome = execute_composed_repair_failing_test(
@@ -4068,7 +4068,7 @@ mod tests {
         assert_eq!(outcome.freshness_summary, "composed test failure repair");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_composed_repair_failing_test_caps_related_files() {
         let settings = RecipeSettings::for_tier(ModelTier::Small);
         let outcome = execute_composed_repair_failing_test(
@@ -4099,7 +4099,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_composed_review_api_change_records_sub_recipes() {
         let settings = RecipeSettings::for_tier(ModelTier::Workhorse);
         let outcome = execute_composed_review_api_change(
@@ -4131,7 +4131,7 @@ mod tests {
         assert!(ia.unwrap().ran);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_composed_repair_hunk_with_preview_records_sub_recipes() {
         let settings = RecipeSettings::for_tier(ModelTier::Workhorse);
         let outcome = execute_composed_repair_hunk_with_preview(
@@ -4163,7 +4163,7 @@ mod tests {
     // LspWorkflowInvocation::execute_composed dispatch tests
     // -----------------------------------------------------------------------
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_invocation_composed_security_review_dispatches() {
         let invocation = LspWorkflowInvocation {
             recipe: LspWorkflowRecipe::SecurityReviewEnriched,
@@ -4183,7 +4183,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_invocation_composed_test_failure_repair_dispatches() {
         let invocation = LspWorkflowInvocation {
             recipe: LspWorkflowRecipe::TestFailureRepair,
@@ -4203,7 +4203,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_invocation_composed_interface_boundary_dispatches() {
         let invocation = LspWorkflowInvocation {
             recipe: LspWorkflowRecipe::InterfaceBoundary,
@@ -4221,7 +4221,7 @@ mod tests {
         assert_eq!(outcome.sub_recipes.len(), 2);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_invocation_composed_repair_hunk_dispatches() {
         let invocation = LspWorkflowInvocation {
             recipe: LspWorkflowRecipe::RepairHunk,
@@ -4247,7 +4247,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_invocation_composed_non_composed_recipe_falls_through() {
         // RepairLocal is not in the composed match, so it falls through to execute().
         let invocation = LspWorkflowInvocation {
@@ -4375,7 +4375,7 @@ mod tests {
     /// recipes must be invokable on an empty provider, must succeed
     /// (or yield a typed error), and must not panic. The recipe name
     /// is verified via the Outcome's recipe field.
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_table_driven_recipe_execution_all_twelve() {
         let provider = EmptyProvider;
 
@@ -4525,7 +4525,7 @@ mod tests {
 
     /// Test that recipes which require a primary_path must fail with
     /// RequiredFailed rather than panic when the path is missing.
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_recipes_reject_missing_primary_path_without_panic() {
         let provider = EmptyProvider;
 
@@ -4568,7 +4568,7 @@ mod tests {
 
     /// Test that call_neighborhood with max_depth=0 still succeeds
     /// without panicking (early-return path).
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_call_neighborhood_zero_depth_does_not_panic() {
         let provider = EmptyProvider;
         let request = CallNeighborhoodRequest {
@@ -4591,7 +4591,7 @@ mod tests {
 
     /// Test that recipes tolerate extreme line/column values without
     /// panicking (saturating arithmetic must protect against overflow).
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_repair_local_extreme_position_does_not_panic() {
         let provider = EmptyProvider;
         // Use a large but bounded value so the `start = line.saturating_sub(20)
@@ -4616,7 +4616,7 @@ mod tests {
     /// never apply them) and must NEVER mutate files. We verify both
     /// by checking that preview_ids remain empty for every composed
     /// recipe (when the underlying provider yields no preview ids).
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_composed_workflows_never_apply_previews() {
         let provider = EmptyProvider;
         let settings = RecipeSettings::for_tier(ModelTier::Workhorse);
@@ -4707,7 +4707,7 @@ mod tests {
     ///   ImpactAnalysis.
     /// - Always off (focus on previews or symbols): PreviewSuggestion /
     ///   TestFailureRepair.
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_tier_caps_diverge_for_all_recipes() {
         // Recipes whose reference policy tracks tier (Small off, others on).
         let tier_scaled: &[LspWorkflowRecipe] = &[
@@ -4789,7 +4789,7 @@ mod tests {
     /// Tier cap depth: Frontier includes previews for RepairLocal;
     /// Small never does. Security review forces Aggressive risk on
     /// every tier.
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_tier_caps_preview_hints_for_repair_local() {
         let small = default_settings_for_recipe(LspWorkflowRecipe::RepairLocal, ModelTier::Small);
         let workhorse =
@@ -4804,7 +4804,7 @@ mod tests {
 
     /// Security review enforces Aggressive risk on every tier (no
     /// scaling down to Conservative for safety-critical review).
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_security_review_aggressive_on_all_tiers() {
         for tier in [ModelTier::Small, ModelTier::Workhorse, ModelTier::Frontier] {
             let settings =
@@ -4820,7 +4820,7 @@ mod tests {
     /// Sub-recipe provenance rendering: confirm that the provenance
     /// fields populated by composed workflows flow through to the
     /// public SubRecipeProvenance struct used by LspWorkflowDisplay.
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_sub_recipe_provenance_fields_round_trip() {
         let provider = EmptyProvider;
         let settings = RecipeSettings::for_tier(ModelTier::Workhorse);
@@ -4871,7 +4871,7 @@ mod tests {
     /// Composed workflows must surface distinct freshness summaries
     /// that name the composition (so downstream consumers can tell
     /// composed from direct).
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_composed_workflows_freshness_summary_distinct() {
         let provider = EmptyProvider;
         let settings = RecipeSettings::for_tier(ModelTier::Workhorse);
@@ -4928,7 +4928,7 @@ mod tests {
     /// Composed workflows fall through to direct execute when the
     /// dispatched recipe has no composed variant. Verify that
     /// sub_recipes stays empty for non-composed recipes.
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_composed_dispatch_falls_through_for_non_composed_recipes() {
         let provider = EmptyProvider;
 

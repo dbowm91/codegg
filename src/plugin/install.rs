@@ -424,7 +424,7 @@ mod tests {
         dir
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn install_rejects_missing_manifest() {
         let src = make_temp_dir("no_manifest");
         // No manifest.toml created
@@ -432,7 +432,7 @@ mod tests {
         assert!(matches!(result, Err(InstallError::Manifest(_))));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn install_rejects_invalid_toml_manifest() {
         let src = make_temp_dir("bad_manifest");
         fs::write(src.join("manifest.toml"), "this is not valid toml [[[ ]]]").unwrap();
@@ -440,13 +440,13 @@ mod tests {
         assert!(matches!(result, Err(InstallError::Manifest(_))));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn install_rejects_nonexistent_path() {
         let result = install_from_path(Path::new("/nonexistent/zzz/path/abc")).await;
         assert!(matches!(result, Err(InstallError::InvalidPath(_))));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn install_accepts_valid_plugin() {
         let src = make_temp_dir("valid");
         fs::write(
@@ -474,7 +474,7 @@ api_version = 1
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn install_rejects_path_traversal() {
         // plugins_dir().join(plugin_name) keeps the path anchored to the
         // canonical plugins directory. A traversal attempt resolves into
@@ -793,7 +793,7 @@ api_version = 1
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn uninstall_rejects_parent_component_in_name() {
         let result = uninstall("../escape").await;
         assert!(
@@ -802,7 +802,7 @@ api_version = 1
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn uninstall_rejects_absolute_path_in_name() {
         let result = uninstall("/etc/passwd").await;
         assert!(
@@ -811,7 +811,7 @@ api_version = 1
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn install_creates_nested_valid_plugin() {
         let src = make_temp_dir("nested_valid");
         let dest_root = make_temp_dir("nested_valid_root");
@@ -977,7 +977,7 @@ api_version = 1
         let _ = policy;
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn uninstall_rejects_path_separators_after_split() {
         // Regression guard: uninstall name validation remains strict.
         assert!(matches!(

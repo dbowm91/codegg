@@ -269,6 +269,7 @@ User Input → TUI Event Loop → App::on_key() → State Mutation → Render
 - [Skills](skills.md) - Runtime skill loader
 - [Snapshot](snapshot.md) - File state capture and restore
 - [Storage](storage.md) - SQLite initialization
+- [Testing](testing.md) - Test resource taxonomy, Tokio runtime rules, pool strategy
 - [Theme](theme.md) - Frontend-neutral theme system
 - [Deterministic Tools](deterministic_tools.md) — Eggsact in-process deterministic utilities (text comparison, config validation, security inspection)
 - [Tool](tool.md) - Tool system and registry

@@ -2382,7 +2382,7 @@ mod tests {
 
     // === Phase 4: Semantic Checkpoint Tests ===
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_parse_semantic_response_valid() {
         let json = r#"{"constraints": ["must use Rust"], "decisions": ["use async"], "unresolved_errors": [], "next_steps": ["run tests"]}"#;
         let frame = parse_semantic_response(json).unwrap();
@@ -2392,14 +2392,14 @@ mod tests {
         assert_eq!(frame.next_steps, vec!["run tests"]);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_parse_semantic_response_with_fences() {
         let json = "```json\n{\"constraints\": [\"no unwrap\"], \"decisions\": [], \"unresolved_errors\": [], \"next_steps\": []}\n```";
         let frame = parse_semantic_response(json).unwrap();
         assert_eq!(frame.constraints, vec!["no unwrap"]);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_parse_semantic_response_invalid() {
         let result = parse_semantic_response("not json at all");
         assert!(result.is_err());

@@ -700,7 +700,7 @@ mod tests {
 
     // ── Integration tests with real PluginService ────────────────────
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn event_hook_observes_with_real_service() {
         use crate::plugin::registry::PluginRegistry;
         use crate::plugin::service::PluginService;
@@ -721,7 +721,7 @@ mod tests {
         assert!(outcome.is_ok());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn before_tool_execute_skipped_when_blocking_disabled() {
         use crate::plugin::registry::PluginRegistry;
         use crate::plugin::service::PluginService;
@@ -747,7 +747,7 @@ mod tests {
         assert!(outcome.is_skipped());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn before_tool_execute_allowed_when_blocking_enabled() {
         use crate::plugin::registry::PluginRegistry;
         use crate::plugin::service::PluginService;
@@ -774,7 +774,7 @@ mod tests {
         assert!(outcome.is_ok() || outcome.is_skipped());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn after_tool_execute_observes_with_real_service() {
         use crate::plugin::registry::PluginRegistry;
         use crate::plugin::service::PluginService;
@@ -797,7 +797,7 @@ mod tests {
         assert!(outcome.is_ok());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn shell_env_hook_with_real_service() {
         use crate::plugin::registry::PluginRegistry;
         use crate::plugin::service::PluginService;
@@ -828,7 +828,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn message_transform_skipped_when_mutating_disabled() {
         use crate::plugin::registry::PluginRegistry;
         use crate::plugin::service::PluginService;
@@ -855,7 +855,7 @@ mod tests {
         assert!(outcome.is_skipped());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn disabled_plugin_does_not_receive_hooks() {
         use crate::plugin::manifest::{
             PluginCapability, PluginHookSpec, PluginManifest, PluginRuntimeSpec, PluginTrustClass,
@@ -907,7 +907,7 @@ mod tests {
         assert!(outcome.is_ok() || outcome.is_skipped());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn builtin_auth_hook_dispatches_through_service() {
         use crate::plugin::builtin::{builtin_runtime_registry, register_builtins};
         use crate::plugin::registry::PluginRegistry;
@@ -941,7 +941,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn process_lifecycle_hook_denied_by_default_policy() {
         use crate::plugin::manifest::PluginRuntimeSpec;
 
@@ -956,7 +956,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn lifecycle_hooks_policy_prevents_tool_before_when_disabled() {
         use crate::plugin::registry::PluginRegistry;
         use crate::plugin::service::PluginService;
@@ -981,7 +981,7 @@ mod tests {
         assert!(outcome.is_skipped());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn before_tool_execute_allow_passes_args_unchanged() {
         use crate::plugin::builtin::builtin_runtime_registry;
         use crate::plugin::manifest::{
@@ -1046,7 +1046,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn before_tool_execute_modify_ignored_when_mutating_disabled() {
         use crate::plugin::registry::PluginRegistry;
         use crate::plugin::service::PluginService;
@@ -1071,7 +1071,7 @@ mod tests {
         assert!(outcome.is_skipped());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn wasm_and_builtin_mutating_hooks_allowed_when_policy_enables() {
         use crate::plugin::hooks::HookType;
         use crate::plugin::manifest::PluginRuntimeSpec;
@@ -1108,7 +1108,7 @@ mod tests {
         assert_eq!(classify_hook(HookType::ShellEnv), HookCategory::Mutating);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn shell_env_hook_does_not_log_secret_values() {
         use crate::plugin::registry::PluginRegistry;
         use crate::plugin::service::PluginService;
@@ -1139,7 +1139,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn chat_params_hook_skipped_when_mutating_disabled() {
         use crate::plugin::registry::PluginRegistry;
         use crate::plugin::service::PluginService;
@@ -1158,7 +1158,7 @@ mod tests {
         assert!(outcome.is_skipped());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn chat_headers_hook_skipped_when_mutating_disabled() {
         use crate::plugin::registry::PluginRegistry;
         use crate::plugin::service::PluginService;
@@ -1177,7 +1177,7 @@ mod tests {
         assert!(outcome.is_skipped());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn auth_hook_skipped_when_blocking_disabled() {
         use crate::plugin::registry::PluginRegistry;
         use crate::plugin::service::PluginService;
@@ -1283,7 +1283,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn disabled_event_hook_skipped_by_policy() {
         use crate::plugin::registry::PluginRegistry;
         use crate::plugin::service::PluginService;

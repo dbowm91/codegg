@@ -273,7 +273,7 @@ mod tests {
         assert_eq!(back.kind, artifact.kind);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_in_memory_store_put_and_get() {
         let store = InMemoryArtifactStore::new();
         let artifact = ContextArtifact {
@@ -295,14 +295,14 @@ mod tests {
         assert_eq!(got.unwrap().handle, "ctx://tool/s1/0/c1");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_in_memory_store_get_missing() {
         let store = InMemoryArtifactStore::new();
         let got = store.get("nonexistent").await.unwrap();
         assert!(got.is_none());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_in_memory_store_list_recent() {
         let store = InMemoryArtifactStore::new();
         for i in 0..5 {
@@ -328,7 +328,7 @@ mod tests {
         assert_eq!(results[2].turn_index, 2);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_in_memory_store_list_recent_filters_session() {
         let store = InMemoryArtifactStore::new();
         store
@@ -368,7 +368,7 @@ mod tests {
         assert_eq!(results[0].session_id, "s1");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_in_memory_store_overwrite() {
         let store = InMemoryArtifactStore::new();
         store
@@ -428,7 +428,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_failing_store_returns_error() {
         let store = FailingStore;
         let artifact = ContextArtifact {

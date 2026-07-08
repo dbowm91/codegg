@@ -2760,7 +2760,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_collector_returns_diagnostics_with_provenance() {
         let provider = MockProvider::new();
         *provider.diagnostics.lock().unwrap() = vec![(
@@ -2792,7 +2792,7 @@ mod tests {
         assert_eq!(item.provenance.operation, "textDocument/diagnostic");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_collector_returns_definition_excerpt() {
         let provider = MockProvider::new();
         *provider.defs.lock().unwrap() =
@@ -2822,7 +2822,7 @@ mod tests {
         assert_eq!(defs[0].line, Some(9)); // 0-indexed
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_collector_limits_references() {
         let provider = MockProvider::new();
         *provider.refs.lock().unwrap() = (0..100)
@@ -2856,7 +2856,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_collector_records_unsupported_notes() {
         // When a provider returns an error, we get an operational note.
         struct FailProvider;
@@ -2969,7 +2969,7 @@ mod tests {
         assert!(!notes.is_empty(), "expected operational note for failure");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_collector_handles_unknown_capability_fail_closed_when_required() {
         // Required mode + unavailable server → RequiredFailed error.
         struct UnavailRequiredProvider;
@@ -3091,7 +3091,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_collector_does_not_execute_code_actions() {
         // Verify that code actions are never called — the provider has no
         // such method and we never invoke it.
@@ -3121,7 +3121,7 @@ mod tests {
         assert!(code_actions.is_empty(), "should not execute code actions");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_collector_does_not_apply_rename_or_formatting() {
         let provider = MockProvider::new();
         let request = LspContextRequest::Review {
@@ -3149,7 +3149,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_hunk_context_prefers_changed_range_diagnostics() {
         let provider = MockProvider::new();
         *provider.diagnostics.lock().unwrap() = vec![
@@ -3195,7 +3195,7 @@ mod tests {
         assert!(diagnostics[0].score.is_hunk_local);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_hunk_context_includes_enclosing_symbol() {
         let provider = MockProvider::new();
         *provider.defs.lock().unwrap() = vec![("test.rs".to_string(), "(2:0)-(2:30)".to_string())];
@@ -3228,7 +3228,7 @@ mod tests {
         assert_eq!(defs[0].file, PathBuf::from("test.rs"));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_hunk_context_caps_references() {
         let provider = MockProvider::new();
         *provider.refs.lock().unwrap() = (0..50)
@@ -3265,7 +3265,7 @@ mod tests {
         assert!(refs.len() <= 5, "expected <= 5 refs, got {}", refs.len());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_hunk_context_degrades_without_lsp() {
         // Opportunistic mode should return empty items when server is unusable.
         struct UnavailProvider;
@@ -3378,7 +3378,7 @@ mod tests {
         assert!(!notes.is_empty(), "expected degraded note");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_required_mode_fails_when_server_unavailable() {
         struct UnavailProvider;
         #[async_trait]
@@ -3491,7 +3491,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_opportunistic_returns_partial_when_server_unavailable() {
         struct PartialProvider;
         #[async_trait]
@@ -3607,7 +3607,7 @@ mod tests {
         assert_eq!(diags.len(), 1, "diagnostic should survive");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_collect_context_cached_miss_then_hit() {
         let provider = MockProvider::new();
         *provider.diagnostics.lock().unwrap() = vec![(
@@ -3667,7 +3667,7 @@ mod tests {
         assert!(packet2.notes.iter().any(|n| n.contains("cache-hit")));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_collect_context_cached_disabled_passthrough() {
         let provider = MockProvider::new();
         *provider.diagnostics.lock().unwrap() = vec![(
@@ -3720,7 +3720,7 @@ mod tests {
         assert!(!hit2, "disabled cache should never hit");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_collect_context_cached_no_cache_passthrough() {
         let provider = MockProvider::new();
         let request = LspContextRequest::File {
@@ -3750,7 +3750,7 @@ mod tests {
         assert!(!hit);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_collect_context_cached_file_hash_change_invalidates() {
         let provider = MockProvider::new();
         *provider.diagnostics.lock().unwrap() = vec![(
@@ -3964,7 +3964,7 @@ mod tests {
         assert_eq!(policy.unavailable_policy, LspUnavailablePolicy::Omit);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn collector_ready_server_produces_fresh_items() {
         let provider = MockProvider::new();
         // Default state is "ready", generation 1.
@@ -3995,7 +3995,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn collector_degraded_server_produces_possibly_stale_items() {
         let provider = MockProvider::new();
         *provider.state.lock().unwrap() = "degraded".to_string();
@@ -4026,7 +4026,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn collector_unavailable_server_opportunistic_returns_note() {
         struct UnavailProvider;
         #[async_trait]
@@ -4149,7 +4149,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn collector_unavailable_server_required_returns_error() {
         struct UnavailProvider;
         #[async_trait]
@@ -4260,7 +4260,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn collector_disabled_mode_returns_empty_with_note() {
         let provider = MockProvider::new();
         *provider.diagnostics.lock().unwrap() = vec![(
@@ -4293,7 +4293,7 @@ mod tests {
         assert!(packet.notes.contains(&"disabled".to_string()));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn collector_server_generation_in_provenance() {
         let provider = MockProvider::new();
         *provider.generation.lock().unwrap() = Some(3);
@@ -4329,7 +4329,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn collector_generation_one_is_not_post_restart() {
         let provider = MockProvider::new();
         *provider.generation.lock().unwrap() = Some(1);

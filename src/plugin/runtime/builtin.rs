@@ -208,7 +208,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn builtin_runtime_rejects_command_invocation() {
         let mut registry = BuiltinHandlerRegistry::new();
         registry.register("test_handler".into(), make_test_handler());
@@ -238,7 +238,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn builtin_runtime_rejects_unknown_hook_type() {
         let mut registry = BuiltinHandlerRegistry::new();
         registry.register("test_handler".into(), make_test_handler());
@@ -270,7 +270,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn builtin_runtime_dispatches_known_handler() {
         let mut registry = BuiltinHandlerRegistry::new();
         registry.register("test_handler".into(), make_test_handler());
@@ -293,7 +293,7 @@ mod tests {
         assert_eq!(response.data, serde_json::json!({"handled": true}));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn builtin_runtime_returns_error_for_unknown_handler() {
         let registry = BuiltinHandlerRegistry::new();
         let runtime = BuiltinRuntime::new(Arc::new(registry));
@@ -314,7 +314,7 @@ mod tests {
         assert!(matches!(err, RuntimeError::Unsupported(_)));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn builtin_runtime_returns_error_for_non_builtin_plugin_id() {
         let registry = BuiltinHandlerRegistry::new();
         let runtime = BuiltinRuntime::new(Arc::new(registry));

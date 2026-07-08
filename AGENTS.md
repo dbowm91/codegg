@@ -71,7 +71,7 @@ Changes to server/plugin modules need `--all-features` testing. LSP integration 
 
 ## Test Resource Budget
 
-The workspace test matrix is large. Prefer the narrowest crate, test file, or test name that covers a change before reaching for a workspace-wide run.
+The workspace test matrix is large (~1,219 async tests across 94 files). Prefer the narrowest crate, test file, or test name that covers a change before reaching for a workspace-wide run.
 
 When you do need the full suite locally, cap Cargo's build parallelism and keep the test harness serial:
 
@@ -83,7 +83,7 @@ CARGO_BUILD_JOBS=1 cargo test --workspace --all-features -- --test-threads=1
 
 Run `--all-features` and `lsp-test-support` paths as separate capped invocations when possible; those are the heaviest test paths in this repo.
 
-Follow `.codegg/skills/testing/SKILL.md` for the test selection pattern and the capped full-suite command.
+See `architecture/testing.md` for the full test resource taxonomy, Tokio runtime flavor rules, and pool strategy guidance. Follow `.codegg/skills/testing/SKILL.md` for the test selection pattern and the capped full-suite command.
 
 ## Testing
 

@@ -1257,7 +1257,7 @@ mod tests {
         assert_eq!(converted.end_column, 3);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_resolve_overlay_content_prefers_request_content() {
         let request = SemanticContextRequest::new("test.rs", egglsp::SemanticContextIntent::Review)
             .with_overlay(true)
@@ -1274,7 +1274,7 @@ mod tests {
         assert_eq!(content, "overlay from request");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_resolve_overlay_content_reads_disk_when_request_missing() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("overlay.rs");

@@ -1,0 +1,19 @@
+[profile.default]
+slow-timeout = { period = "30s", terminate-after = 2 }
+
+[profile.ci-fast]
+failure-output = "immediate-final"
+success-output = "never"
+slow-timeout = { period = "20s", terminate-after = 2 }
+
+[profile.ci-heavy]
+failure-output = "immediate-final"
+success-output = "never"
+test-threads = 1
+slow-timeout = { period = "60s", terminate-after = 2 }
+
+[profile.ci-release]
+failure-output = "immediate-final"
+success-output = "never"
+test-threads = 1
+slow-timeout = { period = "120s", terminate-after = 2 }

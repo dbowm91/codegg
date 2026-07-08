@@ -313,7 +313,7 @@ mod tests {
             .unwrap();
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn repo_status_clean() {
         let dir = TempDir::new().unwrap();
         init_repo(dir.path());
@@ -335,7 +335,7 @@ mod tests {
         assert!(s.commit_hash.is_some());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn repo_status_dirty() {
         let dir = TempDir::new().unwrap();
         init_repo(dir.path());
@@ -356,7 +356,7 @@ mod tests {
         assert!(s.is_dirty);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn diff_summary_detects_changes() {
         let dir = TempDir::new().unwrap();
         init_repo(dir.path());
@@ -383,7 +383,7 @@ mod tests {
         assert_eq!(s.files[0].path, "a.txt");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn changed_files_after_commit() {
         let dir = TempDir::new().unwrap();
         init_repo(dir.path());
@@ -412,7 +412,7 @@ mod tests {
         assert!(paths.contains(&"b.txt"));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn file_diff_returns_patch() {
         let dir = TempDir::new().unwrap();
         init_repo(dir.path());
@@ -436,7 +436,7 @@ mod tests {
         assert!(d.patch.contains("hello") || d.patch.contains("world"));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn validate_patch_clean() {
         let dir = TempDir::new().unwrap();
         init_repo(dir.path());
@@ -457,7 +457,7 @@ mod tests {
         assert!(v.valid, "expected patch to validate, got: {:?}", v.error);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn validate_patch_invalid() {
         let dir = TempDir::new().unwrap();
         init_repo(dir.path());
@@ -467,14 +467,14 @@ mod tests {
         assert!(v.error.is_some());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn non_repo_errors_for_nonexistent_path() {
         let fake = std::path::PathBuf::from("/this/path/does/not/exist/xyz");
         let r = repo_status(&fake).await;
         assert!(r.is_err());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn diff_text_head_includes_unstaged_changes() {
         let dir = TempDir::new().unwrap();
         init_repo(dir.path());
@@ -500,7 +500,7 @@ mod tests {
         assert!(text.contains("+two"));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn diff_text_staged_includes_only_staged_changes() {
         let dir = TempDir::new().unwrap();
         init_repo(dir.path());

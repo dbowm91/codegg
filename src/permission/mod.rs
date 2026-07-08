@@ -1656,7 +1656,7 @@ impl DoomLoopDetector {
 mod tests {
     use super::*;
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn read_only_tools_short_circuit_to_allow() {
         let checker = PermissionChecker::new(None, None);
         for tool in &[
@@ -1685,7 +1685,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn safe_mutating_tools_short_circuit_to_allow() {
         let checker = PermissionChecker::new(None, None);
         for tool in &["todowrite", "todoread", "question", "invalid"] {
@@ -1699,7 +1699,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn mutating_tools_fall_through_to_ask() {
         let checker = PermissionChecker::new(None, None);
         for tool in &["edit", "write", "apply_patch", "replace", "image"] {
@@ -1713,7 +1713,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn non_destructive_bash_auto_allows() {
         let checker = PermissionChecker::new(None, None);
         for cmd in &[
@@ -1733,7 +1733,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn destructive_bash_prompts() {
         let checker = PermissionChecker::new(None, None);
         for cmd in &[

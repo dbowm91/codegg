@@ -688,7 +688,7 @@ mod tests {
             .contains(&NotificationKind::TurnCompleted));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn emit_deduplicates() {
         let router = Arc::new(NotificationRouter::new(NotificationPolicy::default()));
         let event = NotificationEvent {
@@ -708,7 +708,7 @@ mod tests {
         assert!(speech.is_none());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn next_speech_returns_highest_priority() {
         let router = Arc::new(NotificationRouter::new(NotificationPolicy::default()));
         router
@@ -774,7 +774,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn emit_deduplicates_within_batch() {
         let router = Arc::new(NotificationRouter::new(policy_with_turn_completed()));
         let a = make_event(
@@ -808,7 +808,7 @@ mod tests {
         assert_eq!(router.queue_len().await, 0);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn next_speech_batch_collects_multiple_sessions() {
         let router = Arc::new(NotificationRouter::new(policy_with_turn_completed()));
         router
@@ -855,7 +855,7 @@ mod tests {
         assert_eq!(router.queue_len().await, 0);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn next_speech_batch_prioritizes_urgent() {
         // Use a policy that speaks both kinds so the batch covers both events.
         let mut policy = NotificationPolicy::default();
@@ -902,7 +902,7 @@ mod tests {
         assert_eq!(batch.priority, NotificationPriority::Urgent);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn next_speech_batch_respects_max_items() {
         let router = Arc::new(NotificationRouter::new(policy_with_turn_completed()));
         // Use unique first-8-char prefixes so the test can identify which
@@ -944,7 +944,7 @@ mod tests {
         assert_eq!(router.queue_len().await, 3);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn next_speech_batch_priority_preserved_within_kind() {
         let router = Arc::new(NotificationRouter::new(NotificationPolicy::default()));
         // All events share the same kind (TurnFailed). Priorities differ.
@@ -1000,14 +1000,14 @@ mod tests {
         assert_eq!(batch.priority, NotificationPriority::High);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn next_speech_batch_empty_returns_none() {
         let router = Arc::new(NotificationRouter::new(NotificationPolicy::default()));
         let batch = router.next_speech_batch(16).await;
         assert!(batch.is_none());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn next_speech_batch_zero_max_items_returns_none() {
         let router = Arc::new(NotificationRouter::new(NotificationPolicy::default()));
         router
@@ -1025,7 +1025,7 @@ mod tests {
         assert_eq!(router.queue_len().await, 1);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn next_speech_batch_single_event_returned_as_is() {
         let router = Arc::new(NotificationRouter::new(NotificationPolicy::default()));
         router

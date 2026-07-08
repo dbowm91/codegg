@@ -926,7 +926,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn enable_sets_state() {
         let registry = PluginRegistry::new();
         registry
@@ -940,7 +940,7 @@ mod tests {
         assert!(view.enabled);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn disable_sets_state() {
         let registry = PluginRegistry::new();
         registry
@@ -954,7 +954,7 @@ mod tests {
         assert!(!view.enabled);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn registry_rejects_duplicate_command() {
         // The registry enforces global command-name uniqueness at register
         // time. Two plugins with the same command name cannot both register;
@@ -1009,7 +1009,7 @@ mod tests {
         ));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn remove_unregisters_plugin() {
         let registry = PluginRegistry::new();
         registry
@@ -1025,7 +1025,7 @@ mod tests {
         assert!(lookup.is_err());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn resolve_via_registry() {
         let registry = PluginRegistry::new();
         registry
@@ -1039,7 +1039,7 @@ mod tests {
         assert_eq!(view.id, "my-plugin:1");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn doctor_reports_process_executable_missing() {
         let registry = PluginRegistry::new();
         let manifest = PluginManifest {
@@ -1084,7 +1084,7 @@ mod tests {
         assert!(rt_check.message.contains("not found"));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn doctor_reports_wasm_disabled_when_feature_off() {
         let registry = PluginRegistry::new();
         let manifest = PluginManifest {
@@ -1127,7 +1127,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn doctor_reports_api_version_mismatch() {
         let registry = PluginRegistry::new();
         let mut manifest = make_manifest("old", Vec::new());
@@ -1155,7 +1155,7 @@ mod tests {
         assert!(!api_check.passed);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn doctor_builtin_runtime_is_always_available() {
         let registry = PluginRegistry::new();
         let manifest = PluginManifest {
@@ -1191,7 +1191,7 @@ mod tests {
         assert!(rt_check.message.contains("always available"));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn doctor_includes_registry_consistency_check() {
         let registry = PluginRegistry::new();
         registry
@@ -1210,7 +1210,7 @@ mod tests {
         assert!(consistency_check.passed);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn doctor_includes_enable_state_check() {
         let registry = PluginRegistry::new();
         registry
@@ -1229,7 +1229,7 @@ mod tests {
         assert!(enable_check.message.contains("disabled"));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn doctor_includes_output_surfaces_check() {
         let registry = PluginRegistry::new();
         registry
@@ -1249,7 +1249,7 @@ mod tests {
         assert!(output_check.message.contains("output surface"));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn resolve_exact_id() {
         let registry = PluginRegistry::new();
         registry
@@ -1264,7 +1264,7 @@ mod tests {
         assert_eq!(result.id, "my-plugin:1");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn resolve_exact_name() {
         let registry = PluginRegistry::new();
         registry
@@ -1276,7 +1276,7 @@ mod tests {
         assert_eq!(result.manifest.name, "my-plugin");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn resolve_unique_id_prefix() {
         let registry = PluginRegistry::new();
         registry
@@ -1295,7 +1295,7 @@ mod tests {
         assert_eq!(result.id, "my-plugin-alpha:1");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn resolve_unique_name_prefix() {
         let registry = PluginRegistry::new();
         registry
@@ -1311,7 +1311,7 @@ mod tests {
         assert_eq!(result.manifest.name, "alpha-plugin");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn ambiguous_prefix_returns_error() {
         let registry = PluginRegistry::new();
         registry
@@ -1327,7 +1327,7 @@ mod tests {
         assert!(result.is_err());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn no_match_returns_error() {
         let registry = PluginRegistry::new();
         registry
@@ -1339,7 +1339,7 @@ mod tests {
         assert!(result.is_err());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn resolve_case_insensitive_id_prefix() {
         let registry = PluginRegistry::new();
         registry
@@ -1415,7 +1415,7 @@ mod tests {
         assert_eq!(view.permissions_summary, "none");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn doctor_report_checks_registered_plugin() {
         let registry = PluginRegistry::new();
         let caps = vec![PluginCapability::Command(PluginCommandSpec {
@@ -1462,7 +1462,7 @@ mod tests {
         assert!(rt.passed);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn doctor_report_detects_empty_manifest() {
         let registry = PluginRegistry::new();
         registry
@@ -1488,7 +1488,7 @@ mod tests {
         assert!(!manifest_check.passed);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn list_returns_all_plugins() {
         let registry = PluginRegistry::new();
         registry
@@ -1565,7 +1565,7 @@ mod tests {
         assert!(view.last_error.is_none());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn doctor_includes_policy_checks_when_policy_set() {
         use crate::plugin::policy::PluginPolicy;
         let registry = PluginRegistry::new();
@@ -1607,7 +1607,7 @@ mod tests {
         assert!(check.message.contains("denied by policy"));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn doctor_includes_env_passthrough_check_for_process_plugins() {
         use crate::plugin::policy::PluginPolicy;
         let registry = PluginRegistry::new();
@@ -1647,7 +1647,7 @@ mod tests {
         assert!(env_check.unwrap().message.contains("passthrough"));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn doctor_no_policy_checks_when_no_policy() {
         let registry = PluginRegistry::new();
         registry
@@ -1666,7 +1666,7 @@ mod tests {
         assert!(policy_checks.is_empty());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn doctor_reports_high_risk_permissions() {
         use crate::plugin::policy::PluginPolicy;
         let registry = PluginRegistry::new();
@@ -1767,7 +1767,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn uninstall_source_less_plugin_reports_unregister_only() {
         use crate::plugin::registry::{PluginInstallKind, PluginSourceMetadata};
         let registry = PluginRegistry::new();
@@ -1800,7 +1800,7 @@ mod tests {
         assert!(lookup.is_err());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn uninstall_builtin_does_not_attempt_filesystem_removal() {
         use crate::plugin::registry::{PluginInstallKind, PluginSourceMetadata};
         let registry = PluginRegistry::new();
@@ -1829,7 +1829,7 @@ mod tests {
         assert!(result.warning.is_none());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn uninstall_with_install_path_outside_plugins_dir_is_rejected() {
         use crate::plugin::registry::{PluginInstallKind, PluginSourceMetadata};
         let registry = PluginRegistry::new();

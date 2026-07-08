@@ -895,7 +895,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn register_and_list() {
         let registry = PluginRegistry::new();
         let info = make_plugin_info("test:1", "test");
@@ -904,7 +904,7 @@ mod tests {
         assert_eq!(list.len(), 1);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn duplicate_registration_rejected() {
         let registry = PluginRegistry::new();
         let info1 = make_plugin_info("test:1", "test");
@@ -914,7 +914,7 @@ mod tests {
         assert!(result.is_err());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn command_lookup_by_name() {
         let registry = PluginRegistry::new();
         let manifest = PluginManifest {
@@ -954,7 +954,7 @@ mod tests {
         assert!(cmd.is_some());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn disabled_plugin_excluded_from_queries() {
         let registry = PluginRegistry::new();
         let manifest = PluginManifest {
@@ -990,14 +990,14 @@ mod tests {
         assert!(registry.command("test-cmd").await.is_none());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn normalize_command_name_works() {
         assert_eq!(normalize_command_name("/Deploy"), "deploy");
         assert_eq!(normalize_command_name("DEPLOY"), "deploy");
         assert_eq!(normalize_command_name("/deploy"), "deploy");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn alias_duplicate_detection_rejects_name_colliding_with_existing_alias() {
         let registry = PluginRegistry::new();
 
@@ -1058,7 +1058,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn alias_duplicate_detection_rejects_alias_colliding_with_existing_name() {
         let registry = PluginRegistry::new();
 
@@ -1119,7 +1119,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn panels_and_status_widgets_are_indexed_and_queried() {
         let registry = PluginRegistry::new();
         let manifest = PluginManifest {
@@ -1165,7 +1165,7 @@ mod tests {
         assert_eq!(widgets[0].refresh_ms, Some(5000));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn same_panel_id_auto_namespaced_not_rejected() {
         let registry = PluginRegistry::new();
 
@@ -1219,7 +1219,7 @@ mod tests {
         assert!(ids.contains(&"b:1:shared-panel"));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn same_status_widget_id_auto_namespaced_not_rejected() {
         let registry = PluginRegistry::new();
 
@@ -1275,7 +1275,7 @@ mod tests {
         assert!(ids.contains(&"b:1:shared-widget"));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn hook_priority_ordering_is_stable_and_ascending() {
         let registry = PluginRegistry::new();
 
@@ -1319,7 +1319,7 @@ mod tests {
         assert_eq!(hooks[2].priority, 10);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn hook_priority_ordering_across_plugins() {
         let registry = PluginRegistry::new();
 
@@ -1394,7 +1394,7 @@ mod tests {
         assert_eq!(hooks[2].plugin_id, "a:1");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn disabled_plugin_excluded_from_panel_queries() {
         let registry = PluginRegistry::new();
         let manifest = PluginManifest {
@@ -1424,7 +1424,7 @@ mod tests {
         assert_eq!(registry.panels().await.len(), 0);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn panel_id_already_namespaced_is_not_double_namespaced() {
         let registry = PluginRegistry::new();
         let manifest = PluginManifest {
@@ -1452,7 +1452,7 @@ mod tests {
         assert_eq!(panels[0].id, "ns-plugin:already-namespaced");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn unregister_returns_removed_info() {
         let registry = PluginRegistry::new();
         let info = make_plugin_info("test:1", "test");
@@ -1469,14 +1469,14 @@ mod tests {
         assert!(registry.list().await.is_empty());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn unregister_nonexistent_returns_none() {
         let registry = PluginRegistry::new();
         let removed = registry.unregister("nope").await;
         assert!(removed.is_none());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn unregister_cleans_capability_indexes() {
         let registry = PluginRegistry::new();
         let manifest = PluginManifest {
@@ -1543,7 +1543,7 @@ mod tests {
         assert!(registry.event_subscribers("test.event").await.is_empty());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn reenable_plugin_with_duplicate_command_rejected() {
         let registry = PluginRegistry::new();
 
@@ -1630,7 +1630,7 @@ mod tests {
         assert!(registry.is_enabled("c:1").await);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn set_enabled_rejects_duplicate_on_enable() {
         let registry = PluginRegistry::new();
 
@@ -1687,7 +1687,7 @@ mod tests {
     // --- Phase D: Deterministic enabled-filtering tests ---
 
     /// `enabled_plugin_ids()` returns only enabled plugin ids.
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn enabled_plugin_ids_filters_correctly() {
         let registry = PluginRegistry::new();
         let make = |id: &str, enabled: bool| PluginInfo {
@@ -1711,7 +1711,7 @@ mod tests {
 
     /// Capability queries never use `try_read()`: they must filter against
     /// a snapshot of enabled ids. This test exercises all six query paths.
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn capability_queries_filter_via_enabled_snapshot() {
         use crate::plugin::manifest::{
             PluginCommandSpec, PluginEventSubscriptionSpec, PluginHookSpec,
@@ -1830,7 +1830,7 @@ mod tests {
     /// from `try_read()` to a snapshot: enabling a previously-disabled
     /// plugin whose command is still owned by another enabled plugin must
     /// fail. Verifies the new snapshot path preserves this invariant.
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn duplicate_command_alias_re_enable_semantics_intact() {
         use crate::plugin::manifest::PluginCommandSpec;
         let registry = PluginRegistry::new();
@@ -1909,7 +1909,7 @@ mod tests {
         assert_eq!(m.installed_by, PluginInstallKind::RegistryLoaded);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn registry_persists_source_metadata_through_unregister() {
         // Workstream A regression guard: source metadata round-trips through
         // register/unregister without being lost.

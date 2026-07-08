@@ -235,7 +235,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_auto_compact_async_fallback_when_no_provider() {
         use codegg::agent::compaction::auto_compact_async;
 
@@ -765,7 +765,7 @@ mod tests {
 
     // --- Programmatic Compaction Tests ---
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_programmatic_mode_no_provider_call() {
         let messages = vec![
             Message::System {
@@ -800,7 +800,7 @@ mod tests {
         assert!(result.tokens_before > 0);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_programmatic_compaction_preserves_tool_pairs() {
         let messages = vec![
             Message::System {
@@ -1232,7 +1232,7 @@ mod tests {
 
     // --- Hybrid Mode Tests ---
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_hybrid_mode_calls_provider_when_model_set() {
         let mock_response = r#"{"constraints": ["must use Rust"], "decisions": [], "unresolved_errors": [], "next_steps": ["implement feature"]}"#;
         let provider = MockProvider::new(mock_response);
@@ -1274,7 +1274,7 @@ mod tests {
         assert_eq!(frame.next_steps, vec!["implement feature"]);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_hybrid_mode_falls_back_to_programmatic_on_provider_error() {
         struct FailingProvider;
 
@@ -1335,7 +1335,7 @@ mod tests {
         assert!(!result.messages.is_empty());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_hybrid_mode_without_model_skips_semantic() {
         let messages = vec![
             Message::System {
@@ -1367,7 +1367,7 @@ mod tests {
 
     // --- Agent Mode Tests ---
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_agent_mode_calls_provider() {
         let mock_response = r#"{"constraints": [], "decisions": ["use async"], "unresolved_errors": [], "next_steps": []}"#;
         let provider = MockProvider::new(mock_response);
@@ -1405,7 +1405,7 @@ mod tests {
         assert!(!result.messages.is_empty());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_agent_mode_falls_back_without_provider() {
         let messages = vec![
             Message::System {
@@ -1437,7 +1437,7 @@ mod tests {
 
     // --- Validation Failure Tests ---
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_validation_failure_triggers_emergency_fallback() {
         // Create messages that would result in invalid state after compaction
         // The emergency fallback should fix this

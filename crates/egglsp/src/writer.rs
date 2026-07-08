@@ -217,7 +217,7 @@ mod tests {
             .expect("missing Content-Length")
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn content_length_and_body_are_correct() {
         let (writer, mut rx) = make_mock();
         let msg = serde_json::json!({"hello": "world"});
@@ -233,7 +233,7 @@ mod tests {
         assert_eq!(claimed, body.len());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn request_envelope_json_is_correct() {
         let (writer, mut rx) = make_mock();
         let id = JsonRpcId::Number(42);
@@ -251,7 +251,7 @@ mod tests {
         assert_eq!(parsed["params"]["root"], "/tmp");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn response_result_envelope_is_correct() {
         let (writer, mut rx) = make_mock();
         let id = JsonRpcId::Number(7);
@@ -269,7 +269,7 @@ mod tests {
         assert!(parsed.get("error").is_none());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn response_error_envelope_is_correct() {
         let (writer, mut rx) = make_mock();
         let id = JsonRpcId::Number(99);
@@ -288,7 +288,7 @@ mod tests {
         assert!(parsed["error"].get("data").is_none());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn response_error_with_data() {
         let (writer, mut rx) = make_mock();
         let id = JsonRpcId::Number(10);
@@ -305,7 +305,7 @@ mod tests {
         assert_eq!(parsed["error"]["data"]["details"], "extra info");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn notification_envelope_is_correct() {
         let (writer, mut rx) = make_mock();
         writer
@@ -321,7 +321,7 @@ mod tests {
         assert!(parsed.get("id").is_none());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn unicode_body_length_uses_encoded_bytes() {
         let (writer, mut rx) = make_mock();
         let msg = serde_json::json!({"text": "\u{00e9}\u{00e8}\u{00ea}"});
@@ -336,7 +336,7 @@ mod tests {
         assert_eq!(parsed["text"], "\u{00e9}\u{00e8}\u{00ea}");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn multiple_sequential_writes_are_frame_isolated() {
         let (writer, mut rx) = make_mock();
         for i in 0..10 {
@@ -352,7 +352,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn string_id_roundtrip() {
         let (writer, mut rx) = make_mock();
         let id = JsonRpcId::String("abc-123".to_string());
@@ -367,7 +367,7 @@ mod tests {
         assert_eq!(parsed["id"], "abc-123");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn send_raw_string_wraps_correctly() {
         let (writer, mut rx) = make_mock();
         let json_str = r#"{"method":"test"}"#;
@@ -380,7 +380,7 @@ mod tests {
         assert_eq!(body, json_str.as_bytes());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn content_length_matches_utf8_byte_count() {
         let (writer, mut rx) = make_mock();
         // "café" has 5 bytes in UTF-8 (c=1, a=1, f=1, é=2).

@@ -242,7 +242,7 @@ mod tests {
         assert!(status.is_empty());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_mcp_service_disconnect_nonexistent() {
         use codegg::mcp::McpService;
 
@@ -269,7 +269,7 @@ mod tests {
         assert!(tools.is_empty());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_mcp_service_shutdown_all() {
         use codegg::mcp::McpService;
 

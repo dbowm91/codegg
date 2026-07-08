@@ -115,14 +115,14 @@ mod tests {
         pool
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn get_returns_none_for_missing_key() {
         let prefs = UserPreferences::new(temp_pool().await);
         let got = prefs.get(KEY_THEME_ACTIVE).await.unwrap();
         assert!(got.is_none());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn set_then_get_round_trips() {
         let prefs = UserPreferences::new(temp_pool().await);
         prefs.set(KEY_THEME_ACTIVE, "cyber-red").await.unwrap();
@@ -130,7 +130,7 @@ mod tests {
         assert_eq!(got.as_deref(), Some("cyber-red"));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn set_overwrites_existing_value() {
         let prefs = UserPreferences::new(temp_pool().await);
         prefs.set(KEY_THEME_ACTIVE, "midnight").await.unwrap();
@@ -139,7 +139,7 @@ mod tests {
         assert_eq!(got.as_deref(), Some("cyber-red"));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn delete_removes_key() {
         let prefs = UserPreferences::new(temp_pool().await);
         prefs
@@ -152,7 +152,7 @@ mod tests {
         assert!(got.is_none());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn updated_at_advances_on_rewrite() {
         let prefs = UserPreferences::new(temp_pool().await);
         prefs.set(KEY_THEME_ACTIVE, "midnight").await.unwrap();

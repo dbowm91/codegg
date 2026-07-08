@@ -163,7 +163,7 @@ mod tests {
         store
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_context_read_success() {
         let store = make_store_with_artifact("ctx://tool/s1/0/c1", "s1", "hello world");
         let tool = ContextReadTool::new(store, "s1".into());
@@ -175,7 +175,7 @@ mod tests {
         assert!(result.contains("Tool: bash"));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_context_read_missing_handle() {
         let store = Arc::new(InMemoryArtifactStore::new());
         let tool = ContextReadTool::new(store, "s1".into());
@@ -186,7 +186,7 @@ mod tests {
         assert!(result.unwrap_err().to_string().contains("missing 'handle'"));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_context_read_invalid_handle_prefix() {
         let store = Arc::new(InMemoryArtifactStore::new());
         let tool = ContextReadTool::new(store, "s1".into());
@@ -197,7 +197,7 @@ mod tests {
         assert!(result.unwrap_err().to_string().contains("invalid handle"));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_context_read_cross_session_denied() {
         let store = make_store_with_artifact("ctx://tool/other/0/c1", "other", "secret");
         let tool = ContextReadTool::new(store, "s1".into());
@@ -208,7 +208,7 @@ mod tests {
         assert!(result.unwrap_err().to_string().contains("cross-session"));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_context_read_cross_session_substring_denied() {
         // "s1" must not match a handle with session "not-s1"
         let store = make_store_with_artifact("ctx://tool/not-s1/0/c1", "not-s1", "secret");
@@ -220,7 +220,7 @@ mod tests {
         assert!(result.unwrap_err().to_string().contains("cross-session"));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_context_read_not_found() {
         let store = Arc::new(InMemoryArtifactStore::new());
         let tool = ContextReadTool::new(store, "s1".into());
@@ -234,7 +234,7 @@ mod tests {
             .contains("no artifact found"));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_context_read_truncation() {
         let long_content = "x".repeat(50000);
         let store = make_store_with_artifact("ctx://tool/s1/0/c1", "s1", &long_content);
@@ -246,7 +246,7 @@ mod tests {
         assert!(result.contains("100/50000"));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_context_read_offset() {
         let store = make_store_with_artifact("ctx://tool/s1/0/c1", "s1", "abcdef");
         let tool = ContextReadTool::new(store, "s1".into());
@@ -258,7 +258,7 @@ mod tests {
         assert!(result.contains("2-5 shown"));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_context_read_offset_beyond_content() {
         let store = make_store_with_artifact("ctx://tool/s1/0/c1", "s1", "short");
         let tool = ContextReadTool::new(store, "s1".into());
@@ -268,7 +268,7 @@ mod tests {
         assert!(result.contains("empty or fully consumed"));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_context_read_non_ascii_no_panic() {
         // Chinese characters + emoji: each char is multi-byte
         let content = "你好世界🚀🎉";
@@ -282,7 +282,7 @@ mod tests {
         assert!(result.contains("---"));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_context_read_non_ascii_truncation_hint() {
         let content = "日本語テスト".repeat(100);
         let store = make_store_with_artifact("ctx://tool/s1/0/c1", "s1", &content);
@@ -311,7 +311,7 @@ mod tests {
         assert!(props.get("max_bytes").is_some());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_context_read_malformed_handle_rejected_before_store() {
         let store = Arc::new(InMemoryArtifactStore::new());
         let tool = ContextReadTool::new(store, "s1".into());

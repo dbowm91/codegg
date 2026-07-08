@@ -547,7 +547,7 @@ mod tests {
         pool
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn session_create_returns_session() {
         let pool = test_pool().await;
         let client = InprocCoreClient::new(None, None, None, Some(pool), test_config(), None);
@@ -566,7 +566,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn session_load_existing() {
         let pool = test_pool().await;
         let client =
@@ -599,7 +599,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn session_load_not_found() {
         let pool = test_pool().await;
         let client = InprocCoreClient::new(None, None, None, Some(pool), test_config(), None);
@@ -616,7 +616,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn session_messages_load_empty() {
         let pool = test_pool().await;
         let client =
@@ -655,7 +655,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn permission_respond_no_pending() {
         let client = InprocCoreClient::new(None, None, None, None, test_config(), None);
         let req = new_request(
@@ -672,7 +672,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn permission_respond_invalid_choice() {
         let client = InprocCoreClient::new(None, None, None, None, test_config(), None);
         let req = new_request(
@@ -689,7 +689,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn question_respond_no_pending() {
         let client = InprocCoreClient::new(None, None, None, None, test_config(), None);
         let req = new_request(
@@ -706,7 +706,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn missing_pool_returns_error() {
         let client = InprocCoreClient::new(None, None, None, None, test_config(), None);
         let req = new_request(

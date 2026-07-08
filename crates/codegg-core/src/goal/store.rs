@@ -522,7 +522,7 @@ mod tests {
         .unwrap();
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_create_active() {
         let pool = test_pool().await;
         ensure_test_session(&pool, "sess1", "proj1").await;
@@ -549,7 +549,7 @@ mod tests {
         assert!(goal.completed_at.is_none());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_active_for_session() {
         let pool = test_pool().await;
         ensure_test_session(&pool, "sess1", "proj1").await;
@@ -577,7 +577,7 @@ mod tests {
         assert!(none.is_none());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_second_active_pauses_first() {
         let pool = test_pool().await;
         ensure_test_session(&pool, "sess1", "proj1").await;
@@ -603,7 +603,7 @@ mod tests {
         assert_eq!(active.status, GoalStatus::Active);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_update_status_complete_sets_completed_at() {
         let pool = test_pool().await;
         ensure_test_session(&pool, "sess1", "proj1").await;
@@ -625,7 +625,7 @@ mod tests {
         assert!(updated.completed_at.is_some());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_update_progress() {
         let pool = test_pool().await;
         ensure_test_session(&pool, "sess1", "proj1").await;
@@ -660,7 +660,7 @@ mod tests {
         assert!(updated.progress_summary.contains("remaining: Module C"));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_increment_usage() {
         let pool = test_pool().await;
         ensure_test_session(&pool, "sess1", "proj1").await;
@@ -695,7 +695,7 @@ mod tests {
         assert_eq!(updated.usage.turns_used, 2);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_increment_usage_budget_limited() {
         let pool = test_pool().await;
         ensure_test_session(&pool, "sess1", "proj1").await;
@@ -722,7 +722,7 @@ mod tests {
         assert_eq!(updated.status, GoalStatus::BudgetLimited);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_set_budget_revives_budget_limited() {
         let pool = test_pool().await;
         ensure_test_session(&pool, "sess1", "proj1").await;
@@ -750,7 +750,7 @@ mod tests {
         assert_eq!(limited.status, GoalStatus::Active);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_clear_active_for_session() {
         let pool = test_pool().await;
         ensure_test_session(&pool, "sess1", "proj1").await;
@@ -778,7 +778,7 @@ mod tests {
         assert!(active.is_none());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_latest_paused_for_session() {
         let pool = test_pool().await;
         ensure_test_session(&pool, "sess1", "proj1").await;

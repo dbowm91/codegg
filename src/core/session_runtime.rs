@@ -137,7 +137,7 @@ mod tests {
         assert!(rt.active_turn.blocking_read().is_none());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn pending_permissions_tracked() {
         let reg = SessionRuntimeRegistry::new();
         let rt = reg.get_or_create("s1", "p1", PathBuf::from("/tmp"));

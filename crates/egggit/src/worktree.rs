@@ -209,7 +209,7 @@ mod tests {
         assert!(!is_git_file(&file));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn list_worktrees_for_repo() {
         let dir = tempfile::TempDir::new().unwrap();
         init_repo(dir.path());

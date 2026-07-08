@@ -312,7 +312,7 @@ pub async fn run_server(
 mod tests {
     use super::*;
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn rate_limiter_reports_remaining_after_consuming_request() {
         let limiter = RateLimiter::new(2, 60);
 

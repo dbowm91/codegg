@@ -599,7 +599,7 @@ mod lsp_hunk_adapter_tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn lsp_hunk_executor_forwards_exact_typed_request() {
         let request = make_request("src/main.rs");
         let response = HunkSourceNavigationResponse::new("src/main.rs");
@@ -622,7 +622,7 @@ mod lsp_hunk_adapter_tests {
         assert_eq!(captured.max_symbols_per_hunk, 10);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn lsp_hunk_executor_propagates_target_response() {
         let request = make_request("src/lib.rs");
         let response = HunkSourceNavigationResponse::new("src/lib.rs");
@@ -635,7 +635,7 @@ mod lsp_hunk_adapter_tests {
         assert_eq!(actual.file_path, response.file_path);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn lsp_hunk_executor_propagates_target_error() {
         let request = make_request("src/bad.rs");
         let target = Arc::new(ErrorTarget {

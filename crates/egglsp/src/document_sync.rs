@@ -119,7 +119,7 @@ mod tests {
         Url::parse(&format!("file://{path}")).unwrap()
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn open_and_retrieve() {
         let reg = OpenDocumentRegistry::new();
         let uri = test_uri("/tmp/test.py");
@@ -131,7 +131,7 @@ mod tests {
         assert_eq!(docs[0].version, 1);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn change_updates_text_and_version() {
         let reg = OpenDocumentRegistry::new();
         let uri = test_uri("/tmp/test.py");
@@ -143,7 +143,7 @@ mod tests {
         assert!(docs[0].dirty);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn save_clears_dirty() {
         let reg = OpenDocumentRegistry::new();
         let uri = test_uri("/tmp/test.py");
@@ -154,7 +154,7 @@ mod tests {
         assert!(!docs[0].dirty);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn close_removes_document() {
         let reg = OpenDocumentRegistry::new();
         let uri = test_uri("/tmp/test.py");
@@ -164,7 +164,7 @@ mod tests {
         assert_eq!(reg.document_count("c").await, 0);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn clear_client_removes_all_for_key() {
         let reg = OpenDocumentRegistry::new();
         let u1 = test_uri("/tmp/a.py");
@@ -176,7 +176,7 @@ mod tests {
         assert_eq!(reg.document_count("c").await, 0);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn clients_are_independent() {
         let reg = OpenDocumentRegistry::new();
         let uri = test_uri("/tmp/test.py");

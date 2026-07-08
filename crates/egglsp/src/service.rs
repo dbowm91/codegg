@@ -4772,19 +4772,19 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn close_non_open_file_succeeds() {
         let svc = LspService::new(LspConfig::Disabled(false));
         assert!(svc.close_file(rust_file()).await.is_ok());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn save_non_open_file_succeeds() {
         let svc = LspService::new(LspConfig::Disabled(false));
         assert!(svc.save_file(rust_file(), Some("text")).await.is_ok());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn lifecycle_starts_running() {
         let svc = LspService::new(LspConfig::Disabled(false));
         let lc = *svc.lifecycle.read().await;
@@ -4792,7 +4792,7 @@ mod tests {
         assert_eq!(lc.generation, 0);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn shutdown_is_idempotent() {
         let svc = LspService::new(LspConfig::Disabled(false));
         svc.shutdown_all().await;
@@ -4801,7 +4801,7 @@ mod tests {
         assert_eq!(svc.lifecycle.read().await.phase, ServiceLifecycle::Stopped);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn get_or_create_client_rejects_after_shutdown() {
         let svc = LspService::new(LspConfig::Disabled(false));
         svc.shutdown_all().await;
@@ -4809,7 +4809,7 @@ mod tests {
         assert!(matches!(result, Err(LspError::InitializationCancelled(_))));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn shutdown_increments_generation() {
         let svc = LspService::new(LspConfig::Disabled(false));
         assert_eq!(svc.lifecycle.read().await.generation, 0);
@@ -4817,7 +4817,7 @@ mod tests {
         assert_eq!(svc.lifecycle.read().await.generation, 1);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn same_key_concurrent_cold_start_invokes_factory_once() {
         let (entered_tx, mut entered_rx) = watch::channel(false);
         let state = std::sync::Arc::new(BlockingFactoryState::new_standard(
@@ -4860,7 +4860,7 @@ mod tests {
         assert!(svc.initializing.lock().await.is_empty());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn second_caller_becomes_waiter_before_leader_spawn() {
         let counter = std::sync::Arc::new(AtomicUsize::new(0));
         let (leader_gate, mut leader_rx) = pause_gate();
@@ -4897,7 +4897,7 @@ mod tests {
         assert_eq!(counter.load(Ordering::SeqCst), 1);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn shared_failure_is_identical_for_all_callers() {
         let (entered_tx, mut entered_rx) = watch::channel(false);
         let state = std::sync::Arc::new(BlockingFactoryState::new_standard(
@@ -4950,7 +4950,7 @@ mod tests {
         assert!(svc.initializing.lock().await.is_empty());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn retry_after_failure_invokes_factory_again() {
         let (entered_tx, mut entered_rx) = watch::channel(false);
         let state = std::sync::Arc::new(BlockingFactoryState::new_standard(
@@ -4994,7 +4994,7 @@ mod tests {
         assert!(svc.initializing.lock().await.is_empty());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn shutdown_during_init_cancels_waiters_and_disposes_client() {
         let (entered_tx, mut entered_rx) = watch::channel(false);
         let shutdown_count = std::sync::Arc::new(AtomicUsize::new(0));
@@ -5055,7 +5055,7 @@ mod tests {
         assert_eq!(svc.lifecycle.read().await.phase, ServiceLifecycle::Stopped);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn publish_before_shutdown_drains_published_client() {
         let (shutdown_gate, mut shutdown_rx) = pause_gate();
         let hooks = std::sync::Arc::new(TestHooks {
@@ -5120,7 +5120,7 @@ mod tests {
         assert_eq!(svc.lifecycle.read().await.phase, ServiceLifecycle::Stopped);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn factory_panic_resolves_all_callers() {
         let svc = std::sync::Arc::new(LspService::test_new(
             LspConfig::Disabled(false),
@@ -5159,7 +5159,7 @@ mod tests {
     /// Test: blocked factory is cancelled during shutdown, leader/waiters
     /// receive cancellation. The wrapper task's drop guard removes the
     /// active-task entry on every terminal path.
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn shutdown_cancels_blocked_factory() {
         let (entered_tx, mut entered_rx) = watch::channel(false);
         let shutdown_count = std::sync::Arc::new(AtomicUsize::new(0));
@@ -5214,7 +5214,7 @@ mod tests {
     /// the notification), so this exercises the cooperative path.
     /// We use the `FutureExitProbe` to assert that the future body
     /// is actually dropped before shutdown returns.
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn cooperative_cancellation_drops_factory_future() {
         // A factory that blocks on `release.notified().await`,
         // which is cancellation-safe. Shutdown signals the
@@ -5285,7 +5285,7 @@ mod tests {
 
     /// Test: concurrent shutdown callers both return after Stopped.
     /// Uses the `watch` channel-based race-free wait.
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn concurrent_shutdown_callers() {
         let (shutdown_gate, mut shutdown_rx) = pause_gate();
         let hooks = std::sync::Arc::new(TestHooks {
@@ -5341,7 +5341,7 @@ mod tests {
 
     /// Test: read-lock concurrency — two read-only operations can proceed
     /// concurrently without exclusive serialization.
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn read_lock_concurrency() {
         let svc = std::sync::Arc::new(LspService::new(LspConfig::Disabled(false)));
 
@@ -5401,7 +5401,7 @@ mod tests {
 
     /// Test: publication race remains safe — either publication occurs and
     /// shutdown drains it, or cancellation prevents publication.
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn publication_race_remains_safe() {
         let shutdown_count = std::sync::Arc::new(AtomicUsize::new(0));
         let (entered_tx, mut entered_rx) = watch::channel(false);
@@ -5449,7 +5449,7 @@ mod tests {
 
     /// Test: normal completion removes the active-task entry without
     /// requiring shutdown to drain the map.
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn normal_completion_removes_active_task_entry() {
         let (entered_tx, mut entered_rx) = watch::channel(false);
         let state = std::sync::Arc::new(BlockingFactoryState::new_standard(
@@ -5495,7 +5495,7 @@ mod tests {
 
     /// Test: ordinary initialization failure removes the active-task
     /// entry without requiring shutdown.
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn ordinary_failure_removes_active_task_entry() {
         let (entered_tx, mut entered_rx) = watch::channel(false);
         let state = std::sync::Arc::new(BlockingFactoryState::new_standard(
@@ -5539,7 +5539,7 @@ mod tests {
     /// Test: cooperative shutdown resolves waiters — the task body
     /// exits cooperatively and the future is dropped before shutdown
     /// returns.
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn cooperative_shutdown_resolves_waiters() {
         // Factory that blocks on `release.notified().await`,
         // which is cancellation-safe.
@@ -5617,7 +5617,7 @@ mod tests {
 
     /// Test: lost-wakeup boundary — concurrent shutdown callers
     /// always observe the final Stopped state.
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn concurrent_shutdown_lost_wakeup_boundary() {
         // No in-flight init tasks; just verify the watch-based
         // coordination works.
@@ -5652,7 +5652,7 @@ mod tests {
     /// cancelled by the `select!` blocks in `run_initialization_attempt`.
     /// This tests that shutdown completes within the global deadline when
     /// the factory future is dropped via cooperative cancellation.
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn global_deadline_finalizes_state() {
         // Factory that blocks forever, ignoring cancellation.
         fn stuck_factory(
@@ -5726,7 +5726,7 @@ mod tests {
     /// been installed, so the entry is never stale.
     ///
     /// Repeatedly in a bounded loop to expose scheduler races.
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn fast_completion_cannot_beat_registration() {
         const ITERATIONS: usize = 20;
 
@@ -5777,7 +5777,7 @@ mod tests {
 
     /// Test: cooperative cancellation is observed. The factory
     /// future body is dropped before shutdown returns (RAII probe).
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn cooperative_cancellation_is_observed() {
         let (entered_tx, mut entered_rx) = watch::channel(false);
         let shutdown_count = std::sync::Arc::new(AtomicUsize::new(0));
@@ -5833,7 +5833,7 @@ mod tests {
     /// key, so this test exercises the grace plumbing with one
     /// task but with multiple concurrent waiters, ensuring the
     /// total shutdown time is bounded by one grace period.
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn many_tasks_share_one_grace_period() {
         // Build a service with a factory that blocks on a release
         // notify.
@@ -5886,7 +5886,7 @@ mod tests {
     /// concurrent fast success/failure attempts across multiple
     /// keys and assert the active map becomes empty without
     /// shutdown.
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn no_stale_active_entries_under_contention() {
         const ITERATIONS: usize = 10;
 
@@ -5965,7 +5965,7 @@ mod tests {
     /// Test: lock-order regression. Force concurrent registration
     /// and shutdown to overlap via the test gate, and assert no
     /// deadlock. Both complete within a bounded time.
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn lock_order_no_deadlock_under_overlap() {
         let (leader_gate, mut leader_rx) = pause_gate();
         let (shutdown_gate, mut shutdown_rx) = pause_gate();
@@ -6024,7 +6024,7 @@ mod tests {
     /// `std::future::pending()` which is cooperatively cancelled by the
     /// `select!` blocks. This tests that shutdown completes, all maps are
     /// drained, and the lifecycle reaches Stopped within the global deadline.
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn global_deadline_fallback_asserts_all_signals() {
         // Stuck factory that ignores cancellation.
         fn stuck_factory(
@@ -6084,7 +6084,7 @@ mod tests {
     /// returns, but the wrapper gets stuck before sending the
     /// completion signal. The grace period expires and
     /// `AbortHandle::abort()` is called.
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn forced_abort_after_grace_period() {
         let (entered_tx, mut entered_rx) = watch::channel(false);
         let release = Notify::new();
@@ -6155,7 +6155,7 @@ mod tests {
     /// applied once across all in-flight tasks (aggregate), not
     /// per-task. Uses N independent roots to avoid single-flight
     /// deduplication so N real init tasks are spawned.
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn aggregate_grace_across_independent_tasks() {
         let (entered_tx, mut entered_rx) = watch::channel(false);
         let release = Notify::new();
@@ -6246,7 +6246,7 @@ mod tests {
     /// whose senders are intentionally retained (never dropped, never
     /// sent to), verifying that the deadline fires and returns them as
     /// still-pending.
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn deadline_fallback_with_unresolvable_completion() {
         let (tx1, rx1) = tokio::sync::oneshot::channel::<InitTaskExit>();
         let (tx2, rx2) = tokio::sync::oneshot::channel::<InitTaskExit>();
@@ -6298,7 +6298,7 @@ mod tests {
     /// Per-client generation starts at `0` (no client published) and
     /// becomes `1` on first publish. A subsequent publish (e.g. via
     /// restart) increments it to `2`.
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn generation_increments_on_publish() {
         let svc = LspService::new(LspConfig::Disabled(false));
         let key = "/tmp:rust-analyzer".to_string();
@@ -6334,7 +6334,7 @@ mod tests {
     /// A stale process-exit event (whose `event.generation` does
     /// not match the authoritative `generation_for_key` value) is
     /// ignored — the operational state is not mutated.
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn stale_exit_event_does_not_mutate_state() {
         use LspProcessExitEvent;
 
@@ -6386,7 +6386,7 @@ mod tests {
     /// Direct unit test for the helper: removal requires an exact
     /// generation match. A stale monitor with a different generation
     /// must not remove the active runtime.
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn runtime_removal_requires_exact_generation() {
         let runtime_map: RuntimeMap = Arc::new(Mutex::new(HashMap::new()));
 
@@ -6426,7 +6426,7 @@ mod tests {
     /// Sequence test: a delayed gen-1 monitor must not remove a
     /// live gen-2 runtime. The active runtime must remain in the
     /// map and be reachable for shutdown intent.
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn old_monitor_cannot_remove_new_runtime() {
         let runtime_map: RuntimeMap = Arc::new(Mutex::new(HashMap::new()));
 
@@ -6463,7 +6463,7 @@ mod tests {
     /// caller receives `RuntimeInstallResult::Rejected { ... }`
     /// and MUST terminate the requested runtime itself; the
     /// helper does not reap it.
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn same_generation_install_is_rejected() {
         let runtime_map: RuntimeMap = Arc::new(Mutex::new(HashMap::new()));
         let runtime1 = spawn_dummy_runtime("gen1").await;
@@ -6518,7 +6518,7 @@ mod tests {
     /// prior generation if it needs to terminate a still-live
     /// prior runtime (the helper itself does NOT terminate
     /// the prior runtime; that is the caller's responsibility).
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn older_generation_replacement_reports_prior_entry() {
         let runtime_map: RuntimeMap = Arc::new(Mutex::new(HashMap::new()));
         let runtime_gen1 = spawn_dummy_runtime("gen1").await;
@@ -6545,7 +6545,7 @@ mod tests {
     /// `terminate_runtime` flips the intent to graceful BEFORE
     /// sending the protocol shutdown request. The runtime's exit
     /// event must therefore classify as expected.
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn graceful_shutdown_marks_exit_expected() {
         let runtime_map: RuntimeMap = Arc::new(Mutex::new(HashMap::new()));
         let runtime = spawn_dummy_runtime("graceful").await;
@@ -6578,7 +6578,7 @@ mod tests {
     /// `terminate_runtime` force-kills and reaps a runtime that
     /// does not exit within the graceful deadline. The force-kill
     /// path is the production safety net for hung processes.
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn hung_process_is_force_killed_and_reaped_via_shutdown_all() {
         // Build an LspService with a published client and a
         // hung-style runtime. The runtime uses a real child
@@ -6640,7 +6640,7 @@ mod tests {
     /// a service that had multiple runtimes. This is the
     /// unconditional postcondition: no live runtime may survive a
     /// successful shutdown.
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn shutdown_all_leaves_no_live_runtime() {
         let svc = LspService::new_arc(LspConfig::Disabled(false));
         let runtime_map = svc.runtime_map.clone();
@@ -6699,7 +6699,7 @@ mod tests {
     /// successive calls. The function does not mutate the
     /// store — only `set_generation` does. This guarantees the
     /// coordinator is the single source of truth.
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn next_generation_is_strictly_monotonic() {
         let svc = LspService::new_arc(LspConfig::Disabled(false));
         let key = "pass3:monotonic";
@@ -6740,7 +6740,7 @@ mod tests {
     /// publication step by simulating what the closure does
     /// (the same `set_generation` call with the value
     /// `next_generation_for_key` produced).
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn reinit_publishes_coordinator_supplied_generation() {
         let svc = LspService::new_arc(LspConfig::Disabled(false));
         let key = "pass3:coordinator_gen".to_string();
@@ -6777,7 +6777,7 @@ mod tests {
     /// generation-calculation rule. Two consecutive restarts
     /// produce generations `2` and `3` with no skipped or
     /// duplicate values.
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn restart_produces_no_skipped_or_duplicate_generations() {
         let svc = LspService::new_arc(LspConfig::Disabled(false));
         let key = "pass3:consecutive";
@@ -6815,7 +6815,7 @@ mod tests {
     /// → LaunchFailed), so the call returns an error — but
     /// we can still verify that the old runtime was drained
     /// from `runtime_map` BEFORE the error.
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn manual_restart_terminates_old_runtime_before_new_start() {
         use std::time::Duration;
         let svc = LspService::new_arc(LspConfig::Disabled(false));
@@ -6858,7 +6858,7 @@ mod tests {
     /// for a different reason — no real LSP server — but
     /// bypassing the disabled-policy check).
     #[cfg(feature = "lsp-test-support")]
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn manual_restart_bypasses_disabled_policy() {
         let svc = LspService::new_arc(LspConfig::Disabled(false));
         let key = "pass4:bypass_disabled".to_string();
@@ -6908,7 +6908,7 @@ mod tests {
     /// `terminate_runtime` (no old runtime to terminate) and
     /// the call still proceeds. This guards against the
     /// "first-ever restart" edge case.
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn manual_restart_with_no_old_runtime_is_a_no_op_termination() {
         let svc = LspService::new_arc(LspConfig::Disabled(false));
         let key = "pass4:no_old_runtime".to_string();
@@ -6953,7 +6953,7 @@ mod tests {
     ///    for gen 2) must remain in `runtime_map` after the
     ///    manual call returns — the manual teardown did NOT
     ///    target the newer generation.
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn manual_detects_generation_advance_during_wait() {
         let svc = LspService::new_arc(LspConfig::Disabled(false));
         let key = "pass2:detect_advance".to_string();
@@ -7051,7 +7051,7 @@ mod tests {
     ///
     /// This is the "no generation advance" baseline that
     /// makes the advance-detection test above non-vacuous.
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn manual_same_generation_proceeds_after_wait() {
         let svc = LspService::new_arc(LspConfig::Disabled(false));
         let key = "pass2:same_generation".to_string();
@@ -7134,7 +7134,7 @@ mod tests {
     ///    or `InitializationCancelled` (the deterministic
     ///    waiter-timeout path); the live client and runtime
     ///    must both remain.
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn manual_timeout_preserves_original_generation() {
         let svc = LspService::new_arc(LspConfig::Disabled(false));
         let key = "pass2:timeout_preserves_generation".to_string();
@@ -7261,7 +7261,7 @@ mod tests {
     /// counterpart of the older
     /// `manual_waits_for_cancelled_automatic_completion`
     /// integration test which accepted a wider bounded set.
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn manual_generation_advance_returns_server_restarted() {
         let svc = LspService::new_arc(LspConfig::Disabled(false));
         let key = "pass4:advance_returns_server_restarted".to_string();
@@ -7328,7 +7328,7 @@ mod tests {
     /// proceeds), exactly one runtime entry and exactly one
     /// live client remain for the key. This guards against
     /// leaked or duplicated state during supersession.
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn one_runtime_and_one_client_after_supersession() {
         let svc = LspService::new_arc(LspConfig::Disabled(false));
         let key = "pass4:one_runtime_one_client".to_string();
@@ -7408,7 +7408,7 @@ mod tests {
     /// last healthy timestamp is missing or the interval
     /// has not yet elapsed, the call returns `None` and the
     /// counter is unchanged.
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn healthy_reset_only_fires_after_reset_interval() {
         let svc = LspService::new_arc(LspConfig::Disabled(false));
         let key = "pass5:healthy_reset";
@@ -7440,7 +7440,7 @@ mod tests {
     /// invocations. The shared counter is the cross-
     /// invocation bound, so a rapid crash cycle drains the
     /// budget across cycles rather than per-invocation.
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn restart_attempts_increments_under_load() {
         let svc = LspService::new_arc(LspConfig::Disabled(false));
         let key = "pass5:increment";
@@ -7471,7 +7471,7 @@ mod tests {
     /// `post_restart` only for generation `2` or higher
     /// (Pass 6). Generation `1` is the cold-start publication
     /// and is NEVER post-restart.
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn generation_one_is_not_post_restart() {
         use crate::client::DiagnosticCacheEntry;
         use crate::diagnostics::LspDiagnosticSource;
@@ -7525,7 +7525,7 @@ mod tests {
     /// `snapshot_diagnostics_for_restart` returns the live
     /// client's cache snapshot. When no live client exists
     /// the snapshot is empty.
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn snapshot_diagnostics_returns_empty_when_no_client() {
         let svc = LspService::new_arc(LspConfig::Disabled(false));
         let snap = svc
@@ -7542,7 +7542,7 @@ mod tests {
     /// the first client-creating path. The bare `new`
     /// constructor remains available for tests but is
     /// documented as un-supervised.
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn new_arc_wires_self_ref() {
         let svc = LspService::new_arc(LspConfig::Disabled(false));
         // The `self_ref` is a `OnceLock<Weak<LspService>>`;
@@ -7564,7 +7564,7 @@ mod tests {
     /// test-only. `shutdown_all` works on the bare
     /// service too (the supervised path is for the
     /// exit-receiver, not for shutdown).
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn bare_new_works_for_tests() {
         let svc = LspService::new(LspConfig::Disabled(false));
         let _ = svc.shutdown_all().await;
@@ -7630,7 +7630,7 @@ mod tests {
     /// failed restart), `operational_health_snapshot` returns a
     /// snapshot. The `Failed` reason and `transport: None` are
     /// surfaced.
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn snapshot_available_during_failed_state() {
         let svc = LspService::new(LspConfig::Disabled(false));
         let key = "/tmp:rust-analyzer".to_string();
@@ -7669,7 +7669,7 @@ mod tests {
 
     /// `transition_operational_state` rejects terminal→terminal
     /// and other invalid moves (e.g. `Stopped` → `Ready`).
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn transition_helper_rejects_invalid_moves() {
         let svc = LspService::new(LspConfig::Disabled(false));
         let key = "/tmp:rust-analyzer".to_string();
@@ -7722,7 +7722,7 @@ mod tests {
 
     /// `transition_operational_state` updates the entry on a
     /// valid move (e.g. `Ready` → `Degraded`).
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn transition_helper_updates_state_on_valid_move() {
         let svc = LspService::new(LspConfig::Disabled(false));
         let key = "/tmp:rust-analyzer".to_string();
@@ -7772,7 +7772,7 @@ mod tests {
         (svc, key)
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn wait_for_readiness_initialized_is_ready_immediately() {
         let (svc, key) = build_minimal_service();
         let policy = LspReadinessPolicy::InitializedIsReady;
@@ -7783,7 +7783,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn wait_for_readiness_warmup_delay_returns_ready_after_sleep() {
         let (svc, key) = build_minimal_service();
         let policy = LspReadinessPolicy::WarmupDelay {
@@ -7802,7 +7802,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn wait_for_readiness_no_client_returns_degraded() {
         let (svc, key) = build_minimal_service();
         // Key has never been published, so the service has no
@@ -7827,14 +7827,14 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn operational_state_for_key_returns_none_for_unknown() {
         let (svc, _) = build_minimal_service();
         let result = svc.operational_state_for_key("nope:rust-analyzer").await;
         assert!(result.is_none());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn wait_for_readiness_timeout_returns_degraded() {
         // Register a client manually so the service has a live
         // client for the key. Then register a progress token

@@ -55,15 +55,10 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      # Full workspace test suite (all features, serial). Shell projection tests
+      # (harness, phase10, redactor, rtk) are included in this run — no separate
+      # rerun needed. See architecture/testing.md for the test taxonomy.
       - run: cargo test --workspace --all-features -- --test-threads=1
-      - name: Shell projection evaluation harness
-        run: cargo test --all-features --test shell_projection_harness
-      - name: Shell projection context budget tests
-        run: cargo test --all-features --test shell_projection_phase10
-      - name: Shell projection redactor unit tests
-        run: cargo test --all-features --lib shell::redactor
-      - name: Shell projection RTK unit tests
-        run: cargo test --all-features --lib shell::rtk
 
   plugin-focused:
     runs-on: ubuntu-latest

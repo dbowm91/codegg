@@ -625,7 +625,7 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_team_manager_creation() {
         let tmp = tempdir().unwrap();
         let manager = Arc::new(TeamManager::new());
@@ -645,13 +645,13 @@ mod tests {
         assert_eq!(team.agent_names(), vec!["worker"]);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_get_nonexistent_team() {
         let manager = Arc::new(TeamManager::new());
         assert!(manager.get_team("nonexistent").await.is_none());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_shared_task_list() {
         let task_list = Arc::new(SharedTaskList::new());
 
@@ -665,7 +665,7 @@ mod tests {
         assert!(task_list.can_start("task2").await);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_idle_notifier() {
         let notifier = Arc::new(IdleNotifier::new());
         let rx = notifier.register("agent1".to_string()).await;

@@ -379,7 +379,7 @@ mod tests {
         assert!(parse_frontmatter("no frontmatter").is_none());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_load_command_from_file() {
         let tmp = tempfile::tempdir().unwrap();
         let content = "---\ndescription: A test command\nagent: build\ntemplate: \"Review the file: {file}\"\n---\nFallback body\n";
@@ -396,7 +396,7 @@ mod tests {
         assert!(cmd.process.is_none());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_load_command_uses_filename() {
         let tmp = tempfile::tempdir().unwrap();
         tokio::fs::write(tmp.path().join("review.md"), "---\n---\nbody")
@@ -408,7 +408,7 @@ mod tests {
         assert_eq!(cmd.name, "review");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_load_command_fallback_to_body() {
         let tmp = tempfile::tempdir().unwrap();
         tokio::fs::write(
@@ -431,7 +431,7 @@ mod tests {
         assert!(validate_command_name("/leading").is_err());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_load_command_missing_frontmatter() {
         let tmp = tempfile::tempdir().unwrap();
         tokio::fs::write(tmp.path().join("nocfm.md"), "no frontmatter")
@@ -442,7 +442,7 @@ mod tests {
             .is_err());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_process_command_yaml_frontmatter() {
         let tmp = tempfile::tempdir().unwrap();
         let content = "---\ndescription: Show quota\nruntime: process\ncommand: python3\nargs: [\"scripts/quota.py\"]\nstdout: text\ntimeout_ms: 5000\n---\n";
@@ -462,7 +462,7 @@ mod tests {
         assert_eq!(proc.timeout_ms, 5000);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_process_command_json_output() {
         let tmp = tempfile::tempdir().unwrap();
         let content = "---\ndescription: Show quota as dialog\nruntime: process\ncommand: python3\nargs: [\"scripts/quota.py\", \"--json\"]\nstdin: json\nstdout: json\ntimeout_ms: 5000\noutput: [\"chat\", \"dialog\"]\n---\n";
@@ -478,7 +478,7 @@ mod tests {
         assert_eq!(proc.output, vec!["chat", "dialog"]);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_process_command_auto_stdout_default() {
         let tmp = tempfile::tempdir().unwrap();
         let content = "---\ndescription: Auto detect\nruntime: process\ncommand: echo\n---\n";
@@ -494,7 +494,7 @@ mod tests {
         assert_eq!(proc.stdin, CommandStdinMode::None); // default
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_process_command_without_command_field_fails() {
         let tmp = tempfile::tempdir().unwrap();
         let content = "---\ndescription: Bad command\nruntime: process\n---\n";
@@ -506,7 +506,7 @@ mod tests {
         assert!(result.unwrap_err().contains("no 'command' field"));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_process_command_env_and_cwd() {
         let tmp = tempfile::tempdir().unwrap();
         let content = "---\ndescription: With env\ncwd: /tmp\nenv: [\"FOO=bar\", \"BAZ=qux\"]\nruntime: process\ncommand: env\n---\n";
@@ -521,7 +521,7 @@ mod tests {
         assert_eq!(proc.env, vec!["FOO=bar", "BAZ=qux"]);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_template_command_still_works() {
         let tmp = tempfile::tempdir().unwrap();
         let content = "---\ndescription: A template\ntemplate: \"Review {args}\"\n---\n";

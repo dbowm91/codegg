@@ -65,7 +65,7 @@ mod tests {
         assert!(t > 0);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_in_memory_store_through_mod() {
         let store = InMemoryArtifactStore::new();
         let artifact = ContextArtifact {
@@ -187,7 +187,7 @@ mod tests {
 
     // --- Artifact tests ---
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_artifact_put_get_roundtrip() {
         let store = InMemoryArtifactStore::new();
         let artifact = ContextArtifact {
@@ -209,14 +209,14 @@ mod tests {
         assert_eq!(got.redacted_content, artifact.redacted_content);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_artifact_missing_handle_returns_none() {
         let store = InMemoryArtifactStore::new();
         let got = store.get("ctx://tool/s1/0/missing").await.unwrap();
         assert!(got.is_none());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_artifact_list_recent_by_session() {
         let store = InMemoryArtifactStore::new();
         for i in 0..5 {
@@ -427,7 +427,7 @@ mod tests {
 
     // --- Phase 2: artifact_store = false skips storage ---
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_artifact_store_false_skips_storage() {
         let store = InMemoryArtifactStore::new();
         // Simulate artifact_store = false by not calling put()
@@ -486,7 +486,7 @@ mod tests {
 
     // --- ContextReadTool tests (additional) ---
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_context_read_tool_preserves_metadata() {
         let store = InMemoryArtifactStore::new();
         let artifact = ContextArtifact {

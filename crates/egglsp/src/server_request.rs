@@ -405,7 +405,7 @@ mod tests {
 
     // ── Configuration tests ──────────────────────────────────────────
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn configuration_matching_section() {
         let ctx = make_context();
         let params = serde_json::json!({
@@ -422,7 +422,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn configuration_unknown_section_returns_null() {
         let ctx = make_context();
         let params = serde_json::json!({
@@ -439,7 +439,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn configuration_empty_items() {
         let ctx = make_context();
         let params = serde_json::json!({"items": []});
@@ -452,7 +452,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn configuration_missing_items_is_invalid() {
         let ctx = make_context();
         let params = serde_json::json!({});
@@ -463,7 +463,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn configuration_multiple_items() {
         let ctx = make_context();
         let params = serde_json::json!({
@@ -486,7 +486,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn configuration_scope_outside_root_returns_null() {
         let ctx = make_context();
         let params = serde_json::json!({
@@ -504,7 +504,7 @@ mod tests {
 
     // ── Workspace folders tests ──────────────────────────────────────
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn workspace_folders_returns_current_root() {
         let ctx = make_context();
         let params = serde_json::json!({});
@@ -521,7 +521,7 @@ mod tests {
 
     // ── Register capability tests ────────────────────────────────────
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn register_capability_records_registration() {
         let ctx = make_context();
         let params = serde_json::json!({
@@ -537,7 +537,7 @@ mod tests {
         assert_eq!(state.count(), 1);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn register_capability_at_limit_returns_error() {
         let ctx = make_context();
         {
@@ -558,7 +558,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn register_missing_registrations_is_invalid() {
         let ctx = make_context();
         let params = serde_json::json!({});
@@ -569,7 +569,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn register_capability_multiple_registrations() {
         let ctx = make_context();
         let params = serde_json::json!({
@@ -585,7 +585,7 @@ mod tests {
         assert_eq!(state.count(), 3);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn register_capability_replacement_at_cap_succeeds() {
         let ctx = make_context();
         {
@@ -606,7 +606,7 @@ mod tests {
         assert_eq!(state.count(), MAX_REGISTRATIONS);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn register_capability_new_above_cap_fails() {
         let ctx = make_context();
         {
@@ -630,7 +630,7 @@ mod tests {
         assert_eq!(state.count(), MAX_REGISTRATIONS);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn register_capability_malformed_entry_rejects_all() {
         let ctx = make_context();
         let params = serde_json::json!({
@@ -652,7 +652,7 @@ mod tests {
         assert_eq!(state.count(), 0);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn register_capability_duplicate_ids_last_write_wins() {
         let ctx = make_context();
         let params = serde_json::json!({
@@ -673,7 +673,7 @@ mod tests {
 
     // ── Unregister capability tests ──────────────────────────────────
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn unregister_capability_removes_registration() {
         let ctx = make_context();
         {
@@ -689,7 +689,7 @@ mod tests {
         assert_eq!(state.count(), 0);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn unregister_unknown_id_succeeds() {
         let ctx = make_context();
         let params = serde_json::json!({"id": "nonexistent"});
@@ -697,7 +697,7 @@ mod tests {
         assert!(matches!(reply, ServerRequestReply::Result(_)));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn unregister_missing_id_is_invalid() {
         let ctx = make_context();
         let params = serde_json::json!({});
@@ -708,7 +708,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn unregister_capability_multiple_unregistrations() {
         let ctx = make_context();
         {
@@ -730,7 +730,7 @@ mod tests {
         assert!(state.get("r2").is_some());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn unregister_capability_protocol_spelling() {
         let ctx = make_context();
         {
@@ -746,7 +746,7 @@ mod tests {
         assert_eq!(state.count(), 0);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn unregister_capability_compat_spelling() {
         let ctx = make_context();
         {
@@ -762,7 +762,7 @@ mod tests {
         assert_eq!(state.count(), 0);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn unregister_capability_unknown_ids_succeeds() {
         let ctx = make_context();
         let params = serde_json::json!({
@@ -775,7 +775,7 @@ mod tests {
         assert!(matches!(reply, ServerRequestReply::Result(_)));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn unregister_capability_empty_array_is_invalid() {
         let ctx = make_context();
         let params = serde_json::json!({
@@ -788,7 +788,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn unregister_capability_array_missing_id_is_invalid() {
         let ctx = make_context();
         let params = serde_json::json!({
@@ -801,7 +801,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn unregister_mixed_valid_and_malformed_rejects_all_atomically() {
         let ctx = make_context();
         {
@@ -836,7 +836,7 @@ mod tests {
 
     // ── WorkDoneProgress/create test ─────────────────────────────────
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn work_done_progress_create_returns_null() {
         let ctx = make_context();
         let params = serde_json::json!({"token": "progress-1"});
@@ -849,7 +849,7 @@ mod tests {
 
     // ── ApplyEdit test ──────────────────────────────────────────────
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn apply_edit_always_rejected() {
         let ctx = make_context();
         let params = serde_json::json!({
@@ -870,7 +870,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn apply_edit_with_changes_refused_as_result() {
         let ctx = make_context();
         let params = serde_json::json!({
@@ -898,7 +898,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn apply_edit_with_document_changes_refused_as_result() {
         let ctx = make_context();
         let params = serde_json::json!({
@@ -929,7 +929,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn apply_edit_with_both_changes_and_document_changes() {
         let ctx = make_context();
         let params = serde_json::json!({
@@ -970,7 +970,7 @@ mod tests {
 
     // ── Unknown method test ──────────────────────────────────────────
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn unknown_method_returns_not_found() {
         let ctx = make_context();
         let reply = dispatch_server_request(&ctx, "unknown/method", serde_json::json!({})).await;
@@ -1045,7 +1045,7 @@ mod tests {
 
     // ── Dispatch timeout tests ──────────────────────────────────────
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn dispatch_completes_within_timeout() {
         // All current handlers are fast and local — verify they complete
         // well within the 5-second SERVER_REQUEST_TIMEOUT.
@@ -1131,7 +1131,7 @@ mod tests {
         assert_eq!(state.count(), MAX_REGISTRATIONS);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn configuration_uses_context_configuration_field() {
         let uri: lsp_types::Uri = "file:///workspace".parse().expect("valid URI");
         // Simulate a context where configuration comes from workspace_configuration

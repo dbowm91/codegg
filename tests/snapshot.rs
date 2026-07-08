@@ -9,7 +9,7 @@ async fn create_test_pool() -> SqlitePool {
     common::pool::isolated_pool().await
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn test_snapshot_capture_empty_dir() {
     let (mut manager, pool) = create_test_manager_with_pool().await;
 
@@ -50,10 +50,6 @@ async fn test_snapshot_capture_empty_dir() {
 
 async fn create_test_manager_with_pool() -> (SnapshotManager, SqlitePool) {
     let pool = create_test_pool().await;
-    // Run migrations
-    codegg::session::schema::migrate(&pool)
-        .await
-        .expect("failed to run migrations");
 
     let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
     (
@@ -126,12 +122,9 @@ fn test_snapshot_view_creation() {
     assert_eq!(snapshot.files.len(), 1);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn test_capture_incremental_uses_old_content() {
     let pool = create_test_pool().await;
-    codegg::session::schema::migrate(&pool)
-        .await
-        .expect("failed to run migrations");
     insert_test_project_and_session(&pool).await;
 
     let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
@@ -156,12 +149,9 @@ async fn test_capture_incremental_uses_old_content() {
     assert_eq!(old.content, "old-main");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn test_capture_incremental_rejects_traversal_path() {
     let pool = create_test_pool().await;
-    codegg::session::schema::migrate(&pool)
-        .await
-        .expect("failed to run migrations");
     insert_test_project_and_session(&pool).await;
 
     let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
@@ -187,14 +177,11 @@ async fn test_capture_incremental_rejects_traversal_path() {
     assert!(!result.files.keys().any(|k| k.contains("..")));
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn test_restore_rejects_traversal_path() {
     use std::collections::HashMap;
 
     let pool = create_test_pool().await;
-    codegg::session::schema::migrate(&pool)
-        .await
-        .expect("failed to run migrations");
     insert_test_project_and_session(&pool).await;
 
     let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
@@ -250,14 +237,11 @@ async fn test_restore_rejects_traversal_path() {
     assert!(root.join("ok.txt").exists());
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn test_restore_to_path_rejects_traversal_path() {
     use std::collections::HashMap;
 
     let pool = create_test_pool().await;
-    codegg::session::schema::migrate(&pool)
-        .await
-        .expect("failed to run migrations");
     insert_test_project_and_session(&pool).await;
 
     let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
@@ -299,12 +283,9 @@ async fn test_restore_to_path_rejects_traversal_path() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn test_capture_skips_binary_and_large_files() {
     let pool = create_test_pool().await;
-    codegg::session::schema::migrate(&pool)
-        .await
-        .expect("failed to run migrations");
     insert_test_project_and_session(&pool).await;
 
     let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
@@ -326,12 +307,9 @@ async fn test_capture_skips_binary_and_large_files() {
     assert!(!snapshot.files.contains_key("src/big.txt"));
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn test_capture_file_count_limit() {
     let pool = create_test_pool().await;
-    codegg::session::schema::migrate(&pool)
-        .await
-        .expect("failed to run migrations");
     insert_test_project_and_session(&pool).await;
 
     let temp_dir = tempfile::tempdir().expect("failed to create temp dir");

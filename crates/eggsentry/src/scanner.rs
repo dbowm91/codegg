@@ -650,7 +650,7 @@ fn main() {
         assert!(secret_findings.is_empty());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn inspect_file_success() {
         let dir = tempfile::tempdir().unwrap();
         let file_path = dir.path().join("test.rs");
@@ -664,7 +664,7 @@ fn main() {
         assert_eq!(unsafe_findings[0].file, Some(file_path));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn inspect_file_too_large() {
         let dir = tempfile::tempdir().unwrap();
         let file_path = dir.path().join("big.txt");
@@ -673,7 +673,7 @@ fn main() {
         assert!(result.is_err());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn inspect_file_not_found() {
         let path = PathBuf::from("/nonexistent/file.txt");
         let result = inspect_file(&path, 1_000_000).await;

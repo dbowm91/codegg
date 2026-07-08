@@ -2115,7 +2115,7 @@ mod tests {
 
     // ── Tests ────────────────────────────────────────────────────
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn coordinator_exhausts_attempts_and_returns_failed() {
         let shared = MockShared::new();
         // Initial state must be `Ready` (or any valid source state)
@@ -2142,7 +2142,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn coordinator_cancels_on_shutdown() {
         let shared = MockShared::new();
         // Drive service into ShuttingDown before coordinator runs.
@@ -2161,7 +2161,7 @@ mod tests {
         assert!(matches!(result, Err(LspError::InitializationCancelled(_))));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn coordinator_succeeds_on_third_attempt() {
         let shared = MockShared::new();
         let descriptor = dummy_descriptor("test:rust-analyzer");
@@ -2192,7 +2192,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn coordinator_rejects_stale_generation() {
         // The reinit closure needs to mutate the shared state
         // mid-loop to bump the generation. MockShared has
@@ -2222,7 +2222,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn coordinator_replays_documents_on_success() {
         let shared = MockShared::new();
         // Seed two open documents for the key.
@@ -2267,7 +2267,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn coordinator_disabled_policy_blocks_automatic_only() {
         let shared = MockShared::new();
         let mut descriptor = dummy_descriptor("test:rust-analyzer");
@@ -2312,7 +2312,7 @@ mod tests {
     /// snapshot stored in the document registry is unchanged
     /// (the replay uses the snapshot's version, not the registry's
     /// current version).
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn replay_uses_snapshot_version_not_one() {
         let shared = MockShared::new();
         // Seed a document with version=5 (a non-trivial value).
@@ -2363,7 +2363,7 @@ mod tests {
     /// Replay failure must transition the operational state to
     /// `Degraded` and return an error. The coordinator must NOT
     /// mark the client `Ready` after a replay failure.
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn replay_failure_transitions_to_degraded() {
         // We test `replay_documents` directly: the helper
         // transitions to Degraded on failure. We construct a
@@ -2425,7 +2425,7 @@ mod tests {
     /// rewrite. This test asserts the coordinator does NOT call
     /// `mark_diagnostics_stale_for_key` after a successful
     /// restart.
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn coordinator_preserves_retained_diagnostic_metadata() {
         let shared = MockShared::new();
         // Seed a document so replay has something to do.
@@ -2466,7 +2466,7 @@ mod tests {
     // ── Pass 1 — Per-key restart ownership serialization ─────────
 
     /// First acquisition wins; second sees `AlreadyInProgress`.
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn acquire_restart_ownership_serializes_concurrent_callers() {
         let map: RestartTaskMap = Arc::new(Mutex::new(HashMap::new()));
         let counter = Arc::new(AtomicU64::new(0));
@@ -2499,7 +2499,7 @@ mod tests {
     }
 
     /// Owner cleanup must not remove a newer owner's entry.
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn restart_lease_cleanup_is_owner_safe() {
         let map: RestartTaskMap = Arc::new(Mutex::new(HashMap::new()));
         let counter = Arc::new(AtomicU64::new(0));
@@ -2536,7 +2536,7 @@ mod tests {
     /// coordinator. We start a long-backoff coordinator and
     /// cancel the lease token; the coordinator must observe the
     /// cancellation and abort with `InitializationCancelled`.
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn lease_token_cancellation_aborts_coordinator() {
         let shared = MockShared::new();
         let mut descriptor = dummy_descriptor("test:rust-analyzer");
@@ -2577,7 +2577,7 @@ mod tests {
     /// the coordinator MUST spawn exactly 3 reinit calls before
     /// returning `LaunchFailed`. The mock increments a counter
     /// each time the reinit closure is invoked.
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn max_three_allows_exactly_three_replacement_spawns() {
         let shared = MockShared::new();
         let mut descriptor = dummy_descriptor("test:rust-analyzer");
@@ -2613,7 +2613,7 @@ mod tests {
 
     /// Pass 3 — pre-seeded counter at the budget MUST reject the
     /// next reservation before any spawn.
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn attempt_at_budget_is_rejected_before_spawn() {
         let shared = MockShared::new();
         let mut descriptor = dummy_descriptor("test:rust-analyzer");
@@ -2654,7 +2654,7 @@ mod tests {
     /// Pass 3 — failed initialization counts as one replacement
     /// launch. With `max_attempts = 2`, the reinit fails twice
     /// (counter == 2) and the coordinator returns LaunchFailed.
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn failed_initialization_consumes_attempt() {
         let shared = MockShared::new();
         let mut descriptor = dummy_descriptor("test:rust-analyzer");
@@ -2696,7 +2696,7 @@ mod tests {
     /// `AlreadyInProgress` even after the first owner's token
     /// was cancelled. The control entry is only removed when
     /// the owner releases (signals `Finished`).
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn cancel_does_not_release_restart_slot() {
         let map: RestartTaskMap = Arc::new(Mutex::new(HashMap::new()));
         let counter = Arc::new(AtomicU64::new(0));
@@ -2731,7 +2731,7 @@ mod tests {
     /// barrier to keep the first owner installed, cancel its
     /// token, then release it; the waiter must observe
     /// `Finished` exactly once.
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn owner_completion_waiter_resolves_on_release() {
         let map: RestartTaskMap = Arc::new(Mutex::new(HashMap::new()));
         let counter = Arc::new(AtomicU64::new(0));
@@ -2774,7 +2774,7 @@ mod tests {
     /// the new completion-channel signaling (the older lease
     /// sends Finished on its own channel which is detached, and
     /// the map entry removal is owner-id-gated).
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn old_owner_release_cannot_remove_new_owner() {
         let map: RestartTaskMap = Arc::new(Mutex::new(HashMap::new()));
         let counter = Arc::new(AtomicU64::new(0));
@@ -2827,7 +2827,7 @@ mod tests {
     /// already passed (the closure is running), and the
     /// post-spawn check is the next boundary the coordinator
     /// evaluates.
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn coordinator_removes_unpublished_client_when_lease_cancelled_after_spawn() {
         let shared = MockShared::new();
         let mut descriptor = dummy_descriptor("test:rust-analyzer");
@@ -2921,7 +2921,7 @@ mod tests {
     /// guard directly because the production path cannot
     /// easily race a replacement between the closure return
     /// and the cancellation check without a process runtime.
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn remove_unpublished_client_does_not_touch_newer_client() {
         use super::super::restart::remove_unpublished_client_if_generation;
 
@@ -2968,7 +2968,7 @@ mod tests {
     /// via [`terminate_unpublished_runtime_for_test`]; the
     /// generation-scope guard is the same code path used by
     /// the production coordinator's cancellation cleanup.
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn terminate_unpublished_runtime_does_not_disturb_newer_runtime() {
         // Seed an empty runtime map. We can't easily build a
         // real `LspProcessRuntime` from a unit test (it owns
@@ -3002,7 +3002,7 @@ mod tests {
     /// against a `MockShared` whose readiness policy times out
     /// (no client present, no diagnostics, no progress) and
     /// assert the live outcome.
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn degraded_restart_returns_live_outcome() {
         let shared = MockShared::new();
         let mut descriptor = dummy_descriptor("test:rust-analyzer");
@@ -3072,7 +3072,7 @@ mod tests {
     /// budget counter. The coordinator already incremented
     /// `restart_attempts` via the reservation helper; the
     /// readiness-timeout branch must not roll it back.
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn degraded_restart_does_not_reset_budget() {
         let shared = MockShared::new();
         let mut descriptor = dummy_descriptor("test:rust-analyzer");
@@ -3130,7 +3130,7 @@ mod tests {
     /// Pass 6 — A degraded restart MUST leave the live client
     /// published and observable in the live-clients map. A
     /// later process exit continues from the existing budget.
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn degraded_client_remains_published() {
         let shared = MockShared::new();
         let mut descriptor = dummy_descriptor("test:rust-analyzer");
@@ -3316,7 +3316,7 @@ mod tests {
     ///    directly with a short timeout).
     /// 2. While the waiter is unresolved, the existing client
     ///    must remain installed in the clients map.
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn manual_timeout_does_not_touch_current_client() {
         use super::cancel_restart_ownership;
 
@@ -3386,7 +3386,7 @@ mod tests {
     /// `coordinator_removes_unpublished_client_when_lease_cancelled_after_spawn`
     /// test, exercised through the public coordinator entry
     /// point with a real cancellation token.
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn cancel_after_spawn_reaps_replacement() {
         use tokio_util::sync::CancellationToken;
 
@@ -3467,7 +3467,7 @@ mod tests {
     /// `install_runtime_for_test` with the SAME generation and
     /// assert the result is `Rejected`. The test-only API
     /// matches the production install path.
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn rejected_runtime_install_reaps_loser() {
         use super::super::service::{
             install_runtime_for_test_v2, RuntimeEntry, RuntimeInstallResultForTest,
@@ -3532,7 +3532,7 @@ mod tests {
     /// late release MUST NOT remove a newer owner's entry even
     /// if the older owner holds a valid completion sender that
     /// sends `Finished`.
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn old_owner_completion_cannot_release_new_owner() {
         use super::{
             acquire_restart_ownership, RestartCompletion, RestartLeaseAcquisition,
@@ -3605,7 +3605,7 @@ mod tests {
     /// path must observe the newer generation on re-read and
     /// return `ServerRestarted` rather than tearing down the
     /// newer generation's runtime.
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn manual_revalidates_generation_after_wait() {
         let generation_map: Arc<Mutex<HashMap<String, u64>>> = Arc::new(Mutex::new(HashMap::new()));
 
@@ -3639,7 +3639,7 @@ mod tests {
     /// `Ok(RestartOutcome::Degraded { reason })` when readiness
     /// times out, NOT `Err(LaunchFailed(_))`. A live degraded
     /// client must remain published.
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn degraded_restart_is_live_outcome() {
         let shared = MockShared::new();
         let mut descriptor = dummy_descriptor("test:rust-analyzer");
@@ -3712,7 +3712,7 @@ mod tests {
     /// after `cancel_restart_ownership` returns must see
     /// `AlreadyInProgress` because the entry stays installed
     /// until the owner signals completion.
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn cancel_does_not_remove_restart_owner() {
         let map: RestartTaskMap = Arc::new(Mutex::new(HashMap::new()));
         let counter = Arc::new(AtomicU64::new(0));
@@ -3759,7 +3759,7 @@ mod tests {
     /// readiness mock holds the coordinator inside the
     /// readiness check long enough for the cancellation to be
     /// observable from a concurrent cancel task.
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn post_publication_cancellation_returns_live_outcome() {
         let shared = MockShared::new();
         let mut descriptor = dummy_descriptor("test:rust-analyzer");
@@ -3862,7 +3862,7 @@ mod tests {
     /// observably fires *after* the publication boundary). The
     /// forced readiness mock returns `Ready` so the coordinator
     /// can reach the success branch.
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn cancellation_after_publication_finishes_replacement() {
         let shared = MockShared::new();
         let mut descriptor = dummy_descriptor("test:rust-analyzer");
@@ -3976,7 +3976,7 @@ mod tests {
     /// that the post-publication policy (Pass 3) preserves:
     /// cancellation between reinit return and coordinator
     /// publication must NOT leak the unpublished client.
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn cancellation_before_publication_still_reaps_replacement() {
         let shared = MockShared::new();
         let mut descriptor = dummy_descriptor("test:rust-analyzer");
@@ -4072,7 +4072,7 @@ mod tests {
     /// becomes free and a new acquisition succeeds. This locks
     /// down the invariant that `Finished` is the ownership
     /// release boundary, not the cancellation signal.
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn completion_release_allows_new_owner() {
         let map: RestartTaskMap = Arc::new(Mutex::new(HashMap::new()));
         let counter = Arc::new(AtomicU64::new(0));
@@ -4130,7 +4130,7 @@ mod tests {
     /// have been removed depending on the lock contention.
     /// We then verify the wait returns Err within a generous
     /// timeout.
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn closed_completion_without_release_is_not_success() {
         let map: RestartTaskMap = Arc::new(Mutex::new(HashMap::new()));
         let counter = Arc::new(AtomicU64::new(0));
@@ -4182,7 +4182,7 @@ mod tests {
     /// `AlreadyInProgress`. Only an explicit owner release (which
     /// signals `Finished` and removes the entry) frees the slot
     /// for a new acquisition.
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn cancelled_owner_retains_slot_until_finished() {
         use super::super::restart::cancel_restart_ownership;
 
@@ -4252,7 +4252,7 @@ mod tests {
     /// this by holding a lease alive across the cancellation
     /// and release sequence and asserting that a second
     /// acquisition is blocked while the lease is held.
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn manual_acquires_only_after_finished() {
         use super::super::restart::cancel_restart_ownership;
 
@@ -4325,7 +4325,7 @@ mod tests {
     /// `verify_slot_free` step MUST succeed. This is the happy
     /// path that lets manual supersession proceed after the
     /// in-flight automatic restart exits cleanly.
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn finished_signal_after_release_resolves_waiter() {
         use super::super::restart::cancel_restart_ownership;
 
@@ -4386,7 +4386,7 @@ mod tests {
     /// race the removal, observe `Finished`, and either return
     /// `Ok` while the slot was still installed (false success) or
     /// block forever behind the contended lock.
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn finished_is_not_observable_until_slot_is_removed() {
         use super::super::restart::cancel_restart_ownership;
 
@@ -4493,7 +4493,7 @@ mod tests {
     /// separate task, then verify the waiter observes
     /// `Finished` only after the lock releases and the cleanup
     /// task removes the entry.
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn drop_fallback_removes_before_finished() {
         use super::super::restart::cancel_restart_ownership;
 
@@ -4562,7 +4562,7 @@ mod tests {
     /// MUST NOT send `Finished` (because the slot is not theirs
     /// to free). The newer owner's wait and acquisition must
     /// remain unblocked by the older owner's signal.
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn old_owner_release_does_not_signal_for_new_owner() {
         use super::super::restart::cancel_restart_ownership;
 
@@ -4666,7 +4666,7 @@ mod tests {
     /// `RestartLease`. Instead, we exercise the same code path
     /// by manually holding the lease past the bounded wait and
     /// asserting the waiter returns an error.
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn completion_channel_close_without_finished_is_error() {
         use super::super::restart::cancel_restart_ownership;
 
@@ -4737,7 +4737,7 @@ mod tests {
     ///    remove-before-signal completes).
     /// 8. Assert the slot is absent and a new acquisition
     ///    succeeds with a fresh owner_id.
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn cancelled_async_release_falls_back_to_drop_cleanup() {
         use super::super::restart::cancel_restart_ownership;
 
@@ -4865,7 +4865,7 @@ mod tests {
     /// includes the in-flight owner id so the caller can
     /// correlate the failure with the original coordinator.
     /// We assert the owner id appears in the error message.
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn completion_channel_close_error_names_owner() {
         use super::super::restart::cancel_restart_ownership;
 
@@ -4915,7 +4915,7 @@ mod tests {
     /// correlate the failure and reason about bounded waits.
     /// We assert both the owner id and a bounded-wait hint
     /// appear in the error message.
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn completion_timeout_error_names_owner() {
         use super::super::restart::cancel_restart_ownership;
 

@@ -341,7 +341,7 @@ fn make_packet_with_items(items: Vec<LspContextItem>) -> LspContextPacket {
 // Tests
 // ===========================================================================
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn phase5_context_packet_budget_enforcement() {
     let mut items = Vec::new();
     for i in 0..50 {
@@ -393,7 +393,7 @@ async fn phase5_context_packet_budget_enforcement() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn phase5_context_packet_dedup_and_ranking() {
     let items = vec![
         make_item(LspContextItemKind::Diagnostic, "a.rs", Some(5), "first", 10),
@@ -428,7 +428,7 @@ async fn phase5_context_packet_dedup_and_ranking() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn phase5_security_summary_risk_tags() {
     let packet = LspContextPacket {
         request: LspContextRequest::Review {
@@ -475,7 +475,7 @@ async fn phase5_security_summary_risk_tags() {
         .contains(&SecurityRiskTag::ImplementationHierarchyAffected));
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn phase5_agent_context_render_budgeted() {
     let items = vec![
         make_item(LspContextItemKind::Diagnostic, "a.rs", Some(0), "err", 10),
@@ -494,7 +494,7 @@ async fn phase5_agent_context_render_budgeted() {
     assert!(!rendered.contains("## References"));
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn phase5_preview_artifact_non_mutating() {
     let mut registry = PreviewArtifactRegistry::new();
 
@@ -540,7 +540,7 @@ async fn phase5_preview_artifact_non_mutating() {
     assert_eq!(registry.len(), 3);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn phase5_degraded_lsp_opportunistic_context() {
     let decision = evaluate_degradation(&LspContextMode::Opportunistic, false, true);
 
@@ -553,7 +553,7 @@ async fn phase5_degraded_lsp_opportunistic_context() {
     }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn phase5_required_lsp_failure() {
     let decision = evaluate_degradation(&LspContextMode::Required, false, true);
 
@@ -565,7 +565,7 @@ async fn phase5_required_lsp_failure() {
     }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn phase5_tui_summary_states() {
     // Ready state.
     let items = vec![make_item(
@@ -618,7 +618,7 @@ async fn phase5_tui_summary_states() {
     assert_eq!(summary.server_status, "unavailable");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn phase5_full_pipeline_file_request() {
     let provider = MockProvider::new();
     *provider.diagnostics.lock().unwrap() = vec![
@@ -683,7 +683,7 @@ async fn phase5_full_pipeline_file_request() {
     assert!(line.contains("0def")); // no definitions (symbols are separate)
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn phase5_full_pipeline_hunk_request() {
     let provider = MockProvider::new();
     *provider.diagnostics.lock().unwrap() = vec![
@@ -746,7 +746,7 @@ async fn phase5_full_pipeline_hunk_request() {
     assert!(!refs.is_empty());
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn phase5_evidence_collector_opportunistic_degradation() {
     // FailProvider returns errors for all operations.
     // In Opportunistic mode, should still return a packet (partial results).
@@ -775,7 +775,7 @@ async fn phase5_evidence_collector_opportunistic_degradation() {
     assert!(notes[0].message.contains("failed"));
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn phase5_disabled_mode_returns_empty() {
     let provider = MockProvider::new();
     *provider.diagnostics.lock().unwrap() = vec![(
@@ -804,7 +804,7 @@ async fn phase5_disabled_mode_returns_empty() {
     assert!(packet.notes.contains(&"disabled".to_string()));
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn phase5_tui_summary_detail_full() {
     let items = vec![
         make_item(LspContextItemKind::Diagnostic, "a.rs", Some(5), "err", 10),
@@ -847,7 +847,7 @@ async fn phase5_tui_summary_detail_full() {
     assert!(detail.contains("Notes: (none)"));
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn phase5_degradation_full_collect_when_all_good() {
     let decision = evaluate_degradation(&LspContextMode::Opportunistic, true, true);
     assert_eq!(decision, LspContextDegradeDecision::FullCollect);
@@ -856,7 +856,7 @@ async fn phase5_degradation_full_collect_when_all_good() {
     assert_eq!(decision, LspContextDegradeDecision::FullCollect);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn phase5_degradation_disabled_always_skips() {
     let decision = evaluate_degradation(&LspContextMode::Disabled, true, true);
     assert_eq!(
@@ -875,7 +875,7 @@ async fn phase5_degradation_disabled_always_skips() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn phase5_security_summary_empty_packet() {
     let packet = LspContextPacket {
         request: LspContextRequest::Review {
@@ -907,7 +907,7 @@ async fn phase5_security_summary_empty_packet() {
     assert!(!summary.truncated);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn phase5_opportunistic_partial_on_unsupported_capability() {
     let decision = evaluate_degradation(&LspContextMode::Opportunistic, true, false);
     match decision {
@@ -919,7 +919,7 @@ async fn phase5_opportunistic_partial_on_unsupported_capability() {
     }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn phase5_required_fail_on_unsupported_capability() {
     let decision = evaluate_degradation(&LspContextMode::Required, true, false);
     match decision {
@@ -934,7 +934,7 @@ async fn phase5_required_fail_on_unsupported_capability() {
 // Security packet tests (Pass 4 gaps)
 // ---------------------------------------------------------------------------
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn phase5_security_packet_includes_changed_diagnostics() {
     let provider = MockProvider::new();
     *provider.diagnostics.lock().unwrap() = vec![(
@@ -972,7 +972,7 @@ async fn phase5_security_packet_includes_changed_diagnostics() {
     assert_eq!(summary.diagnostics_count, 1);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn phase5_security_packet_caps_reference_clusters() {
     let provider = MockProvider::new();
     // 50 symbols, each with 10 references → 500 total, but budget caps at 30.
@@ -1016,7 +1016,7 @@ async fn phase5_security_packet_caps_reference_clusters() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn phase5_security_packet_never_executes_code_actions() {
     let provider = MockProvider::new();
 
@@ -1048,7 +1048,7 @@ async fn phase5_security_packet_never_executes_code_actions() {
     }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn phase5_security_packet_budget_truncation_visible() {
     let provider = MockProvider::new();
     // 100 diagnostics, budget at 5.
@@ -1092,7 +1092,7 @@ async fn phase5_security_packet_budget_truncation_visible() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn phase5_security_packet_stale_evidence_marked() {
     let provider = MockProvider::new();
     *provider.state.lock().unwrap() = "degraded".to_string();
@@ -1134,7 +1134,7 @@ async fn phase5_security_packet_stale_evidence_marked() {
 // Hunk context tests (Pass 3 gaps)
 // ---------------------------------------------------------------------------
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn phase5_hunk_context_does_not_include_unrelated_file_flood() {
     let provider = MockProvider::new();
     // Diagnostics in 10 different files, only 1 in the hunk's file.
@@ -1187,7 +1187,7 @@ async fn phase5_hunk_context_does_not_include_unrelated_file_flood() {
     assert_eq!(diagnostics[0].message, "in hunk file");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn phase5_hunk_context_marks_stale_evidence() {
     let provider = MockProvider::new();
     *provider.state.lock().unwrap() = "initializing".to_string();
@@ -1229,7 +1229,7 @@ async fn phase5_hunk_context_marks_stale_evidence() {
     }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn phase5_hunk_context_caps_references_composite() {
     let provider = MockProvider::new();
     *provider.refs.lock().unwrap() = (0..100)
@@ -1272,7 +1272,7 @@ async fn phase5_hunk_context_caps_references_composite() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn phase5_security_packet_marks_public_api_reference_fanout() {
     let provider = MockProvider::new();
     // Symbols in the changed file — review path uses these to find positions
@@ -1336,7 +1336,7 @@ async fn phase5_security_packet_marks_public_api_reference_fanout() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn phase5_security_packet_degrades_without_lsp() {
     // Mock provider returns "deaded" state — simulates LSP unavailable.
     let provider = MockProvider::new();
@@ -1375,7 +1375,7 @@ async fn phase5_security_packet_degrades_without_lsp() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn phase5_budget_limits_ranges_per_file() {
     use egglsp::context::enforce_context_budget;
 
@@ -1421,7 +1421,7 @@ async fn phase5_budget_limits_ranges_per_file() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn phase5_agent_context_omits_disabled_section() {
     use egglsp::context_renderer::{
         render_lsp_context_for_agent, LspContextRenderConfig, ModelTier,
@@ -1465,7 +1465,7 @@ async fn phase5_agent_context_omits_disabled_section() {
     assert!(rendered.contains("## Diagnostics"));
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn phase5_agent_context_does_not_render_raw_large_payloads() {
     use egglsp::context_renderer::{render_lsp_context_for_agent, LspContextRenderConfig};
 
@@ -1501,7 +1501,7 @@ async fn phase5_agent_context_does_not_render_raw_large_payloads() {
     assert!(rendered.contains("|"), "should have item separator");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn phase5_lsp_summary_preview_stale() {
     use egglsp::preview_registry::PreviewArtifactRegistry;
     use egglsp::tui_summary::build_tui_summary;
@@ -1545,7 +1545,7 @@ async fn phase5_lsp_summary_preview_stale() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn phase5_initializing_state_records_note() {
     let provider = MockProvider::new();
     *provider.state.lock().unwrap() = "initializing".to_string();
@@ -1610,7 +1610,7 @@ mod production_seam_tests {
         p
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn production_adapter_collects_diagnostics() {
         let provider = make_provider_with_diagnostics(
             "rust-analyzer",
@@ -1647,7 +1647,7 @@ mod production_seam_tests {
         assert_eq!(diag.provenance.server_id, "rust-analyzer");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn production_adapter_collects_diagnostics_via_review() {
         let p = MockProvider::new();
         *p.server_id.lock().unwrap() = Some("test-server".to_string());
@@ -1684,7 +1684,7 @@ mod production_seam_tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn production_adapter_records_generation_and_freshness() {
         let provider = make_provider_with_diagnostics(
             "gen-5-server",
@@ -1824,7 +1824,7 @@ mod production_seam_tests {
     // Pass 9: additional production-seam tests
     // -----------------------------------------------------------------------
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn production_adapter_collects_references() {
         let p = MockProvider::new();
         *p.server_id.lock().unwrap() = Some("rust-analyzer".to_string());
@@ -1872,7 +1872,7 @@ mod production_seam_tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn production_adapter_collects_hover_via_symbol_request() {
         let p = MockProvider::new();
         *p.server_id.lock().unwrap() = Some("rust-analyzer".to_string());
@@ -1903,7 +1903,7 @@ mod production_seam_tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn production_adapter_records_unsupported_capability() {
         let p = MockProvider::new();
         *p.server_id.lock().unwrap() = Some("basedpyright".to_string());
@@ -2044,7 +2044,7 @@ mod production_seam_tests {
         // The collector silently skips failed operations.
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn production_adapter_collects_workspace_symbols() {
         let p = MockProvider::new();
         *p.server_id.lock().unwrap() = Some("rust-analyzer".to_string());
@@ -2088,7 +2088,7 @@ mod production_seam_tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn production_adapter_records_generation_on_all_items() {
         let p = MockProvider::new();
         *p.server_id.lock().unwrap() = Some("gen-server".to_string());
@@ -2225,7 +2225,7 @@ mod phase5_no_mutation_sweep {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn phase5_agent_context_collection_does_not_apply_rename() {
         let dir = TempDir::new().expect("tempdir");
         let root = dir.path().to_path_buf();
@@ -2294,7 +2294,7 @@ mod phase5_no_mutation_sweep {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn phase5_agent_context_collection_does_not_apply_formatting() {
         let dir = TempDir::new().expect("tempdir");
         let root = dir.path().to_path_buf();
@@ -2355,7 +2355,7 @@ mod phase5_no_mutation_sweep {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn phase5_agent_context_collection_does_not_execute_code_action_command() {
         let dir = TempDir::new().expect("tempdir");
         let root = dir.path().to_path_buf();

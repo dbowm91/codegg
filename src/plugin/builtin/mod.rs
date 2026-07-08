@@ -260,7 +260,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn register_builtins_populates_registry_hook_indexes() {
         let registry = crate::plugin::registry::PluginRegistry::new();
         register_builtins(&registry).await;
@@ -275,7 +275,7 @@ mod tests {
         assert!(plugin_ids.contains(&"builtin:poe"));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn disabling_builtin_excludes_its_capabilities_from_queries() {
         let registry = crate::plugin::registry::PluginRegistry::new();
         register_builtins(&registry).await;
@@ -301,7 +301,7 @@ mod tests {
         assert!(plugin_ids.contains(&"builtin:poe"));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn invoking_builtin_through_plugin_service_reaches_builtin_runtime() {
         let registry = Arc::new(crate::plugin::registry::PluginRegistry::new());
         register_builtins(&registry).await;
@@ -326,7 +326,7 @@ mod tests {
     /// `PluginService::invoke_command` for a builtin plugin must reject with
     /// a runtime error (no builtin command handler exists). This guards
     /// against the old placeholder-success behavior.
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn builtin_command_invocation_is_rejected_by_service() {
         use crate::plugin::runtime::builtin::{BuiltinHandlerRegistry, BuiltinRuntime};
         let registry = Arc::new(crate::plugin::registry::PluginRegistry::new());
