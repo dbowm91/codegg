@@ -33,6 +33,7 @@ pub mod security;
 pub mod shell;
 pub mod shell_session;
 pub mod skills;
+pub mod test_runner;
 pub mod theme;
 pub mod tool;
 pub mod tts;

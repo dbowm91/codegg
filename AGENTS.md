@@ -118,6 +118,9 @@ cargo test -p codegg --lib shell::redactor
 # Shell projection RTK unit tests (no RTK binary required)
 cargo test -p codegg --lib shell::rtk
 
+# Test runner module (resolver, parser, report formatter)
+cargo test -p codegg --lib test_runner
+
 # LSP integration (fake server, no network, needs lsp-test-support)
 cargo test -p egglsp --features lsp-test-support --test scenario_engine
 cargo test --features lsp-test-support --test lsp_composite_stdio
