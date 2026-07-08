@@ -203,13 +203,14 @@ fn resolve_deterministic_config(config: &Config) -> DeterministicToolsRuntimeCon
         None => return DeterministicToolsRuntimeConfig::default(),
     };
 
-    let profile = dt.profile.clone();
+    let mut profile = dt.profile.clone();
     if !KNOWN_EGGSACT_PROFILES.contains(&profile.as_str()) {
         tracing::warn!(
             profile = %profile,
             known = ?KNOWN_EGGSACT_PROFILES,
-            "unknown eggsact profile; falling back to Default profile"
+            "unknown eggsact profile; falling back to codegg_core"
         );
+        profile = "codegg_core".to_string();
     }
 
     if !dt.enabled {
@@ -348,7 +349,7 @@ mod tests {
     }
 
     #[test]
-    fn unknown_profile_emits_warning() {
+    fn unknown_profile_emits_warning_and_canonicalizes() {
         use crate::config::schema::DeterministicToolsConfig;
 
         let config = Config {
@@ -359,10 +360,8 @@ mod tests {
             ..Default::default()
         };
 
-        // The warning is logged via tracing::warn; we just verify
-        // the config resolves without panicking.
         let resolved = resolve_integrated_config(&config);
         let deterministic = resolved.deterministic.unwrap();
-        assert_eq!(deterministic.profile, "nonexistent_profile");
+        assert_eq!(deterministic.profile, "codegg_core");
     }
 }

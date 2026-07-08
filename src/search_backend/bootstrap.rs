@@ -7,7 +7,7 @@
 //! wrapper tools will return a clear actionable error and the
 //! agent loop continues without the raw MCP tools exposed.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use tokio::sync::RwLock;
@@ -16,6 +16,19 @@ use crate::config::schema::{Config, SearchBackendConfig, SearchConfig};
 use crate::mcp::McpService;
 
 use super::state;
+
+/// Required eggsearch tools — if missing, the integration is incompatible
+pub const EGGSEARCH_REQUIRED_TOOLS: &[&str] = &["web_search", "web_fetch"];
+/// Recommended eggsearch tools — if missing, support is partial but functional
+pub const EGGSEARCH_RECOMMENDED_TOOLS: &[&str] = &[
+    "batch_fetch",
+    "repo_search",
+    "repo_fetch",
+    "repo_map",
+    "security_search",
+    "research_search",
+    "build_evidence_bundle",
+];
 
 /// Connect eggsearch from config and install shared state. Returns
 /// the `Arc<RwLock<McpService>>` that the agent loop should use, or
@@ -291,6 +304,54 @@ pub struct BootstrapReport {
 }
 
 impl BootstrapReport {
+    /// Returns the tool coverage classification:
+    /// - "complete" if all required + recommended tools are present
+    /// - "partial" if all required but some recommended are missing
+    /// - "incompatible" if any required tools are missing
+    pub fn tool_coverage_status(&self) -> &str {
+        let discovered: HashSet<&str> = self.tools.iter().map(|s| s.as_str()).collect();
+
+        let required_missing: Vec<_> = EGGSEARCH_REQUIRED_TOOLS
+            .iter()
+            .filter(|t| !discovered.contains(*t))
+            .collect();
+
+        if !required_missing.is_empty() {
+            return "incompatible";
+        }
+
+        let recommended_missing: Vec<_> = EGGSEARCH_RECOMMENDED_TOOLS
+            .iter()
+            .filter(|t| !discovered.contains(*t))
+            .collect();
+
+        if !recommended_missing.is_empty() {
+            return "partial";
+        }
+
+        "complete"
+    }
+
+    /// Returns names of missing required tools
+    pub fn missing_required_tools(&self) -> Vec<&str> {
+        let discovered: HashSet<&str> = self.tools.iter().map(|s| s.as_str()).collect();
+        EGGSEARCH_REQUIRED_TOOLS
+            .iter()
+            .filter(|t| !discovered.contains(*t))
+            .copied()
+            .collect()
+    }
+
+    /// Returns names of missing recommended tools
+    pub fn missing_recommended_tools(&self) -> Vec<&str> {
+        let discovered: HashSet<&str> = self.tools.iter().map(|s| s.as_str()).collect();
+        EGGSEARCH_RECOMMENDED_TOOLS
+            .iter()
+            .filter(|t| !discovered.contains(*t))
+            .copied()
+            .collect()
+    }
+
     pub fn summary_lines(&self) -> Vec<String> {
         let mut lines = Vec::new();
         lines.push(format!(
@@ -324,20 +385,19 @@ impl BootstrapReport {
         }
         // Required/recommended tool coverage.
         if !self.required_tool_coverage.is_empty() {
-            let missing: Vec<&str> = self
-                .required_tool_coverage
-                .iter()
-                .filter(|(_, found)| !found)
-                .map(|(name, _)| name.as_str())
-                .collect();
-            if missing.is_empty() {
-                lines.push("Tool coverage: all required and recommended tools present".to_string());
-            } else {
-                lines.push(format!(
-                    "Tool coverage: missing {} ({})",
-                    missing.len(),
-                    missing.join(", ")
-                ));
+            let coverage = self.tool_coverage_status();
+            lines.push(format!("Tool coverage: {}", coverage));
+            if coverage == "partial" {
+                let missing = self.missing_recommended_tools();
+                if !missing.is_empty() {
+                    lines.push(format!("  Missing recommended: {}", missing.join(", ")));
+                }
+            }
+            if coverage == "incompatible" {
+                let missing = self.missing_required_tools();
+                if !missing.is_empty() {
+                    lines.push(format!("  Missing required: {}", missing.join(", ")));
+                }
             }
         }
         lines.push(format!(
@@ -436,7 +496,9 @@ mod tests {
         assert!(joined.contains("Server name: eggsearch"));
         assert!(joined.contains("connected"));
         assert!(joined.contains("web_search, web_fetch"));
-        assert!(joined.contains("Tool coverage: missing 1 (repo_search)"));
+        assert!(joined.contains("Tool coverage: partial"));
+        assert!(joined.contains("Missing recommended:"));
+        assert!(joined.contains("repo_search"));
         assert!(joined.contains("Raw MCP tools exposed to model: no"));
         assert!(joined.contains("Fallback to built-in: no"));
         assert!(joined.contains("Default timeout: 60000ms"));
@@ -487,16 +549,20 @@ mod tests {
         state::reset_for_tests();
 
         // Build a Config with a deliberately missing command
-        let mut cfg = Config::default();
-        let egg_cfg = EggsearchConfig {
-            command: Some("definitely-missing-eggsearch-test-binary".to_string()),
-            ..Default::default()
+        #[allow(clippy::field_reassign_with_default)]
+        let cfg = {
+            let mut cfg = Config::default();
+            let egg_cfg = EggsearchConfig {
+                command: Some("definitely-missing-eggsearch-test-binary".to_string()),
+                ..Default::default()
+            };
+            cfg.search = Some(SearchConfig {
+                backend: Some(SearchBackendConfig::Eggsearch),
+                eggsearch: Some(egg_cfg),
+                ..Default::default()
+            });
+            cfg
         };
-        cfg.search = Some(SearchConfig {
-            backend: Some(SearchBackendConfig::Eggsearch),
-            eggsearch: Some(egg_cfg),
-            ..Default::default()
-        });
 
         // Ensure a clean baseline so the bootstrap actually runs.
         state::install_search_config(SearchConfig::default());
@@ -574,15 +640,19 @@ mod tests {
             .await;
         state::reset_for_tests();
 
-        let mut cfg = Config::default();
-        cfg.search = Some(SearchConfig {
-            backend: Some(SearchBackendConfig::Eggsearch),
-            eggsearch: Some(EggsearchConfig {
-                enabled: Some(false),
+        #[allow(clippy::field_reassign_with_default)]
+        let cfg = {
+            let mut cfg = Config::default();
+            cfg.search = Some(SearchConfig {
+                backend: Some(SearchBackendConfig::Eggsearch),
+                eggsearch: Some(EggsearchConfig {
+                    enabled: Some(false),
+                    ..Default::default()
+                }),
                 ..Default::default()
-            }),
-            ..Default::default()
-        });
+            });
+            cfg
+        };
 
         let report = bootstrap_eggsearch(&cfg).await;
         assert!(!report.connected);
@@ -669,5 +739,102 @@ mod tests {
         let lines = report.summary_lines();
         let joined = lines.join("\n");
         assert!(joined.contains("explicit [mcp.eggsearch]"));
+    }
+
+    #[test]
+    fn bootstrap_report_complete_coverage() {
+        let report = BootstrapReport {
+            tools: vec![
+                "web_search".to_string(),
+                "web_fetch".to_string(),
+                "batch_fetch".to_string(),
+                "repo_search".to_string(),
+                "repo_fetch".to_string(),
+                "repo_map".to_string(),
+                "security_search".to_string(),
+                "research_search".to_string(),
+                "build_evidence_bundle".to_string(),
+            ],
+            required_tool_coverage: vec![
+                ("web_search".to_string(), true),
+                ("web_fetch".to_string(), true),
+            ],
+            ..Default::default()
+        };
+        assert_eq!(report.tool_coverage_status(), "complete");
+        assert!(report.missing_required_tools().is_empty());
+        assert!(report.missing_recommended_tools().is_empty());
+    }
+
+    #[test]
+    fn bootstrap_report_partial_coverage() {
+        let report = BootstrapReport {
+            tools: vec![
+                "web_search".to_string(),
+                "web_fetch".to_string(),
+                "repo_search".to_string(),
+            ],
+            required_tool_coverage: vec![
+                ("web_search".to_string(), true),
+                ("web_fetch".to_string(), true),
+                ("repo_search".to_string(), true),
+            ],
+            ..Default::default()
+        };
+        assert_eq!(report.tool_coverage_status(), "partial");
+        assert!(report.missing_required_tools().is_empty());
+        let missing = report.missing_recommended_tools();
+        assert!(!missing.is_empty());
+        assert!(missing.contains(&"batch_fetch"));
+        assert!(missing.contains(&"repo_fetch"));
+        assert!(missing.contains(&"repo_map"));
+        assert!(missing.contains(&"security_search"));
+        assert!(missing.contains(&"research_search"));
+        assert!(missing.contains(&"build_evidence_bundle"));
+    }
+
+    #[test]
+    fn bootstrap_report_incompatible_coverage() {
+        let report = BootstrapReport {
+            tools: vec!["repo_search".to_string()],
+            required_tool_coverage: vec![
+                ("web_search".to_string(), false),
+                ("web_fetch".to_string(), false),
+                ("repo_search".to_string(), true),
+            ],
+            ..Default::default()
+        };
+        assert_eq!(report.tool_coverage_status(), "incompatible");
+        let missing = report.missing_required_tools();
+        assert!(missing.contains(&"web_search"));
+        assert!(missing.contains(&"web_fetch"));
+    }
+
+    #[test]
+    fn bootstrap_report_coverage_status_includes_missing_tools() {
+        let report = BootstrapReport {
+            tools: vec!["web_search".to_string()],
+            required_tool_coverage: vec![("web_search".to_string(), true)],
+            ..Default::default()
+        };
+        assert_eq!(report.tool_coverage_status(), "incompatible");
+        let missing = report.missing_required_tools();
+        assert!(missing.contains(&"web_fetch"));
+    }
+
+    #[test]
+    fn bootstrap_report_summary_includes_coverage() {
+        let report = BootstrapReport {
+            tools: vec!["web_search".to_string(), "web_fetch".to_string()],
+            required_tool_coverage: vec![
+                ("web_search".to_string(), true),
+                ("web_fetch".to_string(), true),
+            ],
+            ..Default::default()
+        };
+        let lines = report.summary_lines();
+        let joined = lines.join("\n");
+        assert!(joined.contains("Tool coverage: partial"));
+        assert!(joined.contains("Missing recommended:"));
     }
 }

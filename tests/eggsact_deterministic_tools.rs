@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use codegg::eggsact::adapter::{EggsactConfig, EggsactRuntime};
-use codegg::tool::deterministic::{build_eggsact_tools, EggsactTool};
+use codegg::tool::deterministic::build_eggsact_tools;
 use codegg::tool::{Tool, ToolCategory, ToolRegistry};
 
 fn test_runtime() -> Arc<EggsactRuntime> {
@@ -26,7 +26,7 @@ const ALWAYS_VISIBLE_NAMES: &[&str] = &[
 #[test]
 fn always_visible_tools_are_exposed_in_definitions() {
     let runtime = test_runtime();
-    let (visible, _deferred) = build_eggsact_tools(runtime);
+    let (_visible, _deferred) = build_eggsact_tools(runtime);
     let registry = ToolRegistry::with_defaults();
     let defs: Vec<String> = registry.definitions().into_iter().map(|d| d.name).collect();
     for name in ALWAYS_VISIBLE_NAMES {

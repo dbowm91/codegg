@@ -1,5 +1,7 @@
-use codegg::config::schema::{PreflightConfig, PreflightMode as ConfigPreflightMode};
-use codegg::eggsact::adapter::{EggsactConfig, EggsactRuntime};
+use codegg::config::schema::{
+    DeterministicToolsConfig, PreflightConfig, PreflightMode as ConfigPreflightMode,
+};
+use codegg::eggsact::adapter::{EggsactCallResult, EggsactConfig, EggsactRuntime};
 use codegg::preflight::{
     PreflightDecision, PreflightFinding, PreflightLocation, PreflightMode, PreflightPolicy,
     PreflightService, PreflightSeverity,
@@ -82,12 +84,14 @@ fn test_policy_from_config_none_fields_use_defaults() {
 
 #[test]
 fn test_disabled_policy_skips_all() {
-    let mut policy = PreflightPolicy::default();
-    policy.enabled = false;
-    policy.patch = false;
-    policy.config = false;
-    policy.shell = false;
-    policy.unicode = false;
+    let policy = PreflightPolicy {
+        enabled: false,
+        patch: false,
+        config: false,
+        shell: false,
+        unicode: false,
+        ..Default::default()
+    };
     // The early-return logic in each check method checks `!self.policy.enabled || !self.policy.<flag>`.
     // With enabled=false, every check returns Allow.
     assert!(!policy.enabled);
@@ -97,8 +101,10 @@ fn test_disabled_policy_skips_all() {
 
 #[test]
 fn test_patch_disabled_skips_replace_check() {
-    let mut policy = PreflightPolicy::default();
-    policy.patch = false;
+    let policy = PreflightPolicy {
+        patch: false,
+        ..Default::default()
+    };
     assert!(policy.enabled);
     assert!(!policy.patch);
     // check_text_replace returns Allow early when !policy.patch
@@ -106,8 +112,10 @@ fn test_patch_disabled_skips_replace_check() {
 
 #[test]
 fn test_config_disabled_skips_json() {
-    let mut policy = PreflightPolicy::default();
-    policy.config = false;
+    let policy = PreflightPolicy {
+        config: false,
+        ..Default::default()
+    };
     assert!(policy.enabled);
     assert!(!policy.config);
     // check_json_valid returns Allow early when !policy.config
@@ -185,22 +193,29 @@ fn test_decision_is_blocked() {
 
 #[test]
 fn test_should_block_only_block_on_definite() {
-    let mut policy = PreflightPolicy::default();
-
     // Warn mode: never blocks even on Block severity
-    policy.mode = PreflightMode::Warn;
+    let policy = PreflightPolicy {
+        mode: PreflightMode::Warn,
+        ..Default::default()
+    };
     assert!(!policy.should_block(PreflightSeverity::Block));
     assert!(!policy.should_block(PreflightSeverity::Warn));
     assert!(!policy.should_block(PreflightSeverity::Annotate));
 
     // BlockOnDefinite: blocks on Block severity only
-    policy.mode = PreflightMode::BlockOnDefinite;
+    let policy = PreflightPolicy {
+        mode: PreflightMode::BlockOnDefinite,
+        ..Default::default()
+    };
     assert!(policy.should_block(PreflightSeverity::Block));
     assert!(!policy.should_block(PreflightSeverity::Warn));
     assert!(!policy.should_block(PreflightSeverity::Annotate));
 
     // Disabled policy: should_block always false
-    policy.enabled = false;
+    let policy = PreflightPolicy {
+        enabled: false,
+        ..Default::default()
+    };
     assert!(!policy.should_block(PreflightSeverity::Block));
 }
 
@@ -366,8 +381,10 @@ async fn test_edit_tool_with_preflight_blocks_on_text_replace() {
 
 #[tokio::test]
 async fn test_edit_tool_with_preflight_warns_on_unicode() {
-    let mut policy = PreflightPolicy::default();
-    policy.unicode = true;
+    let policy = PreflightPolicy {
+        unicode: true,
+        ..Default::default()
+    };
     let svc = test_preflight_service_with_policy(policy);
     let tool = codegg::tool::edit::EditTool::new()
         .with_allowed_root(std::env::temp_dir())
@@ -448,8 +465,10 @@ async fn test_multiedit_tool_with_preflight_blocks_on_edit() {
 
 #[tokio::test]
 async fn test_apply_patch_tool_with_preflight_blocks_on_invalid_config() {
-    let mut policy = PreflightPolicy::default();
-    policy.config = true;
+    let policy = PreflightPolicy {
+        config: true,
+        ..Default::default()
+    };
     let svc = test_preflight_service_with_policy(policy);
     let tool = codegg::tool::apply_patch::ApplyPatchTool::new()
         .with_allowed_root(std::env::temp_dir())
@@ -484,8 +503,10 @@ async fn test_apply_patch_tool_with_preflight_blocks_on_invalid_config() {
 
 #[tokio::test]
 async fn test_bash_tool_with_preflight_blocks_on_dangerous_command() {
-    let mut policy = PreflightPolicy::default();
-    policy.shell = true;
+    let policy = PreflightPolicy {
+        shell: true,
+        ..Default::default()
+    };
     let svc = test_preflight_service_with_policy(policy);
     let tool = codegg::tool::bash::BashTool::new().with_preflight(svc);
 
@@ -510,8 +531,10 @@ async fn test_bash_tool_with_preflight_blocks_on_dangerous_command() {
 
 #[test]
 fn test_observe_mode_does_not_block() {
-    let mut policy = PreflightPolicy::default();
-    policy.mode = PreflightMode::Observe;
+    let policy = PreflightPolicy {
+        mode: PreflightMode::Observe,
+        ..Default::default()
+    };
 
     // In observe mode, even Block severity findings should not cause blocking
     assert!(!policy.should_block(PreflightSeverity::Block));
@@ -520,8 +543,10 @@ fn test_observe_mode_does_not_block() {
 
 #[test]
 fn test_warn_mode_does_not_block() {
-    let mut policy = PreflightPolicy::default();
-    policy.mode = PreflightMode::Warn;
+    let policy = PreflightPolicy {
+        mode: PreflightMode::Warn,
+        ..Default::default()
+    };
 
     assert!(!policy.should_block(PreflightSeverity::Block));
     assert!(!policy.should_block(PreflightSeverity::Warn));
@@ -529,8 +554,10 @@ fn test_warn_mode_does_not_block() {
 
 #[test]
 fn test_block_on_definite_only_blocks_block_severity() {
-    let mut policy = PreflightPolicy::default();
-    policy.mode = PreflightMode::BlockOnDefinite;
+    let policy = PreflightPolicy {
+        mode: PreflightMode::BlockOnDefinite,
+        ..Default::default()
+    };
 
     assert!(policy.should_block(PreflightSeverity::Block));
     assert!(!policy.should_block(PreflightSeverity::Warn));
@@ -539,8 +566,10 @@ fn test_block_on_definite_only_blocks_block_severity() {
 
 #[test]
 fn test_disabled_policy_skips_all_checks() {
-    let mut policy = PreflightPolicy::default();
-    policy.enabled = false;
+    let policy = PreflightPolicy {
+        enabled: false,
+        ..Default::default()
+    };
 
     assert!(!policy.should_block(PreflightSeverity::Block));
     assert!(!policy.should_surface());
@@ -548,11 +577,13 @@ fn test_disabled_policy_skips_all_checks() {
 
 #[test]
 fn test_per_category_toggle_respected() {
-    let mut policy = PreflightPolicy::default();
-    policy.patch = false;
-    policy.config = false;
-    policy.shell = false;
-    policy.unicode = false;
+    let policy = PreflightPolicy {
+        patch: false,
+        config: false,
+        shell: false,
+        unicode: false,
+        ..Default::default()
+    };
 
     // All categories disabled — checks should return Allow
     assert!(!policy.patch);
@@ -644,8 +675,10 @@ fn test_policy_serialization_roundtrip_all_modes() {
         PreflightMode::Warn,
         PreflightMode::BlockOnDefinite,
     ] {
-        let mut policy = PreflightPolicy::default();
-        policy.mode = mode;
+        let policy = PreflightPolicy {
+            mode,
+            ..Default::default()
+        };
         let json = serde_json::to_string(&policy).unwrap();
         let deserialized: PreflightPolicy = serde_json::from_str(&json).unwrap();
         assert_eq!(policy.mode, deserialized.mode);
@@ -791,11 +824,9 @@ async fn check_text_replace_detects_no_match() {
     let decision = service
         .check_text_replace("hello world", "nonexistent", "new")
         .await;
-    // No match found → either Block (if eggsact reports match_count: 0)
-    // or Allow (if eggsact returns ok: true with no explicit count).
-    // Either way, the service should not panic.
+    // No match found → Block finding (may surface as Warn in Warn mode)
     match &decision {
-        PreflightDecision::Block { findings } => {
+        PreflightDecision::Block { findings } | PreflightDecision::Warn { findings } => {
             assert!(!findings.is_empty());
             assert!(
                 findings[0].message.contains("not found")
@@ -811,7 +842,6 @@ async fn check_text_replace_detects_no_match() {
                         .any(|f| f.severity == PreflightSeverity::Block)
             );
         }
-        other => panic!("unexpected decision for no-match: {:?}", other),
     }
 }
 
@@ -971,4 +1001,309 @@ fn bootstrap_report_summary_fragments() {
     assert!(joined.contains("web_search, web_fetch"));
     assert!(joined.contains("Raw MCP tools exposed to model: no"));
     assert!(joined.contains("Fallback to built-in: no"));
+}
+
+// ── Synthetic EggsactCallResult tests ───────────────────────────────
+
+fn synthetic_result(
+    output: &str,
+    result: Option<serde_json::Value>,
+    findings: Option<serde_json::Value>,
+) -> EggsactCallResult {
+    EggsactCallResult {
+        output: output.to_string(),
+        success: true,
+        elapsed_ms: 0,
+        truncated: false,
+        machine_code: None,
+        result,
+        findings,
+        warnings: None,
+        error_type: None,
+        error: None,
+    }
+}
+
+fn service_for_synthetic() -> PreflightService {
+    let runtime = Arc::new(EggsactRuntime::new(EggsactConfig::default()).unwrap());
+    let policy = PreflightPolicy {
+        mode: PreflightMode::BlockOnDefinite,
+        ..Default::default()
+    };
+    PreflightService::with_runtime(runtime, policy)
+}
+
+#[test]
+fn check_text_replace_uses_structured_match_count() {
+    let svc = service_for_synthetic();
+    let result = synthetic_result(
+        "ok: true",
+        Some(serde_json::json!({"match_count": 0})),
+        None,
+    );
+    let decision = svc.parse_replace_check_result(result);
+    assert!(
+        decision.is_blocked(),
+        "match_count 0 should block: {:?}",
+        decision
+    );
+    assert_eq!(decision.findings().len(), 1);
+    assert!(decision.findings()[0].message.contains("not found"));
+}
+
+#[test]
+fn check_text_replace_uses_structured_ambiguity() {
+    let svc = service_for_synthetic();
+    let result = synthetic_result(
+        "ok: true",
+        Some(serde_json::json!({"match_count": 3, "ambiguous": true})),
+        None,
+    );
+    let decision = svc.parse_replace_check_result(result);
+    assert!(
+        decision.is_blocked(),
+        "ambiguous match should block: {:?}",
+        decision
+    );
+    assert!(decision.findings()[0].message.contains("disambiguation"));
+}
+
+#[test]
+fn check_command_uses_structured_verdict() {
+    let svc = service_for_synthetic();
+    let result = synthetic_result(
+        "ok: true",
+        Some(serde_json::json!({"verdict": "block", "risk_level": "high"})),
+        None,
+    );
+    let decision = svc.parse_command_result(result);
+    assert!(
+        decision.is_blocked(),
+        "verdict block should block: {:?}",
+        decision
+    );
+}
+
+#[test]
+fn check_text_security_uses_structured_verdict() {
+    let svc = service_for_synthetic();
+    let result = synthetic_result(
+        "ok: true",
+        Some(serde_json::json!({"verdict": "block"})),
+        None,
+    );
+    let decision = svc.parse_text_security_result(result);
+    // Unicode defaults to Warn, not Block (severity is Warn even with structured verdict block)
+    assert!(
+        !decision.is_blocked(),
+        "unicode verdict block should warn, not block: {:?}",
+        decision
+    );
+    assert!(decision.has_warnings());
+}
+
+#[test]
+fn fallback_to_string_parsing_when_no_structured_fields() {
+    let svc = service_for_synthetic();
+
+    // text_replace_check: no structured result, match_count: 0 in output
+    let result = synthetic_result("ok: true\nmatch_count: 0", None, None);
+    let decision = svc.parse_replace_check_result(result);
+    assert!(
+        decision.is_blocked(),
+        "string fallback match_count 0 should block"
+    );
+
+    // command_preflight: no structured result, risk: high in output
+    let result = synthetic_result("ok: true\nrisk: high", None, None);
+    let decision = svc.parse_command_result(result);
+    assert!(
+        decision.is_blocked(),
+        "string fallback risk high should block"
+    );
+
+    // text_security_inspect: no structured result, verdict: block in output
+    let result = synthetic_result("ok: true\nverdict: block", None, None);
+    let decision = svc.parse_text_security_result(result);
+    assert!(
+        decision.has_warnings(),
+        "string fallback verdict block should warn"
+    );
+}
+
+// ── DeterministicToolsConfig validation tests ────────────────────────
+
+#[test]
+fn deterministic_config_valid_profile() {
+    let config = DeterministicToolsConfig {
+        profile: "codegg_core".to_string(),
+        ..Default::default()
+    };
+    assert!(config.validate().is_ok());
+}
+
+#[test]
+fn deterministic_config_all_known_profiles() {
+    for profile in &["codegg_core", "codegg_core_min", "default", "full"] {
+        let config = DeterministicToolsConfig {
+            profile: profile.to_string(),
+            ..Default::default()
+        };
+        assert!(
+            config.validate().is_ok(),
+            "profile '{}' should be valid",
+            profile
+        );
+    }
+}
+
+#[test]
+fn deterministic_config_unknown_profile_warns() {
+    let config = DeterministicToolsConfig {
+        profile: "nonexistent_profile".to_string(),
+        ..Default::default()
+    };
+    let errs = config.validate().unwrap_err();
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("unknown deterministic_tools.profile")),
+        "should warn about unknown profile: {:?}",
+        errs
+    );
+}
+
+#[test]
+fn deterministic_config_zero_max_output_chars() {
+    let config = DeterministicToolsConfig {
+        max_output_chars: 0,
+        ..Default::default()
+    };
+    let errs = config.validate().unwrap_err();
+    assert!(
+        errs.iter().any(|e| e.contains("max_output_chars")),
+        "should warn about zero max_output_chars: {:?}",
+        errs
+    );
+}
+
+#[test]
+fn deterministic_config_excessive_max_output_chars() {
+    let config = DeterministicToolsConfig {
+        max_output_chars: 2_000_000,
+        ..Default::default()
+    };
+    let errs = config.validate().unwrap_err();
+    assert!(
+        errs.iter().any(|e| e.contains("exceeds maximum")),
+        "should warn about excessive max_output_chars: {:?}",
+        errs
+    );
+}
+
+#[test]
+fn deterministic_config_disabled_backend() {
+    let config = DeterministicToolsConfig {
+        backend: "disabled".to_string(),
+        ..Default::default()
+    };
+    assert!(config.validate().is_ok());
+}
+
+#[test]
+fn deterministic_config_invalid_backend() {
+    let config = DeterministicToolsConfig {
+        backend: "mcp".to_string(),
+        ..Default::default()
+    };
+    let errs = config.validate().unwrap_err();
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("invalid deterministic_tools.backend")),
+        "should warn about invalid backend: {:?}",
+        errs
+    );
+}
+
+#[test]
+fn deterministic_config_invalid_model_audience() {
+    let config = DeterministicToolsConfig {
+        model_audience: "invalid".to_string(),
+        ..Default::default()
+    };
+    let errs = config.validate().unwrap_err();
+    assert!(
+        errs.iter().any(|e| e.contains("model_audience")),
+        "should warn about invalid model_audience: {:?}",
+        errs
+    );
+}
+
+#[test]
+fn deterministic_config_invalid_harness_audience() {
+    let config = DeterministicToolsConfig {
+        harness_audience: "invalid".to_string(),
+        ..Default::default()
+    };
+    let errs = config.validate().unwrap_err();
+    assert!(
+        errs.iter().any(|e| e.contains("harness_audience")),
+        "should warn about invalid harness_audience: {:?}",
+        errs
+    );
+}
+
+// ── PreflightConfig validation tests ─────────────────────────────────
+
+#[test]
+fn preflight_config_valid() {
+    let config = PreflightConfig::default();
+    assert!(config.validate().is_ok());
+}
+
+#[test]
+fn preflight_config_all_modes_valid() {
+    for mode in &[
+        ConfigPreflightMode::Off,
+        ConfigPreflightMode::Observe,
+        ConfigPreflightMode::Warn,
+        ConfigPreflightMode::BlockOnDefinite,
+    ] {
+        let config = PreflightConfig {
+            mode: Some(*mode),
+            ..Default::default()
+        };
+        assert!(config.validate().is_ok(), "mode {:?} should be valid", mode);
+    }
+}
+
+// ── Config-level validation integration tests ────────────────────────
+
+#[test]
+fn config_validate_deterministic_tools_errors_are_collected() {
+    use codegg::config::schema::Config;
+
+    let config = Config {
+        deterministic_tools: Some(DeterministicToolsConfig {
+            profile: "bad_profile".to_string(),
+            backend: "mcp".to_string(),
+            max_output_chars: 0,
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let errs = config.validate().unwrap_err();
+    assert!(errs.iter().any(|e| e.contains("deterministic_tools")));
+}
+
+#[test]
+fn config_validate_preflight_errors_are_collected() {
+    use codegg::config::schema::Config;
+
+    // PreflightConfig validates OK for all enum variants,
+    // so this test ensures the call path exists and doesn't panic.
+    let config = Config {
+        preflight: Some(PreflightConfig::default()),
+        ..Default::default()
+    };
+    assert!(config.validate().is_ok());
 }

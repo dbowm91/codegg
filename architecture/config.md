@@ -248,6 +248,12 @@ Validated fields:
 - `max_parallel_tools`: must be 1-100 (0 = invalid, >100 = invalid)
 - `compaction.threshold`: must be 0.1-1.0 (threshold ratio for context compaction)
 - `compaction.max_tokens`: must be at least 1000
+- `deterministic_tools.backend`: must be `native` or `disabled`
+- `deterministic_tools.profile`: must be `codegg_core`, `codegg_core_min`, `default`, or `full` (unknown profiles emit warning and fall back to `codegg_core`)
+- `deterministic_tools.model_audience`: must be `model` or `harness`
+- `deterministic_tools.harness_audience`: must be `harness` or `model`
+- `deterministic_tools.max_output_chars`: must be > 0 and <= 1,000,000
+- `preflight.mode`: enum validated at deserialization (`off`, `observe`, `warn`, `block_on_definite`)
 
 ## Configuration Example (JSONC)
 

@@ -146,7 +146,7 @@ Config schema in `crates/codegg-config/src/schema.rs`:
 }
 ```
 
-`PreflightPolicy::from_config()` converts from the schema type. All fields are `Option<T>` with sensible defaults.
+All fields are `Option<T>` with sensible defaults. `PreflightPolicy::from_config()` fills defaults for missing fields. The `mode` field is an enum (`off`, `observe`, `warn`, `block_on_definite`) and is validated at deserialization time.
 
 ## Integration Points
 
@@ -179,7 +179,7 @@ The preflight module and the deterministic tools (`src/tool/deterministic.rs`) b
 | Visibility | Model-facing (registered in ToolRegistry) | Harness-internal (not in ToolRegistry) |
 | Purpose | Expose eggsact capabilities to the model | Validate before tool execution |
 | Interface | `Tool::execute()` via ToolRegistry | `PreflightService::check_*()` methods |
-| Audience | `agent` | `harness` |
+| Audience | `model` | `harness` |
 | Error handling | Returns ToolError | Returns `Allow` (fail-open) |
 
 ## Avoiding Recursive Tool Pollution
@@ -187,9 +187,22 @@ The preflight module and the deterministic tools (`src/tool/deterministic.rs`) b
 The preflight service avoids tool execution cycles through:
 
 1. **Direct runtime usage**: Calls `EggsactRuntime::call_json()` directly, bypassing `ToolRegistry` entirely
-2. **Separate audience**: Constructed with `audience = "harness"` (vs `"agent"` for model-facing tools)
+2. **Separate audience**: Constructed with `audience = "harness"` (vs `"model"` for model-facing tools)
 3. **No tool registration**: `PreflightService` is not a `Tool` and is never registered in any registry
 4. **Fail-open**: Eggsact failures return `Allow` — preflight never prevents execution due to its own errors
+
+## Structured Parsing
+
+Preflight decision methods (`parse_replace_check_result`, `parse_command_result`, `parse_text_security_result`) use a two-tier approach:
+
+1. **Structured fields first**: Read `result`, `findings`, `warnings` from `EggsactCallResult` — these are typed JSON values from the eggsact response.
+2. **String parsing fallback**: If structured fields are absent or incomplete, fall back to parsing the `output` text for patterns like `"match_count: N"`, `"verdict: block"`, `"risk: high"`.
+
+This ensures correct behavior as eggsact evolves its response format, while maintaining backward compatibility.
+
+## Validation
+
+`PreflightConfig::validate()` in `crates/codegg-config/src/schema.rs` performs forward-compatibility checks. Since `PreflightMode` is an enum, deserialization always produces a valid variant; the validation block is a placeholder for future extensibility.
 
 ## Tests
 
@@ -198,7 +211,9 @@ Unit tests in `src/preflight/service.rs` cover:
 - `should_block` behavior across modes
 - Decision helper methods (`is_blocked`, `has_warnings`, `summary`)
 - `parse_match_count` for text_replace_check output
-- String truncation
+- String truncation via `truncate_utf8_safe`
+- Structured-field parsing (synthetic `EggsactCallResult` with `result`/`findings`/`warnings`)
+- Fallback to string parsing when structured fields are absent
 
 ## See Also
 

@@ -1512,6 +1512,18 @@ impl Config {
             }
         }
 
+        if let Some(ref dt) = self.deterministic_tools {
+            if let Err(dt_errors) = dt.validate() {
+                errors.extend(dt_errors);
+            }
+        }
+
+        if let Some(ref pf) = self.preflight {
+            if let Err(pf_errors) = pf.validate() {
+                errors.extend(pf_errors);
+            }
+        }
+
         if errors.is_empty() {
             Ok(())
         } else {
@@ -2018,6 +2030,57 @@ impl Default for DeterministicToolsConfig {
     }
 }
 
+impl DeterministicToolsConfig {
+    pub fn validate(&self) -> Result<(), Vec<String>> {
+        let mut errors = Vec::new();
+
+        if self.backend != "native" && self.backend != "disabled" {
+            errors.push(format!(
+                "invalid deterministic_tools.backend: '{}' (expected 'native' or 'disabled')",
+                self.backend
+            ));
+        }
+
+        const KNOWN_PROFILES: &[&str] = &["codegg_core", "codegg_core_min", "default", "full"];
+        if !KNOWN_PROFILES.contains(&self.profile.as_str()) {
+            errors.push(format!(
+                "unknown deterministic_tools.profile: '{}' (expected one of: {})",
+                self.profile,
+                KNOWN_PROFILES.join(", ")
+            ));
+        }
+
+        if self.model_audience != "model" && self.model_audience != "harness" {
+            errors.push(format!(
+                "invalid deterministic_tools.model_audience: '{}' (expected 'model' or 'harness')",
+                self.model_audience
+            ));
+        }
+        if self.harness_audience != "harness" && self.harness_audience != "model" {
+            errors.push(format!(
+                "invalid deterministic_tools.harness_audience: '{}' (expected 'harness' or 'model')",
+                self.harness_audience
+            ));
+        }
+
+        if self.max_output_chars == 0 {
+            errors.push("deterministic_tools.max_output_chars must be > 0".into());
+        }
+        if self.max_output_chars > 1_000_000 {
+            errors.push(format!(
+                "deterministic_tools.max_output_chars ({}) exceeds maximum of 1,000,000",
+                self.max_output_chars
+            ));
+        }
+
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors)
+        }
+    }
+}
+
 /// Configuration for harness-side eggsact preflight checks.
 #[derive(Deserialize, Serialize, Debug, Clone, PartialEq)]
 #[serde(default)]
@@ -2051,6 +2114,29 @@ impl Default for PreflightConfig {
             unicode: Some(true),
             log_findings: Some(true),
             model_visible_findings: Some(true),
+        }
+    }
+}
+
+impl PreflightConfig {
+    pub fn validate(&self) -> Result<(), Vec<String>> {
+        let errors = Vec::new();
+
+        // PreflightMode is an enum so it always deserializes to a valid
+        // variant; this block is for forward compatibility.
+        if let Some(ref mode) = self.mode {
+            let _ = match mode {
+                PreflightMode::Off => "off",
+                PreflightMode::Observe => "observe",
+                PreflightMode::Warn => "warn",
+                PreflightMode::BlockOnDefinite => "block_on_definite",
+            };
+        }
+
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors)
         }
     }
 }

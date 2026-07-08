@@ -266,13 +266,22 @@ impl ToolRegistry {
         registry.register(crate::tool::webfetch::WebFetchTool::default());
         registry.register(crate::tool::websearch::WebSearchTool::default());
         registry.register(crate::tool::research::ResearchTool::with_default_service());
-        registry.register(crate::tool::repo_search::RepoSearchTool);
-        registry.register(crate::tool::repo_fetch::RepoFetchTool);
-        registry.register(crate::tool::security_search::SecuritySearchTool);
-        registry.register(crate::tool::research_search::ResearchSearchTool);
-        registry.register(crate::tool::repo_map::RepoMapTool);
-        registry.register(crate::tool::batch_fetch::BatchFetchTool);
-        registry.register(crate::tool::evidence_bundle::EvidenceBundleTool);
+
+        // Evidence/search wrapper tools — only register when evidence backend is enabled
+        let evidence_enabled = options.evidence_config.as_ref().map_or(true, |c| c.enabled);
+        if evidence_enabled {
+            registry.register(crate::tool::repo_search::RepoSearchTool);
+            registry.register(crate::tool::repo_fetch::RepoFetchTool);
+            registry.register(crate::tool::security_search::SecuritySearchTool);
+            registry.register(crate::tool::research_search::ResearchSearchTool);
+            registry.register(crate::tool::repo_map::RepoMapTool);
+            registry.register(crate::tool::batch_fetch::BatchFetchTool);
+            registry.register(crate::tool::evidence_bundle::EvidenceBundleTool);
+        } else {
+            tracing::info!(
+                "Evidence/search backend disabled — expanded evidence wrappers omitted from registry"
+            );
+        }
         registry.register(crate::tool::image::ImageTool::default());
         registry.register(crate::tool::codesearch::CodeSearchTool);
         registry.register(crate::tool::question::QuestionTool);

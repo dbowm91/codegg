@@ -3,7 +3,9 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::eggsact::adapter::{EggsactCallResult, EggsactConfig, EggsactRuntime};
+use crate::eggsact::adapter::{
+    truncate_utf8_safe, EggsactCallResult, EggsactConfig, EggsactRuntime,
+};
 use crate::error::ToolError;
 
 /// Severity level for a preflight finding.
@@ -224,13 +226,32 @@ impl PreflightService {
         }
     }
 
-    fn parse_replace_check_result(&self, result: EggsactCallResult) -> PreflightDecision {
+    /// Parse a pre-computed `EggsactCallResult` from `text_replace_check` into a decision.
+    /// Public for testing with synthetic results.
+    pub fn parse_replace_check_result(&self, result: EggsactCallResult) -> PreflightDecision {
         let mut findings = Vec::new();
 
-        // Parse the output to extract match information
-        let output = &result.output;
-        let match_count = parse_match_count(output);
-        let ambiguity = output.contains("ambiguous") || output.contains("multiple matches");
+        // Extract match count and ambiguity from structured result first,
+        // then fall back to string parsing.
+        let (match_count, ambiguity) = if let Some(ref structured) = result.result {
+            let mc = structured
+                .get("match_count")
+                .or_else(|| structured.get("matches"))
+                .and_then(|v| v.as_u64())
+                .map(|n| n as usize)
+                .unwrap_or_else(|| parse_match_count(&result.output));
+            let amb = structured
+                .get("ambiguous")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+                || structured
+                    .get("multiple_matches")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+            (mc, amb)
+        } else {
+            (parse_match_count(&result.output), false)
+        };
 
         if match_count == 0 {
             findings.push(PreflightFinding {
@@ -359,36 +380,65 @@ impl PreflightService {
 
         let args = json!({ "command": command });
         match self.runtime.call_json("command_preflight", args) {
-            Ok(result) => {
-                let mut findings = Vec::new();
-                let output = &result.output;
-
-                // Detect risk patterns from command_preflight output
-                if output.contains("risk: high") || output.contains("verdict: block") {
-                    findings.push(PreflightFinding {
-                        severity: PreflightSeverity::Block,
-                        machine_code: result.machine_code.clone(),
-                        message: format!("Command preflight: {}", truncate(output, 200)),
-                        location: None,
-                        source_tool: "command_preflight".to_string(),
-                    });
-                } else if output.contains("risk: medium") || output.contains("verdict: warn") {
-                    findings.push(PreflightFinding {
-                        severity: PreflightSeverity::Warn,
-                        machine_code: result.machine_code.clone(),
-                        message: format!("Command preflight: {}", truncate(output, 200)),
-                        location: None,
-                        source_tool: "command_preflight".to_string(),
-                    });
-                }
-
-                self.decide_from_findings(findings)
-            }
+            Ok(result) => self.parse_command_result(result),
             Err(e) => {
                 tracing::debug!(error = %e, "preflight command_preflight failed");
                 PreflightDecision::Allow { findings: vec![] }
             }
         }
+    }
+
+    /// Parse a pre-computed `EggsactCallResult` from `command_preflight` into a decision.
+    /// Public for testing with synthetic results.
+    pub fn parse_command_result(&self, result: EggsactCallResult) -> PreflightDecision {
+        let mut findings = Vec::new();
+
+        // Extract verdict/risk from structured result first,
+        // then fall back to string parsing.
+        let (verdict, risk) = if let Some(ref structured) = result.result {
+            let v = structured
+                .get("verdict")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            let r = structured
+                .get("risk_level")
+                .or_else(|| structured.get("risk"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            (v, r)
+        } else {
+            (None, None)
+        };
+
+        let output = &result.output;
+        let is_block = verdict.as_deref() == Some("block")
+            || risk.as_deref() == Some("high")
+            || output.contains("risk: high")
+            || output.contains("verdict: block");
+        let is_warn = verdict.as_deref() == Some("warn")
+            || risk.as_deref() == Some("medium")
+            || output.contains("risk: medium")
+            || output.contains("verdict: warn");
+
+        if is_block {
+            findings.push(PreflightFinding {
+                severity: PreflightSeverity::Block,
+                machine_code: result.machine_code.clone(),
+                message: format!("Command preflight: {}", truncate(output, 200)),
+                location: None,
+                source_tool: "command_preflight".to_string(),
+            });
+        } else if is_warn {
+            findings.push(PreflightFinding {
+                severity: PreflightSeverity::Warn,
+                machine_code: result.machine_code.clone(),
+                message: format!("Command preflight: {}", truncate(output, 200)),
+                location: None,
+                source_tool: "command_preflight".to_string(),
+            });
+        }
+
+        self.decide_from_findings(findings)
     }
 
     /// Run `text_security_inspect` on text for unicode/confusable issues.
@@ -399,35 +449,67 @@ impl PreflightService {
 
         let args = json!({ "text": text });
         match self.runtime.call_json("text_security_inspect", args) {
-            Ok(result) => {
-                let mut findings = Vec::new();
-                let output = &result.output;
-
-                if output.contains("verdict: block") {
-                    findings.push(PreflightFinding {
-                        severity: PreflightSeverity::Warn, // Unicode defaults to warn, not block
-                        machine_code: result.machine_code.clone(),
-                        message: format!("Text security: {}", truncate(output, 200)),
-                        location: None,
-                        source_tool: "text_security_inspect".to_string(),
-                    });
-                } else if output.contains("verdict: review") || output.contains("confusable") {
-                    findings.push(PreflightFinding {
-                        severity: PreflightSeverity::Annotate,
-                        machine_code: result.machine_code.clone(),
-                        message: format!("Text security note: {}", truncate(output, 200)),
-                        location: None,
-                        source_tool: "text_security_inspect".to_string(),
-                    });
-                }
-
-                self.decide_from_findings(findings)
-            }
+            Ok(result) => self.parse_text_security_result(result),
             Err(e) => {
                 tracing::debug!(error = %e, "preflight text_security_inspect failed");
                 PreflightDecision::Allow { findings: vec![] }
             }
         }
+    }
+
+    /// Parse a pre-computed `EggsactCallResult` from `text_security_inspect` into a decision.
+    /// Public for testing with synthetic results.
+    pub fn parse_text_security_result(&self, result: EggsactCallResult) -> PreflightDecision {
+        let mut findings = Vec::new();
+
+        // Extract verdict from structured result first,
+        // then fall back to string parsing.
+        let verdict = result
+            .result
+            .as_ref()
+            .and_then(|r| r.get("verdict"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        // Check findings for confusable entries in structured data
+        let has_confusable_structured = result
+            .findings
+            .as_ref()
+            .and_then(|f| f.as_array())
+            .map(|arr| {
+                arr.iter().any(|item| {
+                    item.get("type")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s == "confusable")
+                        .unwrap_or(false)
+                })
+            })
+            .unwrap_or(false);
+
+        let output = &result.output;
+        let is_block = verdict.as_deref() == Some("block") || output.contains("verdict: block");
+        let is_review = verdict.as_deref() == Some("review") || output.contains("verdict: review");
+        let has_confusable = has_confusable_structured || output.contains("confusable");
+
+        if is_block {
+            findings.push(PreflightFinding {
+                severity: PreflightSeverity::Warn, // Unicode defaults to warn, not block
+                machine_code: result.machine_code.clone(),
+                message: format!("Text security: {}", truncate(output, 200)),
+                location: None,
+                source_tool: "text_security_inspect".to_string(),
+            });
+        } else if is_review || has_confusable {
+            findings.push(PreflightFinding {
+                severity: PreflightSeverity::Annotate,
+                machine_code: result.machine_code.clone(),
+                message: format!("Text security note: {}", truncate(output, 200)),
+                location: None,
+                source_tool: "text_security_inspect".to_string(),
+            });
+        }
+
+        self.decide_from_findings(findings)
     }
 
     /// Evaluate a set of findings into a decision based on policy.
@@ -489,13 +571,9 @@ fn parse_match_count(output: &str) -> usize {
     0
 }
 
-/// Truncate a string to max chars with ellipsis.
+/// Truncate a string to max chars with ellipsis (UTF-8 safe).
 fn truncate(s: &str, max: usize) -> String {
-    if s.len() <= max {
-        s.to_string()
-    } else {
-        format!("{}...", &s[..max])
-    }
+    truncate_utf8_safe(s, max, "...").text
 }
 
 #[cfg(test)]
@@ -515,11 +593,16 @@ mod tests {
 
     #[test]
     fn should_block_only_in_block_on_definite() {
-        let mut policy = PreflightPolicy::default();
-        policy.mode = PreflightMode::Warn;
+        let policy = PreflightPolicy {
+            mode: PreflightMode::Warn,
+            ..Default::default()
+        };
         assert!(!policy.should_block(PreflightSeverity::Block));
 
-        policy.mode = PreflightMode::BlockOnDefinite;
+        let policy = PreflightPolicy {
+            mode: PreflightMode::BlockOnDefinite,
+            ..Default::default()
+        };
         assert!(policy.should_block(PreflightSeverity::Block));
         assert!(!policy.should_block(PreflightSeverity::Warn));
     }
@@ -569,6 +652,7 @@ mod tests {
     #[test]
     fn truncate_works() {
         assert_eq!(truncate("hello", 10), "hello");
-        assert_eq!(truncate("hello world", 5), "hello...");
+        // char-based: budget=5, marker=3 chars -> take 2 chars + "..."
+        assert_eq!(truncate("hello world", 5), "he...");
     }
 }

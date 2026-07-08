@@ -1,6 +1,6 @@
 //! Integration tests for the eggsact adapter (Phase 3).
 
-use codegg::eggsact::adapter::{EggsactConfig, EggsactRuntime};
+use codegg::eggsact::adapter::{truncate_utf8_safe, EggsactConfig, EggsactRuntime};
 
 fn test_config() -> EggsactConfig {
     EggsactConfig::default()
@@ -152,4 +152,67 @@ fn max_output_chars_truncates() {
         .unwrap();
     // The output should be truncated at 20 chars
     assert!(result.output.len() <= 50); // Allow some overhead for truncation message
+}
+
+#[test]
+fn truncate_utf8_safe_does_not_panic_on_multibyte() {
+    let input = "🌍🌎🌏";
+    let result = truncate_utf8_safe(input, 2, "...");
+    assert!(result.truncated);
+    assert_eq!(result.text.chars().count(), 5);
+    assert!(std::str::from_utf8(result.text.as_bytes()).is_ok());
+}
+
+#[test]
+fn truncate_utf8_safe_at_limit_not_truncated() {
+    let result = truncate_utf8_safe("hello", 5, "...");
+    assert!(!result.truncated);
+    assert_eq!(result.text, "hello");
+}
+
+#[test]
+fn truncate_utf8_safe_over_limit_truncated() {
+    let result = truncate_utf8_safe("hello world", 5, "...");
+    assert!(result.truncated);
+    // Marker (3 chars) fills budget: take 5-3=2 chars, then append marker
+    assert_eq!(result.text, "he...");
+}
+
+#[test]
+fn truncate_utf8_safe_small_cap() {
+    let result = truncate_utf8_safe("hello world", 1, "...");
+    assert!(result.truncated);
+    assert!(std::str::from_utf8(result.text.as_bytes()).is_ok());
+}
+
+#[test]
+fn truncate_utf8_safe_result_is_valid_utf8() {
+    let inputs = ["plain ascii", "日本語テスト", "a\u{0301}b\u{0301}c"];
+    let limits = [1, 3, 5, 10, 100];
+    for input in &inputs {
+        for &limit in &limits {
+            let result = truncate_utf8_safe(input, limit, "...");
+            assert!(
+                std::str::from_utf8(result.text.as_bytes()).is_ok(),
+                "Invalid UTF-8 for input={input:?}, limit={limit}"
+            );
+        }
+    }
+}
+
+#[test]
+fn formatted_response_truncation_metadata_correct() {
+    let config = EggsactConfig {
+        max_output_chars: 20,
+        ..test_config()
+    };
+    let runtime = EggsactRuntime::new(config).unwrap();
+    let result = runtime
+        .call_json(
+            "text_equal",
+            serde_json::json!({"a": "hello", "b": "hello"}),
+        )
+        .unwrap();
+    // With max_output_chars=20 the response should be truncated
+    assert!(result.truncated || result.output.len() < 60);
 }

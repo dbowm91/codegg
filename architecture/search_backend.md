@@ -79,9 +79,37 @@ immutable after startup.
      `connect_from_config` to honor it.
    - Otherwise spawns `eggsearch` via `McpService::connect_stdio`.
    - Lists the tools it advertises for the `BootstrapReport`.
+   - Classifies tool coverage as **complete** (all required + recommended),
+     **partial** (required present, some recommended missing), or
+     **incompatible** (required tools missing).
 
 The returned `BootstrapReport` is consumed by the doctor command
 (`codegg doctor search`).
+
+### Tool Coverage Classification
+
+The bootstrap report classifies tool coverage against two lists:
+
+**Required tools** (`EGGSEARCH_REQUIRED_TOOLS`):
+- `web_search`
+- `web_fetch`
+
+If any required tool is missing, coverage is `"incompatible"` —
+`websearch`/`webfetch` will fail.
+
+**Recommended tools** (`EGGSEARCH_RECOMMENDED_TOOLS`):
+- `batch_fetch`, `repo_search`, `repo_fetch`, `repo_map`,
+  `security_search`, `research_search`, `build_evidence_bundle`
+
+If all required tools are present but some recommended are missing,
+coverage is `"partial"` — core search/fetch works, but expanded
+wrapper tools may not.
+
+If all tools are present, coverage is `"complete"`.
+
+The report's `tool_coverage_status()` method returns the classification
+string. The `summary_lines()` output includes this classification and
+lists missing tools.
 
 ## Adapter contracts
 
@@ -248,10 +276,17 @@ codegg doctor search
 
 Output is a `BootstrapReport::summary_lines()` dump covering:
 backend, server name, command, MCP connection status, advertised
-tools, required/recommended tool coverage (missing tools listed),
-default timeout, provider status (available/unavailable with
+tools, tool coverage classification (complete/partial/incompatible with
+missing tool lists), required/recommended tool coverage, default
+timeout, provider status (available/unavailable with
 details), `expose_raw_mcp_tools`, `fallback_to_builtin`, and all
-9 per-domain output caps.
+per-domain output caps.
+
+## Tool Registration
+
+The `websearch` and `webfetch` tools are **always registered** regardless of the search backend configuration — they fall back to error messages or builtin implementations when the eggsearch backend is unavailable.
+
+The seven expanded evidence wrapper tools (`repo_search`, `repo_fetch`, `repo_map`, `security_search`, `research_search`, `batch_fetch`, `evidence_bundle`) are **conditionally registered** based on `evidence_config.enabled`. When `[search].backend = "disabled"`, the `EvidenceBackendRuntimeConfig.enabled` field is `false` and the expanded wrappers are omitted from the tool registry entirely. When `[search].backend = "builtin"`, the wrappers are still registered since builtin is a valid backend (though the wrappers will error since they require eggsearch).
 
 ## Where to add new providers
 

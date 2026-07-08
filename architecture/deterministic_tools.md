@@ -109,8 +109,20 @@ profile = "codegg_core"           # eggsact profile: "codegg_core" | "codegg_cor
 model_audience = "model"          # audience for model-facing tools
 harness_audience = "harness"      # audience for preflight checks
 expose_expert_tools = false       # expose deferred tools to model
-max_output_chars = 12000          # truncation limit for tool output
+max_output_chars = 12000          # truncation limit for tool output (1..1_000_000)
 ```
+
+### Validation
+
+`DeterministicToolsConfig::validate()` in `crates/codegg-config/src/schema.rs` checks:
+
+- `backend` must be `"native"` or `"disabled"`
+- `profile` must be one of `"codegg_core"`, `"codegg_core_min"`, `"default"`, `"full"`
+- `model_audience` must be `"model"` or `"harness"`
+- `harness_audience` must be `"harness"` or `"model"`
+- `max_output_chars` must be > 0 and <= 1,000,000
+
+Unknown profiles emit a warning and are canonicalized to `"codegg_core"` at resolve time (`integrated_config::resolve_deterministic_config()`).
 
 ### Profile Selection
 
@@ -123,6 +135,8 @@ The `profile` field controls which eggsact tools are available:
 ### Runtime Config Resolution
 
 `DeterministicToolsRuntimeConfig` is resolved from the schema by `integrated_config::resolve_integrated_config()` in `src/tool/integrated_config.rs`. The resolved config is passed through `ToolRegistryOptions` to `with_options()`.
+
+Unknown profile names are detected and canonicalized to `"codegg_core"` with a warning log. This prevents runtime failures from typos in profile names.
 
 ## Integration with Preflight
 
@@ -138,12 +152,42 @@ The deterministic tools and the preflight system share the same eggsact runtime 
 
 The preflight service (`src/preflight/service.rs`) calls `EggsactRuntime::call_json()` directly, bypassing the ToolRegistry to avoid recursive tool execution.
 
+## EggsactCallResult
+
+`EggsactCallResult` (`src/eggsact/adapter.rs`) is the return type of `EggsactRuntime::call_json()`. It carries structured data from eggsact tool responses:
+
+```rust
+pub struct EggsactCallResult {
+    pub output: String,                    // formatted text output (truncated)
+    pub success: bool,                     // whether the tool call succeeded
+    pub elapsed_ms: u64,                   // wall-clock time
+    pub truncated: bool,                   // whether output was truncated
+    pub machine_code: Option<String>,      // machine-readable error code
+    pub result: Option<serde_json::Value>, // structured result (match count, verdict, etc.)
+    pub findings: Option<serde_json::Value>, // structured findings array
+    pub warnings: Option<serde_json::Value>, // warnings array
+    pub error_type: Option<String>,        // error type if tool returned error
+    pub error: Option<String>,             // error message if tool returned error
+}
+```
+
+The structured fields (`result`, `findings`, `warnings`) are populated from the eggsact `ToolResponse` when available. Preflight parsing methods use these fields first, falling back to string parsing of `output` only when structured data is absent.
+
+## truncate_utf8_safe
+
+`truncate_utf8_safe()` (`src/eggsact/adapter.rs`) is a shared helper that truncates a string to at most `max_chars` characters without splitting multibyte UTF-8 sequences. Returns a `TruncatedText` struct with `text` and `truncated` fields.
+
+If a `marker` (e.g. `"..."`) is provided, it is appended after truncation. The marker's character count is subtracted from the budget when it fits; when the limit is very small (smaller than the marker), the marker is appended anyway (overflow is acceptable).
+
+Used by both the eggsact adapter (for tool output) and the preflight service (for finding summaries).
+
 ## Tests
 
 ### Unit Tests
 - `format_response` — response formatting
 - `to_structured_result` — structured result conversion
 - `EggsactConfig` defaults
+- `truncate_utf8_safe` — multibyte boundary safety, empty markers, edge cases
 
 ### Integration Tests
 - All 8 always-visible tools with real eggsact calls
@@ -152,11 +196,13 @@ The preflight service (`src/preflight/service.rs`) calls `EggsactRuntime::call_j
 - Audience filtering (model vs harness)
 - Output truncation at `max_output_chars`
 - Deferred tools not in default definitions but discoverable via `tool_search`
+- `EggsactCallResult` structured fields (`result`, `findings`, `warnings`, `error_type`, `error`)
 
 ### Test Matrix (Phase 7)
-- **Eggsact adapter**: Unit tests for formatting, conversion, defaults. Integration tests for all tools, provenance, audience, truncation.
-- **Harness preflight**: Integration tests for all check methods with real eggsact calls. Policy mode tests for off/observe/warn/block_on_definite.
+- **Eggsact adapter**: Unit tests for formatting, conversion, defaults, structured fields, truncation. Integration tests for all tools, provenance, audience, truncation.
+- **Harness preflight**: Integration tests for all check methods with real eggsact calls. Policy mode tests for off/observe/warn/block_on_definite. Tests for structured-field-first parsing with string-parsing fallback.
 - **Tool registry**: Tests verifying deferred tools are hidden, descriptions imply no mutation, disabled backend hides wrappers.
+- **Validation**: `DeterministicToolsConfig::validate()` for invalid backend, unknown profile, invalid audiences, zero/max output chars. `PreflightConfig::validate()` forward-compatibility checks.
 
 ## File Structure
 

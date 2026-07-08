@@ -399,9 +399,6 @@ fn eggsearch_config_all_caps() -> SearchConfig {
         max_search_output_chars: Some(12_000),
         max_fetch_output_chars: Some(20_000),
         max_repo_output_chars: Some(16_000),
-        max_repo_search_output_chars: Some(16_000),
-        max_repo_fetch_output_chars: Some(24_000),
-        max_repo_map_output_chars: Some(16_000),
         max_security_output_chars: Some(18_000),
         max_research_output_chars: Some(22_000),
         max_batch_output_chars: Some(30_000),
@@ -681,4 +678,112 @@ async fn missing_upstream_tool_fails_clearly() {
         msg.contains("repo_search") && msg.contains("not advertised"),
         "expected missing tool error, got: {msg}"
     );
+}
+
+// ── Evidence backend config gating tests ──
+
+fn evidence_disabled_config() -> codegg::tool::integrated_config::EvidenceBackendRuntimeConfig {
+    codegg::tool::integrated_config::EvidenceBackendRuntimeConfig {
+        enabled: false,
+        ..Default::default()
+    }
+}
+
+fn evidence_enabled_config() -> codegg::tool::integrated_config::EvidenceBackendRuntimeConfig {
+    codegg::tool::integrated_config::EvidenceBackendRuntimeConfig {
+        enabled: true,
+        ..Default::default()
+    }
+}
+
+/// With evidence backend disabled, expanded evidence wrapper tools
+/// should NOT appear in model-facing definitions.
+#[test]
+fn disabled_evidence_backend_omits_expanded_tools() {
+    let registry = codegg::tool::ToolRegistry::with_options(codegg::tool::ToolRegistryOptions {
+        evidence_config: Some(evidence_disabled_config()),
+        ..Default::default()
+    });
+    let defs = registry.definitions();
+    let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
+
+    for tool in &[
+        "repo_search",
+        "repo_fetch",
+        "security_search",
+        "research_search",
+        "repo_map",
+        "batch_fetch",
+        "evidence_bundle",
+    ] {
+        assert!(
+            !names.contains(tool),
+            "tool '{tool}' should NOT be in definitions when evidence backend is disabled"
+        );
+    }
+}
+
+/// With evidence backend enabled, expanded evidence wrapper tools
+/// should appear in model-facing definitions.
+#[test]
+fn enabled_evidence_backend_includes_expanded_tools() {
+    let registry = codegg::tool::ToolRegistry::with_options(codegg::tool::ToolRegistryOptions {
+        evidence_config: Some(evidence_enabled_config()),
+        ..Default::default()
+    });
+    let defs = registry.definitions();
+    let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
+
+    for tool in &[
+        "repo_search",
+        "repo_fetch",
+        "security_search",
+        "research_search",
+        "repo_map",
+        "batch_fetch",
+        "evidence_bundle",
+    ] {
+        assert!(
+            names.contains(tool),
+            "tool '{tool}' should be in definitions when evidence backend is enabled"
+        );
+    }
+}
+
+/// websearch and webfetch should always be registered regardless
+/// of evidence config.
+#[test]
+fn websearch_webfetch_always_registered() {
+    for cfg in [
+        None,
+        Some(evidence_disabled_config()),
+        Some(evidence_enabled_config()),
+    ] {
+        let registry =
+            codegg::tool::ToolRegistry::with_options(codegg::tool::ToolRegistryOptions {
+                evidence_config: cfg,
+                ..Default::default()
+            });
+        let defs = registry.definitions();
+        let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
+
+        assert!(
+            names.contains(&"websearch"),
+            "websearch should always be in definitions (evidence_config={:?})",
+            registry
+                .integrated_config()
+                .evidence
+                .as_ref()
+                .map(|e| e.enabled),
+        );
+        assert!(
+            names.contains(&"webfetch"),
+            "webfetch should always be in definitions (evidence_config={:?})",
+            registry
+                .integrated_config()
+                .evidence
+                .as_ref()
+                .map(|e| e.enabled),
+        );
+    }
 }
