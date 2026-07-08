@@ -788,18 +788,28 @@ fn test_severity_serialize_deserialize() {
 #[tokio::test]
 async fn check_text_replace_detects_no_match() {
     let service = PreflightService::new(PreflightPolicy::default()).unwrap();
-    let decision = service.check_text_replace("hello world", "nonexistent", "new").await;
+    let decision = service
+        .check_text_replace("hello world", "nonexistent", "new")
+        .await;
     // No match found → either Block (if eggsact reports match_count: 0)
     // or Allow (if eggsact returns ok: true with no explicit count).
     // Either way, the service should not panic.
     match &decision {
         PreflightDecision::Block { findings } => {
             assert!(!findings.is_empty());
-            assert!(findings[0].message.contains("not found") || findings[0].message.contains("no effect"));
+            assert!(
+                findings[0].message.contains("not found")
+                    || findings[0].message.contains("no effect")
+            );
         }
         PreflightDecision::Allow { findings } => {
             // eggsact may not report no-match as a block depending on profile
-            assert!(findings.is_empty() || !findings.iter().any(|f| f.severity == PreflightSeverity::Block));
+            assert!(
+                findings.is_empty()
+                    || !findings
+                        .iter()
+                        .any(|f| f.severity == PreflightSeverity::Block)
+            );
         }
         other => panic!("unexpected decision for no-match: {:?}", other),
     }
@@ -808,16 +818,26 @@ async fn check_text_replace_detects_no_match() {
 #[tokio::test]
 async fn check_text_replace_allows_clean_match() {
     let service = PreflightService::new(PreflightPolicy::default()).unwrap();
-    let decision = service.check_text_replace("hello world", "world", "rust").await;
+    let decision = service
+        .check_text_replace("hello world", "world", "rust")
+        .await;
     // Single clean match → Allow
-    assert!(!decision.is_blocked(), "clean match should not block: {:?}", decision);
+    assert!(
+        !decision.is_blocked(),
+        "clean match should not block: {:?}",
+        decision
+    );
 }
 
 #[tokio::test]
 async fn check_json_valid_passes_for_valid_json() {
     let service = PreflightService::new(PreflightPolicy::default()).unwrap();
     let decision = service.check_json_valid(r#"{"key": "value"}"#).await;
-    assert!(!decision.is_blocked(), "valid JSON should not block: {:?}", decision);
+    assert!(
+        !decision.is_blocked(),
+        "valid JSON should not block: {:?}",
+        decision
+    );
 }
 
 #[tokio::test]
@@ -834,7 +854,11 @@ async fn check_json_valid_detects_invalid_json() {
 async fn check_toml_valid_passes_for_valid_toml() {
     let service = PreflightService::new(PreflightPolicy::default()).unwrap();
     let decision = service.check_toml_valid("[package]\nname = \"test\"").await;
-    assert!(!decision.is_blocked(), "valid TOML should not block: {:?}", decision);
+    assert!(
+        !decision.is_blocked(),
+        "valid TOML should not block: {:?}",
+        decision
+    );
 }
 
 #[tokio::test]
@@ -842,7 +866,11 @@ async fn check_command_analyzes_shell_command() {
     let service = PreflightService::new(PreflightPolicy::default()).unwrap();
     let decision = service.check_command("ls -la").await;
     // ls is low-risk → Allow or Warn, but not Block
-    assert!(!decision.is_blocked(), "ls should not block: {:?}", decision);
+    assert!(
+        !decision.is_blocked(),
+        "ls should not block: {:?}",
+        decision
+    );
 }
 
 #[tokio::test]
@@ -850,7 +878,11 @@ async fn check_text_security_clean_text() {
     let service = PreflightService::new(PreflightPolicy::default()).unwrap();
     let decision = service.check_text_security("hello world").await;
     // Clean ASCII text → Allow
-    assert!(!decision.is_blocked(), "clean text should not block: {:?}", decision);
+    assert!(
+        !decision.is_blocked(),
+        "clean text should not block: {:?}",
+        decision
+    );
 }
 
 #[tokio::test]
@@ -872,7 +904,9 @@ async fn observe_mode_records_but_does_not_block() {
         ..Default::default()
     };
     let service = PreflightService::new(policy).unwrap();
-    let decision = service.check_text_replace("hello world", "nonexistent", "new").await;
+    let decision = service
+        .check_text_replace("hello world", "nonexistent", "new")
+        .await;
     // Observe mode should never block, even on no-match
     assert!(!decision.is_blocked(), "observe mode should not block");
 }
@@ -914,7 +948,10 @@ fn provenance_serialization_roundtrip() {
     let deserialized: codegg::tool::ToolProvenance = serde_json::from_str(&json).unwrap();
     assert_eq!(deserialized.backend, "mcp");
     assert_eq!(deserialized.implementation, "eggsearch/search");
-    assert_eq!(deserialized.trust, codegg::tool::ToolTrust::ExternalUntrusted);
+    assert_eq!(
+        deserialized.trust,
+        codegg::tool::ToolTrust::ExternalUntrusted
+    );
 }
 
 #[test]

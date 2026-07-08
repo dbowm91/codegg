@@ -309,10 +309,17 @@ fn expected_tool_counts() {
 fn text_diff_explain_tool_executes() {
     let runtime = test_runtime();
     let (visible, _) = build_eggsact_tools(runtime);
-    let tool = visible.iter().find(|t| t.name() == "text_diff_explain").unwrap();
+    let tool = visible
+        .iter()
+        .find(|t| t.name() == "text_diff_explain")
+        .unwrap();
     let rt = tokio::runtime::Runtime::new().unwrap();
     let result = rt.block_on(tool.execute(serde_json::json!({"a": "hello", "b": "world"})));
-    assert!(result.is_ok(), "text_diff_explain should execute: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "text_diff_explain should execute: {:?}",
+        result.err()
+    );
     let output = result.unwrap();
     assert!(output.contains("ok: true"));
 }
@@ -321,14 +328,21 @@ fn text_diff_explain_tool_executes() {
 fn text_replace_check_tool_executes() {
     let runtime = test_runtime();
     let (visible, _) = build_eggsact_tools(runtime);
-    let tool = visible.iter().find(|t| t.name() == "text_replace_check").unwrap();
+    let tool = visible
+        .iter()
+        .find(|t| t.name() == "text_replace_check")
+        .unwrap();
     let rt = tokio::runtime::Runtime::new().unwrap();
     let result = rt.block_on(tool.execute(serde_json::json!({
         "text": "hello world",
         "old": "world",
         "new": "rust"
     })));
-    assert!(result.is_ok(), "text_replace_check should execute: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "text_replace_check should execute: {:?}",
+        result.err()
+    );
     let output = result.unwrap();
     assert!(output.contains("ok: true"));
 }
@@ -337,10 +351,17 @@ fn text_replace_check_tool_executes() {
 fn command_preflight_tool_executes() {
     let runtime = test_runtime();
     let (visible, _) = build_eggsact_tools(runtime);
-    let tool = visible.iter().find(|t| t.name() == "command_preflight").unwrap();
+    let tool = visible
+        .iter()
+        .find(|t| t.name() == "command_preflight")
+        .unwrap();
     let rt = tokio::runtime::Runtime::new().unwrap();
     let result = rt.block_on(tool.execute(serde_json::json!({"command": "ls -la"})));
-    assert!(result.is_ok(), "command_preflight should execute: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "command_preflight should execute: {:?}",
+        result.err()
+    );
     let output = result.unwrap();
     assert!(output.contains("ok: true"));
 }
@@ -349,10 +370,17 @@ fn command_preflight_tool_executes() {
 fn text_security_inspect_tool_executes() {
     let runtime = test_runtime();
     let (visible, _) = build_eggsact_tools(runtime);
-    let tool = visible.iter().find(|t| t.name() == "text_security_inspect").unwrap();
+    let tool = visible
+        .iter()
+        .find(|t| t.name() == "text_security_inspect")
+        .unwrap();
     let rt = tokio::runtime::Runtime::new().unwrap();
     let result = rt.block_on(tool.execute(serde_json::json!({"text": "hello world"})));
-    assert!(result.is_ok(), "text_security_inspect should execute: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "text_security_inspect should execute: {:?}",
+        result.err()
+    );
     let output = result.unwrap();
     assert!(output.contains("ok: true"));
 }
@@ -363,20 +391,34 @@ fn text_security_inspect_tool_executes() {
 fn text_inspect_deferred_executes() {
     let runtime = test_runtime();
     let (_, deferred) = build_eggsact_tools(runtime);
-    let tool = deferred.iter().find(|t| t.name() == "text_inspect").unwrap();
+    let tool = deferred
+        .iter()
+        .find(|t| t.name() == "text_inspect")
+        .unwrap();
     let rt = tokio::runtime::Runtime::new().unwrap();
     let result = rt.block_on(tool.execute(serde_json::json!({"text": "hello"})));
-    assert!(result.is_ok(), "text_inspect should execute: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "text_inspect should execute: {:?}",
+        result.err()
+    );
 }
 
 #[test]
 fn text_fingerprint_deferred_executes() {
     let runtime = test_runtime();
     let (_, deferred) = build_eggsact_tools(runtime);
-    let tool = deferred.iter().find(|t| t.name() == "text_fingerprint").unwrap();
+    let tool = deferred
+        .iter()
+        .find(|t| t.name() == "text_fingerprint")
+        .unwrap();
     let rt = tokio::runtime::Runtime::new().unwrap();
     let result = rt.block_on(tool.execute(serde_json::json!({"text": "hello world"})));
-    assert!(result.is_ok(), "text_fingerprint should execute: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "text_fingerprint should execute: {:?}",
+        result.err()
+    );
 }
 
 // ── Descriptions do not imply mutation ───────────────────────────
@@ -408,7 +450,11 @@ fn deferred_tools_in_default_definitions_have_defer_loading() {
     let defs = registry.definitions();
     for name in DEFERRED_NAMES {
         let def = defs.iter().find(|d| d.name == *name);
-        assert!(def.is_some(), "Deferred tool '{}' should be in definitions()", name);
+        assert!(
+            def.is_some(),
+            "Deferred tool '{}' should be in definitions()",
+            name
+        );
     }
 }
 
@@ -421,7 +467,14 @@ fn unknown_profile_falls_back_to_default() {
         ..EggsactConfig::default()
     };
     let runtime = EggsactRuntime::new(config);
-    assert!(runtime.is_ok(), "Unknown profile should fall back to default: {:?}", runtime.err());
+    assert!(
+        runtime.is_ok(),
+        "Unknown profile should fall back to default: {:?}",
+        runtime.err()
+    );
     let runtime = runtime.unwrap();
-    assert!(runtime.has_tool("text_equal"), "Fallback should still have text_equal");
+    assert!(
+        runtime.has_tool("text_equal"),
+        "Fallback should still have text_equal"
+    );
 }

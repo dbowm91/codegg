@@ -939,11 +939,14 @@ src/
 ├── client/       # Client for server mode
 ├── command/      # CLI command implementations
 ├── config/       # Configuration (re-exports from codegg-config)
+├── eggsact/      # Eggsact adapter: in-process deterministic tool runtime
 ├── lsp/          # Language Server Protocol support (thin shim; authoritative impl in crates/egglsp)
 ├── mcp/          # Model Context Protocol client
 ├── permission/   # Permission checking, DoomLoop detection, mode system
 ├── plugin/       # WASM plugin system with process/wasm/builtin runtimes
+├── preflight/    # Harness-side preflight validation (wraps eggsact)
 ├── provider/     # LLM providers (re-exports from codegg-providers)
+├── search_backend/ # Search backend dispatch (eggsearch MCP + builtin fallback)
 ├── security/     # SSRF protection, Landlock sandboxing, security review workflow
 ├── server/       # HTTP/WebSocket server (feature-gated behind `server`)
 ├── session/      # Session management and storage (re-exports from codegg-core)
@@ -951,7 +954,7 @@ src/
 ├── skills/       # Skill system (re-exports from codegg-config)
 ├── snapshot/     # State snapshots (re-exports from codegg-core)
 ├── storage/      # SQLite storage layer (re-exports from codegg-core)
-├── tool/         # ~37 built-in tools (bash, read, edit, grep, glob, lsp, git, websearch, webfetch, repo_search, etc.)
+├── tool/         # ~38 built-in tools (bash, read, edit, grep, glob, lsp, git, websearch, webfetch, deterministic tools, etc.)
 ├── tui/          # Terminal UI (app, components, runtime, commands)
 ├── upgrade/      # Self-upgrade functionality
 ├── util/         # Utilities (clipboard, fuzzy search, pricing, metrics)
@@ -967,6 +970,26 @@ crates/
 ├── egglsp/             # Language Server Protocol client/service/operations (39 servers)
 └── egglsp-test-server/ # Fake LSP server binary for integration tests
 ```
+
+### Tool Backends
+
+Codegg supports multiple tool backends:
+
+- **Native** — In-process workspace crates (`egglsp`, `egggit`, `eggsentry`, `eggsact`)
+- **MCP** — External MCP servers (default: `eggsearch` for web search/fetch)
+- **Builtin** — Legacy in-tree fallback implementations
+
+The `eggsearch` MCP server provides web search, repository search, and
+evidence gathering. It is the default backend for `websearch`, `webfetch`,
+and 7 additional wrapper tools (`repo_search`, `repo_fetch`, `repo_map`,
+`security_search`, `research_search`, `batch_fetch`, `evidence_bundle`).
+
+The `eggsact` crate provides in-process deterministic tools for text
+comparison, config validation, and security inspection. These run
+entirely in-process with no external dependencies.
+
+Use `/tool-backends` in the TUI to inspect the active backend for each
+tool. Use `codegg doctor search` to check eggsearch connectivity.
 
 ## Security
 

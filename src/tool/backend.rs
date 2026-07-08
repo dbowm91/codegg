@@ -853,12 +853,7 @@ pub fn build_report(
                 },
                 implementation: format!("{}/bundle", eggsearch_server),
                 status: ev_status.to_string(),
-                raw_mcp_exposed: if ev.expose_raw_mcp_tools {
-                    "yes"
-                } else {
-                    "no"
-                }
-                .to_string(),
+                raw_mcp_exposed: if ev.expose_raw_mcp_tools { "yes" } else { "no" }.to_string(),
             });
         }
     }
@@ -993,7 +988,11 @@ mod report_tests {
             preflight: None,
         };
         let report = build_report(&cfg, None, None, Some(&ic));
-        let det = report.rows.iter().find(|r| r.tool == "deterministic").unwrap();
+        let det = report
+            .rows
+            .iter()
+            .find(|r| r.tool == "deterministic")
+            .unwrap();
         assert_eq!(det.status, "disabled");
     }
 }

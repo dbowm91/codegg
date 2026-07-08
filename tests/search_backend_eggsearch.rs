@@ -556,11 +556,19 @@ fn raw_mcp_hiding_works_for_all_expanded_tools() {
     };
 
     let hidden = filter(tools.clone(), false);
-    assert_eq!(hidden.len(), 1, "only native_tool should remain when raw hidden");
+    assert_eq!(
+        hidden.len(),
+        1,
+        "only native_tool should remain when raw hidden"
+    );
     assert_eq!(hidden[0].name, "native_tool");
 
     let shown = filter(tools, true);
-    assert_eq!(shown.len(), all_expanded.len() + 1, "all tools shown when expose=true");
+    assert_eq!(
+        shown.len(),
+        all_expanded.len() + 1,
+        "all tools shown when expose=true"
+    );
 }
 
 /// Native Codegg wrappers remain registered regardless of raw MCP exposure.

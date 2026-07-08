@@ -555,7 +555,11 @@ mod tests {
         let (svc2, report2) = bootstrap_search_backend(&cfg).await;
         assert!(svc2.is_some());
         assert!(
-            report2.note.as_deref().unwrap_or("").contains("already installed")
+            report2
+                .note
+                .as_deref()
+                .unwrap_or("")
+                .contains("already installed")
                 || report2.note.as_deref().unwrap_or("").contains("reusing"),
             "re-entrant bootstrap should note reuse, got: {:?}",
             report2.note
@@ -583,7 +587,11 @@ mod tests {
         let report = bootstrap_eggsearch(&cfg).await;
         assert!(!report.connected);
         assert!(
-            report.note.as_deref().unwrap_or("").contains("enabled = false"),
+            report
+                .note
+                .as_deref()
+                .unwrap_or("")
+                .contains("enabled = false"),
             "expected enabled=false note, got: {:?}",
             report.note
         );

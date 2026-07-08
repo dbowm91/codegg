@@ -153,35 +153,28 @@ fn resolve_evidence_config(config: &Config) -> EvidenceBackendRuntimeConfig {
     let search = &config.search;
     let sc = search.as_ref();
     let enabled = sc
-        .map(|s| !matches!(s.backend(), crate::config::schema::SearchBackendConfig::Disabled))
+        .map(|s| {
+            !matches!(
+                s.backend(),
+                crate::config::schema::SearchBackendConfig::Disabled
+            )
+        })
         .unwrap_or(true);
 
-    let expose_raw_mcp_tools = sc
-        .map(|s| s.expose_raw_mcp_tools())
-        .unwrap_or(false);
+    let expose_raw_mcp_tools = sc.map(|s| s.expose_raw_mcp_tools()).unwrap_or(false);
 
-    let fallback_to_builtin = sc
-        .map(|s| s.fallback_to_builtin())
-        .unwrap_or(false);
+    let fallback_to_builtin = sc.map(|s| s.fallback_to_builtin()).unwrap_or(false);
 
-    let max_search_output_chars = sc
-        .and_then(|s| s.max_search_output_chars)
-        .unwrap_or(12_000);
-    let max_fetch_output_chars = sc
-        .and_then(|s| s.max_fetch_output_chars)
-        .unwrap_or(20_000);
-    let max_repo_output_chars = sc
-        .and_then(|s| s.max_repo_output_chars)
-        .unwrap_or(15_000);
+    let max_search_output_chars = sc.and_then(|s| s.max_search_output_chars).unwrap_or(12_000);
+    let max_fetch_output_chars = sc.and_then(|s| s.max_fetch_output_chars).unwrap_or(20_000);
+    let max_repo_output_chars = sc.and_then(|s| s.max_repo_output_chars).unwrap_or(15_000);
     let max_security_output_chars = sc
         .and_then(|s| s.max_security_output_chars)
         .unwrap_or(12_000);
     let max_research_output_chars = sc
         .and_then(|s| s.max_research_output_chars)
         .unwrap_or(12_000);
-    let max_batch_output_chars = sc
-        .and_then(|s| s.max_batch_output_chars)
-        .unwrap_or(15_000);
+    let max_batch_output_chars = sc.and_then(|s| s.max_batch_output_chars).unwrap_or(15_000);
     let max_evidence_output_chars = sc
         .and_then(|s| s.max_evidence_output_chars)
         .unwrap_or(20_000);

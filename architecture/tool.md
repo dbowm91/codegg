@@ -210,7 +210,9 @@ The `/security-review` TUI command exposes the workflow. The command handler is 
 ### Deterministic Tools (eggsact)
 
 In-process deterministic correctness utilities backed by the `eggsact` crate.
-Implemented via the generic `EggsactTool` wrapper in `src/tool/deterministic.rs`.
+See [deterministic_tools.md](deterministic_tools.md) for the full catalog,
+configuration, and integration details. Implemented via the generic
+`EggsactTool` wrapper in `src/tool/deterministic.rs`.
 All use `ToolCategory::ReadOnly` and are registered best-effort — if `EggsactRuntime::new()` fails, the tools are silently skipped.
 
 **Always-visible (8 tools):**

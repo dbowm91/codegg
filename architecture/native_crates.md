@@ -295,6 +295,22 @@ There are now two report sources:
 - `launch::read_response` / `launch::read_notification` have been removed — stdout is exclusively owned by the background reader
 - `LspError { ServerNotFound, DownloadFailed, LaunchFailed, NotInitialized, RequestFailed, RequestTimeout, UnsupportedLanguage, Io, Json, UnsupportedEdit, PathOutsideRoot, Utf16Position, OverlappingEdits, UnsupportedSourceAction, CommandOnlySourceAction, NoEditForSourceAction, AmbiguousSourceAction }`
 
+### `eggsact` (in-process, not a workspace crate)
+
+Eggsact is consumed as a direct Rust dependency (not via MCP). The adapter
+wraps `eggsact::agent::ToolRegistry` in-process:
+
+- `src/eggsact/adapter.rs` — `EggsactRuntime` owns the registry, exposes `call()` for tool invocation
+- `src/tool/deterministic.rs` — `EggsactTool` generic wrapper, `build_eggsact_tools()` factory
+- `src/preflight/service.rs` — `PreflightService` wrapping the same runtime with `audience = "harness"`
+
+Provenance: `backend = "native"`, `implementation = "eggsact/<tool_name>"`, `trust = LocalTrusted`.
+
+Config flows from `DeterministicToolsConfig` in `codegg-config` to
+`EggsactConfig` at the adapter boundary. See
+`architecture/deterministic_tools.md` for the full tool catalog and
+`architecture/preflight.md` for harness-side integration.
+
 ## Codegg-side bridge files
 
 When a Codegg config type needs to flow into a crate, conversion

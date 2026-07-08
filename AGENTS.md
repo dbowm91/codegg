@@ -433,7 +433,8 @@ CI runs on push/PR to dev/main: `agent-assets` → `fmt` → `check` → `clippy
 | `architecture/bus.md` | 42 AppEvent variants; PermissionRegistry/QuestionRegistry are synchronous |
 | `architecture/lsp.md` | egglsp is authoritative; 39 servers; `src/lsp/` is thin re-export shim |
 | `architecture/plugin.md` | No `wasm.rs`; `marketplace.rs` exists; PluginRuntime trait with Process/Wasm/Builtin |
-| `architecture/tool.md` | ~37 tools in default registry; `ToolCatalog::register()` takes `&dyn Tool` |
+| `architecture/tool.md` | ~38 tools in default registry; `ToolCatalog::register()` takes `&dyn Tool` |
+| `architecture/deterministic_tools.md` | Eggsact in-process deterministic tools (8 always-visible + 5 deferred); trust model, registration, preflight integration |
 | `architecture/tui.md` | `src/tui/app/mod.rs` ~13K lines; async command pattern; TuiTaskRegistry lifecycle |
 | `architecture/human_shell.md` | ! commands not in model context unless promoted; Phases 1-10 projection pipeline |
 | `architecture/command.md` | 105 built-in slash commands |
@@ -447,6 +448,23 @@ CI runs on push/PR to dev/main: `agent-assets` → `fmt` → `check` → `clippy
 
 1. **Verify claims against code** — Many "bugs" in docs turned out to be correct after inspection.
 2. **Documentation goes stale** — Struct fields get added/removed; always compare docs to source.
+
+## Where New Components Belong
+
+### New Web Search Providers
+Add to the **eggsearch** project, not to Codegg's built-in search provider registry (`src/search/`). The built-in registry is legacy fallback only. Codegg owns the wrapper UX, permissioning, output caps, trust framing, and backend selection; the actual search/fetch logic lives in eggsearch.
+
+### New Deterministic Validators
+Add to the **eggsact** crate. The eggsact project owns the validation logic. Codegg's `EggsactTool` wrapper in `src/tool/deterministic.rs` exposes eggsact tools to the model. New tools need:
+1. Implementation in eggsact with the `codegg_core` profile
+2. Registration in `build_eggsact_tools()` in `src/tool/deterministic.rs`
+3. Category assignment (always-visible vs deferred)
+
+### New LSP Servers
+Add to `crates/egglsp/src/server.rs`. Each server needs a `LspRule` entry with command, extensions, and initialization options. See `architecture/lsp.md` for the full contract.
+
+### New Native Tool Crates
+Follow the library-first, MCP-second pattern in `architecture/native_crates.md`. Durable tool domains live in workspace crates under `crates/` and are consumed directly in-process by Codegg's tool wrappers.
 3. **Line numbers are fragile** — References like `watcher.rs:157` can be off by several lines. Use code search.
 4. **Count from source, not docs** — Tool/server/command counts drift. Count actual entries in `with_options()`, `server_definitions()`, `CommandRegistry`.
 5. **Don't assume tool registration** — Not every tool in `/tool` is in the default registry.

@@ -116,6 +116,7 @@ hidden by default — see [MCP](mcp.md)).
 | [task_state/](model_profile_task_state.md) | Todo/task state machine, injection, and projection | `mod.rs` |
 | [theme/](theme.md) | Frontend-neutral theme system (SemanticTheme → ratatui) | `schema.rs`, `registry.rs`, `native.rs`, `halloy.rs`, `target/` |
 | [tool/](tool.md) | Built-in tools (~38 tools in default registry) and backend abstractions | `mod.rs`, `backend.rs`, `bash.rs`, `read.rs`, etc. |
+| [deterministic_tools/](deterministic_tools.md) | Eggsact in-process deterministic tools (8 always-visible + 5 deferred) | `deterministic.rs`, `eggsact/adapter.rs` |
 | [tts/](tts.md) | Text-to-speech (macOS `say` command) | `mod.rs` |
 | [tui/](tui.md) | Terminal user interface (Ratatui) | `app/mod.rs`, `components/` |
 | [upgrade/](upgrade.md) | Self-upgrade via GitHub releases | `mod.rs` |
@@ -269,6 +270,7 @@ User Input → TUI Event Loop → App::on_key() → State Mutation → Render
 - [Snapshot](snapshot.md) - File state capture and restore
 - [Storage](storage.md) - SQLite initialization
 - [Theme](theme.md) - Frontend-neutral theme system
+- [Deterministic Tools](deterministic_tools.md) — Eggsact in-process deterministic utilities (text comparison, config validation, security inspection)
 - [Tool](tool.md) - Tool system and registry
 - [TTS](tts.md) - Text-to-speech
 - [TUI](tui.md) - Terminal user interface

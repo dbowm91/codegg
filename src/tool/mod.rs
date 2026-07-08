@@ -420,10 +420,7 @@ impl ToolRegistry {
         registry.register(crate::tool::plan::PlanExitTool);
 
         // --- Deterministic tools (eggsact-backed) ---
-        let det_cfg = options
-            .deterministic_config
-            .clone()
-            .unwrap_or_default();
+        let det_cfg = options.deterministic_config.clone().unwrap_or_default();
         if det_cfg.enabled && det_cfg.backend != "disabled" {
             let eggsact_config = crate::eggsact::adapter::EggsactConfig {
                 profile: det_cfg.profile.clone(),
