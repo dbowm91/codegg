@@ -373,3 +373,9 @@ A successful implementation should show:
 This plan does not require removing `--test-threads=1` from full validation. It also does not require making every test parallel-safe. Some tests should remain serial because they intentionally exercise process lifecycle, restart timing, global state, or heavyweight runtime behavior.
 
 The central change is to make the resource policy explicit and granular rather than implicit and global.
+
+## Follow-Up: Shell Projection Fixture Review
+
+After completing this plan, a follow-up review of the shell projection fixture corpus was conducted. The review found 19 existing fixtures covering ~60% of redaction rules and native projectors, with 4 of 6 redaction rules and GitLogProjector having no fixture coverage at all.
+
+See **[Shell Projection Fixture Corpus Review](shell-projection-fixture-review.md)** for the full analysis and plan to add 12 new fixtures covering the gaps.
