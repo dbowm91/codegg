@@ -989,7 +989,66 @@ comparison, config validation, and security inspection. These run
 entirely in-process with no external dependencies.
 
 Use `/tool-backends` in the TUI to inspect the active backend for each
-tool. Use `codegg doctor search` to check eggsearch connectivity.
+tool. Use `codegg doctor search` to check eggsearch connectivity and
+`codegg doctor deterministic-tools` to verify eggsact status.
+
+### Tool Backend Configuration
+
+Configure backends in `opencode.json` (TOML or JSON):
+
+#### Search Backend (eggsearch)
+
+Default — no config needed if `eggsearch` is installed. To customize:
+
+```toml
+[search]
+backend = "eggsearch"           # "eggsearch" | "builtin" | "disabled"
+expose_raw_mcp_tools = false   # hide raw mcp__eggsearch__* tools
+fallback_to_builtin = false     # fall back to legacy if eggsearch unavailable
+max_search_output_chars = 12000
+max_fetch_output_chars = 20000
+
+[search.eggsearch]
+server_name = "eggsearch"
+command = "eggsearch"
+args = ["mcp", "stdio"]
+timeout_ms = 60000
+```
+
+Install `eggsearch` separately — it is not bundled with Codegg:
+
+```bash
+cargo install eggsearch
+```
+
+#### Deterministic Tools (eggsact)
+
+Enabled by default. No external process needed — eggsact is an in-process
+Rust dependency. To customize:
+
+```toml
+[deterministic_tools]
+enabled = true
+backend = "native"                # "native" | "disabled"
+profile = "codegg_core"           # "codegg_core" | "codegg_core_min" | "default" | "full"
+expose_expert_tools = false       # expose deferred tools to model
+max_output_chars = 12000
+```
+
+#### Preflight
+
+Harness-side validation before mutating operations. Enabled by default in
+`warn` mode (surfaces findings without blocking). To customize:
+
+```toml
+[preflight]
+enabled = true
+mode = "warn"                     # "off" | "observe" | "warn" | "block_on_definite"
+patch = true                      # validate edits/replacements
+config = true                     # validate config writes
+shell = true                      # validate shell commands
+unicode = true                    # validate unicode safety
+```
 
 ## Security
 
@@ -1027,6 +1086,47 @@ Each successful run stores a structured `SecurityReviewReceipt` on the App so th
 2. **Configure permissions** to restrict dangerous tools
 3. **Review commands** before approving
 4. **Secure server** with authentication in production
+
+## Migrating to eggsearch/eggsact
+
+As of this release, Codegg uses two external backends for search and
+deterministic tool operations:
+
+### Search (eggsearch)
+
+- **Before:** Codegg shipped in-tree web search providers (Exa, Tavily,
+  Brave, DuckDuckGo, Mojeek, etc.) behind the `websearch` and `webfetch`
+  tools.
+- **After:** Codegg defaults to `eggsearch`, an external MCP server that
+  provides web search, repository search, and evidence gathering.
+- **Migration:** Install `eggsearch` (`cargo install eggsearch`). Codegg
+  auto-detects it on startup.
+- **Fallback:** If `eggsearch` is unavailable, Codegg falls back to the
+  legacy built-in providers when `[search].fallback_to_builtin = true`.
+  Set `[search].backend = "builtin"` to force the legacy path.
+- **Removal:** The built-in providers are maintained but will not grow
+  new features. New search providers belong in the eggsearch project.
+
+### Deterministic tools (eggsact)
+
+- **Before:** Some text comparison and config validation was done inline.
+- **After:** Codegg uses `eggsact`, an in-process Rust library providing
+  deterministic tools (`text_equal`, `validate_json`, `validate_toml`,
+  `command_preflight`, `path_normalize`, `text_security_inspect`, etc.).
+- **Migration:** No action needed — eggsact is a Rust dependency bundled
+  with Codegg.
+- **Discovery:** Some eggsact tools are deferred and discoverable via
+  `tool_search` rather than always visible to the model.
+
+### Configuration
+
+All backends are configurable in `opencode.json`. See the
+[Tool Backend Configuration](#tool-backend-configuration) section for
+TOML examples. Key config sections:
+
+- `[search]` — backend selection, output caps, eggsearch connection
+- `[deterministic_tools]` — eggsact profile, tool exposure
+- `[preflight]` — pre-edit/command validation mode
 
 ## Contributing
 

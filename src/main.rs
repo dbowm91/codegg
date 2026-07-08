@@ -305,6 +305,8 @@ pub enum DoctorSubsystem {
     Mcp,
     /// Language Server Protocol subsystem.
     Lsp,
+    /// Deterministic tools (eggsact) and preflight.
+    DeterministicTools,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, clap::ValueEnum)]
@@ -975,6 +977,12 @@ async fn cmd_doctor(subsystem: DoctorSubsystem) -> Result<(), AppError> {
         return Ok(());
     }
 
+    if matches!(subsystem, DoctorSubsystem::DeterministicTools) {
+        println!("\n== Deterministic tools (eggsact) ==");
+        print_deterministic_tools_report(&config);
+        return Ok(());
+    }
+
     if matches!(subsystem, DoctorSubsystem::All | DoctorSubsystem::Search) {
         println!("\n== Search backend ==");
         let (_svc, report) = bootstrap::bootstrap_search_backend(&config).await;
@@ -991,6 +999,14 @@ async fn cmd_doctor(subsystem: DoctorSubsystem) -> Result<(), AppError> {
     if matches!(subsystem, DoctorSubsystem::All | DoctorSubsystem::Lsp) {
         println!("\n== LSP ==");
         list_lsp_diagnostics(&config);
+    }
+
+    if matches!(
+        subsystem,
+        DoctorSubsystem::All | DoctorSubsystem::DeterministicTools
+    ) {
+        println!("\n== Deterministic tools (eggsact) ==");
+        print_deterministic_tools_report(&config);
     }
 
     Ok(())
@@ -1093,6 +1109,60 @@ fn list_lsp_diagnostics(config: &Config) {
         println!("model tool: hidden (registry-visible but agent exposure gate is false)");
     } else {
         println!("model tool: hidden (lsp not in registry definitions)");
+    }
+}
+
+fn print_deterministic_tools_report(config: &Config) {
+    use codegg::tool::integrated_config::resolve_integrated_config;
+
+    let integrated = resolve_integrated_config(config);
+    let det = match &integrated.deterministic {
+        Some(d) => d,
+        None => {
+            println!("deterministic tools: not configured");
+            return;
+        }
+    };
+
+    println!("enabled: {}", det.enabled);
+    println!("backend: {}", det.backend);
+    println!("profile: {}", det.profile);
+    println!("expose_expert_tools: {}", det.expose_expert_tools);
+    println!("max_output_chars: {}", det.max_output_chars);
+
+    if !det.enabled {
+        println!("\nNote: deterministic tools are disabled. Enable with [deterministic_tools].enabled = true");
+        return;
+    }
+
+    // Try to create a runtime and probe tool count
+    let eggsact_config = codegg::eggsact::adapter::EggsactConfig {
+        profile: det.profile.clone(),
+        audience: det.model_audience.clone(),
+        max_output_chars: det.max_output_chars,
+    };
+    match codegg::eggsact::adapter::EggsactRuntime::new(eggsact_config) {
+        Ok(runtime) => {
+            let runtime = std::sync::Arc::new(runtime);
+            let (always_visible, deferred) =
+                codegg::tool::deterministic::build_eggsact_tools(runtime);
+            println!(
+                "model tools: {} always-visible, {} deferred",
+                always_visible.len(),
+                deferred.len()
+            );
+        }
+        Err(e) => {
+            println!("runtime: FAILED to initialize ({e})");
+        }
+    }
+
+    // Preflight status
+    if let Some(pf) = &integrated.preflight {
+        println!("\npreflight mode: {}", pf.mode);
+        println!("preflight enabled: {}", pf.enabled);
+    } else {
+        println!("\npreflight: not configured");
     }
 }
 

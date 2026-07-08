@@ -18,29 +18,44 @@ pub(crate) async fn handle_run_doctor(app: &mut App) {
         }
     };
     let (_svc, report) = bootstrap::bootstrap_search_backend(&config).await;
-    let summary = if report.connected {
-        format!(
-            "doctor: {} OK ({})",
+    let mut lines: Vec<String> = Vec::new();
+
+    if report.connected {
+        lines.push(format!(
+            "search: {} OK ({})",
             report.search_backend.as_deref().unwrap_or("?"),
             report.tools.join(", ")
-        )
+        ));
     } else if let Some(err) = &report.connection_error {
-        format!(
-            "doctor: {} unavailable ({err})",
+        lines.push(format!(
+            "search: {} unavailable ({err})",
             report.search_backend.as_deref().unwrap_or("?")
-        )
+        ));
     } else {
-        format!(
-            "doctor: {} (no MCP service)",
+        lines.push(format!(
+            "search: {} (no MCP service)",
             report.search_backend.as_deref().unwrap_or("?")
-        )
-    };
-    for line in report.summary_lines() {
-        tracing::info!(target: "codegg::doctor", "{}", line);
+        ));
     }
-    if let Some(mcp) = config.mcp.as_ref() {
-        tracing::info!(target: "codegg::doctor", "MCP servers: {}", mcp.len());
+
+    // Deterministic tools status
+    let integrated = crate::tool::integrated_config::resolve_integrated_config(&config);
+    if let Some(det) = &integrated.deterministic {
+        if det.enabled {
+            lines.push(format!(
+                "deterministic: {} profile={}",
+                det.backend, det.profile
+            ));
+        } else {
+            lines.push("deterministic: disabled".to_string());
+        }
     }
+
+    if let Some(pf) = &integrated.preflight {
+        lines.push(format!("preflight: mode={}", pf.mode));
+    }
+
+    let summary = lines.join("\n");
     app.messages_state.toasts.info(&summary);
 }
 
@@ -64,33 +79,55 @@ pub(crate) fn start_run_doctor(app: &mut App) {
                 }
             };
             let (_svc, report) = bootstrap::bootstrap_search_backend(&config).await;
-            let summary = if report.connected {
-                format!(
-                    "doctor: {} OK ({})",
+            let mut lines: Vec<String> = Vec::new();
+
+            if report.connected {
+                lines.push(format!(
+                    "search: {} OK ({})",
                     report.search_backend.as_deref().unwrap_or("?"),
                     report.tools.join(", ")
-                )
+                ));
             } else if let Some(err) = &report.connection_error {
-                format!(
-                    "doctor: {} unavailable ({err})",
+                lines.push(format!(
+                    "search: {} unavailable ({err})",
                     report.search_backend.as_deref().unwrap_or("?")
-                )
+                ));
             } else {
-                format!(
-                    "doctor: {} (no MCP service)",
+                lines.push(format!(
+                    "search: {} (no MCP service)",
                     report.search_backend.as_deref().unwrap_or("?")
-                )
-            };
+                ));
+            }
             for line in report.summary_lines() {
                 tracing::info!(target: "codegg::doctor", "{}", line);
             }
             if let Some(mcp) = config.mcp.as_ref() {
                 tracing::info!(target: "codegg::doctor", "MCP servers: {}", mcp.len());
             }
-            Some(TuiCommand::DoctorResult {
-                summary,
-                is_error: false,
-            })
+
+            // Deterministic tools status
+            let integrated = crate::tool::integrated_config::resolve_integrated_config(&config);
+            if let Some(det) = &integrated.deterministic {
+                if det.enabled {
+                    lines.push(format!(
+                        "deterministic: {} profile={}",
+                        det.backend, det.profile
+                    ));
+                } else {
+                    lines.push("deterministic: disabled".to_string());
+                }
+            } else {
+                lines.push("deterministic: not configured".to_string());
+            }
+
+            // Preflight status
+            if let Some(pf) = &integrated.preflight {
+                lines.push(format!("preflight: mode={}", pf.mode));
+            }
+
+            let summary = lines.join("\n");
+            let is_error = !report.connected;
+            Some(TuiCommand::DoctorResult { summary, is_error })
         },
     );
 }
