@@ -6186,6 +6186,7 @@ impl App {
                     &search_cfg,
                     config.tool_backends.as_ref(),
                     mcp_server_names.as_deref(),
+                    Some(&crate::tool::integrated_config::resolve_integrated_config(&config)),
                 );
                 let rendered = report.render();
                 self.messages_state.toasts.info(&rendered);

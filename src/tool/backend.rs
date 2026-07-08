@@ -584,10 +584,15 @@ fn truncate(s: &str, max: usize) -> String {
 /// names currently registered with `McpService`. When `None`, MCP
 /// status is reported as `unknown`. The function never reads
 /// environment variables or filesystem state.
+///
+/// The optional `integrated_config` provides resolved runtime configs
+/// for evidence, deterministic, and preflight subsystems. When `Some`,
+/// additional rows for eggsact/deterministic/preflight are appended.
 pub fn build_report(
     search: &crate::config::schema::SearchConfig,
     tool_backends: Option<&crate::config::schema::ToolBackendConfigSchema>,
     mcp_server_names: Option<&[String]>,
+    integrated_config: Option<&crate::tool::integrated_config::IntegratedToolRuntimeConfig>,
 ) -> ToolBackendReport {
     let mut report = ToolBackendReport::default();
 
@@ -788,6 +793,76 @@ pub fn build_report(
         }
     }
 
+    // --- Eggsact / deterministic tools ---
+    if let Some(ic) = integrated_config {
+        if let Some(ref det) = ic.deterministic {
+            let det_enabled = det.enabled && det.backend != "disabled";
+            let det_status = if det_enabled { "ready" } else { "disabled" };
+            report.rows.push(ToolBackendReportRow {
+                tool: "deterministic".to_string(),
+                backend: if det_enabled {
+                    "Native".to_string()
+                } else {
+                    "Disabled".to_string()
+                },
+                implementation: format!("eggsact/{}", det.profile),
+                status: det_status.to_string(),
+                raw_mcp_exposed: "n/a".to_string(),
+            });
+
+            // Preflight (harness audience, same eggsact runtime)
+            if let Some(ref pf) = ic.preflight {
+                let pf_status = if !pf.enabled || pf.mode == "off" {
+                    "disabled"
+                } else {
+                    "ready"
+                };
+                report.rows.push(ToolBackendReportRow {
+                    tool: "preflight".to_string(),
+                    backend: if pf.enabled && pf.mode != "off" {
+                        "Native".to_string()
+                    } else {
+                        "Disabled".to_string()
+                    },
+                    implementation: format!("eggsact/{} ({})", pf.profile, pf.mode),
+                    status: pf_status.to_string(),
+                    raw_mcp_exposed: "n/a".to_string(),
+                });
+            }
+        }
+
+        // Evidence/search backend summary row
+        if let Some(ref ev) = ic.evidence {
+            let ev_status = if !ev.enabled {
+                "disabled"
+            } else if matches!(
+                search_backend,
+                crate::config::schema::SearchBackendConfig::Eggsearch
+            ) && !eggsearch_present
+            {
+                "unavailable"
+            } else {
+                "ready"
+            };
+            report.rows.push(ToolBackendReportRow {
+                tool: "evidence".to_string(),
+                backend: match search_backend {
+                    crate::config::schema::SearchBackendConfig::Disabled => "Disabled".to_string(),
+                    crate::config::schema::SearchBackendConfig::Builtin => "Builtin".to_string(),
+                    crate::config::schema::SearchBackendConfig::Eggsearch => "MCP".to_string(),
+                },
+                implementation: format!("{}/bundle", eggsearch_server),
+                status: ev_status.to_string(),
+                raw_mcp_exposed: if ev.expose_raw_mcp_tools {
+                    "yes"
+                } else {
+                    "no"
+                }
+                .to_string(),
+            });
+        }
+    }
+
     // --- Warnings ---
     if matches!(
         search_backend,
@@ -831,7 +906,7 @@ mod report_tests {
     #[test]
     fn report_renders_table_with_header() {
         let cfg = SearchConfig::default();
-        let report = build_report(&cfg, None, None);
+        let report = build_report(&cfg, None, None, None);
         let rendered = report.render();
         assert!(rendered.contains("Tool         Backend"));
         assert!(rendered.contains("websearch"));
@@ -842,7 +917,7 @@ mod report_tests {
     #[test]
     fn report_eggsearch_unavailable_warning() {
         let cfg = SearchConfig::default();
-        let report = build_report(&cfg, None, Some(&[]));
+        let report = build_report(&cfg, None, Some(&[]), None);
         assert!(report.warnings.iter().any(|w| w.contains("eggsearch")));
     }
 
@@ -852,7 +927,7 @@ mod report_tests {
             backend: Some(SearchBackendConfig::Disabled),
             ..Default::default()
         };
-        let report = build_report(&cfg, None, None);
+        let report = build_report(&cfg, None, None, None);
         let websearch = report.rows.iter().find(|r| r.tool == "websearch").unwrap();
         assert_eq!(websearch.status, "disabled");
         assert!(report.warnings.iter().any(|w| w.contains("disabled")));
@@ -862,7 +937,7 @@ mod report_tests {
     fn report_eggsearch_present_shows_ready() {
         let cfg = SearchConfig::default();
         let names = vec!["eggsearch".to_string()];
-        let report = build_report(&cfg, None, Some(&names));
+        let report = build_report(&cfg, None, Some(&names), None);
         let websearch = report.rows.iter().find(|r| r.tool == "websearch").unwrap();
         assert_eq!(websearch.status, "ready");
         assert!(websearch.implementation.contains("eggsearch"));
@@ -871,8 +946,54 @@ mod report_tests {
     #[test]
     fn report_hides_raw_mcp_by_default() {
         let cfg = SearchConfig::default();
-        let report = build_report(&cfg, None, None);
+        let report = build_report(&cfg, None, None, None);
         let websearch = report.rows.iter().find(|r| r.tool == "websearch").unwrap();
         assert_eq!(websearch.raw_mcp_exposed, "no");
+    }
+
+    #[test]
+    fn report_with_integrated_config_shows_deterministic_row() {
+        use crate::tool::integrated_config::{
+            DeterministicToolsRuntimeConfig, IntegratedToolRuntimeConfig, PreflightRuntimeConfig,
+        };
+
+        let cfg = SearchConfig::default();
+        let ic = IntegratedToolRuntimeConfig {
+            evidence: None,
+            deterministic: Some(DeterministicToolsRuntimeConfig::default()),
+            preflight: Some(PreflightRuntimeConfig::default()),
+        };
+        let report = build_report(&cfg, None, None, Some(&ic));
+        let det = report.rows.iter().find(|r| r.tool == "deterministic");
+        assert!(det.is_some(), "deterministic row should be present");
+        let det = det.unwrap();
+        assert_eq!(det.status, "ready");
+        assert!(det.implementation.contains("eggsact"));
+
+        let pf = report.rows.iter().find(|r| r.tool == "preflight");
+        assert!(pf.is_some(), "preflight row should be present");
+        let pf = pf.unwrap();
+        assert_eq!(pf.status, "ready");
+        assert!(pf.implementation.contains("warn"));
+    }
+
+    #[test]
+    fn report_disabled_deterministic_shows_disabled() {
+        use crate::tool::integrated_config::{
+            DeterministicToolsRuntimeConfig, IntegratedToolRuntimeConfig,
+        };
+
+        let cfg = SearchConfig::default();
+        let ic = IntegratedToolRuntimeConfig {
+            evidence: None,
+            deterministic: Some(DeterministicToolsRuntimeConfig {
+                enabled: false,
+                ..Default::default()
+            }),
+            preflight: None,
+        };
+        let report = build_report(&cfg, None, None, Some(&ic));
+        let det = report.rows.iter().find(|r| r.tool == "deterministic").unwrap();
+        assert_eq!(det.status, "disabled");
     }
 }

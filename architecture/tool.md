@@ -285,6 +285,7 @@ pub struct ToolRegistry {
     tools: HashMap<String, Box<dyn Tool>>,
     catalog: catalog::ToolCatalog,
     tool_backends: ToolBackendConfig,
+    integrated_config: IntegratedToolRuntimeConfig,
 }
 ```
 
@@ -295,8 +296,9 @@ pub struct ToolRegistry {
 | `new()` | Create empty registry |
 | `with_options(ToolRegistryOptions)` | Authoritative registration sequence; the other constructors are thin wrappers |
 | `with_defaults()` | Create registry with all 30 built-in tools, all-native backend defaults |
-| `with_session_config_defaults(&Config, todo_state, policy, pool, session_id)` | **Production session constructor.** Resolves `ToolBackendConfig::from_config(&Config)` and threads it through `with_options`, so resolved `[tool_backends]` config (LSP/security backends, MCP fallback) is preserved. |
-| `with_session_defaults(todo_state, policy, pool, session_id)` | Session registry with **all-native backend defaults** — drops any loaded `[tool_backends]`. Kept for tests and non-config-aware callers; the doc comment warns against using it in production paths. |
+| `with_config(&Config)` | Resolves `ToolBackendConfig::from_config` + `IntegratedToolRuntimeConfig::resolve_integrated_config` and passes both through `with_options`. Used by CLI exec/chat and subagents. |
+| `with_session_config_defaults(&Config, todo_state, policy, pool, session_id)` | **Production session constructor.** Resolves both `ToolBackendConfig::from_config(&Config)` and `IntegratedToolRuntimeConfig` and threads them through `with_options`, so resolved `[tool_backends]`, `[deterministic_tools]`, `[preflight]`, and `[search]` configs are preserved. |
+| `with_session_defaults(todo_state, policy, pool, session_id)` | Session registry with **all-native backend defaults** — drops any loaded `[tool_backends]` and integrated config. Kept for tests and non-config-aware callers; the doc comment warns against using it in production paths. |
 | `register(&mut self, tool: impl Tool + 'static)` | Register a tool (takes owned value via `impl Tool + 'static`) |
 | `get(&self, name: &str) -> Option<&dyn Tool>` | Get tool by name (includes hidden stubs) |
 | `list(&self) -> Vec<&dyn Tool>` | List all tools (includes hidden stubs) |
@@ -308,6 +310,7 @@ pub struct ToolRegistry {
 | `set_search_tool_available_tools(&mut self, available)` | Inject available tool names into `tool_search` |
 | `execute_capture(name, input, ctx) -> StructuredToolResult` | Central execution path used by `AgentLoop::execute_tool_calls` for native tools. Returns structured provenance; the model-facing `structured.output` matches the legacy `execute()` string. |
 | `tool_backends()` | Resolved `ToolBackendConfig` captured at construction |
+| `integrated_config()` | Resolved `IntegratedToolRuntimeConfig` (evidence/deterministic/preflight) captured at construction |
 | `backend_report(mcp_server_names)` | Runtime-aware status report for `/tool-backends` (Active / FallbackToNative / Disabled / ConfiguredButUnavailable) |
 
 ### ToolRegistryOptions (Phase 2)
@@ -322,12 +325,46 @@ pub struct ToolRegistryOptions {
     pub session_id: Option<String>,
     pub lsp_service: Option<Arc<LspService>>,
     pub tool_backends: ToolBackendConfig,
+    pub context_artifact_store: Option<Arc<dyn ContextArtifactStore>>,
+    pub context_session_id: Option<String>,
+    pub context_read_enabled: bool,
+    pub lsp_cache_config: Option<LspCacheConfig>,
+    pub evidence_config: Option<EvidenceBackendRuntimeConfig>,
+    pub deterministic_config: Option<DeterministicToolsRuntimeConfig>,
+    pub preflight_config: Option<PreflightRuntimeConfig>,
 }
 ```
+
+The last three fields are resolved by `integrated_config::resolve_integrated_config(&Config)` and passed through from `with_config()`, `with_session_config_defaults()`, and `build_session_tool_registry()`. `with_defaults()` and `with_session_defaults()` pass `None` for these (tests only).
 
 Both `with_defaults()` and `with_session_*_defaults(...)` build a
 `ToolRegistryOptions` and delegate to `with_options()`. LSP service
 construction is now injectable instead of hardcoded in two places.
+
+### Integrated Tool Runtime Config (Phase 6)
+
+`src/tool/integrated_config.rs` resolves evidence, deterministic, and
+preflight runtime configs from the loaded `Config` in one pass:
+
+```rust
+pub struct IntegratedToolRuntimeConfig {
+    pub evidence: EvidenceBackendRuntimeConfig,     // from [search]
+    pub deterministic: DeterministicToolsRuntimeConfig, // from [deterministic_tools]
+    pub preflight: PreflightRuntimeConfig,           // from [preflight]
+}
+```
+
+Entry point: `resolve_integrated_config(&Config) -> IntegratedToolRuntimeConfig`.
+
+- **Evidence**: `search_backend`, `expose_raw_mcp_tools`, `fallback_to_builtin`
+- **Deterministic**: `enabled`, `backend`, `profile` (validated against `KNOWN_EGGSACT_PROFILES`: `codegg_core`, `codegg_core_min`, `default`, `full`), `model_audience`, `harness_audience`, `expose_expert_tools`, `max_output_chars`
+- **Preflight**: `enabled`, `mode` (off/observe/warn/block_on_definite), `log_findings`, `model_visible_findings`
+
+The resolved config is stashed on `ToolRegistry.integrated_config` and
+accessible via `registry.integrated_config()`. It is consumed by:
+- `with_options()` — passes `deterministic_config` to `EggsactConfig` instead of hardcoded defaults; respects `enabled` and `backend != "disabled"`
+- `build_report()` — adds deterministic/preflight/evidence rows to `/tool-backends`
+- Subagent construction (`worker.rs:698`) — now uses `with_config(&config)` which resolves integrated config, instead of `with_defaults()` which dropped it
 
 ### Native tool execution path
 
@@ -582,7 +619,8 @@ impl ToolError {
 
 `/tool-backends` (aliases `/tools`, `/backends`) surfaces the native vs
 MCP wiring of every model-facing tool. The handler builds a
-synchronous report from the resolved `ToolBackendConfig` plus any
+synchronous report from the resolved `ToolBackendConfig` plus
+`IntegratedToolRuntimeConfig` (evidence/deterministic/preflight) and any
 pre-installed context (e.g. eggsearch availability from
 `search_backend::state`) and renders it as a toast. The report shape:
 
@@ -600,7 +638,15 @@ evidence_bundle   MCP       eggsearch          ready        no
 lsp               Native    egglsp             ready        n/a
 security          Native    eggsentry          ready        n/a
 git               Native    codegg/egggit      ready        n/a
+deterministic     native    eggsact/codegg_core enabled      n/a
+preflight         native    eggsact/codegg_core warn         n/a
+evidence          MCP       eggsearch          ready        no
 ```
+
+The `deterministic` row shows the eggsact profile and enabled/disabled
+state. The `preflight` row shows the eggsact profile and the policy
+mode (off/observe/warn/block_on_definite). The `evidence` row shows
+the search backend connection status.
 
 Status values are: `ready`, `disabled`, `unavailable`, `error(<msg>)`.
 Warnings are appended when a backend is configured-but-unavailable or
@@ -616,6 +662,9 @@ src/tool/
 ├── mod.rs          # Tool trait, ToolRegistry, with_options() / with_defaults() / with_session_defaults()
 ├── backend.rs      # ToolBackendKind, ToolProvenance, ToolExecutionContext, StructuredToolResult,
 │                   # ToolBackendConfig, build_report() for /tool-backends
+├── backend_config.rs  # ToolBackendConfig::from_config() — schema → runtime conversion
+├── integrated_config.rs  # IntegratedToolRuntimeConfig: resolve_integrated_config() for evidence/deterministic/preflight
+├── factory.rs      # build_session_tool_registry() — canonical production constructor for daemon sessions
 ├── catalog.rs      # ToolCatalog for metadata and search
 ├── util.rs         # Path validation helpers
 ├── bash.rs         # Shell command execution

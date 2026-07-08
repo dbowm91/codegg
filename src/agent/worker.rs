@@ -695,7 +695,7 @@ async fn execute_agent_task(
         .ok_or_else(|| format!("Provider '{}' not found", provider_name))?
         .clone_box();
 
-    let mut tool_registry = ToolRegistry::with_defaults();
+    let mut tool_registry = ToolRegistry::with_config(&config);
     // Subagents must NEVER have access to in-flight planning tools
     // (todowrite/todoread), long-horizon goal tools (goal_get,
     // goal_update_progress, goal_request_completion — not in

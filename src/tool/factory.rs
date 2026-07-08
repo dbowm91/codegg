@@ -5,6 +5,7 @@ use sqlx::SqlitePool;
 use crate::config::schema::Config;
 use crate::context::{ContextArtifactStore, InMemoryArtifactStore};
 use crate::model_profile::types::TaskStatePolicy;
+use crate::tool::integrated_config;
 use crate::tool::{ToolRegistry, ToolRegistryOptions};
 
 /// Build a session-scoped [`ToolRegistry`] with default tools, goal tools,
@@ -38,6 +39,8 @@ pub fn build_session_tool_registry(
 
     let artifact_store: Arc<dyn ContextArtifactStore> = Arc::new(InMemoryArtifactStore::new());
 
+    let integrated = integrated_config::resolve_integrated_config(config);
+
     let mut tool_registry = ToolRegistry::with_options(ToolRegistryOptions {
         todo_state: Some(todo_state),
         todo_policy: Some(task_state_policy),
@@ -57,6 +60,9 @@ pub fn build_session_tool_registry(
         },
         context_read_enabled,
         lsp_cache_config: crate::tool::convert_lsp_cache_config(&config.lsp_semantic_cache),
+        evidence_config: integrated.evidence,
+        deterministic_config: integrated.deterministic,
+        preflight_config: integrated.preflight,
     });
 
     // Register the task/subagent tool when a runtime is available.

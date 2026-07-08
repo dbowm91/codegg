@@ -27,6 +27,7 @@ pub mod glob;
 pub mod goal;
 pub mod grep;
 pub mod image;
+pub mod integrated_config;
 pub mod invalid;
 pub mod list;
 pub mod lsp;
@@ -172,6 +173,7 @@ pub struct ToolRegistry {
     tools: HashMap<String, Box<dyn Tool>>,
     catalog: catalog::ToolCatalog,
     tool_backends: ToolBackendConfig,
+    integrated_config: integrated_config::IntegratedToolRuntimeConfig,
 }
 
 impl Default for ToolRegistry {
@@ -224,6 +226,15 @@ pub struct ToolRegistryOptions {
     /// Optional cache config for the LSP semantic cache. When `None`,
     /// `LspCacheConfig::default()` (disabled) is used.
     pub lsp_cache_config: Option<egglsp::cache::LspCacheConfig>,
+    /// Resolved evidence/search backend config. When `None`,
+    /// `EvidenceBackendRuntimeConfig::default()` is used.
+    pub evidence_config: Option<integrated_config::EvidenceBackendRuntimeConfig>,
+    /// Resolved deterministic (eggsact) tool config. When `None`,
+    /// `DeterministicToolsRuntimeConfig::default()` is used.
+    pub deterministic_config: Option<integrated_config::DeterministicToolsRuntimeConfig>,
+    /// Resolved preflight config. When `None`,
+    /// `PreflightRuntimeConfig::default()` is used.
+    pub preflight_config: Option<integrated_config::PreflightRuntimeConfig>,
 }
 
 impl ToolRegistry {
@@ -232,6 +243,7 @@ impl ToolRegistry {
             tools: HashMap::new(),
             catalog: catalog::ToolCatalog::new(),
             tool_backends: ToolBackendConfig::default(),
+            integrated_config: integrated_config::IntegratedToolRuntimeConfig::default(),
         }
     }
 
@@ -408,16 +420,35 @@ impl ToolRegistry {
         registry.register(crate::tool::plan::PlanExitTool);
 
         // --- Deterministic tools (eggsact-backed) ---
-        if let Ok(eggsact_runtime) = crate::eggsact::adapter::EggsactRuntime::new(
-            crate::eggsact::adapter::EggsactConfig::default(),
-        ) {
-            let runtime = std::sync::Arc::new(eggsact_runtime);
-            let (visible, deferred) = crate::tool::deterministic::build_eggsact_tools(runtime);
-            for tool in visible {
-                registry.register(tool);
-            }
-            for tool in deferred {
-                registry.register(tool);
+        let det_cfg = options
+            .deterministic_config
+            .clone()
+            .unwrap_or_default();
+        if det_cfg.enabled && det_cfg.backend != "disabled" {
+            let eggsact_config = crate::eggsact::adapter::EggsactConfig {
+                profile: det_cfg.profile.clone(),
+                audience: det_cfg.model_audience.clone(),
+                max_output_chars: det_cfg.max_output_chars,
+            };
+            match crate::eggsact::adapter::EggsactRuntime::new(eggsact_config) {
+                Ok(eggsact_runtime) => {
+                    let runtime = std::sync::Arc::new(eggsact_runtime);
+                    let (visible, deferred) =
+                        crate::tool::deterministic::build_eggsact_tools(runtime);
+                    for tool in visible {
+                        registry.register(tool);
+                    }
+                    for tool in deferred {
+                        registry.register(tool);
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        profile = %det_cfg.profile,
+                        "failed to initialize eggsact runtime; deterministic tools skipped"
+                    );
+                }
             }
         }
 
@@ -432,6 +463,11 @@ impl ToolRegistry {
         // (`backend_report`) and any wrapper that wants to consult
         // the runtime-resolved backend at call time.
         registry.tool_backends = options.tool_backends;
+        registry.integrated_config = integrated_config::IntegratedToolRuntimeConfig {
+            evidence: options.evidence_config,
+            deterministic: options.deterministic_config,
+            preflight: options.preflight_config,
+        };
 
         // --- Context read tool (artifact expansion) ---
         if options.context_read_enabled {
@@ -455,9 +491,13 @@ impl ToolRegistry {
     /// can consult it.
     pub fn with_config(config: &crate::config::schema::Config) -> Self {
         let tool_backends = ToolBackendConfig::from_config(config);
+        let integrated = integrated_config::resolve_integrated_config(config);
         Self::with_options(ToolRegistryOptions {
             tool_backends,
             lsp_cache_config: convert_lsp_cache_config(&config.lsp_semantic_cache),
+            evidence_config: integrated.evidence,
+            deterministic_config: integrated.deterministic,
+            preflight_config: integrated.preflight,
             ..ToolRegistryOptions::default()
         })
     }
@@ -545,6 +585,7 @@ impl ToolRegistry {
         pool: Option<sqlx::SqlitePool>,
         session_id: Option<String>,
     ) -> Self {
+        let integrated = integrated_config::resolve_integrated_config(config);
         Self::with_options(ToolRegistryOptions {
             todo_state: Some(todo_state),
             todo_policy: Some(policy),
@@ -556,6 +597,9 @@ impl ToolRegistry {
             context_session_id: None,
             context_read_enabled: false,
             lsp_cache_config: convert_lsp_cache_config(&config.lsp_semantic_cache),
+            evidence_config: integrated.evidence,
+            deterministic_config: integrated.deterministic,
+            preflight_config: integrated.preflight,
         })
     }
 
@@ -585,6 +629,9 @@ impl ToolRegistry {
             context_session_id: None,
             context_read_enabled: false,
             lsp_cache_config: None,
+            evidence_config: None,
+            deterministic_config: None,
+            preflight_config: None,
         })
     }
 
@@ -599,6 +646,12 @@ impl ToolRegistry {
     /// consult the runtime-resolved backend at call time.
     pub fn tool_backends(&self) -> &ToolBackendConfig {
         &self.tool_backends
+    }
+
+    /// Resolved integrated tool backend config (evidence, deterministic,
+    /// preflight) captured at construction. Used by diagnostics.
+    pub fn integrated_config(&self) -> &integrated_config::IntegratedToolRuntimeConfig {
+        &self.integrated_config
     }
 
     /// Whether a tool with the given name is currently registered.
