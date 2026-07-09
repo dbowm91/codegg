@@ -209,6 +209,9 @@ cargo test -p codegg --lib command_routing
 # Python scripting (risk analysis, script execution, timeout, fixtures)
 cargo test -p codegg --lib python_scripting
 
+# First-class Python scripting MVP (types, analyze, sandbox, snapshot, executor, projection, tool)
+cargo test -p codegg --lib python_script
+
 # Bash tool routing metadata (classify + plan + route integration, config tests)
 cargo test -p codegg --lib tool::bash
 ```
@@ -484,6 +487,7 @@ CI runs on push/PR to dev/main: `agent-assets` → `fmt` → `check` → `clippy
 - **Permission planning**: `CommandPermissionRequest` carries `PermissionDefault` (Allow, Ask, Deny) per capability. `generate_permission_requests()` maps `ExecutionCapability` → permission request with risk-level-aware defaults.
 - **Command routing resolves to subsystem**: `resolve_routing()` in `src/command_routing.rs` maps planned execution to concrete `RoutingDecision` variants (RouteToTestRunner, RouteToShell, RouteToPythonScripting, RouteToNativeTool, RouteToManagedProcess, Rejected).
 - **Python scripting is first-class**: `src/python_scripting.rs` provides `PythonScript` with Analyze/Transform/Verify modes, static risk analysis via `analyze_python_risk()`, and async execution via `run_python_script()`. Python is NOT hidden inside bash.
+- **First-class Python scripting MVP**: `src/python_script/` is the new module-based implementation with `PythonExecutionMode`, `PythonCapabilityEnvelope` (9-field sandbox), `WorkspaceSnapshot` for transform diffing, `PythonScriptTool` (model-facing), and `project_python_run()` projection. Replaces ad-hoc bash routing for Python one-offs.
 - **Conservative classifier**: The classifier recognizes simple argv-shaped commands and falls back to `RawShell` for complex cases (pipes, redirection, command substitution). It does NOT attempt full POSIX shell parsing.
 - **RtkProjectionPolicy**: Added to `src/shell/projector.rs` for controlling RTK projection behavior (Disabled/PostProcessOnly/WrapperOnly/Both).
 
@@ -511,6 +515,7 @@ CI runs on push/PR to dev/main: `agent-assets` → `fmt` → `check` → `clippy
 | `architecture/command_planner.md` | Backend routing, permission generation, projector/RTK policy selection |
 | `architecture/command_routing.md` | Routing resolution mapping planned execution to concrete subsystems |
 | `architecture/python_scripting.md` | First-class Python scripting with Analyze/Transform/Verify modes, risk analysis |
+| `architecture/python_script.md` | Module-based Python scripting MVP: types, sandbox, executor, projection, tool registration |
 | `architecture/command.md` | 105 built-in slash commands |
 | `architecture/config.md` | Config schema in `crates/codegg-config/src/schema.rs` |
 | `architecture/provider.md` | 16 auto-registered providers via env vars; CircuitBreaker pattern |

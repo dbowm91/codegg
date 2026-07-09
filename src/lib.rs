@@ -29,6 +29,7 @@ pub mod permission;
 pub mod plugin;
 pub mod preflight;
 pub mod protocol_conversions;
+pub mod python_script;
 pub mod python_scripting;
 pub mod research;
 pub mod search;

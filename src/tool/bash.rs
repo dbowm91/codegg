@@ -461,7 +461,9 @@ impl Tool for BashTool {
             let decision = resolve_routing(&plan);
 
             let family_enabled = match intent.kind {
-                CommandIntentKind::Test => cic.is_enabled(crate::config::schema::CommandIntentFamily::Tests),
+                CommandIntentKind::Test => {
+                    cic.is_enabled(crate::config::schema::CommandIntentFamily::Tests)
+                }
                 CommandIntentKind::GitReadOnly => {
                     cic.is_enabled(crate::config::schema::CommandIntentFamily::GitRead)
                 }
@@ -815,12 +817,12 @@ mod tests {
 
     use crate::command_intent::IntentConfidence;
     use crate::command_intent::RiskLevel;
-    use crate::command_planner::ExecutionBackend;
     use crate::command_planner::plan_execution;
-    use crate::command_routing::RoutingDecision;
+    use crate::command_planner::ExecutionBackend;
     use crate::command_routing::resolve_routing;
-    use crate::config::schema::CommandIntentFamily;
+    use crate::command_routing::RoutingDecision;
     use crate::config::schema::CommandIntentConfig;
+    use crate::config::schema::CommandIntentFamily;
 
     #[test]
     fn classify_test_command() {
@@ -897,7 +899,10 @@ mod tests {
         let intent = classify_command("cargo test");
         let plan = plan_execution(&intent);
         let decision = resolve_routing(&plan);
-        assert!(matches!(decision, RoutingDecision::RouteToTestRunner { .. }));
+        assert!(matches!(
+            decision,
+            RoutingDecision::RouteToTestRunner { .. }
+        ));
     }
 
     #[test]

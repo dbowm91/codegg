@@ -329,6 +329,7 @@ impl ToolRegistry {
         registry.register(crate::tool::review::ReviewTool::default());
         registry.register(crate::tool::terminal::TerminalTool::default());
         registry.register(crate::tool::test::TestTool);
+        registry.register(crate::python_script::tool::PythonScriptTool);
         registry.register(crate::tool::git::GitTool::default());
 
         // --- LSP: consult resolved backend config. ---

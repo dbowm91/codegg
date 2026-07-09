@@ -113,6 +113,7 @@ hidden by default — see [MCP](mcp.md)).
 | [command_planner/](command_planner.md) | Command planner mapping intents to execution backends with permission generation | `mod.rs` (in root `src/command_planner.rs`) |
 | [command_routing/](command_routing.md) | Backend routing MVP resolving planned execution to concrete subsystems | `mod.rs` (in root `src/command_routing.rs`) |
 | [python_scripting/](python_scripting.md) | First-class Python scripting with Analyze/Transform/Verify modes, risk analysis, async execution | `mod.rs` (in root `src/python_scripting.rs`) |
+| [python_script/](python_script.md) | Module-based Python scripting MVP: types, analyze, sandbox, snapshot, executor, projection, tool | `mod.rs`, `types.rs`, `analyze.rs`, `sandbox.rs`, `snapshot.rs`, `executor.rs`, `projection.rs`, `tool.rs` |
 | [shell_session/](shell_session.md) | Shell session metadata (no PTY) | `mod.rs` |
 | [skills/](skills.md) | Runtime skill loader and activation | `mod.rs` |
 | [snapshot/](snapshot.md) | File state capture and restore | `mod.rs` |
