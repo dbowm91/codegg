@@ -44,7 +44,7 @@ pub fn resolve_test_command(request: &TestRunRequest) -> Result<ResolvedTestComm
     match &request.scope {
         TestScope::Auto => resolve_auto(workdir),
         TestScope::Workspace => resolve_workspace(workdir),
-        TestScope::Changed => resolve_auto(workdir),
+        TestScope::Changed => resolve_changed(workdir),
         TestScope::Package(name) => resolve_package(workdir, name),
         TestScope::File(path) => resolve_file(workdir, path),
         TestScope::PreviousFailures => resolve_previous_failures(workdir),
@@ -99,6 +99,19 @@ fn resolve_auto(workdir: &Path) -> Result<ResolvedTestCommand> {
     }
 }
 
+/// `changed` scope is currently a fallback that runs the same command as
+/// `auto`. The label is prefixed so reports are honest about the behavior —
+/// no git-based changed-file resolution is performed yet.
+fn resolve_changed(workdir: &Path) -> Result<ResolvedTestCommand> {
+    let mut resolved = resolve_auto(workdir)?;
+    resolved.scope_label = match resolved.language {
+        TestLanguage::Rust => "changed-fallback:auto-rust".to_string(),
+        TestLanguage::Python => "changed-fallback:auto-python".to_string(),
+        TestLanguage::Generic => "changed-fallback:auto".to_string(),
+    };
+    Ok(resolved)
+}
+
 fn resolve_workspace(workdir: &Path) -> Result<ResolvedTestCommand> {
     if has_cargo_manifest(workdir) {
         return Ok(ResolvedTestCommand {
@@ -147,11 +160,31 @@ fn resolve_file(workdir: &Path, path: &Path) -> Result<ResolvedTestCommand> {
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| "file".to_string());
-        return Ok(ResolvedTestCommand {
+        // Map integration test files (`tests/foo.rs`) to `cargo test --test foo`.
+        // Bare `cargo test` would silently broaden to the whole suite and discard
+        // the requested file's relationship to reported failures.
+        let stem = path.file_stem().and_then(|s| s.to_str());
+        let parent_is_tests = path
+            .parent()
+            .and_then(|p| p.file_name())
+            .map(|n| n == "tests")
+            .unwrap_or(false);
+        if let (Some(stem), true) = (stem, parent_is_tests) {
+            return Ok(ResolvedTestCommand {
+                language: TestLanguage::Rust,
+                argv: vec![
+                    "cargo".into(),
+                    "test".into(),
+                    "--test".into(),
+                    stem.to_string(),
+                ],
+                cwd: workdir.to_path_buf(),
+                scope_label: format!("file:{label}"),
+            });
+        }
+        return Err(TestResolveError::UnsupportedScopeForEcosystem {
+            scope: "File",
             language: TestLanguage::Rust,
-            argv: vec!["cargo".into(), "test".into()],
-            cwd: workdir.to_path_buf(),
-            scope_label: format!("file:{label}"),
         });
     }
     if has_python_test_markers(workdir) {
@@ -297,11 +330,50 @@ mod tests {
     }
 
     #[test]
-    fn changed_scope_uses_auto_fallback() {
+    fn resolves_rust_integration_test_file_to_cargo_test_target() {
+        let dir = temp_dir_with_files("rust-int", &["Cargo.toml", "tests/foo.rs"]);
+        let path = dir.path().join("tests/foo.rs");
+        let result = resolve_test_command(&request(TestScope::File(path), dir.path())).unwrap();
+        assert_eq!(result.language, TestLanguage::Rust);
+        assert_eq!(result.argv, vec!["cargo", "test", "--test", "foo"]);
+        assert_eq!(result.scope_label, "file:foo.rs");
+    }
+
+    #[test]
+    fn rejects_rust_file_outside_tests_directory() {
+        // Rust files outside `tests/` cannot be mapped to a Cargo target
+        // without silently running the whole suite, so the resolver rejects
+        // them explicitly instead of broadening the scope.
+        let dir = temp_dir_with_files("rust-src", &["Cargo.toml", "src/foo.rs"]);
+        let path = dir.path().join("src/foo.rs");
+        let result = resolve_test_command(&request(TestScope::File(path), dir.path()));
+        assert!(matches!(
+            result,
+            Err(TestResolveError::UnsupportedScopeForEcosystem {
+                scope: "File",
+                language: TestLanguage::Rust,
+            })
+        ));
+    }
+
+    #[test]
+    fn changed_scope_uses_auto_fallback_with_distinct_label() {
         let dir = temp_dir_with_files("changed-rust", &["Cargo.toml"]);
         let result = resolve_test_command(&request(TestScope::Changed, dir.path())).unwrap();
         assert_eq!(result.language, TestLanguage::Rust);
-        assert_eq!(result.scope_label, "auto-rust");
+        // The fallback command matches `auto-rust`, but the label is prefixed
+        // so reports are honest about the changed-scope behavior.
+        assert_eq!(result.argv, vec!["cargo", "test"]);
+        assert_eq!(result.scope_label, "changed-fallback:auto-rust");
+    }
+
+    #[test]
+    fn changed_scope_python_fallback_label() {
+        let dir = temp_dir_with_files("changed-py", &["pyproject.toml"]);
+        let result = resolve_test_command(&request(TestScope::Changed, dir.path())).unwrap();
+        assert_eq!(result.language, TestLanguage::Python);
+        assert_eq!(result.argv, vec!["pytest"]);
+        assert_eq!(result.scope_label, "changed-fallback:auto-python");
     }
 
     #[test]

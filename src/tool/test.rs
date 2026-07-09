@@ -5,8 +5,8 @@ use std::time::Instant;
 
 use crate::error::ToolError;
 use crate::test_runner::{
-    custom::validate_custom_command, format_test_report, resolve_and_run_test, TestRunRequest,
-    TestScope, TestStatus,
+    custom::validate_custom_command, format_test_report_with_cap, resolve_and_run_test,
+    TestRunRequest, TestScope, TestStatus,
 };
 use crate::tool::backend::{
     StructuredToolResult, ToolBackendKind, ToolExecutionContext, ToolProvenance, ToolTrust,
@@ -63,6 +63,11 @@ impl Tool for TestTool {
                 "stall_timeout": {
                     "type": "number",
                     "description": "No-output timeout in seconds. Default 120; set 0 to disable."
+                },
+                "max_report_bytes": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "Hard ceiling for the formatted report returned to the model, in bytes. Default 20000. Useful for keeping model-visible output bounded when failure sets are large."
                 }
             },
             "required": ["scope"]
@@ -75,10 +80,11 @@ impl Tool for TestTool {
 
     async fn execute(&self, input: serde_json::Value) -> Result<String, ToolError> {
         let request = parse_test_request(&input)?;
+        let max_report_bytes = request.max_report_bytes;
         let report = resolve_and_run_test(request, Some(&crate::test_runner::BusEventSink))
             .await
             .map_err(|e| ToolError::Execution(format!("test runner error: {e}")))?;
-        Ok(format_test_report(&report))
+        Ok(format_test_report_capped(&report, max_report_bytes))
     }
 
     async fn execute_structured(
@@ -88,10 +94,11 @@ impl Tool for TestTool {
     ) -> Result<StructuredToolResult, ToolError> {
         let start = Instant::now();
         let request = parse_test_request(&input)?;
+        let max_report_bytes = request.max_report_bytes;
         let report = resolve_and_run_test(request, Some(&crate::test_runner::BusEventSink))
             .await
             .map_err(|e| ToolError::Execution(format!("test runner error: {e}")))?;
-        let output = format_test_report(&report);
+        let output = format_test_report_capped(&report, max_report_bytes);
         let elapsed_ms = start.elapsed().as_millis() as u64;
 
         let success = matches!(report.status, TestStatus::Passed);
@@ -174,14 +181,43 @@ fn parse_test_request(input: &serde_json::Value) -> Result<TestRunRequest, ToolE
     let timeout_secs = input["timeout"].as_u64();
     let stall_timeout_secs = input["stall_timeout"].as_u64();
 
+    let max_report_bytes = match input.get("max_report_bytes") {
+        Some(v) => {
+            let n = v.as_u64().ok_or_else(|| {
+                ToolError::Execution("max_report_bytes must be a positive integer".to_string())
+            })?;
+            if n == 0 {
+                return Err(ToolError::Execution(
+                    "max_report_bytes must be greater than 0".to_string(),
+                ));
+            }
+            Some(n as usize)
+        }
+        None => None,
+    };
+
     Ok(TestRunRequest {
         scope,
         workdir,
         timeout_secs,
         stall_timeout_secs,
-        max_report_bytes: None,
+        max_report_bytes,
         session_id: None,
     })
+}
+
+/// Format the report, applying a caller-requested cap if set.
+fn format_test_report_capped(
+    report: &crate::test_runner::TestReport,
+    max_report_bytes: Option<usize>,
+) -> String {
+    match max_report_bytes {
+        Some(cap) => format_test_report_with_cap(report, cap),
+        None => format_test_report_with_cap(
+            report,
+            crate::test_runner::report::DEFAULT_MAX_REPORT_BYTES,
+        ),
+    }
 }
 
 #[cfg(test)]

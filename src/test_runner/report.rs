@@ -3,8 +3,19 @@ use crate::test_runner::types::{FailureClass, TestReport, TestStatus, TimeoutKin
 const MAX_DISPLAY_FAILURES: usize = 5;
 const MAX_FAILURE_MESSAGE_BYTES: usize = 2000;
 const MAX_TIMEOUT_EXCERPT_BYTES: usize = 2000;
+/// Default ceiling when the caller does not specify `max_report_bytes`.
+/// Matches the runner's `DEFAULT_MAX_REPORT_BYTES`.
+pub const DEFAULT_MAX_REPORT_BYTES: usize = 20_000;
 
 pub fn format_test_report(report: &TestReport) -> String {
+    format_test_report_with_cap(report, DEFAULT_MAX_REPORT_BYTES)
+}
+
+/// Format a report and enforce a hard total byte ceiling. When the formatted
+/// output exceeds `max_report_bytes`, the body is head-truncated at a UTF-8
+/// character boundary, a truncation marker is inserted, and the log-path
+/// footer is reattached so callers always see where to read the full output.
+pub fn format_test_report_with_cap(report: &TestReport, max_report_bytes: usize) -> String {
     let mut out = String::new();
 
     let status_str = match report.status {
@@ -114,25 +125,61 @@ pub fn format_test_report(report: &TestReport) -> String {
         }
     }
 
-    out.push('\n');
-    out.push_str("Logs:\n");
-    if let Some(ref path) = report.stdout_log {
-        out.push_str(&format!("stdout: {}\n", path.display()));
-    }
-    if let Some(ref path) = report.stderr_log {
-        out.push_str(&format!("stderr: {}\n", path.display()));
-    }
-    if let Some(ref path) = report.log_dir {
-        let report_path = path.join("report.json");
-        out.push_str(&format!("report: {}\n", report_path.display()));
-    }
+    let log_footer = build_log_footer(report);
 
     if report.output_truncated {
         out.push('\n');
         out.push_str("Note: output was truncated; see full logs for complete output.\n");
     }
 
+    let total_with_footer = out.len() + log_footer.len();
+    if total_with_footer > max_report_bytes {
+        // Reserve space for the footer + truncation marker so the model
+        // always sees where to read the full output.
+        let suffix = "\n... report body truncated to fit max_report_bytes; see full logs.\n";
+        let footer_budget = log_footer.len() + suffix.len();
+        let body_budget = max_report_bytes.saturating_sub(footer_budget);
+        if body_budget == 0 {
+            // Cap is too small to fit anything besides the footer; just
+            // emit the footer and let the caller know.
+            let mut minimal = String::with_capacity(log_footer.len() + suffix.len());
+            minimal.push_str(suffix);
+            minimal.push_str(&log_footer);
+            return minimal;
+        }
+        let mut end = body_budget;
+        while end > 0 && !out.is_char_boundary(end) {
+            end -= 1;
+        }
+        let mut trimmed = String::with_capacity(end + suffix.len() + log_footer.len());
+        trimmed.push_str(&out[..end]);
+        trimmed.push_str(suffix);
+        trimmed.push_str(&log_footer);
+        return trimmed;
+    }
+
+    out.push_str(&log_footer);
     out
+}
+
+/// Build the log-path footer block that should always survive report
+/// truncation. Lives as a separate helper so the cap-aware formatter can
+/// reserve space for it before head-truncating the report body.
+fn build_log_footer(report: &TestReport) -> String {
+    let mut footer = String::new();
+    footer.push('\n');
+    footer.push_str("Logs:\n");
+    if let Some(ref path) = report.stdout_log {
+        footer.push_str(&format!("stdout: {}\n", path.display()));
+    }
+    if let Some(ref path) = report.stderr_log {
+        footer.push_str(&format!("stderr: {}\n", path.display()));
+    }
+    if let Some(ref path) = report.log_dir {
+        let report_path = path.join("report.json");
+        footer.push_str(&format!("report: {}\n", report_path.display()));
+    }
+    footer
 }
 
 fn compute_failure_class(report: &TestReport) -> FailureClass {
@@ -279,6 +326,66 @@ mod tests {
         let msg_line = text.lines().find(|l| l.contains("test_long")).unwrap();
         assert!(msg_line.len() < 2200);
         assert!(msg_line.ends_with("..."));
+    }
+
+    #[test]
+    fn report_caps_total_bytes_when_max_report_bytes_is_low() {
+        let mut report = base_report(TestStatus::Failed);
+        for i in 0..20 {
+            report.failures.push(TestFailure {
+                name: Some(format!("test_{i}")),
+                file: Some(format!("src/test_{i}.rs")),
+                line: Some(i as u32 + 1),
+                message: "x".repeat(1500),
+                failure_class: FailureClass::RustTestFailure,
+            });
+        }
+        let cap = 4000usize;
+        let text = format_test_report_with_cap(&report, cap);
+        assert!(
+            text.len() <= cap,
+            "report len {} exceeded cap {}",
+            text.len(),
+            cap
+        );
+        assert!(
+            text.contains("report body truncated to fit max_report_bytes"),
+            "expected truncation marker in: {text}"
+        );
+    }
+
+    #[test]
+    fn report_caps_total_bytes_preserves_log_paths() {
+        let mut report = base_report(TestStatus::Failed);
+        for i in 0..30 {
+            report.failures.push(TestFailure {
+                name: Some(format!("test_{i}")),
+                file: None,
+                line: None,
+                message: "y".repeat(2000),
+                failure_class: FailureClass::RustTestFailure,
+            });
+        }
+        // Cap is set high enough that the failure section is truncated but
+        // the log-path footer still survives.
+        let cap = 8000usize;
+        let text = format_test_report_with_cap(&report, cap);
+        assert!(text.len() <= cap);
+        // Log paths and primary status must remain even after truncation.
+        assert!(text.starts_with("Test run failed."));
+        assert!(text.contains("stdout:"));
+        assert!(text.contains("stderr:"));
+        assert!(text.contains("report:"));
+    }
+
+    #[test]
+    fn report_caps_under_total_byte_boundary_does_not_truncate() {
+        let mut report = base_report(TestStatus::Passed);
+        let text = format_test_report_with_cap(&report, 1_000_000);
+        assert!(
+            !text.contains("report body truncated to fit max_report_bytes"),
+            "small report should not trigger truncation"
+        );
     }
 
     #[test]
