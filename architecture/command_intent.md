@@ -52,7 +52,7 @@ pub struct RiskAssessment {
 }
 ```
 
-Constructors: `safe()`, `low(reason)`, `medium(reason)`, `high(reason)`.
+Constructors: `safe()`, `low(reason)`, `medium(reason)`, `high(reason)` (backward-compat), plus specific constructors: `read_only(reason)` (no Subprocess), `raw_shell(reason)` (with Subprocess), `managed_process(reason)` (no Subprocess), `git_mutation(reason)` (with GitMutation), `destructive(reason)` (with DestructiveFileMutation).
 
 ### `CommandIntent`
 
@@ -78,6 +78,16 @@ Methods:
 
 ```rust
 pub fn classify_command(command: &str) -> CommandIntent
+pub fn classify_command_with_context(command: &str, ctx: &CommandIntentContext) -> CommandIntent
+```
+
+`classify_command()` is a backward-compatible wrapper that calls `classify_command_with_context` with a default context (uses process cwd). For workspace-aware path checks, use `classify_command_with_context` with a `CommandIntentContext` containing the workspace root.
+
+```rust
+pub struct CommandIntentContext {
+    pub workspace_root: Option<PathBuf>,
+    pub cwd: Option<PathBuf>,
+}
 ```
 
 Classification is now driven by **shell shape parsing** (`src/command_intent/shell_shape.rs`):

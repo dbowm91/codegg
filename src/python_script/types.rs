@@ -273,12 +273,12 @@ pub struct PythonRunResult {
     pub diff: Option<String>,
     /// SHA-256 hex digest of the script source body.
     pub script_body_hash: Option<String>,
-    /// Handle for stdout expansion: `python_run://<run_id>/stdout`.
-    pub stdout_handle: Option<String>,
-    /// Handle for stderr expansion: `python_run://<run_id>/stderr`.
-    pub stderr_handle: Option<String>,
-    /// Handle for diff expansion: `python_run://<run_id>/diff`.
-    pub diff_handle: Option<String>,
+    /// Pseudo-local label for stdout (not registered in any artifact store; non-resolvable).
+    pub stdout_label: Option<String>,
+    /// Pseudo-local label for stderr (not registered in any artifact store; non-resolvable).
+    pub stderr_label: Option<String>,
+    /// Pseudo-local label for diff (not registered in any artifact store; non-resolvable).
+    pub diff_label: Option<String>,
 }
 
 impl PythonRunResult {

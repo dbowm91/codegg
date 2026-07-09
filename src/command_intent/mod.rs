@@ -152,6 +152,60 @@ impl RiskAssessment {
             ],
         }
     }
+
+    /// Read-only command risk. No subprocess, no mutation.
+    pub fn read_only(reason: &str) -> Self {
+        Self {
+            level: RiskLevel::Low,
+            reasons: vec![reason.to_string()],
+            capabilities: vec![ExecutionCapability::ReadWorkspace],
+        }
+    }
+
+    /// Raw shell / complex command risk. Shell-eval style.
+    pub fn raw_shell(reason: &str) -> Self {
+        Self {
+            level: RiskLevel::Medium,
+            reasons: vec![reason.to_string()],
+            capabilities: vec![
+                ExecutionCapability::ReadWorkspace,
+                ExecutionCapability::Subprocess,
+            ],
+        }
+    }
+
+    /// Managed process risk (may have child processes beyond primary).
+    pub fn managed_process(reason: &str) -> Self {
+        Self {
+            level: RiskLevel::Low,
+            reasons: vec![reason.to_string()],
+            capabilities: vec![ExecutionCapability::ReadWorkspace],
+        }
+    }
+
+    /// Git mutation risk.
+    pub fn git_mutation(reason: &str) -> Self {
+        Self {
+            level: RiskLevel::Medium,
+            reasons: vec![reason.to_string()],
+            capabilities: vec![
+                ExecutionCapability::ReadWorkspace,
+                ExecutionCapability::GitMutation,
+            ],
+        }
+    }
+
+    /// Destructive filesystem risk.
+    pub fn destructive(reason: &str) -> Self {
+        Self {
+            level: RiskLevel::High,
+            reasons: vec![reason.to_string()],
+            capabilities: vec![
+                ExecutionCapability::ReadWorkspace,
+                ExecutionCapability::DestructiveFileMutation,
+            ],
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -208,7 +262,7 @@ pub fn classify_command(command: &str) -> CommandIntent {
             CommandIntent {
                 kind: CommandIntentKind::RawShell,
                 confidence: IntentConfidence::Low,
-                risk: RiskAssessment::medium(&format!("complex shell: {}", reason_str)),
+                risk: RiskAssessment::raw_shell(&format!("complex shell: {}", reason_str)),
                 source: CommandSource::AgentTool,
                 command: trimmed.to_string(),
                 context_policy: ContextPolicy::ProjectToModel,
@@ -249,7 +303,7 @@ pub fn classify_command(command: &str) -> CommandIntent {
             CommandIntent {
                 kind: CommandIntentKind::RawShell,
                 confidence: IntentConfidence::Low,
-                risk: RiskAssessment::medium("unclassified command"),
+                risk: RiskAssessment::raw_shell("unclassified command"),
                 source: CommandSource::AgentTool,
                 command: trimmed.to_string(),
                 context_policy: ContextPolicy::ProjectToModel,
@@ -326,9 +380,9 @@ fn looks_like_test_command(first: &str, argv: &[String]) -> bool {
 
 fn classify_test(command: &str, argv: &[String]) -> CommandIntent {
     let risk = if argv.iter().any(|a| a == "--force" || a == "-y") {
-        RiskAssessment::low("test command with force flag")
+        RiskAssessment::managed_process("test command with force flag")
     } else {
-        RiskAssessment::safe()
+        RiskAssessment::managed_process("test command")
     };
 
     CommandIntent {
@@ -455,15 +509,18 @@ fn classify_git(command: &str, argv: &[String]) -> CommandIntent {
     };
 
     let risk = if result.readonly {
-        RiskAssessment::safe()
+        RiskAssessment::read_only("git read-only")
     } else {
-        let mut r = match result.risk {
-            RiskLevel::High => RiskAssessment::high(result.reason.unwrap_or("git mutating")),
-            RiskLevel::Medium => RiskAssessment::medium(result.reason.unwrap_or("git mutating")),
-            _ => RiskAssessment::low(result.reason.unwrap_or("git mutating")),
-        };
-        r.capabilities.push(ExecutionCapability::GitMutation);
-        r
+        let reason = result.reason.unwrap_or("git mutating");
+        let level = result.risk;
+        RiskAssessment {
+            level,
+            reasons: vec![reason.to_string()],
+            capabilities: vec![
+                ExecutionCapability::ReadWorkspace,
+                ExecutionCapability::GitMutation,
+            ],
+        }
     };
 
     CommandIntent {
@@ -676,7 +733,7 @@ fn classify_search(command: &str, argv: &[String]) -> Option<CommandIntent> {
     Some(CommandIntent {
         kind: CommandIntentKind::SearchReadOnly,
         confidence: IntentConfidence::High,
-        risk: RiskAssessment::safe(),
+        risk: RiskAssessment::read_only("search read-only"),
         source: CommandSource::AgentTool,
         command: command.to_string(),
         context_policy: ContextPolicy::ProjectToModel,
@@ -706,7 +763,7 @@ fn classify_build(command: &str, argv: &[String]) -> CommandIntent {
     CommandIntent {
         kind,
         confidence: IntentConfidence::High,
-        risk: RiskAssessment::safe(),
+        risk: RiskAssessment::managed_process("build command"),
         source: CommandSource::AgentTool,
         command: command.to_string(),
         context_policy: ContextPolicy::ProjectToModel,
@@ -731,7 +788,7 @@ fn classify_file_read(command: &str, argv: &[String]) -> Option<CommandIntent> {
     Some(CommandIntent {
         kind: CommandIntentKind::FileRead,
         confidence: IntentConfidence::High,
-        risk: RiskAssessment::safe(),
+        risk: RiskAssessment::read_only("file read"),
         source: CommandSource::AgentTool,
         command: command.to_string(),
         context_policy: ContextPolicy::ProjectToModel,
@@ -770,7 +827,11 @@ mod tests {
         let intent = classify_command("cargo test");
         assert_eq!(intent.kind, CommandIntentKind::Test);
         assert_eq!(intent.confidence, IntentConfidence::High);
-        assert_eq!(intent.risk.level, RiskLevel::Safe);
+        assert_eq!(intent.risk.level, RiskLevel::Low);
+        assert!(!intent
+            .risk
+            .capabilities
+            .contains(&ExecutionCapability::Subprocess));
     }
 
     #[test]
@@ -784,21 +845,33 @@ mod tests {
     fn rg_is_search() {
         let intent = classify_command("rg 'fn main' src/");
         assert_eq!(intent.kind, CommandIntentKind::SearchReadOnly);
-        assert_eq!(intent.risk.level, RiskLevel::Safe);
+        assert_eq!(intent.risk.level, RiskLevel::Low);
+        assert!(!intent
+            .risk
+            .capabilities
+            .contains(&ExecutionCapability::Subprocess));
     }
 
     #[test]
     fn cargo_build_is_build() {
         let intent = classify_command("cargo build --release");
         assert_eq!(intent.kind, CommandIntentKind::Build);
-        assert_eq!(intent.risk.level, RiskLevel::Safe);
+        assert_eq!(intent.risk.level, RiskLevel::Low);
+        assert!(!intent
+            .risk
+            .capabilities
+            .contains(&ExecutionCapability::Subprocess));
     }
 
     #[test]
     fn cargo_fmt_is_lint() {
         let intent = classify_command("cargo fmt");
         assert_eq!(intent.kind, CommandIntentKind::Lint);
-        assert_eq!(intent.risk.level, RiskLevel::Safe);
+        assert_eq!(intent.risk.level, RiskLevel::Low);
+        assert!(!intent
+            .risk
+            .capabilities
+            .contains(&ExecutionCapability::Subprocess));
     }
 
     #[test]
@@ -825,7 +898,11 @@ mod tests {
     fn cat_is_file_read() {
         let intent = classify_command("cat README.md");
         assert_eq!(intent.kind, CommandIntentKind::FileRead);
-        assert_eq!(intent.risk.level, RiskLevel::Safe);
+        assert_eq!(intent.risk.level, RiskLevel::Low);
+        assert!(!intent
+            .risk
+            .capabilities
+            .contains(&ExecutionCapability::Subprocess));
     }
 
     #[test]
@@ -909,7 +986,11 @@ mod tests {
     fn git_status_is_readonly() {
         let intent = classify_command("git status");
         assert_eq!(intent.kind, CommandIntentKind::GitReadOnly);
-        assert_eq!(intent.risk.level, RiskLevel::Safe);
+        assert_eq!(intent.risk.level, RiskLevel::Low);
+        assert!(!intent
+            .risk
+            .capabilities
+            .contains(&ExecutionCapability::Subprocess));
         assert!(intent.parsed_argv.is_some());
     }
 
@@ -917,7 +998,11 @@ mod tests {
     fn git_diff_is_readonly() {
         let intent = classify_command("git diff HEAD~1");
         assert_eq!(intent.kind, CommandIntentKind::GitReadOnly);
-        assert_eq!(intent.risk.level, RiskLevel::Safe);
+        assert_eq!(intent.risk.level, RiskLevel::Low);
+        assert!(!intent
+            .risk
+            .capabilities
+            .contains(&ExecutionCapability::Subprocess));
     }
 
     #[test]
@@ -930,42 +1015,50 @@ mod tests {
     fn git_log_is_readonly() {
         let intent = classify_command("git log --oneline -10");
         assert_eq!(intent.kind, CommandIntentKind::GitReadOnly);
-        assert_eq!(intent.risk.level, RiskLevel::Safe);
+        assert_eq!(intent.risk.level, RiskLevel::Low);
+        assert!(!intent
+            .risk
+            .capabilities
+            .contains(&ExecutionCapability::Subprocess));
     }
 
     #[test]
     fn git_show_is_readonly() {
         let intent = classify_command("git show HEAD");
         assert_eq!(intent.kind, CommandIntentKind::GitReadOnly);
-        assert_eq!(intent.risk.level, RiskLevel::Safe);
+        assert_eq!(intent.risk.level, RiskLevel::Low);
+        assert!(!intent
+            .risk
+            .capabilities
+            .contains(&ExecutionCapability::Subprocess));
     }
 
     #[test]
     fn git_branch_show_current_is_readonly() {
         let intent = classify_command("git branch --show-current");
         assert_eq!(intent.kind, CommandIntentKind::GitReadOnly);
-        assert_eq!(intent.risk.level, RiskLevel::Safe);
+        assert_eq!(intent.risk.level, RiskLevel::Low);
     }
 
     #[test]
     fn git_branch_list_is_readonly() {
         let intent = classify_command("git branch --list");
         assert_eq!(intent.kind, CommandIntentKind::GitReadOnly);
-        assert_eq!(intent.risk.level, RiskLevel::Safe);
+        assert_eq!(intent.risk.level, RiskLevel::Low);
     }
 
     #[test]
     fn git_branch_l_is_readonly() {
         let intent = classify_command("git branch -l");
         assert_eq!(intent.kind, CommandIntentKind::GitReadOnly);
-        assert_eq!(intent.risk.level, RiskLevel::Safe);
+        assert_eq!(intent.risk.level, RiskLevel::Low);
     }
 
     #[test]
     fn git_branch_no_args_is_readonly() {
         let intent = classify_command("git branch");
         assert_eq!(intent.kind, CommandIntentKind::GitReadOnly);
-        assert_eq!(intent.risk.level, RiskLevel::Safe);
+        assert_eq!(intent.risk.level, RiskLevel::Low);
     }
 
     #[test]
@@ -990,7 +1083,11 @@ mod tests {
     fn git_stash_list_is_readonly() {
         let intent = classify_command("git stash list");
         assert_eq!(intent.kind, CommandIntentKind::GitReadOnly);
-        assert_eq!(intent.risk.level, RiskLevel::Safe);
+        assert_eq!(intent.risk.level, RiskLevel::Low);
+        assert!(!intent
+            .risk
+            .capabilities
+            .contains(&ExecutionCapability::Subprocess));
     }
 
     #[test]
@@ -1003,7 +1100,11 @@ mod tests {
     fn git_remote_v_is_readonly() {
         let intent = classify_command("git remote -v");
         assert_eq!(intent.kind, CommandIntentKind::GitReadOnly);
-        assert_eq!(intent.risk.level, RiskLevel::Safe);
+        assert_eq!(intent.risk.level, RiskLevel::Low);
+        assert!(!intent
+            .risk
+            .capabilities
+            .contains(&ExecutionCapability::Subprocess));
     }
 
     #[test]
@@ -1028,7 +1129,11 @@ mod tests {
     fn git_tag_list_is_readonly() {
         let intent = classify_command("git tag --list");
         assert_eq!(intent.kind, CommandIntentKind::GitReadOnly);
-        assert_eq!(intent.risk.level, RiskLevel::Safe);
+        assert_eq!(intent.risk.level, RiskLevel::Low);
+        assert!(!intent
+            .risk
+            .capabilities
+            .contains(&ExecutionCapability::Subprocess));
     }
 
     #[test]
@@ -1304,7 +1409,7 @@ mod tests {
             .risk
             .capabilities
             .contains(&ExecutionCapability::GitMutation));
-        assert!(intent
+        assert!(!intent
             .risk
             .capabilities
             .contains(&ExecutionCapability::DestructiveFileMutation));
@@ -1331,7 +1436,11 @@ mod tests {
     fn find_simple_is_search() {
         let intent = classify_command("find . -name '*.rs'");
         assert_eq!(intent.kind, CommandIntentKind::SearchReadOnly);
-        assert_eq!(intent.risk.level, RiskLevel::Safe);
+        assert_eq!(intent.risk.level, RiskLevel::Low);
+        assert!(!intent
+            .risk
+            .capabilities
+            .contains(&ExecutionCapability::Subprocess));
     }
 
     #[test]
@@ -1368,21 +1477,33 @@ mod tests {
     fn cat_relative_path_is_file_read() {
         let intent = classify_command("cat src/main.rs");
         assert_eq!(intent.kind, CommandIntentKind::FileRead);
-        assert_eq!(intent.risk.level, RiskLevel::Safe);
+        assert_eq!(intent.risk.level, RiskLevel::Low);
+        assert!(!intent
+            .risk
+            .capabilities
+            .contains(&ExecutionCapability::Subprocess));
     }
 
     #[test]
     fn rg_is_search_read_only() {
         let intent = classify_command("rg 'fn main' src/");
         assert_eq!(intent.kind, CommandIntentKind::SearchReadOnly);
-        assert_eq!(intent.risk.level, RiskLevel::Safe);
+        assert_eq!(intent.risk.level, RiskLevel::Low);
+        assert!(!intent
+            .risk
+            .capabilities
+            .contains(&ExecutionCapability::Subprocess));
     }
 
     #[test]
     fn ls_is_search_read_only() {
         let intent = classify_command("ls -la");
         assert_eq!(intent.kind, CommandIntentKind::SearchReadOnly);
-        assert_eq!(intent.risk.level, RiskLevel::Safe);
+        assert_eq!(intent.risk.level, RiskLevel::Low);
+        assert!(!intent
+            .risk
+            .capabilities
+            .contains(&ExecutionCapability::Subprocess));
     }
 
     #[test]
@@ -1419,14 +1540,22 @@ mod tests {
     fn grep_is_search() {
         let intent = classify_command("grep -r 'TODO' src/");
         assert_eq!(intent.kind, CommandIntentKind::SearchReadOnly);
-        assert_eq!(intent.risk.level, RiskLevel::Safe);
+        assert_eq!(intent.risk.level, RiskLevel::Low);
+        assert!(!intent
+            .risk
+            .capabilities
+            .contains(&ExecutionCapability::Subprocess));
     }
 
     #[test]
     fn wc_is_search() {
         let intent = classify_command("wc -l src/main.rs");
         assert_eq!(intent.kind, CommandIntentKind::SearchReadOnly);
-        assert_eq!(intent.risk.level, RiskLevel::Safe);
+        assert_eq!(intent.risk.level, RiskLevel::Low);
+        assert!(!intent
+            .risk
+            .capabilities
+            .contains(&ExecutionCapability::Subprocess));
     }
 
     #[test]
@@ -1456,41 +1585,123 @@ mod tests {
     fn less_is_file_read() {
         let intent = classify_command("less README.md");
         assert_eq!(intent.kind, CommandIntentKind::FileRead);
-        assert_eq!(intent.risk.level, RiskLevel::Safe);
+        assert_eq!(intent.risk.level, RiskLevel::Low);
+        assert!(!intent
+            .risk
+            .capabilities
+            .contains(&ExecutionCapability::Subprocess));
     }
 
     #[test]
     fn more_is_file_read() {
         let intent = classify_command("more README.md");
         assert_eq!(intent.kind, CommandIntentKind::FileRead);
-        assert_eq!(intent.risk.level, RiskLevel::Safe);
+        assert_eq!(intent.risk.level, RiskLevel::Low);
+        assert!(!intent
+            .risk
+            .capabilities
+            .contains(&ExecutionCapability::Subprocess));
     }
 
     #[test]
     fn head_is_file_read() {
         let intent = classify_command("head README.md");
         assert_eq!(intent.kind, CommandIntentKind::FileRead);
-        assert_eq!(intent.risk.level, RiskLevel::Safe);
+        assert_eq!(intent.risk.level, RiskLevel::Low);
+        assert!(!intent
+            .risk
+            .capabilities
+            .contains(&ExecutionCapability::Subprocess));
     }
 
     #[test]
     fn tail_is_file_read() {
         let intent = classify_command("tail README.md");
         assert_eq!(intent.kind, CommandIntentKind::FileRead);
-        assert_eq!(intent.risk.level, RiskLevel::Safe);
+        assert_eq!(intent.risk.level, RiskLevel::Low);
+        assert!(!intent
+            .risk
+            .capabilities
+            .contains(&ExecutionCapability::Subprocess));
     }
 
     #[test]
     fn head_with_flags_is_file_read() {
         let intent = classify_command("head -n 5 README.md");
         assert_eq!(intent.kind, CommandIntentKind::FileRead);
-        assert_eq!(intent.risk.level, RiskLevel::Safe);
+        assert_eq!(intent.risk.level, RiskLevel::Low);
+        assert!(!intent
+            .risk
+            .capabilities
+            .contains(&ExecutionCapability::Subprocess));
     }
 
     #[test]
     fn tail_with_flags_is_file_read() {
         let intent = classify_command("tail -f src/main.rs");
         assert_eq!(intent.kind, CommandIntentKind::FileRead);
-        assert_eq!(intent.risk.level, RiskLevel::Safe);
+        assert_eq!(intent.risk.level, RiskLevel::Low);
+        assert!(!intent
+            .risk
+            .capabilities
+            .contains(&ExecutionCapability::Subprocess));
+    }
+
+    // ── RiskAssessment constructor tests ────────────────────────────────
+
+    #[test]
+    fn read_only_has_no_subprocess() {
+        let risk = RiskAssessment::read_only("test");
+        assert_eq!(risk.level, RiskLevel::Low);
+        assert!(!risk.capabilities.contains(&ExecutionCapability::Subprocess));
+        assert!(risk
+            .capabilities
+            .contains(&ExecutionCapability::ReadWorkspace));
+    }
+
+    #[test]
+    fn managed_process_has_no_subprocess() {
+        let risk = RiskAssessment::managed_process("test");
+        assert_eq!(risk.level, RiskLevel::Low);
+        assert!(!risk.capabilities.contains(&ExecutionCapability::Subprocess));
+        assert!(risk
+            .capabilities
+            .contains(&ExecutionCapability::ReadWorkspace));
+    }
+
+    #[test]
+    fn git_mutation_has_git_mutation_no_subprocess() {
+        let risk = RiskAssessment::git_mutation("test");
+        assert_eq!(risk.level, RiskLevel::Medium);
+        assert!(risk
+            .capabilities
+            .contains(&ExecutionCapability::GitMutation));
+        assert!(!risk.capabilities.contains(&ExecutionCapability::Subprocess));
+        assert!(risk
+            .capabilities
+            .contains(&ExecutionCapability::ReadWorkspace));
+    }
+
+    #[test]
+    fn destructive_has_destructive_file_mutation() {
+        let risk = RiskAssessment::destructive("test");
+        assert_eq!(risk.level, RiskLevel::High);
+        assert!(risk
+            .capabilities
+            .contains(&ExecutionCapability::DestructiveFileMutation));
+        assert!(!risk.capabilities.contains(&ExecutionCapability::Subprocess));
+        assert!(risk
+            .capabilities
+            .contains(&ExecutionCapability::ReadWorkspace));
+    }
+
+    #[test]
+    fn raw_shell_has_subprocess() {
+        let risk = RiskAssessment::raw_shell("test");
+        assert_eq!(risk.level, RiskLevel::Medium);
+        assert!(risk.capabilities.contains(&ExecutionCapability::Subprocess));
+        assert!(risk
+            .capabilities
+            .contains(&ExecutionCapability::ReadWorkspace));
     }
 }

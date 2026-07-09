@@ -82,9 +82,9 @@ pub fn project_python_run(result: &PythonRunResult) -> String {
     }
 
     // Artifact handle availability note
-    if result.stdout_handle.is_some() || result.stderr_handle.is_some() {
+    if result.stdout_label.is_some() || result.stderr_label.is_some() {
         lines.push(String::new());
-        lines.push("[Artifact handles available for expansion]".to_string());
+        lines.push("[Run labels: not expandable artifacts]".to_string());
     }
 
     lines.join("\n")
@@ -123,9 +123,9 @@ mod tests {
             interpreter: "python3".to_string(),
             diff: None,
             script_body_hash: None,
-            stdout_handle: None,
-            stderr_handle: None,
-            diff_handle: None,
+            stdout_label: None,
+            stderr_label: None,
+            diff_label: None,
         }
     }
 
@@ -193,7 +193,7 @@ mod tests {
     fn projection_shows_rtk_eligible_for_large_stdout() {
         let mut result = make_result(PythonRunStatus::Success, PythonExecutionMode::Analyze);
         result.stdout = "x".repeat(3000);
-        result.stdout_handle = Some("python_run://1/stdout".to_string());
+        result.stdout_label = Some("python_run://1/stdout".to_string());
         let text = project_python_run(&result);
         assert!(text.contains("RTK eligible"));
     }
@@ -202,7 +202,7 @@ mod tests {
     fn projection_shows_rtk_eligible_for_large_diff() {
         let mut result = make_result(PythonRunStatus::Success, PythonExecutionMode::Transform);
         result.diff = Some("x".repeat(3000));
-        result.diff_handle = Some("python_run://1/diff".to_string());
+        result.diff_label = Some("python_run://1/diff".to_string());
         let text = project_python_run(&result);
         assert!(text.contains("RTK eligible"));
     }
@@ -217,17 +217,17 @@ mod tests {
     #[test]
     fn projection_shows_artifact_handles() {
         let mut result = make_result(PythonRunStatus::Success, PythonExecutionMode::Transform);
-        result.stdout_handle = Some("python_run://1/stdout".to_string());
-        result.stderr_handle = Some("python_run://1/stderr".to_string());
+        result.stdout_label = Some("python_run://1/stdout".to_string());
+        result.stderr_label = Some("python_run://1/stderr".to_string());
         let text = project_python_run(&result);
-        assert!(text.contains("Artifact handles available"));
+        assert!(text.contains("Run labels"));
     }
 
     #[test]
     fn projection_no_artifact_handles_when_none() {
         let result = make_result(PythonRunStatus::Success, PythonExecutionMode::Analyze);
         let text = project_python_run(&result);
-        assert!(!text.contains("Artifact handles"));
+        assert!(!text.contains("Run labels"));
     }
 
     #[test]

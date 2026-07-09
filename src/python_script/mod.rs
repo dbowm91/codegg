@@ -537,9 +537,9 @@ mod tests {
             interpreter: "python3".into(),
             diff: None,
             script_body_hash: None,
-            stdout_handle: None,
-            stderr_handle: None,
-            diff_handle: None,
+            stdout_label: None,
+            stderr_label: None,
+            diff_label: None,
         };
         let text = project_python_run(&result);
         assert!(text.contains("Timed Out"));
@@ -560,9 +560,9 @@ mod tests {
             interpreter: "python3".into(),
             diff: None,
             script_body_hash: None,
-            stdout_handle: None,
-            stderr_handle: None,
-            diff_handle: None,
+            stdout_label: None,
+            stderr_label: None,
+            diff_label: None,
         };
         let text = project_python_run(&result);
         assert!(text.contains("Spawn Error"));
@@ -596,9 +596,9 @@ mod tests {
             interpreter: "python3".into(),
             diff: None,
             script_body_hash: None,
-            stdout_handle: None,
-            stderr_handle: None,
-            diff_handle: None,
+            stdout_label: None,
+            stderr_label: None,
+            diff_label: None,
         };
         let text = project_python_run(&result);
         assert!(text.contains("network access detected"));
@@ -619,9 +619,9 @@ mod tests {
             interpreter: "python3".into(),
             diff: None,
             script_body_hash: None,
-            stdout_handle: None,
-            stderr_handle: None,
-            diff_handle: None,
+            stdout_label: None,
+            stderr_label: None,
+            diff_label: None,
         };
         let text = project_python_run(&result);
         assert!(!text.contains("### stdout"));
@@ -643,9 +643,9 @@ mod tests {
             interpreter: "python3".into(),
             diff: None,
             script_body_hash: None,
-            stdout_handle: None,
-            stderr_handle: None,
-            diff_handle: None,
+            stdout_label: None,
+            stderr_label: None,
+            diff_label: None,
         };
         let text = project_python_run(&result);
         assert!(text.contains("### stderr"));
@@ -669,9 +669,9 @@ mod tests {
             interpreter: "python3".into(),
             diff: None,
             script_body_hash: None,
-            stdout_handle: None,
-            stderr_handle: None,
-            diff_handle: None,
+            stdout_label: None,
+            stderr_label: None,
+            diff_label: None,
         };
         let s = result.summary();
         assert!(s.contains("transform"));
@@ -694,9 +694,9 @@ mod tests {
             interpreter: "python3".into(),
             diff: None,
             script_body_hash: None,
-            stdout_handle: None,
-            stderr_handle: None,
-            diff_handle: None,
+            stdout_label: None,
+            stderr_label: None,
+            diff_label: None,
         };
         let s = result.summary();
         assert!(s.contains("exit: 42"));
@@ -729,9 +729,9 @@ mod tests {
             interpreter: "python3".into(),
             diff: None,
             script_body_hash: None,
-            stdout_handle: None,
-            stderr_handle: None,
-            diff_handle: None,
+            stdout_label: None,
+            stderr_label: None,
+            diff_label: None,
         };
         let s = result.summary();
         assert!(s.contains("file I/O operations detected"));

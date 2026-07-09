@@ -37,9 +37,9 @@ pub async fn execute_python_script(request: &PythonScriptRequest) -> PythonRunRe
             interpreter: String::new(),
             diff: None,
             script_body_hash,
-            stdout_handle: None,
-            stderr_handle: None,
-            diff_handle: None,
+            stdout_label: None,
+            stderr_label: None,
+            diff_label: None,
         };
     }
 
@@ -60,9 +60,9 @@ pub async fn execute_python_script(request: &PythonScriptRequest) -> PythonRunRe
                 interpreter: String::new(),
                 diff: None,
                 script_body_hash,
-                stdout_handle: None,
-                stderr_handle: None,
-                diff_handle: None,
+                stdout_label: None,
+                stderr_label: None,
+                diff_label: None,
             };
         }
     };
@@ -92,9 +92,9 @@ pub async fn execute_python_script(request: &PythonScriptRequest) -> PythonRunRe
             interpreter: String::new(),
             diff: None,
             script_body_hash,
-            stdout_handle: None,
-            stderr_handle: None,
-            diff_handle: None,
+            stdout_label: None,
+            stderr_label: None,
+            diff_label: None,
         };
     }
 
@@ -122,9 +122,9 @@ pub async fn execute_python_script(request: &PythonScriptRequest) -> PythonRunRe
             interpreter: String::new(),
             diff: None,
             script_body_hash,
-            stdout_handle: None,
-            stderr_handle: None,
-            diff_handle: None,
+            stdout_label: None,
+            stderr_label: None,
+            diff_label: None,
         };
     }
 
@@ -247,11 +247,11 @@ pub async fn execute_python_script(request: &PythonScriptRequest) -> PythonRunRe
         None
     };
 
-    // Generate artifact handles using the script_id as run identifier
+    // Generate pseudo-local run labels (not registered in any artifact store)
     let run_id = script_id.to_string();
-    let stdout_handle = Some(format!("python_run://{run_id}/stdout"));
-    let stderr_handle = Some(format!("python_run://{run_id}/stderr"));
-    let diff_handle = if diff.is_some() {
+    let stdout_label = Some(format!("python_run://{run_id}/stdout"));
+    let stderr_label = Some(format!("python_run://{run_id}/stderr"));
+    let diff_label = if diff.is_some() {
         Some(format!("python_run://{run_id}/diff"))
     } else {
         None
@@ -273,9 +273,9 @@ pub async fn execute_python_script(request: &PythonScriptRequest) -> PythonRunRe
         interpreter,
         diff,
         script_body_hash,
-        stdout_handle,
-        stderr_handle,
-        diff_handle,
+        stdout_label,
+        stderr_label,
+        diff_label,
     }
 }
 

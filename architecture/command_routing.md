@@ -65,6 +65,17 @@ Maps `ExecutionBackend` → `RoutingDecision`:
 
 The routing decision is currently informational for the bash tool — all commands still execute via raw shell. The metadata is attached to output for visibility and future structured routing. Python scripts are executed directly by the `PythonScriptTool` (model-facing tool), not via the bash tool routing path.
 
+## Active Routing Status
+
+**Active routing is intentionally deferred.** The classify → plan → route pipeline currently serves as an observe-only metadata annotation layer. All commands execute through raw shell regardless of the routing decision.
+
+This deferral is deliberate until:
+- Workspace root context is used for safety-critical path checks
+- Python artifact handles are either real artifacts or explicitly documented as non-resolvable
+- Command-intent risk metadata is not materially misleading
+
+When `CommandIntentMode::Route` is configured, BashTool logs a warning and falls back to observe behavior. No config combination defaults to active routing.
+
 ## Tests
 
 ```bash

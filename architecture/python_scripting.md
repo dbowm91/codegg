@@ -39,8 +39,11 @@ pub struct PythonScriptRequest {
     pub timeout_secs: Option<u64>,
     pub session_id: Option<String>,
     pub intent: Option<String>,
+    pub workspace_root: Option<PathBuf>,
 }
 ```
+
+`workspace_root` provides the authoritative workspace boundary for CWD containment checks. When set, CWD must be inside this root. Falls back to process cwd when `None`.
 
 ### `PythonRiskAssessment`
 
@@ -78,11 +81,13 @@ pub struct PythonRunResult {
     pub interpreter: String,
     pub diff: Option<String>,
     pub script_body_hash: Option<String>,
-    pub stdout_handle: Option<String>,
-    pub stderr_handle: Option<String>,
-    pub diff_handle: Option<String>,
+    pub stdout_label: Option<String>,
+    pub stderr_label: Option<String>,
+    pub diff_label: Option<String>,
 }
 ```
+
+Labels are pseudo-local run identifiers, not registered in any artifact store. They are not expandable via `context_read` or other tools.
 
 ## Risk Analysis
 
@@ -90,7 +95,7 @@ pub struct PythonRunResult {
 pub fn analyze_python_risk(code: &str) -> PythonRiskAssessment
 ```
 
-**AST-first analysis**: Spawns `python3 -I` with the script piped via stdin to an inline AST scanner. The scanner walks the Python AST tree to extract imports, function calls, and risk indicators. Falls back to string scanning if Python is unavailable or parsing fails.
+**AST-first analysis**: Spawns `python3 -I` with the script piped via stdin to an inline AST scanner. The scanner walks the Python AST tree to extract imports, function calls, and risk indicators. It builds alias maps to resolve `import subprocess as sp; sp.run(...)` and `from subprocess import run; run(...)` forms through their aliases. Falls back to string scanning if Python is unavailable or parsing fails.
 
 Detection targets:
 - **High**: destructive ops (`shutil.rmtree`, `os.remove`, `os.unlink`, `chmod`, etc.)
@@ -112,7 +117,12 @@ Default envelopes per mode:
 - `Transform()`: read + write workspace
 - `Verify()`: read workspace + subprocess
 
-`from_mode_and_risk(mode, risk)` denies capabilities flagged by risk analysis (e.g., network in Analyze, subprocess in Analyze/Transform).
+`from_mode_and_risk(mode, risk)` denies capabilities flagged by risk analysis. Capability checks distinguish file reads from file writes:
+- `has_file_read` with `read_workspace`
+- `has_file_write` with `write_workspace`
+- destructive ops with `destructive_fs`
+
+Analyze mode allows workspace reads but denies writes. Transform mode allows non-destructive workspace writes. Verify mode allows subprocess but denies writes.
 
 ## Execution Pipeline
 
@@ -123,7 +133,7 @@ pub async fn execute_python_script(request: &PythonScriptRequest) -> PythonRunRe
 Flow:
 1. Compute script body SHA-256 hash for reproducibility tracking
 2. Validate script length against `MAX_SCRIPT_LENGTH` (500KB)
-3. Validate CWD (must exist, must be directory, must be inside workspace)
+3. Validate CWD (must exist, must be directory, must be inside workspace root when provided)
 4. Derive capability envelope and run risk analysis
 5. **Pre-execution capability check**: `check_compatibility()` blocks scripts with denied capabilities BEFORE any child process is spawned
 6. Materialize script to temp file (under `.codegg/python_runs/`)

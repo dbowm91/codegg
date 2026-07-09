@@ -850,7 +850,7 @@ mod tests {
         let intent = classify_command("cargo test");
         assert_eq!(intent.kind, CommandIntentKind::Test);
         assert_eq!(intent.confidence, IntentConfidence::High);
-        assert_eq!(intent.risk.level, RiskLevel::Safe);
+        assert_eq!(intent.risk.level, RiskLevel::Low);
     }
 
     #[test]
