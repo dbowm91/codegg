@@ -33,12 +33,13 @@ pub enum RoutingDecision {
 pub fn resolve_routing(plan: &CommandPlan) -> RoutingDecision {
     match &plan.backend {
         ExecutionBackend::TestRunner { validated_command } => {
-            let argv: Vec<String> = plan
-                .intent
-                .command
-                .split_whitespace()
-                .map(String::from)
-                .collect();
+            let argv: Vec<String> = plan.intent.parsed_argv.clone().unwrap_or_else(|| {
+                plan.intent
+                    .command
+                    .split_whitespace()
+                    .map(String::from)
+                    .collect()
+            });
             let scope_label = format!("command-intent:{}", plan.intent.kind.label());
             RoutingDecision::RouteToTestRunner {
                 argv,
@@ -166,6 +167,32 @@ mod tests {
         match decision {
             RoutingDecision::RouteToManagedProcess { cwd, .. } => {
                 assert!(cwd.exists());
+            }
+            _ => panic!("expected RouteToManagedProcess"),
+        }
+    }
+
+    #[test]
+    fn test_runner_uses_parsed_argv() {
+        let intent = classify_command("cargo test --lib -p foo");
+        let plan = plan_execution(&intent);
+        let decision = resolve_routing(&plan);
+        match decision {
+            RoutingDecision::RouteToTestRunner { argv, .. } => {
+                assert_eq!(argv, vec!["cargo", "test", "--lib", "-p", "foo"]);
+            }
+            _ => panic!("expected RouteToTestRunner"),
+        }
+    }
+
+    #[test]
+    fn managed_process_uses_parsed_argv() {
+        let intent = classify_command("rg 'fn main' src/");
+        let plan = plan_execution(&intent);
+        let decision = resolve_routing(&plan);
+        match decision {
+            RoutingDecision::RouteToManagedProcess { argv, .. } => {
+                assert_eq!(argv, vec!["rg", "fn main", "src/"]);
             }
             _ => panic!("expected RouteToManagedProcess"),
         }

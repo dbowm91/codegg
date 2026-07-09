@@ -2084,10 +2084,21 @@ impl DeterministicToolsConfig {
 }
 
 /// Configuration for command intent classification and routing.
+///
+/// **Observe-only invariant**: Setting `route_safe_commands = true` alone does
+/// NOT enable active execution routing. The `mode` field controls whether
+/// classification produces metadata only (Observe, default) or actively routes
+/// commands to structured backends (Route, not yet implemented).
 #[derive(Deserialize, Serialize, Debug, Clone, PartialEq)]
 #[serde(default)]
 pub struct CommandIntentConfig {
-    /// Enable safe command routing (master toggle).
+    /// Operating mode: `observe` (metadata only, raw shell) or `route` (active routing).
+    /// Default: `observe`. **Active routing is not yet implemented** — if set to
+    /// `route`, a warning is logged and behavior falls back to observe.
+    pub mode: Option<CommandIntentMode>,
+    /// Enable safe command routing (master toggle for family-level enablement).
+    /// Controls metadata annotation (`routing: enabled/disabled`) in observe mode.
+    /// Does NOT enable active routing — use `mode` for that.
     pub route_safe_commands: Option<bool>,
     /// Route recognized test commands to the test runner subsystem.
     pub route_tests: Option<bool>,
@@ -2102,6 +2113,7 @@ pub struct CommandIntentConfig {
 impl Default for CommandIntentConfig {
     fn default() -> Self {
         Self {
+            mode: Some(CommandIntentMode::Observe),
             route_safe_commands: Some(false),
             route_tests: Some(false),
             route_git_read: Some(false),
@@ -2121,7 +2133,23 @@ impl CommandIntentConfig {
         }
     }
 
+    /// Returns the effective intent mode, defaulting to Observe.
+    pub fn mode(&self) -> CommandIntentMode {
+        self.mode.unwrap_or(CommandIntentMode::Observe)
+    }
+
+    /// Returns true if the mode is Route (active routing requested).
+    /// Note: Active routing is not yet implemented; this is for config
+    /// validation and future use.
+    pub fn is_route_mode(&self) -> bool {
+        self.mode() == CommandIntentMode::Route
+    }
+
     /// Returns true if routing is enabled for the given family.
+    ///
+    /// This controls metadata annotation (`routing: enabled/disabled`) in
+    /// observe mode. It does NOT enable active execution routing — the
+    /// `mode` field controls that.
     pub fn is_enabled(&self, family: CommandIntentFamily) -> bool {
         let master = self.route_safe_commands.unwrap_or(false);
         if !master {
@@ -2143,6 +2171,24 @@ pub enum CommandIntentFamily {
     GitRead,
     Search,
     Python,
+}
+
+/// Controls whether command intent classification produces metadata only (Observe)
+/// or actively routes execution to structured backends (Route).
+///
+/// **Observe mode** (default): Classifies commands, computes routing metadata,
+/// and appends it to model-visible output. All commands execute via raw shell.
+///
+/// **Route mode**: Would route commands to structured backends.
+/// **Not yet implemented** — falls back to Observe with a warning.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CommandIntentMode {
+    /// Metadata only, raw shell execution. Safe default.
+    #[default]
+    Observe,
+    /// Active routing to structured backends (not yet implemented).
+    Route,
 }
 
 /// Configuration for harness-side eggsact preflight checks.

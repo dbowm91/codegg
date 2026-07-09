@@ -67,7 +67,7 @@ Request → analyze risk → derive envelope → materialize to temp file
 - Registered in `src/tool/mod.rs` via `registry.register(PythonScriptTool)` in `with_options()`
 - Declared in `src/lib.rs` as `pub mod python_script`
 - Command routing: `classify_command()` → `plan_execution()` → `resolve_routing()` → `RouteToPythonScripting`
-- Compatible with existing `src/python_scripting.rs` (legacy module still present)
+- This is the sole canonical module — the legacy `src/python_scripting.rs` has been removed
 
 ## Tests
 

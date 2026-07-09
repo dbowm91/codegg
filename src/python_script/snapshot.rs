@@ -103,18 +103,25 @@ fn walk_dir(dir: &Path, results: &mut Vec<PathBuf>, depth: usize) -> Result<(), 
             let path = entry.path();
             if path.is_dir() {
                 let name = path.file_name().unwrap_or_default();
-                // Skip hidden dirs and target
+                // Skip hidden dirs, build artifacts, and codegg internals
                 let name_str = name.to_string_lossy();
                 if name_str == "."
                     || name_str == ".."
                     || name_str.starts_with('.')
                     || name_str == "target"
                     || name_str == "node_modules"
+                    || name_str == ".codegg"
                 {
                     continue;
                 }
                 walk_dir(&path, results, depth - 1)?;
             } else {
+                let name = path.file_name().unwrap_or_default();
+                let name_str = name.to_string_lossy();
+                // Skip OS metadata files
+                if name_str.starts_with('.') || name_str == "Thumbs.db" {
+                    continue;
+                }
                 results.push(path);
             }
         }

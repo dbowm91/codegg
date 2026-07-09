@@ -212,21 +212,25 @@ fn select_backend(intent: &CommandIntent) -> ExecutionBackend {
         },
         CommandIntentKind::SearchReadOnly | CommandIntentKind::FileRead => {
             ExecutionBackend::ManagedArgv {
-                argv: intent
-                    .command
-                    .split_whitespace()
-                    .map(String::from)
-                    .collect(),
+                argv: intent.parsed_argv.clone().unwrap_or_else(|| {
+                    intent
+                        .command
+                        .split_whitespace()
+                        .map(String::from)
+                        .collect()
+                }),
                 cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             }
         }
         CommandIntentKind::Build | CommandIntentKind::Lint | CommandIntentKind::Format => {
             ExecutionBackend::ManagedArgv {
-                argv: intent
-                    .command
-                    .split_whitespace()
-                    .map(String::from)
-                    .collect(),
+                argv: intent.parsed_argv.clone().unwrap_or_else(|| {
+                    intent
+                        .command
+                        .split_whitespace()
+                        .map(String::from)
+                        .collect()
+                }),
                 cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             }
         }
@@ -655,5 +659,48 @@ mod tests {
         let intent = classify_command("cargo test");
         let plan = plan_execution(&intent);
         assert!(plan.notes.is_empty());
+    }
+
+    #[test]
+    fn rg_single_quoted_argv_flows_to_backend() {
+        let intent = classify_command("rg 'fn main' src/");
+        let plan = plan_execution(&intent);
+        match &plan.backend {
+            ExecutionBackend::ManagedArgv { argv, .. } => {
+                assert_eq!(argv, &vec!["rg", "fn main", "src/"]);
+            }
+            other => panic!("expected ManagedArgv, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn cat_double_quoted_argv_flows_to_backend() {
+        let intent = classify_command("cat \"my file.txt\"");
+        let plan = plan_execution(&intent);
+        match &plan.backend {
+            ExecutionBackend::ManagedArgv { argv, .. } => {
+                assert_eq!(argv, &vec!["cat", "my file.txt"]);
+            }
+            other => panic!("expected ManagedArgv, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn cargo_build_argv_flows_to_backend() {
+        let intent = classify_command("cargo build --release");
+        let plan = plan_execution(&intent);
+        match &plan.backend {
+            ExecutionBackend::ManagedArgv { argv, .. } => {
+                assert_eq!(argv, &vec!["cargo", "build", "--release"]);
+            }
+            other => panic!("expected ManagedArgv, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_runner_uses_parsed_argv() {
+        let intent = classify_command("cargo test --lib -p foo");
+        let plan = plan_execution(&intent);
+        assert!(matches!(plan.backend, ExecutionBackend::TestRunner { .. }));
     }
 }

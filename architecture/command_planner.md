@@ -78,15 +78,18 @@ pub fn plan_execution(intent: &CommandIntent) -> CommandPlan
 
 ### Backend Selection
 
-| IntentKind | Backend |
-|------------|---------|
-| Test | `TestRunner { validated_command }` |
-| PythonAnalyze/Transform/Verify | `PythonScript { script, mode_guess }` |
-| GitReadOnly | `NativeTool { tool_name: "egggit" }` |
-| GitMutating | `RawShell { command }` |
-| SearchReadOnly, FileRead, Build, Lint, Format | `ManagedArgv { argv, cwd }` |
-| FileWrite, FileEdit, RawShell | `RawShell { command }` |
-| Rejected | `Reject { reason }` |
+| IntentKind | Backend | argv source |
+|------------|---------|-------------|
+| Test | `TestRunner { validated_command }` | command string validated |
+| PythonAnalyze/Transform/Verify | `PythonScript { script, mode_guess }` | command string |
+| GitReadOnly | `NativeTool { tool_name: "egggit" }` | n/a |
+| GitMutating | `RawShell { command }` | command string |
+| SearchReadOnly, FileRead | `ManagedArgv { argv, cwd }` | `parsed_argv` (fallback to whitespace split) |
+| Build, Lint, Format | `ManagedArgv { argv, cwd }` | `parsed_argv` (fallback to whitespace split) |
+| FileWrite, FileEdit, RawShell | `RawShell { command }` | command string |
+| Rejected | `Reject { reason }` | n/a |
+
+`ManagedArgv` backends use `intent.parsed_argv` from the shell shape parser, falling back to whitespace splitting if `None`.
 
 ### Projector Selection
 

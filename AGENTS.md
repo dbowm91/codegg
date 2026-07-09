@@ -197,7 +197,7 @@ python3 scripts/audit_tokio_tests.py
 # Check for bare #[tokio::test] annotations (regression guard)
 python3 scripts/check-tokio-test-flavors.py
 
-# Command intent classifier (intent classification, risk assessment, fixtures)
+# Command intent classifier (intent classification, risk assessment, ShellShape parsing, fixtures)
 cargo test -p codegg --lib command_intent
 
 # Command planner (backend routing, permission generation, fixtures)
@@ -207,7 +207,7 @@ cargo test -p codegg --lib command_planner
 cargo test -p codegg --lib command_routing
 
 # Python scripting (risk analysis, script execution, timeout, fixtures)
-cargo test -p codegg --lib python_scripting
+cargo test -p codegg --lib python_script
 
 # First-class Python scripting MVP (types, analyze, sandbox, snapshot, executor, projection, tool)
 cargo test -p codegg --lib python_script
@@ -421,6 +421,7 @@ CI runs on push/PR to dev/main: `agent-assets` → `fmt` → `check` → `clippy
 - **eggsact is in-process, not MCP**: The `eggsact` dependency is consumed as a direct Rust dependency (`src/eggsact/adapter.rs`), not via MCP server. `EggsactRuntime` wraps `eggsact::agent::ToolRegistry` in-process. Provenance must tag `backend = "native"`, `implementation = "eggsact/<tool_name>"`, `trust = LocalTrusted`. `EggsactCallResult` carries structured fields (`result`, `findings`, `warnings`, `error_type`, `error`) in addition to the legacy string output.
 - **Deterministic tools (Phase 4)**: `EggsactTool` generic wrapper in `src/tool/deterministic.rs` exposes a conservative subset of eggsact tools to the model. 8 always-visible tools (`text_equal`, `text_diff_explain`, `text_replace_check`, `validate_json`, `validate_toml`, `command_preflight`, `path_normalize`, `text_security_inspect`) plus 5 deferred tools discoverable via `tool_search`. All use `ToolCategory::ReadOnly` and are registered best-effort; if `EggsactRuntime::new()` fails, the tools are silently skipped. `truncate_utf8_safe()` in `src/eggsact/adapter.rs` is the shared helper for UTF-8 safe truncation of tool output. `DeterministicToolsConfig::validate()` provides runtime config validation for the deterministic tool layer. `BootstrapReport` has `tool_coverage_status()`, `missing_required_tools()`, and `missing_recommended_tools()` for classifying which eggsact tools are available vs missing.
 - **Preflight (Phase 5)**: `src/preflight/` provides harness-side automatic validation before mutating operations (edits, config writes, shell commands) using eggsact. Config: `[preflight]` section in opencode.json. Default mode: `warn`. Key types: `PreflightService`, `PreflightPolicy`, `PreflightDecision`, `PreflightFinding`. Integration points: edit, replace, apply_patch, multiedit, bash tools. **Harness-internal only** — preflight calls do not appear as model-facing tool calls. Findings are severity-classified (`Block`/`Warn`/`Annotate`) and can block, warn, or annotate depending on policy mode (`off`, `observe`, `warn`, `block_on_definite`). **Structured parsing**: Decisions use structured eggsact fields first (`result`, `findings`, `warnings`), falling back to string parsing for legacy output. `PreflightConfig::validate()` provides runtime config validation.
+- **CommandIntentMode**: `CommandIntentMode` enum (`Observe | Route`) with default `Observe`. `CommandIntentConfig` has `mode` field. Route mode falls back to Observe with warning. `route_safe_commands = true` alone does NOT enable active routing. All commands still execute via raw shell regardless of mode.
 
 ### Agent Runtime
 
@@ -481,13 +482,19 @@ CI runs on push/PR to dev/main: `agent-assets` → `fmt` → `check` → `clippy
 ### Command Intent and Planning
 
 - **Command intent classification and routing metadata**: `classify_command()` in `src/command_intent/mod.rs` classifies commands into intent families (Test, GitReadOnly, GitMutating, SearchReadOnly, PythonAnalyze/Transform/Verify, RawShell, Rejected). In Phase 04, `BashTool::execute()` classifies commands, plans execution, resolves routing, and attaches routing metadata to output when `CommandIntentConfig` is set. All commands still execute via raw shell; metadata is for visibility and future structured routing.
+- **ShellShape parsing**: `ShellShape` enum (`Empty | SimpleArgv(Vec<String>) | ComplexShell`) in `src/command_intent/shell_shape.rs`. `parse_shell_words()` handles quotes, escapes, operators, redirection, command substitution, variable expansion. `CommandIntent` has `parsed_argv: Option<Vec<String>>` field. Classifier uses parsed argv for all `looks_like_*` functions. Planner uses parsed argv for ManagedArgv and TestRunner backends.
+- **Git classification tightened**: `classify_git()` uses parsed argv, not string prefixes. `git branch`, `git tag`, `git remote` are only read-only for specific forms (--list, -l, -v, --show-current). Mutating forms (branch <name>, tag <name>, remote add/remove) correctly classified as GitMutating. `git push`, `git reset --hard`, `git clean -f` classified as High risk.
+- **Search/read classification tightened**: `find -exec`, `-delete`, `-ok`, `-execdir` rejected from safe search. Absolute outside-workspace paths rejected from safe search/file-read. `which`/`whereis` no longer classified as file reads. `classify_search()` and `classify_file_read()` return Option for fallthrough.
 - **Shell operator detection**: `has_shell_operators()` in `src/command_intent/mod.rs` uses quote-aware scanning to detect `|`, `;`, `$`, `` ` ``, `&`, `&&`, `||` outside quotes. Commands with operators are classified as `RawShell` (prevents `cargo test && rm -rf .` routing to TestRunner).
 - **Command planner maps intent to backend**: `plan_execution()` in `src/command_intent/plan.rs` maps classified intents to `ExecutionBackend` (RawShell, ManagedArgv, NativeTool, TestRunner, PythonScript, Reject) with rich struct variants carrying metadata. Re-exports from `src/command_planner.rs`.
 - **Plan includes projector and RTK metadata**: `CommandPlan` now carries `ProjectorRoute` (Raw, Truncated, ErrorRetention, GitStatus/Diff/Log, TestReport, FileSearch, PythonRun, RtkEligible) and `PlanRtkPolicy` (Disabled, Eligible, RequiredForPromotion).
 - **Permission planning**: `CommandPermissionRequest` carries `PermissionDefault` (Allow, Ask, Deny) per capability. `generate_permission_requests()` maps `ExecutionCapability` → permission request with risk-level-aware defaults.
 - **Command routing resolves to subsystem**: `resolve_routing()` in `src/command_routing.rs` maps planned execution to concrete `RoutingDecision` variants (RouteToTestRunner, RouteToShell, RouteToPythonScripting, RouteToNativeTool, RouteToManagedProcess, Rejected).
-- **Python scripting is first-class**: `src/python_scripting.rs` provides `PythonScript` with Analyze/Transform/Verify modes, static risk analysis via `analyze_python_risk()`, and async execution via `run_python_script()`. Python is NOT hidden inside bash.
-- **First-class Python scripting MVP**: `src/python_script/` is the new module-based implementation with `PythonExecutionMode`, `PythonCapabilityEnvelope` (9-field sandbox), `WorkspaceSnapshot` for transform diffing, `PythonScriptTool` (model-facing), and `project_python_run()` projection. Replaces ad-hoc bash routing for Python one-offs.
+- **Python scripting is first-class**: `src/python_script/` is the sole canonical Python scripting module. `PythonScript` supports Analyze/Transform/Verify modes with `PythonCapabilityEnvelope` (9-field sandbox), `WorkspaceSnapshot` for transform diffing, `PythonScriptTool` (model-facing), and `project_python_run()` projection. Python is NOT hidden inside bash.
+- **Capability enforcement**: `execute_python_script()` calls `check_compatibility()` BEFORE execution — denied capabilities block execution. Snapshots are taken for ALL modes (Analyze, Transform, Verify), not just Transform. Analyze and Verify modes fail if ANY workspace files change.
+- **Environment hardening**: CWD validated (must exist, must be directory, defaults to current dir). Environment cleared via `.env_clear()` with only PATH, HOME, LANG, LC_ALL, VIRTUAL_ENV, PYTHONPATH, DYLD_LIBRARY_PATH restored.
+- **AST-aware risk scanning**: `analyze_python_risk()` tries AST scanning first via `python3 -I` with stdin, falls back to string scanning if Python unavailable or parse fails. `PythonRiskAssessment` has `scanner: PythonRiskScanner` field (Ast | Fallback). Detects aliases (`import subprocess as sp`), from-imports, chained calls (`Path.write_text`), false positive reduction.
+- **Python projection tightened**: Transform mode generates actual textual diffs for changed files. Script body SHA-256 hash computed and included in projection. `PythonRunResult` carries `diff`, `script_body_hash`, `stdout_handle`, `stderr_handle`, `diff_handle`. RTK eligibility noted when output exceeds 2000 chars.
 - **Conservative classifier**: The classifier recognizes simple argv-shaped commands and falls back to `RawShell` for complex cases (pipes, redirection, command substitution). It does NOT attempt full POSIX shell parsing.
 - **RtkProjectionPolicy**: Added to `src/shell/projector.rs` for controlling RTK projection behavior (Disabled/PostProcessOnly/WrapperOnly/Both).
 
@@ -514,8 +521,8 @@ CI runs on push/PR to dev/main: `agent-assets` → `fmt` → `check` → `clippy
 | `architecture/command_intent.md` | Command intent classification, risk assessment, execution capability model |
 | `architecture/command_planner.md` | Backend routing, permission generation, projector/RTK policy selection |
 | `architecture/command_routing.md` | Routing resolution mapping planned execution to concrete subsystems |
-| `architecture/python_scripting.md` | First-class Python scripting with Analyze/Transform/Verify modes, risk analysis |
-| `architecture/python_script.md` | Module-based Python scripting MVP: types, sandbox, executor, projection, tool registration |
+| `architecture/python_scripting.md` | First-class Python scripting with Analyze/Transform/Verify modes, AST-aware risk analysis, capability enforcement, env hardening — sole canonical module at `src/python_script/` |
+| `architecture/python_script.md` | Module-based Python scripting: types, sandbox, executor, projection, tool registration |
 | `architecture/command.md` | 105 built-in slash commands |
 | `architecture/config.md` | Config schema in `crates/codegg-config/src/schema.rs` |
 | `architecture/provider.md` | 16 auto-registered providers via env vars; CircuitBreaker pattern |

@@ -4,11 +4,24 @@ First-class Python script execution with risk analysis, three execution modes, a
 
 ## Source
 
-`src/python_scripting.rs`
+`src/python_script/` (8 files) — sole canonical module. The legacy `src/python_scripting.rs` has been removed.
+
+## Module Structure
+
+| File | Purpose |
+|------|---------|
+| `mod.rs` | Module root, re-exports, integration tests |
+| `types.rs` | Core types: `PythonExecutionMode`, `PythonScriptSource`, `PythonCapabilityEnvelope`, `PythonRiskLevel`, `PythonRiskAssessment`, `PythonRiskScanner`, `PythonScriptRequest`, `PythonRunStatus`, `PythonRunResult` |
+| `analyze.rs` | AST-first risk analyzer with string-scanning fallback |
+| `sandbox.rs` | `derive_envelope(mode, code)` and `check_compatibility(mode, code)` for capability enforcement |
+| `snapshot.rs` | `WorkspaceSnapshot::capture(root)` and `diff()` for change detection |
+| `executor.rs` | `execute_python_script(request)` — validates, runs risk analysis, enforces capabilities, captures snapshots, executes with timeout, generates diffs |
+| `projection.rs` | `project_python_run(result)` — formats run results into model-facing markdown |
+| `tool.rs` | `PythonScriptTool` — `Tool` trait impl for model-facing Python execution |
 
 ## Core Types
 
-### `PythonScriptMode`
+### `PythonExecutionMode`
 
 | Mode | Description | Timeout |
 |------|-------------|---------|
@@ -16,43 +29,38 @@ First-class Python script execution with risk analysis, three execution modes, a
 | `Transform` | Mutating transformation | 60s |
 | `Verify` | Test/verification | 300s |
 
-Methods: `label()` → `"analyze"`/`"transform"`/`"verify"`, `description()` → human-readable.
-
-### `PythonScriptSource`
+### `PythonScriptRequest`
 
 ```rust
-pub enum PythonScriptSource {
-    Inline(String),
-    FilePath(PathBuf),
+pub struct PythonScriptRequest {
+    pub code: String,
+    pub mode: PythonExecutionMode,
+    pub cwd: PathBuf,
+    pub timeout_secs: Option<u64>,
+    pub session_id: Option<String>,
+    pub intent: Option<String>,
 }
 ```
 
-### `PythonScript`
+### `PythonRiskAssessment`
 
 ```rust
-pub struct PythonScript {
-    pub mode: PythonScriptMode,
-    pub source: PythonScriptSource,
-    pub timeout_secs: u64,
-    pub cwd: Option<PathBuf>,
-    pub env: Option<Vec<(String, String)>>,
-}
-```
-
-Constructors: `analyze_inline(code)`, `transform_inline(code)`, `verify_inline(code)`, `from_file(path, mode)`.
-
-### `PythonRiskAnalysis`
-
-```rust
-pub struct PythonRiskAnalysis {
+pub struct PythonRiskAssessment {
     pub level: PythonRiskLevel,
     pub reasons: Vec<String>,
     pub has_file_io: bool,
+    pub has_file_read: bool,
+    pub has_file_write: bool,
     pub has_subprocess: bool,
     pub has_network: bool,
     pub has_destructive_ops: bool,
+    pub has_dynamic_execution: bool,
+    pub imports: Vec<String>,
+    pub scanner: PythonRiskScanner,
 }
 ```
+
+`PythonRiskScanner` enum: `Ast` | `Fallback` — indicates which analysis backend produced the result.
 
 ### `PythonRunResult`
 
@@ -62,45 +70,84 @@ pub struct PythonRunResult {
     pub stdout: String,
     pub stderr: String,
     pub duration: Duration,
-    pub mode: PythonScriptMode,
+    pub mode: PythonExecutionMode,
     pub script_length: usize,
+    pub risk: PythonRiskAssessment,
+    pub capabilities: PythonCapabilityEnvelope,
+    pub changed_files: Vec<PathBuf>,
+    pub interpreter: String,
+    pub diff: Option<String>,
+    pub script_body_hash: Option<String>,
+    pub stdout_handle: Option<String>,
+    pub stderr_handle: Option<String>,
+    pub diff_handle: Option<String>,
 }
 ```
 
 ## Risk Analysis
 
 ```rust
-pub fn analyze_python_risk(code: &str) -> PythonRiskAnalysis
+pub fn analyze_python_risk(code: &str) -> PythonRiskAssessment
 ```
 
-Static string-contains analysis:
+**AST-first analysis**: Spawns `python3 -I` with the script piped via stdin to an inline AST scanner. The scanner walks the Python AST tree to extract imports, function calls, and risk indicators. Falls back to string scanning if Python is unavailable or parsing fails.
 
-| Pattern | Flag | Risk Level |
-|---------|------|------------|
-| `open(`, `write(`, `os.remove` | `has_file_io` | Low |
-| `subprocess`, `os.system`, `os.popen` | `has_subprocess` | Medium |
-| `requests.`, `urllib`, `http.client`, `socket.` | `has_network` | Medium |
-| `shutil.rmtree`, `os.unlink`, `os.rmdir` | `has_destructive_ops` | High |
+Detection targets:
+- **High**: destructive ops (`shutil.rmtree`, `os.remove`, `os.unlink`, `chmod`, etc.)
+- **Medium**: subprocess calls, network access
+- **Low**: file I/O, dynamic execution (`eval`/`exec`/`compile`), suspicious imports
+- **Safe**: no risk indicators
 
 Priority: destructive_ops > subprocess/network > file_io > safe.
 
-`requires_permission()` returns true for Medium or High risk.
-
-## Script Execution
+## Capability Enforcement
 
 ```rust
-pub async fn run_python_script(script: &PythonScript) -> PythonRunResult
+pub fn check_compatibility(mode: PythonExecutionMode, code: &str) -> Vec<String>
+pub fn derive_envelope(mode: PythonExecutionMode, code: &str) -> (PythonCapabilityEnvelope, PythonRiskAssessment)
+```
+
+Default envelopes per mode:
+- `Analyze()`: read_workspace only
+- `Transform()`: read + write workspace
+- `Verify()`: read workspace + subprocess
+
+`from_mode_and_risk(mode, risk)` denies capabilities flagged by risk analysis (e.g., network in Analyze, subprocess in Analyze/Transform).
+
+## Execution Pipeline
+
+```rust
+pub async fn execute_python_script(request: &PythonScriptRequest) -> PythonRunResult
 ```
 
 Flow:
-1. Check script length against `MAX_SCRIPT_LENGTH` (500KB)
-2. Find python command (`python3` on Unix, `python` on Windows)
-3. Build args: `-c <code>` for Inline, `<path>` for FilePath
-4. Set cwd and env if provided
-5. `tokio::time::timeout` with `script.timeout_secs`
-6. Return `PythonRunResult` with status, stdout, stderr, duration, mode, script_length
+1. Compute script body SHA-256 hash for reproducibility tracking
+2. Validate script length against `MAX_SCRIPT_LENGTH` (500KB)
+3. Validate CWD (must exist, must be directory, must be inside workspace)
+4. Derive capability envelope and run risk analysis
+5. **Pre-execution capability check**: `check_compatibility()` blocks scripts with denied capabilities BEFORE any child process is spawned
+6. Materialize script to temp file (under `.codegg/python_runs/`)
+7. **Pre-execution snapshot** for ALL modes (Analyze, Transform, Verify)
+8. Capture pre-execution file contents for diff generation
+9. Find python interpreter (`VIRTUAL_ENV` > `python3` > `python`)
+10. Execute with timeout and **minimal environment isolation**:
+    - Environment cleared via `.env_clear()` with selective restore of: `PATH`, `HOME`, `LANG`, `LC_ALL`, `VIRTUAL_ENV`, `PYTHONPATH`, `DYLD_LIBRARY_PATH`
+11. **Post-execution snapshot and diff** for ALL modes:
+    - Analyze/Verify: any file change is a policy violation → run failed with exit code -2
+    - Transform: file changes are allowed and reported; textual diff generated
+12. Generate artifact handles (`python_run://<id>/stdout`, `stderr`, `diff`)
+13. Return `PythonRunResult` with all fields populated
 
-Constants: `DEFAULT_PYTHON_TIMEOUT_SECS = 60`, `MAX_SCRIPT_LENGTH = 500_000`.
+Constants: `DEFAULT_TIMEOUT_SECS = 60`, `MAX_SCRIPT_LENGTH = 500_000`.
+
+## Transform Mode Diff Generation
+
+Transform mode captures pre-execution file contents and generates a human-readable textual diff showing:
+- Modified files: `--- a/<path>` / `+++ b/<path>` with truncated old/new content
+- New files: `--- /dev/null` / `+++ b/<path>` with truncated content
+- Deleted files: `--- a/<path>` / `+++ /dev/null` with truncated old content
+
+Per-file content capped at 4000 chars.
 
 ## Integration
 
@@ -109,10 +156,10 @@ Python scripts are routed from the command intent pipeline:
 2. `plan_execution()` maps to `ExecutionBackend::PythonScript`
 3. `resolve_routing()` maps to `RoutingDecision::RouteToPythonScripting`
 
-Currently, Python routing is recognized and metadata is attached to BashTool output, but actual execution still goes through raw shell. Full Python script routing is planned for Phase 05.
+Registered in `src/tool/mod.rs` via `registry.register(PythonScriptTool)` in `with_options()`.
 
 ## Tests
 
 ```bash
-cargo test -p codegg --lib python_scripting
+cargo test -p codegg --lib python_script
 ```

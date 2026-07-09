@@ -4,7 +4,7 @@ Command intent classification analyzes shell commands to determine their family,
 
 ## Source
 
-`src/command_intent/mod.rs`
+`src/command_intent/mod.rs` (with `shell_shape.rs` and `plan.rs` submodules)
 
 ## Core Types
 
@@ -64,8 +64,11 @@ pub struct CommandIntent {
     pub source: CommandSource,
     pub command: String,
     pub context_policy: ContextPolicy,
+    pub parsed_argv: Option<Vec<String>>,
 }
 ```
+
+`parsed_argv` is populated for all simple argv-shaped commands. `None` for complex shell commands where argv parsing failed or was not applicable.
 
 Methods:
 - `is_safe_for_model_context()` — true when risk is Safe/Low AND context is ProjectToModel/Promote
@@ -77,20 +80,22 @@ Methods:
 pub fn classify_command(command: &str) -> CommandIntent
 ```
 
-Classification order:
-1. Empty → `Rejected`
-2. Shell operators (`|`, `;`, `$`, `` ` ``, `&`) detected by `has_shell_operators()` → `RawShell` (Low confidence, medium risk)
-3. Test patterns → `Test`
-4. Python patterns → `PythonAnalyze|Transform|Verify`
-5. Git commands → `GitReadOnly` or `GitMutating`
-6. File read patterns → `FileRead`
-7. Search patterns → `SearchReadOnly`
-8. Build patterns → `Build`
-9. Unmatched → `RawShell` (Low confidence)
+Classification is now driven by **shell shape parsing** (`src/command_intent/shell_shape.rs`):
 
-### Shell Operator Detection
+1. Parse command into `ShellShape` via `parse_shell_words()`
+2. `Empty` → `Rejected`
+3. `ComplexShell { reasons }` → `RawShell` (Low confidence, medium risk)
+4. `SimpleArgv(argv)` → pattern-match on first token through `looks_like_*` / `classify_*` helpers
 
-`has_shell_operators()` uses quote-aware scanning to detect `|`, `;`, `$`, `` ` ``, `&` outside quotes. Commands with operators are classified as `RawShell` — this prevents `cargo test && rm -rf .` from routing to the test runner.
+### ShellShape Parsing
+
+`parse_shell_words()` is a POSIX-aware state machine that handles:
+- Single quotes (no escape processing inside)
+- Double quotes (with `\"` and `\\` escapes)
+- Backslash escapes outside quotes
+- Detection of shell complexity: pipes, semicolons, `&&`/`||`, background, redirection, command substitution, variable expansion, heredocs, globs, tilde, env assignments, unbalanced quotes
+
+Commands classified as `ComplexShell` are routed to `RawShell` — this prevents `cargo test && rm -rf .` from routing to the test runner.
 
 ### Pattern Recognition
 
@@ -98,18 +103,40 @@ Classification uses `looks_like_*` / `classify_*` helper pairs. Key patterns:
 
 - **Test**: `cargo test`, `cargo nextest`, `pytest`, `uv run pytest`, `go test`, `npm/pnpm/yarn/bun test`, `make test/check`
 - **Python**: `python`, `python3`, `uv run python/pytest`, `pytest`, `.py` suffix
-- **Git readonly**: `status`, `diff`, `log`, `show`, `branch`, `remote`, `stash list`, `tag`
-- **Search**: `rg`, `grep`, `find`, `ls`, `tree`, `cat`, `head`, `tail`, `wc`, `which`, `whereis`
+- **Git readonly**: `status`, `diff`, `log`, `show` (always read-only); `branch`, `tag`, `remote`, `stash` (read-only only for specific forms — see git classification below)
+- **Search**: `rg`, `grep`, `find`, `ls`, `tree`, `wc` (with destructive-flag and outside-workspace rejection)
+- **File read**: `cat`, `less`, `more`, `head`, `tail` (with outside-workspace rejection)
 - **Build**: `cargo build/check/clippy/fmt/run`, `make`, `cmake`, `npm/pnpm run`
+
+### Git Classification (argv-based)
+
+Git classification uses **parsed argv**, not string prefixes. This prevents false positives like `git push --dry-run` being classified as safe.
+
+- `git branch` — read-only only for: no args, `--list`, `-l`, `--show-current`, `--contains`, `--merged`, `--all`, `--remotes`, `--sort=...` (without name arg). Mutating for: `-d`, `-D`, `-m`, `-M`, `--delete`, `--move`, creating a branch (`<name>`)
+- `git tag` — read-only only for: no args, `--list`, `-l`. Mutating for: `-d`, `--delete`, creating a tag (`<name>`)
+- `git remote` — read-only only for: no args, `-v`, `show`, `get-url`, `prune`. Mutating for: `add`, `remove`, `rm`, `rename`, `set-url`
+- `git stash` — read-only only for `list`/`ls`. All other stash commands are mutating
+- `git push` → High risk; `git pull` → Medium risk; `git reset --hard` → High risk; `git clean -f` → High risk
+
+### Search/read Classification
+
+- `find -exec`, `-delete`, `-ok`, `-execdir` → rejected from safe search (falls through to RawShell)
+- Absolute outside-workspace path arguments → rejected from safe search and file-read
+- `which`/`whereis` → NOT classified as file reads (fall through to RawShell)
 
 ## Integration
 
 `classify_command()` is called by:
 - `BashTool::execute()` in `src/tool/bash.rs` — attaches routing metadata when `CommandIntentConfig` is set
-- `plan_execution()` in `src/command_intent/plan.rs` — second stage of the pipeline
+
+### CommandIntentMode
+
+`CommandIntentMode` enum (`Observe` | `Route`, default `Observe`) controls whether the bash tool only observes intent or attempts active routing. Route mode currently falls back to observe with a warning — active routing is not yet implemented.
 
 ## Tests
 
 ```bash
 cargo test -p codegg --lib command_intent
 ```
+
+Tests cover: general classification, shell shape parsing (quoted args, operators, complex shell detection), git read-only/mutating classification (branch/tag/remote forms), search/read rejection (find -exec, outside-workspace, which/whereis), parsed argv round-trips, and cross-module classify→plan→route integration.

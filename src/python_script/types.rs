@@ -166,17 +166,29 @@ pub enum PythonRiskLevel {
     High,
 }
 
+/// Which scanner produced this risk assessment.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum PythonRiskScanner {
+    /// String/line scanning (fallback).
+    Fallback,
+    /// AST-aware scanning via `python3 -I`.
+    Ast,
+}
+
 /// Static risk assessment of a Python script.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PythonRiskAssessment {
     pub level: PythonRiskLevel,
     pub reasons: Vec<String>,
     pub has_file_io: bool,
+    pub has_file_read: bool,
+    pub has_file_write: bool,
     pub has_subprocess: bool,
     pub has_network: bool,
     pub has_destructive_ops: bool,
     pub has_dynamic_execution: bool,
     pub imports: Vec<String>,
+    pub scanner: PythonRiskScanner,
 }
 
 impl PythonRiskAssessment {
@@ -185,11 +197,14 @@ impl PythonRiskAssessment {
             level: PythonRiskLevel::Safe,
             reasons: vec![],
             has_file_io: false,
+            has_file_read: false,
+            has_file_write: false,
             has_subprocess: false,
             has_network: false,
             has_destructive_ops: false,
             has_dynamic_execution: false,
             imports: vec![],
+            scanner: PythonRiskScanner::Fallback,
         }
     }
 
@@ -254,6 +269,16 @@ pub struct PythonRunResult {
     pub capabilities: PythonCapabilityEnvelope,
     pub changed_files: Vec<PathBuf>,
     pub interpreter: String,
+    /// Textual diff for Transform mode changed files (unified diff format).
+    pub diff: Option<String>,
+    /// SHA-256 hex digest of the script source body.
+    pub script_body_hash: Option<String>,
+    /// Handle for stdout expansion: `python_run://<run_id>/stdout`.
+    pub stdout_handle: Option<String>,
+    /// Handle for stderr expansion: `python_run://<run_id>/stderr`.
+    pub stderr_handle: Option<String>,
+    /// Handle for diff expansion: `python_run://<run_id>/diff`.
+    pub diff_handle: Option<String>,
 }
 
 impl PythonRunResult {
@@ -280,6 +305,12 @@ impl PythonRunResult {
         }
         if !self.changed_files.is_empty() {
             parts.push(format!("changed: {} files", self.changed_files.len()));
+        }
+        if let Some(ref hash) = self.script_body_hash {
+            parts.push(format!("script_hash: {hash}"));
+        }
+        if self.diff.is_some() {
+            parts.push("diff: available".to_string());
         }
         parts.join(", ")
     }

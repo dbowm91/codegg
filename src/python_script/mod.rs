@@ -14,7 +14,7 @@ pub use sandbox::{check_compatibility, derive_envelope};
 pub use tool::PythonScriptTool;
 pub use types::{
     PythonCapabilityEnvelope, PythonExecutionMode, PythonRiskAssessment, PythonRiskLevel,
-    PythonRunResult, PythonRunStatus, PythonScriptRequest, PythonScriptSource,
+    PythonRiskScanner, PythonRunResult, PythonRunStatus, PythonScriptRequest, PythonScriptSource,
 };
 
 #[cfg(test)]
@@ -68,11 +68,14 @@ mod tests {
             level: PythonRiskLevel::Medium,
             reasons: vec!["network access detected".into()],
             has_file_io: false,
+            has_file_read: false,
+            has_file_write: false,
             has_subprocess: false,
             has_network: true,
             has_destructive_ops: false,
             has_dynamic_execution: false,
             imports: vec!["requests".into()],
+            scanner: PythonRiskScanner::Fallback,
         };
         let json = serde_json::to_string(&risk).unwrap();
         let back: PythonRiskAssessment = serde_json::from_str(&json).unwrap();
@@ -206,11 +209,14 @@ mod tests {
             level: PythonRiskLevel::Medium,
             reasons: vec![],
             has_file_io: false,
+            has_file_read: false,
+            has_file_write: false,
             has_subprocess: false,
             has_network: true,
             has_destructive_ops: false,
             has_dynamic_execution: false,
             imports: vec![],
+            scanner: PythonRiskScanner::Fallback,
         };
         let env =
             PythonCapabilityEnvelope::from_mode_and_risk(PythonExecutionMode::Transform, &risk);
@@ -223,11 +229,14 @@ mod tests {
             level: PythonRiskLevel::High,
             reasons: vec![],
             has_file_io: false,
+            has_file_read: false,
+            has_file_write: false,
             has_subprocess: false,
             has_network: false,
             has_destructive_ops: true,
             has_dynamic_execution: false,
             imports: vec![],
+            scanner: PythonRiskScanner::Fallback,
         };
         let env =
             PythonCapabilityEnvelope::from_mode_and_risk(PythonExecutionMode::Transform, &risk);
@@ -240,11 +249,14 @@ mod tests {
             level: PythonRiskLevel::Medium,
             reasons: vec![],
             has_file_io: false,
+            has_file_read: false,
+            has_file_write: false,
             has_subprocess: true,
             has_network: false,
             has_destructive_ops: false,
             has_dynamic_execution: false,
             imports: vec![],
+            scanner: PythonRiskScanner::Fallback,
         };
         // Verify mode allows subprocess even when risk detected
         let env = PythonCapabilityEnvelope::from_mode_and_risk(PythonExecutionMode::Verify, &risk);
@@ -257,11 +269,14 @@ mod tests {
             level: PythonRiskLevel::Medium,
             reasons: vec![],
             has_file_io: false,
+            has_file_read: false,
+            has_file_write: false,
             has_subprocess: true,
             has_network: false,
             has_destructive_ops: false,
             has_dynamic_execution: false,
             imports: vec![],
+            scanner: PythonRiskScanner::Fallback,
         };
         let env = PythonCapabilityEnvelope::from_mode_and_risk(PythonExecutionMode::Analyze, &risk);
         assert!(!env.subprocess);
@@ -280,11 +295,14 @@ mod tests {
             level: PythonRiskLevel::Medium,
             reasons: vec![],
             has_file_io: false,
+            has_file_read: false,
+            has_file_write: false,
             has_subprocess: false,
             has_network: true,
             has_destructive_ops: false,
             has_dynamic_execution: false,
             imports: vec![],
+            scanner: PythonRiskScanner::Fallback,
         };
         let env = PythonCapabilityEnvelope::analyze();
         let denied = env.has_denied_capabilities(&risk);
@@ -297,11 +315,14 @@ mod tests {
             level: PythonRiskLevel::Low,
             reasons: vec![],
             has_file_io: true,
+            has_file_read: false,
+            has_file_write: true,
             has_subprocess: false,
             has_network: false,
             has_destructive_ops: false,
             has_dynamic_execution: false,
             imports: vec![],
+            scanner: PythonRiskScanner::Fallback,
         };
         let env = PythonCapabilityEnvelope::analyze();
         let denied = env.has_denied_capabilities(&risk);
@@ -361,9 +382,11 @@ mod tests {
     }
 
     #[test]
-    fn pathlib_unlink_via_string_not_detected() {
+    fn pathlib_unlink_detected_by_ast_scanner() {
         let result = analyze_python_risk("from pathlib import Path\nPath('x.txt').unlink()");
-        assert_eq!(result.level, PythonRiskLevel::Safe);
+        assert_eq!(result.level, PythonRiskLevel::High);
+        assert!(result.has_destructive_ops);
+        assert_eq!(result.scanner, PythonRiskScanner::Ast);
     }
 
     #[test]
@@ -512,6 +535,11 @@ mod tests {
             capabilities: PythonCapabilityEnvelope::analyze(),
             changed_files: vec![],
             interpreter: "python3".into(),
+            diff: None,
+            script_body_hash: None,
+            stdout_handle: None,
+            stderr_handle: None,
+            diff_handle: None,
         };
         let text = project_python_run(&result);
         assert!(text.contains("Timed Out"));
@@ -530,6 +558,11 @@ mod tests {
             capabilities: PythonCapabilityEnvelope::analyze(),
             changed_files: vec![],
             interpreter: "python3".into(),
+            diff: None,
+            script_body_hash: None,
+            stdout_handle: None,
+            stderr_handle: None,
+            diff_handle: None,
         };
         let text = project_python_run(&result);
         assert!(text.contains("Spawn Error"));
@@ -549,15 +582,23 @@ mod tests {
                 level: PythonRiskLevel::Medium,
                 reasons: vec!["network access detected".into()],
                 has_file_io: false,
+                has_file_read: false,
+                has_file_write: false,
                 has_subprocess: false,
                 has_network: true,
                 has_destructive_ops: false,
                 has_dynamic_execution: false,
                 imports: vec!["requests".into()],
+                scanner: PythonRiskScanner::Fallback,
             },
             capabilities: PythonCapabilityEnvelope::analyze(),
             changed_files: vec![],
             interpreter: "python3".into(),
+            diff: None,
+            script_body_hash: None,
+            stdout_handle: None,
+            stderr_handle: None,
+            diff_handle: None,
         };
         let text = project_python_run(&result);
         assert!(text.contains("network access detected"));
@@ -576,6 +617,11 @@ mod tests {
             capabilities: PythonCapabilityEnvelope::analyze(),
             changed_files: vec![],
             interpreter: "python3".into(),
+            diff: None,
+            script_body_hash: None,
+            stdout_handle: None,
+            stderr_handle: None,
+            diff_handle: None,
         };
         let text = project_python_run(&result);
         assert!(!text.contains("### stdout"));
@@ -595,6 +641,11 @@ mod tests {
             capabilities: PythonCapabilityEnvelope::analyze(),
             changed_files: vec![],
             interpreter: "python3".into(),
+            diff: None,
+            script_body_hash: None,
+            stdout_handle: None,
+            stderr_handle: None,
+            diff_handle: None,
         };
         let text = project_python_run(&result);
         assert!(text.contains("### stderr"));
@@ -616,6 +667,11 @@ mod tests {
             capabilities: PythonCapabilityEnvelope::analyze(),
             changed_files: vec![std::path::PathBuf::from("a.txt")],
             interpreter: "python3".into(),
+            diff: None,
+            script_body_hash: None,
+            stdout_handle: None,
+            stderr_handle: None,
+            diff_handle: None,
         };
         let s = result.summary();
         assert!(s.contains("transform"));
@@ -636,6 +692,11 @@ mod tests {
             capabilities: PythonCapabilityEnvelope::analyze(),
             changed_files: vec![],
             interpreter: "python3".into(),
+            diff: None,
+            script_body_hash: None,
+            stdout_handle: None,
+            stderr_handle: None,
+            diff_handle: None,
         };
         let s = result.summary();
         assert!(s.contains("exit: 42"));
@@ -654,15 +715,23 @@ mod tests {
                 level: PythonRiskLevel::Low,
                 reasons: vec!["file I/O operations detected".into()],
                 has_file_io: true,
+                has_file_read: false,
+                has_file_write: true,
                 has_subprocess: false,
                 has_network: false,
                 has_destructive_ops: false,
                 has_dynamic_execution: false,
                 imports: vec![],
+                scanner: PythonRiskScanner::Fallback,
             },
             capabilities: PythonCapabilityEnvelope::analyze(),
             changed_files: vec![],
             interpreter: "python3".into(),
+            diff: None,
+            script_body_hash: None,
+            stdout_handle: None,
+            stderr_handle: None,
+            diff_handle: None,
         };
         let s = result.summary();
         assert!(s.contains("file I/O operations detected"));
@@ -701,7 +770,7 @@ mod tests {
     }
 
     #[test]
-    fn route_to_python_scripting_decision() {
+    fn route_to_python_script_decision() {
         use crate::command_intent::classify_command;
         use crate::command_planner::plan_execution;
         use crate::command_routing::resolve_routing;

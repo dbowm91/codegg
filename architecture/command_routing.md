@@ -63,7 +63,7 @@ Maps `ExecutionBackend` → `RoutingDecision`:
 `resolve_routing()` is called by:
 - `BashTool::execute()` in `src/tool/bash.rs` — determines routing metadata attached to output
 
-The routing decision is currently informational only — all commands still execute via raw shell. The metadata is attached to output for visibility and future structured routing.
+The routing decision is currently informational for the bash tool — all commands still execute via raw shell. The metadata is attached to output for visibility and future structured routing. Python scripts are executed directly by the `PythonScriptTool` (model-facing tool), not via the bash tool routing path.
 
 ## Tests
 

@@ -1,5 +1,8 @@
 use super::types::PythonRunResult;
 
+/// Threshold (in chars) for stdout/stderr/diff beyond which RTK eligibility is noted.
+const RTK_ELIGIBLE_THRESHOLD: usize = 2000;
+
 /// Project a Python run result into model-facing text.
 ///
 /// This is the Python-specific projector that formats run results,
@@ -21,6 +24,11 @@ pub fn project_python_run(result: &PythonRunResult) -> String {
     lines.push(format!("**Duration:** {:.2?}", result.duration));
     lines.push(format!("**Interpreter:** {}", result.interpreter));
 
+    // Script body hash for reproducibility
+    if let Some(ref hash) = result.script_body_hash {
+        lines.push(format!("**Script hash:** `{hash}`"));
+    }
+
     // Risk assessment
     if !result.risk.reasons.is_empty() {
         lines.push(format!("**Risk:** {}", result.risk.reasons.join("; ")));
@@ -37,6 +45,14 @@ pub fn project_python_run(result: &PythonRunResult) -> String {
         }
     }
 
+    // Diff (Transform mode)
+    if let Some(ref diff) = result.diff {
+        lines.push(String::new());
+        lines.push("### diff".to_string());
+        let diff_text = truncate_output(diff, 4000);
+        lines.push(diff_text);
+    }
+
     // Stdout (bounded)
     if !result.stdout.is_empty() {
         lines.push(String::new());
@@ -51,6 +67,24 @@ pub fn project_python_run(result: &PythonRunResult) -> String {
         lines.push("### stderr".to_string());
         let stderr = truncate_output(&result.stderr, 2000);
         lines.push(stderr);
+    }
+
+    // RTK eligibility note
+    let rtk_eligible = result.stdout.len() > RTK_ELIGIBLE_THRESHOLD
+        || result.stderr.len() > RTK_ELIGIBLE_THRESHOLD
+        || result
+            .diff
+            .as_ref()
+            .is_some_and(|d| d.len() > RTK_ELIGIBLE_THRESHOLD);
+    if rtk_eligible {
+        lines.push(String::new());
+        lines.push("[RTK eligible: output exceeds threshold]".to_string());
+    }
+
+    // Artifact handle availability note
+    if result.stdout_handle.is_some() || result.stderr_handle.is_some() {
+        lines.push(String::new());
+        lines.push("[Artifact handles available for expansion]".to_string());
     }
 
     lines.join("\n")
@@ -87,6 +121,11 @@ mod tests {
             capabilities: PythonCapabilityEnvelope::analyze(),
             changed_files: vec![],
             interpreter: "python3".to_string(),
+            diff: None,
+            script_body_hash: None,
+            stdout_handle: None,
+            stderr_handle: None,
+            diff_handle: None,
         }
     }
 
@@ -128,6 +167,87 @@ mod tests {
     fn projection_truncates_long_output() {
         let mut result = make_result(PythonRunStatus::Success, PythonExecutionMode::Analyze);
         result.stdout = "x".repeat(10000);
+        let text = project_python_run(&result);
+        assert!(text.contains("truncated"));
+    }
+
+    #[test]
+    fn projection_includes_script_hash() {
+        let mut result = make_result(PythonRunStatus::Success, PythonExecutionMode::Analyze);
+        result.script_body_hash = Some("abc123".to_string());
+        let text = project_python_run(&result);
+        assert!(text.contains("Script hash"));
+        assert!(text.contains("abc123"));
+    }
+
+    #[test]
+    fn projection_includes_diff() {
+        let mut result = make_result(PythonRunStatus::Success, PythonExecutionMode::Transform);
+        result.diff = Some("--- a/foo.txt\n+++ b/foo.txt\n-old\n+new".to_string());
+        let text = project_python_run(&result);
+        assert!(text.contains("### diff"));
+        assert!(text.contains("--- a/foo.txt"));
+    }
+
+    #[test]
+    fn projection_shows_rtk_eligible_for_large_stdout() {
+        let mut result = make_result(PythonRunStatus::Success, PythonExecutionMode::Analyze);
+        result.stdout = "x".repeat(3000);
+        result.stdout_handle = Some("python_run://1/stdout".to_string());
+        let text = project_python_run(&result);
+        assert!(text.contains("RTK eligible"));
+    }
+
+    #[test]
+    fn projection_shows_rtk_eligible_for_large_diff() {
+        let mut result = make_result(PythonRunStatus::Success, PythonExecutionMode::Transform);
+        result.diff = Some("x".repeat(3000));
+        result.diff_handle = Some("python_run://1/diff".to_string());
+        let text = project_python_run(&result);
+        assert!(text.contains("RTK eligible"));
+    }
+
+    #[test]
+    fn projection_no_rtk_note_for_small_output() {
+        let result = make_result(PythonRunStatus::Success, PythonExecutionMode::Analyze);
+        let text = project_python_run(&result);
+        assert!(!text.contains("RTK eligible"));
+    }
+
+    #[test]
+    fn projection_shows_artifact_handles() {
+        let mut result = make_result(PythonRunStatus::Success, PythonExecutionMode::Transform);
+        result.stdout_handle = Some("python_run://1/stdout".to_string());
+        result.stderr_handle = Some("python_run://1/stderr".to_string());
+        let text = project_python_run(&result);
+        assert!(text.contains("Artifact handles available"));
+    }
+
+    #[test]
+    fn projection_no_artifact_handles_when_none() {
+        let result = make_result(PythonRunStatus::Success, PythonExecutionMode::Analyze);
+        let text = project_python_run(&result);
+        assert!(!text.contains("Artifact handles"));
+    }
+
+    #[test]
+    fn projection_no_script_hash_when_none() {
+        let result = make_result(PythonRunStatus::Success, PythonExecutionMode::Analyze);
+        let text = project_python_run(&result);
+        assert!(!text.contains("Script hash"));
+    }
+
+    #[test]
+    fn projection_no_diff_when_none() {
+        let result = make_result(PythonRunStatus::Success, PythonExecutionMode::Transform);
+        let text = project_python_run(&result);
+        assert!(!text.contains("### diff"));
+    }
+
+    #[test]
+    fn projection_truncates_long_diff() {
+        let mut result = make_result(PythonRunStatus::Success, PythonExecutionMode::Transform);
+        result.diff = Some("x".repeat(10000));
         let text = project_python_run(&result);
         assert!(text.contains("truncated"));
     }

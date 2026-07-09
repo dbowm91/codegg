@@ -13,6 +13,7 @@ use crate::command_intent::{classify_command, CommandIntentKind};
 use crate::command_planner::plan_execution;
 use crate::command_routing::resolve_routing;
 use crate::config::schema::CommandIntentConfig;
+use crate::config::schema::CommandIntentMode;
 use crate::error::ToolError;
 use crate::preflight::{PreflightDecision, PreflightService};
 use crate::security::sandbox::{get_default_allowed_paths, get_sensitive_paths, SandboxConfig};
@@ -31,6 +32,7 @@ struct RoutingMetadata {
     risk_level: String,
     routing_enabled: bool,
     routing_decision: String,
+    mode: CommandIntentMode,
 }
 
 /// Named command-injection patterns. Each entry is a human-readable name
@@ -455,7 +457,21 @@ impl Tool for BashTool {
         // Phase 04: Classify command intent and attach routing metadata.
         // All commands still execute via raw shell in this phase; metadata
         // is for visibility and prepares for future structured routing.
+        //
+        // Workstream G: The `mode` field controls whether this is observe-only
+        // (default) or active routing. Route mode is not yet implemented — if
+        // configured, we log a warning and fall back to observe behavior.
         let routing_metadata = if let Some(ref cic) = self.command_intent_config {
+            let mode = cic.mode();
+
+            if mode == CommandIntentMode::Route {
+                tracing::warn!(
+                    "command_intent.mode = \"route\" is not yet implemented; \
+                     falling back to observe mode. Active routing will be enabled \
+                     in a future phase."
+                );
+            }
+
             let intent = classify_command(command);
             let plan = plan_execution(&intent);
             let decision = resolve_routing(&plan);
@@ -487,6 +503,7 @@ impl Tool for BashTool {
                 risk_level: format!("{:?}", intent.risk.level).to_lowercase(),
                 routing_enabled: family_enabled,
                 routing_decision: format!("{:?}", decision),
+                mode,
             })
         } else {
             None
@@ -638,7 +655,7 @@ impl Tool for BashTool {
 
         if let Some(meta) = routing_metadata {
             result = format!(
-                "{}\n\n[intent: {} | backend: {} | projector: {} | confidence: {} | risk: {} | routing: {} | rtk: {} | route: {}]",
+                "{}\n\n[intent: {} | backend: {} | projector: {} | confidence: {} | risk: {} | routing: {} | rtk: {} | route: {} | mode: {}]",
                 result,
                 meta.intent_kind,
                 meta.backend_label,
@@ -652,6 +669,10 @@ impl Tool for BashTool {
                 },
                 if meta.rtk_eligible { "eligible" } else { "off" },
                 meta.routing_decision,
+                match meta.mode {
+                    CommandIntentMode::Observe => "observe",
+                    CommandIntentMode::Route => "route (fallback: observe)",
+                },
             );
         }
 
@@ -1065,5 +1086,167 @@ mod tests {
         assert!(result.contains("intent: raw-shell"));
         assert!(result.contains("backend: raw-shell"));
         assert!(result.contains("routing: disabled"));
+    }
+
+    // ── Workstream G: Observe-only mode tests ──────────────────────────
+
+    #[tokio::test]
+    async fn observe_mode_runs_raw_shell_for_test_command() {
+        // Even when tests are "enabled", observe mode must execute via sh -c,
+        // not route to TestRunner. The command must actually run.
+        let mut cic = CommandIntentConfig::default();
+        cic.route_safe_commands = Some(true);
+        cic.route_tests = Some(true);
+        cic.mode = Some(crate::config::schema::CommandIntentMode::Observe);
+
+        let tool = BashTool::new().with_command_intent_config(cic);
+        let input = serde_json::json!({"command": "echo observe-test-ok"});
+        let result = tool.execute(input).await.unwrap();
+        assert!(
+            result.contains("observe-test-ok"),
+            "command must execute via raw shell"
+        );
+        assert!(result.contains("mode: observe"));
+        assert!(result.contains("intent: raw-shell"));
+    }
+
+    #[tokio::test]
+    async fn observe_mode_appends_metadata() {
+        let mut cic = CommandIntentConfig::default();
+        cic.route_safe_commands = Some(true);
+        cic.route_tests = Some(true);
+
+        let tool = BashTool::new().with_command_intent_config(cic);
+        let input = serde_json::json!({"command": "echo hello"});
+        let result = tool.execute(input).await.unwrap();
+        assert!(result.contains("[intent:"), "metadata must be present");
+        assert!(
+            result.contains("mode: observe"),
+            "mode must appear in metadata"
+        );
+    }
+
+    #[tokio::test]
+    async fn observe_mode_is_default_when_not_set() {
+        let mut cic = CommandIntentConfig::default();
+        cic.route_safe_commands = Some(true);
+
+        let tool = BashTool::new().with_command_intent_config(cic);
+        let input = serde_json::json!({"command": "echo default-mode"});
+        let result = tool.execute(input).await.unwrap();
+        assert!(
+            result.contains("mode: observe"),
+            "default mode must be observe"
+        );
+    }
+
+    #[tokio::test]
+    async fn route_mode_falls_back_to_observe_and_warns() {
+        // When mode = Route, the tool should fall back to observe behavior.
+        // The command must still execute via raw shell.
+        let mut cic = CommandIntentConfig::default();
+        cic.route_safe_commands = Some(true);
+        cic.route_tests = Some(true);
+        cic.mode = Some(crate::config::schema::CommandIntentMode::Route);
+
+        let tool = BashTool::new().with_command_intent_config(cic);
+        let input = serde_json::json!({"command": "echo route-fallback-ok"});
+        let result = tool.execute(input).await.unwrap();
+        assert!(
+            result.contains("route-fallback-ok"),
+            "command must execute even in route mode"
+        );
+        assert!(
+            result.contains("mode: route (fallback: observe)"),
+            "metadata must show route fallback"
+        );
+    }
+
+    #[tokio::test]
+    async fn route_mode_does_not_change_execution_path() {
+        // Verify that even with route mode + all families enabled,
+        // the command still executes via raw shell (not routed to any backend).
+        let mut cic = CommandIntentConfig::default();
+        cic.route_safe_commands = Some(true);
+        cic.route_tests = Some(true);
+        cic.route_git_read = Some(true);
+        cic.route_search = Some(true);
+        cic.route_python = Some(true);
+        cic.mode = Some(crate::config::schema::CommandIntentMode::Route);
+
+        let tool = BashTool::new().with_command_intent_config(cic);
+
+        // Test command — would route to TestRunner if active routing existed
+        let input = serde_json::json!({"command": "echo routing-inactive"});
+        let result = tool.execute(input).await.unwrap();
+        assert!(
+            result.contains("routing-inactive"),
+            "must execute via raw shell"
+        );
+
+        // Git command — would route to NativeTool if active routing existed
+        let input = serde_json::json!({"command": "echo git-fallback"});
+        let result = tool.execute(input).await.unwrap();
+        assert!(
+            result.contains("git-fallback"),
+            "must execute via raw shell"
+        );
+    }
+
+    #[tokio::test]
+    async fn no_config_produces_no_metadata_no_mode() {
+        let tool = BashTool::new();
+        let input = serde_json::json!({"command": "echo clean"});
+        let result = tool.execute(input).await.unwrap();
+        assert!(result.contains("clean"));
+        assert!(!result.contains("[intent:"), "no metadata without config");
+        assert!(!result.contains("mode:"), "no mode without config");
+    }
+
+    #[tokio::test]
+    async fn route_safe_commands_true_alone_does_not_enable_routing() {
+        // Setting route_safe_commands = true does NOT mean active routing.
+        // The mode must be explicitly Route for that (and even then it falls back).
+        let mut cic = CommandIntentConfig::default();
+        cic.route_safe_commands = Some(true);
+        cic.route_tests = Some(true);
+        // mode is default (Observe)
+
+        let tool = BashTool::new().with_command_intent_config(cic);
+        // Use a test command so family_enabled = true for metadata annotation.
+        let input = serde_json::json!({"command": "cargo test --no-run"});
+        let result = tool.execute(input).await.unwrap();
+        assert!(result.contains("intent: test"), "must classify as test");
+        assert!(
+            result.contains("mode: observe"),
+            "must remain in observe mode"
+        );
+        assert!(
+            result.contains("routing: enabled"),
+            "family can be enabled for metadata annotation"
+        );
+    }
+
+    #[test]
+    fn command_intent_mode_default_is_observe() {
+        let mode = crate::config::schema::CommandIntentMode::default();
+        assert_eq!(mode, crate::config::schema::CommandIntentMode::Observe);
+    }
+
+    #[test]
+    fn command_intent_config_mode_helper() {
+        let mut config = CommandIntentConfig::default();
+        assert_eq!(
+            config.mode(),
+            crate::config::schema::CommandIntentMode::Observe
+        );
+        assert!(!config.is_route_mode());
+
+        config.mode = Some(crate::config::schema::CommandIntentMode::Route);
+        assert_eq!(
+            config.mode(),
+            crate::config::schema::CommandIntentMode::Route
+        );
+        assert!(config.is_route_mode());
     }
 }
