@@ -4626,7 +4626,7 @@ impl App {
             "/agent" => {
                 let query = self.dialog_state.command_palette.query.trim().to_string();
                 let name = query
-                    .strip_prefix("agent")
+                    .strip_prefix("/agent")
                     .map(|s| s.trim())
                     .unwrap_or("")
                     .to_string();
@@ -4656,7 +4656,7 @@ impl App {
                 let query = self.dialog_state.command_palette.query.trim().to_string();
                 // Strip the leading "/agents" to get subcommand args
                 let args = query
-                    .strip_prefix("agents")
+                    .strip_prefix("/agents")
                     .map(|s| s.trim())
                     .unwrap_or("")
                     .to_string();
@@ -5115,6 +5115,7 @@ impl App {
             }
             "/goal" => {
                 let query = self.dialog_state.command_palette.query.trim().to_string();
+                let query = query.trim_start_matches("/goal").trim();
                 let parts: Vec<&str> = query.splitn(2, ' ').collect();
                 let subcmd = parts.first().copied().unwrap_or("");
                 let args = parts.get(1).copied().unwrap_or("").trim();
@@ -5242,6 +5243,7 @@ impl App {
             }
             "/plan" => {
                 let query = self.dialog_state.command_palette.query.trim().to_string();
+                let query = query.trim_start_matches("/plan").trim();
                 let parts: Vec<&str> = query.splitn(2, ' ').collect();
                 let subcmd = parts.first().copied().unwrap_or("");
                 let args = parts.get(1).copied().unwrap_or("").trim();
@@ -6229,7 +6231,7 @@ impl App {
             "/test" => {
                 let query = self.dialog_state.command_palette.query.trim().to_string();
                 let raw_args = query
-                    .strip_prefix("test")
+                    .strip_prefix("/test")
                     .map(|s| s.trim())
                     .unwrap_or("")
                     .to_string();

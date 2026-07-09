@@ -326,15 +326,6 @@ impl SnapshotManager {
                             }
                         }
                     }
-                    let canonical_path = full_path
-                        .canonicalize()
-                        .unwrap_or_else(|_| full_path.clone());
-                    if !canonical_path.starts_with(&canonical_project_root) {
-                        return Err(format!(
-                            "path traversal attempt detected: {}",
-                            full_path.display()
-                        ));
-                    }
                     let temp_path = full_path.with_extension("tmp");
                     if let Err(e) = std::fs::write(&temp_path, &file_snapshot.content) {
                         return Err(format!("failed to write {}: {}", temp_path.display(), e));
@@ -396,15 +387,6 @@ impl SnapshotManager {
                                 ));
                             }
                         }
-                    }
-                    let canonical_path = full_path
-                        .canonicalize()
-                        .unwrap_or_else(|_| full_path.clone());
-                    if !canonical_path.starts_with(&canonical_target) {
-                        return Err(format!(
-                            "path traversal attempt detected: {}",
-                            full_path.display()
-                        ));
                     }
                     let temp_path = full_path.with_extension("tmp");
                     std::fs::write(&temp_path, &file_snapshot.content)

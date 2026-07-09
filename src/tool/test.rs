@@ -178,8 +178,8 @@ fn parse_test_request(input: &serde_json::Value) -> Result<TestRunRequest, ToolE
         .map(PathBuf::from)
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
 
-    let timeout_secs = input["timeout"].as_u64();
-    let stall_timeout_secs = input["stall_timeout"].as_u64();
+    let timeout_secs = parse_positive_seconds(input.get("timeout"), "timeout")?;
+    let stall_timeout_secs = parse_positive_seconds(input.get("stall_timeout"), "stall_timeout")?;
 
     let max_report_bytes = match input.get("max_report_bytes") {
         Some(v) => {
@@ -204,6 +204,33 @@ fn parse_test_request(input: &serde_json::Value) -> Result<TestRunRequest, ToolE
         max_report_bytes,
         session_id: None,
     })
+}
+
+/// Parse a positive-integer seconds value from an optional JSON parameter.
+///
+/// Returns `Ok(None)` when `value` is `None`, `Ok(Some(n))` when `n >= 1`,
+/// and `Err` when the value is present but invalid (non-number, fractional,
+/// negative, zero, or NaN). This matches the validation policy used for
+/// `max_report_bytes` so the model gets a clear error rather than a silent
+/// fall-through to defaults.
+fn parse_positive_seconds(
+    value: Option<&serde_json::Value>,
+    field: &str,
+) -> Result<Option<u64>, ToolError> {
+    let Some(v) = value else {
+        return Ok(None);
+    };
+    let n = v.as_f64().ok_or_else(|| {
+        ToolError::Execution(format!(
+            "{field} must be a positive integer number of seconds"
+        ))
+    })?;
+    if !n.is_finite() || n <= 0.0 || n.fract() != 0.0 {
+        return Err(ToolError::Execution(format!(
+            "{field} must be a positive integer number of seconds"
+        )));
+    }
+    Ok(Some(n as u64))
 }
 
 /// Format the report, applying a caller-requested cap if set.
@@ -439,6 +466,61 @@ mod tests {
         let req = parse_test_request(&input).unwrap();
         assert_eq!(req.timeout_secs, Some(60));
         assert_eq!(req.stall_timeout_secs, Some(30));
+    }
+
+    #[test]
+    fn test_parse_request_rejects_negative_timeout() {
+        let input = json!({"scope": "auto", "timeout": -1});
+        let err = parse_test_request(&input).unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("timeout must be a positive integer"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_parse_request_rejects_zero_timeout() {
+        let input = json!({"scope": "auto", "timeout": 0});
+        let err = parse_test_request(&input).unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("timeout must be a positive integer"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_parse_request_rejects_fractional_timeout() {
+        let input = json!({"scope": "auto", "timeout": 0.5});
+        let err = parse_test_request(&input).unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("timeout must be a positive integer"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_parse_request_rejects_string_timeout() {
+        let input = json!({"scope": "auto", "timeout": "60"});
+        let err = parse_test_request(&input).unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("timeout must be a positive integer"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_parse_request_rejects_invalid_stall_timeout() {
+        let input = json!({"scope": "auto", "stall_timeout": -1});
+        let err = parse_test_request(&input).unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("stall_timeout must be a positive integer"),
+            "unexpected error: {msg}"
+        );
     }
 
     #[test]

@@ -230,11 +230,35 @@ pub fn has_cargo_manifest(workdir: &Path) -> bool {
 }
 
 pub fn has_python_test_markers(workdir: &Path) -> bool {
-    workdir.join("pyproject.toml").exists()
+    if workdir.join("pyproject.toml").exists()
         || workdir.join("pytest.ini").exists()
         || workdir.join("tox.ini").exists()
         || workdir.join("noxfile.py").exists()
-        || workdir.join("tests").is_dir()
+    {
+        return true;
+    }
+    let tests_dir = workdir.join("tests");
+    if !tests_dir.is_dir() {
+        return false;
+    }
+    // A bare top-level `tests/` directory is shared with Rust integration
+    // tests, so only treat it as a Python marker when it actually contains
+    // Python files. This avoids an ambiguous-ecosystem error in Rust
+    // workspaces that happen to have a `tests/` directory.
+    if let Ok(entries) = std::fs::read_dir(&tests_dir) {
+        for entry in entries.flatten() {
+            if entry
+                .path()
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|e| e.eq_ignore_ascii_case("py"))
+                .unwrap_or(false)
+            {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 pub fn detect_language_for_auto(
@@ -284,6 +308,20 @@ mod tests {
     #[test]
     fn resolves_auto_rust_when_cargo_toml_exists() {
         let dir = temp_dir_with_files("rust", &["Cargo.toml"]);
+        let result = resolve_test_command(&request(TestScope::Auto, dir.path())).unwrap();
+        assert_eq!(result.language, TestLanguage::Rust);
+        assert_eq!(result.argv, vec!["cargo", "test"]);
+        assert_eq!(result.scope_label, "auto-rust");
+    }
+
+    #[test]
+    fn resolves_auto_rust_when_cargo_toml_plus_rust_tests_dir() {
+        // Regression: a Cargo workspace may have a top-level `tests/`
+        // directory (Rust integration tests). The presence of `tests/`
+        // alone must NOT trigger Python detection — that produced
+        // `AmbiguousEcosystem` and broke the model-facing `test` tool
+        // with `scope: "auto"` in Rust repos.
+        let dir = temp_dir_with_files("rust-tests", &["Cargo.toml", "tests/foo.rs"]);
         let result = resolve_test_command(&request(TestScope::Auto, dir.path())).unwrap();
         assert_eq!(result.language, TestLanguage::Rust);
         assert_eq!(result.argv, vec!["cargo", "test"]);
