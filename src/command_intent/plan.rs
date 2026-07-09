@@ -48,6 +48,12 @@ pub enum PlanRtkPolicy {
     RequiredForPromotion,
 }
 
+impl PlanRtkPolicy {
+    pub fn is_rtk_eligible(&self) -> bool {
+        matches!(self, Self::Eligible { .. })
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum ProjectionSpanKind {
     CompilerErrors,

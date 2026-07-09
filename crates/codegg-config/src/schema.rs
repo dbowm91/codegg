@@ -265,6 +265,8 @@ pub struct Config {
     pub deterministic_tools: Option<DeterministicToolsConfig>,
     /// Harness-side eggsact preflight configuration.
     pub preflight: Option<PreflightConfig>,
+    /// Command intent classification and routing configuration.
+    pub command_intent: Option<CommandIntentConfig>,
 }
 
 /// Configuration for the context ledger and artifact projection system.
@@ -2079,6 +2081,68 @@ impl DeterministicToolsConfig {
             Err(errors)
         }
     }
+}
+
+/// Configuration for command intent classification and routing.
+#[derive(Deserialize, Serialize, Debug, Clone, PartialEq)]
+#[serde(default)]
+pub struct CommandIntentConfig {
+    /// Enable safe command routing (master toggle).
+    pub route_safe_commands: Option<bool>,
+    /// Route recognized test commands to the test runner subsystem.
+    pub route_tests: Option<bool>,
+    /// Route read-only git commands to native/projected backends.
+    pub route_git_read: Option<bool>,
+    /// Route safe search/list/read commands to structured backends.
+    pub route_search: Option<bool>,
+    /// Route Python commands to the Python scripting subsystem (deferred to Phase 05).
+    pub route_python: Option<bool>,
+}
+
+impl Default for CommandIntentConfig {
+    fn default() -> Self {
+        Self {
+            route_safe_commands: Some(false),
+            route_tests: Some(false),
+            route_git_read: Some(false),
+            route_search: Some(false),
+            route_python: Some(false),
+        }
+    }
+}
+
+impl CommandIntentConfig {
+    pub fn validate(&self) -> Result<(), Vec<String>> {
+        let errors = Vec::new();
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors)
+        }
+    }
+
+    /// Returns true if routing is enabled for the given family.
+    pub fn is_enabled(&self, family: CommandIntentFamily) -> bool {
+        let master = self.route_safe_commands.unwrap_or(false);
+        if !master {
+            return false;
+        }
+        match family {
+            CommandIntentFamily::Tests => self.route_tests.unwrap_or(false),
+            CommandIntentFamily::GitRead => self.route_git_read.unwrap_or(false),
+            CommandIntentFamily::Search => self.route_search.unwrap_or(false),
+            CommandIntentFamily::Python => self.route_python.unwrap_or(false),
+        }
+    }
+}
+
+/// Command intent routing families for config-gated routing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CommandIntentFamily {
+    Tests,
+    GitRead,
+    Search,
+    Python,
 }
 
 /// Configuration for harness-side eggsact preflight checks.

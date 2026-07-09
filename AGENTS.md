@@ -208,6 +208,9 @@ cargo test -p codegg --lib command_routing
 
 # Python scripting (risk analysis, script execution, timeout, fixtures)
 cargo test -p codegg --lib python_scripting
+
+# Bash tool routing metadata (classify + plan + route integration, config tests)
+cargo test -p codegg --lib tool::bash
 ```
 
 ## Built-in Agent Assets
@@ -474,7 +477,7 @@ CI runs on push/PR to dev/main: `agent-assets` → `fmt` → `check` → `clippy
 
 ### Command Intent and Planning
 
-- **Command intent is classification-only**: `classify_command()` in `src/command_intent/mod.rs` classifies commands into intent families (Test, GitReadOnly, GitMutating, SearchReadOnly, PythonAnalyze/Transform/Verify, RawShell, Rejected). It does NOT change execution behavior.
+- **Command intent classification and routing metadata**: `classify_command()` in `src/command_intent/mod.rs` classifies commands into intent families (Test, GitReadOnly, GitMutating, SearchReadOnly, PythonAnalyze/Transform/Verify, RawShell, Rejected). In Phase 04, `BashTool::execute()` classifies commands, plans execution, resolves routing, and attaches routing metadata to output when `CommandIntentConfig` is set. All commands still execute via raw shell; metadata is for visibility and future structured routing.
 - **Shell operator detection**: `has_shell_operators()` in `src/command_intent/mod.rs` uses quote-aware scanning to detect `|`, `;`, `$`, `` ` ``, `&`, `&&`, `||` outside quotes. Commands with operators are classified as `RawShell` (prevents `cargo test && rm -rf .` routing to TestRunner).
 - **Command planner maps intent to backend**: `plan_execution()` in `src/command_intent/plan.rs` maps classified intents to `ExecutionBackend` (RawShell, ManagedArgv, NativeTool, TestRunner, PythonScript, Reject) with rich struct variants carrying metadata. Re-exports from `src/command_planner.rs`.
 - **Plan includes projector and RTK metadata**: `CommandPlan` now carries `ProjectorRoute` (Raw, Truncated, ErrorRetention, GitStatus/Diff/Log, TestReport, FileSearch, PythonRun, RtkEligible) and `PlanRtkPolicy` (Disabled, Eligible, RequiredForPromotion).
@@ -504,7 +507,10 @@ CI runs on push/PR to dev/main: `agent-assets` → `fmt` → `check` → `clippy
 | `architecture/deterministic_tools.md` | Eggsact in-process deterministic tools (8 always-visible + 5 deferred); trust model, registration, preflight integration |
 | `architecture/tui.md` | `src/tui/app/mod.rs` ~13K lines; async command pattern; TuiTaskRegistry lifecycle |
 | `architecture/human_shell.md` | ! commands not in model context unless promoted; Phases 1-10 projection pipeline |
-| `architecture/command_intent.md` | Command intent classification, planner, routing, and Python scripting |
+| `architecture/command_intent.md` | Command intent classification, risk assessment, execution capability model |
+| `architecture/command_planner.md` | Backend routing, permission generation, projector/RTK policy selection |
+| `architecture/command_routing.md` | Routing resolution mapping planned execution to concrete subsystems |
+| `architecture/python_scripting.md` | First-class Python scripting with Analyze/Transform/Verify modes, risk analysis |
 | `architecture/command.md` | 105 built-in slash commands |
 | `architecture/config.md` | Config schema in `crates/codegg-config/src/schema.rs` |
 | `architecture/provider.md` | 16 auto-registered providers via env vars; CircuitBreaker pattern |

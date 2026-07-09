@@ -9,12 +9,29 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::process::Command;
 
+use crate::command_intent::{classify_command, CommandIntentKind};
+use crate::command_planner::plan_execution;
+use crate::command_routing::resolve_routing;
+use crate::config::schema::CommandIntentConfig;
 use crate::error::ToolError;
 use crate::preflight::{PreflightDecision, PreflightService};
 use crate::security::sandbox::{get_default_allowed_paths, get_sensitive_paths, SandboxConfig};
 use crate::tool::{Tool, ToolCategory};
 
 const MAX_COMMAND_LENGTH: usize = 100_000;
+
+/// Routing metadata attached to bash output when command intent routing is enabled.
+#[derive(Debug, Clone)]
+struct RoutingMetadata {
+    intent_kind: String,
+    backend_label: String,
+    projector_label: String,
+    rtk_eligible: bool,
+    confidence: String,
+    risk_level: String,
+    routing_enabled: bool,
+    routing_decision: String,
+}
 
 /// Named command-injection patterns. Each entry is a human-readable name
 /// plus a regex. We iterate them individually so we can return which
@@ -156,6 +173,7 @@ pub struct BashTool {
     allowlist: Option<HashSet<&'static str>>,
     landlock_sandbox: Option<SandboxConfig>,
     preflight: Option<Arc<PreflightService>>,
+    command_intent_config: Option<CommandIntentConfig>,
 }
 
 impl BashTool {
@@ -204,6 +222,7 @@ impl BashTool {
             allowlist: None,
             landlock_sandbox: None,
             preflight: None,
+            command_intent_config: None,
         }
     }
 
@@ -250,6 +269,11 @@ impl BashTool {
 
     pub fn with_preflight(mut self, service: PreflightService) -> Self {
         self.preflight = Some(Arc::new(service));
+        self
+    }
+
+    pub fn with_command_intent_config(mut self, config: CommandIntentConfig) -> Self {
+        self.command_intent_config = Some(config);
         self
     }
 
@@ -427,6 +451,44 @@ impl Tool for BashTool {
         let timeout = Duration::from_secs(timeout_secs);
 
         let workdir = input["workdir"].as_str().map(|s| s.to_string());
+
+        // Phase 04: Classify command intent and attach routing metadata.
+        // All commands still execute via raw shell in this phase; metadata
+        // is for visibility and prepares for future structured routing.
+        let routing_metadata = if let Some(ref cic) = self.command_intent_config {
+            let intent = classify_command(command);
+            let plan = plan_execution(&intent);
+            let decision = resolve_routing(&plan);
+
+            let family_enabled = match intent.kind {
+                CommandIntentKind::Test => cic.is_enabled(crate::config::schema::CommandIntentFamily::Tests),
+                CommandIntentKind::GitReadOnly => {
+                    cic.is_enabled(crate::config::schema::CommandIntentFamily::GitRead)
+                }
+                CommandIntentKind::SearchReadOnly | CommandIntentKind::FileRead => {
+                    cic.is_enabled(crate::config::schema::CommandIntentFamily::Search)
+                }
+                CommandIntentKind::PythonAnalyze
+                | CommandIntentKind::PythonTransform
+                | CommandIntentKind::PythonVerify => {
+                    cic.is_enabled(crate::config::schema::CommandIntentFamily::Python)
+                }
+                _ => false,
+            };
+
+            Some(RoutingMetadata {
+                intent_kind: intent.kind.label().to_string(),
+                backend_label: plan.backend.label().to_string(),
+                projector_label: plan.projector.label().to_string(),
+                rtk_eligible: plan.rtk_policy.is_rtk_eligible(),
+                confidence: format!("{:?}", intent.confidence).to_lowercase(),
+                risk_level: format!("{:?}", intent.risk.level).to_lowercase(),
+                routing_enabled: family_enabled,
+                routing_decision: format!("{:?}", decision),
+            })
+        } else {
+            None
+        };
         let mut canonical_workdir: Option<PathBuf> = None;
 
         if let Some(ref paths) = self.allowed_paths {
@@ -570,6 +632,25 @@ impl Tool for BashTool {
 
         if let Some(warning) = preflight_warning {
             result = format!("{}\n\n{}", warning, result);
+        }
+
+        if let Some(meta) = routing_metadata {
+            result = format!(
+                "{}\n\n[intent: {} | backend: {} | projector: {} | confidence: {} | risk: {} | routing: {} | rtk: {} | route: {}]",
+                result,
+                meta.intent_kind,
+                meta.backend_label,
+                meta.projector_label,
+                meta.confidence,
+                meta.risk_level,
+                if meta.routing_enabled {
+                    "enabled"
+                } else {
+                    "disabled"
+                },
+                if meta.rtk_eligible { "eligible" } else { "off" },
+                meta.routing_decision,
+            );
         }
 
         Ok(result)
@@ -728,5 +809,256 @@ mod tests {
         // We treat all $VAR expansions as a security concern for now
         // (could be a leak of secrets, etc.)
         assert_blocked("ls $HOME", "$VAR");
+    }
+
+    // ── Phase 04 routing metadata tests ────────────────────────────────
+
+    use crate::command_intent::IntentConfidence;
+    use crate::command_intent::RiskLevel;
+    use crate::command_planner::ExecutionBackend;
+    use crate::command_planner::plan_execution;
+    use crate::command_routing::RoutingDecision;
+    use crate::command_routing::resolve_routing;
+    use crate::config::schema::CommandIntentFamily;
+    use crate::config::schema::CommandIntentConfig;
+
+    #[test]
+    fn classify_test_command() {
+        let intent = classify_command("cargo test");
+        assert_eq!(intent.kind, CommandIntentKind::Test);
+        assert_eq!(intent.confidence, IntentConfidence::High);
+        assert_eq!(intent.risk.level, RiskLevel::Safe);
+    }
+
+    #[test]
+    fn classify_git_readonly_command() {
+        let intent = classify_command("git status");
+        assert_eq!(intent.kind, CommandIntentKind::GitReadOnly);
+        assert_eq!(intent.confidence, IntentConfidence::High);
+    }
+
+    #[test]
+    fn classify_git_mutable_command() {
+        let intent = classify_command("git commit -m 'foo'");
+        assert_eq!(intent.kind, CommandIntentKind::GitMutating);
+    }
+
+    #[test]
+    fn classify_search_command() {
+        let intent = classify_command("grep -rn 'pattern' src/");
+        assert_eq!(intent.kind, CommandIntentKind::SearchReadOnly);
+    }
+
+    #[test]
+    fn classify_python_command() {
+        let intent = classify_command("python3 script.py");
+        assert!(matches!(
+            intent.kind,
+            CommandIntentKind::PythonAnalyze
+                | CommandIntentKind::PythonTransform
+                | CommandIntentKind::PythonVerify
+        ));
+    }
+
+    #[test]
+    fn classify_empty_is_rejected() {
+        let intent = classify_command("");
+        assert_eq!(intent.kind, CommandIntentKind::Rejected);
+    }
+
+    #[test]
+    fn plan_test_routes_to_test_runner() {
+        let intent = classify_command("cargo test");
+        let plan = plan_execution(&intent);
+        assert!(matches!(plan.backend, ExecutionBackend::TestRunner { .. }));
+        assert_eq!(plan.projector.label(), "test-report");
+    }
+
+    #[test]
+    fn plan_git_readonly_routes_to_native_tool() {
+        let intent = classify_command("git status");
+        let plan = plan_execution(&intent);
+        assert!(matches!(
+            plan.backend,
+            ExecutionBackend::NativeTool { tool_name } if tool_name == "egggit"
+        ));
+    }
+
+    #[test]
+    fn plan_search_routes_to_managed_argv() {
+        let intent = classify_command("grep -rn 'pattern' src/");
+        let plan = plan_execution(&intent);
+        assert!(matches!(plan.backend, ExecutionBackend::ManagedArgv { .. }));
+        assert_eq!(plan.projector.label(), "file-search");
+    }
+
+    #[test]
+    fn resolve_test_routing() {
+        let intent = classify_command("cargo test");
+        let plan = plan_execution(&intent);
+        let decision = resolve_routing(&plan);
+        assert!(matches!(decision, RoutingDecision::RouteToTestRunner { .. }));
+    }
+
+    #[test]
+    fn resolve_git_readonly_routing() {
+        let intent = classify_command("git status");
+        let plan = plan_execution(&intent);
+        let decision = resolve_routing(&plan);
+        assert!(matches!(
+            decision,
+            RoutingDecision::RouteToNativeTool { tool_name, .. } if tool_name == "egggit"
+        ));
+    }
+
+    #[test]
+    fn resolve_search_routing() {
+        let intent = classify_command("grep -rn 'pattern' src/");
+        let plan = plan_execution(&intent);
+        let decision = resolve_routing(&plan);
+        assert!(matches!(
+            decision,
+            RoutingDecision::RouteToManagedProcess { .. }
+        ));
+    }
+
+    #[test]
+    fn config_is_enabled_requires_master_toggle() {
+        let mut config = CommandIntentConfig::default();
+        config.route_safe_commands = Some(false);
+        config.route_tests = Some(true);
+        assert!(!config.is_enabled(CommandIntentFamily::Tests));
+
+        config.route_safe_commands = Some(true);
+        assert!(config.is_enabled(CommandIntentFamily::Tests));
+    }
+
+    #[test]
+    fn config_is_enabled_per_family() {
+        let mut config = CommandIntentConfig::default();
+        config.route_safe_commands = Some(true);
+        config.route_tests = Some(true);
+        config.route_git_read = Some(false);
+        config.route_search = Some(false);
+
+        assert!(config.is_enabled(CommandIntentFamily::Tests));
+        assert!(!config.is_enabled(CommandIntentFamily::GitRead));
+        assert!(!config.is_enabled(CommandIntentFamily::Search));
+    }
+
+    #[test]
+    fn config_all_disabled_by_default() {
+        let config = CommandIntentConfig::default();
+        assert!(!config.is_enabled(CommandIntentFamily::Tests));
+        assert!(!config.is_enabled(CommandIntentFamily::GitRead));
+        assert!(!config.is_enabled(CommandIntentFamily::Search));
+        assert!(!config.is_enabled(CommandIntentFamily::Python));
+    }
+
+    #[tokio::test]
+    async fn bash_no_config_produces_no_routing_metadata() {
+        let tool = BashTool::new();
+        let input = serde_json::json!({"command": "echo hello"});
+        let result = tool.execute(input).await.unwrap();
+        assert!(result.contains("hello"));
+        assert!(!result.contains("[intent:"));
+    }
+
+    #[tokio::test]
+    async fn bash_with_config_attaches_routing_metadata() {
+        let mut cic = CommandIntentConfig::default();
+        cic.route_safe_commands = Some(true);
+        cic.route_tests = Some(true);
+
+        let tool = BashTool::new().with_command_intent_config(cic);
+        let input = serde_json::json!({"command": "echo hello"});
+        let result = tool.execute(input).await.unwrap();
+        assert!(result.contains("[intent:"));
+        assert!(result.contains("backend:"));
+        assert!(result.contains("routing:"));
+    }
+
+    #[tokio::test]
+    async fn bash_test_command_metadata_when_enabled() {
+        let mut cic = CommandIntentConfig::default();
+        cic.route_safe_commands = Some(true);
+        cic.route_tests = Some(true);
+
+        let tool = BashTool::new().with_command_intent_config(cic);
+        let input = serde_json::json!({"command": "cargo test --no-run"});
+        let result = tool.execute(input).await.unwrap();
+        assert!(result.contains("intent: test"));
+        assert!(result.contains("backend: test-runner"));
+        assert!(result.contains("projector: test-report"));
+        assert!(result.contains("routing: enabled"));
+    }
+
+    #[tokio::test]
+    async fn bash_test_command_metadata_when_disabled() {
+        let mut cic = CommandIntentConfig::default();
+        cic.route_safe_commands = Some(true);
+        cic.route_tests = Some(false);
+
+        let tool = BashTool::new().with_command_intent_config(cic);
+        let input = serde_json::json!({"command": "cargo test --no-run"});
+        let result = tool.execute(input).await.unwrap();
+        assert!(result.contains("intent: test"));
+        assert!(result.contains("routing: disabled"));
+    }
+
+    #[tokio::test]
+    async fn bash_git_readonly_metadata() {
+        let mut cic = CommandIntentConfig::default();
+        cic.route_safe_commands = Some(true);
+        cic.route_git_read = Some(true);
+
+        let tool = BashTool::new().with_command_intent_config(cic);
+        let input = serde_json::json!({"command": "git status"});
+        let result = tool.execute(input).await.unwrap();
+        assert!(result.contains("intent: git-readonly"));
+        assert!(result.contains("backend: native-tool"));
+        assert!(result.contains("routing: enabled"));
+    }
+
+    #[tokio::test]
+    async fn bash_search_metadata() {
+        let mut cic = CommandIntentConfig::default();
+        cic.route_safe_commands = Some(true);
+        cic.route_search = Some(true);
+
+        let tool = BashTool::new().with_command_intent_config(cic);
+        let input = serde_json::json!({"command": "grep -rn 'pattern' src/"});
+        let result = tool.execute(input).await.unwrap();
+        assert!(result.contains("intent: search-readonly"));
+        assert!(result.contains("backend: managed-argv"));
+        assert!(result.contains("projector: file-search"));
+        assert!(result.contains("routing: enabled"));
+    }
+
+    #[tokio::test]
+    async fn bash_python_metadata_when_disabled() {
+        let mut cic = CommandIntentConfig::default();
+        cic.route_safe_commands = Some(true);
+        cic.route_python = Some(false);
+
+        let tool = BashTool::new().with_command_intent_config(cic);
+        let input = serde_json::json!({"command": "python3 -c 'print(1)'"});
+        let result = tool.execute(input).await.unwrap();
+        assert!(result.contains("python"));
+        assert!(result.contains("routing: disabled"));
+    }
+
+    #[tokio::test]
+    async fn bash_raw_shell_metadata() {
+        let mut cic = CommandIntentConfig::default();
+        cic.route_safe_commands = Some(true);
+        cic.route_tests = Some(false);
+
+        let tool = BashTool::new().with_command_intent_config(cic);
+        let input = serde_json::json!({"command": "echo hello"});
+        let result = tool.execute(input).await.unwrap();
+        assert!(result.contains("intent: raw-shell"));
+        assert!(result.contains("backend: raw-shell"));
+        assert!(result.contains("routing: disabled"));
     }
 }
