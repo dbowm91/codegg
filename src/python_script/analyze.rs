@@ -61,6 +61,9 @@ def main():
                         "os.system", "os.popen", "os.exec",
                         "os.execv", "os.execve", "os.execl", "os.execle"}
 
+    # Alias map: resolves local names to their fully-qualified module paths
+    alias_map = {}  # local_name -> fully_qualified_name
+
     def dotted_name(node):
         if isinstance(node, ast.Name):
             return node.id
@@ -72,22 +75,58 @@ def main():
             return dotted_name(node.func)
         return ""
 
+    def resolve_name(name):
+        """Resolve a name through the alias map, handling dotted prefixes."""
+        if not name:
+            return name
+        # Try direct lookup first
+        if name in alias_map:
+            return alias_map[name]
+        # Try resolving the first segment of a dotted name
+        parts = name.split(".", 1)
+        if parts[0] in alias_map:
+            resolved_base = alias_map[parts[0]]
+            if len(parts) > 1:
+                return f"{resolved_base}.{parts[1]}"
+            return resolved_base
+        return name
+
     for node in ast.walk(tree):
-        # Imports
+        # Imports - build alias map
         if isinstance(node, ast.Import):
             for alias in node.names:
                 mod = alias.name.split(".")[0]
                 imports.append(mod)
+                if alias.asname:
+                    alias_map[alias.asname] = alias.name
+                else:
+                    alias_map[alias.name] = alias.name
         elif isinstance(node, ast.ImportFrom):
             if node.module:
                 mod = node.module.split(".")[0]
                 from_imports.append(mod)
+                for alias in node.names:
+                    fqn = f"{node.module}.{alias.name}"
+                    if alias.asname:
+                        alias_map[alias.asname] = fqn
+                    else:
+                        alias_map[alias.name] = fqn
 
-        # Function / method calls
+        # Function / method calls - resolve through alias map
         elif isinstance(node, ast.Call):
             name = dotted_name(node.func)
             if name:
-                calls.append(name)
+                resolved = resolve_name(name)
+                calls.append(resolved)
+            # Detect open() with write-mode arguments
+            raw_name = dotted_name(node.func)
+            if raw_name == "open" and node.args:
+                for arg in node.args[1:]:
+                    if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                        mode = arg.value
+                        if any(m in mode for m in ("w", "a", "x")):
+                            file_write = True
+                            break
 
     # Classify imports
     all_modules = set(imports) | set(from_imports)
@@ -96,7 +135,7 @@ def main():
             subprocess = subprocess or (mod == "subprocess")
             network = network or (mod in network_imports)
 
-    # Classify calls
+    # Classify calls (using resolved names)
     for c in calls:
         # Dynamic execution
         if c in ("eval", "exec", "compile", "__import__"):
@@ -642,5 +681,93 @@ mod tests {
                     .iter()
                     .any(|r| r.contains("dependency installation"))
         );
+    }
+
+    // ── AST scanner: alias and from-import resolution tests ──────────
+
+    #[test]
+    fn ast_from_import_run_detected() {
+        let result = analyze_python_risk("from subprocess import run\nrun(['ls'])");
+        assert_eq!(result.level, PythonRiskLevel::Medium);
+        assert!(result.has_subprocess);
+        assert_eq!(result.scanner, PythonRiskScanner::Ast);
+    }
+
+    #[test]
+    fn ast_from_import_popen_detected() {
+        let result = analyze_python_risk("from subprocess import Popen as P\nP(['ls'])");
+        assert_eq!(result.level, PythonRiskLevel::Medium);
+        assert!(result.has_subprocess);
+        assert_eq!(result.scanner, PythonRiskScanner::Ast);
+    }
+
+    #[test]
+    fn ast_import_os_alias_remove_detected() {
+        let result = analyze_python_risk("import os as o\no.remove('x')");
+        assert_eq!(result.level, PythonRiskLevel::High);
+        assert!(result.has_destructive_ops);
+        assert_eq!(result.scanner, PythonRiskScanner::Ast);
+    }
+
+    #[test]
+    fn ast_from_os_import_remove_detected() {
+        let result = analyze_python_risk("from os import remove\nremove('x')");
+        assert_eq!(result.level, PythonRiskLevel::High);
+        assert!(result.has_destructive_ops);
+        assert_eq!(result.scanner, PythonRiskScanner::Ast);
+    }
+
+    #[test]
+    fn ast_from_os_import_remove_as_detected() {
+        let result = analyze_python_risk("from os import remove as rm\nrm('x')");
+        assert_eq!(result.level, PythonRiskLevel::High);
+        assert!(result.has_destructive_ops);
+        assert_eq!(result.scanner, PythonRiskScanner::Ast);
+    }
+
+    #[test]
+    fn ast_from_pathlib_import_path_write_detected() {
+        let result = analyze_python_risk("from pathlib import Path\nPath('x').write_text('y')");
+        assert_eq!(result.level, PythonRiskLevel::Low);
+        assert!(result.has_file_write);
+        assert!(!result.has_file_read);
+        assert_eq!(result.scanner, PythonRiskScanner::Ast);
+    }
+
+    #[test]
+    fn ast_from_pathlib_import_path_read_detected() {
+        let result = analyze_python_risk("from pathlib import Path\nPath('x').read_text()");
+        assert_eq!(result.level, PythonRiskLevel::Low);
+        assert!(result.has_file_read);
+        assert!(!result.has_file_write);
+        assert_eq!(result.scanner, PythonRiskScanner::Ast);
+    }
+
+    #[test]
+    fn ast_pathlib_alias_write_detected() {
+        let result = analyze_python_risk("import pathlib as pl\npl.Path('x').write_text('y')");
+        assert_eq!(result.level, PythonRiskLevel::Low);
+        assert!(result.has_file_write);
+        assert_eq!(result.scanner, PythonRiskScanner::Ast);
+    }
+
+    #[test]
+    fn ast_comment_subprocess_alias_not_detected() {
+        let result = analyze_python_risk("# sp.run(['ls'])\nx = 1");
+        assert!(!result.has_subprocess);
+        assert_eq!(result.scanner, PythonRiskScanner::Ast);
+    }
+
+    #[test]
+    fn ast_string_subprocess_not_detected() {
+        let result = analyze_python_risk("x = 'subprocess.run([\"ls\"])'");
+        assert!(!result.has_subprocess);
+        assert_eq!(result.scanner, PythonRiskScanner::Ast);
+    }
+
+    #[test]
+    fn ast_syntax_error_fallback() {
+        let result = analyze_python_risk("def foo(");
+        assert_eq!(result.scanner, PythonRiskScanner::Ast);
     }
 }

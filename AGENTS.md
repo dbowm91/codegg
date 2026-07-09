@@ -200,6 +200,9 @@ python3 scripts/check-tokio-test-flavors.py
 # Command intent classifier (intent classification, risk assessment, ShellShape parsing, fixtures)
 cargo test -p codegg --lib command_intent
 
+# Shell shape parser (quotes, escapes, operators, complex shell detection)
+cargo test -p codegg --lib command_intent::shell_shape
+
 # Command planner (backend routing, permission generation, fixtures)
 cargo test -p codegg --lib command_planner
 
@@ -207,9 +210,6 @@ cargo test -p codegg --lib command_planner
 cargo test -p codegg --lib command_routing
 
 # Python scripting (risk analysis, script execution, timeout, fixtures)
-cargo test -p codegg --lib python_script
-
-# First-class Python scripting MVP (types, analyze, sandbox, snapshot, executor, projection, tool)
 cargo test -p codegg --lib python_script
 
 # Bash tool routing metadata (classify + plan + route integration, config tests)
@@ -481,8 +481,8 @@ CI runs on push/PR to dev/main: `agent-assets` → `fmt` → `check` → `clippy
 
 ### Command Intent and Planning
 
-- **Command intent classification and routing metadata**: `classify_command()` in `src/command_intent/mod.rs` classifies commands into intent families (Test, GitReadOnly, GitMutating, SearchReadOnly, PythonAnalyze/Transform/Verify, RawShell, Rejected). In Phase 04, `BashTool::execute()` classifies commands, plans execution, resolves routing, and attaches routing metadata to output when `CommandIntentConfig` is set. All commands still execute via raw shell; metadata is for visibility and future structured routing.
-- **CommandIntentContext**: `classify_command_with_context(command, ctx)` provides workspace-aware path classification via `CommandIntentContext { workspace_root, cwd }`. `classify_command(command)` is a backward-compatible wrapper using default context. Active routing must use contextual classification, not bare process-cwd classification.
+- **Command intent classification and routing metadata**: `classify_command_with_context(command, ctx)` in `src/command_intent/mod.rs` is the primary classifier — classifies commands into intent families (Test, GitReadOnly, GitMutating, SearchReadOnly, PythonAnalyze/Transform/Verify, RawShell, Rejected) using workspace-aware path checks. `classify_command()` is a backward-compatible wrapper that delegates to `classify_command_with_context` with a default context (process cwd fallback). In Phase 04, `BashTool::execute()` classifies commands, plans execution, resolves routing, and attaches routing metadata to output when `CommandIntentConfig` is set. All commands still execute via raw shell; metadata is for visibility and future structured routing.
+- **CommandIntentContext**: `CommandIntentContext { workspace_root: Option<PathBuf>, cwd: Option<PathBuf> }` carries workspace boundary information for path containment checks. `classify_search_with_context()` and `classify_file_read_with_context()` reject absolute outside-workspace paths from safe classification. Helper functions: `canonical_workspace_root()`, `path_is_inside_workspace()`, `absolute_path_outside_workspace()`. Active routing must use contextual classification, not bare process-cwd classification.
 - **ShellShape parsing**: `ShellShape` enum (`Empty | SimpleArgv(Vec<String>) | ComplexShell`) in `src/command_intent/shell_shape.rs`. `parse_shell_words()` handles quotes, escapes, operators, redirection, command substitution, variable expansion. `CommandIntent` has `parsed_argv: Option<Vec<String>>` field. Classifier uses parsed argv for all `looks_like_*` functions. Planner uses parsed argv for ManagedArgv and TestRunner backends.
 - **Git classification tightened**: `classify_git()` uses parsed argv, not string prefixes. `git branch`, `git tag`, `git remote` are only read-only for specific forms (--list, -l, -v, --show-current). Mutating forms (branch <name>, tag <name>, remote add/remove) correctly classified as GitMutating. `git push`, `git reset --hard`, `git clean -f` classified as High risk.
 - **Search/read classification tightened**: `find -exec`, `-delete`, `-ok`, `-execdir` rejected from safe search. Absolute outside-workspace paths rejected from safe search/file-read. `which`/`whereis` no longer classified as file reads. `classify_search()` and `classify_file_read()` return Option for fallthrough.

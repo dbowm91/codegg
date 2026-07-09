@@ -1,8 +1,20 @@
 pub mod plan;
 pub mod shell_shape;
 
+use std::path::PathBuf;
+
 // Re-export CommandIntentMode from the config schema crate.
 pub use crate::config::schema::CommandIntentMode;
+
+/// Context for command intent classification. Provides an explicit workspace
+/// root so safety-critical path checks do not depend solely on process cwd.
+#[derive(Debug, Clone, Default)]
+pub struct CommandIntentContext {
+    /// Authoritative workspace root. When set, used for path containment checks.
+    pub workspace_root: Option<PathBuf>,
+    /// Current working directory. Falls back to process cwd when None.
+    pub cwd: Option<PathBuf>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum CommandSource {
@@ -238,7 +250,11 @@ impl CommandIntent {
     }
 }
 
-pub fn classify_command(command: &str) -> CommandIntent {
+/// Classify a command with explicit workspace context.
+pub fn classify_command_with_context(
+    command: &str,
+    context: &CommandIntentContext,
+) -> CommandIntent {
     let trimmed = command.trim();
 
     let shape = shell_shape::parse_shell_words(trimmed);
@@ -285,13 +301,13 @@ pub fn classify_command(command: &str) -> CommandIntent {
             }
 
             if looks_like_file_read(first) {
-                if let Some(intent) = classify_file_read(trimmed, &argv) {
+                if let Some(intent) = classify_file_read_with_context(trimmed, &argv, context) {
                     return intent;
                 }
             }
 
             if looks_like_search(first) {
-                if let Some(intent) = classify_search(trimmed, &argv) {
+                if let Some(intent) = classify_search_with_context(trimmed, &argv, context) {
                     return intent;
                 }
             }
@@ -311,6 +327,11 @@ pub fn classify_command(command: &str) -> CommandIntent {
             }
         }
     }
+}
+
+/// Classify a command. Uses process cwd as workspace root for compatibility.
+pub fn classify_command(command: &str) -> CommandIntent {
+    classify_command_with_context(command, &CommandIntentContext::default())
 }
 
 /// Check if the first argument matches.
@@ -713,7 +734,11 @@ fn is_find_destructive_flag(arg: &str) -> bool {
         || (arg.starts_with("-ok") && arg.len() > 3 && !arg.as_bytes()[3].is_ascii_alphanumeric())
 }
 
-fn classify_search(command: &str, argv: &[String]) -> Option<CommandIntent> {
+fn classify_search_with_context(
+    command: &str,
+    argv: &[String],
+    context: &CommandIntentContext,
+) -> Option<CommandIntent> {
     let first = argv.first().map(String::as_str).unwrap_or("");
 
     // For find: reject if argv contains destructive flags
@@ -725,7 +750,7 @@ fn classify_search(command: &str, argv: &[String]) -> Option<CommandIntent> {
     if argv
         .iter()
         .skip(1)
-        .any(|a| !a.starts_with('-') && is_absolute_path_outside_workspace(a))
+        .any(|a| !a.starts_with('-') && absolute_path_outside_workspace(a, context))
     {
         return None;
     }
@@ -775,12 +800,16 @@ fn looks_like_file_read(first: &str) -> bool {
     matches!(first, "cat" | "less" | "more" | "head" | "tail")
 }
 
-fn classify_file_read(command: &str, argv: &[String]) -> Option<CommandIntent> {
+fn classify_file_read_with_context(
+    command: &str,
+    argv: &[String],
+    context: &CommandIntentContext,
+) -> Option<CommandIntent> {
     // Reject if any path argument is absolute and outside workspace
     if argv
         .iter()
         .skip(1)
-        .any(|a| !a.starts_with('-') && is_absolute_path_outside_workspace(a))
+        .any(|a| !a.starts_with('-') && absolute_path_outside_workspace(a, context))
     {
         return None;
     }
@@ -796,17 +825,39 @@ fn classify_file_read(command: &str, argv: &[String]) -> Option<CommandIntent> {
     })
 }
 
-/// Check if a path is absolute and resolves outside the current workspace.
-fn is_absolute_path_outside_workspace(path: &str) -> bool {
+/// Canonical workspace root from context, falling back to process cwd.
+fn canonical_workspace_root(context: &CommandIntentContext) -> Option<PathBuf> {
+    let root = context
+        .workspace_root
+        .clone()
+        .or_else(|| context.cwd.clone())
+        .or_else(|| std::env::current_dir().ok());
+    root.and_then(|r| std::fs::canonicalize(r).ok())
+}
+
+/// Check if a path is inside the workspace defined by context.
+fn path_is_inside_workspace(path: &std::path::Path, context: &CommandIntentContext) -> bool {
+    if let Some(workspace) = canonical_workspace_root(context) {
+        if let Ok(canonical) = std::fs::canonicalize(path) {
+            return canonical.starts_with(&workspace);
+        }
+    }
+    // Fallback: use process cwd
+    if let Ok(cwd) = std::env::current_dir() {
+        if let Ok(canonical) = std::fs::canonicalize(path) {
+            return canonical.starts_with(&cwd);
+        }
+    }
+    false
+}
+
+/// Check if an absolute path resolves outside the workspace.
+fn absolute_path_outside_workspace(path: &str, context: &CommandIntentContext) -> bool {
     let p = std::path::Path::new(path);
     if !p.is_absolute() {
         return false;
     }
-    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-    match std::fs::canonicalize(p) {
-        Ok(canonical) => !canonical.starts_with(&cwd),
-        Err(_) => true,
-    }
+    !path_is_inside_workspace(p, context)
 }
 
 #[cfg(test)]
@@ -1703,5 +1754,49 @@ mod tests {
         assert!(risk
             .capabilities
             .contains(&ExecutionCapability::ReadWorkspace));
+    }
+
+    // ── CommandIntentContext tests ──────────────────────────────────
+
+    #[test]
+    fn classify_command_with_context_accepts_inside_root() {
+        let root = std::env::current_dir().unwrap();
+        let ctx = CommandIntentContext {
+            workspace_root: Some(root.clone()),
+            cwd: None,
+        };
+        let intent = classify_command_with_context("cat Cargo.toml", &ctx);
+        assert_eq!(intent.kind, CommandIntentKind::FileRead);
+    }
+
+    #[test]
+    fn classify_command_with_context_rejects_outside_root() {
+        let root = std::env::current_dir().unwrap();
+        let ctx = CommandIntentContext {
+            workspace_root: Some(root.clone()),
+            cwd: None,
+        };
+        // /etc/passwd is outside the workspace
+        let intent = classify_command_with_context("cat /etc/passwd", &ctx);
+        assert_ne!(intent.kind, CommandIntentKind::FileRead);
+    }
+
+    #[test]
+    fn classify_command_compat_matches_context_default() {
+        let a = classify_command("cat Cargo.toml");
+        let b = classify_command_with_context("cat Cargo.toml", &CommandIntentContext::default());
+        assert_eq!(a.kind, b.kind);
+    }
+
+    #[test]
+    fn classify_search_rejects_outside_root() {
+        let root = std::env::current_dir().unwrap();
+        let ctx = CommandIntentContext {
+            workspace_root: Some(root),
+            cwd: None,
+        };
+        let intent = classify_command_with_context("rg pattern /etc", &ctx);
+        // /etc is outside workspace, so should not classify as SearchReadOnly
+        assert_ne!(intent.kind, CommandIntentKind::SearchReadOnly);
     }
 }

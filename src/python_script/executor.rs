@@ -44,7 +44,7 @@ pub async fn execute_python_script(request: &PythonScriptRequest) -> PythonRunRe
     }
 
     // Validate and canonicalize cwd
-    let cwd = match validate_cwd(&request.cwd) {
+    let cwd = match validate_cwd(&request.cwd, request.workspace_root.as_deref()) {
         Ok(c) => c,
         Err(e) => {
             return PythonRunResult {
@@ -280,41 +280,44 @@ pub async fn execute_python_script(request: &PythonScriptRequest) -> PythonRunRe
 }
 
 /// Validate that `cwd` exists, is a directory, and is inside the workspace.
-/// Falls back to `env::current_dir()` when `cwd` is not provided or invalid.
-fn validate_cwd(cwd: &Path) -> Result<PathBuf, String> {
-    // Canonicalize or fall back to current dir
+/// When `workspace_root` is provided, uses it for containment checks.
+/// Falls back to `env::current_dir()` when no explicit root is given.
+fn validate_cwd(cwd: &Path, workspace_root: Option<&Path>) -> Result<PathBuf, String> {
     let candidate = if cwd.as_os_str().is_empty() {
         std::env::current_dir().map_err(|e| format!("cannot determine current directory: {e}"))?
     } else {
         cwd.to_path_buf()
     };
 
-    // Must exist
     if !candidate.exists() {
         return Err(format!("cwd does not exist: {}", candidate.display()));
     }
 
-    // Must be a directory
     if !candidate.is_dir() {
         return Err(format!("cwd is not a directory: {}", candidate.display()));
     }
 
-    // Reject paths outside workspace (reject if not under current dir)
-    let workspace_root =
-        std::env::current_dir().map_err(|e| format!("cannot determine workspace root: {e}"))?;
     let canonical_cwd = candidate
         .canonicalize()
         .map_err(|e| format!("cannot canonicalize cwd: {e}"))?;
-    let canonical_workspace = workspace_root
-        .canonicalize()
-        .map_err(|e| format!("cannot canonicalize workspace root: {e}"))?;
 
-    if !canonical_cwd.starts_with(&canonical_workspace) {
-        return Err(format!(
-            "cwd is outside workspace: {} (workspace: {})",
-            canonical_cwd.display(),
-            canonical_workspace.display()
-        ));
+    // Use explicit workspace root when provided, else fall back to process cwd
+    let effective_root = workspace_root
+        .map(|r| r.to_path_buf())
+        .or_else(|| std::env::current_dir().ok());
+
+    if let Some(root) = effective_root {
+        let canonical_root = root
+            .canonicalize()
+            .map_err(|e| format!("cannot canonicalize workspace root: {e}"))?;
+
+        if !canonical_cwd.starts_with(&canonical_root) {
+            return Err(format!(
+                "cwd is outside workspace: {} (workspace: {})",
+                canonical_cwd.display(),
+                canonical_root.display()
+            ));
+        }
     }
 
     Ok(canonical_cwd)
@@ -516,6 +519,7 @@ mod tests {
             code: "print('hello from python')".to_string(),
             mode: PythonExecutionMode::Analyze,
             cwd: dir.clone(),
+            workspace_root: None,
             timeout_secs: Some(10),
             session_id: None,
             intent: None,
@@ -532,6 +536,7 @@ mod tests {
             code: "open('should_not_exist.txt', 'w').write('nope')".to_string(),
             mode: PythonExecutionMode::Analyze,
             cwd: dir.clone(),
+            workspace_root: None,
             timeout_secs: Some(10),
             session_id: None,
             intent: None,
@@ -553,6 +558,7 @@ mod tests {
             code: "import subprocess\nsubprocess.run(['echo', 'should not run'])".to_string(),
             mode: PythonExecutionMode::Analyze,
             cwd: dir.clone(),
+            workspace_root: None,
             timeout_secs: Some(10),
             session_id: None,
             intent: None,
@@ -582,6 +588,7 @@ mod tests {
                 .to_string(),
             mode: PythonExecutionMode::Analyze,
             cwd: dir.clone(),
+            workspace_root: None,
             timeout_secs: Some(10),
             session_id: None,
             intent: None,
@@ -613,6 +620,7 @@ mod tests {
                 .to_string(),
             mode: PythonExecutionMode::Verify,
             cwd: dir.clone(),
+            workspace_root: None,
             timeout_secs: Some(10),
             session_id: None,
             intent: None,
@@ -640,6 +648,7 @@ mod tests {
             code: "with open('_transform_test.txt', 'w') as f: f.write('allowed')".to_string(),
             mode: PythonExecutionMode::Transform,
             cwd: dir.clone(),
+            workspace_root: None,
             timeout_secs: Some(10),
             session_id: None,
             intent: None,
@@ -654,34 +663,34 @@ mod tests {
 
     #[test]
     fn validate_cwd_rejects_nonexistent() {
-        let result = validate_cwd(Path::new("/nonexistent_path_xyz_12345"));
+        let result = validate_cwd(Path::new("/nonexistent_path_xyz_12345"), None);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("does not exist"));
     }
 
     #[test]
     fn validate_cwd_rejects_file_not_dir() {
-        let result = validate_cwd(std::env::current_exe().unwrap().as_path());
+        let result = validate_cwd(std::env::current_exe().unwrap().as_path(), None);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("not a directory"));
     }
 
     #[test]
     fn validate_cwd_empty_falls_back_to_current_dir() {
-        let result = validate_cwd(Path::new(""));
+        let result = validate_cwd(Path::new(""), None);
         assert!(result.is_ok());
     }
 
     #[test]
     fn validate_cwd_accepts_current_dir() {
         let cwd = std::env::current_dir().unwrap();
-        let result = validate_cwd(&cwd);
+        let result = validate_cwd(&cwd, None);
         assert!(result.is_ok());
     }
 
     #[test]
     fn validate_cwd_rejects_outside_workspace() {
-        let result = validate_cwd(Path::new("/"));
+        let result = validate_cwd(Path::new("/"), None);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("outside workspace"));
     }

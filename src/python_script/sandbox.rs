@@ -98,4 +98,60 @@ mod tests {
         );
         assert!(!env.destructive_fs);
     }
+
+    #[test]
+    fn analyze_mode_allows_read() {
+        let (env, _) = derive_envelope(PythonExecutionMode::Analyze, "f = open('x', 'r')");
+        assert!(env.read_workspace);
+        assert!(!env.write_workspace);
+    }
+
+    #[test]
+    fn analyze_mode_read_no_violations() {
+        let violations = check_compatibility(PythonExecutionMode::Analyze, "f = open('x', 'r')");
+        assert!(!violations.contains(&"read_workspace".to_string()));
+    }
+
+    #[test]
+    fn analyze_mode_write_denied() {
+        let violations = check_compatibility(PythonExecutionMode::Analyze, "f = open('x', 'w')");
+        assert!(violations.contains(&"write_workspace".to_string()));
+    }
+
+    #[test]
+    fn transform_mode_write_allowed() {
+        let violations = check_compatibility(PythonExecutionMode::Transform, "f = open('x', 'w')");
+        assert!(!violations.contains(&"write_workspace".to_string()));
+    }
+
+    #[test]
+    fn verify_mode_read_no_violations() {
+        let violations = check_compatibility(PythonExecutionMode::Verify, "f = open('x', 'r')");
+        assert!(!violations.contains(&"read_workspace".to_string()));
+    }
+
+    #[test]
+    fn verify_mode_write_denied() {
+        let violations = check_compatibility(PythonExecutionMode::Verify, "f = open('x', 'w')");
+        assert!(violations.contains(&"write_workspace".to_string()));
+    }
+
+    #[test]
+    fn analyze_mode_pathlib_read_no_violations() {
+        let violations = check_compatibility(
+            PythonExecutionMode::Analyze,
+            "from pathlib import Path\nPath('x').read_text()",
+        );
+        assert!(!violations.contains(&"read_workspace".to_string()));
+        assert!(!violations.contains(&"write_workspace".to_string()));
+    }
+
+    #[test]
+    fn analyze_mode_pathlib_write_denied() {
+        let violations = check_compatibility(
+            PythonExecutionMode::Analyze,
+            "from pathlib import Path\nPath('x').write_text('y')",
+        );
+        assert!(violations.contains(&"write_workspace".to_string()));
+    }
 }

@@ -96,6 +96,7 @@ mod tests {
             code: "print(1)".into(),
             mode: PythonExecutionMode::Analyze,
             cwd: std::env::temp_dir(),
+            workspace_root: None,
             timeout_secs: Some(30),
             session_id: Some("s1".into()),
             intent: Some("test".into()),

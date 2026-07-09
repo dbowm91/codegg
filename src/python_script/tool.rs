@@ -111,6 +111,7 @@ impl Tool for PythonScriptTool {
             code: code.to_string(),
             mode,
             cwd: workdir,
+            workspace_root: None,
             timeout_secs: timeout,
             session_id: None,
             intent,

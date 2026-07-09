@@ -131,7 +131,8 @@ impl PythonCapabilityEnvelope {
         if risk.has_destructive_ops {
             env.destructive_fs = false;
         }
-        if risk.has_file_io && mode == PythonExecutionMode::Analyze {
+        // In Analyze mode, file reads are allowed (read_workspace=true), but writes are denied
+        if risk.has_file_write && mode == PythonExecutionMode::Analyze {
             env.write_workspace = false;
         }
 
@@ -150,7 +151,10 @@ impl PythonCapabilityEnvelope {
         if risk.has_destructive_ops && !self.destructive_fs {
             denied.push("destructive_fs".to_string());
         }
-        if risk.has_file_io && !self.write_workspace {
+        if risk.has_file_read && !self.read_workspace {
+            denied.push("read_workspace".to_string());
+        }
+        if risk.has_file_write && !self.write_workspace {
             denied.push("write_workspace".to_string());
         }
         denied
@@ -219,6 +223,8 @@ pub struct PythonScriptRequest {
     pub code: String,
     pub mode: PythonExecutionMode,
     pub cwd: PathBuf,
+    #[serde(default)]
+    pub workspace_root: Option<PathBuf>,
     pub timeout_secs: Option<u64>,
     pub session_id: Option<String>,
     pub intent: Option<String>,
