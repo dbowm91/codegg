@@ -1,3 +1,5 @@
+pub mod plan;
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum CommandSource {
     AgentTool,
@@ -189,6 +191,17 @@ pub fn classify_command(command: &str) -> CommandIntent {
         };
     }
 
+    if has_shell_operators(trimmed) {
+        return CommandIntent {
+            kind: CommandIntentKind::RawShell,
+            confidence: IntentConfidence::Low,
+            risk: RiskAssessment::medium("complex shell with operators"),
+            source: CommandSource::AgentTool,
+            command: trimmed.to_string(),
+            context_policy: ContextPolicy::ProjectToModel,
+        };
+    }
+
     if looks_like_test_command(trimmed) {
         return classify_test(trimmed);
     }
@@ -221,6 +234,37 @@ pub fn classify_command(command: &str) -> CommandIntent {
         command: trimmed.to_string(),
         context_policy: ContextPolicy::ProjectToModel,
     }
+}
+
+fn has_shell_operators(command: &str) -> bool {
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut escaped = false;
+    for ch in command.chars() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if ch == '\\' {
+            escaped = true;
+            continue;
+        }
+        if ch == '\'' && !in_double {
+            in_single = !in_single;
+            continue;
+        }
+        if ch == '"' && !in_single {
+            in_double = !in_double;
+            continue;
+        }
+        if in_single || in_double {
+            continue;
+        }
+        if ch == '|' || ch == ';' || ch == '$' || ch == '`' || ch == '&' {
+            return true;
+        }
+    }
+    false
 }
 
 fn looks_like_python(command: &str) -> bool {
@@ -313,9 +357,13 @@ fn classify_git(command: &str) -> CommandIntent {
     let risk = if is_readonly {
         RiskAssessment::safe()
     } else if command.starts_with("git push") || command.starts_with("git reset --hard") {
-        RiskAssessment::high("git push or hard reset")
+        let mut r = RiskAssessment::high("git push or hard reset");
+        r.capabilities.push(ExecutionCapability::GitMutation);
+        r
     } else {
-        RiskAssessment::low("git mutating command")
+        let mut r = RiskAssessment::low("git mutating command");
+        r.capabilities.push(ExecutionCapability::GitMutation);
+        r
     };
 
     CommandIntent {

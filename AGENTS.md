@@ -471,8 +471,11 @@ CI runs on push/PR to dev/main: `agent-assets` → `fmt` → `check` → `clippy
 
 ### Command Intent and Planning
 
-- **Command intent is classification-only**: `classify_command()` in `src/command_intent.rs` classifies commands into intent families (Test, GitReadOnly, GitMutating, SearchReadOnly, PythonAnalyze/Transform/Verify, RawShell, Rejected). It does NOT change execution behavior.
-- **Command planner maps intent to backend**: `plan_execution()` in `src/command_planner.rs` maps classified intents to `ExecutionBackend` (TestRunner, PythonScripting, NativeTool, ManagedProcess, RawShell, Rejected) and generates permission requests.
+- **Command intent is classification-only**: `classify_command()` in `src/command_intent/mod.rs` classifies commands into intent families (Test, GitReadOnly, GitMutating, SearchReadOnly, PythonAnalyze/Transform/Verify, RawShell, Rejected). It does NOT change execution behavior.
+- **Shell operator detection**: `has_shell_operators()` in `src/command_intent/mod.rs` uses quote-aware scanning to detect `|`, `;`, `$`, `` ` ``, `&`, `&&`, `||` outside quotes. Commands with operators are classified as `RawShell` (prevents `cargo test && rm -rf .` routing to TestRunner).
+- **Command planner maps intent to backend**: `plan_execution()` in `src/command_intent/plan.rs` maps classified intents to `ExecutionBackend` (RawShell, ManagedArgv, NativeTool, TestRunner, PythonScript, Reject) with rich struct variants carrying metadata. Re-exports from `src/command_planner.rs`.
+- **Plan includes projector and RTK metadata**: `CommandPlan` now carries `ProjectorRoute` (Raw, Truncated, ErrorRetention, GitStatus/Diff/Log, TestReport, FileSearch, PythonRun, RtkEligible) and `PlanRtkPolicy` (Disabled, Eligible, RequiredForPromotion).
+- **Permission planning**: `CommandPermissionRequest` carries `PermissionDefault` (Allow, Ask, Deny) per capability. `generate_permission_requests()` maps `ExecutionCapability` → permission request with risk-level-aware defaults.
 - **Command routing resolves to subsystem**: `resolve_routing()` in `src/command_routing.rs` maps planned execution to concrete `RoutingDecision` variants (RouteToTestRunner, RouteToShell, RouteToPythonScripting, RouteToNativeTool, RouteToManagedProcess, Rejected).
 - **Python scripting is first-class**: `src/python_scripting.rs` provides `PythonScript` with Analyze/Transform/Verify modes, static risk analysis via `analyze_python_risk()`, and async execution via `run_python_script()`. Python is NOT hidden inside bash.
 - **Conservative classifier**: The classifier recognizes simple argv-shaped commands and falls back to `RawShell` for complex cases (pipes, redirection, command substitution). It does NOT attempt full POSIX shell parsing.

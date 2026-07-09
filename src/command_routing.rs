@@ -1,11 +1,13 @@
-use crate::command_intent::{CommandIntent, CommandIntentKind};
-use crate::command_planner::{CommandPlan, ExecutionBackend};
+use crate::command_planner::{
+    CommandPlan, ExecutionBackend, PythonModeGuess,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RoutingDecision {
     RouteToTestRunner {
         argv: Vec<String>,
         scope_label: String,
+        validated_command: Option<String>,
     },
     RouteToShell {
         command: String,
@@ -13,7 +15,7 @@ pub enum RoutingDecision {
     },
     RouteToPythonScripting {
         script: String,
-        mode: PythonScriptMode,
+        mode: PythonModeGuess,
         timeout_secs: Option<u64>,
     },
     RouteToNativeTool {
@@ -22,6 +24,7 @@ pub enum RoutingDecision {
     },
     RouteToManagedProcess {
         argv: Vec<String>,
+        cwd: std::path::PathBuf,
         timeout_secs: Option<u64>,
     },
     Rejected {
@@ -29,64 +32,45 @@ pub enum RoutingDecision {
     },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-pub enum PythonScriptMode {
-    Analyze,
-    Transform,
-    Verify,
-}
-
 pub fn resolve_routing(plan: &CommandPlan) -> RoutingDecision {
-    match plan.backend {
-        ExecutionBackend::TestRunner => resolve_test_runner(&plan.intent),
-        ExecutionBackend::PythonScripting => resolve_python_scripting(&plan.intent),
-        ExecutionBackend::NativeTool(ref name) => RoutingDecision::RouteToNativeTool {
-            tool_name: name.clone(),
+    match &plan.backend {
+        ExecutionBackend::TestRunner { validated_command } => {
+            let argv: Vec<String> = plan
+                .intent
+                .command
+                .split_whitespace()
+                .map(String::from)
+                .collect();
+            let scope_label = format!("command-intent:{}", plan.intent.kind.label());
+            RoutingDecision::RouteToTestRunner {
+                argv,
+                scope_label,
+                validated_command: validated_command.clone(),
+            }
+        }
+        ExecutionBackend::PythonScript { script, mode_guess } => {
+            RoutingDecision::RouteToPythonScripting {
+                script: script.clone(),
+                mode: *mode_guess,
+                timeout_secs: plan.timeout_secs,
+            }
+        }
+        ExecutionBackend::NativeTool { tool_name } => RoutingDecision::RouteToNativeTool {
+            tool_name: tool_name.clone(),
             command: plan.intent.command.clone(),
         },
-        ExecutionBackend::ManagedProcess => resolve_managed_process(&plan.intent),
-        ExecutionBackend::RawShell => RoutingDecision::RouteToShell {
-            command: plan.intent.command.clone(),
+        ExecutionBackend::ManagedArgv { argv, cwd } => RoutingDecision::RouteToManagedProcess {
+            argv: argv.clone(),
+            cwd: cwd.clone(),
             timeout_secs: plan.timeout_secs,
         },
-        ExecutionBackend::Rejected => RoutingDecision::Rejected {
-            reason: "command was rejected by classifier".to_string(),
+        ExecutionBackend::RawShell { command } => RoutingDecision::RouteToShell {
+            command: command.clone(),
+            timeout_secs: plan.timeout_secs,
         },
-    }
-}
-
-fn resolve_test_runner(intent: &CommandIntent) -> RoutingDecision {
-    let argv: Vec<String> = intent
-        .command
-        .split_whitespace()
-        .map(String::from)
-        .collect();
-    let scope_label = format!("command-intent:{}", intent.kind.label());
-    RoutingDecision::RouteToTestRunner { argv, scope_label }
-}
-
-fn resolve_python_scripting(intent: &CommandIntent) -> RoutingDecision {
-    let mode = match intent.kind {
-        CommandIntentKind::PythonVerify => PythonScriptMode::Verify,
-        CommandIntentKind::PythonAnalyze => PythonScriptMode::Analyze,
-        _ => PythonScriptMode::Transform,
-    };
-    RoutingDecision::RouteToPythonScripting {
-        script: intent.command.clone(),
-        mode,
-        timeout_secs: Some(60),
-    }
-}
-
-fn resolve_managed_process(intent: &CommandIntent) -> RoutingDecision {
-    let argv: Vec<String> = intent
-        .command
-        .split_whitespace()
-        .map(String::from)
-        .collect();
-    RoutingDecision::RouteToManagedProcess {
-        argv,
-        timeout_secs: Some(30),
+        ExecutionBackend::Reject { reason } => RoutingDecision::Rejected {
+            reason: reason.clone(),
+        },
     }
 }
 
@@ -159,5 +143,33 @@ mod tests {
         let plan = plan_execution(&intent);
         let decision = resolve_routing(&plan);
         assert!(matches!(decision, RoutingDecision::Rejected { .. }));
+    }
+
+    #[test]
+    fn test_runner_includes_validated_command() {
+        let intent = classify_command("cargo test");
+        let plan = plan_execution(&intent);
+        let decision = resolve_routing(&plan);
+        match decision {
+            RoutingDecision::RouteToTestRunner {
+                validated_command, ..
+            } => {
+                assert!(validated_command.is_some());
+            }
+            _ => panic!("expected RouteToTestRunner"),
+        }
+    }
+
+    #[test]
+    fn managed_process_includes_cwd() {
+        let intent = classify_command("rg 'pattern'");
+        let plan = plan_execution(&intent);
+        let decision = resolve_routing(&plan);
+        match decision {
+            RoutingDecision::RouteToManagedProcess { cwd, .. } => {
+                assert!(cwd.exists());
+            }
+            _ => panic!("expected RouteToManagedProcess"),
+        }
     }
 }
