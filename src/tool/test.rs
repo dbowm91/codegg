@@ -75,7 +75,7 @@ impl Tool for TestTool {
 
     async fn execute(&self, input: serde_json::Value) -> Result<String, ToolError> {
         let request = parse_test_request(&input)?;
-        let report = resolve_and_run_test(request, None)
+        let report = resolve_and_run_test(request, Some(&crate::test_runner::BusEventSink))
             .await
             .map_err(|e| ToolError::Execution(format!("test runner error: {e}")))?;
         Ok(format_test_report(&report))
@@ -88,7 +88,7 @@ impl Tool for TestTool {
     ) -> Result<StructuredToolResult, ToolError> {
         let start = Instant::now();
         let request = parse_test_request(&input)?;
-        let report = resolve_and_run_test(request, None)
+        let report = resolve_and_run_test(request, Some(&crate::test_runner::BusEventSink))
             .await
             .map_err(|e| ToolError::Execution(format!("test runner error: {e}")))?;
         let output = format_test_report(&report);

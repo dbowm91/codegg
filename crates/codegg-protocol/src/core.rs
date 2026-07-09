@@ -415,6 +415,28 @@ pub enum CoreEvent {
         agent: String,
         error: String,
     },
+    /// A supervised test run started.
+    TestRunStarted {
+        session_id: String,
+        job_id: String,
+        command: String,
+        cwd: String,
+    },
+    /// Progress during a supervised test run.
+    TestRunProgress {
+        session_id: String,
+        job_id: String,
+        message: String,
+    },
+    /// A supervised test run completed.
+    TestRunCompleted {
+        session_id: String,
+        job_id: String,
+        status: String,
+        summary: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        log_dir: Option<String>,
+    },
     /// A plugin produced a UI effect (dialog, toast, panel, status item,
     /// etc.) through a lifecycle hook or session-scoped command.
     ///
@@ -640,5 +662,129 @@ mod tests {
             }
             other => panic!("expected PluginUiEffect, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn core_event_test_run_started_round_trip() {
+        let env = EventEnvelope {
+            protocol_version: PROTOCOL_VERSION,
+            event_seq: 20,
+            timestamp_ms: 200,
+            session_id: Some("s1".into()),
+            turn_id: None,
+            payload: CoreEvent::TestRunStarted {
+                session_id: "s1".into(),
+                job_id: "job-1".into(),
+                command: "cargo test".into(),
+                cwd: "/tmp".into(),
+            },
+        };
+        let json = serde_json::to_string(&env).unwrap();
+        assert!(json.contains("test_run_started"));
+        assert!(json.contains("cargo test"));
+        let back: EventEnvelope<CoreEvent> = serde_json::from_str(&json).unwrap();
+        match back.payload {
+            CoreEvent::TestRunStarted {
+                session_id,
+                job_id,
+                command,
+                cwd,
+            } => {
+                assert_eq!(session_id, "s1");
+                assert_eq!(job_id, "job-1");
+                assert_eq!(command, "cargo test");
+                assert_eq!(cwd, "/tmp");
+            }
+            other => panic!("expected TestRunStarted, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn core_event_test_run_progress_round_trip() {
+        let env = EventEnvelope {
+            protocol_version: PROTOCOL_VERSION,
+            event_seq: 21,
+            timestamp_ms: 201,
+            session_id: Some("s1".into()),
+            turn_id: None,
+            payload: CoreEvent::TestRunProgress {
+                session_id: "s1".into(),
+                job_id: "job-1".into(),
+                message: "3 passed, 1 failed".into(),
+            },
+        };
+        let json = serde_json::to_string(&env).unwrap();
+        assert!(json.contains("test_run_progress"));
+        let back: EventEnvelope<CoreEvent> = serde_json::from_str(&json).unwrap();
+        match back.payload {
+            CoreEvent::TestRunProgress {
+                session_id,
+                job_id,
+                message,
+            } => {
+                assert_eq!(session_id, "s1");
+                assert_eq!(job_id, "job-1");
+                assert_eq!(message, "3 passed, 1 failed");
+            }
+            other => panic!("expected TestRunProgress, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn core_event_test_run_completed_round_trip() {
+        let env = EventEnvelope {
+            protocol_version: PROTOCOL_VERSION,
+            event_seq: 22,
+            timestamp_ms: 202,
+            session_id: Some("s1".into()),
+            turn_id: None,
+            payload: CoreEvent::TestRunCompleted {
+                session_id: "s1".into(),
+                job_id: "job-1".into(),
+                status: "passed".into(),
+                summary: "5 passed in 2.3s".into(),
+                log_dir: Some("/tmp/logs".into()),
+            },
+        };
+        let json = serde_json::to_string(&env).unwrap();
+        assert!(json.contains("test_run_completed"));
+        assert!(json.contains("passed"));
+        let back: EventEnvelope<CoreEvent> = serde_json::from_str(&json).unwrap();
+        match back.payload {
+            CoreEvent::TestRunCompleted {
+                session_id,
+                job_id,
+                status,
+                summary,
+                log_dir,
+            } => {
+                assert_eq!(session_id, "s1");
+                assert_eq!(job_id, "job-1");
+                assert_eq!(status, "passed");
+                assert_eq!(summary, "5 passed in 2.3s");
+                assert_eq!(log_dir.as_deref(), Some("/tmp/logs"));
+            }
+            other => panic!("expected TestRunCompleted, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn core_event_test_run_completed_omits_none_log_dir() {
+        let env = EventEnvelope {
+            protocol_version: PROTOCOL_VERSION,
+            event_seq: 23,
+            timestamp_ms: 203,
+            session_id: Some("s1".into()),
+            turn_id: None,
+            payload: CoreEvent::TestRunCompleted {
+                session_id: "s1".into(),
+                job_id: "job-2".into(),
+                status: "failed".into(),
+                summary: "1 failed".into(),
+                log_dir: None,
+            },
+        };
+        let json = serde_json::to_string(&env).unwrap();
+        assert!(!json.contains("log_dir"));
     }
 }

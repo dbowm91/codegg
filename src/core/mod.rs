@@ -505,6 +505,39 @@ pub(crate) fn map_app_event_to_core_event(
         crate::bus::events::AppEvent::FileChanged { path, action, .. } => {
             Some(CoreEvent::FileChanged { path, action })
         }
+        crate::bus::events::AppEvent::TestRunStarted {
+            session_id,
+            job_id,
+            command,
+            cwd,
+        } => Some(CoreEvent::TestRunStarted {
+            session_id,
+            job_id,
+            command,
+            cwd,
+        }),
+        crate::bus::events::AppEvent::TestRunProgress {
+            session_id,
+            job_id,
+            message,
+        } => Some(CoreEvent::TestRunProgress {
+            session_id,
+            job_id,
+            message,
+        }),
+        crate::bus::events::AppEvent::TestRunCompleted {
+            session_id,
+            job_id,
+            status,
+            summary,
+            log_dir,
+        } => Some(CoreEvent::TestRunCompleted {
+            session_id,
+            job_id,
+            status,
+            summary,
+            log_dir,
+        }),
         _ => None,
     }
 }
@@ -814,6 +847,78 @@ mod tests {
                 assert_eq!(turn_id.as_deref(), Some(new_turn.as_str()));
             }
             other => panic!("expected ToolCompleted, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_run_started_maps_to_core_event() {
+        let ev = map_app_event_to_core_event(crate::bus::events::AppEvent::TestRunStarted {
+            session_id: "s1".into(),
+            job_id: "job-1".into(),
+            command: "cargo test".into(),
+            cwd: "/tmp".into(),
+        });
+        match ev {
+            Some(crate::protocol::core::CoreEvent::TestRunStarted {
+                session_id,
+                job_id,
+                command,
+                cwd,
+            }) => {
+                assert_eq!(session_id, "s1");
+                assert_eq!(job_id, "job-1");
+                assert_eq!(command, "cargo test");
+                assert_eq!(cwd, "/tmp");
+            }
+            other => panic!("expected Some(TestRunStarted), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_run_progress_maps_to_core_event() {
+        let ev = map_app_event_to_core_event(crate::bus::events::AppEvent::TestRunProgress {
+            session_id: "s1".into(),
+            job_id: "job-1".into(),
+            message: "running".into(),
+        });
+        match ev {
+            Some(crate::protocol::core::CoreEvent::TestRunProgress {
+                session_id,
+                job_id,
+                message,
+            }) => {
+                assert_eq!(session_id, "s1");
+                assert_eq!(job_id, "job-1");
+                assert_eq!(message, "running");
+            }
+            other => panic!("expected Some(TestRunProgress), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_run_completed_maps_to_core_event() {
+        let ev = map_app_event_to_core_event(crate::bus::events::AppEvent::TestRunCompleted {
+            session_id: "s1".into(),
+            job_id: "job-1".into(),
+            status: "passed".into(),
+            summary: "5 passed".into(),
+            log_dir: Some("/tmp/logs".into()),
+        });
+        match ev {
+            Some(crate::protocol::core::CoreEvent::TestRunCompleted {
+                session_id,
+                job_id,
+                status,
+                summary,
+                log_dir,
+            }) => {
+                assert_eq!(session_id, "s1");
+                assert_eq!(job_id, "job-1");
+                assert_eq!(status, "passed");
+                assert_eq!(summary, "5 passed");
+                assert_eq!(log_dir.as_deref(), Some("/tmp/logs"));
+            }
+            other => panic!("expected Some(TestRunCompleted), got {:?}", other),
         }
     }
 

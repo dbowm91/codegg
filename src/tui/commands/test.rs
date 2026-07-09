@@ -106,9 +106,12 @@ pub(crate) fn start_test_run(app: &mut App, scope: String, args: String) {
                 }
             };
 
-            let report = crate::test_runner::resolve_and_run_test(request, None)
-                .await
-                .map_err(|e| format!("test runner error: {e}"));
+            let report = crate::test_runner::resolve_and_run_test(
+                request,
+                Some(&crate::test_runner::BusEventSink),
+            )
+            .await
+            .map_err(|e| format!("test runner error: {e}"));
 
             match report {
                 Ok(report) => Some(TuiCommand::TestRunFinished {

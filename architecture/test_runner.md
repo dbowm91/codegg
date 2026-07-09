@@ -17,6 +17,7 @@ The `test_runner` module provides test command resolution, output parsing, repor
 | `report.rs` | Text formatter |
 | `runner.rs` | Streaming runner with process-group-aware log capture |
 | `index.rs` | Bounded previous-failures index (Phase 06) |
+| `bus_sink.rs` | `BusEventSink` — bridges `TestEventSink` trait to `GlobalEventBus` |
 
 **Key Responsibilities**:
 - Resolve `TestScope` into platform-specific shell commands
@@ -26,6 +27,7 @@ The `test_runner` module provides test command resolution, output parsing, repor
 - Classify exit codes, panics, compile errors, and pytest failures
 - Format `TestReport` into bounded, stable, model-facing text
 - Maintain a bounded previous-failures index for automatic reruns
+- Publish lifecycle events (`TestRunStarted`, `TestRunProgress`, `TestRunCompleted`) to `GlobalEventBus` for remote client visibility via the core protocol
 
 **Phase**: 4 (Failure Extraction and Report Quality)
 
@@ -356,6 +358,46 @@ A static `OnceLock<Mutex<()>>` serializes concurrent writes in-process.
 - `validate_indexed_rerun_command()` rejects empty argv, empty tokens, cwd outside workdir, and unrecognized argv[0]
 - Only `Failed` and `TimedOut` entries are actionable — `Passed`, `Cancelled`, and `Error` entries are skipped
 - `truncate_utf8()` ensures stored summaries and failure messages respect byte limits without splitting UTF-8 char boundaries
+
+## Protocol Event Integration (Phase 07)
+
+The test runner publishes lifecycle events to the `GlobalEventBus` via the `BusEventSink` implementation (`src/test_runner/bus_sink.rs`). This bridges the `TestEventSink` trait to the core protocol so remote clients (WebSocket, stdio) can observe test runs.
+
+### BusEventSink
+
+```rust
+pub struct BusEventSink;
+
+impl TestEventSink for BusEventSink {
+    fn started(&self, snapshot: TestRunStartedSnapshot);
+    fn progress(&self, snapshot: TestRunProgressSnapshot);
+    fn completed(&self, snapshot: TestRunCompletedSnapshot);
+}
+```
+
+Each method publishes the corresponding `AppEvent::TestRun*` variant to `GlobalEventBus::publish()`.
+
+### Event flow
+
+1. `resolve_and_run_test()` calls `BusEventSink::started()` / `progress()` / `completed()` at lifecycle boundaries
+2. `GlobalEventBus` delivers `AppEvent::TestRun*` to subscribers
+3. `map_app_event_to_core_event()` in `src/core/mod.rs` converts to `CoreEvent::TestRun*`
+4. `bridge_app_event()` in `src/core/daemon.rs` wraps in `EventEnvelope` and sends to remote clients
+
+### Protocol wire events
+
+| AppEvent | CoreEvent | Wire type string |
+|----------|-----------|------------------|
+| `TestRunStarted` | `TestRunStarted` | `"test_run_started"` |
+| `TestRunProgress` | `TestRunProgress` | `"test_run_progress"` |
+| `TestRunCompleted` | `TestRunCompleted` | `"test_run_completed"` |
+
+The TUI handler (`src/tui/commands/test.rs`) and tool handler (`src/tool/test.rs`) both pass `Some(&BusEventSink)` to `resolve_and_run_test()`.
+
+```bash
+cargo test -p codegg-protocol -- core_event_test_run
+cargo test -p codegg --lib core::tests::test_run
+```
 
 ## Parser API
 

@@ -1,3 +1,4 @@
+pub mod bus_sink;
 pub mod custom;
 pub mod index;
 pub mod parse;
@@ -6,6 +7,7 @@ pub mod resolve;
 pub mod runner;
 pub mod types;
 
+pub use bus_sink::BusEventSink;
 pub use index::{TestIndexError, TestRunIndex, TestRunIndexEntry};
 pub use parse::{failure_class_summary, ingest_stderr_line, ingest_stdout_line, TestParseState};
 pub use report::format_test_report;

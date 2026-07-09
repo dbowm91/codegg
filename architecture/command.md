@@ -249,13 +249,15 @@ When a command is executed:
 
 ### Test Lifecycle Events
 
-The `/test` command publishes lifecycle events through the AppEvent bus:
+The `/test` command publishes lifecycle events through the AppEvent bus, which are bridged to the core protocol for remote clients:
 
 - `test_run:started` — A supervised test run began. Includes job ID, command, and working directory.
 - `test_run:progress` — Throttled progress updates (test counts, failures detected).
 - `test_run:completed` — The run finished with status, summary, and log directory path.
 
 Events are throttled to at most one progress event per 500ms to avoid flooding the bus.
+
+The `BusEventSink` (`src/test_runner/bus_sink.rs`) bridges `TestEventSink` calls to `GlobalEventBus`. The core daemon's `map_app_event_to_core_event()` converts these to `CoreEvent::TestRun*` variants for remote client visibility. See `architecture/test_runner.md` for the full event flow.
 
 Stale completion protection: each `/test` invocation captures a monotonic `AsyncUiRequestState` request ID. If a newer `/test` invocation begins before the previous one finishes, the previous result is silently dropped instead of overwriting the UI state. See `src/tui/app/state/async_request.rs`.
 
