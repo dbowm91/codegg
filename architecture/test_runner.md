@@ -1,6 +1,6 @@
 # Test Runner Module
 
-The `test_runner` module provides test command resolution, output parsing, report formatting, and streaming process execution for supervised test runs.
+The `test_runner` module provides test command resolution, output parsing, report formatting, streaming process execution for supervised test runs, and a bounded previous-failures index for automatic reruns.
 
 ## Overview
 
@@ -16,6 +16,7 @@ The `test_runner` module provides test command resolution, output parsing, repor
 | `parse.rs` | Line-by-line output parser with ANSI escape stripping |
 | `report.rs` | Text formatter |
 | `runner.rs` | Streaming runner with process-group-aware log capture |
+| `index.rs` | Bounded previous-failures index (Phase 06) |
 
 **Key Responsibilities**:
 - Resolve `TestScope` into platform-specific shell commands
@@ -24,6 +25,7 @@ The `test_runner` module provides test command resolution, output parsing, repor
 - Capture raw logs to `.codegg/test-runs/` directory
 - Classify exit codes, panics, compile errors, and pytest failures
 - Format `TestReport` into bounded, stable, model-facing text
+- Maintain a bounded previous-failures index for automatic reruns
 
 **Phase**: 4 (Failure Extraction and Report Quality)
 
@@ -159,6 +161,8 @@ pub struct TestReport {
     pub stdout_log: Option<PathBuf>,
     pub stderr_log: Option<PathBuf>,
     pub output_truncated: bool,
+    pub scope_label: Option<String>,
+    pub previous_run_id: Option<String>,
 }
 ```
 
@@ -191,7 +195,19 @@ pub enum TestResolveError {
     AmbiguousEcosystem,
     UnsupportedEcosystem(String),
     UnsupportedScopeForEcosystem { scope: &'static str, language: TestLanguage },
-    PreviousFailuresUnsupported,
+    PreviousFailures(TestIndexError),
+}
+```
+
+### TestIndexError
+
+```rust
+pub enum TestIndexError {
+    IndexMissing(PathBuf),
+    IndexUnreadable(PathBuf, io::Error),
+    IndexMalformed(PathBuf, serde_json::Error),
+    NoPreviousFailures(String),
+    CommandInvalid(String),
 }
 ```
 
@@ -259,6 +275,87 @@ Both the model-facing `test` tool and the TUI `/test` slash command call `valida
 - Anything that isn't a plain whitespace-separated argv vector
 
 This is the intended behavior. Custom scope means "allowlisted test command with ordinary arguments," not arbitrary shell syntax after an allowlisted prefix. If you need shell semantics, do not use the test runner — use the bash tool directly.
+
+## Previous-Failures Index (Phase 06)
+
+The `index.rs` module maintains a bounded, local index of recent test runs so that the `PreviousFailures` scope can automatically find and rerun the most recent failing test command.
+
+### Index file location
+
+```
+.codegg/test-runs/index.json
+```
+
+### Key types
+
+```rust
+pub struct TestRunIndex {
+    pub version: u32,           // always 1
+    pub updated_at: String,     // RFC3339 timestamp
+    pub runs: Vec<TestRunIndexEntry>,
+}
+
+pub struct TestRunIndexEntry {
+    pub run_id: String,         // directory name (e.g. "20260708T123456Z-abc12345")
+    pub created_at: String,     // RFC3339 timestamp
+    pub status: TestStatus,
+    pub failure_class: FailureClass,
+    pub language: String,       // "rust", "python", "go", etc.
+    pub scope_label: String,
+    pub cwd: PathBuf,
+    pub argv: Vec<String>,
+    pub summary: String,        // truncated to MAX_SUMMARY_BYTES (1000)
+    pub failures: Vec<TestFailureIndexEntry>,
+    pub log_dir: PathBuf,
+    pub stdout_log: Option<PathBuf>,
+    pub stderr_log: Option<PathBuf>,
+    pub report_json: Option<PathBuf>,
+}
+
+pub struct TestFailureIndexEntry {
+    pub name: Option<String>,
+    pub file: Option<String>,
+    pub line: Option<u32>,
+    pub message_preview: String, // truncated to MAX_MESSAGE_PREVIEW_BYTES (500)
+    pub failure_class: FailureClass,
+}
+```
+
+### Constants
+
+| Constant | Value | Purpose |
+|----------|-------|---------|
+| `MAX_INDEX_ENTRIES` | 100 | Max runs retained in the index |
+| `MAX_FAILURE_ENTRIES_PER_RUN` | 10 | Max failures captured per run entry |
+| `MAX_MESSAGE_PREVIEW_BYTES` | 500 | Truncation limit for failure messages |
+| `MAX_SUMMARY_BYTES` | 1000 | Truncation limit for run summaries |
+
+### Writing
+
+After every test run completes, `runner.rs` calls `append_to_index()` which:
+
+1. Loads the existing index (or creates a new one if missing/malformed)
+2. Appends a new `TestRunIndexEntry` built from the `TestReport`
+3. Bounds the index to `MAX_INDEX_ENTRIES` (keeps newest entries)
+4. Writes atomically via `.tmp` + rename
+
+A static `OnceLock<Mutex<()>>` serializes concurrent writes in-process.
+
+### Resolution
+
+`resolve_previous_failures()` in `resolve.rs`:
+
+1. Loads the index from `.codegg/test-runs/index.json`
+2. Scans entries newest-first for the first "actionable" failure (status = `Failed` or `TimedOut`)
+3. Validates the entry's cwd exists and is within the request workdir
+4. Validates argv is non-empty and argv[0] is from a known test runner
+5. Returns `ResolvedTestCommand` with `scope_label: "previous-failures:{run_id}"`
+
+### Safety
+
+- `validate_indexed_rerun_command()` rejects empty argv, empty tokens, cwd outside workdir, and unrecognized argv[0]
+- Only `Failed` and `TimedOut` entries are actionable — `Passed`, `Cancelled`, and `Error` entries are skipped
+- `truncate_utf8()` ensures stored summaries and failure messages respect byte limits without splitting UTF-8 char boundaries
 
 ## Parser API
 
@@ -395,12 +492,13 @@ Empty sections are suppressed. Full logs always available under `.codegg/test-ru
 
 ## Tests
 
-90+ parser + formatter + runner + custom-allowlist + bypass-regression tests:
+107+ parser + formatter + runner + custom-allowlist + index + bypass-regression tests:
 - 11 resolver tests (auto rust, auto python, mixed ambiguity, package, file, changed fallback, custom command tokenization, forbidden-shell-syntax rejection, unsupported-command rejection, empty mapping, prefix-collision rejection)
 - 30+ custom command validator tests (allowed argv prefixes, disallowed commands, empty/whitespace, allowlist invariants, semicolon/`&&`/`||`/`|`/`>`/`<` suffix rejection, `$(...)` and `${...}` substitution rejection, backtick substitution, newline/CR rejection, `&` backgrounding, leading-disallowed rejection, prefix-collision rejection for `pytestevil`/`cargo testify`/`make testcase`, quoted-argument rejection, glob metacharacter rejection, tilde/`#` rejection, history `!` rejection, NUL and other control characters, bidi Unicode control rejection, `is_allowed_custom_command` wrapper agreement)
 - 22 parser tests (rust count, ok/failed, panic file/line, assertion message with file:line:col, compile error code, compile error location, doctest failure, pytest collected, pytest failed, pytest file, pytest assertion, pytest collection error, pytest error vs failure, ANSI stripping for rust/pytest/compile-error lines)
 - 10 formatter tests (stable sections, passed suppression, timeout details, failure limit, max bytes, log paths, truncation note, error status, compile error display)
 - 13+ runner tests (pass, fail, wall-clock timeout, stall timeout, empty command, zero timeout, log layout, UTF-8 truncation, summary building, parser failures for nonzero exit, timeout excerpt, sink present, sink absent, custom-tokenized argv path, timeout-after-kill)
+- 18 index tests (load missing, load malformed, append creates file, bounds entries, truncation, newest actionable failure selected, non-actionable skipped, cwd validation, argv validation, empty argv rejected, empty token rejected, cwd outside workdir rejected, unknown argv[0] rejected, language detection, UTF-8 boundary handling)
 - 14 `AsyncUiRequestState` tests covering stale completion protection for `/test` and other dialog async paths (`new_is_idle`, `begin_increments_and_sets_loading`, `begin_clears_previous_error`, `finish_returns_true_for_current`, `finish_returns_false_for_stale`, `finish_returns_false_when_cancelled`, `cancel_increments_and_clears_loading`, `fail_stores_error_for_current`, `fail_ignores_stale`, `fail_ignores_cancelled`, `clear_loading_does_not_affect_request_id`, `default_matches_new`, `begin_after_cancel_resets_cancelled`, `multiple_lifecycle_cycles`)
 
 ```bash

@@ -118,20 +118,24 @@ cargo test -p codegg --lib shell::redactor
 # Shell projection RTK unit tests (no RTK binary required)
 cargo test -p codegg --lib shell::rtk
 
-# Test runner module (resolver, parser with failure extraction, report formatter)
+# Test runner module (resolver, parser with failure extraction, report formatter, previous-failures index)
 cargo test -p codegg --lib test_runner
 
 # Strict custom-command validator (argv-prefix allowlist + shell-metachar rejection)
 cargo test -p codegg --lib test_runner::custom
 
+# Previous-failures index (read/write, truncation, resolution, safety validation)
+cargo test -p codegg --lib test_runner::index
+
 # Test tool (model-facing wrapper for supervised test runner)
 cargo test -p codegg --lib tool::test
 
 # Run supervised tests via TUI slash command
-# /test, /test workspace, /test changed, /test package <name>, /test file <path>, /test previous, /test custom <argv>
+# /test, /test workspace, /test changed, /test package <name>, /test file <path>, /test previous|prev|last, /test custom <argv>
 # Custom commands must be plain whitespace-separated argv matching an allowlist prefix (cargo test, pytest, etc.).
 # Shell metacharacters (`;`, `|`, `>`, `$`, backticks, newlines, etc.) are rejected at validation time.
-# See architecture/test_runner.md "Custom Command Allowlist" for the full contract.
+# Previous failures scope reruns the most recent failing test from a bounded local index.
+# See architecture/test_runner.md "Custom Command Allowlist" and "Previous-Failures Index" for the full contract.
 
 # Test runner event sink tests
 cargo test -p codegg --lib test_runner::runner::tests
@@ -374,6 +378,7 @@ CI runs on push/PR to dev/main: `agent-assets` → `fmt` → `check` → `clippy
 
 - **TUI render.rs doesn't exist**: `src/tui/app/` contains `mod.rs` (~13K lines) and `types.rs`. Command handlers are in `src/tui/commands/` (13 submodules). Runtime is in `src/tui/runtime/` (event_loop, command_dispatch, app_events, render_recovery).
 - **Custom test command validation is strict argv-prefix**: `src/test_runner/custom.rs::validate_custom_command` is the single source of truth — used by both the model-facing `test` tool (`src/tool/test.rs`) and the `/test` slash command (`src/tui/commands/test.rs`). Rejects shell metacharacters (`;`, `|`, `>`, `<`, `&`, `$(`, `` ` ``, `$`, `\`, quotes, parentheses, braces, brackets, `*`, `?`, `~`, `#`, `!`), newlines, NUL/control characters, and bidi Unicode controls. Argv-token-bounded match, so `pytestevil` and `cargo testify` do NOT match. Resolver re-runs the validator as defense-in-depth before producing `ResolvedTestCommand.argv`. Both generated and custom commands execute via direct `Command::new(argv[0]).args(&argv[1..])` — never via a shell.
+- **Previous-failures index**: `.codegg/test-runs/index.json` stores up to 100 recent test run entries (newest-first). `TestScope::PreviousFailures` loads the index, scans for the newest actionable failure (`Failed` or `TimedOut`), validates cwd and argv safety, and returns a `ResolvedTestCommand` for rerun. The index is written atomically after every test run via `append_to_index()` in `runner.rs`. See `architecture/test_runner.md` "Previous-Failures Index (Phase 06)".
 - **Dialog::Info doesn't exist**: Despite `src/tui/components/dialogs/info.rs` existing, `Dialog::Info` is NOT in the Dialog enum (`src/tui/app/types.rs`).
 - **DialogType is in component.rs**, not `types.rs`. FocusManager is in `component/focus.rs`.
 - **Dialog::Plugin is generic**: A single `Dialog::Plugin` variant handles all plugin dialogs. Plugin dialog content is stored in `PluginUiState.dialogs` and rendered via `PluginDialog` component.

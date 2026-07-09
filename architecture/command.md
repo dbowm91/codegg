@@ -208,7 +208,7 @@ Representative built-ins:
 | `/tool-backends` | `/tools`, `/backends` | Show resolved backend for each model-facing tool |
 | `/security-review` | | Security review of changed files |
 | `/shell-list` | | List recent shell commands |
-| `/test` | | Run supervised tests (/test, /test workspace, /test changed, /test package <name>, /test file <path>, /test previous, /test custom <command>). Custom commands are validated as argv-prefix matches against a strict allowlist — see `architecture/test_runner.md`. |
+| `/test` | | Run supervised tests (/test, /test workspace, /test changed, /test package <name>, /test file <path>, /test previous|prev|last, /test custom <command>). Previous failures scope reruns the most recent failing test from the bounded index. Custom commands are validated as argv-prefix matches against a strict allowlist — see `architecture/test_runner.md`. |
 | `/tui-stats` | | Show TUI runtime diagnostics |
 
 ### Dynamic Commands

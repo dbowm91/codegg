@@ -227,6 +227,10 @@ pub async fn run_resolved_test(
     let report_path = log_dir.join("report.json");
     let _ = std::fs::write(&report_path, report_json);
 
+    // Append to the previous-failures index (best-effort; index write failure
+    // must not fail the test run).
+    crate::test_runner::index::append_to_index(&report, &request.workdir).await;
+
     Ok(report)
 }
 
@@ -248,9 +252,8 @@ fn spawn_child(resolved: &ResolvedTestCommand) -> Result<Child, TestRunError> {
             cmd.pre_exec(|| {
                 // Create a new session and process group. The child becomes
                 // the session leader with PGID == its own PID.
-                nix::unistd::setsid().map_err(|e| {
-                    io::Error::new(io::ErrorKind::Other, format!("setsid failed: {e}"))
-                })?;
+                nix::unistd::setsid()
+                    .map_err(|e| io::Error::other(format!("setsid failed: {e}")))?;
                 Ok(())
             });
         }
@@ -540,6 +543,8 @@ fn build_report(
         stdout_log: Some(stdout_log.to_path_buf()),
         stderr_log: Some(stderr_log.to_path_buf()),
         output_truncated,
+        scope_label: Some(resolved.scope_label.clone()),
+        previous_run_id: None,
     }
 }
 
@@ -831,7 +836,6 @@ mod tests {
     }
 
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-    use std::sync::Arc;
 
     struct TestSink {
         started_called: AtomicBool,

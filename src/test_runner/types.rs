@@ -160,6 +160,10 @@ pub struct TestReport {
     pub stdout_log: Option<PathBuf>,
     pub stderr_log: Option<PathBuf>,
     pub output_truncated: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scope_label: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub previous_run_id: Option<String>,
 }
 
 /// Snapshot types for test lifecycle events.

@@ -22,6 +22,14 @@ pub fn format_test_report(report: &TestReport) -> String {
     out.push_str(&report.argv.join(" "));
     out.push('\n');
 
+    if let Some(ref label) = report.scope_label {
+        if let Some(run_id) = label.strip_prefix("previous-failures:") {
+            out.push('\n');
+            out.push_str("Rerun source:\n");
+            out.push_str(&format!("previous failed run {run_id}\n"));
+        }
+    }
+
     out.push('\n');
     out.push_str("Duration:\n");
     let secs = report.duration_ms as f64 / 1000.0;
@@ -184,6 +192,8 @@ mod tests {
                 "/workspace/.codegg/test-runs/run1/stderr.log",
             )),
             output_truncated: false,
+            scope_label: Some("auto-rust".to_string()),
+            previous_run_id: None,
         }
     }
 

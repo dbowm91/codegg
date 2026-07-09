@@ -4,15 +4,13 @@ fn strip_ansi_escapes(line: &str) -> String {
     let mut out = String::with_capacity(line.len());
     let mut chars = line.chars();
     while let Some(ch) = chars.next() {
-        if ch == '\x1b' {
-            if chars.next() == Some('[') {
-                for esc_ch in chars.by_ref() {
-                    if esc_ch.is_ascii_alphabetic() {
-                        break;
-                    }
+        if ch == '\x1b' && chars.next() == Some('[') {
+            for esc_ch in chars.by_ref() {
+                if esc_ch.is_ascii_alphabetic() {
+                    break;
                 }
-                continue;
             }
+            continue;
         }
         out.push(ch);
     }

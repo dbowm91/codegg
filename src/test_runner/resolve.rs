@@ -5,6 +5,7 @@ use thiserror::Error;
 use crate::test_runner::custom::{
     validate_custom_command, CustomCommandValidationError, ValidatedCustomCommand,
 };
+use crate::test_runner::index::{self, TestIndexError};
 use crate::test_runner::types::{ResolvedTestCommand, TestLanguage, TestRunRequest, TestScope};
 
 #[derive(Error, Debug)]
@@ -28,8 +29,8 @@ pub enum TestResolveError {
         scope: &'static str,
         language: TestLanguage,
     },
-    #[error("previous failures scope not yet supported")]
-    PreviousFailuresUnsupported,
+    #[error(transparent)]
+    PreviousFailures(#[from] TestIndexError),
 }
 
 pub type Result<T> = std::result::Result<T, TestResolveError>;
@@ -46,7 +47,7 @@ pub fn resolve_test_command(request: &TestRunRequest) -> Result<ResolvedTestComm
         TestScope::Changed => resolve_auto(workdir),
         TestScope::Package(name) => resolve_package(workdir, name),
         TestScope::File(path) => resolve_file(workdir, path),
-        TestScope::PreviousFailures => Err(TestResolveError::PreviousFailuresUnsupported),
+        TestScope::PreviousFailures => resolve_previous_failures(workdir),
         TestScope::CustomCommand(cmd) => {
             let validated = resolve_validated_custom_command(cmd)?;
             Ok(ResolvedTestCommand {
@@ -57,6 +58,21 @@ pub fn resolve_test_command(request: &TestRunRequest) -> Result<ResolvedTestComm
             })
         }
     }
+}
+
+fn resolve_previous_failures(workdir: &Path) -> Result<ResolvedTestCommand> {
+    let index = index::load_index(workdir)?;
+    let entry = index::find_newest_actionable_failure(&index, workdir)
+        .ok_or(TestIndexError::NoPreviousFailures)?;
+
+    index::validate_indexed_rerun_command(&entry.argv, workdir, &entry.cwd)?;
+
+    Ok(ResolvedTestCommand {
+        language: TestLanguage::Generic,
+        argv: entry.argv.clone(),
+        cwd: entry.cwd.clone(),
+        scope_label: format!("previous-failures:{}", entry.run_id),
+    })
 }
 
 fn resolve_auto(workdir: &Path) -> Result<ResolvedTestCommand> {
