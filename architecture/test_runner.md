@@ -197,19 +197,68 @@ pub enum TestResolveError {
 
 ## Custom Command Allowlist
 
-The `custom.rs` module defines the shared allowlist used by both the model-facing `test` tool and the `/test` slash command:
+The `custom.rs` module defines the shared allowlist used by both the model-facing `test` tool and the `/test` slash command. The allowlist is **argv-prefix based**, NOT raw-string-prefix based. Each entry is a sequence of argv tokens; a custom command is accepted only if it tokenizes into an argv vector whose prefix matches one of the allowed `argv_prefix` sequences exactly.
 
 ```rust
-pub const CUSTOM_COMMAND_ALLOWLIST: &[&str] = &[
-    "cargo test", "cargo nextest", "pytest", "uv run pytest",
-    "go test", "zig build test", "make test", "make check",
-    "npm test", "pnpm test", "yarn test", "bun test",
+pub struct AllowedTestCommand {
+    pub label: &'static str,
+    pub argv_prefix: &'static [&'static str],
+}
+
+pub const CUSTOM_COMMAND_ALLOWLIST: &[AllowedTestCommand] = &[
+    AllowedTestCommand { label: "cargo test",     argv_prefix: &["cargo", "test"] },
+    AllowedTestCommand { label: "cargo nextest",  argv_prefix: &["cargo", "nextest"] },
+    AllowedTestCommand { label: "pytest",         argv_prefix: &["pytest"] },
+    AllowedTestCommand { label: "uv run pytest",  argv_prefix: &["uv", "run", "pytest"] },
+    AllowedTestCommand { label: "go test",        argv_prefix: &["go", "test"] },
+    AllowedTestCommand { label: "zig build test", argv_prefix: &["zig", "build", "test"] },
+    AllowedTestCommand { label: "make test",      argv_prefix: &["make", "test"] },
+    AllowedTestCommand { label: "make check",     argv_prefix: &["make", "check"] },
+    AllowedTestCommand { label: "npm test",       argv_prefix: &["npm", "test"] },
+    AllowedTestCommand { label: "pnpm test",      argv_prefix: &["pnpm", "test"] },
+    AllowedTestCommand { label: "yarn test",      argv_prefix: &["yarn", "test"] },
+    AllowedTestCommand { label: "bun test",       argv_prefix: &["bun", "test"] },
 ];
+
+pub fn validate_custom_command(cmd: &str)
+    -> Result<ValidatedCustomCommand, CustomCommandValidationError>
 
 pub fn is_allowed_custom_command(cmd: &str) -> bool
 ```
 
-Custom commands not in the allowlist are rejected at the tool and TUI layers. The resolver itself does not enforce the allowlist — it only rejects empty commands. This layered design allows the resolver to remain reusable while security enforcement happens at the presentation boundaries.
+### Validation contract
+
+The strict validator enforces these invariants on every custom command string:
+
+1. **Reject empty / whitespace-only input** — returns `Empty`.
+2. **Reject forbidden shell syntax** — returns `ForbiddenShellSyntax` if the input contains any of:
+   - Shell control operators: `;`, `&&`, `||`, `&`, `|`, `>`, `<`
+   - Command substitution: `` ` ``, `$(`, `${`
+   - Quoting: `'`, `"`, `\`
+   - Grouping / redirection: `(`, `)`, `{`, `}`, `[`, `]`
+   - Globbing: `*`, `?`
+   - Expansion / history: `~`, `#`, `!`
+   - Newlines, carriage returns, NUL bytes, and other ASCII control characters
+   - Bidirectional Unicode control characters (U+200E–U+200F, U+202A–U+202E, U+2066–U+2069)
+3. **Tokenize as whitespace-separated argv** — quote handling is intentionally absent. If a user wants to pass a literal space, they must use a different scope.
+4. **Match the token prefix against the allowlist** — argv-token-bounded match, so `pytestevil` is NOT a hit for `pytest` and `cargo testify` is NOT a hit for `cargo test`.
+5. **Return the validated argv vector** — the validator returns a `ValidatedCustomCommand { argv, label }` ready for direct `Command::new(argv[0]).args(&argv[1..])` execution.
+
+### Defense-in-depth re-validation
+
+Both the model-facing `test` tool and the TUI `/test` slash command call `validate_custom_command` at the presentation boundary. As a defense-in-depth measure, the resolver (`src/test_runner/resolve.rs::resolve_validated_custom_command`) **also** re-runs the strict validator before producing `ResolvedTestCommand.argv`. The resolver never accepts raw text into argv — even if a caller forgets to validate, the resolver still rejects shell metacharacters, redirection, command substitution, and allowlist-prefix smuggling.
+
+### What is NOT supported
+
+- Quoted arguments with embedded spaces (`-- 'name with space'`)
+- Glob patterns (`--tests-*`)
+- Tilde expansion (`~/tmp`)
+- Environment variable references (`${HOME}`, `$VAR`)
+- Shell history expansion (`!`)
+- Pipes, redirections, backgrounding, subshells
+- Anything that isn't a plain whitespace-separated argv vector
+
+This is the intended behavior. Custom scope means "allowlisted test command with ordinary arguments," not arbitrary shell syntax after an allowlisted prefix. If you need shell semantics, do not use the test runner — use the bash tool directly.
 
 ## Parser API
 
@@ -280,7 +329,13 @@ pub async fn run_resolved_test(
 ) -> Result<TestReport, TestRunError>
 ```
 
-Spawns a tokio process with piped stdout/stderr and reads lines concurrently via `BufReader`. On Unix, the child is placed in its own session/process group via `setsid()` so that timeout kills target the entire process tree (`libc::kill(-pgid, SIGKILL)`), preventing grandchild process leaks. Raw bytes are written to log files. Decoded lines are fed to `TestParseState` via `Arc<Mutex<>>`. A `tokio::select!` supervisor enforces wall-clock timeout (default 300s) and no-output/stall timeout (default 120s). On completion, classifies exit code and builds `TestReport` with `FailureClass` from parsed results.
+Spawns a tokio process with piped stdout/stderr and reads lines concurrently via `BufReader`. **Both generated commands and validated custom commands are executed as direct `argv` via `Command::new(argv[0]).args(&argv[1..])` — never via a shell.** Raw bytes are written to log files. Decoded lines are fed to `TestParseState` via `Arc<Mutex<>>`. A `tokio::select!` supervisor enforces wall-clock timeout (default 300s) and no-output/stall timeout (default 120s). On completion, classifies exit code and builds `TestReport` with `FailureClass` from parsed results.
+
+#### Process-group cleanup (Unix only)
+
+On Unix, the child is placed in its own session/process group via `setsid()` in `pre_exec`, so that timeout kills target the entire process tree using `libc::kill(-pgid, SIGKILL)`, preventing grandchild process leaks. The `setsid()` call and the negative-`pgid` kill are both `#[cfg(unix)]` gated.
+
+**Non-Unix fallback**: On non-Unix targets, `spawn_child` skips the `setsid()` step, and `kill_child` falls back to `child.kill().await`, which only kills the direct child — grandchildren can outlive the timeout. This is a known limitation. Cross-platform process-tree cleanup is not implemented.
 
 ## Log Directory Layout
 
@@ -340,12 +395,13 @@ Empty sections are suppressed. Full logs always available under `.codegg/test-ru
 
 ## Tests
 
-56+ parser + formatter + runner + custom-allowlist tests:
-- 7 resolver tests (auto rust, auto python, mixed ambiguity, package, file, changed fallback, custom command)
-- 4 custom command allowlist tests (allowed, disallowed, empty, nonempty)
-- 22 parser tests (rust count, ok/failed, panic file/line, assertion message with file:line:col, compile error code, compile error location, doctest failure, pytest collected, pytest failed, pytest file, pytest assertion, pytest collection error, pytest error vs failure, ANSI stripping)
+90+ parser + formatter + runner + custom-allowlist + bypass-regression tests:
+- 11 resolver tests (auto rust, auto python, mixed ambiguity, package, file, changed fallback, custom command tokenization, forbidden-shell-syntax rejection, unsupported-command rejection, empty mapping, prefix-collision rejection)
+- 30+ custom command validator tests (allowed argv prefixes, disallowed commands, empty/whitespace, allowlist invariants, semicolon/`&&`/`||`/`|`/`>`/`<` suffix rejection, `$(...)` and `${...}` substitution rejection, backtick substitution, newline/CR rejection, `&` backgrounding, leading-disallowed rejection, prefix-collision rejection for `pytestevil`/`cargo testify`/`make testcase`, quoted-argument rejection, glob metacharacter rejection, tilde/`#` rejection, history `!` rejection, NUL and other control characters, bidi Unicode control rejection, `is_allowed_custom_command` wrapper agreement)
+- 22 parser tests (rust count, ok/failed, panic file/line, assertion message with file:line:col, compile error code, compile error location, doctest failure, pytest collected, pytest failed, pytest file, pytest assertion, pytest collection error, pytest error vs failure, ANSI stripping for rust/pytest/compile-error lines)
 - 10 formatter tests (stable sections, passed suppression, timeout details, failure limit, max bytes, log paths, truncation note, error status, compile error display)
-- 11+ runner tests (pass, fail, wall-clock timeout, stall timeout, empty command, zero timeout, log layout, UTF-8 truncation, summary building, parser failures for nonzero exit, timeout excerpt)
+- 13+ runner tests (pass, fail, wall-clock timeout, stall timeout, empty command, zero timeout, log layout, UTF-8 truncation, summary building, parser failures for nonzero exit, timeout excerpt, sink present, sink absent, custom-tokenized argv path, timeout-after-kill)
+- 14 `AsyncUiRequestState` tests covering stale completion protection for `/test` and other dialog async paths (`new_is_idle`, `begin_increments_and_sets_loading`, `begin_clears_previous_error`, `finish_returns_true_for_current`, `finish_returns_false_for_stale`, `finish_returns_false_when_cancelled`, `cancel_increments_and_clears_loading`, `fail_stores_error_for_current`, `fail_ignores_stale`, `fail_ignores_cancelled`, `clear_loading_does_not_affect_request_id`, `default_matches_new`, `begin_after_cancel_resets_cancelled`, `multiple_lifecycle_cycles`)
 
 ```bash
 cargo test -p codegg --lib test_runner
@@ -359,7 +415,8 @@ The `test` tool (`src/tool/test.rs`) wraps the test runner for model consumption
 - **Category**: `ShellExec` (conservative permission gating)
 - **Input**: JSON with `scope` (required), plus optional `package`, `path`, `command`, `workdir`, `timeout`, `stall_timeout`
 - **Output**: Compact text report via `format_test_report()`
-- **Custom commands**: Allowlisted via `custom.rs` (cargo test, pytest, go test, etc.)
+- **Custom commands**: Validated via `custom.rs::validate_custom_command`. Only argv-token-prefix matches against the 12-entry allowlist pass; shell metacharacters, redirection, pipes, command substitution, newlines, and prefix collisions are rejected. The validator returns the validated argv vector — both generated and custom commands execute via direct `Command::new(argv[0]).args(&argv[1..])` with no shell interpretation.
+- **Defense-in-depth**: The resolver re-runs the strict validator before producing argv, so even if a presentation-boundary caller forgets to validate, the runner still rejects shell-injection attempts.
 - **Failing tests**: Return success tool result with failure report; only infrastructure failures return `ToolError`
 - **Provenance**: Native backend, `test_runner` implementation, `LocalTrusted`
 - **No LLM involvement**: The test tool runs the resolved command directly via the supervised runner. No LLM call is made to interpret, summarize, or augment the output. The compact report is produced deterministically by `format_test_report()`.
@@ -369,3 +426,9 @@ The tool is registered in `ToolRegistry::with_options()` and categorized in `too
 ```bash
 cargo test -p codegg --lib tool::test
 ```
+
+The TUI `/test` slash command (`src/tui/commands/test.rs`) shares the same `validate_custom_command` function — there is exactly one source of truth for the validation contract.
+
+### Stale completion protection
+
+The TUI `/test` command uses `AsyncUiRequestState` (`src/tui/app/state/async_request.rs`) for stale-completion protection. Each `/test` invocation calls `begin()` to allocate a monotonically increasing request ID; when the result comes back, `finish(request_id)` returns `false` (silently dropping the result) if the request has been superseded or cancelled. This guarantees that a slow `/test custom cargo test` from an earlier invocation cannot overwrite the UI state of a newer `/test` invocation.

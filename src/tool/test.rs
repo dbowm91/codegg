@@ -5,8 +5,8 @@ use std::time::Instant;
 
 use crate::error::ToolError;
 use crate::test_runner::{
-    custom::{is_allowed_custom_command, CUSTOM_COMMAND_ALLOWLIST},
-    format_test_report, resolve_and_run_test, TestRunRequest, TestScope, TestStatus,
+    custom::validate_custom_command, format_test_report, resolve_and_run_test, TestRunRequest,
+    TestScope, TestStatus,
 };
 use crate::tool::backend::{
     StructuredToolResult, ToolBackendKind, ToolExecutionContext, ToolProvenance, ToolTrust,
@@ -147,15 +147,14 @@ fn parse_test_request(input: &serde_json::Value) -> Result<TestRunRequest, ToolE
             let cmd = input["command"].as_str().ok_or_else(|| {
                 ToolError::Execution("custom scope requires 'command' parameter".to_string())
             })?;
-            if cmd.trim().is_empty() {
-                return Err(ToolError::Execution(
-                    "command parameter must not be empty".to_string(),
-                ));
-            }
-            if !is_allowed_custom_command(cmd) {
+            if validate_custom_command(cmd).is_err() {
                 return Err(ToolError::Execution(format!(
-                    "custom command not in allowlist: '{cmd}'. Allowed prefixes: {}",
-                    CUSTOM_COMMAND_ALLOWLIST.join(", ")
+                    "custom command rejected by safety validator: '{cmd}'. \
+                     Allowed argv prefixes: cargo test, cargo nextest, pytest, \
+                     uv run pytest, go test, zig build test, make test, make check, \
+                     npm test, pnpm test, yarn test, bun test. \
+                     Shell metacharacters, redirection, pipes, command substitution, \
+                     and newlines are not allowed."
                 )));
             }
             TestScope::CustomCommand(cmd.to_string())
@@ -262,9 +261,10 @@ mod tests {
         let result = tool.execute(input).await;
         assert!(result.is_err());
         let err = result.unwrap_err();
+        let msg = format!("{err}");
         assert!(
-            format!("{err}").contains("not in allowlist"),
-            "unexpected error: {err}"
+            msg.contains("rejected by safety validator"),
+            "unexpected error: {msg}"
         );
     }
 
@@ -273,12 +273,16 @@ mod tests {
         let tool = TestTool;
         let input = json!({"scope": "custom", "command": "cargo test --lib", "workdir": "/tmp"});
         let result = tool.execute(input).await;
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(
-            !format!("{err}").contains("not in allowlist"),
-            "should not be an allowlist error: {err}"
-        );
+        // Validation should pass (so the error is NOT a validator rejection).
+        // Actual execution may or may not succeed depending on the test environment,
+        // so we only assert that we got past the validator.
+        if let Err(ref err) = result {
+            let msg = format!("{err}");
+            assert!(
+                !msg.contains("rejected by safety validator"),
+                "should not be a validator error: {msg}"
+            );
+        }
     }
 
     #[tokio::test]
@@ -405,5 +409,55 @@ mod tests {
     fn test_tool_exposes_in_definitions() {
         let tool = TestTool;
         assert!(tool.expose_in_definitions());
+    }
+
+    #[test]
+    fn test_tool_custom_rejects_semicolon_suffix() {
+        // Bypass regression: an allowlisted prefix followed by `;` must NOT pass.
+        let cmd = validate_custom_command_for_tool("cargo test; rm -rf target/tmp");
+        assert!(cmd.is_err(), "semicolon suffix should be rejected");
+    }
+
+    #[test]
+    fn test_tool_custom_rejects_pipe_suffix() {
+        let cmd = validate_custom_command_for_tool("pytest | tee /tmp/out");
+        assert!(cmd.is_err(), "pipe suffix should be rejected");
+    }
+
+    #[test]
+    fn test_tool_custom_rejects_command_substitution() {
+        let cmd = validate_custom_command_for_tool("pytest $(some-command)");
+        assert!(cmd.is_err(), "command substitution should be rejected");
+        let cmd = validate_custom_command_for_tool("pytest `some-command`");
+        assert!(cmd.is_err(), "backtick substitution should be rejected");
+    }
+
+    #[test]
+    fn test_tool_custom_rejects_newline_suffix() {
+        let cmd = validate_custom_command_for_tool("cargo test\nrm -rf /");
+        assert!(cmd.is_err(), "newline suffix should be rejected");
+    }
+
+    #[test]
+    fn test_tool_custom_rejects_prefix_collision() {
+        let cmd = validate_custom_command_for_tool("pytestevil");
+        assert!(cmd.is_err(), "prefix collision should be rejected");
+    }
+
+    #[test]
+    fn test_tool_custom_accepts_normal_cargo_test_args() {
+        let cmd = validate_custom_command_for_tool("cargo test --lib");
+        assert!(cmd.is_ok(), "normal cargo test args should be accepted");
+        let cmd = validate_custom_command_for_tool("cargo test -p codegg-core");
+        assert!(cmd.is_ok(), "package flag should be accepted");
+    }
+
+    /// Helper that runs the strict custom-command validator the same
+    /// way `parse_test_request` does, but without spinning up a full
+    /// test execution. Used by tool-layer bypass regression tests.
+    fn validate_custom_command_for_tool(
+        cmd: &str,
+    ) -> Result<(), crate::test_runner::custom::CustomCommandValidationError> {
+        crate::test_runner::custom::validate_custom_command(cmd).map(|_| ())
     }
 }

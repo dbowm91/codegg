@@ -265,7 +265,7 @@ The TUI supports inline slash commands for quick actions.
 | `/shell-ask <id>` | Ask the agent about a shell command's output |
 | `/shell-rerun <id>` | Rerun a previous shell command |
 | `/shell-kill <id>` | Kill a running shell command |
-| `/test` | Run supervised project tests with compact reporting and full logs under `.codegg/test-runs/`. |
+| `/test` | Run supervised project tests with compact reporting and full logs under `.codegg/test-runs/`. Custom commands (`/test custom <argv>`) are validated as argv-prefix matches against a strict 12-entry allowlist — shell metacharacters, redirection, pipes, command substitution, and newlines are rejected. |
 | `/exit`, `/quit`, `/q` | Exit the application |
 | `/skill:<name>` | Activate a skill |
 | `/skills` | List available skills |

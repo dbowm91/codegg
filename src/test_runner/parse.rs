@@ -690,4 +690,41 @@ mod tests {
         assert_eq!(state.tests_failed, 1);
         assert_eq!(state.failures[0].name.as_deref(), Some("foo::bar"));
     }
+
+    #[test]
+    fn parser_strips_ansi_for_rust_failed_line() {
+        let mut state = TestParseState::default();
+        // Standard colorized Rust test failure line.
+        ingest_stdout_line(&mut state, "\x1b[1m\x1b[31mtest foo::bar ... FAILED\x1b[0m");
+        assert_eq!(state.tests_failed, 1);
+        assert_eq!(state.failures[0].name.as_deref(), Some("foo::bar"));
+        assert_eq!(state.language, Some(TestLanguage::Rust));
+    }
+
+    #[test]
+    fn parser_strips_ansi_for_pytest_failed_line() {
+        let mut state = TestParseState::default();
+        // Colorized pytest failure summary line.
+        ingest_stdout_line(
+            &mut state,
+            "\x1b[31mFAILED\x1b[0m tests/test_x.py::test_y - \x1b[31mbold\x1b[0m red",
+        );
+        assert_eq!(state.tests_failed, 1);
+        assert_eq!(
+            state.failures[0].name.as_deref(),
+            Some("tests/test_x.py::test_y")
+        );
+        assert_eq!(state.language, Some(TestLanguage::Python));
+    }
+
+    #[test]
+    fn parser_strips_ansi_for_compile_error_line() {
+        let mut state = TestParseState::default();
+        ingest_stdout_line(
+            &mut state,
+            "\x1b[1;31merror[E0432]\x1b[0m: \x1b[1munresolved import `foo`\x1b[0m",
+        );
+        assert_eq!(state.compile_errors.len(), 1);
+        assert_eq!(state.language, Some(TestLanguage::Rust));
+    }
 }

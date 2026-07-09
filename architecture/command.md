@@ -208,7 +208,7 @@ Representative built-ins:
 | `/tool-backends` | `/tools`, `/backends` | Show resolved backend for each model-facing tool |
 | `/security-review` | | Security review of changed files |
 | `/shell-list` | | List recent shell commands |
-| `/test` | | Run supervised tests (/test, /test workspace, /test changed, /test package <name>, /test file <path>, /test previous, /test custom <command>) |
+| `/test` | | Run supervised tests (/test, /test workspace, /test changed, /test package <name>, /test file <path>, /test previous, /test custom <command>). Custom commands are validated as argv-prefix matches against a strict allowlist — see `architecture/test_runner.md`. |
 | `/tui-stats` | | Show TUI runtime diagnostics |
 
 ### Dynamic Commands
@@ -256,6 +256,8 @@ The `/test` command publishes lifecycle events through the AppEvent bus:
 - `test_run:completed` — The run finished with status, summary, and log directory path.
 
 Events are throttled to at most one progress event per 500ms to avoid flooding the bus.
+
+Stale completion protection: each `/test` invocation captures a monotonic `AsyncUiRequestState` request ID. If a newer `/test` invocation begins before the previous one finishes, the previous result is silently dropped instead of overwriting the UI state. See `src/tui/app/state/async_request.rs`.
 
 ## Error Handling
 

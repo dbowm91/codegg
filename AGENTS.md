@@ -121,17 +121,26 @@ cargo test -p codegg --lib shell::rtk
 # Test runner module (resolver, parser with failure extraction, report formatter)
 cargo test -p codegg --lib test_runner
 
+# Strict custom-command validator (argv-prefix allowlist + shell-metachar rejection)
+cargo test -p codegg --lib test_runner::custom
+
 # Test tool (model-facing wrapper for supervised test runner)
 cargo test -p codegg --lib tool::test
 
 # Run supervised tests via TUI slash command
-# /test, /test workspace, /test changed, /test package <name>, /test file <path>, /test previous, /test custom <command>
+# /test, /test workspace, /test changed, /test package <name>, /test file <path>, /test previous, /test custom <argv>
+# Custom commands must be plain whitespace-separated argv matching an allowlist prefix (cargo test, pytest, etc.).
+# Shell metacharacters (`;`, `|`, `>`, `$`, backticks, newlines, etc.) are rejected at validation time.
+# See architecture/test_runner.md "Custom Command Allowlist" for the full contract.
 
 # Test runner event sink tests
 cargo test -p codegg --lib test_runner::runner::tests
 
 # Test command parser tests
 cargo test -p codegg --lib tui::commands::test
+
+# Stale /test completion protection (shared with all async dialog paths)
+cargo test -p codegg --lib async_request
 
 # LSP integration (fake server, no network, needs lsp-test-support)
 cargo test -p egglsp --features lsp-test-support --test scenario_engine
@@ -364,6 +373,7 @@ CI runs on push/PR to dev/main: `agent-assets` → `fmt` → `check` → `clippy
 ### TUI
 
 - **TUI render.rs doesn't exist**: `src/tui/app/` contains `mod.rs` (~13K lines) and `types.rs`. Command handlers are in `src/tui/commands/` (13 submodules). Runtime is in `src/tui/runtime/` (event_loop, command_dispatch, app_events, render_recovery).
+- **Custom test command validation is strict argv-prefix**: `src/test_runner/custom.rs::validate_custom_command` is the single source of truth — used by both the model-facing `test` tool (`src/tool/test.rs`) and the `/test` slash command (`src/tui/commands/test.rs`). Rejects shell metacharacters (`;`, `|`, `>`, `<`, `&`, `$(`, `` ` ``, `$`, `\`, quotes, parentheses, braces, brackets, `*`, `?`, `~`, `#`, `!`), newlines, NUL/control characters, and bidi Unicode controls. Argv-token-bounded match, so `pytestevil` and `cargo testify` do NOT match. Resolver re-runs the validator as defense-in-depth before producing `ResolvedTestCommand.argv`. Both generated and custom commands execute via direct `Command::new(argv[0]).args(&argv[1..])` — never via a shell.
 - **Dialog::Info doesn't exist**: Despite `src/tui/components/dialogs/info.rs` existing, `Dialog::Info` is NOT in the Dialog enum (`src/tui/app/types.rs`).
 - **DialogType is in component.rs**, not `types.rs`. FocusManager is in `component/focus.rs`.
 - **Dialog::Plugin is generic**: A single `Dialog::Plugin` variant handles all plugin dialogs. Plugin dialog content is stored in `PluginUiState.dialogs` and rendered via `PluginDialog` component.

