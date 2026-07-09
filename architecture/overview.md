@@ -118,7 +118,7 @@ hidden by default — see [MCP](mcp.md)).
 | [snapshot/](snapshot.md) | File state capture and restore | `mod.rs` |
 | [storage/](storage.md) | SQLite initialization and connection pooling | `mod.rs` |
 | [task_state/](model_profile_task_state.md) | Todo/task state machine, injection, and projection | `mod.rs` |
-| [test_runner/](test_runner.md) | Test command resolution, failure extraction, output parsing, report formatting, previous-failures index, and protocol event integration | `types.rs`, `resolve.rs`, `parse.rs`, `report.rs`, `runner.rs`, `index.rs`, `bus_sink.rs`, `mod.rs` |
+| [test_runner/](test_runner.md) | Test command resolution, failure extraction, output parsing, report formatting, previous-failures index, projection adapter, and protocol event integration | `types.rs`, `resolve.rs`, `parse.rs`, `report.rs`, `runner.rs`, `index.rs`, `bus_sink.rs`, `projection.rs`, `mod.rs` |
 | [theme/](theme.md) | Frontend-neutral theme system (SemanticTheme → ratatui) | `schema.rs`, `registry.rs`, `native.rs`, `halloy.rs`, `target/` |
 | [tool/](tool.md) | Built-in tools (~40 tools in default registry) and backend abstractions | `mod.rs`, `backend.rs`, `bash.rs`, `read.rs`, etc. |
 | [deterministic_tools/](deterministic_tools.md) | Eggsact in-process deterministic tools (8 always-visible + 5 deferred) | `deterministic.rs`, `eggsact/adapter.rs` |

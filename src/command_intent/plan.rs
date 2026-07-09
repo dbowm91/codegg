@@ -148,9 +148,12 @@ impl CommandPlan {
     }
 
     pub fn requires_any_permission(&self) -> bool {
-        self.permission_requests
-            .iter()
-            .any(|p| matches!(p.default_decision, PermissionDefault::Ask | PermissionDefault::Deny))
+        self.permission_requests.iter().any(|p| {
+            matches!(
+                p.default_decision,
+                PermissionDefault::Ask | PermissionDefault::Deny
+            )
+        })
     }
 }
 
@@ -203,13 +206,21 @@ fn select_backend(intent: &CommandIntent) -> ExecutionBackend {
         },
         CommandIntentKind::SearchReadOnly | CommandIntentKind::FileRead => {
             ExecutionBackend::ManagedArgv {
-                argv: intent.command.split_whitespace().map(String::from).collect(),
+                argv: intent
+                    .command
+                    .split_whitespace()
+                    .map(String::from)
+                    .collect(),
                 cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             }
         }
         CommandIntentKind::Build | CommandIntentKind::Lint | CommandIntentKind::Format => {
             ExecutionBackend::ManagedArgv {
-                argv: intent.command.split_whitespace().map(String::from).collect(),
+                argv: intent
+                    .command
+                    .split_whitespace()
+                    .map(String::from)
+                    .collect(),
                 cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             }
         }
@@ -347,7 +358,9 @@ fn select_projector(intent: &CommandIntent, _backend: &ExecutionBackend) -> Proj
         }
         CommandIntentKind::GitMutating => ProjectorRoute::Raw,
         CommandIntentKind::Test => ProjectorRoute::TestReport,
-        CommandIntentKind::SearchReadOnly | CommandIntentKind::FileRead => ProjectorRoute::FileSearch,
+        CommandIntentKind::SearchReadOnly | CommandIntentKind::FileRead => {
+            ProjectorRoute::FileSearch
+        }
         CommandIntentKind::PythonAnalyze
         | CommandIntentKind::PythonTransform
         | CommandIntentKind::PythonVerify => ProjectorRoute::PythonRun,
@@ -480,10 +493,7 @@ mod tests {
     fn git_diff_routes_to_native_with_diff_projector() {
         let intent = classify_command("git diff HEAD~1");
         let plan = plan_execution(&intent);
-        assert!(matches!(
-            plan.backend,
-            ExecutionBackend::NativeTool { .. }
-        ));
+        assert!(matches!(plan.backend, ExecutionBackend::NativeTool { .. }));
         assert_eq!(plan.projector, ProjectorRoute::GitDiff);
     }
 
@@ -499,10 +509,10 @@ mod tests {
         let intent = classify_command("git commit -m 'fix'");
         let plan = plan_execution(&intent);
         assert!(plan.requires_any_permission());
-        assert!(plan.permission_requests.iter().any(|p| matches!(
-            p.default_decision,
-            PermissionDefault::Ask
-        )));
+        assert!(plan
+            .permission_requests
+            .iter()
+            .any(|p| matches!(p.default_decision, PermissionDefault::Ask)));
     }
 
     #[test]
@@ -538,8 +548,7 @@ mod tests {
         let intent = classify_command("python3 -c 'import subprocess; subprocess.run([\"ls\"])'");
         let plan = plan_execution(&intent);
         assert!(plan.permission_requests.iter().any(|p| {
-            p.risk_level == RiskLevel::High
-                && p.default_decision == PermissionDefault::Ask
+            p.risk_level == RiskLevel::High && p.default_decision == PermissionDefault::Ask
         }));
     }
 
@@ -547,10 +556,7 @@ mod tests {
     fn cargo_test_and_rm_is_rejected_or_raw_shell() {
         let intent = classify_command("cargo test && rm -rf .");
         let plan = plan_execution(&intent);
-        assert!(!matches!(
-            plan.backend,
-            ExecutionBackend::TestRunner { .. }
-        ));
+        assert!(!matches!(plan.backend, ExecutionBackend::TestRunner { .. }));
     }
 
     #[test]
@@ -644,5 +650,4 @@ mod tests {
         let plan = plan_execution(&intent);
         assert!(plan.notes.is_empty());
     }
-
 }

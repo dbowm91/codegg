@@ -31,6 +31,7 @@ The `shell` module provides human-initiated shell command execution with bounded
 | `projection.rs` | Phase 1 of the shell-output projection roadmap. Durable command event model: `CommandRun`, `CommandExit`, `CommandOutputStore`, `OutputHandle`, `default_command_projection` seam |
 | `projector.rs` | Phase 2+3 of the shell-output projection roadmap. `CommandOutputProjector` trait, `ProjectionRequest`/`ProjectionResult`, `RawProjector` / `TruncatedProjector` / `ErrorRetentionProjector` + Phase 3 native projectors (`GitStatusProjector`, `GitDiffProjector`, `GitLogProjector`, `CargoCheckProjector`, `CargoTestProjector`), `ProjectionSelector`, redaction hook |
 | `rtk.rs` | Phase 5: `RtkDiscovery`, `RtkAvailability`, `RtkState`, `RtkCapabilities`, `CapabilityState`, `CompressionEligibility`, `classify_command()`, `RtkProjector` |
+| `redactor.rs` | Phase 8: `Redactor`, `RedactRule` trait, six built-in rules (`AuthorizationRule`, `EnvSecretRule`, `PemBlockRule`, `CloudCredentialRule`, `EmbeddedCredentialUrlRule`, `SessionMaterialRule`), `RedactedOutput` |
 | `projection_bridge.rs` | `ShellCommandRunBridge` — sidecar accumulator that mirrors `ShellEvent`s into the `CommandOutputStore` |
 
 ## Key Types

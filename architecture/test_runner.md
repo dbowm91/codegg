@@ -18,6 +18,7 @@ The `test_runner` module provides test command resolution, output parsing, repor
 | `runner.rs` | Streaming runner with process-group-aware log capture |
 | `index.rs` | Bounded previous-failures index (Phase 06) |
 | `bus_sink.rs` | `BusEventSink` — bridges `TestEventSink` trait to `GlobalEventBus` |
+| `projection.rs` | `test_report_to_projection()` — converts `TestReport` to `ProjectionResult` (Phase 03) |
 
 **Key Responsibilities**:
 - Resolve `TestScope` into platform-specific shell commands
@@ -30,6 +31,7 @@ The `test_runner` module provides test command resolution, output parsing, repor
 - Publish lifecycle events (`TestRunStarted`, `TestRunProgress`, `TestRunCompleted`) to `GlobalEventBus` for remote client visibility via the core protocol
 
 **Phase**: 4 (Failure Extraction and Report Quality)
+**Projection Adapter**: Phase 03 (`projection.rs`)
 
 ## Key Types
 
@@ -532,15 +534,47 @@ report: <path>
 
 Empty sections are suppressed. Full logs always available under `.codegg/test-runs/`.
 
+## Projection Adapter (Phase 03)
+
+```rust
+pub fn test_report_to_projection(report: &TestReport) -> ProjectionResult
+```
+
+Converts a structured `TestReport` into a `ProjectionResult` for the shell-output projection pipeline. This avoids re-parsing raw logs — the report is already structured.
+
+### Mapping
+
+| `TestReport` field | `ProjectionResult` field |
+|---------------------|--------------------------|
+| `status` (Passed/Failed/TimedOut/Error) | `text` (formatted report body), `projector` = `"test-report"`, `kind` = `Structured`, `exactness` = `Exact` |
+| `failures[].name` | Lines in `text` with failure details (max 20 displayed) |
+| `failures[].failure_class` | `warnings` (failure class labels for non-passed runs) |
+| `output_truncated` | `warnings` includes truncation notice |
+| `previous_run_id` | `warnings` includes rerun source label |
+| `summary` | Included in `text` body |
+
+The adapter does NOT apply redaction (handled at `ProjectionSelector::project()` level). Sets `RedactionState::NotApplied`.
+
+### Bounds
+
+- Max failures displayed: 20 (extra omitted with count)
+- Max failure message bytes: 2000 (truncated with `...`)
+- Max timeout excerpt bytes: 2000
+
+```bash
+cargo test -p codegg --lib test_runner::projection
+```
+
 ## Tests
 
-107+ parser + formatter + runner + custom-allowlist + index + bypass-regression tests:
+118+ parser + formatter + runner + custom-allowlist + index + projection + bypass-regression tests:
 - 11 resolver tests (auto rust, auto python, mixed ambiguity, package, file, changed fallback, custom command tokenization, forbidden-shell-syntax rejection, unsupported-command rejection, empty mapping, prefix-collision rejection)
 - 30+ custom command validator tests (allowed argv prefixes, disallowed commands, empty/whitespace, allowlist invariants, semicolon/`&&`/`||`/`|`/`>`/`<` suffix rejection, `$(...)` and `${...}` substitution rejection, backtick substitution, newline/CR rejection, `&` backgrounding, leading-disallowed rejection, prefix-collision rejection for `pytestevil`/`cargo testify`/`make testcase`, quoted-argument rejection, glob metacharacter rejection, tilde/`#` rejection, history `!` rejection, NUL and other control characters, bidi Unicode control rejection, `is_allowed_custom_command` wrapper agreement)
 - 22 parser tests (rust count, ok/failed, panic file/line, assertion message with file:line:col, compile error code, compile error location, doctest failure, pytest collected, pytest failed, pytest file, pytest assertion, pytest collection error, pytest error vs failure, ANSI stripping for rust/pytest/compile-error lines)
 - 10 formatter tests (stable sections, passed suppression, timeout details, failure limit, max bytes, log paths, truncation note, error status, compile error display)
 - 13+ runner tests (pass, fail, wall-clock timeout, stall timeout, empty command, zero timeout, log layout, UTF-8 truncation, summary building, parser failures for nonzero exit, timeout excerpt, sink present, sink absent, custom-tokenized argv path, timeout-after-kill)
 - 18 index tests (load missing, load malformed, append creates file, bounds entries, truncation, newest actionable failure selected, non-actionable skipped, cwd validation, argv validation, empty argv rejected, empty token rejected, cwd outside workdir rejected, unknown argv[0] rejected, language detection, UTF-8 boundary handling)
+- 11 projection adapter tests (passed/failed/timeout/error projections, output_bytes matching, truncation warnings, many-failures warning, previous-failures rerun source, redaction state, no omitted ranges, compile error class preservation)
 - 14 `AsyncUiRequestState` tests covering stale completion protection for `/test` and other dialog async paths (`new_is_idle`, `begin_increments_and_sets_loading`, `begin_clears_previous_error`, `finish_returns_true_for_current`, `finish_returns_false_for_stale`, `finish_returns_false_when_cancelled`, `cancel_increments_and_clears_loading`, `fail_stores_error_for_current`, `fail_ignores_stale`, `fail_ignores_cancelled`, `clear_loading_does_not_affect_request_id`, `default_matches_new`, `begin_after_cancel_resets_cancelled`, `multiple_lifecycle_cycles`)
 
 ```bash

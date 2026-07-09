@@ -1,6 +1,4 @@
-use crate::command_planner::{
-    CommandPlan, ExecutionBackend, PythonModeGuess,
-};
+use crate::command_planner::{CommandPlan, ExecutionBackend, PythonModeGuess};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RoutingDecision {
