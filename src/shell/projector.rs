@@ -147,6 +147,14 @@ pub const DEFAULT_PROJECTION_BUDGET_BYTES: usize = 8 * 1024;
 /// Approximate bytes per token used by the rough token estimator.
 pub const APPROX_BYTES_PER_TOKEN: usize = 4;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum RtkProjectionPolicy {
+    Disabled,
+    PostProcessOnly,
+    WrapperOnly,
+    Both,
+}
+
 /// Policy fields that are stable across a session.
 ///
 /// A policy is constructed once (or once per session) and passed into
@@ -211,6 +219,14 @@ impl ProjectionPolicy {
                 allow_external_backend: false,
                 redact_model_visible: true,
             },
+        }
+    }
+
+    pub fn rtk_policy(&self) -> RtkProjectionPolicy {
+        if !self.allow_external_backend {
+            RtkProjectionPolicy::Disabled
+        } else {
+            RtkProjectionPolicy::Both
         }
     }
 

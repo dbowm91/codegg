@@ -13,6 +13,9 @@ pub use codegg_core::{
 pub mod agent;
 pub mod auth;
 pub mod command;
+pub mod command_intent;
+pub mod command_planner;
+pub mod command_routing;
 pub mod context;
 pub mod core;
 pub mod eggsact;
@@ -26,6 +29,7 @@ pub mod permission;
 pub mod plugin;
 pub mod preflight;
 pub mod protocol_conversions;
+pub mod python_scripting;
 pub mod research;
 pub mod search;
 pub mod search_backend;

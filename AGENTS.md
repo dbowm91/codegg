@@ -193,6 +193,18 @@ python3 scripts/audit_tokio_tests.py
 
 # Check for bare #[tokio::test] annotations (regression guard)
 python3 scripts/check-tokio-test-flavors.py
+
+# Command intent classifier (intent classification, risk assessment, fixtures)
+cargo test -p codegg --lib command_intent
+
+# Command planner (backend routing, permission generation, fixtures)
+cargo test -p codegg --lib command_planner
+
+# Command routing (backend routing MVP, test/git/search/python routing)
+cargo test -p codegg --lib command_routing
+
+# Python scripting (risk analysis, script execution, timeout, fixtures)
+cargo test -p codegg --lib python_scripting
 ```
 
 ## Built-in Agent Assets
@@ -457,6 +469,15 @@ CI runs on push/PR to dev/main: `agent-assets` → `fmt` → `check` → `clippy
 - **Redaction pipeline (Phase 8)**: `src/shell/redactor.rs` implements the `Redactor` with six `RedactRule` implementations: `AuthorizationRule`, `EnvSecretRule`, `PemBlockRule`, `CloudCredentialRule`, `EmbeddedCredentialUrlRule`, `SessionMaterialRule`. `apply_redaction_hook` in `src/shell/projector.rs` calls `Redactor::new().redact()` and sets `RedactionState::Applied { replacements }` or `AppliedNoMatches`. The call site lives in `ProjectionSelector::project` so redaction cannot be bypassed by RTK or native projectors. `RedactionState` has six variants: `NotApplied`, `HookAppliedNoRules` (legacy), `Applied { replacements }`, `AppliedNoMatches`, `SkippedByPolicy`, `Unavailable`. The redaction test suite now includes false-positive, long-line, multiple-credentials-per-line, and edge-case tests.
 - **Context budget and compaction integration (Phase 10)**: `ProjectionContextMetadata` and `ProjectionFact` types carry critical facts (failed tests, error codes, diagnostic spans, changed files, redaction state) for compaction preservation. `ModelTier` (Mini/Workhorse/Frontier) and `ContextAwareBudget` provide model-tier-aware token budgets. `ProjectionResult::to_context_metadata()` extracts metadata for the compaction system. `is_already_projected` flag prevents double compression. `extract_critical_facts()` scans projected text for patterns. Tests in `tests/shell_projection_phase10.rs`.
 
+### Command Intent and Planning
+
+- **Command intent is classification-only**: `classify_command()` in `src/command_intent.rs` classifies commands into intent families (Test, GitReadOnly, GitMutating, SearchReadOnly, PythonAnalyze/Transform/Verify, RawShell, Rejected). It does NOT change execution behavior.
+- **Command planner maps intent to backend**: `plan_execution()` in `src/command_planner.rs` maps classified intents to `ExecutionBackend` (TestRunner, PythonScripting, NativeTool, ManagedProcess, RawShell, Rejected) and generates permission requests.
+- **Command routing resolves to subsystem**: `resolve_routing()` in `src/command_routing.rs` maps planned execution to concrete `RoutingDecision` variants (RouteToTestRunner, RouteToShell, RouteToPythonScripting, RouteToNativeTool, RouteToManagedProcess, Rejected).
+- **Python scripting is first-class**: `src/python_scripting.rs` provides `PythonScript` with Analyze/Transform/Verify modes, static risk analysis via `analyze_python_risk()`, and async execution via `run_python_script()`. Python is NOT hidden inside bash.
+- **Conservative classifier**: The classifier recognizes simple argv-shaped commands and falls back to `RawShell` for complex cases (pipes, redirection, command substitution). It does NOT attempt full POSIX shell parsing.
+- **RtkProjectionPolicy**: Added to `src/shell/projector.rs` for controlling RTK projection behavior (Disabled/PostProcessOnly/WrapperOnly/Both).
+
 ### Context Policy
 
 - Context policy is **disabled by default** (`observe` mode). Config via `[context_policy]`.
@@ -477,6 +498,7 @@ CI runs on push/PR to dev/main: `agent-assets` → `fmt` → `check` → `clippy
 | `architecture/deterministic_tools.md` | Eggsact in-process deterministic tools (8 always-visible + 5 deferred); trust model, registration, preflight integration |
 | `architecture/tui.md` | `src/tui/app/mod.rs` ~13K lines; async command pattern; TuiTaskRegistry lifecycle |
 | `architecture/human_shell.md` | ! commands not in model context unless promoted; Phases 1-10 projection pipeline |
+| `architecture/command_intent.md` | Command intent classification, planner, routing, and Python scripting |
 | `architecture/command.md` | 105 built-in slash commands |
 | `architecture/config.md` | Config schema in `crates/codegg-config/src/schema.rs` |
 | `architecture/provider.md` | 16 auto-registered providers via env vars; CircuitBreaker pattern |
