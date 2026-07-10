@@ -2,6 +2,230 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+// ── Capability profiles ─────────────────────────────────────────────
+
+/// Requirement level for OS-level sandbox enforcement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum SandboxRequirement {
+    /// No sandbox required (policy-only enforcement).
+    None,
+    /// Sandbox preferred but not mandatory; portable fallback acceptable.
+    Preferred,
+    /// OS-level sandbox required; deny if unavailable.
+    Required,
+}
+
+/// Rule for允许的 subprocess invocations in Verify mode.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExecutableRule {
+    /// Binary name or path prefix (e.g. "cargo", "pytest", "python3").
+    pub command: String,
+    /// Optional argument prefix constraints. Empty means any args allowed.
+    pub arg_prefixes: Vec<String>,
+    /// Human-readable reason this rule exists.
+    pub reason: String,
+}
+
+impl ExecutableRule {
+    pub fn new(command: impl Into<String>, reason: impl Into<String>) -> Self {
+        Self {
+            command: command.into(),
+            arg_prefixes: Vec::new(),
+            reason: reason.into(),
+        }
+    }
+
+    pub fn with_arg_prefix(mut self, prefix: impl Into<String>) -> Self {
+        self.arg_prefixes.push(prefix.into());
+        self
+    }
+
+    /// Check whether (command_name, first_arg) matches this rule.
+    pub fn matches(&self, cmd: &str, first_arg: Option<&str>) -> bool {
+        if cmd != self.command {
+            return false;
+        }
+        if self.arg_prefixes.is_empty() {
+            return true;
+        }
+        match first_arg {
+            Some(arg) => self.arg_prefixes.iter().any(|p| arg.starts_with(p.as_str())),
+            None => false,
+        }
+    }
+}
+
+/// Canonical capability profile for a Python script execution.
+///
+/// Profiles are deterministic given (mode, risk, context) and cannot be
+/// silently widened by risk analysis.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PythonCapabilityProfile {
+    pub mode: PythonExecutionMode,
+    /// Directories the script may read from.
+    pub read_roots: Vec<PathBuf>,
+    /// Directories the script may write to.
+    pub write_roots: Vec<PathBuf>,
+    /// Whether subprocess execution is allowed at all.
+    pub allow_subprocess: bool,
+    /// Specific subprocess rules (only checked when allow_subprocess is true).
+    pub allowed_subprocesses: Vec<ExecutableRule>,
+    /// Whether network access is allowed.
+    pub allow_network: bool,
+    /// Environment variables the script may access beyond the minimal allowlist.
+    pub allow_env: Vec<String>,
+    /// Whether dependency installation (pip/conda) is allowed.
+    pub allow_dependency_install: bool,
+    /// Whether destructive filesystem ops (unlink, rmdir, rmtree) are allowed.
+    pub allow_destructive_fs: bool,
+    /// Required sandbox enforcement level.
+    pub sandbox_requirement: SandboxRequirement,
+}
+
+impl PythonCapabilityProfile {
+    /// Build the default profile for Analyze mode.
+    pub fn analyze(workspace_root: &PathBuf) -> Self {
+        Self {
+            mode: PythonExecutionMode::Analyze,
+            read_roots: vec![workspace_root.clone()],
+            write_roots: vec![], // no writes except codegg-managed temp
+            allow_subprocess: false,
+            allowed_subprocesses: vec![],
+            allow_network: false,
+            allow_env: vec![],
+            allow_dependency_install: false,
+            allow_destructive_fs: false,
+            sandbox_requirement: SandboxRequirement::Preferred,
+        }
+    }
+
+    /// Build the default profile for Transform mode.
+    pub fn transform(workspace_root: &PathBuf) -> Self {
+        Self {
+            mode: PythonExecutionMode::Transform,
+            read_roots: vec![workspace_root.clone()],
+            write_roots: vec![workspace_root.clone()],
+            allow_subprocess: false,
+            allowed_subprocesses: vec![],
+            allow_network: false,
+            allow_env: vec![],
+            allow_dependency_install: false,
+            allow_destructive_fs: false,
+            sandbox_requirement: SandboxRequirement::Preferred,
+        }
+    }
+
+    /// Build the default profile for Verify mode.
+    pub fn verify(workspace_root: &PathBuf) -> Self {
+        Self {
+            mode: PythonExecutionMode::Verify,
+            read_roots: vec![workspace_root.clone()],
+            write_roots: vec![], // no workspace writes
+            allow_subprocess: true,
+            allowed_subprocesses: vec![
+                ExecutableRule::new("cargo", "cargo test runner"),
+                ExecutableRule::new("cargo-test", "cargo test binary"),
+                ExecutableRule::new("pytest", "pytest test runner"),
+                ExecutableRule::new("python3", "python -m pytest")
+                    .with_arg_prefix("-m"),
+                ExecutableRule::new("go", "go test runner")
+                    .with_arg_prefix("test"),
+                ExecutableRule::new("make", "make test/build")
+                    .with_arg_prefix("test"),
+                ExecutableRule::new("make", "make build")
+                    .with_arg_prefix("build"),
+            ],
+            allow_network: false,
+            allow_env: vec![],
+            allow_dependency_install: false,
+            allow_destructive_fs: false,
+            sandbox_requirement: SandboxRequirement::Preferred,
+        }
+    }
+
+    /// Build profile from mode and workspace root, then deny capabilities
+    /// flagged by risk analysis. Risk analysis can only narrow, never widen.
+    pub fn from_mode_risk_and_context(
+        mode: PythonExecutionMode,
+        workspace_root: &PathBuf,
+        risk: &PythonRiskAssessment,
+    ) -> Self {
+        let mut profile = match mode {
+            PythonExecutionMode::Analyze => Self::analyze(workspace_root),
+            PythonExecutionMode::Transform => Self::transform(workspace_root),
+            PythonExecutionMode::Verify => Self::verify(workspace_root),
+        };
+
+        // Risk analysis can only deny capabilities, never grant
+        if risk.has_network {
+            profile.allow_network = false;
+        }
+        if risk.has_subprocess && mode != PythonExecutionMode::Verify {
+            profile.allow_subprocess = false;
+            profile.allowed_subprocesses.clear();
+        }
+        if risk.has_destructive_ops {
+            profile.allow_destructive_fs = false;
+        }
+        if risk.has_dynamic_execution && mode == PythonExecutionMode::Verify {
+            // Dynamic execution in verify mode is risky; deny subprocess
+            profile.allow_subprocess = false;
+            profile.allowed_subprocesses.clear();
+        }
+
+        profile
+    }
+}
+
+// ── Sandbox enforcement ─────────────────────────────────────────────
+
+/// Which enforcement backend is active for a given execution.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum SandboxBackend {
+    /// Landlock filesystem sandbox (Linux only).
+    Landlock,
+    /// Portable fallback: cwd containment, env clearing, snapshots.
+    PortableFallback,
+    /// No sandboxing active.
+    None,
+}
+
+impl std::fmt::Display for SandboxBackend {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Landlock => write!(f, "landlock"),
+            Self::PortableFallback => write!(f, "portable_fallback"),
+            Self::None => write!(f, "none"),
+        }
+    }
+}
+
+/// A specific capability that was denied by policy resolution.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CapabilityViolation {
+    /// Name of the denied capability (e.g. "network", "subprocess", "write_workspace").
+    pub capability: String,
+    /// Reason for denial.
+    pub reason: String,
+}
+
+/// Result of the policy resolution step.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PythonPolicyDecision {
+    /// The resolved capability profile.
+    pub profile: PythonCapabilityProfile,
+    /// Capabilities denied by policy (before execution).
+    pub denied: Vec<CapabilityViolation>,
+    /// Non-fatal warnings from policy resolution.
+    pub warnings: Vec<String>,
+    /// Which enforcement backend is active.
+    pub enforcement_backend: SandboxBackend,
+    /// Whether OS-level filesystem isolation is active.
+    pub os_filesystem_isolation: bool,
+    /// Whether network isolation is active (always false until Landlock network support).
+    pub os_network_isolation: bool,
+}
+
 /// Execution mode for Python scripts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum PythonExecutionMode {
@@ -285,6 +509,31 @@ pub struct PythonRunResult {
     pub stderr_label: Option<String>,
     /// Pseudo-local label for diff (not registered in any artifact store; non-resolvable).
     pub diff_label: Option<String>,
+    // ── Enforcement evidence (Phase 06) ──────────────────────────────
+    /// The policy decision that governed this execution.
+    #[serde(default)]
+    pub policy_decision: Option<PythonPolicyDecision>,
+    /// Capabilities that were denied before execution.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub denied_capabilities: Vec<String>,
+    /// Whether OS-level filesystem isolation was active.
+    #[serde(default)]
+    pub os_filesystem_isolation: bool,
+    /// Whether network isolation was active.
+    #[serde(default)]
+    pub os_network_isolation: bool,
+    /// Allowed read roots for this execution.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub effective_read_roots: Vec<PathBuf>,
+    /// Allowed write roots for this execution.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub effective_write_roots: Vec<PathBuf>,
+    /// Subprocess rules that were active (Verify mode).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_subprocesses: Vec<ExecutableRule>,
+    /// Enforcement warnings from policy resolution.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub enforcement_warnings: Vec<String>,
 }
 
 impl PythonRunResult {
@@ -317,6 +566,21 @@ impl PythonRunResult {
         }
         if self.diff.is_some() {
             parts.push("diff: available".to_string());
+        }
+        // Enforcement evidence
+        if !self.denied_capabilities.is_empty() {
+            parts.push(format!("denied: {}", self.denied_capabilities.join(", ")));
+        }
+        if self.os_filesystem_isolation {
+            parts.push("sandbox: os".to_string());
+        } else if self.policy_decision.is_some() {
+            parts.push("sandbox: portable".to_string());
+        }
+        if !self.enforcement_warnings.is_empty() {
+            parts.push(format!(
+                "warnings: {}",
+                self.enforcement_warnings.join(", ")
+            ));
         }
         parts.join(", ")
     }

@@ -81,6 +81,35 @@ pub fn project_python_run(result: &PythonRunResult) -> String {
         lines.push("[RTK eligible: output exceeds threshold]".to_string());
     }
 
+    // Enforcement evidence
+    if !result.denied_capabilities.is_empty() {
+        lines.push(String::new());
+        lines.push(format!(
+            "**Denied capabilities:** {}",
+            result.denied_capabilities.join(", ")
+        ));
+    }
+    if let Some(ref decision) = result.policy_decision {
+        let sandbox_label = match decision.enforcement_backend {
+            super::types::SandboxBackend::Landlock => "Landlock (OS-level)",
+            super::types::SandboxBackend::PortableFallback => "Portable fallback",
+            super::types::SandboxBackend::None => "None",
+        };
+        lines.push(format!("**Sandbox:** {sandbox_label}"));
+        if !decision.warnings.is_empty() {
+            lines.push(format!(
+                "**Policy warnings:** {}",
+                decision.warnings.join("; ")
+            ));
+        }
+    }
+    if !result.enforcement_warnings.is_empty() {
+        lines.push(format!(
+            "**Enforcement warnings:** {}",
+            result.enforcement_warnings.join("; ")
+        ));
+    }
+
     // Artifact handle availability note
     if result.stdout_label.is_some() || result.stderr_label.is_some() {
         lines.push(String::new());
@@ -126,6 +155,14 @@ mod tests {
             stdout_label: None,
             stderr_label: None,
             diff_label: None,
+            policy_decision: None,
+            denied_capabilities: vec![],
+            os_filesystem_isolation: false,
+            os_network_isolation: false,
+            effective_read_roots: vec![],
+            effective_write_roots: vec![],
+            allowed_subprocesses: vec![],
+            enforcement_warnings: vec![],
         }
     }
 
@@ -242,6 +279,70 @@ mod tests {
         let result = make_result(PythonRunStatus::Success, PythonExecutionMode::Transform);
         let text = project_python_run(&result);
         assert!(!text.contains("### diff"));
+    }
+
+    #[test]
+    fn projection_shows_denied_capabilities() {
+        let mut result = make_result(PythonRunStatus::Failed(2), PythonExecutionMode::Analyze);
+        result.denied_capabilities = vec!["network".to_string(), "subprocess".to_string()];
+        let text = project_python_run(&result);
+        assert!(text.contains("Denied capabilities"));
+        assert!(text.contains("network"));
+        assert!(text.contains("subprocess"));
+    }
+
+    #[test]
+    fn projection_shows_sandbox_landlock() {
+        let mut result = make_result(PythonRunStatus::Success, PythonExecutionMode::Analyze);
+        result.policy_decision = Some(super::super::types::PythonPolicyDecision {
+            profile: super::super::types::PythonCapabilityProfile::analyze(
+                &std::path::PathBuf::from("/tmp"),
+            ),
+            denied: vec![],
+            warnings: vec![],
+            enforcement_backend: super::super::types::SandboxBackend::Landlock,
+            os_filesystem_isolation: true,
+            os_network_isolation: false,
+        });
+        let text = project_python_run(&result);
+        assert!(text.contains("Sandbox"));
+        assert!(text.contains("Landlock"));
+    }
+
+    #[test]
+    fn projection_shows_sandbox_portable_fallback() {
+        let mut result = make_result(PythonRunStatus::Success, PythonExecutionMode::Transform);
+        result.policy_decision = Some(super::super::types::PythonPolicyDecision {
+            profile: super::super::types::PythonCapabilityProfile::transform(
+                &std::path::PathBuf::from("/tmp"),
+            ),
+            denied: vec![],
+            warnings: vec!["Landlock unavailable on this OS".to_string()],
+            enforcement_backend: super::super::types::SandboxBackend::PortableFallback,
+            os_filesystem_isolation: false,
+            os_network_isolation: false,
+        });
+        let text = project_python_run(&result);
+        assert!(text.contains("Portable fallback"));
+        assert!(text.contains("Policy warnings"));
+    }
+
+    #[test]
+    fn projection_shows_enforcement_warnings() {
+        let mut result = make_result(PythonRunStatus::Success, PythonExecutionMode::Analyze);
+        result.enforcement_warnings = vec!["cwd not inside workspace".to_string()];
+        let text = project_python_run(&result);
+        assert!(text.contains("Enforcement warnings"));
+        assert!(text.contains("cwd not inside workspace"));
+    }
+
+    #[test]
+    fn projection_no_enforcement_section_when_empty() {
+        let result = make_result(PythonRunStatus::Success, PythonExecutionMode::Analyze);
+        let text = project_python_run(&result);
+        assert!(!text.contains("Denied capabilities"));
+        assert!(!text.contains("Sandbox"));
+        assert!(!text.contains("Enforcement warnings"));
     }
 
     #[test]

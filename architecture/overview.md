@@ -112,7 +112,7 @@ hidden by default — see [MCP](mcp.md)).
 | [command_intent/](command_intent.md) | Command intent classification, risk assessment, and execution capability model | `mod.rs`, `shell_shape.rs`, `plan.rs` |
 | [command_planner/](command_planner.md) | Command planner mapping intents to execution backends with permission generation | `plan.rs` (re-exported via `src/command_planner.rs`) |
 | [command_routing/](command_routing.md) | Backend routing MVP resolving planned execution to concrete subsystems | `src/command_routing.rs` |
-| [python_script/](python_script.md) | First-class Python scripting with Analyze/Transform/Verify modes, AST risk analysis, capability enforcement, snapshots, diff generation | `mod.rs`, `types.rs`, `analyze.rs`, `sandbox.rs`, `snapshot.rs`, `executor.rs`, `projection.rs`, `tool.rs` |
+| [python_script/](python_scripting.md) | First-class Python scripting with Analyze/Transform/Verify modes, AST risk analysis, capability enforcement, OS-level sandbox (Landlock on Linux), evidence reporting | `mod.rs`, `types.rs`, `analyze.rs`, `sandbox.rs`, `snapshot.rs`, `executor.rs`, `projection.rs`, `tool.rs` |
 | [shell_session/](shell_session.md) | Shell session metadata (no PTY) | `mod.rs` |
 | [skills/](skills.md) | Runtime skill loader and activation | `mod.rs` |
 | [snapshot/](snapshot.md) | File state capture and restore | `mod.rs` |

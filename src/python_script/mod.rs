@@ -10,11 +10,13 @@ pub mod types;
 pub use analyze::analyze_python_risk;
 pub use executor::execute_python_script;
 pub use projection::project_python_run;
-pub use sandbox::{check_compatibility, derive_envelope};
+pub use sandbox::{check_compatibility, derive_envelope, resolve_policy, validate_subprocess_invocation};
 pub use tool::PythonScriptTool;
 pub use types::{
-    PythonCapabilityEnvelope, PythonExecutionMode, PythonRiskAssessment, PythonRiskLevel,
+    CapabilityViolation, ExecutableRule, PythonCapabilityEnvelope, PythonCapabilityProfile,
+    PythonExecutionMode, PythonPolicyDecision, PythonRiskAssessment, PythonRiskLevel,
     PythonRiskScanner, PythonRunResult, PythonRunStatus, PythonScriptRequest, PythonScriptSource,
+    SandboxBackend, SandboxRequirement,
 };
 
 #[cfg(test)]
@@ -541,6 +543,14 @@ mod tests {
             stdout_label: None,
             stderr_label: None,
             diff_label: None,
+            policy_decision: None,
+            denied_capabilities: vec![],
+            os_filesystem_isolation: false,
+            os_network_isolation: false,
+            effective_read_roots: vec![],
+            effective_write_roots: vec![],
+            allowed_subprocesses: vec![],
+            enforcement_warnings: vec![],
         };
         let text = project_python_run(&result);
         assert!(text.contains("Timed Out"));
@@ -564,6 +574,14 @@ mod tests {
             stdout_label: None,
             stderr_label: None,
             diff_label: None,
+            policy_decision: None,
+            denied_capabilities: vec![],
+            os_filesystem_isolation: false,
+            os_network_isolation: false,
+            effective_read_roots: vec![],
+            effective_write_roots: vec![],
+            allowed_subprocesses: vec![],
+            enforcement_warnings: vec![],
         };
         let text = project_python_run(&result);
         assert!(text.contains("Spawn Error"));
@@ -600,6 +618,14 @@ mod tests {
             stdout_label: None,
             stderr_label: None,
             diff_label: None,
+            policy_decision: None,
+            denied_capabilities: vec![],
+            os_filesystem_isolation: false,
+            os_network_isolation: false,
+            effective_read_roots: vec![],
+            effective_write_roots: vec![],
+            allowed_subprocesses: vec![],
+            enforcement_warnings: vec![],
         };
         let text = project_python_run(&result);
         assert!(text.contains("network access detected"));
@@ -623,6 +649,14 @@ mod tests {
             stdout_label: None,
             stderr_label: None,
             diff_label: None,
+            policy_decision: None,
+            denied_capabilities: vec![],
+            os_filesystem_isolation: false,
+            os_network_isolation: false,
+            effective_read_roots: vec![],
+            effective_write_roots: vec![],
+            allowed_subprocesses: vec![],
+            enforcement_warnings: vec![],
         };
         let text = project_python_run(&result);
         assert!(!text.contains("### stdout"));
@@ -647,6 +681,14 @@ mod tests {
             stdout_label: None,
             stderr_label: None,
             diff_label: None,
+            policy_decision: None,
+            denied_capabilities: vec![],
+            os_filesystem_isolation: false,
+            os_network_isolation: false,
+            effective_read_roots: vec![],
+            effective_write_roots: vec![],
+            allowed_subprocesses: vec![],
+            enforcement_warnings: vec![],
         };
         let text = project_python_run(&result);
         assert!(text.contains("### stderr"));
@@ -673,6 +715,14 @@ mod tests {
             stdout_label: None,
             stderr_label: None,
             diff_label: None,
+            policy_decision: None,
+            denied_capabilities: vec![],
+            os_filesystem_isolation: false,
+            os_network_isolation: false,
+            effective_read_roots: vec![],
+            effective_write_roots: vec![],
+            allowed_subprocesses: vec![],
+            enforcement_warnings: vec![],
         };
         let s = result.summary();
         assert!(s.contains("transform"));
@@ -698,6 +748,14 @@ mod tests {
             stdout_label: None,
             stderr_label: None,
             diff_label: None,
+            policy_decision: None,
+            denied_capabilities: vec![],
+            os_filesystem_isolation: false,
+            os_network_isolation: false,
+            effective_read_roots: vec![],
+            effective_write_roots: vec![],
+            allowed_subprocesses: vec![],
+            enforcement_warnings: vec![],
         };
         let s = result.summary();
         assert!(s.contains("exit: 42"));
@@ -733,6 +791,14 @@ mod tests {
             stdout_label: None,
             stderr_label: None,
             diff_label: None,
+            policy_decision: None,
+            denied_capabilities: vec![],
+            os_filesystem_isolation: false,
+            os_network_isolation: false,
+            effective_read_roots: vec![],
+            effective_write_roots: vec![],
+            allowed_subprocesses: vec![],
+            enforcement_warnings: vec![],
         };
         let s = result.summary();
         assert!(s.contains("file I/O operations detected"));

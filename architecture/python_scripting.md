@@ -1,6 +1,6 @@
 # Python Scripting
 
-First-class Python script execution with risk analysis, three execution modes, and async subprocess management.
+First-class Python script execution with risk analysis, three execution modes, OS-level sandbox enforcement, and async subprocess management.
 
 ## Source
 
@@ -11,9 +11,9 @@ First-class Python script execution with risk analysis, three execution modes, a
 | File | Purpose |
 |------|---------|
 | `mod.rs` | Module root, re-exports, integration tests |
-| `types.rs` | Core types: `PythonExecutionMode`, `PythonScriptSource`, `PythonCapabilityEnvelope`, `PythonRiskLevel`, `PythonRiskAssessment`, `PythonRiskScanner`, `PythonScriptRequest`, `PythonRunStatus`, `PythonRunResult` |
+| `types.rs` | Core types: `PythonExecutionMode`, `PythonScriptSource`, `PythonCapabilityEnvelope`, `PythonRiskLevel`, `PythonRiskAssessment`, `PythonRiskScanner`, `PythonScriptRequest`, `PythonRunStatus`, `PythonRunResult`, `PythonCapabilityProfile`, `ExecutableRule`, `SandboxRequirement`, `SandboxBackend`, `CapabilityViolation`, `PythonPolicyDecision` |
 | `analyze.rs` | AST-first risk analyzer with string-scanning fallback |
-| `sandbox.rs` | `derive_envelope(mode, code)` and `check_compatibility(mode, code)` for capability enforcement |
+| `sandbox.rs` | `resolve_policy()`, `validate_subprocess_invocation()`, `derive_envelope()`, `check_compatibility()` |
 | `snapshot.rs` | `WorkspaceSnapshot::capture(root)` and `diff()` for change detection |
 | `executor.rs` | `execute_python_script(request)` — validates, runs risk analysis, enforces capabilities, captures snapshots, executes with timeout, generates diffs |
 | `projection.rs` | `project_python_run(result)` — formats run results into model-facing markdown |
@@ -89,6 +89,70 @@ pub struct PythonRunResult {
 
 Labels are pseudo-local run identifiers, not registered in any artifact store. They are not expandable via `context_read` or other tools.
 
+`PythonRunResult` also carries enforcement evidence fields (all `#[serde(default)]`):
+```rust
+pub policy_decision: Option<PythonPolicyDecision>,
+pub denied_capabilities: Vec<String>,
+pub os_filesystem_isolation: bool,
+pub os_network_isolation: bool,
+pub effective_read_roots: Vec<PathBuf>,
+pub effective_write_roots: Vec<PathBuf>,
+pub allowed_subprocesses: Vec<ExecutableRule>,
+pub enforcement_warnings: Vec<String>,
+```
+
+### `PythonCapabilityProfile`
+
+Determines allowed filesystem roots, subprocess rules, and sandbox requirements per execution mode and risk level:
+
+```rust
+pub struct PythonCapabilityProfile {
+    pub mode: PythonExecutionMode,
+    pub read_roots: Vec<PathBuf>,
+    pub write_roots: Vec<PathBuf>,
+    pub allow_subprocess: bool,
+    pub allowed_subprocesses: Vec<ExecutableRule>,
+    pub allow_network: bool,
+    pub allow_env: bool,
+    pub allow_dependency_install: bool,
+    pub allow_destructive_fs: bool,
+    pub sandbox_requirement: SandboxRequirement,
+}
+```
+
+Constructors: `analyze()`, `transform()`, `verify()`, `from_mode_risk_and_context()`.
+
+### `ExecutableRule`
+
+Controls which subprocess binaries are allowed in Verify mode:
+
+```rust
+pub struct ExecutableRule {
+    pub command: String,
+    pub arg_prefixes: Vec<String>,
+    pub reason: String,
+}
+```
+
+Default rules for Verify mode: `python3 -m pytest`, `python3 -m unittest`, `cargo test`, `cargo build`, `cargo check`.
+
+### `SandboxBackend`
+
+`Landlock` (Linux only, OS-level filesystem isolation), `PortableFallback` (env_clear + cwd containment + snapshot detection), or `None`.
+
+### `PythonPolicyDecision`
+
+```rust
+pub struct PythonPolicyDecision {
+    pub profile: PythonCapabilityProfile,
+    pub denied: Vec<CapabilityViolation>,
+    pub warnings: Vec<String>,
+    pub enforcement_backend: SandboxBackend,
+    pub os_filesystem_isolation: bool,
+    pub os_network_isolation: bool,
+}
+```
+
 ## Risk Analysis
 
 ```rust
@@ -107,10 +171,31 @@ Priority: destructive_ops > subprocess/network > file_io > safe.
 
 ## Capability Enforcement
 
+### Policy Resolution
+
+```rust
+pub fn resolve_policy(
+    mode: PythonExecutionMode,
+    code: &str,
+    workspace_root: Option<&Path>,
+) -> PythonPolicyDecision
+```
+
+Full enforcement pipeline:
+1. Run AST risk analysis (`analyze_python_risk`)
+2. Build capability profile via `PythonCapabilityProfile::from_mode_risk_and_context()`
+3. Cross-check risk against profile for violations
+4. Resolve enforcement backend (Landlock on Linux, PortableFallback elsewhere)
+5. Produce `PythonPolicyDecision` with denied capabilities, warnings, and backend info
+
+### Legacy Enforcement (backward compat)
+
 ```rust
 pub fn check_compatibility(mode: PythonExecutionMode, code: &str) -> Vec<String>
 pub fn derive_envelope(mode: PythonExecutionMode, code: &str) -> (PythonCapabilityEnvelope, PythonRiskAssessment)
 ```
+
+The executor runs both `resolve_policy()` (new) and `derive_envelope()` (legacy) for backward compatibility.
 
 Default envelopes per mode:
 - `Analyze()`: read_workspace only
@@ -134,19 +219,21 @@ Flow:
 1. Compute script body SHA-256 hash for reproducibility tracking
 2. Validate script length against `MAX_SCRIPT_LENGTH` (500KB)
 3. Validate CWD (must exist, must be directory, must be inside workspace root when provided)
-4. Derive capability envelope and run risk analysis
-5. **Pre-execution capability check**: `check_compatibility()` blocks scripts with denied capabilities BEFORE any child process is spawned
-6. Materialize script to temp file (under `.codegg/python_runs/`)
-7. **Pre-execution snapshot** for ALL modes (Analyze, Transform, Verify)
-8. Capture pre-execution file contents for diff generation
-9. Find python interpreter (`VIRTUAL_ENV` > `python3` > `python`)
-10. Execute with timeout and **minimal environment isolation**:
-    - Environment cleared via `.env_clear()` with selective restore of: `PATH`, `HOME`, `LANG`, `LC_ALL`, `VIRTUAL_ENV`, `PYTHONPATH`, `DYLD_LIBRARY_PATH`
-11. **Post-execution snapshot and diff** for ALL modes:
+4. **Policy resolution**: `resolve_policy()` determines capability profile, denied capabilities, and enforcement backend
+5. **Pre-execution capability check**: blocks scripts with denied capabilities before any child process is spawned
+6. Legacy `derive_envelope()` + `check_compatibility()` run for backward compat evidence
+7. Materialize script to temp file (under `.codegg/python_runs/`)
+8. **Pre-execution snapshot** for ALL modes (Analyze, Transform, Verify)
+9. Capture pre-execution file contents for diff generation
+10. Find python interpreter (`VIRTUAL_ENV` > `python3` > `python`)
+11. Execute with timeout, **minimal environment isolation** (`.env_clear()` + selective restore), and **OS-level sandbox**:
+    - **Linux with Landlock**: filesystem restrictions via `landlock_restrict_self()` syscall; allowed paths = workspace + tmp + Python prefix + /usr/lib; denied paths = /proc, /sys, /dev, root home, .ssh, .aws
+    - **Portable fallback**: env_clear + cwd containment + snapshot-based post-hoc change detection
+12. **Post-execution snapshot and diff** for ALL modes:
     - Analyze/Verify: any file change is a policy violation → run failed with exit code -2
     - Transform: file changes are allowed and reported; textual diff generated
-12. Generate artifact handles (`python_run://<id>/stdout`, `stderr`, `diff`)
-13. Return `PythonRunResult` with all fields populated
+13. Generate artifact handles (`python_run://<id>/stdout`, `stderr`, `diff`)
+14. Return `PythonRunResult` with all fields populated including enforcement evidence
 
 Constants: `DEFAULT_TIMEOUT_SECS = 60`, `MAX_SCRIPT_LENGTH = 500_000`.
 
