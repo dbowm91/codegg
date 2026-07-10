@@ -1349,14 +1349,14 @@ mod tests {
     }
 
     #[test]
-    fn git_branch_d_is_mutating() {
+    fn git_branch_lower_d_is_mutating() {
         let intent = classify_command("git branch -d old-branch");
         assert_eq!(intent.kind, CommandIntentKind::GitMutating);
         assert_eq!(intent.risk.level, RiskLevel::Medium);
     }
 
     #[test]
-    fn git_branch_D_is_mutating() {
+    fn git_branch_upper_d_is_mutating() {
         let intent = classify_command("git branch -D force-delete");
         assert_eq!(intent.kind, CommandIntentKind::GitMutating);
         assert_eq!(intent.risk.level, RiskLevel::Medium);

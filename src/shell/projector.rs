@@ -3026,6 +3026,9 @@ pub fn default_command_projection_with_budget(
 /// Uses [`ShellOutputConfig`] to determine policy, budget, and redaction
 /// behavior. Returns the full [`ProjectionResult`] so callers can access
 /// metadata (projector name, exactness, expansion handles, etc.).
+///
+/// Redaction is applied inside [`ProjectionSelector::project`] when the
+/// target requires it; this function does NOT apply a second pass.
 pub fn config_command_projection(
     run: &CommandRun,
     store: &CommandOutputStore,
@@ -3044,14 +3047,12 @@ pub fn config_command_projection(
         allow_external_backend: policy.allow_external_backend,
     };
     let selector = ProjectionSelector::with_defaults();
-    let mut result = selector.project(request, store);
-
-    // Apply redaction if the policy and target require it
-    if policy.should_redact(output_config, target) {
-        apply_redaction_hook(&mut result, target);
-    }
-
-    result
+    // Redaction is applied inside selector.project() when
+    // target.requires_redaction() && policy.redact_model_visible.
+    // Do NOT apply it again here — a second pass would overwrite
+    // RedactionState::Applied { replacements: N } with
+    // AppliedNoMatches, losing the replacement count metadata.
+    selector.project(request, store)
 }
 
 /// Render a metadata header for model-facing command output.

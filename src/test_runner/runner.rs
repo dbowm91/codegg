@@ -118,6 +118,7 @@ pub async fn run_resolved_test(
     request: &TestRunRequest,
     resolved: ResolvedTestCommand,
     sink: Option<&dyn TestEventSink>,
+    run_store: Option<&Arc<dyn codegg_core::run_store::RunStore>>,
 ) -> Result<TestReport, TestRunError> {
     let timeout_secs = request.timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS);
     if timeout_secs == 0 {
@@ -230,6 +231,13 @@ pub async fn run_resolved_test(
     // Append to the previous-failures index (best-effort; index write failure
     // must not fail the test run).
     crate::test_runner::index::append_to_index(&report, &request.workdir).await;
+
+    // Persist to RunStore (best-effort; RunStore write failure must not fail
+    // the test run). This gives test runs the same RunStore lifecycle as
+    // bash/python runs.
+    if let Some(store) = run_store {
+        persist_to_run_store(store, &report, &resolved, &request.workdir).await;
+    }
 
     Ok(report)
 }
@@ -575,9 +583,143 @@ fn build_summary(parse_state: &TestParseState, exit_code: Option<i32>) -> String
 pub async fn resolve_and_run_test(
     request: TestRunRequest,
     sink: Option<&dyn TestEventSink>,
+    run_store: Option<&Arc<dyn codegg_core::run_store::RunStore>>,
 ) -> Result<TestReport, TestRunError> {
     let resolved = resolve_test_command(&request)?;
-    run_resolved_test(&request, resolved, sink).await
+    run_resolved_test(&request, resolved, sink, run_store).await
+}
+
+/// Persist a completed test run to the RunStore. Best-effort; errors are
+/// logged but do not propagate.
+async fn persist_to_run_store(
+    store: &Arc<dyn codegg_core::run_store::RunStore>,
+    report: &TestReport,
+    resolved: &ResolvedTestCommand,
+    workdir: &Path,
+) {
+    use codegg_core::run_store::*;
+
+    let cwd = resolved.cwd.clone();
+    let workspace_root = workdir.to_path_buf();
+
+    let draft = RunDraft {
+        kind: RunKind::Test,
+        invocation: RunInvocation {
+            command: resolved.argv.join(" "),
+            argv: Some(resolved.argv.clone()),
+            script_hash: None,
+        },
+        session_id: None,
+        parent_run_id: None,
+        workspace_root,
+        cwd,
+        backend: BackendRecord {
+            family: "test_runner".to_string(),
+            detail: Some(resolved.scope_label.clone()),
+        },
+        risk: RiskRecord {
+            level: "low".to_string(),
+            has_subprocess: true,
+            has_git_mutation: false,
+            has_destructive_mutation: false,
+        },
+    };
+
+    let status = match report.status {
+        TestStatus::Passed => RunStatus::Complete,
+        TestStatus::Failed => RunStatus::Failed,
+        TestStatus::TimedOut => RunStatus::TimedOut,
+        TestStatus::Error => RunStatus::Failed,
+        TestStatus::Cancelled => RunStatus::Cancelled,
+    };
+
+    let handle = match store.begin_run(draft).await {
+        Ok(h) => h,
+        Err(e) => {
+            tracing::warn!("test runner: failed to begin RunStore run: {e}");
+            return;
+        }
+    };
+
+    // Write stdout artifact
+    if let Some(ref stdout_path) = report.stdout_log {
+        if let Ok(data) = std::fs::read(stdout_path) {
+            if !data.is_empty() {
+                let _ = store
+                    .write_artifact(
+                        &handle,
+                        ArtifactInput {
+                            kind: ArtifactKind::Stdout,
+                            data,
+                            mime_type: "text/plain".to_string(),
+                            safe_for_model: true,
+                        },
+                    )
+                    .await;
+            }
+        }
+    }
+
+    // Write stderr artifact
+    if let Some(ref stderr_path) = report.stderr_log {
+        if let Ok(data) = std::fs::read(stderr_path) {
+            if !data.is_empty() {
+                let _ = store
+                    .write_artifact(
+                        &handle,
+                        ArtifactInput {
+                            kind: ArtifactKind::Stderr,
+                            data,
+                            mime_type: "text/plain".to_string(),
+                            safe_for_model: true,
+                        },
+                    )
+                    .await;
+            }
+        }
+    }
+
+    // Write test report JSON artifact
+    if let Ok(report_json) = serde_json::to_vec_pretty(report) {
+        let _ = store
+            .write_artifact(
+                &handle,
+                ArtifactInput {
+                    kind: ArtifactKind::TestReport,
+                    data: report_json,
+                    mime_type: "application/json".to_string(),
+                    safe_for_model: true,
+                },
+            )
+            .await;
+    }
+
+    // Build rerun descriptor so can_rerun works from the TUI
+    let rerun = Some(RerunDescriptor {
+        argv: Some(resolved.argv.clone()),
+        script_source_ref: None,
+        backend_family: "test_runner".to_string(),
+        cwd: resolved.cwd.clone(),
+        workspace_root: workdir.to_path_buf(),
+        mode: Some(resolved.scope_label.clone()),
+        config_profile: None,
+        parent_run_id: None,
+    });
+
+    let _ = store
+        .complete_run(
+            handle,
+            RunCompletion {
+                status,
+                completed_at: Utc::now(),
+                permissions: vec![],
+                sandbox: None,
+                projection: None,
+                changes: vec![],
+                rerun,
+            },
+        )
+        .await;
 }
 
 #[cfg(test)]
@@ -615,7 +757,9 @@ mod tests {
             max_report_bytes: None,
             session_id: None,
         };
-        let result = run_resolved_test(&request, resolved, None).await.unwrap();
+        let result = run_resolved_test(&request, resolved, None, None)
+            .await
+            .unwrap();
         assert_eq!(result.status, TestStatus::Passed);
         assert_eq!(result.exit_code, Some(0));
         assert!(result.log_dir.is_some());
@@ -639,7 +783,7 @@ mod tests {
             max_report_bytes: None,
             session_id: None,
         };
-        let result = resolve_and_run_test(request, None).await.unwrap();
+        let result = resolve_and_run_test(request, None, None).await.unwrap();
         assert_eq!(result.status, TestStatus::Failed);
         assert!(result.exit_code.unwrap_or(0) != 0);
         assert!(!result.failures.is_empty());
@@ -663,7 +807,9 @@ mod tests {
             max_report_bytes: None,
             session_id: None,
         };
-        let result = run_resolved_test(&request, resolved, None).await.unwrap();
+        let result = run_resolved_test(&request, resolved, None, None)
+            .await
+            .unwrap();
         assert_eq!(result.status, TestStatus::TimedOut);
         assert!(result.timeout.is_some());
         let timeout = result.timeout.unwrap();
@@ -687,7 +833,9 @@ mod tests {
             max_report_bytes: None,
             session_id: None,
         };
-        let result = run_resolved_test(&request, resolved, None).await.unwrap();
+        let result = run_resolved_test(&request, resolved, None, None)
+            .await
+            .unwrap();
         assert_eq!(result.status, TestStatus::TimedOut);
         assert!(result.timeout.is_some());
         let timeout = result.timeout.unwrap();
@@ -712,7 +860,7 @@ mod tests {
             scope_label: "test".into(),
         };
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let err = rt.block_on(run_resolved_test(&request, resolved, None));
+        let err = rt.block_on(run_resolved_test(&request, resolved, None, None));
         assert!(matches!(err, Err(TestRunError::EmptyCommand)));
     }
 
@@ -734,7 +882,7 @@ mod tests {
             scope_label: "test".into(),
         };
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let err = rt.block_on(run_resolved_test(&request, resolved, None));
+        let err = rt.block_on(run_resolved_test(&request, resolved, None, None));
         assert!(matches!(err, Err(TestRunError::InvalidRequest(_))));
     }
 
@@ -802,7 +950,9 @@ mod tests {
             max_report_bytes: None,
             session_id: None,
         };
-        let result = run_resolved_test(&request, resolved, None).await.unwrap();
+        let result = run_resolved_test(&request, resolved, None, None)
+            .await
+            .unwrap();
         assert_eq!(result.status, TestStatus::Failed);
         assert_eq!(result.exit_code, Some(1));
         assert_eq!(result.failures[0].failure_class, FailureClass::NonzeroExit);
@@ -829,7 +979,9 @@ mod tests {
             max_report_bytes: None,
             session_id: None,
         };
-        let result = run_resolved_test(&request, resolved, None).await.unwrap();
+        let result = run_resolved_test(&request, resolved, None, None)
+            .await
+            .unwrap();
         assert_eq!(result.status, TestStatus::TimedOut);
         let timeout = result.timeout.unwrap();
         assert!(timeout.last_output.is_some());
@@ -883,7 +1035,7 @@ mod tests {
             session_id: Some("test-session".into()),
         };
         let sink = TestSink::new();
-        let result = run_resolved_test(&request, resolved, Some(&sink))
+        let result = run_resolved_test(&request, resolved, Some(&sink), None)
             .await
             .unwrap();
         assert_eq!(result.status, TestStatus::Passed);
@@ -908,7 +1060,7 @@ mod tests {
             max_report_bytes: None,
             session_id: None,
         };
-        let result = run_resolved_test(&request, resolved, None).await;
+        let result = run_resolved_test(&request, resolved, None, None).await;
         assert!(result.is_ok());
     }
 
@@ -962,7 +1114,9 @@ mod tests {
             max_report_bytes: None,
             session_id: None,
         };
-        let result = run_resolved_test(&request, resolved, None).await.unwrap();
+        let result = run_resolved_test(&request, resolved, None, None)
+            .await
+            .unwrap();
         assert_eq!(result.status, TestStatus::TimedOut);
         assert!(result.timeout.is_some());
         assert!(result.log_dir.is_some());

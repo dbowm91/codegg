@@ -16,6 +16,7 @@ This document defines the test taxonomy, resource model, and guidance for adding
 | `storage` | SQLite pool ops, session CRUD, snapshot capture/restore | Serial or low parallelism | `tests/session_crud.rs`, `tests/snapshot.rs`, `goal::store` |
 | `process-heavy` | Fake LSP stdio, supervisor restart, daemon sockets, subprocess spawning | Serial (`--test-threads=1`) | `tests/lsp.rs`, `tests/lsp_composite_stdio.rs`, `tests/supervisor_restart_stdio.rs` |
 | `plugin-heavy` | Wasmtime runtime, plugin install/registry/management | Serial | `tests/plugin.rs`, `src/plugin/management.rs` |
+| `adversarial` | Command routing, Python sandbox, context projection adversarial tests | Serial | `tests/command_routing_adversarial.rs` (139), `tests/python_sandbox_adversarial.rs` (57), `tests/context_projection_adversarial.rs` (90) |
 | `real-lsp` | Actual language server smoke tests (rust-analyzer, pyright, gopls) | Manual/scheduled only | `crates/egglsp/tests/real_server_smoke.rs` |
 | `release-full` | Conservative full validation for main/tags | Serial | `cargo test --workspace --all-features -- --test-threads=1` |
 
@@ -118,10 +119,11 @@ Classify every new test against these resource classes before writing it:
 | `storage` | `current_thread` | `isolated_pool()` | Serial or low | Default | SQLite CRUD, session, snapshot, goal store |
 | `process-heavy` | `current_thread` or `multi_thread` | `shared_pool()` | Serial (`--test-threads=1`) | Default | Fake LSP stdio, supervisor, daemon, subprocess spawn |
 | `plugin-heavy` | `current_thread` | none | Serial | Default | Wasmtime runtime, plugin install/registry |
+| `adversarial` | `current_thread` | none | Serial | Default | Command routing, Python sandbox, context projection adversarial tests |
 | `real-lsp` | `multi_thread` with bounded workers | none | Manual/scheduled | Separate | Actual language server subprocesses |
 | `release-full` | varies | varies | Serial | Default | Full workspace `--all-features` sweep |
 
-**Quick decision**: If the test spawns `tokio::process::Command` or `tokio::spawn`, use `multi_thread`. If it touches SQLite, use `isolated_pool()`. If it needs installed binaries, it's `real-lsp` (never in default CI).
+**Quick decision**: If the test spawns `tokio::process::Command` or `tokio::spawn`, use `multi_thread`. If it touches SQLite, use `isolated_pool()`. If it needs installed binaries, it's `real-lsp` (never in default CI). Adversarial tests (command routing, Python sandbox, context projection) are `current_thread` and serial — they exercise security boundaries with crafted inputs.
 
 ## Local Commands
 
@@ -141,6 +143,11 @@ cargo test --features lsp-test-support --test lsp_composite_stdio
 
 # Plugin tests (serial)
 cargo test -p codegg --lib plugin --all-features
+
+# Adversarial tests (serial)
+cargo test --test command_routing_adversarial
+cargo test --test python_sandbox_adversarial
+cargo test --test context_projection_adversarial
 
 # Real LSP smoke tests (manual, requires installed servers)
 cargo test -p egglsp --features lsp-real-server-tests --test real_server_smoke -- rust_analyzer

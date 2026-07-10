@@ -380,7 +380,7 @@ mod tests {
 
     #[test]
     fn report_caps_under_total_byte_boundary_does_not_truncate() {
-        let mut report = base_report(TestStatus::Passed);
+        let report = base_report(TestStatus::Passed);
         let text = format_test_report_with_cap(&report, 1_000_000);
         assert!(
             !text.contains("report body truncated to fit max_report_bytes"),

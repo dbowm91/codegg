@@ -93,3 +93,11 @@ cargo test -p codegg --lib command_routing
 ```
 
 Includes 7 new tests for GitMutating routing, kill switch behavior, and fallback paths.
+
+### Adversarial Test Coverage
+
+```bash
+cargo test --test command_routing_adversarial
+```
+
+139 adversarial tests covering: command smuggling, workspace escape, kill switches, Observe/Active modes, per-family RouteLevel overrides, validation failures, safe/dangerous git mutation routing, and full pipeline integration. These tests exercise the classify → plan → route pipeline end-to-end with adversarial inputs.

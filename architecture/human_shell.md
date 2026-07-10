@@ -364,7 +364,7 @@ RTK is disabled by default. When enabled via config:
 
 ### Redaction
 
-Six deterministic `RedactRule` implementations in `src/shell/redactor.rs`: `AuthorizationRule`, `EnvSecretRule`, `PemBlockRule`, `CloudCredentialRule`, `EmbeddedCredentialUrlRule`, `SessionMaterialRule`. `apply_redaction_hook` is called inside `ProjectionSelector::project` so redaction cannot be bypassed by RTK or native projectors. Replacement markers are stable strings (e.g. `[REDACTED:bearer-token]`).
+Six deterministic `RedactRule` implementations in `src/shell/redactor.rs`: `AuthorizationRule`, `EnvSecretRule`, `PemBlockRule`, `CloudCredentialRule`, `EmbeddedCredentialUrlRule`, `SessionMaterialRule`. `apply_redaction_hook` is called inside `ProjectionSelector::project` so redaction cannot be bypassed by RTK or native projectors. Redaction is now applied only inside `ProjectionSelector::project()` — one authoritative coordinator. `config_command_projection()` does NOT apply redaction separately (the previous duplicate call was removed to prevent overwriting `RedactionState::Applied { replacements: N }` with `AppliedNoMatches`). Replacement markers are stable strings (e.g. `[REDACTED:bearer-token]`).
 
 ### Evaluation Harness
 

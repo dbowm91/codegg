@@ -337,7 +337,12 @@ impl ToolRegistry {
         registry.register(crate::tool::replace::ReplaceTool::default());
         registry.register(crate::tool::review::ReviewTool::default());
         registry.register(crate::tool::terminal::TerminalTool::default());
-        registry.register(crate::tool::test::TestTool);
+        let test_tool = if let Some(ref store) = options.run_store {
+            crate::tool::test::TestTool::with_run_store(store.clone())
+        } else {
+            crate::tool::test::TestTool::default()
+        };
+        registry.register(test_tool);
         let python_tool = if let Some(ref store) = options.run_store {
             crate::python_script::tool::PythonScriptTool::with_run_store(store.clone())
         } else {

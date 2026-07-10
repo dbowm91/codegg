@@ -148,7 +148,22 @@ Returns `Ok(CommandPlan)` if all checks pass, `Err(reason)` otherwise. Failed va
 
 ### Permission Generation
 
-`generate_permission_requests()` maps each `ExecutionCapability` in the intent's risk assessment to a `CommandPermissionRequest` with a default decision (`Allow`/`Ask`/`Deny`). Reject backends produce no permissions.
+`generate_permission_requests()` maps each `ExecutionCapability` in the intent's risk assessment to a `CommandPermissionRequest` with a context-aware default decision (`Allow`/`Ask`/`Deny`). Reject backends produce no permissions.
+
+| Capability | Default | Rationale |
+|------------|---------|-----------|
+| `ReadWorkspace` | `Allow` | Read-only, safe |
+| `Subprocess` | `Allow` | Command execution is expected |
+| `EnvAccess` | `Allow` | Environment reads are expected |
+| `ContextPromotion` | `Allow` | Output promotion is a user action |
+| `Network` | `Ask` | Network access needs user consent |
+| `WriteWorkspace` | `Allow` for formatters, `Ask` otherwise | `cargo fmt`, `prettier`, `black`, `isort`, `rustfmt` auto-allowed; other writes ask |
+| `GitMutation` | `Allow` for safe subcommands, `Ask` otherwise | Safe mutations (add, commit, stash push, checkout, switch, restore) auto-allowed; all others ask |
+| `DependencyInstall` | `Deny` | Package installs mutate global state |
+| `OutsideWorkspace` | `Deny` | Access outside workspace is unsafe |
+| `DestructiveFileMutation` | `Deny` | Destructive operations are blocked |
+
+The `is_formatter_command()` helper checks the intent kind (Format) and command text for `cargo fmt`, `prettier`, `black`, `isort`, `rustfmt`. The `is_safe_git_subcommand()` helper checks parsed argv for safe subcommands (add, commit, stash push, checkout, switch, restore).
 
 ## Re-exports
 

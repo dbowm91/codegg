@@ -409,6 +409,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(non_snake_case)]
     fn __import___returns_low() {
         let result = analyze_python_risk("__import__('os')");
         assert!(result.has_dynamic_execution);

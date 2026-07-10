@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use serde_json::json;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Instant;
 
 use crate::error::ToolError;
@@ -18,8 +19,27 @@ use crate::tool::{Tool, ToolCategory};
 /// make test, and similar test commands. The tool streams full stdout/stderr
 /// to logs, classifies timeouts/failures, and returns a compact report
 /// instead of dumping full output into context.
-#[derive(Default)]
-pub struct TestTool;
+pub struct TestTool {
+    run_store: Option<Arc<dyn codegg_core::run_store::RunStore>>,
+}
+
+impl TestTool {
+    pub fn new() -> Self {
+        Self { run_store: None }
+    }
+
+    pub fn with_run_store(store: Arc<dyn codegg_core::run_store::RunStore>) -> Self {
+        Self {
+            run_store: Some(store),
+        }
+    }
+}
+
+impl Default for TestTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 #[async_trait]
 impl Tool for TestTool {
@@ -81,9 +101,13 @@ impl Tool for TestTool {
     async fn execute(&self, input: serde_json::Value) -> Result<String, ToolError> {
         let request = parse_test_request(&input)?;
         let max_report_bytes = request.max_report_bytes;
-        let report = resolve_and_run_test(request, Some(&crate::test_runner::BusEventSink))
-            .await
-            .map_err(|e| ToolError::Execution(format!("test runner error: {e}")))?;
+        let report = resolve_and_run_test(
+            request,
+            Some(&crate::test_runner::BusEventSink),
+            self.run_store.as_ref(),
+        )
+        .await
+        .map_err(|e| ToolError::Execution(format!("test runner error: {e}")))?;
         Ok(format_test_report_capped(&report, max_report_bytes))
     }
 
@@ -95,9 +119,13 @@ impl Tool for TestTool {
         let start = Instant::now();
         let request = parse_test_request(&input)?;
         let max_report_bytes = request.max_report_bytes;
-        let report = resolve_and_run_test(request, Some(&crate::test_runner::BusEventSink))
-            .await
-            .map_err(|e| ToolError::Execution(format!("test runner error: {e}")))?;
+        let report = resolve_and_run_test(
+            request,
+            Some(&crate::test_runner::BusEventSink),
+            self.run_store.as_ref(),
+        )
+        .await
+        .map_err(|e| ToolError::Execution(format!("test runner error: {e}")))?;
         let output = format_test_report_capped(&report, max_report_bytes);
         let elapsed_ms = start.elapsed().as_millis() as u64;
 
@@ -254,7 +282,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_tool_rejects_missing_scope() {
-        let tool = TestTool;
+        let tool = TestTool::default();
         let input = json!({});
         let result = tool.execute(input).await;
         assert!(result.is_err());
@@ -267,7 +295,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_tool_rejects_package_scope_without_package() {
-        let tool = TestTool;
+        let tool = TestTool::default();
         let input = json!({"scope": "package"});
         let result = tool.execute(input).await;
         assert!(result.is_err());
@@ -280,7 +308,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_tool_rejects_file_scope_without_path() {
-        let tool = TestTool;
+        let tool = TestTool::default();
         let input = json!({"scope": "file"});
         let result = tool.execute(input).await;
         assert!(result.is_err());
@@ -293,7 +321,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_tool_rejects_custom_scope_without_command() {
-        let tool = TestTool;
+        let tool = TestTool::default();
         let input = json!({"scope": "custom"});
         let result = tool.execute(input).await;
         assert!(result.is_err());
@@ -306,7 +334,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_tool_rejects_unknown_scope() {
-        let tool = TestTool;
+        let tool = TestTool::default();
         let input = json!({"scope": "invalid"});
         let result = tool.execute(input).await;
         assert!(result.is_err());
@@ -319,7 +347,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_tool_rejects_custom_command_not_in_allowlist() {
-        let tool = TestTool;
+        let tool = TestTool::default();
         let input = json!({"scope": "custom", "command": "rm -rf /"});
         let result = tool.execute(input).await;
         assert!(result.is_err());
@@ -333,7 +361,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_tool_accepts_custom_command_in_allowlist() {
-        let tool = TestTool;
+        let tool = TestTool::default();
         let input = json!({"scope": "custom", "command": "cargo test --lib", "workdir": "/tmp"});
         let result = tool.execute(input).await;
         // Validation should pass (so the error is NOT a validator rejection).
@@ -350,7 +378,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_tool_rejects_empty_package() {
-        let tool = TestTool;
+        let tool = TestTool::default();
         let input = json!({"scope": "package", "package": "  "});
         let result = tool.execute(input).await;
         assert!(result.is_err());
@@ -363,7 +391,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_tool_rejects_empty_path() {
-        let tool = TestTool;
+        let tool = TestTool::default();
         let input = json!({"scope": "file", "path": "  "});
         let result = tool.execute(input).await;
         assert!(result.is_err());
@@ -376,7 +404,7 @@ mod tests {
 
     #[test]
     fn test_tool_category_is_shell_exec() {
-        let tool = TestTool;
+        let tool = TestTool::default();
         assert_eq!(tool.category(), ToolCategory::ShellExec);
     }
 
@@ -391,14 +419,14 @@ mod tests {
 
     #[test]
     fn test_tool_name_and_description() {
-        let tool = TestTool;
+        let tool = TestTool::default();
         assert_eq!(tool.name(), "test");
         assert!(tool.description().contains("supervised test runner"));
     }
 
     #[test]
     fn test_tool_parameters_schema() {
-        let tool = TestTool;
+        let tool = TestTool::default();
         let params = tool.parameters();
         assert_eq!(params["type"], "object");
         assert!(params["properties"]["scope"].is_object());
@@ -525,7 +553,7 @@ mod tests {
 
     #[test]
     fn test_tool_exposes_in_definitions() {
-        let tool = TestTool;
+        let tool = TestTool::default();
         assert!(tool.expose_in_definitions());
     }
 

@@ -522,6 +522,8 @@ pub struct RunCellView {
     pub artifact_count: usize,
     pub can_rerun: bool,
     pub can_rollback: bool,
+    pub can_promote: bool,
+    pub can_view_artifact: bool,
     pub context_state: ContextPromotionState,
 }
 
@@ -542,6 +544,11 @@ impl RunCellView {
         let summary = Self::summary_for_manifest(manifest);
         let can_rollback = manifest.kind == RunKind::Python && !manifest.changes.is_empty();
         let can_rerun = manifest.rerun.is_some();
+        let has_artifacts = !manifest.artifacts.is_empty();
+        let can_promote = has_artifacts
+            && (manifest.projection.is_some()
+                || matches!(manifest.status, RunStatus::Complete | RunStatus::Failed));
+        let can_view_artifact = has_artifacts;
 
         let context_state = if manifest.projection.is_some() {
             ContextPromotionState::ProjectionIncluded
@@ -563,6 +570,8 @@ impl RunCellView {
             artifact_count: manifest.artifacts.len(),
             can_rerun,
             can_rollback,
+            can_promote,
+            can_view_artifact,
             context_state,
         }
     }

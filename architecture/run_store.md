@@ -109,7 +109,7 @@ pub trait RunStore: Send + Sync {
 
 ### View Models (Phase 08)
 
-- **`RunCellView`** (:462) — Compact summary for TUI cells (from_manifest())
+- **`RunCellView`** (:462) — Compact summary for TUI cells (from_manifest()). Includes `can_promote: bool` (true when artifacts exist AND projection present OR status Complete/Failed) and `can_view_artifact: bool` (true when artifacts exist).
 - **`RunDetailView`** (:530) — Full detail for overlay (from_manifest())
 - Sub-views: `RunInvocationView`, `RunPermissionView`, `RunPolicyView`, `RunArtifactView`, `RunProjectionView`, `RunChangeView`
 
@@ -122,9 +122,11 @@ pub trait RunStore: Send + Sync {
 | `src/tool/mod.rs:242` | `ToolRegistryOptions.run_store: Option<Arc<dyn RunStore>>` |
 | `src/tool/mod.rs:263-266` | `BashTool` receives `run_store` via `with_run_store()` |
 | `src/tool/mod.rs:341-342` | `PythonScriptTool` receives `run_store` via `with_run_store()` |
+| `src/tool/mod.rs:340-341` | `TestTool` receives `run_store` via `with_run_store()` |
 | `src/tool/factory.rs:45-52` | Factory creates `FsRunStore` at `.codegg/runs/` and passes to tools |
 | `src/tool/bash.rs:664-760` | BashTool persists `RawShell` runs with stdout/stderr artifacts |
 | `src/python_script/tool.rs:143-257` | PythonScriptTool persists `Python` runs with diff/sandbox/changes |
+| `src/test_runner/runner.rs:238-239` | TestRunner persists `Test` runs via `persist_to_run_store()` after each test run |
 
 ### TUI Integration
 
@@ -154,7 +156,6 @@ In `src/protocol_conversions.rs`:
 
 | Gap | Details |
 |-----|---------|
-| Test runner | `src/test_runner/` uses its own `.codegg/test-runs/` JSONL index |
 | Native git/search tools | No run_store integration |
 | Full rerun from manifest | RerunDescriptor defined but re-execution not wired |
 | Rollback/revert | No rollback infrastructure |

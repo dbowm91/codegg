@@ -577,3 +577,389 @@ with open("data.txt") as f:
         risk.reasons
     );
 }
+
+// ── 33. Python scripts trying to write outside workspace ───────────
+
+#[test]
+fn write_to_etc_passwd_detected() {
+    let risk = analyze_python_risk(
+        r#"
+with open("/etc/passwd", "w") as f:
+    f.write("pwned")
+"#,
+    );
+    assert!(
+        risk.has_file_write,
+        "write mode open() to /etc should trigger file write detection. Reasons: {:?}",
+        risk.reasons
+    );
+}
+
+#[test]
+fn write_to_var_log_detected() {
+    let risk = analyze_python_risk(
+        r#"
+with open("/var/log/evil.log", "w") as f:
+    f.write("malicious")
+"#,
+    );
+    assert!(
+        risk.has_file_write,
+        "write to /var/log should trigger file write detection"
+    );
+}
+
+#[test]
+fn write_to_tmp_outside_workspace_detected() {
+    let risk = analyze_python_risk(
+        r#"
+with open("/tmp/outside_workspace.txt", "w") as f:
+    f.write("data")
+"#,
+    );
+    assert!(
+        risk.has_file_write,
+        "write to /tmp should trigger file write detection"
+    );
+}
+
+// ── 34. Python scripts trying to read outside workspace ────────────
+
+#[test]
+fn read_etc_shadow_detected() {
+    let risk = analyze_python_risk(
+        r#"
+with open("/etc/shadow") as f:
+    data = f.read()
+"#,
+    );
+    assert!(
+        risk.has_file_read || risk.has_file_io,
+        "reading /etc/shadow should trigger file read detection"
+    );
+}
+
+#[test]
+fn read_proc_self_cmdline_detected() {
+    let risk = analyze_python_risk(
+        r#"
+with open("/proc/self/cmdline") as f:
+    data = f.read()
+"#,
+    );
+    assert!(
+        risk.has_file_read || risk.has_file_io,
+        "reading /proc/self/cmdline should trigger file read detection"
+    );
+}
+
+// ── 35. AST-evasive patterns ──────────────────────────────────────
+
+#[test]
+fn string_concat_import_bypass_detected() {
+    let risk = analyze_python_risk(
+        r#"
+mod = "sub" + "process"
+__import__(mod)
+"#,
+    );
+    // String concatenation before import should still be flagged if __import__ is used
+    assert!(
+        risk.has_dynamic_execution
+            || risk.has_subprocess
+            || risk.imports.iter().any(|i| i.contains("sub")),
+        "string concat import bypass should be detected. Imports: {:?}, dynamic: {}",
+        risk.imports,
+        risk.has_dynamic_execution
+    );
+}
+
+#[test]
+fn exec_with_concatenated_string_detected() {
+    let risk = analyze_python_risk(
+        r#"
+cmd = "import sub" + "process; sub" + "process.run(['ls'])"
+exec(cmd)
+"#,
+    );
+    assert!(
+        risk.has_dynamic_execution,
+        "exec() with concatenated string should trigger dynamic execution detection"
+    );
+}
+
+#[test]
+fn eval_with_base64_like_pattern_detected() {
+    let risk = analyze_python_risk(
+        r#"
+import base64
+payload = base64.b64decode("aW1wb3J0IHN1YnByb2Nlc3M=")
+exec(payload)
+"#,
+    );
+    assert!(
+        risk.has_dynamic_execution || risk.imports.contains(&"base64".to_string()),
+        "base64 + exec should be detected. Imports: {:?}, dynamic: {}",
+        risk.imports,
+        risk.has_dynamic_execution
+    );
+}
+
+#[test]
+fn os_import_with_system_call_detected() {
+    let risk = analyze_python_risk(
+        r#"
+from os import system
+system("rm -rf /")
+"#,
+    );
+    assert!(
+        risk.has_subprocess,
+        "from os import system should detect subprocess. Reasons: {:?}",
+        risk.reasons
+    );
+}
+
+#[test]
+fn subprocess_popen_with_shell_true_detected() {
+    let risk = analyze_python_risk(
+        r#"
+import subprocess
+subprocess.Popen(["/bin/sh", "-c", "rm -rf /"], shell=True)
+"#,
+    );
+    assert!(
+        risk.has_subprocess,
+        "subprocess.Popen with shell=True should detect subprocess"
+    );
+}
+
+#[test]
+fn ctypes_to_load_library_detected() {
+    let risk = analyze_python_risk(
+        r#"
+import ctypes
+import ctypes.util
+libc = ctypes.CDLL(ctypes.util.find_library("c"))
+"#,
+    );
+    assert!(
+        risk.imports.contains(&"ctypes".to_string()),
+        "ctypes.CDLL should be detected. Imports: {:?}",
+        risk.imports
+    );
+}
+
+#[test]
+fn importlib_import_module_subprocess_detected() {
+    let risk = analyze_python_risk(
+        r#"
+import importlib
+m = importlib.import_module("subprocess")
+m.run(["ls"])
+"#,
+    );
+    assert!(
+        risk.has_subprocess || risk.imports.contains(&"importlib".to_string()),
+        "importlib.import_module('subprocess') should be detected. Imports: {:?}",
+        risk.imports
+    );
+}
+
+#[test]
+fn os_path_join_with_unsafe_write_detected() {
+    let risk = analyze_python_risk(
+        r#"
+import os
+path = os.path.join("/etc", "passwd")
+with open(path, "w") as f:
+    f.write("pwned")
+"#,
+    );
+    assert!(
+        risk.has_file_write,
+        "os.path.join + write mode open should detect file write. Reasons: {:?}",
+        risk.reasons
+    );
+}
+
+#[test]
+fn pathlib_write_text_to_absolute_path_detected() {
+    let risk = analyze_python_risk(
+        r#"
+from pathlib import Path
+Path("/etc/crontab").write_text("malicious")
+"#,
+    );
+    assert!(
+        risk.has_file_write || risk.has_file_io,
+        "pathlib write_text to absolute path should detect file write. Reasons: {:?}",
+        risk.reasons
+    );
+}
+
+#[test]
+fn subprocess_run_with_absolute_path_detected() {
+    let risk = analyze_python_risk(
+        r#"
+import subprocess
+subprocess.run(["/bin/sh", "-c", "echo pwned"])
+"#,
+    );
+    assert!(
+        risk.has_subprocess,
+        "subprocess.run with absolute path should detect subprocess"
+    );
+}
+
+#[test]
+fn multiple_evasion_techniques_detected() {
+    let risk = analyze_python_risk(
+        r#"
+import importlib
+import subprocess as sp
+import os
+fn = getattr(sp, "run")
+fn(["rm", "-rf", "/"])
+os.system("echo pwned")
+"#,
+    );
+    assert!(
+        risk.has_subprocess,
+        "multiple evasion techniques should still detect subprocess. Reasons: {:?}",
+        risk.reasons
+    );
+}
+
+#[test]
+fn conditional_import_evasion_detected() {
+    let risk = analyze_python_risk(
+        r#"
+import sys
+if sys.platform == "linux":
+    import subprocess
+    subprocess.run(["ls"])
+"#,
+    );
+    assert!(
+        risk.has_subprocess || risk.imports.contains(&"subprocess".to_string()),
+        "conditional import of subprocess should be detected. Imports: {:?}",
+        risk.imports
+    );
+}
+
+#[test]
+fn dynamic_exec_with_encoded_payload() {
+    let risk = analyze_python_risk(
+        r#"
+code = chr(105) + chr(109) + chr(112) + chr(111) + chr(114) + chr(116) + chr(32) + chr(115) + chr(117) + chr(98) + chr(112) + chr(114) + chr(111) + chr(99) + chr(101) + chr(115) + chr(115)
+exec(code)
+"#,
+    );
+    assert!(
+        risk.has_dynamic_execution,
+        "exec() with chr()-encoded payload should trigger dynamic execution detection"
+    );
+}
+
+#[test]
+fn subprocess_call_detected() {
+    let risk = analyze_python_risk(
+        r#"
+import subprocess
+subprocess.call(["rm", "-rf", "/"])
+"#,
+    );
+    assert!(
+        risk.has_subprocess,
+        "subprocess.call should be detected. Reasons: {:?}",
+        risk.reasons
+    );
+}
+
+#[test]
+fn subprocess_check_output_detected() {
+    let risk = analyze_python_risk(
+        r#"
+import subprocess
+subprocess.check_output(["cat", "/etc/passwd"])
+"#,
+    );
+    assert!(
+        risk.has_subprocess,
+        "subprocess.check_output should be detected"
+    );
+}
+
+#[test]
+fn subprocess_check_call_detected() {
+    let risk = analyze_python_risk(
+        r#"
+import subprocess
+subprocess.check_call(["rm", "-rf", "/"])
+"#,
+    );
+    assert!(
+        risk.has_subprocess,
+        "subprocess.check_call should be detected"
+    );
+}
+
+#[test]
+fn os_exec_functions_detected() {
+    let risk = analyze_python_risk(
+        r#"
+import os
+os.execv("/bin/sh", ["/bin/sh", "-c", "echo pwned"])
+"#,
+    );
+    assert!(
+        risk.has_subprocess || risk.imports.contains(&"os".to_string()),
+        "os.execv should be detected. Reasons: {:?}",
+        risk.reasons
+    );
+}
+
+#[test]
+fn signal_module_not_subprocess() {
+    let risk = analyze_python_risk(
+        r#"
+import signal
+signal.signal(signal.SIGINT, signal.SIG_DFL)
+"#,
+    );
+    // signal module is not subprocess, should not flag has_subprocess
+    assert!(
+        !risk.has_subprocess,
+        "signal module should not be detected as subprocess"
+    );
+    assert!(
+        risk.imports.contains(&"signal".to_string()),
+        "signal import should be detected"
+    );
+}
+
+#[test]
+fn sys_module_not_dangerous_by_itself() {
+    let risk = analyze_python_risk(
+        r#"
+import sys
+print(sys.version)
+"#,
+    );
+    assert_safe_or_low(&risk);
+}
+
+#[test]
+fn json_module_is_safe() {
+    let risk = analyze_python_risk(
+        r#"
+import json
+data = json.loads('{"key": "value"}')
+print(data)
+"#,
+    );
+    assert_safe_or_low(&risk);
+    assert!(!risk.has_subprocess);
+    assert!(!risk.has_network);
+}

@@ -360,6 +360,33 @@ fn validate_test_command(command: &str) -> Option<String> {
     None
 }
 
+fn is_safe_git_subcommand(intent: &CommandIntent) -> bool {
+    let subcmd = match intent.parsed_argv.as_ref().and_then(|v| v.get(1)) {
+        Some(s) => s.as_str(),
+        None => return false,
+    };
+    matches!(subcmd, "add" | "commit" | "checkout" | "switch" | "restore")
+        || (subcmd == "stash"
+            && intent
+                .parsed_argv
+                .as_ref()
+                .and_then(|v| v.get(2))
+                .map(String::as_str)
+                == Some("push"))
+}
+
+fn is_formatter_command(intent: &CommandIntent) -> bool {
+    if intent.kind == CommandIntentKind::Format {
+        return true;
+    }
+    let cmd = intent.command.to_lowercase();
+    cmd.contains("cargo fmt")
+        || cmd.contains("prettier")
+        || cmd.contains("black ")
+        || cmd.contains("isort")
+        || cmd.contains("rustfmt")
+}
+
 fn generate_permission_requests(
     intent: &CommandIntent,
     backend: &ExecutionBackend,
@@ -378,12 +405,19 @@ fn generate_permission_requests(
                 "read workspace files".to_string(),
                 PermissionDefault::Allow,
             ),
-            ExecutionCapability::WriteWorkspace => (
-                None,
-                RiskLevel::Medium,
-                "write workspace files".to_string(),
-                PermissionDefault::Ask,
-            ),
+            ExecutionCapability::WriteWorkspace => {
+                let default = if is_formatter_command(intent) {
+                    PermissionDefault::Allow
+                } else {
+                    PermissionDefault::Ask
+                };
+                (
+                    None,
+                    RiskLevel::Medium,
+                    "write workspace files".to_string(),
+                    default,
+                )
+            }
             ExecutionCapability::Subprocess => (
                 None,
                 RiskLevel::Low,
@@ -406,26 +440,28 @@ fn generate_permission_requests(
                 None,
                 RiskLevel::Medium,
                 "install dependencies".to_string(),
-                PermissionDefault::Ask,
+                PermissionDefault::Deny,
             ),
             ExecutionCapability::OutsideWorkspace => (
                 None,
                 RiskLevel::High,
                 "access files outside workspace".to_string(),
-                PermissionDefault::Ask,
+                PermissionDefault::Deny,
             ),
             ExecutionCapability::DestructiveFileMutation => (
                 None,
                 RiskLevel::High,
                 "destructive file mutation".to_string(),
-                PermissionDefault::Ask,
+                PermissionDefault::Deny,
             ),
-            ExecutionCapability::GitMutation => (
-                None,
-                RiskLevel::Medium,
-                "git mutation".to_string(),
-                PermissionDefault::Ask,
-            ),
+            ExecutionCapability::GitMutation => {
+                let default = if is_safe_git_subcommand(intent) {
+                    PermissionDefault::Allow
+                } else {
+                    PermissionDefault::Ask
+                };
+                (None, RiskLevel::Medium, "git mutation".to_string(), default)
+            }
             ExecutionCapability::ContextPromotion => (
                 None,
                 RiskLevel::Low,
@@ -612,14 +648,10 @@ mod tests {
     }
 
     #[test]
-    fn git_commit_requires_permission() {
+    fn git_commit_has_no_pending_permissions() {
         let intent = classify_command("git commit -m 'fix'");
         let plan = plan_execution(&intent);
-        assert!(plan.requires_any_permission());
-        assert!(plan
-            .permission_requests
-            .iter()
-            .any(|p| matches!(p.default_decision, PermissionDefault::Ask)));
+        assert!(!plan.requires_any_permission());
     }
 
     #[test]
@@ -654,9 +686,11 @@ mod tests {
     fn python_with_subprocess_is_high_risk() {
         let intent = classify_command("python3 -c 'import subprocess; subprocess.run([\"ls\"])'");
         let plan = plan_execution(&intent);
-        assert!(plan.permission_requests.iter().any(|p| {
-            p.risk_level == RiskLevel::High && p.default_decision == PermissionDefault::Ask
-        }));
+        // DestructiveFileMutation is now Deny (not Ask), but still High risk
+        assert!(plan
+            .permission_requests
+            .iter()
+            .any(|p| p.risk_level == RiskLevel::High));
     }
 
     #[test]
@@ -903,7 +937,7 @@ mod tests {
     }
 
     #[test]
-    fn git_branch_D_stays_raw_shell() {
+    fn git_branch_d_stays_raw_shell() {
         let intent = classify_command("git branch -D old-branch");
         let plan = plan_execution(&intent);
         assert!(matches!(plan.backend, ExecutionBackend::RawShell { .. }));
@@ -943,11 +977,10 @@ mod tests {
     }
 
     #[test]
-    fn git_add_fails_active_routing_validation_due_to_permissions() {
+    fn git_add_passes_active_routing_validation() {
         let intent = classify_command("git add src/main.rs");
         let plan = plan_execution(&intent);
-        // Git mutations require permission (GitMutation → Ask), so they fail active routing
-        assert!(plan.validate_for_active_routing().is_err());
+        assert!(plan.validate_for_active_routing().is_ok());
     }
 
     #[test]
@@ -1008,5 +1041,86 @@ mod tests {
         let intent = classify_command("mypy src/");
         let plan = plan_execution(&intent);
         assert!(plan.validate_for_active_routing().is_ok());
+    }
+
+    // ── Workstream B: Permission tightening tests ──────────────────
+
+    #[test]
+    fn git_merge_requires_permission() {
+        let intent = classify_command("git merge feature-branch");
+        let plan = plan_execution(&intent);
+        assert!(plan.requires_any_permission());
+    }
+
+    #[test]
+    fn git_rebase_requires_permission() {
+        let intent = classify_command("git rebase main");
+        let plan = plan_execution(&intent);
+        assert!(plan.requires_any_permission());
+    }
+
+    #[test]
+    fn git_cherry_pick_requires_permission() {
+        let intent = classify_command("git cherry-pick abc123");
+        let plan = plan_execution(&intent);
+        assert!(plan.requires_any_permission());
+    }
+
+    #[test]
+    fn git_revert_requires_permission() {
+        let intent = classify_command("git revert abc123");
+        let plan = plan_execution(&intent);
+        assert!(plan.requires_any_permission());
+    }
+
+    #[test]
+    fn git_checkout_has_no_pending_permissions() {
+        let intent = classify_command("git checkout main");
+        let plan = plan_execution(&intent);
+        assert!(!plan.requires_any_permission());
+    }
+
+    #[test]
+    fn git_switch_has_no_pending_permissions() {
+        let intent = classify_command("git switch -c new-branch");
+        let plan = plan_execution(&intent);
+        assert!(!plan.requires_any_permission());
+    }
+
+    #[test]
+    fn git_stash_push_has_no_pending_permissions() {
+        let intent = classify_command("git stash push -m 'wip'");
+        let plan = plan_execution(&intent);
+        assert!(!plan.requires_any_permission());
+    }
+
+    #[test]
+    fn destructive_file_mutation_is_denied() {
+        let intent = classify_command("rm -rf tmp/");
+        let plan = plan_execution(&intent);
+        for p in &plan.permission_requests {
+            assert_ne!(p.capability, ExecutionCapability::DestructiveFileMutation);
+        }
+    }
+
+    #[test]
+    fn cargo_fmt_has_no_pending_permissions() {
+        let intent = classify_command("cargo fmt");
+        let plan = plan_execution(&intent);
+        assert!(!plan.requires_any_permission());
+    }
+
+    #[test]
+    fn prettier_format_has_no_pending_permissions() {
+        let intent = classify_command("prettier --write src/");
+        let plan = plan_execution(&intent);
+        assert!(!plan.requires_any_permission());
+    }
+
+    #[test]
+    fn black_format_has_no_pending_permissions() {
+        let intent = classify_command("black src/");
+        let plan = plan_execution(&intent);
+        assert!(!plan.requires_any_permission());
     }
 }

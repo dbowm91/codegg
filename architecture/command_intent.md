@@ -74,6 +74,8 @@ Methods:
 - `is_safe_for_model_context()` — true when risk is Safe/Low AND context is ProjectToModel/Promote
 - `requires_permission()` — true when risk is Medium/High/Critical
 
+Permission defaults for each `ExecutionCapability` are defined in the command planner's `generate_permission_requests()` — see [command_planner.md](command_planner.md#permission-generation).
+
 ## Classification
 
 ```rust

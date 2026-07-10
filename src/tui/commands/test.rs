@@ -88,6 +88,7 @@ fn build_test_request(
 pub(crate) fn start_test_run(app: &mut App, scope: String, args: String) {
     let tx = app.tui_cmd_tx.clone();
     let request_id = app.dialog_state.test_run_request.begin();
+    let run_store = app.run_store.clone();
 
     spawn_registered_tui_task(
         tx,
@@ -109,6 +110,7 @@ pub(crate) fn start_test_run(app: &mut App, scope: String, args: String) {
             let report = crate::test_runner::resolve_and_run_test(
                 request,
                 Some(&crate::test_runner::BusEventSink),
+                run_store.as_ref(),
             )
             .await
             .map_err(|e| format!("test runner error: {e}"));
