@@ -17,6 +17,7 @@ pub enum ExecutionBackend {
     NativeTool { tool_name: String },
     TestRunner { validated_command: Option<String> },
     PythonScript { script: String, mode_guess: PythonModeGuess },
+    GitMutating { tool_name: String, argv: Vec<String> },
     Reject { reason: String },
 }
 ```
@@ -83,13 +84,32 @@ pub fn plan_execution(intent: &CommandIntent) -> CommandPlan
 | Test | `TestRunner { validated_command }` | command string validated |
 | PythonAnalyze/Transform/Verify | `PythonScript { script, mode_guess }` | command string |
 | GitReadOnly | `NativeTool { tool_name: "egggit" }` | n/a |
-| GitMutating | `RawShell { command }` | command string |
+| GitMutating (safe) | `GitMutating { tool_name, argv }` | `parsed_argv` |
+| GitMutating (dangerous) | `RawShell { command }` | command string |
 | SearchReadOnly, FileRead | `ManagedArgv { argv, cwd }` | `parsed_argv` (fallback to whitespace split) |
 | Build, Lint, Format | `ManagedArgv { argv, cwd }` | `parsed_argv` (fallback to whitespace split) |
 | FileWrite, FileEdit, RawShell | `RawShell { command }` | command string |
 | Rejected | `Reject { reason }` | n/a |
 
+Safe git mutations (→ `GitMutating`): add, commit, stash, checkout, switch, restore, merge, rebase, cherry-pick, revert.
+
+Dangerous git mutations (→ `RawShell`): push, pull, reset --hard, clean -f, branch -D.
+
 `ManagedArgv` backends use `intent.parsed_argv` from the shell shape parser, falling back to whitespace splitting if `None`.
+
+### `validate_for_active_routing()`
+
+Validates a `CommandPlan` before active routing dispatch. All 7 checks must pass:
+
+1. **SimpleArgv shape** — `intent.parsed_argv` must be `Some` (no complex shell)
+2. **High confidence** — `intent.confidence` must be `High`
+3. **Non-RawShell/Reject backend** — backend must be a structured type
+4. **Non-Critical risk** — `intent.risk.level` must not be `Critical`
+5. **No DestructiveFileMutation** — risk capabilities must not include `DestructiveFileMutation`
+6. **No OutsideWorkspace** — risk capabilities must not include `OutsideWorkspace`
+7. **No pending permissions** — all permission requests must be pre-resolved (no `Ask` defaults in active mode)
+
+Returns `Ok(CommandPlan)` if all checks pass, `Err(reason)` otherwise. Failed validation falls back to raw shell execution.
 
 ### Projector Selection
 
@@ -145,3 +165,5 @@ pub use crate::command_intent::plan::{
 ```bash
 cargo test -p codegg --lib command_intent
 ```
+
+Includes 21 new routing/validation tests for `validate_for_active_routing()` and `GitMutating` backend selection.

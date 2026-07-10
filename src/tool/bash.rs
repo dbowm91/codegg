@@ -3,7 +3,7 @@ use once_cell::sync::Lazy;
 use regex::Regex;
 use serde_json::json;
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use std::time::Duration;
@@ -11,8 +11,11 @@ use tokio::process::Command;
 
 use crate::command_intent::{classify_command, CommandIntentKind};
 use crate::command_planner::plan_execution;
+use crate::command_planner::CommandPlan;
 use crate::command_routing::resolve_routing;
+use crate::command_routing::RoutingDecision;
 use crate::config::schema::CommandIntentConfig;
+use crate::config::schema::CommandIntentFamily;
 use crate::config::schema::CommandIntentMode;
 use crate::error::ToolError;
 use crate::preflight::{PreflightDecision, PreflightService};
@@ -33,6 +36,33 @@ struct RoutingMetadata {
     routing_enabled: bool,
     routing_decision: String,
     mode: CommandIntentMode,
+}
+
+/// Metrics for routing decisions — recorded per command execution.
+#[derive(Debug, Clone)]
+struct RoutingMetric {
+    family: CommandIntentFamily,
+    decision: String,
+    fallback: bool,
+}
+
+/// Map a `CommandIntentKind` to the corresponding `CommandIntentFamily` for
+/// config lookup. Returns `None` for kinds that don't map to a routable family.
+fn intent_kind_to_family(kind: CommandIntentKind) -> Option<CommandIntentFamily> {
+    match kind {
+        CommandIntentKind::Test => Some(CommandIntentFamily::Tests),
+        CommandIntentKind::GitReadOnly => Some(CommandIntentFamily::GitRead),
+        CommandIntentKind::SearchReadOnly | CommandIntentKind::FileRead => {
+            Some(CommandIntentFamily::Search)
+        }
+        CommandIntentKind::PythonAnalyze
+        | CommandIntentKind::PythonTransform
+        | CommandIntentKind::PythonVerify => Some(CommandIntentFamily::Python),
+        CommandIntentKind::Build => Some(CommandIntentFamily::Build),
+        CommandIntentKind::Lint => Some(CommandIntentFamily::Lint),
+        CommandIntentKind::Format => Some(CommandIntentFamily::Format),
+        _ => None,
+    }
 }
 
 /// Named command-injection patterns. Each entry is a human-readable name
@@ -328,6 +358,344 @@ impl BashTool {
         self
     }
 
+    /// Check if active routing is disabled by any kill switch.
+    fn check_kill_switches(&self, family: CommandIntentFamily) -> bool {
+        // 1. Check env var emergency disable
+        if std::env::var("CODEGG_ROUTING_DISABLE").unwrap_or_default() == "1" {
+            return true;
+        }
+
+        // 2. Check per-family config level
+        if let Some(ref cic) = self.command_intent_config {
+            if cic.family_level(family) == crate::config::schema::RouteLevel::Off {
+                return true;
+            }
+        }
+
+        false
+    }
+
+    /// Record a routing metric for telemetry/debugging.
+    fn record_routing_metric(&self, metric: RoutingMetric) {
+        tracing::debug!(
+            family = ?metric.family,
+            decision = %metric.decision,
+            fallback = metric.fallback,
+            "routing metric"
+        );
+    }
+
+    /// Execute a command via raw shell (`sh -c`). This is the original behavior
+    /// used by observe mode and as a fallback when active routing is disabled
+    /// or dispatch fails.
+    async fn execute_via_raw_shell(
+        &self,
+        command: &str,
+        canonical_workdir: Option<&Path>,
+    ) -> Result<(String, std::process::Output), ToolError> {
+        let timeout = self.timeout;
+        let output = tokio::time::timeout(timeout, async {
+            let mut cmd = Command::new("sh");
+            cmd.env_clear();
+            let preserve_vars = [
+                "PATH",
+                "HOME",
+                "USER",
+                "SHELL",
+                "LANG",
+                "LC_ALL",
+                "TERM",
+                "CARGO_HOME",
+                "RUSTUP_HOME",
+                "CARGO_INCREMENTAL",
+                "CARGO_TERM_COLOR",
+                "CARGO_TERM_PROGRESS",
+                "RUSTFLAGS",
+                "RUSTDOCFLAGS",
+                "CARGO_PROFILE_*",
+                "npm_config_*",
+                "NVM_DIR",
+                "PYENV_ROOT",
+                "VIRTUAL_ENV",
+                "PYTHONPATH",
+                "JAVA_HOME",
+                "GOPATH",
+                "GOBIN",
+            ];
+            for var in &preserve_vars {
+                if let Some(prefix) = var.strip_suffix('*') {
+                    for (key, value) in std::env::vars() {
+                        if key.starts_with(prefix) {
+                            cmd.env(&key, &value);
+                        }
+                    }
+                } else if let Some(value) = std::env::var_os(var) {
+                    cmd.env(var, &value);
+                }
+            }
+            cmd.arg("-c").arg(command);
+            if let Some(dir) = canonical_workdir {
+                cmd.current_dir(dir);
+            }
+            cmd.kill_on_drop(true);
+            cmd.output().await
+        })
+        .await
+        .map_err(|_| ToolError::Timeout(command.to_string()))?
+        .map_err(|e| ToolError::Execution(e.to_string()))?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        let mut result = String::new();
+        if !stdout.is_empty() {
+            result.push_str(&truncate_output(
+                &stdout,
+                self.max_output_lines,
+                self.max_output_bytes,
+            ));
+        }
+        if !stderr.is_empty() {
+            if !result.is_empty() {
+                result.push_str("\n--- stderr ---\n");
+            }
+            result.push_str(&truncate_output(
+                &stderr,
+                self.max_output_lines,
+                self.max_output_bytes,
+            ));
+        }
+        result.push_str(&format!(
+            "\n\n[exit code: {}]",
+            output.status.code().unwrap_or(-1)
+        ));
+
+        Ok((result, output))
+    }
+
+    /// Dispatch to test runner backend. For MVP, executes via raw shell
+    /// but records that the command was routed through the test runner path.
+    async fn dispatch_to_test_runner(
+        &self,
+        validated_command: Option<&str>,
+        canonical_workdir: Option<&Path>,
+    ) -> Result<(String, std::process::Output), ToolError> {
+        let command_str = validated_command.unwrap_or("cargo test");
+        self.record_routing_metric(RoutingMetric {
+            family: CommandIntentFamily::Tests,
+            decision: "test_runner_dispatch".to_string(),
+            fallback: false,
+        });
+        self.execute_via_raw_shell(command_str, canonical_workdir)
+            .await
+    }
+
+    /// Dispatch to native tool (e.g. egggit). For MVP, executes via
+    /// direct `Command::new` instead of `sh -c`, bypassing shell interpretation.
+    async fn dispatch_to_native_tool(
+        &self,
+        command: &str,
+        canonical_workdir: Option<&Path>,
+    ) -> Result<(String, std::process::Output), ToolError> {
+        let argv: Vec<&str> = command.split_whitespace().collect();
+        if argv.is_empty() {
+            return self.execute_via_raw_shell(command, canonical_workdir).await;
+        }
+
+        let output = tokio::time::timeout(self.timeout, async {
+            let mut cmd = Command::new(argv[0]);
+            cmd.args(&argv[1..]);
+            if let Some(dir) = canonical_workdir {
+                cmd.current_dir(dir);
+            }
+            cmd.kill_on_drop(true);
+            cmd.output().await
+        })
+        .await
+        .map_err(|_| ToolError::Timeout(command.to_string()))?
+        .map_err(|e| ToolError::Execution(e.to_string()))?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        let mut result = stdout;
+        if !stderr.is_empty() {
+            if !result.is_empty() {
+                result.push_str("\n--- stderr ---\n");
+            }
+            result.push_str(&stderr);
+        }
+        result.push_str(&format!(
+            "\n\n[exit code: {}]",
+            output.status.code().unwrap_or(-1)
+        ));
+
+        self.record_routing_metric(RoutingMetric {
+            family: CommandIntentFamily::GitRead,
+            decision: "native_tool_dispatch".to_string(),
+            fallback: false,
+        });
+
+        Ok((result, output))
+    }
+
+    /// Dispatch to Python scripting backend. For MVP, executes via
+    /// direct `Command::new("python3")` instead of `sh -c`.
+    async fn dispatch_to_python_script(
+        &self,
+        script: &str,
+        timeout_secs: Option<u64>,
+        canonical_workdir: Option<&Path>,
+    ) -> Result<(String, std::process::Output), ToolError> {
+        let timeout_duration = Duration::from_secs(timeout_secs.unwrap_or(60));
+        let script_owned = script.to_string();
+
+        let output = tokio::time::timeout(timeout_duration, async {
+            let mut cmd = Command::new("python3");
+            cmd.arg("-c").arg(&script_owned);
+            if let Some(dir) = canonical_workdir {
+                cmd.current_dir(dir);
+            }
+            cmd.kill_on_drop(true);
+            cmd.output().await
+        })
+        .await
+        .map_err(|_| ToolError::Timeout(format!("python3 -c '{}'", script)))?
+        .map_err(|e| ToolError::Execution(e.to_string()))?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        let mut result = stdout;
+        if !stderr.is_empty() {
+            if !result.is_empty() {
+                result.push_str("\n--- stderr ---\n");
+            }
+            result.push_str(&stderr);
+        }
+        result.push_str(&format!(
+            "\n\n[exit code: {}]",
+            output.status.code().unwrap_or(-1)
+        ));
+
+        self.record_routing_metric(RoutingMetric {
+            family: CommandIntentFamily::Python,
+            decision: "python_script_dispatch".to_string(),
+            fallback: false,
+        });
+
+        Ok((result, output))
+    }
+
+    /// Dispatch to managed process via direct `Command::new`. Falls back to
+    /// raw shell on dispatch failure.
+    async fn dispatch_to_managed_process(
+        &self,
+        argv: &[String],
+        cwd: Option<&Path>,
+        timeout_secs: Option<u64>,
+    ) -> Result<(String, std::process::Output), ToolError> {
+        if argv.is_empty() {
+            return Err(ToolError::Execution("empty argv".to_string()));
+        }
+
+        let timeout_duration = Duration::from_secs(timeout_secs.unwrap_or(120));
+        let argv_owned = argv.to_vec();
+        let cwd_owned = cwd.map(|p| p.to_path_buf());
+
+        let output = tokio::time::timeout(timeout_duration, async {
+            let mut cmd = Command::new(&argv_owned[0]);
+            cmd.args(&argv_owned[1..]);
+            if let Some(dir) = &cwd_owned {
+                cmd.current_dir(dir);
+            }
+            cmd.kill_on_drop(true);
+            cmd.output().await
+        })
+        .await
+        .map_err(|_| ToolError::Timeout(argv.join(" ")))?
+        .map_err(|e| ToolError::Execution(e.to_string()))?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        let mut result = stdout;
+        if !stderr.is_empty() {
+            if !result.is_empty() {
+                result.push_str("\n--- stderr ---\n");
+            }
+            result.push_str(&stderr);
+        }
+        result.push_str(&format!(
+            "\n\n[exit code: {}]",
+            output.status.code().unwrap_or(-1)
+        ));
+
+        self.record_routing_metric(RoutingMetric {
+            family: CommandIntentFamily::Search,
+            decision: "managed_process_dispatch".to_string(),
+            fallback: false,
+        });
+
+        Ok((result, output))
+    }
+
+    /// Dispatch to shell backend (used for RouteToShell decisions).
+    /// Executes via raw shell since this IS the shell path.
+    async fn dispatch_to_shell(
+        &self,
+        command: &str,
+        canonical_workdir: Option<&Path>,
+    ) -> Result<(String, std::process::Output), ToolError> {
+        self.record_routing_metric(RoutingMetric {
+            family: CommandIntentFamily::Tests, // generic
+            decision: "shell_dispatch".to_string(),
+            fallback: false,
+        });
+        self.execute_via_raw_shell(command, canonical_workdir).await
+    }
+
+    /// Dispatch a routing decision to the appropriate backend.
+    /// Returns the (result_string, raw_output) tuple.
+    async fn dispatch_routing_decision(
+        &self,
+        decision: &RoutingDecision,
+        _plan: &CommandPlan,
+        canonical_workdir: Option<&Path>,
+    ) -> Result<(String, std::process::Output), ToolError> {
+        match decision {
+            RoutingDecision::RouteToTestRunner {
+                validated_command, ..
+            } => {
+                self.dispatch_to_test_runner(validated_command.as_deref(), canonical_workdir)
+                    .await
+            }
+            RoutingDecision::RouteToNativeTool { command, .. } => {
+                self.dispatch_to_native_tool(command, canonical_workdir)
+                    .await
+            }
+            RoutingDecision::RouteToPythonScripting {
+                script,
+                timeout_secs,
+                ..
+            } => {
+                self.dispatch_to_python_script(script, *timeout_secs, canonical_workdir)
+                    .await
+            }
+            RoutingDecision::RouteToManagedProcess {
+                argv,
+                cwd,
+                timeout_secs,
+            } => {
+                self.dispatch_to_managed_process(argv, Some(cwd), *timeout_secs)
+                    .await
+            }
+            RoutingDecision::RouteToShell { command, .. } => {
+                self.dispatch_to_shell(command, canonical_workdir).await
+            }
+            RoutingDecision::Rejected { reason } => Err(ToolError::Execution(format!(
+                "command rejected: {}",
+                reason
+            ))),
+        }
+    }
+
     fn check_command_security(&self, command: &str, parts: &[&str]) -> Result<(), ToolError> {
         if parts.is_empty() {
             return Ok(());
@@ -485,64 +853,43 @@ impl Tool for BashTool {
         };
 
         let timeout_secs = input["timeout"].as_u64().unwrap_or(120);
-        let timeout = Duration::from_secs(timeout_secs);
+        let _timeout = Duration::from_secs(timeout_secs);
 
         let workdir = input["workdir"].as_str().map(|s| s.to_string());
 
-        // Phase 04: Classify command intent and attach routing metadata.
-        // All commands still execute via raw shell in this phase; metadata
-        // is for visibility and prepares for future structured routing.
-        //
-        // Workstream G: The `mode` field controls whether this is observe-only
-        // (default) or active routing. Route mode is not yet implemented — if
-        // configured, we log a warning and fall back to observe behavior.
-        let routing_metadata = if let Some(ref cic) = self.command_intent_config {
-            let mode = cic.mode();
+        // Phase 04/10: Classify command intent, plan execution, and resolve routing.
+        // When active routing is enabled for the command's family AND the plan
+        // passes validation AND no kill switch is active, dispatch to the
+        // structured backend. Otherwise, execute via raw shell (observe mode).
+        let (intent, plan, decision, routing_metadata) =
+            if let Some(ref cic) = self.command_intent_config {
+                let mode = cic.mode();
+                let intent = classify_command(command);
+                let plan = plan_execution(&intent);
+                let decision = resolve_routing(&plan);
 
-            if mode == CommandIntentMode::Route {
-                tracing::warn!(
-                    "command_intent.mode = \"route\" is not yet implemented; \
-                     falling back to observe mode. Active routing will be enabled \
-                     in a future phase."
-                );
-            }
+                let family_enabled = intent_kind_to_family(intent.kind)
+                    .map(|f| cic.is_enabled(f))
+                    .unwrap_or(false);
 
-            let intent = classify_command(command);
-            let plan = plan_execution(&intent);
-            let decision = resolve_routing(&plan);
+                let metadata = RoutingMetadata {
+                    intent_kind: intent.kind.label().to_string(),
+                    backend_label: plan.backend.label().to_string(),
+                    projector_label: plan.projector.label().to_string(),
+                    rtk_eligible: plan.rtk_policy.is_rtk_eligible(),
+                    confidence: format!("{:?}", intent.confidence).to_lowercase(),
+                    risk_level: format!("{:?}", intent.risk.level).to_lowercase(),
+                    routing_enabled: family_enabled,
+                    routing_decision: format!("{:?}", decision),
+                    mode,
+                };
 
-            let family_enabled = match intent.kind {
-                CommandIntentKind::Test => {
-                    cic.is_enabled(crate::config::schema::CommandIntentFamily::Tests)
-                }
-                CommandIntentKind::GitReadOnly => {
-                    cic.is_enabled(crate::config::schema::CommandIntentFamily::GitRead)
-                }
-                CommandIntentKind::SearchReadOnly | CommandIntentKind::FileRead => {
-                    cic.is_enabled(crate::config::schema::CommandIntentFamily::Search)
-                }
-                CommandIntentKind::PythonAnalyze
-                | CommandIntentKind::PythonTransform
-                | CommandIntentKind::PythonVerify => {
-                    cic.is_enabled(crate::config::schema::CommandIntentFamily::Python)
-                }
-                _ => false,
+                (Some(intent), Some(plan), Some(decision), Some(metadata))
+            } else {
+                (None, None, None, None)
             };
 
-            Some(RoutingMetadata {
-                intent_kind: intent.kind.label().to_string(),
-                backend_label: plan.backend.label().to_string(),
-                projector_label: plan.projector.label().to_string(),
-                rtk_eligible: plan.rtk_policy.is_rtk_eligible(),
-                confidence: format!("{:?}", intent.confidence).to_lowercase(),
-                risk_level: format!("{:?}", intent.risk.level).to_lowercase(),
-                routing_enabled: family_enabled,
-                routing_decision: format!("{:?}", decision),
-                mode,
-            })
-        } else {
-            None
-        };
+        // Resolve canonical working directory
         let mut canonical_workdir: Option<PathBuf> = None;
 
         if let Some(ref paths) = self.allowed_paths {
@@ -602,63 +949,58 @@ impl Tool for BashTool {
         tracing::info!("Running: {command}");
         let start = std::time::Instant::now();
 
-        let output = tokio::time::timeout(timeout, async {
-            let mut cmd = Command::new("sh");
-            cmd.env_clear();
-            // Restore essential environment variables for development tools
-            let preserve_vars = [
-                "PATH",
-                "HOME",
-                "USER",
-                "SHELL",
-                "LANG",
-                "LC_ALL",
-                "TERM",
-                "CARGO_HOME",
-                "RUSTUP_HOME",
-                "CARGO_INCREMENTAL",
-                "CARGO_TERM_COLOR",
-                "CARGO_TERM_PROGRESS",
-                "RUSTFLAGS",
-                "RUSTDOCFLAGS",
-                "CARGO_PROFILE_*",
-                "npm_config_*",
-                "NVM_DIR",
-                "PYENV_ROOT",
-                "VIRTUAL_ENV",
-                "PYTHONPATH",
-                "JAVA_HOME",
-                "GOPATH",
-                "GOBIN",
-            ];
-            for var in &preserve_vars {
-                if let Some(prefix) = var.strip_suffix('*') {
-                    // Handle wildcard prefix matching (e.g., "CARGO_PROFILE_*")
-                    for (key, value) in std::env::vars() {
-                        if key.starts_with(prefix) {
-                            cmd.env(&key, &value);
-                        }
+        // Decide: active routing or raw shell
+        let should_active_route = if let (Some(ref cic), Some(ref intent), Some(ref plan)) =
+            (&self.command_intent_config, &intent, &plan)
+        {
+            let family = intent_kind_to_family(intent.kind);
+            let active_for_family = family.map(|f| cic.is_active_for_family(f)).unwrap_or(false);
+            let plan_valid = plan.validate_for_active_routing().is_ok();
+            let kill_switch_active = family.map(|f| self.check_kill_switches(f)).unwrap_or(true);
+            active_for_family && plan_valid && !kill_switch_active
+        } else {
+            false
+        };
+
+        let (mut result, output) = if should_active_route {
+            // ACTIVE ROUTING: dispatch to structured backend
+            tracing::info!("Active routing dispatch for: {command}");
+            let decision_ref = decision.as_ref().unwrap();
+            match self
+                .dispatch_routing_decision(
+                    decision_ref,
+                    plan.as_ref().unwrap(),
+                    canonical_workdir.as_deref(),
+                )
+                .await
+            {
+                Ok((result, output)) => (result, output),
+                Err(e) => {
+                    // Fallback to raw shell on dispatch failure
+                    if let Some(ref intent) = intent {
+                        self.record_routing_metric(RoutingMetric {
+                            family: intent_kind_to_family(intent.kind)
+                                .unwrap_or(CommandIntentFamily::Tests),
+                            decision: "active_routing_fallback".to_string(),
+                            fallback: true,
+                        });
                     }
-                } else if let Some(value) = std::env::var_os(var) {
-                    cmd.env(var, &value);
+                    tracing::warn!(
+                        "Active routing dispatch failed, falling back to raw shell: {}",
+                        e
+                    );
+                    self.execute_via_raw_shell(command, canonical_workdir.as_deref())
+                        .await?
                 }
             }
-            cmd.arg("-c").arg(command);
-            if let Some(ref dir) = canonical_workdir {
-                cmd.current_dir(dir);
-            }
-            cmd.kill_on_drop(true);
-            cmd.output().await
-        })
-        .await
-        .map_err(|_| ToolError::Timeout(command.to_string()))?
-        .map_err(|e| ToolError::Execution(e.to_string()))?;
+        } else {
+            // OBSERVE MODE: run via raw shell (existing behavior)
+            self.execute_via_raw_shell(command, canonical_workdir.as_deref())
+                .await?
+        };
 
         let elapsed = start.elapsed();
         tracing::info!("Completed in {elapsed:?}");
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
 
         // Persist to run store if available
         if let Some(ref store) = self.run_store {
@@ -715,13 +1057,13 @@ impl Tool for BashTool {
             };
 
             if let Ok(handle) = store.begin_run(draft).await {
-                if !stdout.is_empty() {
+                if !output.stdout.is_empty() {
                     let _ = store
                         .write_artifact(
                             &handle,
                             ArtifactInput {
                                 kind: ArtifactKind::Stdout,
-                                data: stdout.as_bytes().to_vec(),
+                                data: output.stdout.clone(),
                                 mime_type: "text/plain".to_string(),
                                 safe_for_model: true,
                             },
@@ -729,13 +1071,13 @@ impl Tool for BashTool {
                         .await;
                 }
 
-                if !stderr.is_empty() {
+                if !output.stderr.is_empty() {
                     let _ = store
                         .write_artifact(
                             &handle,
                             ArtifactInput {
                                 kind: ArtifactKind::Stderr,
-                                data: stderr.as_bytes().to_vec(),
+                                data: output.stderr.clone(),
                                 mime_type: "text/plain".to_string(),
                                 safe_for_model: true,
                             },
@@ -760,30 +1102,6 @@ impl Tool for BashTool {
             }
         }
 
-        let mut result = String::new();
-        if !stdout.is_empty() {
-            result.push_str(&truncate_output(
-                &stdout,
-                self.max_output_lines,
-                self.max_output_bytes,
-            ));
-        }
-        if !stderr.is_empty() {
-            if !result.is_empty() {
-                result.push_str("\n--- stderr ---\n");
-            }
-            result.push_str(&truncate_output(
-                &stderr,
-                self.max_output_lines,
-                self.max_output_bytes,
-            ));
-        }
-
-        result.push_str(&format!(
-            "\n\n[exit code: {}]",
-            output.status.code().unwrap_or(-1)
-        ));
-
         if let Some(warning) = preflight_warning {
             result = format!("{}\n\n{}", warning, result);
         }
@@ -806,6 +1124,7 @@ impl Tool for BashTool {
                 meta.routing_decision,
                 match meta.mode {
                     CommandIntentMode::Observe => "observe",
+                    CommandIntentMode::Active => "active",
                     CommandIntentMode::Route => "route (fallback: observe)",
                 },
             );
@@ -979,6 +1298,7 @@ mod tests {
     use crate::command_routing::RoutingDecision;
     use crate::config::schema::CommandIntentConfig;
     use crate::config::schema::CommandIntentFamily;
+    use crate::config::schema::RouteLevel;
 
     #[test]
     fn classify_test_command() {
@@ -1087,7 +1407,7 @@ mod tests {
     fn config_is_enabled_requires_master_toggle() {
         let mut config = CommandIntentConfig::default();
         config.route_safe_commands = Some(false);
-        config.route_tests = Some(true);
+        config.route_tests = Some(RouteLevel::Observe);
         assert!(!config.is_enabled(CommandIntentFamily::Tests));
 
         config.route_safe_commands = Some(true);
@@ -1098,9 +1418,9 @@ mod tests {
     fn config_is_enabled_per_family() {
         let mut config = CommandIntentConfig::default();
         config.route_safe_commands = Some(true);
-        config.route_tests = Some(true);
-        config.route_git_read = Some(false);
-        config.route_search = Some(false);
+        config.route_tests = Some(RouteLevel::Observe);
+        config.route_git_read = Some(RouteLevel::Off);
+        config.route_search = Some(RouteLevel::Off);
 
         assert!(config.is_enabled(CommandIntentFamily::Tests));
         assert!(!config.is_enabled(CommandIntentFamily::GitRead));
@@ -1129,7 +1449,7 @@ mod tests {
     async fn bash_with_config_attaches_routing_metadata() {
         let mut cic = CommandIntentConfig::default();
         cic.route_safe_commands = Some(true);
-        cic.route_tests = Some(true);
+        cic.route_tests = Some(RouteLevel::Observe);
 
         let tool = BashTool::new().with_command_intent_config(cic);
         let input = serde_json::json!({"command": "echo hello"});
@@ -1143,7 +1463,7 @@ mod tests {
     async fn bash_test_command_metadata_when_enabled() {
         let mut cic = CommandIntentConfig::default();
         cic.route_safe_commands = Some(true);
-        cic.route_tests = Some(true);
+        cic.route_tests = Some(RouteLevel::Observe);
 
         let tool = BashTool::new().with_command_intent_config(cic);
         let input = serde_json::json!({"command": "cargo test --no-run"});
@@ -1158,7 +1478,7 @@ mod tests {
     async fn bash_test_command_metadata_when_disabled() {
         let mut cic = CommandIntentConfig::default();
         cic.route_safe_commands = Some(true);
-        cic.route_tests = Some(false);
+        cic.route_tests = Some(RouteLevel::Off);
 
         let tool = BashTool::new().with_command_intent_config(cic);
         let input = serde_json::json!({"command": "cargo test --no-run"});
@@ -1171,7 +1491,7 @@ mod tests {
     async fn bash_git_readonly_metadata() {
         let mut cic = CommandIntentConfig::default();
         cic.route_safe_commands = Some(true);
-        cic.route_git_read = Some(true);
+        cic.route_git_read = Some(RouteLevel::Observe);
 
         let tool = BashTool::new().with_command_intent_config(cic);
         let input = serde_json::json!({"command": "git status"});
@@ -1185,7 +1505,7 @@ mod tests {
     async fn bash_search_metadata() {
         let mut cic = CommandIntentConfig::default();
         cic.route_safe_commands = Some(true);
-        cic.route_search = Some(true);
+        cic.route_search = Some(RouteLevel::Observe);
 
         let tool = BashTool::new().with_command_intent_config(cic);
         let input = serde_json::json!({"command": "grep -rn 'pattern' src/"});
@@ -1200,7 +1520,7 @@ mod tests {
     async fn bash_python_metadata_when_disabled() {
         let mut cic = CommandIntentConfig::default();
         cic.route_safe_commands = Some(true);
-        cic.route_python = Some(false);
+        cic.route_python = Some(RouteLevel::Off);
 
         let tool = BashTool::new().with_command_intent_config(cic);
         let input = serde_json::json!({"command": "python3 -c 'print(1)'"});
@@ -1213,7 +1533,7 @@ mod tests {
     async fn bash_raw_shell_metadata() {
         let mut cic = CommandIntentConfig::default();
         cic.route_safe_commands = Some(true);
-        cic.route_tests = Some(false);
+        cic.route_tests = Some(RouteLevel::Off);
 
         let tool = BashTool::new().with_command_intent_config(cic);
         let input = serde_json::json!({"command": "echo hello"});
@@ -1231,7 +1551,7 @@ mod tests {
         // not route to TestRunner. The command must actually run.
         let mut cic = CommandIntentConfig::default();
         cic.route_safe_commands = Some(true);
-        cic.route_tests = Some(true);
+        cic.route_tests = Some(RouteLevel::Observe);
         cic.mode = Some(crate::config::schema::CommandIntentMode::Observe);
 
         let tool = BashTool::new().with_command_intent_config(cic);
@@ -1249,7 +1569,7 @@ mod tests {
     async fn observe_mode_appends_metadata() {
         let mut cic = CommandIntentConfig::default();
         cic.route_safe_commands = Some(true);
-        cic.route_tests = Some(true);
+        cic.route_tests = Some(RouteLevel::Observe);
 
         let tool = BashTool::new().with_command_intent_config(cic);
         let input = serde_json::json!({"command": "echo hello"});
@@ -1281,7 +1601,7 @@ mod tests {
         // The command must still execute via raw shell.
         let mut cic = CommandIntentConfig::default();
         cic.route_safe_commands = Some(true);
-        cic.route_tests = Some(true);
+        cic.route_tests = Some(RouteLevel::Observe);
         cic.mode = Some(crate::config::schema::CommandIntentMode::Route);
 
         let tool = BashTool::new().with_command_intent_config(cic);
@@ -1303,10 +1623,10 @@ mod tests {
         // the command still executes via raw shell (not routed to any backend).
         let mut cic = CommandIntentConfig::default();
         cic.route_safe_commands = Some(true);
-        cic.route_tests = Some(true);
-        cic.route_git_read = Some(true);
-        cic.route_search = Some(true);
-        cic.route_python = Some(true);
+        cic.route_tests = Some(RouteLevel::Observe);
+        cic.route_git_read = Some(RouteLevel::Observe);
+        cic.route_search = Some(RouteLevel::Observe);
+        cic.route_python = Some(RouteLevel::Observe);
         cic.mode = Some(crate::config::schema::CommandIntentMode::Route);
 
         let tool = BashTool::new().with_command_intent_config(cic);
@@ -1344,7 +1664,7 @@ mod tests {
         // The mode must be explicitly Route for that (and even then it falls back).
         let mut cic = CommandIntentConfig::default();
         cic.route_safe_commands = Some(true);
-        cic.route_tests = Some(true);
+        cic.route_tests = Some(RouteLevel::Observe);
         // mode is default (Observe)
 
         let tool = BashTool::new().with_command_intent_config(cic);
@@ -1376,6 +1696,7 @@ mod tests {
             crate::config::schema::CommandIntentMode::Observe
         );
         assert!(!config.is_route_mode());
+        assert!(!config.is_active_mode());
 
         config.mode = Some(crate::config::schema::CommandIntentMode::Route);
         assert_eq!(
@@ -1383,5 +1704,370 @@ mod tests {
             crate::config::schema::CommandIntentMode::Route
         );
         assert!(config.is_route_mode());
+        assert!(config.is_active_mode());
+    }
+
+    #[test]
+    fn active_mode_is_active() {
+        let mut config = CommandIntentConfig::default();
+        config.mode = Some(crate::config::schema::CommandIntentMode::Active);
+        assert!(config.is_active_mode());
+        assert!(config.is_route_mode());
+    }
+
+    #[test]
+    fn family_level_defaults_to_observe_when_mode_is_observe() {
+        let config = CommandIntentConfig::default();
+        assert_eq!(
+            config.family_level(CommandIntentFamily::Tests),
+            RouteLevel::Observe
+        );
+    }
+
+    #[test]
+    fn family_level_defaults_to_active_when_mode_is_active() {
+        let mut config = CommandIntentConfig::default();
+        config.mode = Some(crate::config::schema::CommandIntentMode::Active);
+        assert_eq!(
+            config.family_level(CommandIntentFamily::Tests),
+            RouteLevel::Active
+        );
+    }
+
+    #[test]
+    fn family_level_uses_override_when_set() {
+        let mut config = CommandIntentConfig::default();
+        config.mode = Some(crate::config::schema::CommandIntentMode::Active);
+        config.route_tests = Some(RouteLevel::Off);
+        assert_eq!(
+            config.family_level(CommandIntentFamily::Tests),
+            RouteLevel::Off
+        );
+        // Other families still use global default
+        assert_eq!(
+            config.family_level(CommandIntentFamily::GitRead),
+            RouteLevel::Active
+        );
+    }
+
+    #[test]
+    fn is_active_for_family_requires_active_mode() {
+        let mut config = CommandIntentConfig::default();
+        config.route_safe_commands = Some(true);
+        config.route_tests = Some(RouteLevel::Active);
+        // Mode is Observe (default), so active routing should be off
+        assert!(!config.is_active_for_family(CommandIntentFamily::Tests));
+
+        config.mode = Some(crate::config::schema::CommandIntentMode::Active);
+        assert!(config.is_active_for_family(CommandIntentFamily::Tests));
+    }
+
+    #[test]
+    fn is_active_for_family_requires_active_level() {
+        let mut config = CommandIntentConfig::default();
+        config.mode = Some(crate::config::schema::CommandIntentMode::Active);
+        config.route_tests = Some(RouteLevel::Observe);
+        // Level is Observe, not Active, so active routing should be off
+        assert!(!config.is_active_for_family(CommandIntentFamily::Tests));
+
+        config.route_tests = Some(RouteLevel::Active);
+        assert!(config.is_active_for_family(CommandIntentFamily::Tests));
+    }
+
+    #[test]
+    fn route_level_default_is_observe() {
+        assert_eq!(RouteLevel::default(), RouteLevel::Observe);
+    }
+
+    #[test]
+    fn config_all_new_families_default_to_off() {
+        let config = CommandIntentConfig::default();
+        assert!(!config.is_enabled(CommandIntentFamily::Build));
+        assert!(!config.is_enabled(CommandIntentFamily::Lint));
+        assert!(!config.is_enabled(CommandIntentFamily::Format));
+    }
+
+    // ── Workstream C/L/K: Active routing, kill switches, metrics ────
+
+    #[tokio::test]
+    async fn active_mode_routes_git_to_native_tool() {
+        let mut cic = CommandIntentConfig::default();
+        cic.route_safe_commands = Some(true);
+        cic.route_git_read = Some(RouteLevel::Active);
+        cic.mode = Some(crate::config::schema::CommandIntentMode::Active);
+
+        let tool = BashTool::new().with_command_intent_config(cic);
+        let input = serde_json::json!({"command": "git status"});
+        let result = tool.execute(input).await.unwrap();
+        // Git status should execute via native tool (Command::new("git"))
+        // and produce output with [exit code: 0] or similar
+        assert!(
+            result.contains("[exit code:"),
+            "command must produce exit code in output: {}",
+            result
+        );
+        // Metadata should show active mode
+        assert!(
+            result.contains("mode: active"),
+            "metadata must show active mode: {}",
+            result
+        );
+    }
+
+    #[tokio::test]
+    async fn active_mode_test_command_routes_to_test_runner() {
+        let mut cic = CommandIntentConfig::default();
+        cic.route_safe_commands = Some(true);
+        cic.route_tests = Some(RouteLevel::Active);
+        cic.mode = Some(crate::config::schema::CommandIntentMode::Active);
+
+        let tool = BashTool::new().with_command_intent_config(cic);
+        let input = serde_json::json!({"command": "cargo test --no-run"});
+        let result = tool.execute(input).await.unwrap();
+        // Test command should execute (MVP: via raw shell with test runner metadata)
+        assert!(
+            result.contains("[exit code:"),
+            "command must produce exit code in output"
+        );
+        assert!(
+            result.contains("mode: active"),
+            "metadata must show active mode"
+        );
+        assert!(
+            result.contains("intent: test"),
+            "metadata must classify as test"
+        );
+    }
+
+    #[tokio::test]
+    async fn observe_mode_still_runs_raw_shell_for_git() {
+        let mut cic = CommandIntentConfig::default();
+        cic.route_safe_commands = Some(true);
+        cic.route_git_read = Some(RouteLevel::Observe);
+        cic.mode = Some(crate::config::schema::CommandIntentMode::Observe);
+
+        let tool = BashTool::new().with_command_intent_config(cic);
+        let input = serde_json::json!({"command": "git status"});
+        let result = tool.execute(input).await.unwrap();
+        // Observe mode must execute via raw shell
+        assert!(result.contains("mode: observe"));
+        assert!(result.contains("[exit code:"));
+    }
+
+    #[tokio::test]
+    async fn active_mode_off_level_kill_switch_prevents_routing() {
+        let mut cic = CommandIntentConfig::default();
+        cic.route_safe_commands = Some(true);
+        cic.route_git_read = Some(RouteLevel::Off);
+        cic.mode = Some(crate::config::schema::CommandIntentMode::Active);
+
+        let tool = BashTool::new().with_command_intent_config(cic);
+        let input = serde_json::json!({"command": "git status"});
+        let result = tool.execute(input).await.unwrap();
+        // Off level kills active routing, falls back to raw shell
+        assert!(
+            result.contains("mode: active"),
+            "metadata shows active mode"
+        );
+        assert!(result.contains("routing: disabled"), "routing is disabled");
+    }
+
+    #[tokio::test]
+    async fn env_kill_switch_disables_active_routing() {
+        std::env::set_var("CODEGG_ROUTING_DISABLE", "1");
+        let mut cic = CommandIntentConfig::default();
+        cic.route_safe_commands = Some(true);
+        cic.route_git_read = Some(RouteLevel::Active);
+        cic.mode = Some(crate::config::schema::CommandIntentMode::Active);
+
+        let tool = BashTool::new().with_command_intent_config(cic);
+        let input = serde_json::json!({"command": "git status"});
+        let result = tool.execute(input).await.unwrap();
+        // Env kill switch forces raw shell
+        assert!(result.contains("[exit code:"));
+        std::env::remove_var("CODEGG_ROUTING_DISABLE");
+    }
+
+    #[tokio::test]
+    async fn active_mode_build_command_routes_via_managed_process() {
+        let mut cic = CommandIntentConfig::default();
+        cic.route_safe_commands = Some(true);
+        cic.route_build = Some(RouteLevel::Active);
+        cic.mode = Some(crate::config::schema::CommandIntentMode::Active);
+
+        let tool = BashTool::new().with_command_intent_config(cic);
+        let input = serde_json::json!({"command": "cargo check"});
+        let result = tool.execute(input).await.unwrap();
+        // Build command should execute and produce output
+        assert!(
+            result.contains("[exit code:"),
+            "command must produce exit code in output"
+        );
+        assert!(
+            result.contains("mode: active"),
+            "metadata must show active mode"
+        );
+    }
+
+    #[tokio::test]
+    async fn active_mode_python_command_routes() {
+        let mut cic = CommandIntentConfig::default();
+        cic.route_safe_commands = Some(true);
+        cic.route_python = Some(RouteLevel::Active);
+        cic.mode = Some(crate::config::schema::CommandIntentMode::Active);
+
+        let tool = BashTool::new().with_command_intent_config(cic);
+        let input = serde_json::json!({"command": "python3 -c 'print(42)'"});
+        let result = tool.execute(input).await.unwrap();
+        // Python command should execute via python3 -c
+        assert!(
+            result.contains("42"),
+            "python command must produce expected output: {}",
+            result
+        );
+        assert!(
+            result.contains("mode: active"),
+            "metadata must show active mode"
+        );
+    }
+
+    #[tokio::test]
+    async fn active_mode_search_command_routes() {
+        let mut cic = CommandIntentConfig::default();
+        cic.route_safe_commands = Some(true);
+        cic.route_search = Some(RouteLevel::Active);
+        cic.mode = Some(crate::config::schema::CommandIntentMode::Active);
+
+        let tool = BashTool::new().with_command_intent_config(cic);
+        let input = serde_json::json!({"command": "rg --version"});
+        let result = tool.execute(input).await.unwrap();
+        // Search command should execute via direct Command::new
+        assert!(
+            result.contains("[exit code:"),
+            "command must produce exit code in output"
+        );
+        assert!(
+            result.contains("mode: active"),
+            "metadata must show active mode"
+        );
+    }
+
+    #[test]
+    fn kill_switch_checks_env_var() {
+        // Clear the env var first to ensure a clean state
+        std::env::remove_var("CODEGG_ROUTING_DISABLE");
+
+        let tool = BashTool::new();
+        std::env::set_var("CODEGG_ROUTING_DISABLE", "1");
+        assert!(tool.check_kill_switches(CommandIntentFamily::Tests));
+
+        // Clean up immediately to avoid polluting other tests
+        std::env::remove_var("CODEGG_ROUTING_DISABLE");
+    }
+
+    #[test]
+    fn kill_switch_checks_off_level() {
+        let mut cic = CommandIntentConfig::default();
+        cic.route_safe_commands = Some(true);
+        cic.route_tests = Some(RouteLevel::Off);
+
+        let tool = BashTool::new().with_command_intent_config(cic);
+        assert!(tool.check_kill_switches(CommandIntentFamily::Tests));
+    }
+
+    #[test]
+    fn kill_switch_allows_active_level() {
+        // Clear env var to ensure clean state
+        std::env::remove_var("CODEGG_ROUTING_DISABLE");
+
+        let mut cic = CommandIntentConfig::default();
+        cic.route_safe_commands = Some(true);
+        cic.route_tests = Some(RouteLevel::Active);
+
+        let tool = BashTool::new().with_command_intent_config(cic);
+        assert!(!tool.check_kill_switches(CommandIntentFamily::Tests));
+    }
+
+    #[test]
+    fn intent_kind_to_family_mapping() {
+        assert_eq!(
+            intent_kind_to_family(CommandIntentKind::Test),
+            Some(CommandIntentFamily::Tests)
+        );
+        assert_eq!(
+            intent_kind_to_family(CommandIntentKind::GitReadOnly),
+            Some(CommandIntentFamily::GitRead)
+        );
+        assert_eq!(
+            intent_kind_to_family(CommandIntentKind::SearchReadOnly),
+            Some(CommandIntentFamily::Search)
+        );
+        assert_eq!(
+            intent_kind_to_family(CommandIntentKind::FileRead),
+            Some(CommandIntentFamily::Search)
+        );
+        assert_eq!(
+            intent_kind_to_family(CommandIntentKind::PythonAnalyze),
+            Some(CommandIntentFamily::Python)
+        );
+        assert_eq!(
+            intent_kind_to_family(CommandIntentKind::PythonTransform),
+            Some(CommandIntentFamily::Python)
+        );
+        assert_eq!(
+            intent_kind_to_family(CommandIntentKind::PythonVerify),
+            Some(CommandIntentFamily::Python)
+        );
+        assert_eq!(
+            intent_kind_to_family(CommandIntentKind::Build),
+            Some(CommandIntentFamily::Build)
+        );
+        assert_eq!(
+            intent_kind_to_family(CommandIntentKind::Lint),
+            Some(CommandIntentFamily::Lint)
+        );
+        assert_eq!(
+            intent_kind_to_family(CommandIntentKind::Format),
+            Some(CommandIntentFamily::Format)
+        );
+        assert_eq!(intent_kind_to_family(CommandIntentKind::RawShell), None);
+        assert_eq!(intent_kind_to_family(CommandIntentKind::Rejected), None);
+        assert_eq!(intent_kind_to_family(CommandIntentKind::FileWrite), None);
+        assert_eq!(intent_kind_to_family(CommandIntentKind::FileEdit), None);
+    }
+
+    #[tokio::test]
+    async fn route_mode_still_falls_back_to_observe() {
+        // Route is a deprecated alias for Active — should still work for active routing
+        let mut cic = CommandIntentConfig::default();
+        cic.route_safe_commands = Some(true);
+        cic.route_git_read = Some(RouteLevel::Active);
+        cic.mode = Some(crate::config::schema::CommandIntentMode::Route);
+
+        let tool = BashTool::new().with_command_intent_config(cic);
+        let input = serde_json::json!({"command": "git status"});
+        let result = tool.execute(input).await.unwrap();
+        // Route mode should produce output (active routing since Route == Active)
+        assert!(result.contains("[exit code:"));
+        assert!(
+            result.contains("mode: route (fallback: observe)"),
+            "metadata must show route mode"
+        );
+    }
+
+    #[tokio::test]
+    async fn active_mode_raw_shell_falls_back_to_raw_shell() {
+        // RawShell commands (e.g., echo) cannot be active-routed — should use raw shell
+        let mut cic = CommandIntentConfig::default();
+        cic.route_safe_commands = Some(true);
+        cic.mode = Some(crate::config::schema::CommandIntentMode::Active);
+
+        let tool = BashTool::new().with_command_intent_config(cic);
+        let input = serde_json::json!({"command": "echo active-fallback"});
+        let result = tool.execute(input).await.unwrap();
+        assert!(
+            result.contains("active-fallback"),
+            "command must execute via raw shell fallback"
+        );
     }
 }

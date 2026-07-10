@@ -260,3 +260,19 @@ Registered in `src/tool/mod.rs` via `registry.register(PythonScriptTool)` in `wi
 ```bash
 cargo test -p codegg --lib python_script
 ```
+
+### Adversarial Testing
+
+The Python sandbox has adversarial tests in `tests/python_sandbox_adversarial.rs` that validate escape and bypass resistance:
+
+- **Alias bypass**: `import subprocess as sp; sp.run(...)` resolves through alias maps to detect subprocess calls
+- **getattr bypass**: `getattr(__builtins__, '__import__')('subprocess')` style dynamic imports
+- **shell=True bypass**: `subprocess.call(..., shell=True)` with command concatenation
+- **pathlib escape**: `Path('..').resolve()` traversals that attempt to write outside workspace
+- **Dynamic code execution**: `eval()`, `exec()`, `compile()` with embedded dangerous calls
+- **Import chain resolution**: multi-level aliases (`from os import path; path.join(...)`)
+- **sys.path manipulation**: modifying sys.path to import blocked modules
+
+```bash
+cargo test --test python_sandbox_adversarial
+```

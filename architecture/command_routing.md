@@ -54,6 +54,7 @@ Maps `ExecutionBackend` → `RoutingDecision`:
 | `TestRunner { validated_command }` | `RouteToTestRunner { argv, scope_label: "command-intent:<label>", validated_command }` |
 | `PythonScript { script, mode_guess }` | `RouteToPythonScripting { script, mode, timeout_secs }` |
 | `NativeTool { tool_name }` | `RouteToNativeTool { tool_name, command }` |
+| `GitMutating { tool_name, argv }` | `RouteToManagedProcess { argv, cwd, timeout_secs }` |
 | `ManagedArgv { argv, cwd }` | `RouteToManagedProcess { argv, cwd, timeout_secs }` |
 | `RawShell { command }` | `RouteToShell { command, timeout_secs }` |
 | `Reject { reason }` | `Rejected { reason }` |
@@ -61,23 +62,34 @@ Maps `ExecutionBackend` → `RoutingDecision`:
 ## Integration
 
 `resolve_routing()` is called by:
-- `BashTool::execute()` in `src/tool/bash.rs` — determines routing metadata attached to output
+- `BashTool::execute()` in `src/tool/bash.rs` — determines routing decision and dispatches
 
-The routing decision is currently informational for the bash tool — all commands still execute via raw shell. The metadata is attached to output for visibility and future structured routing. Python scripts are executed directly by the `PythonScriptTool` (model-facing tool), not via the bash tool routing path.
+## Active Routing
 
-## Active Routing Status
+Active routing is implemented and controlled by `CommandIntentMode::Active`. When active:
 
-**Active routing is intentionally deferred.** The classify → plan → route pipeline currently serves as an observe-only metadata annotation layer. All commands execute through raw shell regardless of the routing decision.
+1. `BashTool::execute()` classifies the command, plans execution, validates via `validate_for_active_routing()`, and dispatches to the resolved subsystem
+2. Dispatch methods: `dispatch_to_test_runner()`, `dispatch_to_native_tool()`, `dispatch_to_python_script()`, `dispatch_to_managed_process()`
+3. On any dispatch failure, falls back to raw shell execution
 
-This deferral is deliberate until:
-- Workspace root context is used for safety-critical path checks
-- Python artifact handles are either real artifacts or explicitly documented as non-resolvable
-- Command-intent risk metadata is not materially misleading
+### Kill Switches
 
-When `CommandIntentMode::Route` is configured, BashTool logs a warning and falls back to observe behavior. No config combination defaults to active routing.
+- **Global**: `CODEGG_ROUTING_DISABLE=1` env var disables all active routing (falls back to observe)
+- **Per-family**: `route_build`, `route_lint`, `route_format` set to `RouteLevel::Off` disables routing for that family
+- Default mode is `Observe` — no active routing unless explicitly enabled
+
+### Metrics
+
+`RoutingMetric` is logged via `tracing::debug!` for every routing decision, including dispatch target and fallback reason.
+
+### Safety
+
+Active routing only fires when `validate_for_active_routing()` passes all 7 checks (SimpleArgv, High confidence, non-RawShell, non-Critical, no destructive/outside-workspace capabilities, no pending permissions). Commands that fail validation execute via raw shell as if in observe mode.
 
 ## Tests
 
 ```bash
 cargo test -p codegg --lib command_routing
 ```
+
+Includes 7 new tests for GitMutating routing, kill switch behavior, and fallback paths.

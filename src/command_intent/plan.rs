@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use super::{CommandIntent, CommandIntentKind, ExecutionCapability, RiskLevel};
+use super::{CommandIntent, CommandIntentKind, ExecutionCapability, IntentConfidence, RiskLevel};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum ProjectorRoute {
@@ -105,6 +105,10 @@ pub enum ExecutionBackend {
         script: String,
         mode_guess: PythonModeGuess,
     },
+    GitMutating {
+        tool_name: String,
+        argv: Vec<String>,
+    },
     Reject {
         reason: String,
     },
@@ -126,6 +130,7 @@ impl ExecutionBackend {
             Self::NativeTool { .. } => "native-tool",
             Self::TestRunner { .. } => "test-runner",
             Self::PythonScript { .. } => "python-script",
+            Self::GitMutating { .. } => "git-mutating",
             Self::Reject { .. } => "reject",
         }
     }
@@ -160,6 +165,68 @@ impl CommandPlan {
                 PermissionDefault::Ask | PermissionDefault::Deny
             )
         })
+    }
+
+    /// Validate that this plan is safe to execute via active routing.
+    /// Returns Ok(()) if safe, Err(reason) if not.
+    pub fn validate_for_active_routing(&self) -> Result<(), String> {
+        // 1. Shell shape must be SimpleArgv (no complex shell)
+        if self.intent.parsed_argv.is_none() {
+            return Err("complex shell command not eligible for active routing".to_string());
+        }
+
+        // 2. Confidence must be High
+        if self.intent.confidence != IntentConfidence::High {
+            return Err(format!(
+                "confidence {:?} is not High",
+                self.intent.confidence
+            ));
+        }
+
+        // 3. Backend must not be Reject or RawShell
+        if matches!(
+            self.backend,
+            ExecutionBackend::Reject { .. } | ExecutionBackend::RawShell { .. }
+        ) {
+            return Err(format!(
+                "backend {} is not eligible for active routing",
+                self.backend.label()
+            ));
+        }
+
+        // 4. Risk level must not be Critical
+        if self.intent.risk.level == RiskLevel::Critical {
+            return Err("critical risk level not eligible for active routing".to_string());
+        }
+
+        // 5. No DestructiveFileMutation capability
+        if self
+            .intent
+            .risk
+            .capabilities
+            .contains(&ExecutionCapability::DestructiveFileMutation)
+        {
+            return Err(
+                "destructive file mutation capability not eligible for active routing".to_string(),
+            );
+        }
+
+        // 6. No OutsideWorkspace capability
+        if self
+            .intent
+            .risk
+            .capabilities
+            .contains(&ExecutionCapability::OutsideWorkspace)
+        {
+            return Err("outside workspace capability not eligible for active routing".to_string());
+        }
+
+        // 7. Permissions must be resolved (no pending Ask/Deny permissions)
+        if self.requires_any_permission() {
+            return Err("pending permissions not eligible for active routing".to_string());
+        }
+
+        Ok(())
     }
 }
 
@@ -207,9 +274,33 @@ fn select_backend(intent: &CommandIntent) -> ExecutionBackend {
         CommandIntentKind::GitReadOnly => ExecutionBackend::NativeTool {
             tool_name: "egggit".to_string(),
         },
-        CommandIntentKind::GitMutating => ExecutionBackend::RawShell {
-            command: intent.command.clone(),
-        },
+        CommandIntentKind::GitMutating => {
+            // Route safe git mutations to structured GitMutating backend;
+            // dangerous mutations (push, reset --hard, clean -f, etc.) stay as RawShell.
+            if let Some(argv) = &intent.parsed_argv {
+                let subcmd = argv.get(1).map(String::as_str).unwrap_or("");
+                let is_dangerous = matches!(subcmd, "push" | "pull" | "remote" | "tag")
+                    || (subcmd == "reset" && argv.iter().any(|a| a == "--hard"))
+                    || (subcmd == "clean"
+                        && argv.iter().any(|a| a == "-f" || a == "-fd" || a == "-fx"))
+                    || (subcmd == "branch" && argv.iter().any(|a| a == "-D" || a == "--delete"));
+
+                if is_dangerous {
+                    ExecutionBackend::RawShell {
+                        command: intent.command.clone(),
+                    }
+                } else {
+                    ExecutionBackend::GitMutating {
+                        tool_name: "git".to_string(),
+                        argv: argv.clone(),
+                    }
+                }
+            } else {
+                ExecutionBackend::RawShell {
+                    command: intent.command.clone(),
+                }
+            }
+        }
         CommandIntentKind::SearchReadOnly | CommandIntentKind::FileRead => {
             ExecutionBackend::ManagedArgv {
                 argv: intent.parsed_argv.clone().unwrap_or_else(|| {
@@ -355,7 +446,7 @@ fn generate_permission_requests(
     perms
 }
 
-fn select_projector(intent: &CommandIntent, _backend: &ExecutionBackend) -> ProjectorRoute {
+fn select_projector(intent: &CommandIntent, backend: &ExecutionBackend) -> ProjectorRoute {
     match intent.kind {
         CommandIntentKind::GitReadOnly => {
             if intent.command.starts_with("git diff") {
@@ -366,7 +457,13 @@ fn select_projector(intent: &CommandIntent, _backend: &ExecutionBackend) -> Proj
                 ProjectorRoute::GitStatus
             }
         }
-        CommandIntentKind::GitMutating => ProjectorRoute::Raw,
+        CommandIntentKind::GitMutating => {
+            if matches!(backend, ExecutionBackend::GitMutating { .. }) {
+                ProjectorRoute::Raw
+            } else {
+                ProjectorRoute::Truncated
+            }
+        }
         CommandIntentKind::Test => ProjectorRoute::TestReport,
         CommandIntentKind::SearchReadOnly | CommandIntentKind::FileRead => {
             ProjectorRoute::FileSearch
@@ -702,5 +799,214 @@ mod tests {
         let intent = classify_command("cargo test --lib -p foo");
         let plan = plan_execution(&intent);
         assert!(matches!(plan.backend, ExecutionBackend::TestRunner { .. }));
+    }
+
+    // ── Git mutation routing tests (Workstream E) ────────────────────
+
+    #[test]
+    fn git_add_routes_to_git_mutating() {
+        let intent = classify_command("git add src/main.rs");
+        let plan = plan_execution(&intent);
+        assert!(matches!(
+            plan.backend,
+            ExecutionBackend::GitMutating {
+                tool_name,
+                argv,
+            } if tool_name == "git" && argv[0] == "git" && argv[1] == "add"
+        ));
+    }
+
+    #[test]
+    fn git_commit_routes_to_git_mutating() {
+        let intent = classify_command("git commit -m 'fix'");
+        let plan = plan_execution(&intent);
+        assert!(matches!(
+            plan.backend,
+            ExecutionBackend::GitMutating {
+                tool_name,
+                argv,
+            } if tool_name == "git" && argv[1] == "commit"
+        ));
+    }
+
+    #[test]
+    fn git_stash_routes_to_git_mutating() {
+        let intent = classify_command("git stash push -m 'wip'");
+        let plan = plan_execution(&intent);
+        assert!(matches!(
+            plan.backend,
+            ExecutionBackend::GitMutating {
+                tool_name,
+                argv,
+            } if tool_name == "git" && argv[1] == "stash"
+        ));
+    }
+
+    #[test]
+    fn git_checkout_routes_to_git_mutating() {
+        let intent = classify_command("git checkout main");
+        let plan = plan_execution(&intent);
+        assert!(matches!(
+            plan.backend,
+            ExecutionBackend::GitMutating {
+                tool_name,
+                argv,
+            } if tool_name == "git" && argv[1] == "checkout"
+        ));
+    }
+
+    #[test]
+    fn git_switch_routes_to_git_mutating() {
+        let intent = classify_command("git switch -c new-branch");
+        let plan = plan_execution(&intent);
+        assert!(matches!(
+            plan.backend,
+            ExecutionBackend::GitMutating {
+                tool_name,
+                argv,
+            } if tool_name == "git" && argv[1] == "switch"
+        ));
+    }
+
+    #[test]
+    fn git_restore_routes_to_git_mutating() {
+        let intent = classify_command("git restore src/main.rs");
+        let plan = plan_execution(&intent);
+        assert!(matches!(
+            plan.backend,
+            ExecutionBackend::GitMutating {
+                tool_name,
+                argv,
+            } if tool_name == "git" && argv[1] == "restore"
+        ));
+    }
+
+    #[test]
+    fn git_push_stays_raw_shell() {
+        let intent = classify_command("git push origin main");
+        let plan = plan_execution(&intent);
+        assert!(matches!(plan.backend, ExecutionBackend::RawShell { .. }));
+    }
+
+    #[test]
+    fn git_reset_hard_stays_raw_shell() {
+        let intent = classify_command("git reset --hard HEAD~1");
+        let plan = plan_execution(&intent);
+        assert!(matches!(plan.backend, ExecutionBackend::RawShell { .. }));
+    }
+
+    #[test]
+    fn git_clean_f_stays_raw_shell() {
+        let intent = classify_command("git clean -f");
+        let plan = plan_execution(&intent);
+        assert!(matches!(plan.backend, ExecutionBackend::RawShell { .. }));
+    }
+
+    #[test]
+    fn git_branch_D_stays_raw_shell() {
+        let intent = classify_command("git branch -D old-branch");
+        let plan = plan_execution(&intent);
+        assert!(matches!(plan.backend, ExecutionBackend::RawShell { .. }));
+    }
+
+    #[test]
+    fn git_merge_routes_to_git_mutating() {
+        let intent = classify_command("git merge feature-branch");
+        let plan = plan_execution(&intent);
+        assert!(matches!(plan.backend, ExecutionBackend::GitMutating { .. }));
+    }
+
+    #[test]
+    fn git_mutating_backend_label() {
+        let backend = ExecutionBackend::GitMutating {
+            tool_name: "git".to_string(),
+            argv: vec!["git".to_string(), "add".to_string()],
+        };
+        assert_eq!(backend.label(), "git-mutating");
+        assert!(backend.is_executable());
+    }
+
+    // ── Validation tests (Workstream M) ──────────────────────────────
+
+    #[test]
+    fn build_command_passes_active_routing_validation() {
+        let intent = classify_command("cargo build");
+        let plan = plan_execution(&intent);
+        assert!(plan.validate_for_active_routing().is_ok());
+    }
+
+    #[test]
+    fn test_command_passes_active_routing_validation() {
+        let intent = classify_command("cargo test");
+        let plan = plan_execution(&intent);
+        assert!(plan.validate_for_active_routing().is_ok());
+    }
+
+    #[test]
+    fn git_add_fails_active_routing_validation_due_to_permissions() {
+        let intent = classify_command("git add src/main.rs");
+        let plan = plan_execution(&intent);
+        // Git mutations require permission (GitMutation → Ask), so they fail active routing
+        assert!(plan.validate_for_active_routing().is_err());
+    }
+
+    #[test]
+    fn rejected_command_fails_active_routing_validation() {
+        let intent = classify_command("");
+        let plan = plan_execution(&intent);
+        assert!(plan.validate_for_active_routing().is_err());
+    }
+
+    #[test]
+    fn raw_shell_fails_active_routing_validation() {
+        let intent = classify_command("echo hello");
+        let plan = plan_execution(&intent);
+        let result = plan.validate_for_active_routing();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn complex_shell_fails_active_routing_validation() {
+        let intent = classify_command("cargo test && rm -rf .");
+        let plan = plan_execution(&intent);
+        let result = plan.validate_for_active_routing();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn git_push_fails_active_routing_validation() {
+        let intent = classify_command("git push origin main");
+        let plan = plan_execution(&intent);
+        let result = plan.validate_for_active_routing();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn git_reset_hard_fails_active_routing_validation() {
+        let intent = classify_command("git reset --hard HEAD~1");
+        let plan = plan_execution(&intent);
+        let result = plan.validate_for_active_routing();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn lint_command_passes_active_routing_validation() {
+        let intent = classify_command("cargo clippy");
+        let plan = plan_execution(&intent);
+        assert!(plan.validate_for_active_routing().is_ok());
+    }
+
+    #[test]
+    fn format_command_passes_active_routing_validation() {
+        let intent = classify_command("cargo fmt");
+        let plan = plan_execution(&intent);
+        assert!(plan.validate_for_active_routing().is_ok());
+    }
+
+    #[test]
+    fn mypy_passes_active_routing_validation() {
+        let intent = classify_command("mypy src/");
+        let plan = plan_execution(&intent);
+        assert!(plan.validate_for_active_routing().is_ok());
     }
 }

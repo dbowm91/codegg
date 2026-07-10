@@ -141,7 +141,51 @@ Git classification uses **parsed argv**, not string prefixes. This prevents fals
 
 ### CommandIntentMode
 
-`CommandIntentMode` enum (`Observe` | `Route`, default `Observe`) controls whether the bash tool only observes intent or attempts active routing. Route mode currently falls back to observe with a warning — active routing is not yet implemented.
+`CommandIntentMode` enum (`Observe` | `Active`, default `Observe`) controls whether the bash tool only observes intent or attempts active routing. `Observe` classifies and annotates metadata; `Active` dispatches to structured backends when the command validates for routing.
+
+### CommandIntentFamily
+
+`CommandIntentFamily` enum with 7 variants, used for per-family active routing config:
+
+```rust
+pub enum CommandIntentFamily {
+    Tests,
+    GitRead,
+    Search,
+    Python,
+    Build,
+    Lint,
+    Format,
+}
+```
+
+### RouteLevel (per-family config)
+
+```rust
+pub enum RouteLevel {
+    Off,      // no routing for this family
+    Observe,  // classify + annotate only (default)
+    Active,   // dispatch to structured backend
+}
+```
+
+Per-family fields in `CommandIntentConfig`:
+- `route_build: Option<RouteLevel>` — Build family (cargo build/check)
+- `route_lint: Option<RouteLevel>` — Lint family (cargo clippy, mypy, pyright, tsc)
+- `route_format: Option<RouteLevel>` — Format family (cargo fmt, prettier, black)
+
+`is_active_for_family(family)` returns true when the family's `RouteLevel` is `Active`. `family_level(family)` returns the effective `RouteLevel` for a family (family-specific overrides fall back to global mode).
+
+### Build/Lint/Format Classification
+
+Expanded classification for build-adjacent families:
+
+- **Build**: `cargo build`, `cargo check`, `make`, `cmake`, `npm run build`
+- **Lint**: `cargo clippy`, `mypy`, `pyright`, `tsc`
+- **Format**: `cargo fmt`, `prettier`, `black`
+- **Typecheck** is folded into Lint (mypy, pyright, tsc are all static analysis)
+
+Package managers (`npm install`, `pip install`, `cargo install`, etc.) are **NOT** classified as Build — they fall through to `RawShell`. This is a safety boundary: package installs mutate global state and should not be auto-routed.
 
 ## Tests
 
@@ -149,4 +193,4 @@ Git classification uses **parsed argv**, not string prefixes. This prevents fals
 cargo test -p codegg --lib command_intent
 ```
 
-Tests cover: general classification, shell shape parsing (quoted args, operators, complex shell detection), git read-only/mutating classification (branch/tag/remote forms), search/read rejection (find -exec, outside-workspace, which/whereis), parsed argv round-trips, and cross-module classify→plan→route integration.
+Tests cover: general classification, shell shape parsing (quoted args, operators, complex shell detection), git read-only/mutating classification (branch/tag/remote forms), search/read rejection (find -exec, outside-workspace, which/whereis), build/lint/format/typecheck family classification, package manager safety boundary, parsed argv round-trips, and cross-module classify→plan→route integration.

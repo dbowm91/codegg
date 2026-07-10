@@ -2088,26 +2088,31 @@ impl DeterministicToolsConfig {
 /// **Observe-only invariant**: Setting `route_safe_commands = true` alone does
 /// NOT enable active execution routing. The `mode` field controls whether
 /// classification produces metadata only (Observe, default) or actively routes
-/// commands to structured backends (Route, not yet implemented).
+/// commands to structured backends (Active).
 #[derive(Deserialize, Serialize, Debug, Clone, PartialEq)]
 #[serde(default)]
 pub struct CommandIntentConfig {
-    /// Operating mode: `observe` (metadata only, raw shell) or `route` (active routing).
-    /// Default: `observe`. **Active routing is not yet implemented** — if set to
-    /// `route`, a warning is logged and behavior falls back to observe.
+    /// Operating mode: `observe` (metadata only, raw shell) or `active` (active routing).
+    /// Default: `observe`.
     pub mode: Option<CommandIntentMode>,
     /// Enable safe command routing (master toggle for family-level enablement).
     /// Controls metadata annotation (`routing: enabled/disabled`) in observe mode.
     /// Does NOT enable active routing — use `mode` for that.
     pub route_safe_commands: Option<bool>,
-    /// Route recognized test commands to the test runner subsystem.
-    pub route_tests: Option<bool>,
-    /// Route read-only git commands to native/projected backends.
-    pub route_git_read: Option<bool>,
-    /// Route safe search/list/read commands to structured backends.
-    pub route_search: Option<bool>,
-    /// Route Python commands to the Python scripting subsystem (deferred to Phase 05).
-    pub route_python: Option<bool>,
+    /// Route level for test commands.
+    pub route_tests: Option<RouteLevel>,
+    /// Route level for read-only git commands.
+    pub route_git_read: Option<RouteLevel>,
+    /// Route level for safe search/list/read commands.
+    pub route_search: Option<RouteLevel>,
+    /// Route level for Python commands.
+    pub route_python: Option<RouteLevel>,
+    /// Route level for build commands (cargo build, make, etc.).
+    pub route_build: Option<RouteLevel>,
+    /// Route level for lint commands (cargo clippy, etc.).
+    pub route_lint: Option<RouteLevel>,
+    /// Route level for format commands (cargo fmt, etc.).
+    pub route_format: Option<RouteLevel>,
 }
 
 impl Default for CommandIntentConfig {
@@ -2115,10 +2120,13 @@ impl Default for CommandIntentConfig {
         Self {
             mode: Some(CommandIntentMode::Observe),
             route_safe_commands: Some(false),
-            route_tests: Some(false),
-            route_git_read: Some(false),
-            route_search: Some(false),
-            route_python: Some(false),
+            route_tests: None,
+            route_git_read: None,
+            route_search: None,
+            route_python: None,
+            route_build: None,
+            route_lint: None,
+            route_format: None,
         }
     }
 }
@@ -2126,6 +2134,10 @@ impl Default for CommandIntentConfig {
 impl CommandIntentConfig {
     pub fn validate(&self) -> Result<(), Vec<String>> {
         let errors = Vec::new();
+        // TODO(Workstream M): Add validation rules:
+        // - If any family has Active level, global mode should also be Active
+        // - Warn if route_safe_commands is false but families have Active level
+        // - All levels should be valid
         if errors.is_empty() {
             Ok(())
         } else {
@@ -2138,29 +2150,62 @@ impl CommandIntentConfig {
         self.mode.unwrap_or(CommandIntentMode::Observe)
     }
 
-    /// Returns true if the mode is Route (active routing requested).
-    /// Note: Active routing is not yet implemented; this is for config
-    /// validation and future use.
-    pub fn is_route_mode(&self) -> bool {
-        self.mode() == CommandIntentMode::Route
+    /// Returns true if the mode is Active (or the deprecated Route alias).
+    pub fn is_active_mode(&self) -> bool {
+        matches!(
+            self.mode(),
+            CommandIntentMode::Active | CommandIntentMode::Route
+        )
     }
 
-    /// Returns true if routing is enabled for the given family.
+    /// Returns true if the mode is Route (deprecated alias for Active).
+    /// Prefer `is_active_mode()` for new code.
+    pub fn is_route_mode(&self) -> bool {
+        self.is_active_mode()
+    }
+
+    /// Returns the effective `RouteLevel` for a given family.
     ///
-    /// This controls metadata annotation (`routing: enabled/disabled`) in
-    /// observe mode. It does NOT enable active execution routing — the
-    /// `mode` field controls that.
+    /// If the family has a specific override, that is used. Otherwise,
+    /// the global mode determines the default:
+    /// - `Active` mode → `RouteLevel::Active`
+    /// - `Observe` mode → `RouteLevel::Observe`
+    pub fn family_level(&self, family: CommandIntentFamily) -> RouteLevel {
+        let family_override = match family {
+            CommandIntentFamily::Tests => self.route_tests,
+            CommandIntentFamily::GitRead => self.route_git_read,
+            CommandIntentFamily::Search => self.route_search,
+            CommandIntentFamily::Python => self.route_python,
+            CommandIntentFamily::Build => self.route_build,
+            CommandIntentFamily::Lint => self.route_lint,
+            CommandIntentFamily::Format => self.route_format,
+        };
+        family_override.unwrap_or_else(|| match self.mode() {
+            CommandIntentMode::Active | CommandIntentMode::Route => RouteLevel::Active,
+            CommandIntentMode::Observe => RouteLevel::Observe,
+        })
+    }
+
+    /// Returns true if metadata annotation is enabled for the given family.
+    ///
+    /// Requires `route_safe_commands = true` AND the family's effective level
+    /// is not `Off`.
     pub fn is_enabled(&self, family: CommandIntentFamily) -> bool {
         let master = self.route_safe_commands.unwrap_or(false);
         if !master {
             return false;
         }
-        match family {
-            CommandIntentFamily::Tests => self.route_tests.unwrap_or(false),
-            CommandIntentFamily::GitRead => self.route_git_read.unwrap_or(false),
-            CommandIntentFamily::Search => self.route_search.unwrap_or(false),
-            CommandIntentFamily::Python => self.route_python.unwrap_or(false),
+        !matches!(self.family_level(family), RouteLevel::Off)
+    }
+
+    /// Returns true if active routing is enabled for a specific family.
+    ///
+    /// Requires global mode == Active AND family effective level == Active.
+    pub fn is_active_for_family(&self, family: CommandIntentFamily) -> bool {
+        if !self.is_active_mode() {
+            return false;
         }
+        matches!(self.family_level(family), RouteLevel::Active)
     }
 }
 
@@ -2171,23 +2216,46 @@ pub enum CommandIntentFamily {
     GitRead,
     Search,
     Python,
+    Build,
+    Lint,
+    Format,
+}
+
+/// Per-family route level controlling how commands in a family are handled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum RouteLevel {
+    /// No routing, no metadata annotation.
+    Off,
+    /// Metadata annotation only (default for enabled families).
+    #[default]
+    Observe,
+    /// Active routing to structured backends.
+    Active,
 }
 
 /// Controls whether command intent classification produces metadata only (Observe)
-/// or actively routes execution to structured backends (Route).
+/// or actively routes execution to structured backends (Active).
 ///
 /// **Observe mode** (default): Classifies commands, computes routing metadata,
 /// and appends it to model-visible output. All commands execute via raw shell.
 ///
-/// **Route mode**: Would route commands to structured backends.
-/// **Not yet implemented** — falls back to Observe with a warning.
+/// **Active mode**: Routes commands to structured backends. Per-family control
+/// via `RouteLevel` on each family field.
+///
+/// **Route** is a deprecated alias for Active, kept for deserialization
+/// compatibility with existing configs.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CommandIntentMode {
     /// Metadata only, raw shell execution. Safe default.
     #[default]
     Observe,
-    /// Active routing to structured backends (not yet implemented).
+    /// Active routing to structured backends.
+    Active,
+    /// Deprecated alias for `Active`. Deserializes from `"route"` but
+    /// serializes as `"active"`.
+    #[serde(rename = "route", skip_serializing)]
     Route,
 }
 

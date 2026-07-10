@@ -772,15 +772,60 @@ fn looks_like_build(first: &str, argv: &[String]) -> bool {
             argv[1].as_str(),
             "build" | "check" | "clippy" | "fmt" | "run"
         )
+    } else if (first == "npm" || first == "pnpm") && argv.len() >= 3 && argv[1] == "run" {
+        matches!(
+            argv[2].as_str(),
+            "build" | "compile" | "check" | "lint" | "format" | "typecheck" | "type-check"
+        )
     } else {
-        matches!(first, "make" | "cmake" | "npm" | "pnpm")
+        matches!(
+            first,
+            "make"
+                | "cmake"
+                | "rustfmt"
+                | "prettier"
+                | "black"
+                | "isort"
+                | "eslint"
+                | "pylint"
+                | "flake8"
+                | "mypy"
+                | "pyright"
+                | "tsc"
+        )
     }
 }
 
 fn classify_build(command: &str, argv: &[String]) -> CommandIntent {
+    let first = argv.first().map(String::as_str).unwrap_or("");
     let second = argv.get(1).map(String::as_str).unwrap_or("");
-    let kind = if matches!(second, "fmt" | "clippy") {
+    let third = argv.get(2).map(String::as_str).unwrap_or("");
+
+    let kind = if first == "cargo" {
+        match second {
+            "fmt" => CommandIntentKind::Format,
+            "clippy" => CommandIntentKind::Lint,
+            _ => CommandIntentKind::Build,
+        }
+    } else if (first == "npm" || first == "pnpm") && second == "run" {
+        match third {
+            "lint" | "typecheck" | "type-check" => CommandIntentKind::Lint,
+            "format" => CommandIntentKind::Format,
+            _ => CommandIntentKind::Build,
+        }
+    } else if matches!(
+        first,
+        "eslint" | "pylint" | "flake8" | "mypy" | "pyright" | "tsc" | "rustfmt"
+    ) {
         CommandIntentKind::Lint
+    } else if matches!(first, "prettier" | "black" | "isort") {
+        CommandIntentKind::Format
+    } else if first == "make" {
+        match second {
+            "lint" | "typecheck" | "type-check" => CommandIntentKind::Lint,
+            "format" => CommandIntentKind::Format,
+            _ => CommandIntentKind::Build,
+        }
     } else {
         CommandIntentKind::Build
     };
@@ -915,14 +960,105 @@ mod tests {
     }
 
     #[test]
-    fn cargo_fmt_is_lint() {
+    fn cargo_fmt_is_format() {
         let intent = classify_command("cargo fmt");
-        assert_eq!(intent.kind, CommandIntentKind::Lint);
+        assert_eq!(intent.kind, CommandIntentKind::Format);
         assert_eq!(intent.risk.level, RiskLevel::Low);
         assert!(!intent
             .risk
             .capabilities
             .contains(&ExecutionCapability::Subprocess));
+    }
+
+    #[test]
+    fn cargo_clippy_is_lint() {
+        let intent = classify_command("cargo clippy");
+        assert_eq!(intent.kind, CommandIntentKind::Lint);
+        assert_eq!(intent.risk.level, RiskLevel::Low);
+    }
+
+    #[test]
+    fn cargo_check_is_build() {
+        let intent = classify_command("cargo check");
+        assert_eq!(intent.kind, CommandIntentKind::Build);
+        assert_eq!(intent.risk.level, RiskLevel::Low);
+    }
+
+    #[test]
+    fn mypy_is_lint() {
+        let intent = classify_command("mypy src/");
+        assert_eq!(intent.kind, CommandIntentKind::Lint);
+        assert_eq!(intent.risk.level, RiskLevel::Low);
+    }
+
+    #[test]
+    fn pyright_is_lint() {
+        let intent = classify_command("pyright .");
+        assert_eq!(intent.kind, CommandIntentKind::Lint);
+        assert_eq!(intent.risk.level, RiskLevel::Low);
+    }
+
+    #[test]
+    fn tsc_noemit_is_lint() {
+        let intent = classify_command("tsc --noEmit");
+        assert_eq!(intent.kind, CommandIntentKind::Lint);
+        assert_eq!(intent.risk.level, RiskLevel::Low);
+    }
+
+    #[test]
+    fn prettier_check_is_format() {
+        let intent = classify_command("prettier --check .");
+        assert_eq!(intent.kind, CommandIntentKind::Format);
+        assert_eq!(intent.risk.level, RiskLevel::Low);
+    }
+
+    #[test]
+    fn black_check_is_format() {
+        let intent = classify_command("black --check .");
+        assert_eq!(intent.kind, CommandIntentKind::Format);
+        assert_eq!(intent.risk.level, RiskLevel::Low);
+    }
+
+    #[test]
+    fn eslint_is_lint() {
+        let intent = classify_command("eslint src/");
+        assert_eq!(intent.kind, CommandIntentKind::Lint);
+        assert_eq!(intent.risk.level, RiskLevel::Low);
+    }
+
+    #[test]
+    fn make_build_is_build() {
+        let intent = classify_command("make build");
+        assert_eq!(intent.kind, CommandIntentKind::Build);
+        assert_eq!(intent.risk.level, RiskLevel::Low);
+    }
+
+    #[test]
+    fn make_lint_is_lint() {
+        let intent = classify_command("make lint");
+        assert_eq!(intent.kind, CommandIntentKind::Lint);
+        assert_eq!(intent.risk.level, RiskLevel::Low);
+    }
+
+    #[test]
+    fn make_format_is_format() {
+        let intent = classify_command("make format");
+        assert_eq!(intent.kind, CommandIntentKind::Format);
+        assert_eq!(intent.risk.level, RiskLevel::Low);
+    }
+
+    #[test]
+    fn make_typecheck_is_lint() {
+        let intent = classify_command("make typecheck");
+        assert_eq!(intent.kind, CommandIntentKind::Lint);
+        assert_eq!(intent.risk.level, RiskLevel::Low);
+    }
+
+    #[test]
+    fn make_type_dash_check_is_lint() {
+        let intent = classify_command("make type-check");
+        assert_eq!(intent.kind, CommandIntentKind::Lint);
+        assert_eq!(intent.risk.level, RiskLevel::Low);
     }
 
     #[test]
@@ -1798,5 +1934,127 @@ mod tests {
         let intent = classify_command_with_context("rg pattern /etc", &ctx);
         // /etc is outside workspace, so should not classify as SearchReadOnly
         assert_ne!(intent.kind, CommandIntentKind::SearchReadOnly);
+    }
+
+    // ── Package manager safety tests (Workstream F) ──────────────────
+
+    #[test]
+    fn npm_install_is_raw_shell() {
+        let intent = classify_command("npm install");
+        assert_eq!(intent.kind, CommandIntentKind::RawShell);
+    }
+
+    #[test]
+    fn npm_add_is_raw_shell() {
+        let intent = classify_command("npm add lodash");
+        assert_eq!(intent.kind, CommandIntentKind::RawShell);
+    }
+
+    #[test]
+    fn npm_remove_is_raw_shell() {
+        let intent = classify_command("npm remove lodash");
+        assert_eq!(intent.kind, CommandIntentKind::RawShell);
+    }
+
+    #[test]
+    fn npm_uninstall_is_raw_shell() {
+        let intent = classify_command("npm uninstall lodash");
+        assert_eq!(intent.kind, CommandIntentKind::RawShell);
+    }
+
+    #[test]
+    fn pip_install_is_raw_shell() {
+        let intent = classify_command("pip install requests");
+        assert_eq!(intent.kind, CommandIntentKind::RawShell);
+    }
+
+    #[test]
+    fn pip_uninstall_is_raw_shell() {
+        let intent = classify_command("pip uninstall requests");
+        assert_eq!(intent.kind, CommandIntentKind::RawShell);
+    }
+
+    #[test]
+    fn cargo_install_is_raw_shell() {
+        let intent = classify_command("cargo install ripgrep");
+        assert_eq!(intent.kind, CommandIntentKind::RawShell);
+    }
+
+    #[test]
+    fn cargo_uninstall_is_raw_shell() {
+        let intent = classify_command("cargo uninstall ripgrep");
+        assert_eq!(intent.kind, CommandIntentKind::RawShell);
+    }
+
+    #[test]
+    fn yarn_add_is_raw_shell() {
+        let intent = classify_command("yarn add lodash");
+        assert_eq!(intent.kind, CommandIntentKind::RawShell);
+    }
+
+    #[test]
+    fn yarn_remove_is_raw_shell() {
+        let intent = classify_command("yarn remove lodash");
+        assert_eq!(intent.kind, CommandIntentKind::RawShell);
+    }
+
+    #[test]
+    fn pnpm_add_is_raw_shell() {
+        let intent = classify_command("pnpm add lodash");
+        assert_eq!(intent.kind, CommandIntentKind::RawShell);
+    }
+
+    #[test]
+    fn pnpm_remove_is_raw_shell() {
+        let intent = classify_command("pnpm remove lodash");
+        assert_eq!(intent.kind, CommandIntentKind::RawShell);
+    }
+
+    #[test]
+    fn npm_run_build_is_build() {
+        let intent = classify_command("npm run build");
+        assert_eq!(intent.kind, CommandIntentKind::Build);
+    }
+
+    #[test]
+    fn npm_run_lint_is_lint() {
+        let intent = classify_command("npm run lint");
+        assert_eq!(intent.kind, CommandIntentKind::Lint);
+    }
+
+    #[test]
+    fn npm_run_format_is_format() {
+        let intent = classify_command("npm run format");
+        assert_eq!(intent.kind, CommandIntentKind::Format);
+    }
+
+    #[test]
+    fn pnpm_run_build_is_build() {
+        let intent = classify_command("pnpm run build");
+        assert_eq!(intent.kind, CommandIntentKind::Build);
+    }
+
+    #[test]
+    fn npm_test_is_still_test() {
+        let intent = classify_command("npm test");
+        assert_eq!(intent.kind, CommandIntentKind::Test);
+    }
+
+    #[test]
+    fn pnpm_test_is_still_test() {
+        let intent = classify_command("pnpm test");
+        assert_eq!(intent.kind, CommandIntentKind::Test);
+    }
+
+    #[test]
+    fn brew_install_is_raw_shell() {
+        let intent = classify_command("brew install wget");
+        assert_eq!(intent.kind, CommandIntentKind::RawShell);
+    }
+
+    #[test]
+    fn apt_install_is_raw_shell() {
+        let intent = classify_command("apt install curl");
+        assert_eq!(intent.kind, CommandIntentKind::RawShell);
     }
 }
