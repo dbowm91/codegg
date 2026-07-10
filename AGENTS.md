@@ -29,7 +29,7 @@ cargo cksplit      # check protocol + config + providers + root
 
 | Crate | Purpose |
 |-------|---------|
-| `codegg-core` | Domain types: bus, error, goal, memory, session, storage, snapshot, worktree, task_state, model_profile, resilience, protocol_conversions |
+| `codegg-core` | Domain types: bus, error, goal, memory, session, storage, snapshot, worktree, task_state, model_profile, resilience, protocol_conversions, run_store |
 | `codegg-config` | Config schema, paths, loading, validation, file watching |
 | `codegg-protocol` | CoreRequest, CoreResponse, CoreEvent, TuiMessage, UiNode, UiEffect, PluginManifestDto, PluginInvocation, PluginResponse (re-exported as `codegg::protocol`) |
 | `codegg-providers` | LLM provider implementations, auth types, CircuitBreaker (re-exported as `codegg::provider`) |
@@ -90,6 +90,7 @@ See `architecture/testing.md` for the full test resource taxonomy, Tokio runtime
 ```bash
 # Core workspace crates
 cargo test -p codegg-core
+cargo test -p codegg-core run_store
 cargo test -p codegg-config
 cargo test -p codegg-protocol
 cargo test -p codegg-providers

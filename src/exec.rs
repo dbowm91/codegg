@@ -267,6 +267,7 @@ impl ExecMode {
                 ("CLIPBOARD_ERROR".to_string(), "Clipboard error".to_string())
             }
             AppError::Tui(_) => ("TUI_ERROR".to_string(), "TUI error".to_string()),
+            AppError::RunStore(_) => ("RUN_STORE_ERROR".to_string(), "Run store error".to_string()),
         }
     }
 

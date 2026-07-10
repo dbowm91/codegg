@@ -63,6 +63,7 @@ pub fn build_session_tool_registry(
         evidence_config: integrated.evidence,
         deterministic_config: integrated.deterministic,
         preflight_config: integrated.preflight,
+        run_store: None,
     });
 
     // Register the task/subagent tool when a runtime is available.

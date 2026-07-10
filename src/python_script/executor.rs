@@ -7,12 +7,12 @@ use tokio::process::Command;
 
 use super::sandbox::resolve_policy;
 use super::snapshot::WorkspaceSnapshot;
+#[cfg(target_os = "linux")]
+use super::types::SandboxBackend;
 use super::types::{
     PythonCapabilityEnvelope, PythonExecutionMode, PythonRiskAssessment, PythonRunResult,
     PythonRunStatus, PythonScriptRequest,
 };
-#[cfg(target_os = "linux")]
-use super::types::SandboxBackend;
 
 const DEFAULT_TIMEOUT_SECS: u64 = 60;
 const MAX_SCRIPT_LENGTH: usize = 500_000;

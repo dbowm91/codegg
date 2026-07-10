@@ -54,6 +54,9 @@ pub enum AppError {
 
     #[error("tui error: {0}")]
     Tui(String),
+
+    #[error("run store error: {0}")]
+    RunStore(#[from] RunStoreError),
 }
 
 #[derive(Error, Debug)]
@@ -381,4 +384,28 @@ pub enum ClientError {
 
     #[error("authentication failed: {0}")]
     Auth(String),
+}
+
+#[derive(Error, Debug)]
+pub enum RunStoreError {
+    #[error("io error: {0}")]
+    Io(#[from] std::io::Error),
+
+    #[error("json error: {0}")]
+    Json(#[from] serde_json::Error),
+
+    #[error("not found: {0}")]
+    NotFound(String),
+
+    #[error("path traversal: {0}")]
+    PathTraversal(String),
+
+    #[error("integrity violation: {0}")]
+    IntegrityViolation(String),
+
+    #[error("retention error: {0}")]
+    RetentionError(String),
+
+    #[error("concurrent write: {0}")]
+    ConcurrentWrite(String),
 }

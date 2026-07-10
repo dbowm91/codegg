@@ -104,6 +104,7 @@ hidden by default — see [MCP](mcp.md)).
 | [protocol/](protocol.md) | Shared request/response envelopes — in `crates/codegg-protocol` | `core.rs`, `tui.rs` |
 | [research/](research.md) | Structured research pipeline: source collection → evidence → claims → verification | `coordinator.rs`, `types.rs`, `store.rs`, `claims.rs`, `verify.rs` |
 | [resilience/](resilience.md) | Circuit breaker, retry mechanisms | `circuit.rs` |
+| [run_store/](run_store.md) | Persistent run index and artifact storage for commands, scripts, tests — in `crates/codegg-core` | `run_store.rs` |
 | [search/](search_backend.md) | Web search and fetch tools + 7 eggsearch wrappers (builtin + MCP backend) | `mod.rs`, `websearch.rs`, `webfetch.rs` |
 | [security/](security.md) | SSRF protection, Landlock sandboxing; scanning core in `crates/eggsentry` | `ssrf.rs`, `sandbox.rs` |
 | [server/](server.md) | HTTP/WebSocket server for remote TUI | `http.rs`, `ws.rs`, `routes/` |

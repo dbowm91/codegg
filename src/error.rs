@@ -142,7 +142,8 @@ impl IntoResponse for AxumAppError {
             | AppError::Worktree(_)
             | AppError::Upgrade(_)
             | AppError::Clipboard(_)
-            | AppError::Tui(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            | AppError::Tui(_)
+            | AppError::RunStore(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
 
         if status.is_server_error() {

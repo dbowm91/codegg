@@ -63,7 +63,8 @@ pub fn resolve_policy(
     }
 
     // Determine enforcement backend
-    let (backend, os_fs_isolation, os_net_isolation, warnings) = resolve_enforcement_backend(&profile);
+    let (backend, os_fs_isolation, os_net_isolation, warnings) =
+        resolve_enforcement_backend(&profile);
 
     PythonPolicyDecision {
         profile,
@@ -100,14 +101,10 @@ fn resolve_enforcement_backend(
         "OS-level sandboxing not available on this platform; using portable fallback".to_string(),
     );
     if profile.allow_subprocess {
-        warnings.push(
-            "subprocess supervision is policy-based only without OS sandbox".to_string(),
-        );
+        warnings.push("subprocess supervision is policy-based only without OS sandbox".to_string());
     }
     if profile.allow_network {
-        warnings.push(
-            "network isolation not available; denying network capability".to_string(),
-        );
+        warnings.push("network isolation not available; denying network capability".to_string());
     }
     (SandboxBackend::PortableFallback, false, false, warnings)
 }
@@ -151,8 +148,8 @@ pub fn path_inside_allowed_roots(path: &PathBuf, roots: &[PathBuf]) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::types::ExecutableRule;
+    use super::*;
 
     fn ws() -> PathBuf {
         std::env::current_dir().unwrap()
@@ -326,7 +323,10 @@ mod tests {
     #[test]
     fn profile_verify_has_cargo_rule() {
         let profile = PythonCapabilityProfile::verify(&ws());
-        assert!(profile.allowed_subprocesses.iter().any(|r| r.command == "cargo"));
+        assert!(profile
+            .allowed_subprocesses
+            .iter()
+            .any(|r| r.command == "cargo"));
     }
 
     #[test]
@@ -353,8 +353,11 @@ mod tests {
             imports: vec![],
             scanner: super::super::types::PythonRiskScanner::Fallback,
         };
-        let profile =
-            PythonCapabilityProfile::from_mode_risk_and_context(PythonExecutionMode::Transform, &ws(), &risk);
+        let profile = PythonCapabilityProfile::from_mode_risk_and_context(
+            PythonExecutionMode::Transform,
+            &ws(),
+            &risk,
+        );
         assert!(!profile.allow_network);
     }
 
@@ -373,8 +376,11 @@ mod tests {
             imports: vec![],
             scanner: super::super::types::PythonRiskScanner::Fallback,
         };
-        let profile =
-            PythonCapabilityProfile::from_mode_risk_and_context(PythonExecutionMode::Transform, &ws(), &risk);
+        let profile = PythonCapabilityProfile::from_mode_risk_and_context(
+            PythonExecutionMode::Transform,
+            &ws(),
+            &risk,
+        );
         assert!(!profile.allow_destructive_fs);
     }
 
@@ -393,8 +399,11 @@ mod tests {
             imports: vec![],
             scanner: super::super::types::PythonRiskScanner::Fallback,
         };
-        let profile =
-            PythonCapabilityProfile::from_mode_risk_and_context(PythonExecutionMode::Verify, &ws(), &risk);
+        let profile = PythonCapabilityProfile::from_mode_risk_and_context(
+            PythonExecutionMode::Verify,
+            &ws(),
+            &risk,
+        );
         assert!(profile.allow_subprocess);
     }
 
@@ -442,10 +451,7 @@ mod tests {
             "import requests\nrequests.get('http://x')",
             &ws(),
         );
-        assert!(decision
-            .denied
-            .iter()
-            .any(|v| v.capability == "network"));
+        assert!(decision.denied.iter().any(|v| v.capability == "network"));
     }
 
     #[test]
@@ -456,10 +462,7 @@ mod tests {
             &ws(),
         );
         assert!(decision.profile.allow_subprocess);
-        assert!(!decision
-            .denied
-            .iter()
-            .any(|v| v.capability == "subprocess"));
+        assert!(!decision.denied.iter().any(|v| v.capability == "subprocess"));
     }
 
     #[test]

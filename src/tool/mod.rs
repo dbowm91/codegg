@@ -236,6 +236,10 @@ pub struct ToolRegistryOptions {
     /// Resolved preflight config. When `None`,
     /// `PreflightRuntimeConfig::default()` is used.
     pub preflight_config: Option<integrated_config::PreflightRuntimeConfig>,
+    /// Optional run store for persisting command/script execution records.
+    /// When `Some`, Python and Bash tools persist structured run manifests
+    /// with artifact handles to the filesystem index.
+    pub run_store: Option<Arc<dyn codegg_core::run_store::RunStore>>,
 }
 
 impl ToolRegistry {
@@ -256,7 +260,12 @@ impl ToolRegistry {
         let mut registry = Self::new();
 
         // --- File-system / shell tools (always native) ---
-        registry.register(crate::tool::bash::BashTool::default());
+        let bash_tool = if let Some(ref store) = options.run_store {
+            crate::tool::bash::BashTool::default().with_run_store(store.clone())
+        } else {
+            crate::tool::bash::BashTool::default()
+        };
+        registry.register(bash_tool);
         registry.register(crate::tool::read::ReadTool::default());
         registry.register(crate::tool::edit::EditTool::default());
         registry.register(crate::tool::write::WriteTool::default());
@@ -329,7 +338,12 @@ impl ToolRegistry {
         registry.register(crate::tool::review::ReviewTool::default());
         registry.register(crate::tool::terminal::TerminalTool::default());
         registry.register(crate::tool::test::TestTool);
-        registry.register(crate::python_script::tool::PythonScriptTool);
+        let python_tool = if let Some(ref store) = options.run_store {
+            crate::python_script::tool::PythonScriptTool::with_run_store(store.clone())
+        } else {
+            crate::python_script::tool::PythonScriptTool::new()
+        };
+        registry.register(python_tool);
         registry.register(crate::tool::git::GitTool::default());
 
         // --- LSP: consult resolved backend config. ---
@@ -615,6 +629,7 @@ impl ToolRegistry {
             evidence_config: integrated.evidence,
             deterministic_config: integrated.deterministic,
             preflight_config: integrated.preflight,
+            run_store: None,
         })
     }
 
@@ -647,6 +662,7 @@ impl ToolRegistry {
             evidence_config: None,
             deterministic_config: None,
             preflight_config: None,
+            run_store: None,
         })
     }
 

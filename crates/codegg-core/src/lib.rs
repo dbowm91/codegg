@@ -7,6 +7,7 @@ pub mod memory;
 pub mod model_profile;
 pub mod protocol_conversions;
 pub mod resilience;
+pub mod run_store;
 pub mod session;
 pub mod snapshot;
 pub mod storage;

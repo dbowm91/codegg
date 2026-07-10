@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use serde_json::json;
 
@@ -14,8 +16,27 @@ use super::types::{PythonExecutionMode, PythonScriptRequest};
 /// analysis, captures changed files for Transform mode, and projects
 /// results safely. Use this instead of bash for Python one-off scripts,
 /// analysis, bulk transforms, and custom verification.
-#[derive(Default)]
-pub struct PythonScriptTool;
+pub struct PythonScriptTool {
+    run_store: Option<Arc<dyn codegg_core::run_store::RunStore>>,
+}
+
+impl PythonScriptTool {
+    pub fn new() -> Self {
+        Self { run_store: None }
+    }
+
+    pub fn with_run_store(store: Arc<dyn codegg_core::run_store::RunStore>) -> Self {
+        Self {
+            run_store: Some(store),
+        }
+    }
+}
+
+impl Default for PythonScriptTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 #[async_trait]
 impl Tool for PythonScriptTool {
@@ -118,6 +139,124 @@ impl Tool for PythonScriptTool {
         };
 
         let result = execute_python_script(&request).await;
+
+        // Persist to run store if available
+        if let Some(ref store) = self.run_store {
+            use chrono::Utc;
+            use codegg_core::run_store::*;
+
+            let cwd = request.cwd.clone();
+            let workspace_root = request
+                .workspace_root
+                .clone()
+                .or_else(|| std::env::current_dir().ok())
+                .unwrap_or_else(|| cwd.clone());
+
+            let draft = RunDraft {
+                kind: RunKind::Python,
+                invocation: RunInvocation {
+                    command: "python3".to_string(),
+                    argv: Some(vec!["python3".to_string(), "<script>".to_string()]),
+                    script_hash: result.script_body_hash.clone(),
+                },
+                session_id: request.session_id.clone(),
+                parent_run_id: None,
+                workspace_root,
+                cwd,
+                backend: BackendRecord {
+                    family: "python_script".to_string(),
+                    detail: Some(format!("{:?}", request.mode)),
+                },
+                risk: RiskRecord {
+                    level: format!("{:?}", result.risk.level),
+                    has_subprocess: result.capabilities.subprocess,
+                    has_git_mutation: false,
+                    has_destructive_mutation: result.capabilities.destructive_fs,
+                },
+            };
+
+            let status = match &result.status {
+                super::types::PythonRunStatus::Success => RunStatus::Complete,
+                super::types::PythonRunStatus::Failed(_) => RunStatus::Failed,
+                super::types::PythonRunStatus::TimedOut => RunStatus::TimedOut,
+                super::types::PythonRunStatus::SpawnError => RunStatus::Failed,
+            };
+
+            if let Ok(handle) = store.begin_run(draft).await {
+                // Write stdout artifact
+                if !result.stdout.is_empty() {
+                    let _ = store
+                        .write_artifact(
+                            &handle,
+                            ArtifactInput {
+                                kind: ArtifactKind::Stdout,
+                                data: result.stdout.as_bytes().to_vec(),
+                                mime_type: "text/plain".to_string(),
+                                safe_for_model: true,
+                            },
+                        )
+                        .await;
+                }
+
+                // Write stderr artifact
+                if !result.stderr.is_empty() {
+                    let _ = store
+                        .write_artifact(
+                            &handle,
+                            ArtifactInput {
+                                kind: ArtifactKind::Stderr,
+                                data: result.stderr.as_bytes().to_vec(),
+                                mime_type: "text/plain".to_string(),
+                                safe_for_model: true,
+                            },
+                        )
+                        .await;
+                }
+
+                // Write diff artifact if present
+                if let Some(ref diff) = result.diff {
+                    let _ = store
+                        .write_artifact(
+                            &handle,
+                            ArtifactInput {
+                                kind: ArtifactKind::UnifiedDiff,
+                                data: diff.as_bytes().to_vec(),
+                                mime_type: "text/plain".to_string(),
+                                safe_for_model: true,
+                            },
+                        )
+                        .await;
+                }
+
+                let _ = store
+                    .complete_run(
+                        handle,
+                        RunCompletion {
+                            status,
+                            completed_at: Utc::now(),
+                            permissions: vec![],
+                            sandbox: Some(SandboxRecord {
+                                os_isolation: result.os_filesystem_isolation,
+                                network_isolation: result.os_network_isolation,
+                                read_roots: result.effective_read_roots.clone(),
+                                write_roots: result.effective_write_roots.clone(),
+                            }),
+                            projection: None,
+                            changes: result
+                                .changed_files
+                                .iter()
+                                .map(|p| ChangedPathRecord {
+                                    path: p.clone(),
+                                    kind: "modified".to_string(),
+                                })
+                                .collect(),
+                            rerun: None,
+                        },
+                    )
+                    .await;
+            }
+        }
+
         let projected = project_python_run(&result);
 
         Ok(projected)
@@ -130,14 +269,14 @@ mod tests {
 
     #[test]
     fn tool_name_and_category() {
-        let tool = PythonScriptTool;
+        let tool = PythonScriptTool::new();
         assert_eq!(tool.name(), "python_script");
         assert_eq!(tool.category(), ToolCategory::ShellExec);
     }
 
     #[test]
     fn parameters_schema() {
-        let tool = PythonScriptTool;
+        let tool = PythonScriptTool::new();
         let params = tool.parameters();
         let props = params.get("properties").unwrap();
         assert!(props.get("code").is_some());

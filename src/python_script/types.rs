@@ -49,7 +49,10 @@ impl ExecutableRule {
             return true;
         }
         match first_arg {
-            Some(arg) => self.arg_prefixes.iter().any(|p| arg.starts_with(p.as_str())),
+            Some(arg) => self
+                .arg_prefixes
+                .iter()
+                .any(|p| arg.starts_with(p.as_str())),
             None => false,
         }
     }
@@ -126,14 +129,10 @@ impl PythonCapabilityProfile {
                 ExecutableRule::new("cargo", "cargo test runner"),
                 ExecutableRule::new("cargo-test", "cargo test binary"),
                 ExecutableRule::new("pytest", "pytest test runner"),
-                ExecutableRule::new("python3", "python -m pytest")
-                    .with_arg_prefix("-m"),
-                ExecutableRule::new("go", "go test runner")
-                    .with_arg_prefix("test"),
-                ExecutableRule::new("make", "make test/build")
-                    .with_arg_prefix("test"),
-                ExecutableRule::new("make", "make build")
-                    .with_arg_prefix("build"),
+                ExecutableRule::new("python3", "python -m pytest").with_arg_prefix("-m"),
+                ExecutableRule::new("go", "go test runner").with_arg_prefix("test"),
+                ExecutableRule::new("make", "make test/build").with_arg_prefix("test"),
+                ExecutableRule::new("make", "make build").with_arg_prefix("build"),
             ],
             allow_network: false,
             allow_env: vec![],

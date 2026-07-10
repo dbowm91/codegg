@@ -165,6 +165,34 @@ fn quoted_heredoc_delimiter(line: &str) -> Option<String> {
     }
 }
 
+/// Derive risk capability flags from a command string for run store records.
+/// Returns (has_subprocess, has_git_mutation, has_destructive_mutation).
+fn routing_metadata_risk_caps(command: &str) -> (bool, bool, bool) {
+    let trimmed = command.trim();
+    let has_subprocess = trimmed.contains('|')
+        || trimmed.contains('$')
+        || trimmed.contains('`')
+        || trimmed.starts_with("sudo ");
+    let has_git_mutation = trimmed.starts_with("git ")
+        && ![
+            "git status",
+            "git log",
+            "git diff",
+            "git show",
+            "git branch",
+            "git remote",
+            "git tag",
+        ]
+        .iter()
+        .any(|prefix| trimmed.starts_with(prefix));
+    let has_destructive = trimmed.contains("rm -rf")
+        || trimmed.contains("rm -r ")
+        || trimmed.contains("git clean -f")
+        || trimmed.contains("git reset --hard")
+        || trimmed.contains("git checkout --");
+    (has_subprocess, has_git_mutation, has_destructive)
+}
+
 pub struct BashTool {
     timeout: Duration,
     max_output_lines: usize,
@@ -176,6 +204,7 @@ pub struct BashTool {
     landlock_sandbox: Option<SandboxConfig>,
     preflight: Option<Arc<PreflightService>>,
     command_intent_config: Option<CommandIntentConfig>,
+    run_store: Option<Arc<dyn codegg_core::run_store::RunStore>>,
 }
 
 impl BashTool {
@@ -225,6 +254,7 @@ impl BashTool {
             landlock_sandbox: None,
             preflight: None,
             command_intent_config: None,
+            run_store: None,
         }
     }
 
@@ -250,6 +280,11 @@ impl BashTool {
 
     pub fn with_allowlist(mut self, commands: Vec<&'static str>) -> Self {
         self.allowlist = Some(commands.into_iter().collect());
+        self
+    }
+
+    pub fn with_run_store(mut self, store: Arc<dyn codegg_core::run_store::RunStore>) -> Self {
+        self.run_store = Some(store);
         self
     }
 
@@ -624,6 +659,106 @@ impl Tool for BashTool {
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
+
+        // Persist to run store if available
+        if let Some(ref store) = self.run_store {
+            use chrono::Utc;
+            use codegg_core::run_store::*;
+
+            let cwd = canonical_workdir
+                .clone()
+                .or_else(|| workdir.as_ref().map(PathBuf::from))
+                .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+            let workspace_root = cwd.clone();
+
+            // Extract risk info from routing metadata if available
+            let (risk_level, has_subprocess, has_git_mutation, has_destructive) =
+                if let Some(ref rm) = routing_metadata {
+                    let caps = routing_metadata_risk_caps(command);
+                    (rm.risk_level.clone(), caps.0, caps.1, caps.2)
+                } else {
+                    ("low".to_string(), true, false, false)
+                };
+
+            let draft = RunDraft {
+                kind: RunKind::RawShell,
+                invocation: RunInvocation {
+                    command: command.to_string(),
+                    argv: Some(vec![
+                        "sh".to_string(),
+                        "-c".to_string(),
+                        command.to_string(),
+                    ]),
+                    script_hash: None,
+                },
+                session_id: None,
+                parent_run_id: None,
+                workspace_root,
+                cwd,
+                backend: BackendRecord {
+                    family: "bash".to_string(),
+                    detail: routing_metadata.as_ref().map(|m| m.intent_kind.clone()),
+                },
+                risk: RiskRecord {
+                    level: risk_level,
+                    has_subprocess,
+                    has_git_mutation,
+                    has_destructive_mutation: has_destructive,
+                },
+            };
+
+            let exit_code = output.status.code().unwrap_or(-1);
+            let status = if exit_code == 0 {
+                RunStatus::Complete
+            } else {
+                RunStatus::Failed
+            };
+
+            if let Ok(handle) = store.begin_run(draft).await {
+                if !stdout.is_empty() {
+                    let _ = store
+                        .write_artifact(
+                            &handle,
+                            ArtifactInput {
+                                kind: ArtifactKind::Stdout,
+                                data: stdout.as_bytes().to_vec(),
+                                mime_type: "text/plain".to_string(),
+                                safe_for_model: true,
+                            },
+                        )
+                        .await;
+                }
+
+                if !stderr.is_empty() {
+                    let _ = store
+                        .write_artifact(
+                            &handle,
+                            ArtifactInput {
+                                kind: ArtifactKind::Stderr,
+                                data: stderr.as_bytes().to_vec(),
+                                mime_type: "text/plain".to_string(),
+                                safe_for_model: true,
+                            },
+                        )
+                        .await;
+                }
+
+                let _ = store
+                    .complete_run(
+                        handle,
+                        RunCompletion {
+                            status,
+                            completed_at: Utc::now(),
+                            permissions: vec![],
+                            sandbox: None,
+                            projection: None,
+                            changes: vec![],
+                            rerun: None,
+                        },
+                    )
+                    .await;
+            }
+        }
 
         let mut result = String::new();
         if !stdout.is_empty() {
