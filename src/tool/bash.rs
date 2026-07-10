@@ -1002,103 +1002,156 @@ impl Tool for BashTool {
         let elapsed = start.elapsed();
         tracing::info!("Completed in {elapsed:?}");
 
-        // Persist to run store if available
-        if let Some(ref store) = self.run_store {
-            use chrono::Utc;
-            use codegg_core::run_store::*;
-
-            let cwd = canonical_workdir
-                .clone()
-                .or_else(|| workdir.as_ref().map(PathBuf::from))
-                .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
-            let workspace_root = cwd.clone();
-
-            // Extract risk info from routing metadata if available
-            let (risk_level, has_subprocess, has_git_mutation, has_destructive) =
-                if let Some(ref rm) = routing_metadata {
-                    let caps = routing_metadata_risk_caps(command);
-                    (rm.risk_level.clone(), caps.0, caps.1, caps.2)
+        // Determine RunKind and whether BashTool should persist the run.
+        use codegg_core::run_store::RunKind;
+        // Delegated backends (TestRunner, PythonScript) own their own RunStore records.
+        let decision_ref = decision.as_ref();
+        let run_kind = match decision_ref {
+            Some(RoutingDecision::RouteToNativeTool { .. }) => {
+                // Route to native tool: check if it's a git command
+                if intent.as_ref().is_some_and(|i| {
+                    matches!(
+                        i.kind,
+                        crate::command_intent::CommandIntentKind::GitReadOnly
+                    )
+                }) {
+                    RunKind::GitRead
                 } else {
-                    ("low".to_string(), true, false, false)
+                    RunKind::NativeTool
+                }
+            }
+            Some(RoutingDecision::RouteToManagedProcess { .. }) => {
+                // Route to managed process: check if it's a search or git mutation
+                if intent.as_ref().is_some_and(|i| {
+                    matches!(
+                        i.kind,
+                        crate::command_intent::CommandIntentKind::SearchReadOnly
+                            | crate::command_intent::CommandIntentKind::FileRead
+                    )
+                }) {
+                    RunKind::Search
+                } else if intent.as_ref().is_some_and(|i| {
+                    matches!(
+                        i.kind,
+                        crate::command_intent::CommandIntentKind::GitMutating
+                    )
+                }) {
+                    RunKind::GitMutation
+                } else {
+                    RunKind::ManagedProcess
+                }
+            }
+            Some(RoutingDecision::RouteToTestRunner { .. }) => RunKind::Test,
+            Some(RoutingDecision::RouteToPythonScripting { .. }) => RunKind::Python,
+            _ => RunKind::RawShell,
+        };
+
+        // Skip RunStore persistence for delegated backends that own their own records
+        let persist_run = !matches!(
+            decision_ref,
+            Some(RoutingDecision::RouteToTestRunner { .. })
+                | Some(RoutingDecision::RouteToPythonScripting { .. })
+        );
+
+        // Persist to run store if available and this is not a delegated backend
+        if persist_run {
+            if let Some(ref store) = self.run_store {
+                use chrono::Utc;
+                use codegg_core::run_store::*;
+
+                let cwd = canonical_workdir
+                    .clone()
+                    .or_else(|| workdir.as_ref().map(PathBuf::from))
+                    .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+                let workspace_root = cwd.clone();
+
+                // Extract risk info from routing metadata if available
+                let (risk_level, has_subprocess, has_git_mutation, has_destructive) =
+                    if let Some(ref rm) = routing_metadata {
+                        let caps = routing_metadata_risk_caps(command);
+                        (rm.risk_level.clone(), caps.0, caps.1, caps.2)
+                    } else {
+                        ("low".to_string(), true, false, false)
+                    };
+
+                let draft = RunDraft {
+                    kind: run_kind,
+                    invocation: RunInvocation {
+                        command: command.to_string(),
+                        argv: Some(vec![
+                            "sh".to_string(),
+                            "-c".to_string(),
+                            command.to_string(),
+                        ]),
+                        script_hash: None,
+                    },
+                    session_id: None,
+                    parent_run_id: None,
+                    workspace_root,
+                    cwd,
+                    backend: BackendRecord {
+                        family: "bash".to_string(),
+                        detail: routing_metadata.as_ref().map(|m| m.intent_kind.clone()),
+                    },
+                    risk: RiskRecord {
+                        level: risk_level,
+                        has_subprocess,
+                        has_git_mutation,
+                        has_destructive_mutation: has_destructive,
+                    },
                 };
 
-            let draft = RunDraft {
-                kind: RunKind::RawShell,
-                invocation: RunInvocation {
-                    command: command.to_string(),
-                    argv: Some(vec![
-                        "sh".to_string(),
-                        "-c".to_string(),
-                        command.to_string(),
-                    ]),
-                    script_hash: None,
-                },
-                session_id: None,
-                parent_run_id: None,
-                workspace_root,
-                cwd,
-                backend: BackendRecord {
-                    family: "bash".to_string(),
-                    detail: routing_metadata.as_ref().map(|m| m.intent_kind.clone()),
-                },
-                risk: RiskRecord {
-                    level: risk_level,
-                    has_subprocess,
-                    has_git_mutation,
-                    has_destructive_mutation: has_destructive,
-                },
-            };
+                let exit_code = output.status.code().unwrap_or(-1);
+                let status = if exit_code == 0 {
+                    RunStatus::Complete
+                } else {
+                    RunStatus::Failed
+                };
 
-            let exit_code = output.status.code().unwrap_or(-1);
-            let status = if exit_code == 0 {
-                RunStatus::Complete
-            } else {
-                RunStatus::Failed
-            };
+                if let Ok(handle) = store.begin_run(draft).await {
+                    if !output.stdout.is_empty() {
+                        let _ = store
+                            .write_artifact(
+                                &handle,
+                                ArtifactInput {
+                                    kind: ArtifactKind::Stdout,
+                                    data: output.stdout.clone(),
+                                    mime_type: "text/plain".to_string(),
+                                    safe_for_model: true,
+                                },
+                            )
+                            .await;
+                    }
 
-            if let Ok(handle) = store.begin_run(draft).await {
-                if !output.stdout.is_empty() {
+                    if !output.stderr.is_empty() {
+                        let _ = store
+                            .write_artifact(
+                                &handle,
+                                ArtifactInput {
+                                    kind: ArtifactKind::Stderr,
+                                    data: output.stderr.clone(),
+                                    mime_type: "text/plain".to_string(),
+                                    safe_for_model: true,
+                                },
+                            )
+                            .await;
+                    }
+
                     let _ = store
-                        .write_artifact(
-                            &handle,
-                            ArtifactInput {
-                                kind: ArtifactKind::Stdout,
-                                data: output.stdout.clone(),
-                                mime_type: "text/plain".to_string(),
-                                safe_for_model: true,
+                        .complete_run(
+                            handle,
+                            RunCompletion {
+                                status,
+                                completed_at: Utc::now(),
+                                permissions: vec![],
+                                sandbox: None,
+                                projection: None,
+                                changes: vec![],
+                                rerun: None,
                             },
                         )
                         .await;
                 }
-
-                if !output.stderr.is_empty() {
-                    let _ = store
-                        .write_artifact(
-                            &handle,
-                            ArtifactInput {
-                                kind: ArtifactKind::Stderr,
-                                data: output.stderr.clone(),
-                                mime_type: "text/plain".to_string(),
-                                safe_for_model: true,
-                            },
-                        )
-                        .await;
-                }
-
-                let _ = store
-                    .complete_run(
-                        handle,
-                        RunCompletion {
-                            status,
-                            completed_at: Utc::now(),
-                            permissions: vec![],
-                            sandbox: None,
-                            projection: None,
-                            changes: vec![],
-                            rerun: None,
-                        },
-                    )
-                    .await;
             }
         }
 

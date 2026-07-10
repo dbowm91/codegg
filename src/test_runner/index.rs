@@ -49,6 +49,11 @@ pub struct TestRunIndex {
     pub runs: Vec<TestRunIndexEntry>,
 }
 
+/// Legacy test run index entry. Retained for backward compatibility.
+/// Prefer RunStore for authoritative test run records.
+///
+/// This index is superseded by RunStore (RunKind::Test) records.
+/// Will be removed once PreviousFailures reads from RunStore directly.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TestRunIndexEntry {
     pub run_id: String,
@@ -110,6 +115,11 @@ fn index_lock() -> &'static tokio::sync::Mutex<()> {
     INDEX_LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
 }
 
+/// Append a test run report to the legacy previous-failures index.
+///
+/// Deprecated: RunStore is the authoritative persistence layer. This function
+/// is retained for backward compatibility with `TestScope::PreviousFailures`
+/// and TUI commands that read the index directly.
 pub async fn append_to_index(report: &TestReport, workdir: &Path) {
     let _guard = index_lock().lock().await;
 

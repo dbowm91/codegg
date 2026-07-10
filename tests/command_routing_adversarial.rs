@@ -1509,48 +1509,53 @@ fn git_add_passes_validation() {
 }
 
 #[test]
-fn git_commit_passes_validation() {
+fn git_commit_requires_permission_before_routing() {
     let intent = classify_command("git commit -m 'fix'");
     let plan = plan_execution(&intent);
-    assert!(plan.validate_for_active_routing().is_ok());
+    // commit may run hooks and mutate state; permission required before active routing
+    assert!(plan.validate_for_active_routing().is_err());
     assert!(matches!(plan.backend, ExecutionBackend::GitMutating { .. }));
-    assert!(!plan.requires_any_permission());
+    assert!(plan.requires_any_permission());
 }
 
 #[test]
-fn git_checkout_passes_validation() {
+fn git_checkout_requires_permission_before_routing() {
     let intent = classify_command("git checkout main");
     let plan = plan_execution(&intent);
-    assert!(plan.validate_for_active_routing().is_ok());
+    // checkout may overwrite worktree; permission required before active routing
+    assert!(plan.validate_for_active_routing().is_err());
     assert!(matches!(plan.backend, ExecutionBackend::GitMutating { .. }));
-    assert!(!plan.requires_any_permission());
+    assert!(plan.requires_any_permission());
 }
 
 #[test]
-fn git_switch_passes_validation() {
+fn git_switch_requires_permission_before_routing() {
     let intent = classify_command("git switch -c new-branch");
     let plan = plan_execution(&intent);
-    assert!(plan.validate_for_active_routing().is_ok());
+    // switch may overwrite worktree; permission required before active routing
+    assert!(plan.validate_for_active_routing().is_err());
     assert!(matches!(plan.backend, ExecutionBackend::GitMutating { .. }));
-    assert!(!plan.requires_any_permission());
+    assert!(plan.requires_any_permission());
 }
 
 #[test]
-fn git_stash_passes_validation() {
+fn git_stash_requires_permission_before_routing() {
     let intent = classify_command("git stash push -m 'wip'");
     let plan = plan_execution(&intent);
-    assert!(plan.validate_for_active_routing().is_ok());
+    // stash push mutates state; permission required before active routing
+    assert!(plan.validate_for_active_routing().is_err());
     assert!(matches!(plan.backend, ExecutionBackend::GitMutating { .. }));
-    assert!(!plan.requires_any_permission());
+    assert!(plan.requires_any_permission());
 }
 
 #[test]
-fn git_restore_passes_validation() {
+fn git_restore_requires_permission_before_routing() {
     let intent = classify_command("git restore src/main.rs");
     let plan = plan_execution(&intent);
-    assert!(plan.validate_for_active_routing().is_ok());
+    // restore may overwrite worktree; permission required before active routing
+    assert!(plan.validate_for_active_routing().is_err());
     assert!(matches!(plan.backend, ExecutionBackend::GitMutating { .. }));
-    assert!(!plan.requires_any_permission());
+    assert!(plan.requires_any_permission());
 }
 
 // ── 53. Dangerous git mutations fail validation ───────────────────

@@ -365,14 +365,9 @@ fn is_safe_git_subcommand(intent: &CommandIntent) -> bool {
         Some(s) => s.as_str(),
         None => return false,
     };
-    matches!(subcmd, "add" | "commit" | "checkout" | "switch" | "restore")
-        || (subcmd == "stash"
-            && intent
-                .parsed_argv
-                .as_ref()
-                .and_then(|v| v.get(2))
-                .map(String::as_str)
-                == Some("push"))
+    // Only git add is safe to auto-allow. Commit may run hooks,
+    // checkout/switch/restore may overwrite worktree, stash push mutates state.
+    subcmd == "add"
 }
 
 fn is_formatter_command(intent: &CommandIntent) -> bool {
@@ -385,6 +380,11 @@ fn is_formatter_command(intent: &CommandIntent) -> bool {
         || cmd.contains("black ")
         || cmd.contains("isort")
         || cmd.contains("rustfmt")
+}
+
+fn is_read_only_formatter(intent: &CommandIntent) -> bool {
+    let cmd = intent.command.to_lowercase();
+    cmd.contains("--check") || cmd.contains("--diff") || cmd.contains("checkfmt")
 }
 
 fn generate_permission_requests(
@@ -406,7 +406,11 @@ fn generate_permission_requests(
                 PermissionDefault::Allow,
             ),
             ExecutionCapability::WriteWorkspace => {
-                let default = if is_formatter_command(intent) {
+                // Writing formatters (cargo fmt, black, prettier --write, isort) mutate workspace files.
+                // Default to Ask; read-only formatters (--check, --diff) don't write.
+                let default = if is_formatter_command(intent) && !is_read_only_formatter(intent) {
+                    PermissionDefault::Ask
+                } else if is_formatter_command(intent) {
                     PermissionDefault::Allow
                 } else {
                     PermissionDefault::Ask
@@ -648,10 +652,11 @@ mod tests {
     }
 
     #[test]
-    fn git_commit_has_no_pending_permissions() {
+    fn git_commit_requires_permission() {
         let intent = classify_command("git commit -m 'fix'");
         let plan = plan_execution(&intent);
-        assert!(!plan.requires_any_permission());
+        // commit may run hooks and mutate state; defaults to Ask
+        assert!(plan.requires_any_permission());
     }
 
     #[test]
@@ -1074,24 +1079,27 @@ mod tests {
     }
 
     #[test]
-    fn git_checkout_has_no_pending_permissions() {
+    fn git_checkout_requires_permission() {
         let intent = classify_command("git checkout main");
         let plan = plan_execution(&intent);
-        assert!(!plan.requires_any_permission());
+        // checkout may overwrite worktree; defaults to Ask
+        assert!(plan.requires_any_permission());
     }
 
     #[test]
-    fn git_switch_has_no_pending_permissions() {
+    fn git_switch_requires_permission() {
         let intent = classify_command("git switch -c new-branch");
         let plan = plan_execution(&intent);
-        assert!(!plan.requires_any_permission());
+        // switch may overwrite worktree; defaults to Ask
+        assert!(plan.requires_any_permission());
     }
 
     #[test]
-    fn git_stash_push_has_no_pending_permissions() {
+    fn git_stash_push_requires_permission() {
         let intent = classify_command("git stash push -m 'wip'");
         let plan = plan_execution(&intent);
-        assert!(!plan.requires_any_permission());
+        // stash push mutates state; defaults to Ask
+        assert!(plan.requires_any_permission());
     }
 
     #[test]

@@ -157,13 +157,13 @@ Returns `Ok(CommandPlan)` if all checks pass, `Err(reason)` otherwise. Failed va
 | `EnvAccess` | `Allow` | Environment reads are expected |
 | `ContextPromotion` | `Allow` | Output promotion is a user action |
 | `Network` | `Ask` | Network access needs user consent |
-| `WriteWorkspace` | `Allow` for formatters, `Ask` otherwise | `cargo fmt`, `prettier`, `black`, `isort`, `rustfmt` auto-allowed; other writes ask |
-| `GitMutation` | `Allow` for safe subcommands, `Ask` otherwise | Safe mutations (add, commit, stash push, checkout, switch, restore) auto-allowed; all others ask |
+| `WriteWorkspace` | `Ask` for writing formatters, `Allow` for read-only formatters, `Ask` otherwise | `cargo fmt --check`, `prettier --check` auto-allowed; writing formatters ask; other writes ask |
+| `GitMutation` | `Allow` for `git add` only, `Ask` otherwise | Only `git add` is safe to auto-allow; commit/checkout/switch/restore/stash push all ask (may run hooks or overwrite worktree) |
 | `DependencyInstall` | `Deny` | Package installs mutate global state |
 | `OutsideWorkspace` | `Deny` | Access outside workspace is unsafe |
 | `DestructiveFileMutation` | `Deny` | Destructive operations are blocked |
 
-The `is_formatter_command()` helper checks the intent kind (Format) and command text for `cargo fmt`, `prettier`, `black`, `isort`, `rustfmt`. The `is_safe_git_subcommand()` helper checks parsed argv for safe subcommands (add, commit, stash push, checkout, switch, restore).
+The `is_formatter_command()` helper checks the intent kind (Format) and command text for `cargo fmt`, `prettier`, `black`, `isort`, `rustfmt`. The `is_read_only_formatter()` helper detects `--check`, `--diff`, and `checkfmt` in the command string. The `is_safe_git_subcommand()` helper checks parsed argv for the single safe subcommand: `git add`.
 
 ## Re-exports
 

@@ -106,10 +106,11 @@ pub trait RunStore: Send + Sync {
 - **`RetentionConfig`** (:387) — max_total_bytes, max_run_count, max_age_days, preserve_failed_longer, failed_extra_days
 - **`CleanupPlan`** (:408) — runs_to_delete, bytes_to_free, pinned_runs_skipped
 - **`IndexEntry`** (:417) — JSONL index record (10 fields including pinned, date_dir)
+- **`RunOwnership`** (:75) — Enum (`Caller`, `DelegatedBackend`, `ChildOf(RunId)`) describing who owns the canonical run record for a command execution.
 
 ### View Models (Phase 08)
 
-- **`RunCellView`** (:462) — Compact summary for TUI cells (from_manifest()). Includes `can_promote: bool` (true when artifacts exist AND projection present OR status Complete/Failed) and `can_view_artifact: bool` (true when artifacts exist).
+- **`RunCellView`** (:462) — Compact summary for TUI cells (from_manifest()). Capability flags: `can_rollback` (disabled; no rollback backend exists), `can_rerun` (requires `rerun` descriptor with complete argv), `can_promote` (requires artifacts, projection, completed/failed status, and at least one safe_for_model artifact), `can_view_artifact` (disabled; no ranged reader available yet).
 - **`RunDetailView`** (:530) — Full detail for overlay (from_manifest())
 - Sub-views: `RunInvocationView`, `RunPermissionView`, `RunPolicyView`, `RunArtifactView`, `RunProjectionView`, `RunChangeView`
 
@@ -124,7 +125,7 @@ pub trait RunStore: Send + Sync {
 | `src/tool/mod.rs:341-342` | `PythonScriptTool` receives `run_store` via `with_run_store()` |
 | `src/tool/mod.rs:340-341` | `TestTool` receives `run_store` via `with_run_store()` |
 | `src/tool/factory.rs:45-52` | Factory creates `FsRunStore` at `.codegg/runs/` and passes to tools |
-| `src/tool/bash.rs:664-760` | BashTool persists `RawShell` runs with stdout/stderr artifacts |
+| `src/tool/bash.rs:664-760` | BashTool persists runs with the correct `RunKind` based on routing decision (GitRead, NativeTool, Search, GitMutation, ManagedProcess, Test, Python, RawShell). Skips persistence for TestRunner and PythonScript backends that own their own records. |
 | `src/python_script/tool.rs:143-257` | PythonScriptTool persists `Python` runs with diff/sandbox/changes |
 | `src/test_runner/runner.rs:238-239` | TestRunner persists `Test` runs via `persist_to_run_store()` after each test run |
 

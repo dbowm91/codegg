@@ -568,7 +568,7 @@ impl Component for RunDetailDialog {
             KeyCode::Char('r') if self.detail.cell.can_rerun => Some(TuiMsg::RunRerun {
                 run_id: self.detail.cell.run_id.to_string(),
             }),
-            KeyCode::Char('p') => Some(TuiMsg::RunPromote {
+            KeyCode::Char('p') if self.detail.cell.can_promote => Some(TuiMsg::RunPromote {
                 run_id: self.detail.cell.run_id.to_string(),
             }),
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {

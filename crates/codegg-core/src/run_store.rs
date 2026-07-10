@@ -72,6 +72,19 @@ impl std::fmt::Display for ArtifactId {
     }
 }
 
+// ── Run Ownership ────────────────────────────────────────────────────────
+
+/// Describes who owns the canonical run record for a command execution.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum RunOwnership {
+    /// The caller (e.g., BashTool) persists the run directly.
+    Caller,
+    /// A delegated backend (e.g., TestRunner, PythonScriptTool) owns the record.
+    DelegatedBackend,
+    /// This is a child run of another run.
+    ChildOf(RunId),
+}
+
 // ── Run Kind ────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -542,13 +555,21 @@ impl RunCellView {
         let risk_label = Self::risk_label_for(&manifest.risk);
         let sandbox_label = manifest.sandbox.as_ref().map(Self::sandbox_label_for);
         let summary = Self::summary_for_manifest(manifest);
-        let can_rollback = manifest.kind == RunKind::Python && !manifest.changes.is_empty();
-        let can_rerun = manifest.rerun.is_some();
+        // Rollback is not implemented; disabled until a real handler exists.
+        let can_rollback = false;
+        // Rerun requires a complete argv in the rerun descriptor.
+        let can_rerun = manifest
+            .rerun
+            .as_ref()
+            .is_some_and(|r| matches!(&r.argv, Some(v) if !v.is_empty()));
         let has_artifacts = !manifest.artifacts.is_empty();
+        // Promote requires at least one safe_for_model artifact and completed redaction.
         let can_promote = has_artifacts
-            && (manifest.projection.is_some()
-                || matches!(manifest.status, RunStatus::Complete | RunStatus::Failed));
-        let can_view_artifact = has_artifacts;
+            && manifest.projection.is_some()
+            && matches!(manifest.status, RunStatus::Complete | RunStatus::Failed)
+            && manifest.artifacts.iter().any(|a| a.safe_for_model);
+        // Artifact content viewing requires a ranged reader; metadata-only display does not count.
+        let can_view_artifact = false;
 
         let context_state = if manifest.projection.is_some() {
             ContextPromotionState::ProjectionIncluded
@@ -685,6 +706,14 @@ pub struct RunPolicyView {
     pub write_roots: Vec<PathBuf>,
 }
 
+/// Simplified artifact view for display in the UI.
+///
+/// To read artifact content (bytes), use `RunStore::read_artifact()` which
+/// provides bounded ranged reads. The UI does not currently surface raw
+/// artifact bytes — only metadata is shown in this view.
+///
+/// `safe_for_model` indicates whether the artifact has passed redaction
+/// checks and is safe to include in model context.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunArtifactView {
     pub artifact_id: ArtifactId,

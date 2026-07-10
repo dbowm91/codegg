@@ -282,6 +282,8 @@ This is the intended behavior. Custom scope means "allowlisted test command with
 
 ## Previous-Failures Index (Phase 06)
 
+> **RunStore is the authoritative persistence layer for test runs.** The legacy `.codegg/test-runs/index.json` is retained for backward compatibility with `TestScope::PreviousFailures` and TUI commands that read the index directly. The legacy index is deprecated and will be removed once `PreviousFailures` reads from RunStore directly.
+
 The `index.rs` module maintains a bounded, local index of recent test runs so that the `PreviousFailures` scope can automatically find and rerun the most recent failing test command.
 
 ### Index file location
