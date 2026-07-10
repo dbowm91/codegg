@@ -259,6 +259,12 @@ pub enum TuiCommand {
         run_id: String,
         section: String,
     },
+    OpenRunDetailLoaded {
+        dialog: crate::tui::components::dialogs::run_detail::RunDetailDialog,
+    },
+    OpenRunDetailError {
+        error: String,
+    },
     /// Completion: sessions have been reloaded from core.
     SessionsReloaded {
         request_id: u64,
@@ -671,6 +677,8 @@ pub struct App {
     pub session_store: Option<Arc<SessionStore>>,
     pub message_store: Option<Arc<MessageStore>>,
     pub memory_store: Option<Arc<MemoryStore>>,
+    /// Run store for querying run history. Set externally after App creation.
+    pub run_store: Option<Arc<dyn codegg_core::run_store::RunStore>>,
     /// User preferences backed by SQLite. Holds the active theme id and
     /// the last-used model id; both survive a config-file reset. Always
     /// `Some` in normal operation; `None` is reserved for test fixtures
@@ -861,6 +869,13 @@ impl App {
         // Note: navigation keybindings retrieved for debug logging only
         let _ = (up_key, down_key, j_key, k_key);
         let indexed_files: Arc<RwLock<Vec<String>>> = Arc::new(RwLock::new(Vec::new()));
+        let run_store: Option<Arc<dyn codegg_core::run_store::RunStore>> = {
+            let run_root = std::path::PathBuf::from(&project_dir)
+                .join(".codegg")
+                .join("runs");
+            let store = codegg_core::run_store::FsRunStore::new(run_root);
+            Some(Arc::new(store) as Arc<dyn codegg_core::run_store::RunStore>)
+        };
         let (shutdown_tx, shutdown_rx) = broadcast::channel::<()>(1);
         let dir_clone = project_dir.clone();
         let files_clone = Arc::clone(&indexed_files);
@@ -996,6 +1011,7 @@ impl App {
                 review_dialog: None,
                 security_review_dialog: None,
                 source_preview_dialog: None,
+                run_detail_dialog: None,
                 research_browser: None,
                 help_dialog: None,
                 info_dialog: None,
@@ -1052,6 +1068,7 @@ impl App {
             remote_event_rx: None,
             remote_send_tx: None,
             core_client: None,
+            run_store,
             config_watcher: Some(
                 cfg.and_then(|c| c.watcher.as_ref())
                     .map(|w| crate::config::ConfigWatcher::new().with_config(w))
@@ -1418,6 +1435,7 @@ impl App {
                 review_dialog: None,
                 security_review_dialog: None,
                 source_preview_dialog: None,
+                run_detail_dialog: None,
                 research_browser: None,
                 help_dialog: None,
                 info_dialog: None,
@@ -1474,6 +1492,7 @@ impl App {
             remote_event_rx: None,
             remote_send_tx: None,
             core_client: None,
+            run_store: None,
             config_watcher: None, // No config watcher for tests
             theme_registry: Arc::new(crate::theme::ThemeRegistry::load_builtins()),
             preferences: None,
@@ -1789,6 +1808,20 @@ impl App {
                             text: format!(
                                 "$ {} [{}]\nstdout: {}\nstderr: {}",
                                 command, status, stdout_preview, stderr_preview
+                            )
+                            .into(),
+                        });
+                    }
+                    MsgPart::RunCell {
+                        title,
+                        status,
+                        backend_label,
+                        ..
+                    } => {
+                        content.push(crate::provider::ContentPart::Text {
+                            text: format!(
+                                "run: {} [{}] backend: {}",
+                                title, status, backend_label
                             )
                             .into(),
                         });
@@ -3474,6 +3507,52 @@ impl App {
                 }
                 self.ui_state.dialog = crate::tui::Dialog::SourcePreview;
             }
+            TuiMsg::OpenRunDetail { run_id } => {
+                use crate::tui::components::dialogs::run_detail::RunDetailDialog;
+                use codegg_core::run_store::RunDetailView;
+                if let Some(ref run_store) = self.run_store {
+                    let run_id_val = codegg_core::run_store::RunId(run_id.clone());
+                    let run_store = Arc::clone(run_store);
+                    let theme = Arc::clone(&self.ui_state.theme);
+                    let tx = self.tui_cmd_tx.clone();
+                    tokio::spawn(async move {
+                        match run_store.get_run(&run_id_val).await {
+                            Ok(Some(manifest)) => {
+                                let detail = RunDetailView::from_manifest(&manifest);
+                                let dialog =
+                                    RunDetailDialog::new(detail, Arc::clone(&theme));
+                                if let Some(ref tx) = tx {
+                                    let _ = tx.try_send(
+                                        TuiCommand::OpenRunDetailLoaded { dialog },
+                                    );
+                                }
+                            }
+                            Ok(None) => {
+                                if let Some(ref tx) = tx {
+                                    let _ = tx.try_send(
+                                        TuiCommand::OpenRunDetailError {
+                                            error: format!("Run not found: {}", run_id),
+                                        },
+                                    );
+                                }
+                            }
+                            Err(e) => {
+                                if let Some(ref tx) = tx {
+                                    let _ = tx.try_send(
+                                        TuiCommand::OpenRunDetailError {
+                                            error: format!("Failed to load run: {}", e),
+                                        },
+                                    );
+                                }
+                            }
+                        }
+                    });
+                } else {
+                    self.messages_state
+                        .toasts
+                        .error("Run store not available");
+                }
+            }
             TuiMsg::SecurityReviewJump { path, line } => {
                 // Read-only: copy the file path to the clipboard and
                 // surface a toast. The file is never opened or mutated.
@@ -3517,6 +3596,74 @@ impl App {
                 self.enqueue_tui_command(TuiCommand::ShellKill {
                     id: id.parse().unwrap_or(0),
                 });
+            }
+            TuiMsg::RunRerun { run_id } => {
+                if let Some(ref run_store) = self.run_store {
+                    let run_id_val = codegg_core::run_store::RunId(run_id.clone());
+                    let run_store = Arc::clone(run_store);
+                    let tx = self.tui_cmd_tx.clone();
+                    tokio::spawn(async move {
+                        match run_store.get_run(&run_id_val).await {
+                            Ok(Some(manifest)) => {
+                                if manifest.rerun.is_some() {
+                                    if let Some(ref tx) = tx {
+                                        let _ = tx.try_send(TuiCommand::ShellRerun {
+                                            id: 0,
+                                        });
+                                    }
+                                } else {
+                                    if let Some(ref tx) = tx {
+                                        let _ = tx.try_send(
+                                            TuiCommand::OpenRunDetailError {
+                                                error: "Run has no rerun descriptor".to_string(),
+                                            },
+                                        );
+                                    }
+                                }
+                            }
+                            Ok(None) => {
+                                if let Some(ref tx) = tx {
+                                    let _ = tx.try_send(TuiCommand::OpenRunDetailError {
+                                        error: format!("Run not found: {}", run_id),
+                                    });
+                                }
+                            }
+                            Err(e) => {
+                                if let Some(ref tx) = tx {
+                                    let _ = tx.try_send(TuiCommand::OpenRunDetailError {
+                                        error: format!("Failed to load run: {}", e),
+                                    });
+                                }
+                            }
+                        }
+                    });
+                }
+            }
+            TuiMsg::RunPromote { run_id } => {
+                self.messages_state
+                    .toasts
+                    .info(&format!("Run {} promoted to context", run_id));
+            }
+            TuiMsg::RunCopyId { run_id } => {
+                #[cfg(feature = "arboard")]
+                {
+                    if let Ok(mut clipboard) = arboard::Clipboard::new() {
+                        let _ = clipboard.set_text(run_id.clone());
+                        self.messages_state
+                            .toasts
+                            .info("Run ID copied to clipboard");
+                    } else {
+                        self.messages_state
+                            .toasts
+                            .info(&format!("Run ID: {}", run_id));
+                    }
+                }
+                #[cfg(not(feature = "arboard"))]
+                {
+                    self.messages_state
+                        .toasts
+                        .info(&format!("Run ID: {}", run_id));
+                }
             }
             _ => {}
         }
@@ -7541,6 +7688,9 @@ impl App {
                 self.dialog_state.shell_detail_id = None;
                 self.dialog_state.shell_detail_dialog = None;
             }
+            Dialog::RunDetail => {
+                self.dialog_state.run_detail_dialog = None;
+            }
             _ => {}
         }
 
@@ -8230,6 +8380,12 @@ impl App {
             }
             Dialog::SourcePreview => {
                 if let Some(ref mut dialog) = self.dialog_state.source_preview_dialog {
+                    dialog.set_theme(&self.ui_state.theme);
+                    self.focus_manager.push(Box::new(dialog.clone()));
+                }
+            }
+            Dialog::RunDetail => {
+                if let Some(ref mut dialog) = self.dialog_state.run_detail_dialog {
                     dialog.set_theme(&self.ui_state.theme);
                     self.focus_manager.push(Box::new(dialog.clone()));
                 }
@@ -10654,7 +10810,7 @@ impl App {
                         Some(MsgPart::Reasoning { .. }) | Some(MsgPart::ToolCall { .. }) => {
                             String::new()
                         }
-                        Some(MsgPart::Image { .. }) | Some(MsgPart::ShellCell { .. }) => {
+                        Some(MsgPart::Image { .. }) | Some(MsgPart::ShellCell { .. }) | Some(MsgPart::RunCell { .. }) => {
                             String::new()
                         }
                         None => String::new(),
@@ -10712,7 +10868,7 @@ impl App {
                         }
                         Some(MsgPart::Reasoning { .. }) => "reasoning...".to_string(),
                         Some(MsgPart::ToolCall { name, .. }) => format!("[{}]", name),
-                        Some(MsgPart::Image { .. }) | Some(MsgPart::ShellCell { .. }) => {
+                        Some(MsgPart::Image { .. }) | Some(MsgPart::ShellCell { .. }) | Some(MsgPart::RunCell { .. }) => {
                             String::new()
                         }
                         None => String::new(),

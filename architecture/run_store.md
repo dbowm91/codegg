@@ -1,0 +1,167 @@
+# Run Store
+
+## Overview
+
+**Location**: `crates/codegg-core/src/run_store.rs` (~1900 lines)
+
+The run store provides durable, filesystem-backed persistence for structured command execution records (runs) and their associated artifacts. It replaces ad-hoc log files and JSONL indices with a typed, indexed store that supports ranging, retention, and cleanup.
+
+## Key Responsibilities
+
+- Persist run manifests (metadata, invocation, risk, permissions, sandbox, projection, changes, rerun descriptor)
+- Persist artifacts (stdout, stderr, diffs, test reports, structured JSON, etc.)
+- Provide JSONL index for fast listing and querying
+- Enforce retention limits (bytes, count, age)
+- Support ranged artifact reads for large outputs
+- Provide in-memory implementation for tests
+
+## Architecture
+
+### RunStore Trait
+
+```rust
+#[async_trait]
+pub trait RunStore: Send + Sync {
+    async fn begin_run(&self, draft: RunDraft) -> Result<RunHandle, RunStoreError>;
+    async fn write_artifact(&self, run: &RunHandle, artifact: ArtifactInput) -> Result<ArtifactRef, RunStoreError>;
+    async fn complete_run(&self, run: RunHandle, completion: RunCompletion) -> Result<RunManifest, RunStoreError>;
+    async fn get_run(&self, id: &RunId) -> Result<Option<RunManifest>, RunStoreError>;
+    async fn read_artifact(&self, id: &ArtifactId, range: Option<ByteRange>) -> Result<ArtifactChunk, RunStoreError>;
+    async fn list_runs(&self, query: RunQuery) -> Result<Vec<RunSummary>, RunStoreError>;
+}
+```
+
+### Implementations
+
+| Implementation | Location | Purpose |
+|---------------|----------|---------|
+| `FsRunStore` | `:478` | Filesystem-backed with JSONL index, atomic writes, path traversal protection |
+| `MemRunStore` | `:968` | In-memory for tests, `parking_lot::RwLock` based |
+
+### Directory Layout
+
+```
+<root>/
+  index.jsonl              # One IndexEntry per line
+  2026-07-10/
+    <run-id>/
+      manifest.json        # RunManifest
+      stdout.log           # ArtifactKind::Stdout
+      stderr.log           # ArtifactKind::Stderr
+      invocation.json      # ArtifactKind::CommandSource
+      diff.patch           # ArtifactKind::UnifiedDiff
+      projection.txt       # ArtifactKind::Projection
+      ...
+```
+
+### Key Constants
+
+| Constant | Value |
+|----------|-------|
+| `SCHEMA_VERSION` | `1` |
+| `MAX_ARTIFACT_BYTES` | 64 MiB |
+| `DEFAULT_MAX_TOTAL_BYTES` | 1 GiB |
+| `DEFAULT_MAX_RUN_COUNT` | 1000 |
+| `DEFAULT_MAX_AGE_DAYS` | 30 |
+| `DEFAULT_FAILED_EXTRA_DAYS` | 30 |
+
+## Domain Types
+
+### Identifiers
+
+- `RunId(String)` — UUID v4, Display, Default, Serialize/Deserialize
+- `ArtifactId(String)` — Same pattern as RunId
+
+### Enums
+
+- **`RunKind`** (8 variants): `RawShell`, `ManagedProcess`, `Test`, `GitRead`, `GitMutation`, `Search`, `Python`, `NativeTool`
+- **`RunStatus`** (6 variants): `Running`, `Complete`, `Failed`, `TimedOut`, `Cancelled`, `Incomplete`
+- **`ArtifactKind`** (12 variants): `Stdout`, `Stderr`, `CombinedLog`, `CommandSource`, `TestReport`, `TestLog`, `UnifiedDiff`, `ChangedFiles`, `Projection`, `RtkProjection`, `StructuredJson`, `PolicyEvidence`
+- **`ContextPromotionState`** (5 variants): `LocalOnly`, `ProjectionIncluded`, `ArtifactRangeIncluded { artifact_id, start, end }`, `Pinned`, `Excluded`
+
+### Record Types
+
+- `RunInvocation` — command, argv, script_hash
+- `BackendRecord` — family, detail
+- `RiskRecord` — level, has_subprocess, has_git_mutation, has_destructive_mutation
+- `PermissionDecisionRecord` — tool, path, decision
+- `SandboxRecord` — os_isolation, network_isolation, read_roots, write_roots
+- `ArtifactRecord` — artifact_id, kind, relative_path, mime_type, byte_length, sha256, truncated, redacted, safe_for_model
+- `ProjectionRecord` — projector, exactness, omitted_ranges
+- `ChangedPathRecord` — path, kind
+- `RerunDescriptor` — argv, script_source_ref, backend_family, cwd, workspace_root, mode, config_profile, parent_run_id
+
+### Composite Types
+
+- **`RunManifest`** (:264) — Full run descriptor with all 15 fields
+- **`RunSummary`** (:298) — Lightweight listing (run_id, kind, status, started_at, completed_at, command)
+- **`RunDraft`** (:311) — Input for `begin_run`
+- **`RunHandle`** (:323) — Returned by `begin_run` (run_id, run_dir, started_at)
+- **`RunCompletion`** (:330) — Input for `complete_run`
+- **`RunQuery`** (:343) — Filter for `list_runs` (kind, status, session_id, since, until, limit)
+- **`ArtifactInput`** (:355) — Input for `write_artifact`
+- **`ArtifactRef`** (:363) — Returned by `write_artifact`
+- **`ArtifactChunk`** (:371) — Returned by `read_artifact` (supports ranged reads)
+- **`ByteRange`** (:379) — start, end
+- **`RetentionConfig`** (:387) — max_total_bytes, max_run_count, max_age_days, preserve_failed_longer, failed_extra_days
+- **`CleanupPlan`** (:408) — runs_to_delete, bytes_to_free, pinned_runs_skipped
+- **`IndexEntry`** (:417) — JSONL index record (10 fields including pinned, date_dir)
+
+### View Models (Phase 08)
+
+- **`RunCellView`** (:462) — Compact summary for TUI cells (from_manifest())
+- **`RunDetailView`** (:530) — Full detail for overlay (from_manifest())
+- Sub-views: `RunInvocationView`, `RunPermissionView`, `RunPolicyView`, `RunArtifactView`, `RunProjectionView`, `RunChangeView`
+
+## Integration Points
+
+### Tool Integration
+
+| Location | How Used |
+|----------|----------|
+| `src/tool/mod.rs:242` | `ToolRegistryOptions.run_store: Option<Arc<dyn RunStore>>` |
+| `src/tool/mod.rs:263-266` | `BashTool` receives `run_store` via `with_run_store()` |
+| `src/tool/mod.rs:341-342` | `PythonScriptTool` receives `run_store` via `with_run_store()` |
+| `src/tool/factory.rs:45-52` | Factory creates `FsRunStore` at `.codegg/runs/` and passes to tools |
+| `src/tool/bash.rs:664-760` | BashTool persists `RawShell` runs with stdout/stderr artifacts |
+| `src/python_script/tool.rs:143-257` | PythonScriptTool persists `Python` runs with diff/sandbox/changes |
+
+### TUI Integration
+
+| Location | How Used |
+|----------|----------|
+| `src/tui/app/mod.rs:681` | `App.run_store: Option<Arc<dyn RunStore>>` |
+| `src/tui/app/mod.rs:872-877` | App initializes `FsRunStore` at `.codegg/runs/` |
+| `src/tui/app/mod.rs:3510` | `TuiMsg::OpenRunDetail` loads manifest, creates `RunDetailDialog` |
+| `src/tui/components/dialogs/run_detail.rs` | `RunDetailDialog` — 7-tab detail view |
+| `src/tui/components/messages.rs` | `MsgPart::RunCell` — compact run cell rendering |
+
+### Protocol Events (Phase 08)
+
+Added to `CoreEvent` in `crates/codegg-protocol/src/core.rs`:
+
+- `RunStarted`, `RunProgress`, `RunArtifactCreated`, `RunProjectionReady`
+- `RunCompleted`, `RunDenied`, `RunPinned`, `ContextPromotionChanged`, `RunRerunLinked`
+
+### Protocol Conversions
+
+In `src/protocol_conversions.rs`:
+
+- `run_started_event()`, `run_progress_event()`, `run_completed_event()`
+- `run_artifact_created_event()`, `run_denied_event()`
+
+## Not Yet Integrated
+
+| Gap | Details |
+|-----|---------|
+| Test runner | `src/test_runner/` uses its own `.codegg/test-runs/` JSONL index |
+| Native git/search tools | No run_store integration |
+| Full rerun from manifest | RerunDescriptor defined but re-execution not wired |
+| Rollback/revert | No rollback infrastructure |
+| Artifact viewer | Run detail shows artifact metadata, not full content |
+
+## Tests
+
+13 unit tests in `run_store.rs` covering: ID generation, serde roundtrip, begin/write/complete flow, get/list, ranged reads, integrity violation, artifact too large, rerun descriptor safety, concurrent writes, path traversal, list with limit, cleanup plan, FsRunStore (atomic begin, artifact write, index update).
+
+Run with: `cargo test -p codegg-core run_store`

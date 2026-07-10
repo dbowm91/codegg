@@ -16,6 +16,7 @@ pub mod plugin;
 pub mod question;
 pub mod research;
 pub mod review;
+pub mod run_detail;
 pub mod security_review;
 pub mod session;
 pub mod share;

@@ -437,6 +437,64 @@ pub enum CoreEvent {
         #[serde(skip_serializing_if = "Option::is_none")]
         log_dir: Option<String>,
     },
+    /// A command/script/test run started.
+    RunStarted {
+        session_id: String,
+        run_id: String,
+        kind: String,
+        command: String,
+    },
+    /// Progress update for a long-running run.
+    RunProgress {
+        session_id: String,
+        run_id: String,
+        message: String,
+    },
+    /// An artifact was created for a run.
+    RunArtifactCreated {
+        session_id: String,
+        run_id: String,
+        artifact_id: String,
+        kind: String,
+        byte_length: u64,
+    },
+    /// Projection output is ready for a run.
+    RunProjectionReady {
+        session_id: String,
+        run_id: String,
+        projector: String,
+        exactness: String,
+    },
+    /// A run completed.
+    RunCompleted {
+        session_id: String,
+        run_id: String,
+        status: String,
+        summary: String,
+    },
+    /// A run was denied by policy.
+    RunDenied {
+        session_id: String,
+        run_id: String,
+        reason: String,
+    },
+    /// A run was pinned or unpinned.
+    RunPinned {
+        run_id: String,
+        pinned: bool,
+    },
+    /// Context promotion state changed for a run.
+    ContextPromotionChanged {
+        session_id: String,
+        run_id: String,
+        state: String,
+    },
+    /// A rerun was linked to its parent run.
+    RunRerunLinked {
+        session_id: String,
+        parent_run_id: String,
+        child_run_id: String,
+    },
     /// A plugin produced a UI effect (dialog, toast, panel, status item,
     /// etc.) through a lifecycle hook or session-scoped command.
     ///

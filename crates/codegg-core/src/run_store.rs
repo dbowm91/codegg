@@ -427,6 +427,317 @@ pub struct IndexEntry {
     pub pinned: bool,
 }
 
+// ── Run View Models ────────────────────────────────────────────────────
+
+/// Context promotion state for a run.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ContextPromotionState {
+    /// Output is local-only, not included in model context.
+    LocalOnly,
+    /// Projection is included in model context.
+    ProjectionIncluded,
+    /// A specific artifact range is included.
+    ArtifactRangeIncluded {
+        artifact_id: ArtifactId,
+        start: usize,
+        end: usize,
+    },
+    /// Pinned for future context inclusion.
+    Pinned,
+    /// Explicitly excluded or redacted from context.
+    Excluded,
+}
+
+impl Default for ContextPromotionState {
+    fn default() -> Self {
+        Self::LocalOnly
+    }
+}
+
+/// Compact run cell view for TUI rendering.
+///
+/// Constructed from a `RunManifest` via `RunCellView::from_manifest()`.
+/// This is frontend-independent — TUI, GUI, and web clients all use the same model.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RunCellView {
+    pub run_id: RunId,
+    pub title: String,
+    pub kind: RunKind,
+    pub status: RunStatus,
+    pub backend_label: String,
+    pub duration: Option<chrono::Duration>,
+    pub risk_label: String,
+    pub sandbox_label: Option<String>,
+    pub summary: String,
+    pub changed_file_count: usize,
+    pub artifact_count: usize,
+    pub can_rerun: bool,
+    pub can_rollback: bool,
+    pub context_state: ContextPromotionState,
+}
+
+impl RunCellView {
+    /// Build a compact view from a run manifest.
+    pub fn from_manifest(manifest: &RunManifest) -> Self {
+        let title = Self::title_for_manifest(manifest);
+        let backend_label = manifest
+            .backend
+            .detail
+            .clone()
+            .unwrap_or_else(|| manifest.backend.family.clone());
+        let duration = manifest
+            .completed_at
+            .map(|c| c.signed_duration_since(manifest.started_at));
+        let risk_label = Self::risk_label_for(&manifest.risk);
+        let sandbox_label = manifest
+            .sandbox
+            .as_ref()
+            .map(|s| Self::sandbox_label_for(s));
+        let summary = Self::summary_for_manifest(manifest);
+        let can_rollback = manifest.kind == RunKind::Python && !manifest.changes.is_empty();
+        let can_rerun = manifest.rerun.is_some();
+
+        Self {
+            run_id: manifest.run_id.clone(),
+            title,
+            kind: manifest.kind.clone(),
+            status: manifest.status.clone(),
+            backend_label,
+            duration,
+            risk_label,
+            sandbox_label,
+            summary,
+            changed_file_count: manifest.changes.len(),
+            artifact_count: manifest.artifacts.len(),
+            can_rerun,
+            can_rollback,
+            context_state: ContextPromotionState::LocalOnly,
+        }
+    }
+
+    fn title_for_manifest(m: &RunManifest) -> String {
+        match m.kind {
+            RunKind::RawShell | RunKind::ManagedProcess => m.invocation.command.clone(),
+            RunKind::Test => {
+                format!("test: {}", m.invocation.command)
+            }
+            RunKind::Python => {
+                let mode = m
+                    .rerun
+                    .as_ref()
+                    .and_then(|r| r.mode.as_deref())
+                    .unwrap_or("analyze");
+                format!("python {mode}: {}", m.invocation.command)
+            }
+            RunKind::GitRead | RunKind::GitMutation => {
+                format!("git: {}", m.invocation.command)
+            }
+            RunKind::Search => {
+                format!("search: {}", m.invocation.command)
+            }
+            RunKind::NativeTool => m
+                .backend
+                .detail
+                .clone()
+                .unwrap_or_else(|| m.invocation.command.clone()),
+        }
+    }
+
+    fn risk_label_for(risk: &RiskRecord) -> String {
+        risk.level.clone()
+    }
+
+    fn sandbox_label_for(sandbox: &SandboxRecord) -> String {
+        let mut parts = Vec::new();
+        if sandbox.os_isolation {
+            parts.push("os-sandbox");
+        }
+        if sandbox.network_isolation {
+            parts.push("no-net");
+        }
+        if parts.is_empty() {
+            "portable-fallback".to_string()
+        } else {
+            parts.join("+")
+        }
+    }
+
+    fn summary_for_manifest(m: &RunManifest) -> String {
+        match m.status {
+            RunStatus::Running => "running...".to_string(),
+            RunStatus::Complete => {
+                if m.changes.is_empty() {
+                    "completed".to_string()
+                } else {
+                    format!("completed, {} file(s) changed", m.changes.len())
+                }
+            }
+            RunStatus::Failed => "failed".to_string(),
+            RunStatus::TimedOut => "timed out".to_string(),
+            RunStatus::Cancelled => "cancelled".to_string(),
+            RunStatus::Incomplete => "incomplete".to_string(),
+        }
+    }
+}
+
+/// Detailed run view for the run detail overlay/panel.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RunDetailView {
+    pub cell: RunCellView,
+    pub invocation: RunInvocationView,
+    pub permissions: Vec<RunPermissionView>,
+    pub policy: RunPolicyView,
+    pub artifacts: Vec<RunArtifactView>,
+    pub projection: Option<RunProjectionView>,
+    pub changes: Vec<RunChangeView>,
+    pub parent_run_id: Option<RunId>,
+    pub child_run_ids: Vec<RunId>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RunInvocationView {
+    pub command: String,
+    pub argv: Option<Vec<String>>,
+    pub script_hash: Option<String>,
+    pub cwd: PathBuf,
+    pub workspace_root: PathBuf,
+    pub backend_family: String,
+    pub backend_detail: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RunPermissionView {
+    pub tool: String,
+    pub path: Option<String>,
+    pub decision: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RunPolicyView {
+    pub risk_level: String,
+    pub has_subprocess: bool,
+    pub has_git_mutation: bool,
+    pub has_destructive_mutation: bool,
+    pub os_isolation: bool,
+    pub network_isolation: bool,
+    pub read_roots: Vec<PathBuf>,
+    pub write_roots: Vec<PathBuf>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RunArtifactView {
+    pub artifact_id: ArtifactId,
+    pub kind: ArtifactKind,
+    pub relative_path: String,
+    pub mime_type: String,
+    pub byte_length: u64,
+    pub truncated: bool,
+    pub redacted: bool,
+    pub safe_for_model: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RunProjectionView {
+    pub projector: String,
+    pub exactness: String,
+    pub omitted_ranges: Vec<OmittedRange>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RunChangeView {
+    pub path: PathBuf,
+    pub kind: String,
+}
+
+impl RunDetailView {
+    /// Build a detailed view from a run manifest.
+    pub fn from_manifest(manifest: &RunManifest) -> Self {
+        let cell = RunCellView::from_manifest(manifest);
+
+        let invocation = RunInvocationView {
+            command: manifest.invocation.command.clone(),
+            argv: manifest.invocation.argv.clone(),
+            script_hash: manifest.invocation.script_hash.clone(),
+            cwd: manifest.cwd.clone(),
+            workspace_root: manifest.workspace_root.clone(),
+            backend_family: manifest.backend.family.clone(),
+            backend_detail: manifest.backend.detail.clone(),
+        };
+
+        let permissions = manifest
+            .permissions
+            .iter()
+            .map(|p| RunPermissionView {
+                tool: p.tool.clone(),
+                path: p.path.clone(),
+                decision: p.decision.clone(),
+            })
+            .collect();
+
+        let policy = RunPolicyView {
+            risk_level: manifest.risk.level.clone(),
+            has_subprocess: manifest.risk.has_subprocess,
+            has_git_mutation: manifest.risk.has_git_mutation,
+            has_destructive_mutation: manifest.risk.has_destructive_mutation,
+            os_isolation: manifest.sandbox.as_ref().map_or(false, |s| s.os_isolation),
+            network_isolation: manifest
+                .sandbox
+                .as_ref()
+                .map_or(false, |s| s.network_isolation),
+            read_roots: manifest
+                .sandbox
+                .as_ref()
+                .map_or_else(Vec::new, |s| s.read_roots.clone()),
+            write_roots: manifest
+                .sandbox
+                .as_ref()
+                .map_or_else(Vec::new, |s| s.write_roots.clone()),
+        };
+
+        let artifacts = manifest
+            .artifacts
+            .iter()
+            .map(|a| RunArtifactView {
+                artifact_id: a.artifact_id.clone(),
+                kind: a.kind.clone(),
+                relative_path: a.relative_path.clone(),
+                mime_type: a.mime_type.clone(),
+                byte_length: a.byte_length,
+                truncated: a.truncated,
+                redacted: a.redacted,
+                safe_for_model: a.safe_for_model,
+            })
+            .collect();
+
+        let projection = manifest.projection.as_ref().map(|p| RunProjectionView {
+            projector: p.projector.clone(),
+            exactness: p.exactness.clone(),
+            omitted_ranges: p.omitted_ranges.clone(),
+        });
+
+        let changes = manifest
+            .changes
+            .iter()
+            .map(|c| RunChangeView {
+                path: c.path.clone(),
+                kind: c.kind.clone(),
+            })
+            .collect();
+
+        Self {
+            cell,
+            invocation,
+            permissions,
+            policy,
+            artifacts,
+            projection,
+            changes,
+            parent_run_id: manifest.parent_run_id.clone(),
+            child_run_ids: Vec::new(),
+        }
+    }
+}
+
 // ── RunStore trait ──────────────────────────────────────────────────────
 
 #[async_trait::async_trait]

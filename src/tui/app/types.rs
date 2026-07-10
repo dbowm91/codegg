@@ -34,6 +34,7 @@ pub enum Dialog {
     MemoryResults,
     DoctorReport,
     Plugin,
+    RunDetail,
 }
 
 impl Dialog {
@@ -73,6 +74,7 @@ impl Dialog {
                 | Self::MemoryResults
                 | Self::DoctorReport
                 | Self::Plugin
+                | Self::RunDetail
         )
     }
 }
@@ -236,6 +238,9 @@ pub enum TuiMsg {
         line: Option<u32>,
         origin_label: Option<String>,
     },
+    OpenRunDetail {
+        run_id: String,
+    },
     ShellInclude {
         id: String,
         mode: String,
@@ -248,6 +253,15 @@ pub enum TuiMsg {
     },
     ShellKill {
         id: String,
+    },
+    RunRerun {
+        run_id: String,
+    },
+    RunPromote {
+        run_id: String,
+    },
+    RunCopyId {
+        run_id: String,
     },
 }
 

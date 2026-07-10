@@ -49,6 +49,8 @@ pub struct DialogState {
         Option<crate::tui::components::dialogs::security_review::SecurityReviewDialog>,
     pub source_preview_dialog:
         Option<crate::tui::components::dialogs::source_preview::SourcePreviewDialog>,
+    pub run_detail_dialog:
+        Option<crate::tui::components::dialogs::run_detail::RunDetailDialog>,
     pub research_browser: Option<crate::tui::components::dialogs::research::ResearchBrowserDialog>,
     pub help_dialog: Option<crate::tui::components::dialogs::help::HelpDialog>,
     pub info_dialog: Option<crate::tui::components::dialogs::info::InfoDialog>,

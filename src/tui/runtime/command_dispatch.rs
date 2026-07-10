@@ -225,6 +225,18 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
         TuiCommand::ResearchLoadSection { run_id, section } => {
             start_research_load_section(app, run_id, section);
         }
+        TuiCommand::OpenRunDetailLoaded { mut dialog } => {
+            dialog.set_theme(&app.ui_state.theme);
+            app.dialog_state.run_detail_dialog = Some(dialog);
+            if let Some(ref mut dlg) = app.dialog_state.run_detail_dialog {
+                dlg.set_theme(&app.ui_state.theme);
+                app.focus_manager.push(Box::new(dlg.clone()));
+            }
+            app.ui_state.dialog = crate::tui::Dialog::RunDetail;
+        }
+        TuiCommand::OpenRunDetailError { error } => {
+            app.messages_state.toasts.error(&error);
+        }
         TuiCommand::RunDoctor => {
             start_run_doctor(app);
         }

@@ -135,6 +135,15 @@ pub enum MsgPart {
         projection_omitted: Option<String>,
         projection_raw_handle: Option<String>,
     },
+    RunCell {
+        run_id: String,
+        title: String,
+        status: String,
+        backend_label: String,
+        duration: Option<String>,
+        changed_file_count: usize,
+        risk_label: String,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -204,6 +213,20 @@ impl UIMessage {
                     text.push_str(&format!(
                         "$ {} [{}] stdout: {} stderr: {}",
                         command, status, stdout_preview, stderr_preview
+                    ));
+                }
+                MsgPart::RunCell {
+                    title,
+                    status,
+                    backend_label,
+                    ..
+                } => {
+                    if !text.is_empty() {
+                        text.push('\n');
+                    }
+                    text.push_str(&format!(
+                        "run: {} [{}] backend: {}",
+                        title, status, backend_label
                     ));
                 }
             }
@@ -657,6 +680,9 @@ impl MessagesWidget {
                             lines += 1;
                         }
                     }
+                }
+                MsgPart::RunCell { .. } => {
+                    lines += 1;
                 }
             }
         }
@@ -1269,6 +1295,20 @@ impl MessagesWidget {
                                 command, stdout_preview, stderr_preview
                             ));
                         }
+                        MsgPart::RunCell {
+                            title,
+                            status,
+                            backend_label,
+                            ..
+                        } => {
+                            if !content.is_empty() {
+                                content.push('\n');
+                            }
+                            content.push_str(&format!(
+                                "run: {} [{}] backend: {}",
+                                title, status, backend_label
+                            ));
+                        }
                     }
                 }
                 return content;
@@ -1512,6 +1552,14 @@ impl MessagesWidget {
                     } => {
                         format!("{}\n{}\n{}", command, stdout_preview, stderr_preview)
                     }
+                    MsgPart::RunCell {
+                        title,
+                        status,
+                        backend_label,
+                        ..
+                    } => {
+                        format!("run: {} [{}] {}", title, status, backend_label)
+                    }
                 };
 
                 let lower_content = part_content.to_lowercase();
@@ -1632,6 +1680,20 @@ impl MessagesWidget {
                         content.push_str(&format!(
                             "$ {}\nstdout: {}\nstderr: {}",
                             command, stdout_preview, stderr_preview
+                        ));
+                    }
+                    MsgPart::RunCell {
+                        title,
+                        status,
+                        backend_label,
+                        ..
+                    } => {
+                        if !content.is_empty() {
+                            content.push('\n');
+                        }
+                        content.push_str(&format!(
+                            "run: {} [{}] {}",
+                            title, status, backend_label
                         ));
                     }
                 }
@@ -2301,6 +2363,66 @@ impl MessagesWidget {
                             ),
                         ]));
                     }
+                }
+                MsgPart::RunCell {
+                    run_id,
+                    title,
+                    status,
+                    backend_label,
+                    duration,
+                    changed_file_count,
+                    risk_label,
+                } => {
+                    let (icon, base_style) = match status.as_str() {
+                        "running" => (
+                            tool_spinner_frame(),
+                            Style::default().fg(self.theme.primary),
+                        ),
+                        "complete" => ("✓", Style::default().fg(self.theme.success)),
+                        "failed" | "timed_out" => {
+                            ("✗", Style::default().fg(self.theme.error))
+                        }
+                        "cancelled" | "incomplete" => {
+                            ("✗", Style::default().fg(self.theme.warning))
+                        }
+                        _ => ("○", Style::default().fg(self.theme.muted)),
+                    };
+                    let mut summary_parts: Vec<String> = Vec::new();
+                    summary_parts.push(backend_label.clone());
+                    if let Some(ref dur) = duration {
+                        summary_parts.push(dur.clone());
+                    }
+                    if *changed_file_count > 0 {
+                        summary_parts.push(format!(
+                            "{} file{} changed",
+                            changed_file_count,
+                            if *changed_file_count == 1 { "" } else { "s" }
+                        ));
+                    }
+                    if !risk_label.is_empty() {
+                        summary_parts.push(format!("risk: {}", risk_label));
+                    }
+                    let summary_str = format!(" ({})", summary_parts.join(", "));
+                    let detail_hint = format!(
+                        " [view: /run-detail {}]",
+                        &run_id[..run_id.len().min(8)]
+                    );
+                    lines.push(Line::from(vec![
+                        Span::styled(
+                            format!("  {} run: {}", icon, title),
+                            base_style,
+                        ),
+                        Span::styled(
+                            summary_str,
+                            Style::default().fg(self.theme.muted),
+                        ),
+                        Span::styled(
+                            detail_hint,
+                            Style::default()
+                                .fg(self.theme.muted)
+                                .add_modifier(Modifier::DIM),
+                        ),
+                    ]));
                 }
             }
         }
