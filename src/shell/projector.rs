@@ -486,6 +486,157 @@ impl std::fmt::Display for ExpansionHandle {
     }
 }
 
+// ── Phase 09 — Unified projection contract types ──────────────────────
+
+/// Unique identifier for a projection result.
+///
+/// Used to track projections across the pipeline and in persisted
+/// run manifests for auditability.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct ProjectionId(pub String);
+
+impl ProjectionId {
+    /// Generate a new random projection ID.
+    pub fn new() -> Self {
+        Self(uuid::Uuid::new_v4().to_string())
+    }
+}
+
+impl Default for ProjectionId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl std::fmt::Display for ProjectionId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// Role played by an artifact span in a projection.
+///
+/// Spans with different roles carry different guarantees about what
+/// the consumer can expect from the referenced raw bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum SpanRole {
+    /// An exact excerpt copied verbatim from the raw artifact.
+    ExactExcerpt,
+    /// A diagnostic span (error, warning) with actionable location info.
+    SupportingDiagnostic,
+    /// A summary of a failure (e.g. test failure name + location).
+    FailureSummary,
+    /// A diff hunk with addition/deletion context.
+    DiffHunk,
+    /// A region omitted from the projection (repetitive or noisy).
+    OmittedRepetitive,
+    /// A region that was redacted (sensitive content).
+    RedactedRegion,
+}
+
+impl SpanRole {
+    /// Short label for diagnostics.
+    pub fn label(self) -> &'static str {
+        match self {
+            SpanRole::ExactExcerpt => "exact-excerpt",
+            SpanRole::SupportingDiagnostic => "supporting-diagnostic",
+            SpanRole::FailureSummary => "failure-summary",
+            SpanRole::DiffHunk => "diff-hunk",
+            SpanRole::OmittedRepetitive => "omitted-repetitive",
+            SpanRole::RedactedRegion => "redacted-region",
+        }
+    }
+}
+
+/// A reference to a specific byte range within an artifact.
+///
+/// Every non-trivial projection should map claims or excerpts back to
+/// raw artifacts so consumers can expand to the exact source.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ArtifactSpanRef {
+    /// The artifact containing the span.
+    pub artifact_id: String,
+    /// Inclusive byte offset from the start of the artifact.
+    pub byte_start: u64,
+    /// Exclusive byte offset.
+    pub byte_end: u64,
+    /// Inclusive line number (1-based), when computable.
+    pub line_start: Option<u64>,
+    /// Exclusive line number.
+    pub line_end: Option<u64>,
+    /// Role this span plays in the projection.
+    pub role: SpanRole,
+}
+
+impl ArtifactSpanRef {
+    /// Number of bytes in this span.
+    pub fn byte_len(&self) -> u64 {
+        self.byte_end.saturating_sub(self.byte_start)
+    }
+}
+
+/// Record of a single redaction operation applied during projection.
+///
+/// Retained in projection metadata so the pipeline is auditable without
+/// exposing the redacted content.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct RedactionRecord {
+    /// Name of the rule that matched.
+    pub rule: String,
+    /// Number of replacements made by this rule.
+    pub replacements: usize,
+}
+
+/// Metadata about RTK compression applied to a projection.
+///
+/// `None` fields indicate RTK was not invoked or the information
+/// is unavailable.
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct RtkResultMetadata {
+    /// Whether RTK was invoked.
+    pub invoked: bool,
+    /// RTK binary version string, if known.
+    pub version: Option<String>,
+    /// Invocation mode used (PostProcess or Wrapper).
+    pub mode: Option<String>,
+    /// Original input size in bytes before RTK processing.
+    pub input_bytes: Option<u64>,
+    /// Output size in bytes after RTK processing.
+    pub output_bytes: Option<u64>,
+    /// Compression ratio (input / output), when computable.
+    pub compression_ratio: Option<f64>,
+}
+
+/// Where a projection should be promoted in the context hierarchy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum PromotionTarget {
+    /// Insert into the model conversation context.
+    ModelContext,
+    /// Store locally only, do not promote to model.
+    LocalOnly,
+    /// Include a specific artifact range (not the full projection).
+    ArtifactRange,
+}
+
+/// Deterministic promotion decision for a projection.
+///
+/// Produced by evaluating the projection result against the current
+/// session context budget, redaction state, and run metadata.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum PromotionDecision {
+    /// Do not include this output in context.
+    Exclude,
+    /// Include the full projected text.
+    IncludeProjection,
+    /// Include only selected artifact spans (e.g. failure summaries).
+    IncludeSelectedSpans(Vec<ArtifactSpanRef>),
+    /// Store the artifact for later expansion but do not promote now.
+    StoreOnly,
+    /// The output requires explicit user confirmation before promotion
+    /// (e.g. unredacted sensitive content).
+    RequireUserConfirmation,
+}
+
 /// The result of a projection.
 ///
 /// Every projector returns this struct; model-visible consumers should
@@ -493,6 +644,8 @@ impl std::fmt::Display for ExpansionHandle {
 /// rather than rendering raw retained bytes.
 #[derive(Debug, Clone)]
 pub struct ProjectionResult {
+    /// Unique identifier for this projection.
+    pub projection_id: ProjectionId,
     /// The projected text. Always valid UTF-8 (lossy decoding is used
     /// for non-UTF-8 streams; the encoding is recorded separately).
     pub text: String,
@@ -521,6 +674,13 @@ pub struct ProjectionResult {
     pub warnings: Vec<String>,
     /// Describes which raw bytes the expansion handles refer to.
     pub raw_semantics: ProjectionRawSemantics,
+    // ── Phase 09 additions ────────────────────────────────────────────
+    /// Source spans mapping projection claims back to raw artifacts.
+    pub source_spans: Vec<ArtifactSpanRef>,
+    /// Records of individual redaction operations applied.
+    pub redaction_records: Vec<RedactionRecord>,
+    /// Metadata about RTK compression, if any was applied.
+    pub rtk_metadata: RtkResultMetadata,
 }
 
 impl ProjectionResult {
@@ -540,6 +700,10 @@ impl ProjectionResult {
             estimated_output_tokens: None,
             warnings: Vec::new(),
             raw_semantics: ProjectionRawSemantics::Unknown,
+            projection_id: ProjectionId::new(),
+            source_spans: Vec::new(),
+            redaction_records: Vec::new(),
+            rtk_metadata: RtkResultMetadata::default(),
         }
     }
 
@@ -1167,6 +1331,10 @@ impl CommandOutputProjector for RawProjector {
             input_bytes,
             warnings,
             raw_semantics: ProjectionRawSemantics::OriginalCommandRaw,
+            projection_id: ProjectionId::new(),
+            source_spans: Vec::new(),
+            redaction_records: Vec::new(),
+            rtk_metadata: RtkResultMetadata::default(),
         })
     }
 }
@@ -1286,6 +1454,10 @@ impl CommandOutputProjector for TruncatedProjector {
             estimated_output_tokens: Some(ProjectionBudget::approx_tokens_from_bytes(output_bytes)),
             warnings,
             raw_semantics: ProjectionRawSemantics::OriginalCommandRaw,
+            projection_id: ProjectionId::new(),
+            source_spans: Vec::new(),
+            redaction_records: Vec::new(),
+            rtk_metadata: RtkResultMetadata::default(),
         })
     }
 }
@@ -1403,6 +1575,10 @@ impl CommandOutputProjector for ErrorRetentionProjector {
             estimated_output_tokens: Some(ProjectionBudget::approx_tokens_from_bytes(output_bytes)),
             warnings,
             raw_semantics: ProjectionRawSemantics::OriginalCommandRaw,
+            projection_id: ProjectionId::new(),
+            source_spans: Vec::new(),
+            redaction_records: Vec::new(),
+            rtk_metadata: RtkResultMetadata::default(),
         })
     }
 }
@@ -1470,6 +1646,10 @@ fn make_native_result(
         estimated_output_tokens: Some(ProjectionBudget::approx_tokens_from_bytes(output_bytes)),
         warnings,
         raw_semantics: ProjectionRawSemantics::OriginalCommandRaw,
+        projection_id: ProjectionId::new(),
+        source_spans: Vec::new(),
+        redaction_records: Vec::new(),
+        rtk_metadata: RtkResultMetadata::default(),
     }
 }
 
@@ -2717,6 +2897,10 @@ impl ProjectionSelector {
                 estimated_output_tokens: None,
                 warnings: vec!["no projector supports this request".to_string()],
                 raw_semantics: ProjectionRawSemantics::Unknown,
+                projection_id: ProjectionId::new(),
+                source_spans: Vec::new(),
+                redaction_records: Vec::new(),
+                rtk_metadata: RtkResultMetadata::default(),
             };
         }
 
@@ -2755,6 +2939,10 @@ impl ProjectionSelector {
             estimated_output_tokens: None,
             warnings,
             raw_semantics: ProjectionRawSemantics::Unknown,
+            projection_id: ProjectionId::new(),
+            source_spans: Vec::new(),
+            redaction_records: Vec::new(),
+            rtk_metadata: RtkResultMetadata::default(),
         }
     }
 }
@@ -3232,6 +3420,94 @@ fn matches_error_pattern(line: &str) -> bool {
         }
     }
     false
+}
+
+// ── Phase 09 — Typed projector registry ─────────────────────────────────
+
+use codegg_core::run_store::RunKind;
+
+/// Maps `RunKind` to the preferred projector name.
+///
+/// This allows the selector to be pre-configured based on what kind of
+/// run is being projected, rather than relying solely on runtime command
+/// inspection. The mapping is a hint — the selector still checks
+/// `supports()` on each registered projector.
+pub fn preferred_projector_for_run_kind(kind: &RunKind) -> &'static str {
+    match kind {
+        RunKind::Test => "cargo-test",
+        RunKind::GitRead | RunKind::GitMutation => "git",
+        RunKind::Search => "raw",
+        RunKind::Python => "python",
+        RunKind::RawShell | RunKind::ManagedProcess | RunKind::NativeTool => "raw",
+    }
+}
+
+/// Determine whether a `RunKind` typically benefits from RTK compression.
+pub fn rtk_eligible_for_run_kind(kind: &RunKind) -> bool {
+    matches!(
+        kind,
+        RunKind::RawShell | RunKind::ManagedProcess | RunKind::Test
+    )
+}
+
+// ── Phase 09 — Promotion policy ────────────────────────────────────────
+
+/// Evaluate a promotion decision for a projection result.
+///
+/// Considers the target, redaction state, budget, output size, and
+/// whether the output contains actionable failure information.
+pub fn evaluate_promotion(
+    result: &ProjectionResult,
+    target: ProjectionTarget,
+    budget: &ProjectionBudget,
+    session_context_used: usize,
+    session_context_budget: usize,
+) -> PromotionDecision {
+    let output_tokens = result
+        .estimated_output_tokens
+        .unwrap_or_else(|| ProjectionBudget::approx_tokens_from_bytes(result.output_bytes));
+
+    // Check if redaction is required but not applied
+    if target.requires_redaction()
+        && !matches!(
+            result.redaction,
+            RedactionState::Applied { .. } | RedactionState::AppliedNoMatches
+        )
+    {
+        return PromotionDecision::RequireUserConfirmation;
+    }
+
+    // Check if output fits within budget
+    let remaining = session_context_budget.saturating_sub(session_context_used);
+    if output_tokens > remaining {
+        return PromotionDecision::Exclude;
+    }
+
+    // Successful commands with small output → include
+    if result.output_bytes <= budget.max_output_bytes {
+        return PromotionDecision::IncludeProjection;
+    }
+
+    // Large output with critical facts → include selected spans
+    if !result.source_spans.is_empty() {
+        let selected: Vec<ArtifactSpanRef> = result
+            .source_spans
+            .iter()
+            .filter(|s| {
+                matches!(
+                    s.role,
+                    SpanRole::FailureSummary | SpanRole::SupportingDiagnostic
+                )
+            })
+            .cloned()
+            .collect();
+        if !selected.is_empty() {
+            return PromotionDecision::IncludeSelectedSpans(selected);
+        }
+    }
+
+    // Large output without critical spans → store only
+    PromotionDecision::StoreOnly
 }
 
 #[cfg(test)]
@@ -4738,5 +5014,187 @@ mod tests {
         assert_eq!(format_bytes(1024), "1.0 KiB");
         assert_eq!(format_bytes(1536), "1.5 KiB");
         assert_eq!(format_bytes(1048576), "1.0 MiB");
+    }
+
+    // ── Phase 09 tests ─────────────────────────────────────────────────
+
+    #[test]
+    fn projection_id_is_unique() {
+        let id1 = ProjectionId::new();
+        let id2 = ProjectionId::new();
+        assert_ne!(id1, id2);
+    }
+
+    #[test]
+    fn projection_id_display() {
+        let id = ProjectionId::new();
+        assert!(!id.to_string().is_empty());
+    }
+
+    #[test]
+    fn span_role_labels() {
+        assert_eq!(SpanRole::ExactExcerpt.label(), "exact-excerpt");
+        assert_eq!(
+            SpanRole::SupportingDiagnostic.label(),
+            "supporting-diagnostic"
+        );
+        assert_eq!(SpanRole::FailureSummary.label(), "failure-summary");
+        assert_eq!(SpanRole::DiffHunk.label(), "diff-hunk");
+        assert_eq!(SpanRole::OmittedRepetitive.label(), "omitted-repetitive");
+        assert_eq!(SpanRole::RedactedRegion.label(), "redacted-region");
+    }
+
+    #[test]
+    fn artifact_span_ref_byte_len() {
+        let span = ArtifactSpanRef {
+            artifact_id: "art1".to_string(),
+            byte_start: 100,
+            byte_end: 200,
+            line_start: Some(5),
+            line_end: Some(10),
+            role: SpanRole::ExactExcerpt,
+        };
+        assert_eq!(span.byte_len(), 100);
+    }
+
+    #[test]
+    fn rtk_result_metadata_default() {
+        let meta = RtkResultMetadata::default();
+        assert!(!meta.invoked);
+        assert!(meta.version.is_none());
+        assert!(meta.mode.is_none());
+    }
+
+    #[test]
+    fn promotion_decision_variants() {
+        let excl = PromotionDecision::Exclude;
+        let incl = PromotionDecision::IncludeProjection;
+        let store = PromotionDecision::StoreOnly;
+        let confirm = PromotionDecision::RequireUserConfirmation;
+        assert_ne!(excl, incl);
+        assert_ne!(store, confirm);
+    }
+
+    #[test]
+    fn promotion_target_variants() {
+        let mc = PromotionTarget::ModelContext;
+        let lo = PromotionTarget::LocalOnly;
+        let ar = PromotionTarget::ArtifactRange;
+        assert_ne!(mc, lo);
+        assert_ne!(ar, mc);
+    }
+
+    #[test]
+    fn preferred_projector_for_run_kind_test() {
+        assert_eq!(
+            preferred_projector_for_run_kind(&RunKind::Test),
+            "cargo-test"
+        );
+    }
+
+    #[test]
+    fn preferred_projector_for_run_kind_python() {
+        assert_eq!(preferred_projector_for_run_kind(&RunKind::Python), "python");
+    }
+
+    #[test]
+    fn preferred_projector_for_run_kind_git() {
+        assert_eq!(preferred_projector_for_run_kind(&RunKind::GitRead), "git");
+    }
+
+    #[test]
+    fn rtk_eligible_for_raw_shell() {
+        assert!(rtk_eligible_for_run_kind(&RunKind::RawShell));
+    }
+
+    #[test]
+    fn rtk_not_eligible_for_python() {
+        assert!(!rtk_eligible_for_run_kind(&RunKind::Python));
+    }
+
+    #[test]
+    fn evaluate_promotion_includes_small_output() {
+        let result = ProjectionResult {
+            projection_id: ProjectionId::new(),
+            text: "ok".to_string(),
+            projector: "test".to_string(),
+            kind: ProjectionKind::Raw,
+            exactness: ProjectionExactness::Exact,
+            redaction: RedactionState::AppliedNoMatches,
+            omitted: Vec::new(),
+            expansion_handles: Vec::new(),
+            input_bytes: 10,
+            output_bytes: 10,
+            estimated_output_tokens: Some(5),
+            estimated_input_tokens: None,
+            warnings: Vec::new(),
+            raw_semantics: ProjectionRawSemantics::Unknown,
+            source_spans: Vec::new(),
+            redaction_records: Vec::new(),
+            rtk_metadata: RtkResultMetadata::default(),
+        };
+        let budget = ProjectionBudget::bytes(1000);
+        let decision =
+            evaluate_promotion(&result, ProjectionTarget::ModelContext, &budget, 0, 10000);
+        assert_eq!(decision, PromotionDecision::IncludeProjection);
+    }
+
+    #[test]
+    fn evaluate_promotion_excludes_when_budget_exceeded() {
+        let result = ProjectionResult {
+            projection_id: ProjectionId::new(),
+            text: "x".repeat(50000),
+            projector: "test".to_string(),
+            kind: ProjectionKind::Raw,
+            exactness: ProjectionExactness::Exact,
+            redaction: RedactionState::AppliedNoMatches,
+            omitted: Vec::new(),
+            expansion_handles: Vec::new(),
+            input_bytes: 50000,
+            output_bytes: 50000,
+            estimated_output_tokens: Some(20000),
+            estimated_input_tokens: None,
+            warnings: Vec::new(),
+            raw_semantics: ProjectionRawSemantics::Unknown,
+            source_spans: Vec::new(),
+            redaction_records: Vec::new(),
+            rtk_metadata: RtkResultMetadata::default(),
+        };
+        let budget = ProjectionBudget::bytes(1000);
+        let decision = evaluate_promotion(
+            &result,
+            ProjectionTarget::ModelContext,
+            &budget,
+            9000,
+            10000,
+        );
+        assert_eq!(decision, PromotionDecision::Exclude);
+    }
+
+    #[test]
+    fn evaluate_promotion_requests_confirmation_for_unredacted() {
+        let result = ProjectionResult {
+            projection_id: ProjectionId::new(),
+            text: "secret data".to_string(),
+            projector: "test".to_string(),
+            kind: ProjectionKind::Raw,
+            exactness: ProjectionExactness::Exact,
+            redaction: RedactionState::NotApplied,
+            omitted: Vec::new(),
+            expansion_handles: Vec::new(),
+            input_bytes: 10,
+            output_bytes: 10,
+            estimated_output_tokens: Some(5),
+            estimated_input_tokens: None,
+            warnings: Vec::new(),
+            raw_semantics: ProjectionRawSemantics::Unknown,
+            source_spans: Vec::new(),
+            redaction_records: Vec::new(),
+            rtk_metadata: RtkResultMetadata::default(),
+        };
+        let budget = ProjectionBudget::bytes(1000);
+        let decision =
+            evaluate_promotion(&result, ProjectionTarget::ModelContext, &budget, 0, 10000);
+        assert_eq!(decision, PromotionDecision::RequireUserConfirmation);
     }
 }

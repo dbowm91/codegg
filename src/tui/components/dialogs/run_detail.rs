@@ -143,14 +143,20 @@ impl RunDetailDialog {
         let ctx_color = match &cell.context_state {
             codegg_core::run_store::ContextPromotionState::LocalOnly => Color::DarkGray,
             codegg_core::run_store::ContextPromotionState::ProjectionIncluded => Color::Green,
-            codegg_core::run_store::ContextPromotionState::ArtifactRangeIncluded { .. } => Color::Cyan,
+            codegg_core::run_store::ContextPromotionState::ArtifactRangeIncluded { .. } => {
+                Color::Cyan
+            }
             codegg_core::run_store::ContextPromotionState::Pinned => Color::Yellow,
             codegg_core::run_store::ContextPromotionState::Excluded => Color::Red,
         };
         let ctx_label = match &cell.context_state {
             codegg_core::run_store::ContextPromotionState::LocalOnly => "Local only",
-            codegg_core::run_store::ContextPromotionState::ProjectionIncluded => "Projection included",
-            codegg_core::run_store::ContextPromotionState::ArtifactRangeIncluded { .. } => "Artifact range",
+            codegg_core::run_store::ContextPromotionState::ProjectionIncluded => {
+                "Projection included"
+            }
+            codegg_core::run_store::ContextPromotionState::ArtifactRangeIncluded { .. } => {
+                "Artifact range"
+            }
             codegg_core::run_store::ContextPromotionState::Pinned => "Pinned",
             codegg_core::run_store::ContextPromotionState::Excluded => "Excluded",
         };
@@ -362,11 +368,21 @@ impl RunDetailDialog {
     fn render_context(&self, area: Rect, buf: &mut ratatui::buffer::Buffer) {
         let state = &self.detail.cell.context_state;
         let (state_label, state_color) = match state {
-            codegg_core::run_store::ContextPromotionState::LocalOnly => ("Local only (not in context)", Color::DarkGray),
-            codegg_core::run_store::ContextPromotionState::ProjectionIncluded => ("Projection included in context", Color::Green),
-            codegg_core::run_store::ContextPromotionState::ArtifactRangeIncluded { .. } => ("Artifact range included in context", Color::Cyan),
-            codegg_core::run_store::ContextPromotionState::Pinned => ("Pinned for future context", Color::Yellow),
-            codegg_core::run_store::ContextPromotionState::Excluded => ("Excluded from context", Color::Red),
+            codegg_core::run_store::ContextPromotionState::LocalOnly => {
+                ("Local only (not in context)", Color::DarkGray)
+            }
+            codegg_core::run_store::ContextPromotionState::ProjectionIncluded => {
+                ("Projection included in context", Color::Green)
+            }
+            codegg_core::run_store::ContextPromotionState::ArtifactRangeIncluded { .. } => {
+                ("Artifact range included in context", Color::Cyan)
+            }
+            codegg_core::run_store::ContextPromotionState::Pinned => {
+                ("Pinned for future context", Color::Yellow)
+            }
+            codegg_core::run_store::ContextPromotionState::Excluded => {
+                ("Excluded from context", Color::Red)
+            }
         };
 
         let mut lines = vec![

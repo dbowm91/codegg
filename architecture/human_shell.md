@@ -874,6 +874,48 @@ Tests cover: handle parsing (full stream + range forms), range expansion exactne
 - Full redaction pipeline (Phase 8) — implemented in `src/shell/redactor.rs`
 - Model-accessible `command_output_read` tool (deferred; internal API is ready)
 
+## Projection Contract (Phase 09)
+
+Phase 09 formalizes the projection result as a structured, self-describing contract. Every projection now carries provenance, span references, redaction records, and promotion semantics that downstream consumers (compaction, context packing, run store) can reason about without ad-hoc field sniffing.
+
+### New Types on `ProjectionResult`
+
+| Field | Type | Purpose |
+|-------|------|---------|
+| `projection_id` | `ProjectionId` | Stable, unique identifier for this projection; enables deduplication and audit trails |
+| `source_spans` | `Vec<ArtifactSpanRef>` | References to the specific artifact spans (stdout, stderr, diff) consumed as input |
+| `redaction_records` | `Vec<RedactionRecord>` | Per-rule redaction evidence: which rules fired, how many replacements, byte offsets |
+| `rtk_metadata` | `RtkResultMetadata` | RTK-specific provenance: invocation mode, capabilities used, timing, stderr warnings |
+
+### `ProjectionRecord` (run_store)
+
+`ProjectionRecord` in `crates/codegg-core/src/run_store.rs` stores the full projection metadata alongside the run entry. Fields include source spans, redaction records, RTK metadata, and a `PromotionDecision`. This record is the durable, queryable artifact that the compaction and context systems consume.
+
+### Promotion Semantics
+
+`evaluate_promotion(run, budget, redaction_state, critical_spans)` determines whether a projection should be promoted into model context:
+
+- Budget-aware: projections exceeding the context budget are demoted or summarized
+- Redaction-aware: projections with active redaction records are flagged for audit
+- Span-aware: projections containing critical spans (errors, test failures) are promoted preferentially
+
+`preferred_projector_for_run_kind(run_kind)` maps `RunKind` (test, build, git, etc.) to the preferred projector, allowing the system to select domain-optimal projection without manual configuration.
+
+### Python Projection
+
+`PythonProjector` implements `CommandOutputProjector` for Python script output. `project_python_result()` converts a `PythonRunResult` (with stdout, stderr, diff, enforcement evidence) into a `ProjectionResult` with proper span references, redaction records, and promotion semantics. This closes the loop on Python scripting as a first-class projection source.
+
+### Tests
+
+```bash
+cargo test -p codegg --lib shell::projector -- projection_id
+cargo test -p codegg --lib shell::projector -- span_role
+cargo test -p codegg --lib shell::projector -- promotion
+cargo test -p codegg --lib shell::projector -- preferred_projector
+cargo test -p codegg --lib python_script::projection
+cargo test -p codegg --lib test_runner::projection
+```
+
 ## Current Projection Pipeline Status
 
 | Phase | Status | Notes |
@@ -886,7 +928,7 @@ Tests cover: handle parsing (full stream + range forms), range expansion exactne
 | Phase 6 | **Landed** | Real RTK invocation: `RtkInvocationMode` (PostProcess/Wrapper/Disabled), capability-driven dispatch, input capping, timeout enforcement, projection metadata |
 | Phase 7 | **Landed** | Expansion API (`CommandOutputExpansion`, `ExpansionExactness`, `ExpansionRequest`), `/shell-expand` command, TUI detail panel with projection metadata |
 | Phase 8 | **Landed** | Redaction pipeline: `Redactor` with six `RedactRule` implementations, `apply_redaction_hook` entry point, `RedactionState::Applied { replacements }` |
-| Phase 9 | **Landed** | Evaluation harness: `tests/shell_projection_harness.rs` (11 invariant tests), fixture corpus in `tests/fixtures/shell_projection/`, explicit CI validation steps |
+| Phase 9 | **Landed** | Projection contract: `ProjectionId`, `ArtifactSpanRef`, `RedactionRecord`, `RtkResultMetadata` on `ProjectionResult`; `ProjectionRecord` in run_store with full metadata; `evaluate_promotion()` / `PromotionDecision`; `preferred_projector_for_run_kind()`; `PythonProjector` implementing `CommandOutputProjector` |
 | Phase 10 | **Landed** | Context budget and compaction integration: `ProjectionContextMetadata`, `ProjectionFact`, `ModelTier`, `ContextAwareBudget`, double-compression prevention, critical fact extraction, warning preservation tests |
 
 ### RTK Integration Tests

@@ -1691,10 +1691,7 @@ impl MessagesWidget {
                         if !content.is_empty() {
                             content.push('\n');
                         }
-                        content.push_str(&format!(
-                            "run: {} [{}] {}",
-                            title, status, backend_label
-                        ));
+                        content.push_str(&format!("run: {} [{}] {}", title, status, backend_label));
                     }
                 }
             }
@@ -2379,9 +2376,7 @@ impl MessagesWidget {
                             Style::default().fg(self.theme.primary),
                         ),
                         "complete" => ("✓", Style::default().fg(self.theme.success)),
-                        "failed" | "timed_out" => {
-                            ("✗", Style::default().fg(self.theme.error))
-                        }
+                        "failed" | "timed_out" => ("✗", Style::default().fg(self.theme.error)),
                         "cancelled" | "incomplete" => {
                             ("✗", Style::default().fg(self.theme.warning))
                         }
@@ -2403,19 +2398,11 @@ impl MessagesWidget {
                         summary_parts.push(format!("risk: {}", risk_label));
                     }
                     let summary_str = format!(" ({})", summary_parts.join(", "));
-                    let detail_hint = format!(
-                        " [view: /run-detail {}]",
-                        &run_id[..run_id.len().min(8)]
-                    );
+                    let detail_hint =
+                        format!(" [view: /run-detail {}]", &run_id[..run_id.len().min(8)]);
                     lines.push(Line::from(vec![
-                        Span::styled(
-                            format!("  {} run: {}", icon, title),
-                            base_style,
-                        ),
-                        Span::styled(
-                            summary_str,
-                            Style::default().fg(self.theme.muted),
-                        ),
+                        Span::styled(format!("  {} run: {}", icon, title), base_style),
+                        Span::styled(summary_str, Style::default().fg(self.theme.muted)),
                         Span::styled(
                             detail_hint,
                             Style::default()

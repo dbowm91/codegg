@@ -9,7 +9,7 @@ pub mod types;
 // Re-export key types for convenience
 pub use analyze::analyze_python_risk;
 pub use executor::execute_python_script;
-pub use projection::project_python_run;
+pub use projection::{project_python_result, project_python_run, PythonProjector};
 pub use sandbox::{
     check_compatibility, derive_envelope, resolve_policy, validate_subprocess_invocation,
 };

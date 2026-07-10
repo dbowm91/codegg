@@ -18,6 +18,7 @@ const DEFAULT_TIMEOUT_SECS: u64 = 60;
 const MAX_SCRIPT_LENGTH: usize = 500_000;
 
 /// Helper to create a PythonRunResult with enforcement evidence fields defaulting.
+#[allow(clippy::too_many_arguments)]
 fn make_result(
     status: PythonRunStatus,
     stdout: String,

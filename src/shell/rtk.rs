@@ -833,6 +833,7 @@ impl RtkProjector {
                 let output_bytes = text.len();
 
                 Ok(ProjectionResult {
+                    projection_id: crate::shell::projector::ProjectionId::new(),
                     text,
                     projector: Self::NAME.to_string(),
                     kind: ProjectionKind::ExternalCompressed,
@@ -850,6 +851,9 @@ impl RtkProjector {
                     )),
                     warnings,
                     raw_semantics: ProjectionRawSemantics::OriginalCommandRaw,
+                    source_spans: Vec::new(),
+                    redaction_records: Vec::new(),
+                    rtk_metadata: crate::shell::projector::RtkResultMetadata::default(),
                 })
             }
             Ok((Err(e), _, _)) => Err(ProjectionError::BackendUnavailable {
@@ -997,6 +1001,7 @@ impl RtkProjector {
                 };
 
                 Ok(ProjectionResult {
+                    projection_id: crate::shell::projector::ProjectionId::new(),
                     text,
                     projector: Self::NAME.to_string(),
                     kind: ProjectionKind::ExternalCompressed,
@@ -1014,6 +1019,9 @@ impl RtkProjector {
                     )),
                     warnings,
                     raw_semantics,
+                    source_spans: Vec::new(),
+                    redaction_records: Vec::new(),
+                    rtk_metadata: crate::shell::projector::RtkResultMetadata::default(),
                 })
             }
             Ok((Err(e), _, _)) => Err(ProjectionError::BackendUnavailable {

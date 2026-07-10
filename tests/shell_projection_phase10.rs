@@ -16,9 +16,9 @@ use codegg::shell::projection::{
 };
 use codegg::shell::projector::{
     CommandOutputProjector, ContextAwareBudget, ExpansionHandle, ModelTier, ProjectionBudget,
-    ProjectionContextMetadata, ProjectionExactness, ProjectionFact, ProjectionKind,
+    ProjectionContextMetadata, ProjectionExactness, ProjectionFact, ProjectionId, ProjectionKind,
     ProjectionPolicy, ProjectionRawSemantics, ProjectionRequest, ProjectionResult,
-    ProjectionSelector, ProjectionTarget,
+    ProjectionSelector, ProjectionTarget, RtkResultMetadata,
 };
 use codegg_config::schema::ShellOutputConfig;
 
@@ -729,6 +729,10 @@ fn test_metadata_preserves_projection_warnings() {
             "expansion handles refer to original command output".into(),
         ],
         raw_semantics: ProjectionRawSemantics::default(),
+        projection_id: ProjectionId::new(),
+        source_spans: Vec::new(),
+        redaction_records: Vec::new(),
+        rtk_metadata: RtkResultMetadata::default(),
     };
 
     let metadata = result.to_context_metadata("cargo test", "1", &run);
@@ -769,6 +773,10 @@ fn test_metadata_captures_redaction_as_fact() {
         estimated_output_tokens: Some(3),
         warnings: vec![],
         raw_semantics: ProjectionRawSemantics::default(),
+        projection_id: ProjectionId::new(),
+        source_spans: Vec::new(),
+        redaction_records: Vec::new(),
+        rtk_metadata: RtkResultMetadata::default(),
     };
 
     let metadata = result.to_context_metadata("curl", "1", &run);
@@ -815,6 +823,10 @@ fn test_already_projected_flag_for_non_raw_kind() {
         estimated_output_tokens: Some(3),
         warnings: vec![],
         raw_semantics: ProjectionRawSemantics::default(),
+        projection_id: ProjectionId::new(),
+        source_spans: Vec::new(),
+        redaction_records: Vec::new(),
+        rtk_metadata: RtkResultMetadata::default(),
     };
     let metadata = truncated.to_context_metadata("test", "1", &run);
     assert!(
@@ -837,6 +849,10 @@ fn test_already_projected_flag_for_non_raw_kind() {
         estimated_output_tokens: Some(2),
         warnings: vec![],
         raw_semantics: ProjectionRawSemantics::default(),
+        projection_id: ProjectionId::new(),
+        source_spans: Vec::new(),
+        redaction_records: Vec::new(),
+        rtk_metadata: RtkResultMetadata::default(),
     };
     let metadata = raw.to_context_metadata("test", "2", &run);
     assert!(

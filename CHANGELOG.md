@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Phase 09 projection contract: `ProjectionResult` now carries `projection_id`, `source_spans`, `redaction_records`, and `rtk_metadata`. `ProjectionRecord` in run_store persists full projection metadata with promotion decisions. `evaluate_promotion()` provides budget/redaction/span-aware promotion. `preferred_projector_for_run_kind()` maps run kinds to optimal projectors. `PythonProjector` implements `CommandOutputProjector` for Python script output.
+
 ## Phase 13-17 Corrective Verification Pass (2026-06-27)
 
 Docs/roadmap reconciliation plus test hardening for the Phase 13-17 surface. No new LSP protocol operations, no new workflow recipes, and no `workspace/applyEdit` / `workspace/executeCommand` execution were introduced. Plan: `plans/lsp_phase_13_17_corrective_verification_plan.md`. All eight workstreams meet final closure criteria.

@@ -42,14 +42,13 @@ pub fn build_session_tool_registry(
     let integrated = integrated_config::resolve_integrated_config(config);
 
     // Build the run store rooted at `.codegg/runs/` in the workspace.
-    let run_store: Option<Arc<dyn codegg_core::run_store::RunStore>> =
-        std::env::current_dir()
-            .ok()
-            .map(|cwd| cwd.join(".codegg").join("runs"))
-            .map(|root| {
-                let store = codegg_core::run_store::FsRunStore::new(root);
-                Arc::new(store) as Arc<dyn codegg_core::run_store::RunStore>
-            });
+    let run_store: Option<Arc<dyn codegg_core::run_store::RunStore>> = std::env::current_dir()
+        .ok()
+        .map(|cwd| cwd.join(".codegg").join("runs"))
+        .map(|root| {
+            let store = codegg_core::run_store::FsRunStore::new(root);
+            Arc::new(store) as Arc<dyn codegg_core::run_store::RunStore>
+        });
 
     let mut tool_registry = ToolRegistry::with_options(ToolRegistryOptions {
         todo_state: Some(todo_state),

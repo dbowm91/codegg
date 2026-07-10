@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -87,10 +87,10 @@ pub struct PythonCapabilityProfile {
 
 impl PythonCapabilityProfile {
     /// Build the default profile for Analyze mode.
-    pub fn analyze(workspace_root: &PathBuf) -> Self {
+    pub fn analyze(workspace_root: &Path) -> Self {
         Self {
             mode: PythonExecutionMode::Analyze,
-            read_roots: vec![workspace_root.clone()],
+            read_roots: vec![workspace_root.to_path_buf()],
             write_roots: vec![], // no writes except codegg-managed temp
             allow_subprocess: false,
             allowed_subprocesses: vec![],
@@ -103,11 +103,11 @@ impl PythonCapabilityProfile {
     }
 
     /// Build the default profile for Transform mode.
-    pub fn transform(workspace_root: &PathBuf) -> Self {
+    pub fn transform(workspace_root: &Path) -> Self {
         Self {
             mode: PythonExecutionMode::Transform,
-            read_roots: vec![workspace_root.clone()],
-            write_roots: vec![workspace_root.clone()],
+            read_roots: vec![workspace_root.to_path_buf()],
+            write_roots: vec![workspace_root.to_path_buf()],
             allow_subprocess: false,
             allowed_subprocesses: vec![],
             allow_network: false,
@@ -119,10 +119,10 @@ impl PythonCapabilityProfile {
     }
 
     /// Build the default profile for Verify mode.
-    pub fn verify(workspace_root: &PathBuf) -> Self {
+    pub fn verify(workspace_root: &Path) -> Self {
         Self {
             mode: PythonExecutionMode::Verify,
-            read_roots: vec![workspace_root.clone()],
+            read_roots: vec![workspace_root.to_path_buf()],
             write_roots: vec![], // no workspace writes
             allow_subprocess: true,
             allowed_subprocesses: vec![
@@ -146,7 +146,7 @@ impl PythonCapabilityProfile {
     /// flagged by risk analysis. Risk analysis can only narrow, never widen.
     pub fn from_mode_risk_and_context(
         mode: PythonExecutionMode,
-        workspace_root: &PathBuf,
+        workspace_root: &Path,
         risk: &PythonRiskAssessment,
     ) -> Self {
         let mut profile = match mode {

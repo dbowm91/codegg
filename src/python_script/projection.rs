@@ -1,4 +1,14 @@
+use crate::shell::projection::{CommandOutputStore, CommandRunId};
+use crate::shell::projector::{
+    ArtifactSpanRef, CommandOutputProjector, ExpansionHandle, ProjectionBudget, ProjectionError,
+    ProjectionExactness, ProjectionId, ProjectionKind, ProjectionRawSemantics, ProjectionRequest,
+    ProjectionResult, ProjectionSupport, RtkResultMetadata, SpanRole,
+};
+
 use super::types::PythonRunResult;
+
+const PYTHON_PROJECTOR_NAME: &str = "python";
+const PYTHON_COMMAND_PREFIXES: &[&str] = &["python3", "python", "pip", "pip3", "conda"];
 
 /// Threshold (in chars) for stdout/stderr/diff beyond which RTK eligibility is noted.
 const RTK_ELIGIBLE_THRESHOLD: usize = 2000;
@@ -130,6 +140,203 @@ fn truncate_output(text: &str, max_chars: usize) -> String {
             text.len()
         )
     }
+}
+
+pub struct PythonProjector;
+
+impl PythonProjector {
+    pub const NAME: &'static str = PYTHON_PROJECTOR_NAME;
+
+    fn is_python_command(argv: &[String]) -> bool {
+        argv.first().is_some_and(|cmd| {
+            let base = cmd.rsplit('/').next().unwrap_or(cmd);
+            PYTHON_COMMAND_PREFIXES
+                .iter()
+                .any(|prefix| base == *prefix || base.starts_with(&format!("{prefix}-")))
+        })
+    }
+}
+
+impl CommandOutputProjector for PythonProjector {
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn supports(&self, request: &ProjectionRequest<'_>) -> ProjectionSupport {
+        if request
+            .run
+            .argv
+            .as_deref()
+            .is_some_and(Self::is_python_command)
+        {
+            ProjectionSupport::Preferred
+        } else {
+            ProjectionSupport::Fallback
+        }
+    }
+
+    fn project(
+        &self,
+        request: ProjectionRequest<'_>,
+        store: &CommandOutputStore,
+    ) -> Result<ProjectionResult, ProjectionError> {
+        let run = request.run;
+        let budget = request.budget.max_output_bytes;
+        let mut text = String::new();
+        let mut input_bytes: u64 = 0;
+        let mut warnings = Vec::new();
+
+        let mut expansion_handles = Vec::new();
+
+        let omitted = Vec::new();
+
+        if !run.is_failure() {
+            text.push_str("## Python Output\n");
+        } else {
+            let code = match &run.exit {
+                crate::shell::projection::CommandExit::Code(c) => format!(" (exit {c})"),
+                _ => String::new(),
+            };
+            text.push_str(&format!("## Python Output — failed{code}\n"));
+        }
+
+        if let Some(handle) = run.stdout_handle() {
+            input_bytes += run.stdout.retained_bytes;
+            match store.get_stream(handle) {
+                Some(bytes) => {
+                    let stdout = String::from_utf8_lossy(bytes);
+                    let truncated = truncate_output(&stdout, budget / 2);
+                    if truncated != stdout.as_ref() {
+                        warnings.push(format!(
+                            "stdout truncated to {budget} bytes (total {} bytes)",
+                            stdout.len()
+                        ));
+                    }
+                    if !truncated.is_empty() {
+                        text.push_str("\n### stdout\n");
+                        text.push_str(&truncated);
+                        if !truncated.ends_with('\n') {
+                            text.push('\n');
+                        }
+                    }
+                    expansion_handles.push(ExpansionHandle::full(run.id, handle.stream));
+                }
+                None => {
+                    text.push_str("\n### stdout: <unavailable>\n");
+                }
+            }
+        }
+
+        if let Some(handle) = run.stderr_handle() {
+            input_bytes += run.stderr.retained_bytes;
+            match store.get_stream(handle) {
+                Some(bytes) => {
+                    let stderr = String::from_utf8_lossy(bytes);
+                    let truncated = truncate_output(&stderr, budget / 4);
+                    if truncated != stderr.as_ref() {
+                        warnings.push(format!(
+                            "stderr truncated to {} bytes (total {} bytes)",
+                            budget / 4,
+                            stderr.len()
+                        ));
+                    }
+                    if !truncated.is_empty() {
+                        text.push_str("\n### stderr\n");
+                        text.push_str(&truncated);
+                        if !truncated.ends_with('\n') {
+                            text.push('\n');
+                        }
+                    }
+                    expansion_handles.push(ExpansionHandle::full(run.id, handle.stream));
+                }
+                None => {
+                    text.push_str("\n### stderr: <unavailable>\n");
+                }
+            }
+        }
+
+        let source_spans = extract_python_diagnostic_spans(&text, &run.id);
+        let output_bytes = text.len();
+        let estimated_tokens = ProjectionBudget::approx_tokens_from_bytes(output_bytes);
+
+        Ok(ProjectionResult {
+            projection_id: ProjectionId::new(),
+            text,
+            projector: Self::NAME.to_string(),
+            kind: ProjectionKind::Structured,
+            exactness: ProjectionExactness::Parsed,
+            redaction: crate::shell::projection::RedactionState::NotApplied,
+            omitted,
+            expansion_handles,
+            input_bytes,
+            output_bytes,
+            estimated_input_tokens: Some(estimated_tokens),
+            estimated_output_tokens: Some(estimated_tokens),
+            warnings,
+            raw_semantics: ProjectionRawSemantics::OriginalCommandRaw,
+            source_spans,
+            redaction_records: Vec::new(),
+            rtk_metadata: RtkResultMetadata::default(),
+        })
+    }
+}
+
+pub fn project_python_result(result: &PythonRunResult) -> ProjectionResult {
+    let text = project_python_run(result);
+    let output_bytes = text.len();
+    let estimated_tokens = ProjectionBudget::approx_tokens_from_bytes(output_bytes);
+
+    ProjectionResult {
+        projection_id: ProjectionId::new(),
+        text,
+        projector: PYTHON_PROJECTOR_NAME.to_string(),
+        kind: ProjectionKind::Structured,
+        exactness: ProjectionExactness::Parsed,
+        redaction: crate::shell::projection::RedactionState::NotApplied,
+        omitted: Vec::new(),
+        expansion_handles: Vec::new(),
+        input_bytes: 0,
+        output_bytes,
+        estimated_input_tokens: Some(estimated_tokens),
+        estimated_output_tokens: Some(estimated_tokens),
+        warnings: Vec::new(),
+        raw_semantics: ProjectionRawSemantics::OriginalCommandRaw,
+        source_spans: Vec::new(),
+        redaction_records: Vec::new(),
+        rtk_metadata: RtkResultMetadata::default(),
+    }
+}
+
+fn extract_python_diagnostic_spans(text: &str, run_id: &CommandRunId) -> Vec<ArtifactSpanRef> {
+    let mut spans = Vec::new();
+    for (line_idx, line) in text.lines().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("Traceback (most recent call last):")
+            || trimmed.starts_with("Error:")
+            || trimmed.starts_with("ImportError:")
+            || trimmed.starts_with("ModuleNotFoundError:")
+            || trimmed.starts_with("ValueError:")
+            || trimmed.starts_with("TypeError:")
+            || trimmed.starts_with("RuntimeError:")
+            || trimmed.starts_with("File \"")
+        {
+            let byte_start = text
+                .lines()
+                .take(line_idx)
+                .map(|l| l.len() + 1)
+                .sum::<usize>();
+            let byte_end = byte_start + line.len();
+            spans.push(ArtifactSpanRef {
+                artifact_id: format!("cmd://{}/stderr", run_id.0),
+                byte_start: byte_start as u64,
+                byte_end: byte_end as u64,
+                line_start: Some((line_idx + 1) as u64),
+                line_end: Some((line_idx + 1) as u64),
+                role: SpanRole::SupportingDiagnostic,
+            });
+        }
+    }
+    spans
 }
 
 #[cfg(test)]

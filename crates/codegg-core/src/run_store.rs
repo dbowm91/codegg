@@ -223,12 +223,66 @@ pub struct ProjectionRecord {
     pub exactness: String,
     #[serde(default)]
     pub omitted_ranges: Vec<OmittedRange>,
+    // ── Phase 09 additions ────────────────────────────────────────────
+    /// Unique identifier for this projection.
+    #[serde(default)]
+    pub projection_id: String,
+    /// Source spans mapping projection claims back to raw artifacts.
+    #[serde(default)]
+    pub source_spans: Vec<ArtifactSpanRef>,
+    /// Records of individual redaction operations applied.
+    #[serde(default)]
+    pub redaction_records: Vec<RedactionRecord>,
+    /// Metadata about RTK compression, if any was applied.
+    #[serde(default)]
+    pub rtk_metadata: Option<RtkResultMetadata>,
+    /// Approximate output tokens consumed by this projection.
+    #[serde(default)]
+    pub estimated_output_tokens: Option<usize>,
+    /// Promotion decision that was made for this projection.
+    #[serde(default)]
+    pub promotion_decision: Option<String>,
+    /// Input artifact digests for reproducibility.
+    #[serde(default)]
+    pub input_digests: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OmittedRange {
     pub start: u64,
     pub end: u64,
+}
+
+/// A reference to a specific byte range within an artifact (Phase 09).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ArtifactSpanRef {
+    pub artifact_id: String,
+    pub byte_start: u64,
+    pub byte_end: u64,
+    pub line_start: Option<u64>,
+    pub line_end: Option<u64>,
+    pub role: String,
+}
+
+/// Record of a single redaction operation (Phase 09).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RedactionRecord {
+    pub rule: String,
+    pub replacements: usize,
+}
+
+/// Metadata about RTK compression (Phase 09).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RtkResultMetadata {
+    pub invoked: bool,
+    #[serde(default)]
+    pub version: Option<String>,
+    #[serde(default)]
+    pub mode: Option<String>,
+    #[serde(default)]
+    pub input_bytes: Option<u64>,
+    #[serde(default)]
+    pub output_bytes: Option<u64>,
 }
 
 // ── Changed Path Record ─────────────────────────────────────────────────
@@ -430,9 +484,10 @@ pub struct IndexEntry {
 // ── Run View Models ────────────────────────────────────────────────────
 
 /// Context promotion state for a run.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ContextPromotionState {
     /// Output is local-only, not included in model context.
+    #[default]
     LocalOnly,
     /// Projection is included in model context.
     ProjectionIncluded,
@@ -446,12 +501,6 @@ pub enum ContextPromotionState {
     Pinned,
     /// Explicitly excluded or redacted from context.
     Excluded,
-}
-
-impl Default for ContextPromotionState {
-    fn default() -> Self {
-        Self::LocalOnly
-    }
 }
 
 /// Compact run cell view for TUI rendering.
@@ -489,13 +538,16 @@ impl RunCellView {
             .completed_at
             .map(|c| c.signed_duration_since(manifest.started_at));
         let risk_label = Self::risk_label_for(&manifest.risk);
-        let sandbox_label = manifest
-            .sandbox
-            .as_ref()
-            .map(|s| Self::sandbox_label_for(s));
+        let sandbox_label = manifest.sandbox.as_ref().map(Self::sandbox_label_for);
         let summary = Self::summary_for_manifest(manifest);
         let can_rollback = manifest.kind == RunKind::Python && !manifest.changes.is_empty();
         let can_rerun = manifest.rerun.is_some();
+
+        let context_state = if manifest.projection.is_some() {
+            ContextPromotionState::ProjectionIncluded
+        } else {
+            ContextPromotionState::LocalOnly
+        };
 
         Self {
             run_id: manifest.run_id.clone(),
@@ -511,7 +563,7 @@ impl RunCellView {
             artifact_count: manifest.artifacts.len(),
             can_rerun,
             can_rollback,
-            context_state: ContextPromotionState::LocalOnly,
+            context_state,
         }
     }
 
@@ -679,11 +731,11 @@ impl RunDetailView {
             has_subprocess: manifest.risk.has_subprocess,
             has_git_mutation: manifest.risk.has_git_mutation,
             has_destructive_mutation: manifest.risk.has_destructive_mutation,
-            os_isolation: manifest.sandbox.as_ref().map_or(false, |s| s.os_isolation),
+            os_isolation: manifest.sandbox.as_ref().is_some_and(|s| s.os_isolation),
             network_isolation: manifest
                 .sandbox
                 .as_ref()
-                .map_or(false, |s| s.network_isolation),
+                .is_some_and(|s| s.network_isolation),
             read_roots: manifest
                 .sandbox
                 .as_ref()

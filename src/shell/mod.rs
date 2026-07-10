@@ -21,13 +21,16 @@ pub use projection::{
 };
 pub use projection_bridge::ShellCommandRunBridge;
 pub use projector::{
-    default_command_projection_with_budget, extract_critical_facts_for_test, CargoCheckProjector,
-    CargoTestProjector, CommandOutputProjector, ContextAwareBudget, ErrorRetentionProjector,
-    ExpansionHandle, GitDiffProjector, GitLogProjector, GitStatusProjector, ModelTier,
-    OmittedRange, ProjectionBudget, ProjectionContextMetadata, ProjectionError,
-    ProjectionExactness, ProjectionFact, ProjectionKind, ProjectionPolicy, ProjectionRawSemantics,
-    ProjectionRequest, ProjectionResult, ProjectionSelector, ProjectionSupport, ProjectionTarget,
-    RawProjector, RtkProjectionPolicy, TruncatedProjector, APPROX_BYTES_PER_TOKEN,
+    default_command_projection_with_budget, evaluate_promotion, extract_critical_facts_for_test,
+    preferred_projector_for_run_kind, rtk_eligible_for_run_kind, ArtifactSpanRef,
+    CargoCheckProjector, CargoTestProjector, CommandOutputProjector, ContextAwareBudget,
+    ErrorRetentionProjector, ExpansionHandle, GitDiffProjector, GitLogProjector,
+    GitStatusProjector, ModelTier, OmittedRange, ProjectionBudget, ProjectionContextMetadata,
+    ProjectionError, ProjectionExactness, ProjectionFact, ProjectionId, ProjectionKind,
+    ProjectionPolicy, ProjectionRawSemantics, ProjectionRequest, ProjectionResult,
+    ProjectionSelector, ProjectionSupport, ProjectionTarget, PromotionDecision, PromotionTarget,
+    RawProjector, RedactionRecord, RtkProjectionPolicy, RtkResultMetadata, SpanRole,
+    TruncatedProjector, APPROX_BYTES_PER_TOKEN,
 };
 pub use runtime::{ShellHandle, ShellRuntime};
 pub use store::{BoundedOutput, ShellOutputEntry, ShellOutputStore};

@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use super::analyze::analyze_python_risk;
 use super::types::{
@@ -30,7 +30,7 @@ pub fn check_compatibility(mode: PythonExecutionMode, code: &str) -> Vec<String>
 pub fn resolve_policy(
     mode: PythonExecutionMode,
     code: &str,
-    workspace_root: &PathBuf,
+    workspace_root: &Path,
 ) -> PythonPolicyDecision {
     let risk = analyze_python_risk(code);
     let profile = PythonCapabilityProfile::from_mode_risk_and_context(mode, workspace_root, &risk);
@@ -132,7 +132,7 @@ pub fn validate_subprocess_invocation(
 }
 
 /// Check whether a file path is inside any of the allowed roots.
-pub fn path_inside_allowed_roots(path: &PathBuf, roots: &[PathBuf]) -> bool {
+pub fn path_inside_allowed_roots(path: &Path, roots: &[PathBuf]) -> bool {
     let canonical = match path.canonicalize() {
         Ok(p) => p,
         Err(_) => return false,

@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use crate::shell::projector::{
     ProjectionExactness, ProjectionKind, ProjectionRawSemantics, ProjectionResult,
 };
@@ -13,6 +15,7 @@ pub fn test_report_to_projection(report: &TestReport) -> ProjectionResult {
         + report.stderr_log.as_ref().map(|_| 0).unwrap_or(0);
 
     ProjectionResult {
+        projection_id: crate::shell::projector::ProjectionId::new(),
         text,
         projector: "test-report".to_string(),
         kind: ProjectionKind::Structured,
@@ -26,8 +29,153 @@ pub fn test_report_to_projection(report: &TestReport) -> ProjectionResult {
         estimated_output_tokens: None,
         warnings: build_warnings(report),
         raw_semantics: ProjectionRawSemantics::Unknown,
+        source_spans: Vec::new(),
+        redaction_records: Vec::new(),
+        rtk_metadata: crate::shell::projector::RtkResultMetadata::default(),
     }
     .with_output_bytes()
+}
+
+/// Delta between two test reports, showing new, resolved, and unchanged failures.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TestDelta {
+    pub new_failures: Vec<String>,
+    pub resolved_failures: Vec<String>,
+    pub unchanged_count: usize,
+}
+
+/// Compute the delta between two test reports.
+///
+/// Failure identity is based on `name` (when present), falling back
+/// to a composite of `file:line`.
+pub fn compute_test_delta(current: &TestReport, previous: &TestReport) -> TestDelta {
+    let prev_keys: HashSet<String> = previous.failures.iter().map(failure_key).collect();
+    let curr_keys: HashSet<String> = current.failures.iter().map(failure_key).collect();
+
+    let new_failures: Vec<String> = current
+        .failures
+        .iter()
+        .filter(|f| !prev_keys.contains(&failure_key(f)))
+        .map(failure_label)
+        .collect();
+
+    let resolved_failures: Vec<String> = previous
+        .failures
+        .iter()
+        .filter(|f| !curr_keys.contains(&failure_key(f)))
+        .map(failure_label)
+        .collect();
+
+    let unchanged_count = curr_keys.intersection(&prev_keys).count();
+
+    TestDelta {
+        new_failures,
+        resolved_failures,
+        unchanged_count,
+    }
+}
+
+fn failure_key(f: &crate::test_runner::types::TestFailure) -> String {
+    if let Some(ref name) = f.name {
+        name.clone()
+    } else if let Some(ref file) = f.file {
+        match f.line {
+            Some(line) => format!("{file}:{line}"),
+            None => file.clone(),
+        }
+    } else {
+        f.message.clone()
+    }
+}
+
+fn failure_label(f: &crate::test_runner::types::TestFailure) -> String {
+    if let Some(ref name) = f.name {
+        if let Some(ref file) = f.file {
+            match f.line {
+                Some(line) => format!("{name} ({file}:{line})"),
+                None => format!("{name} ({file})"),
+            }
+        } else {
+            name.clone()
+        }
+    } else if let Some(ref file) = f.file {
+        match f.line {
+            Some(line) => format!("{file}:{line}"),
+            None => file.clone(),
+        }
+    } else {
+        truncate_utf8(&f.message, 80)
+    }
+}
+
+/// Convert a structured [`TestReport`] into a [`ProjectionResult`], optionally
+/// including a delta section when a previous report is provided.
+pub fn test_report_to_projection_with_delta(
+    report: &TestReport,
+    previous_report: Option<&TestReport>,
+) -> ProjectionResult {
+    let mut result = test_report_to_projection(report);
+
+    if let Some(prev) = previous_report {
+        let delta = compute_test_delta(report, prev);
+        let delta_text = format_delta(&delta);
+
+        if !delta_text.is_empty() {
+            result.text.push_str(&delta_text);
+            result.output_bytes = result.text.len();
+
+            if delta.new_failures.len() > 10 {
+                result.warnings.push(format!(
+                    "{} new failures since last run",
+                    delta.new_failures.len()
+                ));
+            }
+            if delta.resolved_failures.len() > 10 {
+                result.warnings.push(format!(
+                    "{} failures resolved since last run",
+                    delta.resolved_failures.len()
+                ));
+            }
+        }
+    }
+
+    result
+}
+
+fn format_delta(delta: &TestDelta) -> String {
+    if delta.new_failures.is_empty() && delta.resolved_failures.is_empty() {
+        return String::new();
+    }
+
+    let mut out = String::new();
+    out.push('\n');
+    out.push_str("--- Delta vs previous run ---\n");
+
+    if !delta.new_failures.is_empty() {
+        out.push('\n');
+        out.push_str(&format!("New failures ({}):\n", delta.new_failures.len()));
+        for name in &delta.new_failures {
+            out.push_str(&format!("  + {name}\n"));
+        }
+    }
+
+    if !delta.resolved_failures.is_empty() {
+        out.push('\n');
+        out.push_str(&format!(
+            "Resolved failures ({}):\n",
+            delta.resolved_failures.len()
+        ));
+        for name in &delta.resolved_failures {
+            out.push_str(&format!("  - {name}\n"));
+        }
+    }
+
+    if delta.unchanged_count > 0 {
+        out.push('\n');
+        out.push_str(&format!("Unchanged failures: {}\n", delta.unchanged_count));
+    }
+
+    out
 }
 
 impl ProjectionResult {
@@ -363,5 +511,149 @@ mod tests {
         assert!(result
             .text
             .contains("E0432 (src/main.rs:5): unresolved import `foo`"));
+    }
+
+    fn report_with_failures(names: &[&str]) -> TestReport {
+        let mut report = base_report(TestStatus::Failed);
+        for name in names {
+            report.failures.push(TestFailure {
+                name: Some((*name).into()),
+                file: None,
+                line: None,
+                message: format!("fail {name}"),
+                failure_class: FailureClass::RustTestFailure,
+            });
+        }
+        report
+    }
+
+    #[test]
+    fn delta_no_previous_report() {
+        let report = report_with_failures(&["test_a"]);
+        let result = test_report_to_projection_with_delta(&report, None);
+        assert!(!result.text.contains("Delta vs previous run"));
+    }
+
+    #[test]
+    fn delta_identical_failures() {
+        let current = report_with_failures(&["test_a", "test_b"]);
+        let previous = report_with_failures(&["test_a", "test_b"]);
+        let result = test_report_to_projection_with_delta(&current, Some(&previous));
+        assert!(!result.text.contains("Delta vs previous run"));
+    }
+
+    #[test]
+    fn delta_new_failures() {
+        let current = report_with_failures(&["test_a", "test_b", "test_c"]);
+        let previous = report_with_failures(&["test_a"]);
+        let result = test_report_to_projection_with_delta(&current, Some(&previous));
+        assert!(result.text.contains("Delta vs previous run"));
+        assert!(result.text.contains("New failures (2):"));
+        assert!(result.text.contains("+ test_b"));
+        assert!(result.text.contains("+ test_c"));
+    }
+
+    #[test]
+    fn delta_resolved_failures() {
+        let current = report_with_failures(&["test_a"]);
+        let previous = report_with_failures(&["test_a", "test_b", "test_c"]);
+        let result = test_report_to_projection_with_delta(&current, Some(&previous));
+        assert!(result.text.contains("Resolved failures (2):"));
+        assert!(result.text.contains("- test_b"));
+        assert!(result.text.contains("- test_c"));
+        assert!(result.text.contains("Unchanged failures: 1"));
+    }
+
+    #[test]
+    fn delta_mixed_new_and_resolved() {
+        let current = report_with_failures(&["test_a", "test_c", "test_d"]);
+        let previous = report_with_failures(&["test_a", "test_b", "test_c"]);
+        let result = test_report_to_projection_with_delta(&current, Some(&previous));
+        assert!(result.text.contains("+ test_d"));
+        assert!(result.text.contains("- test_b"));
+        assert!(result.text.contains("Unchanged failures: 2"));
+    }
+
+    #[test]
+    fn delta_no_failures_either_side() {
+        let current = base_report(TestStatus::Passed);
+        let previous = base_report(TestStatus::Passed);
+        let result = test_report_to_projection_with_delta(&current, Some(&previous));
+        assert!(!result.text.contains("Delta vs previous run"));
+    }
+
+    #[test]
+    fn delta_output_bytes_updated() {
+        let current = report_with_failures(&["test_x"]);
+        let previous = report_with_failures(&["test_y"]);
+        let result = test_report_to_projection_with_delta(&current, Some(&previous));
+        assert_eq!(result.output_bytes, result.text.len());
+    }
+
+    #[test]
+    fn compute_test_delta_empty_reports() {
+        let current = base_report(TestStatus::Passed);
+        let previous = base_report(TestStatus::Passed);
+        let delta = compute_test_delta(&current, &previous);
+        assert!(delta.new_failures.is_empty());
+        assert!(delta.resolved_failures.is_empty());
+        assert_eq!(delta.unchanged_count, 0);
+    }
+
+    #[test]
+    fn compute_test_delta_failure_key_fallback_to_file_line() {
+        let current = TestReport {
+            status: TestStatus::Failed,
+            argv: vec!["cargo".into(), "test".into()],
+            cwd: std::path::PathBuf::from("/workspace"),
+            duration_ms: 0,
+            exit_code: Some(1),
+            summary: "1 failed".into(),
+            failures: vec![TestFailure {
+                name: None,
+                file: Some("src/lib.rs".into()),
+                line: Some(10),
+                message: "assertion failed".into(),
+                failure_class: FailureClass::RustTestFailure,
+            }],
+            timeout: None,
+            log_dir: None,
+            stdout_log: None,
+            stderr_log: None,
+            output_truncated: false,
+            scope_label: None,
+            previous_run_id: None,
+        };
+        let mut previous = base_report(TestStatus::Failed);
+        previous.failures.push(TestFailure {
+            name: None,
+            file: Some("src/lib.rs".into()),
+            line: Some(10),
+            message: "assertion failed".into(),
+            failure_class: FailureClass::RustTestFailure,
+        });
+        let delta = compute_test_delta(&current, &previous);
+        assert!(delta.new_failures.is_empty());
+        assert_eq!(delta.unchanged_count, 1);
+    }
+
+    #[test]
+    fn delta_large_delta_adds_warnings() {
+        let mut current = base_report(TestStatus::Failed);
+        current.failures = (0..15)
+            .map(|i| TestFailure {
+                name: Some(format!("new_test_{i}")),
+                file: None,
+                line: None,
+                message: format!("fail {i}"),
+                failure_class: FailureClass::RustTestFailure,
+            })
+            .collect();
+        let previous = base_report(TestStatus::Failed);
+        let result = test_report_to_projection_with_delta(&current, Some(&previous));
+        assert!(result
+            .warnings
+            .iter()
+            .any(|w| w.contains("15 new failures")));
     }
 }

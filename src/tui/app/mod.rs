@@ -1819,11 +1819,8 @@ impl App {
                         ..
                     } => {
                         content.push(crate::provider::ContentPart::Text {
-                            text: format!(
-                                "run: {} [{}] backend: {}",
-                                title, status, backend_label
-                            )
-                            .into(),
+                            text: format!("run: {} [{}] backend: {}", title, status, backend_label)
+                                .into(),
                         });
                     }
                 }
@@ -3519,38 +3516,29 @@ impl App {
                         match run_store.get_run(&run_id_val).await {
                             Ok(Some(manifest)) => {
                                 let detail = RunDetailView::from_manifest(&manifest);
-                                let dialog =
-                                    RunDetailDialog::new(detail, Arc::clone(&theme));
+                                let dialog = RunDetailDialog::new(detail, Arc::clone(&theme));
                                 if let Some(ref tx) = tx {
-                                    let _ = tx.try_send(
-                                        TuiCommand::OpenRunDetailLoaded { dialog },
-                                    );
+                                    let _ = tx.try_send(TuiCommand::OpenRunDetailLoaded { dialog });
                                 }
                             }
                             Ok(None) => {
                                 if let Some(ref tx) = tx {
-                                    let _ = tx.try_send(
-                                        TuiCommand::OpenRunDetailError {
-                                            error: format!("Run not found: {}", run_id),
-                                        },
-                                    );
+                                    let _ = tx.try_send(TuiCommand::OpenRunDetailError {
+                                        error: format!("Run not found: {}", run_id),
+                                    });
                                 }
                             }
                             Err(e) => {
                                 if let Some(ref tx) = tx {
-                                    let _ = tx.try_send(
-                                        TuiCommand::OpenRunDetailError {
-                                            error: format!("Failed to load run: {}", e),
-                                        },
-                                    );
+                                    let _ = tx.try_send(TuiCommand::OpenRunDetailError {
+                                        error: format!("Failed to load run: {}", e),
+                                    });
                                 }
                             }
                         }
                     });
                 } else {
-                    self.messages_state
-                        .toasts
-                        .error("Run store not available");
+                    self.messages_state.toasts.error("Run store not available");
                 }
             }
             TuiMsg::SecurityReviewJump { path, line } => {
@@ -3607,17 +3595,13 @@ impl App {
                             Ok(Some(manifest)) => {
                                 if manifest.rerun.is_some() {
                                     if let Some(ref tx) = tx {
-                                        let _ = tx.try_send(TuiCommand::ShellRerun {
-                                            id: 0,
-                                        });
+                                        let _ = tx.try_send(TuiCommand::ShellRerun { id: 0 });
                                     }
                                 } else {
                                     if let Some(ref tx) = tx {
-                                        let _ = tx.try_send(
-                                            TuiCommand::OpenRunDetailError {
-                                                error: "Run has no rerun descriptor".to_string(),
-                                            },
-                                        );
+                                        let _ = tx.try_send(TuiCommand::OpenRunDetailError {
+                                            error: "Run has no rerun descriptor".to_string(),
+                                        });
                                     }
                                 }
                             }
@@ -10810,9 +10794,9 @@ impl App {
                         Some(MsgPart::Reasoning { .. }) | Some(MsgPart::ToolCall { .. }) => {
                             String::new()
                         }
-                        Some(MsgPart::Image { .. }) | Some(MsgPart::ShellCell { .. }) | Some(MsgPart::RunCell { .. }) => {
-                            String::new()
-                        }
+                        Some(MsgPart::Image { .. })
+                        | Some(MsgPart::ShellCell { .. })
+                        | Some(MsgPart::RunCell { .. }) => String::new(),
                         None => String::new(),
                     };
 
@@ -10868,9 +10852,9 @@ impl App {
                         }
                         Some(MsgPart::Reasoning { .. }) => "reasoning...".to_string(),
                         Some(MsgPart::ToolCall { name, .. }) => format!("[{}]", name),
-                        Some(MsgPart::Image { .. }) | Some(MsgPart::ShellCell { .. }) | Some(MsgPart::RunCell { .. }) => {
-                            String::new()
-                        }
+                        Some(MsgPart::Image { .. })
+                        | Some(MsgPart::ShellCell { .. })
+                        | Some(MsgPart::RunCell { .. }) => String::new(),
                         None => String::new(),
                     };
 
