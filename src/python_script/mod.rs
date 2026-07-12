@@ -13,7 +13,9 @@ pub use projection::{project_python_result, project_python_run, PythonProjector}
 pub use sandbox::{
     check_compatibility, derive_envelope, resolve_policy, validate_subprocess_invocation,
 };
-pub use tool::PythonScriptTool;
+pub use tool::{
+    execute_and_persist_python_script, persist_python_run, DelegatedPythonRun, PythonScriptTool,
+};
 pub use types::{
     CapabilityViolation, ExecutableRule, PythonCapabilityEnvelope, PythonCapabilityProfile,
     PythonExecutionMode, PythonPolicyDecision, PythonRiskAssessment, PythonRiskLevel,

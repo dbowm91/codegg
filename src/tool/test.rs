@@ -107,7 +107,8 @@ impl Tool for TestTool {
             self.run_store.as_ref(),
         )
         .await
-        .map_err(|e| ToolError::Execution(format!("test runner error: {e}")))?;
+        .map_err(|e| ToolError::Execution(format!("test runner error: {e}")))?
+        .into_report();
         Ok(format_test_report_capped(&report, max_report_bytes))
     }
 
@@ -125,7 +126,8 @@ impl Tool for TestTool {
             self.run_store.as_ref(),
         )
         .await
-        .map_err(|e| ToolError::Execution(format!("test runner error: {e}")))?;
+        .map_err(|e| ToolError::Execution(format!("test runner error: {e}")))?
+        .into_report();
         let output = format_test_report_capped(&report, max_report_bytes);
         let elapsed_ms = start.elapsed().as_millis() as u64;
 

@@ -223,15 +223,17 @@ pub fn ownership_for_outcome(outcome: &ExecutionOutcome) -> RunOwnership {
 }
 
 /// Map an `ExecutionOutcome` to a `RunKind` based on what actually executed.
+///
+/// Workstream D: when the actual executor is `RawShell`, `RunKind` is
+/// unconditionally `raw_shell` regardless of the classified intent. Semantic
+/// intent remains available separately through `planned_backend`, routing
+/// metadata, and intent kind. This keeps `RunKind` a faithful record of the
+/// execution substrate — not an overloading of semantic intent.
 pub fn run_kind_for_outcome(outcome: &ExecutionOutcome, intent_kind: CommandIntentKind) -> String {
     use crate::command_intent::CommandIntentKind::*;
+    let _ = intent_kind; // unused after Workstream D — preserved for API stability
     match &outcome.actual {
-        ActualExecutor::RawShell { .. } => match intent_kind {
-            GitReadOnly => "git_read".to_string(),
-            GitMutating => "git_mutation".to_string(),
-            SearchReadOnly | FileRead => "search".to_string(),
-            _ => "raw_shell".to_string(),
-        },
+        ActualExecutor::RawShell { .. } => "raw_shell".to_string(),
         ActualExecutor::ManagedArgv { .. } => match intent_kind {
             GitMutating => "git_mutation".to_string(),
             SearchReadOnly | FileRead => "search".to_string(),
@@ -350,5 +352,37 @@ mod tests {
             run_kind_for_outcome(&outcome, CommandIntentKind::GitMutating),
             "git_mutation"
         );
+    }
+
+    /// Workstream D: raw-shell actual executor must ALWAYS produce RunKind
+    /// "raw_shell", regardless of intent. Semantic intent remains accessible
+    /// via `planned_backend` and `intent_kind`.
+    #[test]
+    fn run_kind_for_outcome_raw_shell_unconditional() {
+        let intent_kinds = [
+            CommandIntentKind::GitReadOnly,
+            CommandIntentKind::GitMutating,
+            CommandIntentKind::SearchReadOnly,
+            CommandIntentKind::FileRead,
+            CommandIntentKind::Test,
+            CommandIntentKind::PythonAnalyze,
+            CommandIntentKind::Build,
+            CommandIntentKind::RawShell,
+        ];
+        for kind in intent_kinds {
+            let outcome = ExecutionOutcome::identity(
+                PlannedBackend::RawShell,
+                ActualExecutor::RawShell {
+                    command: "echo".to_string(),
+                    argv: vec!["sh".to_string(), "-c".to_string(), "echo".to_string()],
+                },
+            );
+            assert_eq!(
+                run_kind_for_outcome(&outcome, kind),
+                "raw_shell",
+                "RawShell actual executor MUST produce RunKind::raw_shell regardless of intent ({:?})",
+                kind
+            );
+        }
     }
 }

@@ -57,6 +57,17 @@ pub fn resolve_test_command(request: &TestRunRequest) -> Result<ResolvedTestComm
                 scope_label: format!("custom:{}", validated.label),
             })
         }
+        TestScope::BashDispatch(argv) => {
+            if argv.is_empty() {
+                return Err(TestResolveError::EmptyCustomCommand);
+            }
+            Ok(ResolvedTestCommand {
+                language: TestLanguage::Generic,
+                argv: argv.clone(),
+                cwd: workdir.to_path_buf(),
+                scope_label: "bash-dispatch".to_string(),
+            })
+        }
     }
 }
 

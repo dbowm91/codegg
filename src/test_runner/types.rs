@@ -10,6 +10,12 @@ pub enum TestScope {
     File(PathBuf),
     PreviousFailures,
     CustomCommand(String),
+    /// Pre-validated argv from BashTool's active routing dispatcher.
+    /// The argv has already passed the planner's classification and
+    /// validation; the test-runner safety validator does NOT re-run
+    /// (which would reject non-allowlisted test commands). Used only
+    /// by BashTool's `dispatch_to_test_runner`.
+    BashDispatch(Vec<String>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

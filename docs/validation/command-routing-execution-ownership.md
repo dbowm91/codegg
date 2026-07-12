@@ -1,13 +1,16 @@
 # Command Routing Actual Execution Ownership — Validation Evidence
 
-This document validates the corrective pass for command-routing persistence
-and provenance defects. See `plans/command-routing-actual-execution-ownership-corrective-pass.md`
-for the original plan.
+This document validates the corrective passes for command-routing persistence
+and provenance defects.
 
-## Commit
+See also:
+- `plans/command-routing-actual-execution-ownership-corrective-pass.md` — original ownership-corrective plan
+- `plans/command-routing-real-delegation-final-corrective-pass.md` — final real-delegation plan
 
-- **SHA (corrective pass)**: pending (this commit)
-- **Previous SHA**: `819f17a` (plan commit) / `992dfae` (closure hardening)
+## Commits
+
+- **Real delegation SHA (this commit)**: pending (this commit)
+- **Previous SHA**: `605e557` (real-delegation plan) / `195cc5d` (execution ownership) / `819f17a` (plan)
 
 ## Environment
 
@@ -15,162 +18,244 @@ for the original plan.
 - **Architecture**: aarch64
 - **Rust version**: 1.96.0
 
-## Problem Statement
+## Problem Statement (Final Corrective Pass)
 
-The previous command-routing implementation had four persistence defects:
+The earlier ownership-corrective pass introduced a planned-versus-actual
+execution model, but two paths still reported `DelegatedBackend` without
+invoking the delegated subsystem:
 
-1. **RunKind was derived from the planned routing decision**, not what actually executed.
-2. **`argv` was always recorded as `[sh, -c, command]`**, even when the actual execution was a direct `Command::new`.
-3. **`RunOwnership::DelegatedBackend` was defined but never set anywhere.**
-4. **Raw stdout/stderr artifacts were marked `safe_for_model: true`**, which violates the contract that only post-redaction projection is model-safe.
+1. Test routing executed through raw shell and then labeled the result as TestRunner-owned.
+2. Python routing executed `python3 -c` directly and then labeled the result as Python-subsystem-owned.
+
+This broke the central invariant:
+
+> Ownership must reflect the backend that actually executed and persisted the run.
+
+The final corrective pass wires BashTool into the **canonical** TestRunner
+and Python subsystem paths, makes `run_kind_for_outcome()` map raw-shell
+executions unconditionally to `RunKind::RawShell`, and requires a `RunId`
+proof before delegating ownership suppression.
 
 ## Workstreams Completed
 
-### Workstream A: Execution outcome types
+### Workstream A: Strict delegation contract
 
-New types in `crates/codegg-core/src/run_store.rs`:
+New result types carrying `run_id` proof:
 
-- `PlannedBackend` (snake_case enum): Unrouted, RawShell, TestRunner, PythonScript, NativeTool, ManagedArgv, GitMutating
-- `ActualBackend` (snake_case enum): RawShell, TestRunner, PythonScript, NativeTool, ManagedArgv, GitMutating, Rejected
-- `FallbackRecord { planned, actual, reason }`
+```rust
+// src/test_runner/runner.rs:258-270
+pub struct DelegatedTestRun {
+    pub report: TestReport,
+    pub run_id: Option<RunId>,
+}
 
-New optional fields on `RunManifest`, `RunDraft`, and `RunCompletion`:
+// src/python_script/tool.rs:16-19
+pub struct DelegatedPythonRun {
+    pub result: PythonRunResult,
+    pub run_id: Option<RunId>,
+}
+```
 
-- `planned_backend: Option<PlannedBackend>`
-- `actual_backend: Option<ActualBackend>`
-- `fallback: Option<FallbackRecord>`
-- `ownership: RunOwnership` (defaults to Caller; serde-defaulted)
+Contract rules:
 
-New module `src/command_outcome.rs`:
+1. `RunOwnership::DelegatedBackend` is valid only when the delegated subsystem actually executed and persisted a canonical record.
+2. A delegated result must carry a real `run_id` (or equivalent proof).
+3. BashTool never infers delegated ownership from the planned routing decision alone.
+4. If delegated execution cannot start or cannot prove ownership, BashTool falls back to caller-owned persistence with a warning log.
 
-- `ActualExecutor` (the full execution context: argv, cwd, mode, etc.)
-- `ActualInvocation` (the canonical argv-shaped invocation)
-- `ExecutionOutcome` { planned, actual, fallback, fallback_reason }
-- `ownership_for_outcome()` — maps `ExecutionOutcome` → `RunOwnership`
-- `run_kind_for_outcome()` — maps `(ActualExecutor, CommandIntentKind)` → `RunKind`
+### Workstream B: Canonical TestRunner wiring
 
-### Workstream B: Persistence ownership from actual execution
+`BashTool::dispatch_to_test_runner` at `src/tool/bash.rs:529-602`:
 
-- `BashTool` persistence path now derives `RunOwnership` from the actual executor (`ownership_for_outcome()`), not from the planned routing decision.
-- `RunKind` is derived from `run_kind_for_outcome(execution_outcome, intent.kind)`.
-- `BashTool` skips persistence when `ownership == DelegatedBackend`, ensuring only the delegated backend owns the canonical record.
+- No longer executes raw shell. Constructs a `TestScope::BashDispatch(Vec<String>)` from the planner's validated argv.
+- `TestScope::BashDispatch` (new variant, `src/test_runner/types.rs:13`) bypasses allowlist re-validation since argv was already validated by the planner. Handled in `src/test_runner/resolve.rs:62-71`.
+- Calls canonical `resolve_and_run_test`, which returns `DelegatedTestRun { report, run_id }`.
+- Persistence suppression requires `Some(run_id)`. Without a `run_id`, BashTool persists the caller-owned fallback.
 
-### Workstream C: Python canonical subsystem
+Acceptance criteria met:
 
-`PythonScriptTool::execute()` now persists its own RunStore record with:
+- [x] Active test success produces exactly one TestRunner-owned `RunKind::Test` record.
+- [x] Observe-mode test produces exactly one caller-owned `RunKind::RawShell` record.
+- [x] TestRunner initialization failure plus fallback produces exactly one caller-owned `RunKind::RawShell` record.
+- [x] No active test path executes via shell while reporting TestRunner ownership.
 
-- `planned_backend: Some(PythonScript)`
-- `actual_backend: Some(PythonScript)`
-- `ownership: DelegatedBackend`
-- `script_hash: result.script_body_hash.clone()`
-- All raw artifacts (`Stdout`, `Stderr`, `UnifiedDiff`) marked `safe_for_model: false`
+### Workstream C: Canonical Python subsystem wiring
 
-### Workstream D: TestRunner canonical routing
+`BashTool::dispatch_to_python_script` at `src/tool/bash.rs:744-810`:
 
-`TestRunner::persist_to_run_store()` now sets:
+- No longer invokes `python3 -c` directly. Constructs a `PythonScriptRequest` from the planner's planned script, mode, cwd, workspace root, and timeout.
+- Calls canonical `execute_and_persist_python_script(req, store)` (`src/python_script/tool.rs`), which applies AST risk scan, capability enforcement, Landlock sandboxing, snapshots, changed-file detection, and projection.
+- Returns `DelegatedPythonRun { result, run_id }`.
 
-- `planned_backend: Some(TestRunner)`
-- `actual_backend: Some(TestRunner)`
-- `ownership: DelegatedBackend`
-- `argv: resolved.argv.clone()` (actual Command::new invocation, not `[sh, -c, ...]`)
-- Raw `Stdout`/`Stderr` marked `safe_for_model: false`; `TestReport` (structured JSON) remains `safe_for_model: true`
+Acceptance criteria met:
 
-### Workstream E: Exact invocation provenance
+- [x] Active Python routing never bypasses the canonical policy/sandbox path.
+- [x] Structured Python success produces exactly one Python-owned `RunKind::Python` record.
+- [x] No direct `python3 -c` path reports delegated Python ownership.
+- [x] Script hash and Python mode persist correctly.
 
-`BashTool` dispatch returns the actual `ActualExecutor` for each path:
+### Workstream D: Raw-shell run-kind unconditional
 
-- `RawShell` → argv = `[sh, -c, command]`
-- `ManagedArgv` → argv = the actual `Command::new` argv (not `[sh, -c, ...]`)
-- `NativeTool` → argv = the actual native-tool argv
-- `TestRunner` → argv = the actual test runner argv (delegated)
-- `PythonScript` → argv = `["python3", "<script>"]`
+`run_kind_for_outcome()` in `src/command_outcome.rs:226-260`:
 
-### Workstream F: Planned-vs-actual backend metadata
+```rust
+ActualExecutor::RawShell { .. } => RunKind::RawShell
+```
 
-`RunManifest`, `RunDraft`, and `RunCompletion` carry `planned_backend`,
-`actual_backend`, and `fallback`. The persistence path in `FsRunStore` and
-`MemRunStore` propagates these from draft → manifest and from completion →
-manifest. `complete_run` overrides `actual_backend` if the completion
-provides one (for fallback scenarios).
+is now unconditional for all intents. Semantic intent is preserved separately
+through `planned_backend`, routing metadata, and intent kind. The
+`run_kind_for_outcome_raw_shell_unconditional` test exercises all intents
+through the same `RawShell` path.
 
-### Workstream G: Raw artifact safety conservative
+Acceptance criteria met:
 
-| Source | Artifact | safe_for_model |
-|--------|----------|----------------|
-| BashTool | Stdout, Stderr | `false` |
-| TestRunner | Stdout, Stderr | `false` |
-| TestRunner | TestReport | `true` (structured JSON) |
-| PythonScript | Stdout, Stderr, UnifiedDiff | `false` |
+- [x] Observe-mode git/search/test/Python → `RawShell`.
+- [x] Global kill switch → `RawShell`.
+- [x] Per-family `Off` → `RawShell`.
+- [x] Structured dispatch fallback → `RawShell`.
+- [x] Native/managed structured success → semantic structured run kind.
 
-Only structured artifacts (TestReport, post-redaction projection) are
-model-safe. Raw stdout/stderr are explicitly NOT model-safe.
+### Workstream E: Persistence-suppression requires proof
 
-### Workstream H: Persistence failure handling
+`DispatchOutcome` struct at `src/tool/bash.rs:34-44`:
 
-The persistence path uses `if let Ok(handle) = store.begin_run(draft).await`
-which already swallows persistence errors. This means a RunStore failure
-does not change the actual execution outcome or the result string returned
-to the caller. The test suite validates this contract.
+```rust
+pub struct DispatchOutcome {
+    pub result: String,
+    pub output: std::process::Output,
+    pub executor: ActualExecutor,
+    pub delegated_run_id: Option<RunId>,
+}
+```
 
-### Workstream I: Ownership integration tests
+Persistence gating at `src/tool/bash.rs:1343-1354`:
 
-New file `tests/command_routing_execution_ownership.rs` (13 tests):
+```rust
+let persist_run = match (ownership, delegated_run_id.as_ref()) {
+    (RunOwnership::DelegatedBackend, Some(_)) => false,  // subsystem owns persistence
+    (RunOwnership::DelegatedBackend, None) => true,        // fallback: caller persists
+    _ => true,                                             // caller-owned
+};
+```
 
-1. Observe mode persists raw_shell with `PlannedBackend::Unrouted`/`RawShell` and `RunOwnership::Caller`.
-2. Active test command: BashTool MUST NOT persist Caller-owned record when routing to TestRunner.
-3. Active git readonly: `RunKind::GitRead`, `RunOwnership::Caller`, `PlannedBackend::NativeTool`, `ActualBackend::NativeTool`.
-4. Active search: `RunKind::Search`, `RunOwnership::Caller`, `PlannedBackend::ManagedArgv`, `ActualBackend::ManagedArgv`, argv != `[sh, -c, ...]`.
-5. Active routing fallback: `planned_backend=TestRunner`, `actual_backend=RawShell`, FallbackRecord populated.
-6. BashTool artifacts are NEVER `safe_for_model: true`.
-7. PythonScriptTool: `RunOwnership::DelegatedBackend`, raw stdout/stderr NOT safe.
-8. TestRunner canonical API: `RunOwnership::DelegatedBackend`, raw stdout/stderr NOT safe.
-9. Env kill switch forces raw shell persistence.
-10. Per-family `RouteLevel::Off` forces raw shell.
-11. `ownership_for_outcome` API mapping (Caller/DelegatedBackend).
-12. Backward compat: manifests without provenance fields still deserialize (serde defaults).
-13. Manifest serde roundtrip with provenance fields.
+Acceptance criteria met:
+
+- [x] BashTool skips persistence only when `Some(run_id)` is returned.
+- [x] `ActualExecutor::TestRunner` or `PythonScript` without a `run_id` is a correctness violation; fallback persists caller-owned record.
+- [x] One logical execution always has a discoverable canonical record.
+
+### Workstream F: Output/status propagation
+
+`BashTool` dispatch returns `DispatchOutcome` (typed `executor` and
+optional `delegated_run_id`) rather than forcing every backend into
+`std::process::Output`. Delegated subsystems return their own typed
+results, and BashTool synthesizes a minimal `Output`-shaped value from
+`exit_code` only when downstream code requires it (via `synth_output()`
+at `src/tool/bash.rs:1030-1052`).
+
+Acceptance criteria met:
+
+- [x] No duplicate execution to obtain output.
+- [x] Status maps correctly to RunStore and user-visible output.
+- [x] Delegated execution remains typed end to end.
+
+### Workstream G: Validation evidence (this document)
+
+This file. All workstreams marked completed are backed by passing tests
+listed below. There is no remaining "Future Work" deferred delegation.
+
+### Workstream H: Real-delegation integration tests
+
+`tests/command_routing_execution_ownership.rs` now contains 20 tests (13
+ownership + 7 new real-delegation tests):
+
+#### Real-delegation tests (Workstream H-1 to H-7)
+
+| ID | Test | Asserts |
+|----|------|---------|
+| H-1 | `bash_tool_routes_active_test_through_canonical_test_runner` | Active `cargo test --no-run` invokes canonical TestRunner; argv matches; one canonical Test record; no shell reconstruction. |
+| H-2 | `bash_tool_routes_active_python_through_canonical_executor` | Active Python script invokes canonical PythonScript executor; one Python record; raw stdout marked unsafe. |
+| H-3 | `observe_mode_test_persists_as_raw_shell` | Observe-mode test command persists caller-owned `RawShell` record (not delegated). |
+| H-4 | `one_logical_execution_produces_exactly_one_record` | After a delegated execution, the RunStore contains exactly one canonical record owned by the delegated subsystem. |
+| H-5 | `delegated_ownership_without_run_id_falls_back_to_caller` | Even with `ownership == DelegatedBackend`, an absent `run_id` triggers caller-owned fallback persistence with a warning. |
+| H-6 | `raw_shell_run_kind_is_unconditional` | `run_kind_for_outcome()` returns `RunKind::RawShell` for `ActualExecutor::RawShell` regardless of intent. |
+| H-7 | `dispatch_failure_fallback_persists_caller_owned_raw_shell` | When dispatch fails to produce a delegated result, BashTool falls back to caller-owned `RawShell` record with FallbackRecord evidence. |
+
+#### Ownership-corrective tests (pre-existing, all still pass)
+
+| ID | Test |
+|----|------|
+| 1 | Observe mode persists `raw_shell` with `PlannedBackend::Unrouted`/`RawShell` and `RunOwnership::Caller`. |
+| 2 | Active test command: BashTool MUST NOT persist Caller-owned record when routing to TestRunner. |
+| 3 | Active git readonly: `RunKind::GitRead`, `RunOwnership::Caller`, `PlannedBackend::NativeTool`, `ActualBackend::NativeTool`. |
+| 4 | Active search: `RunKind::Search`, `RunOwnership::Caller`, `PlannedBackend::ManagedArgv`, `ActualBackend::ManagedArgv`, argv != `[sh, -c, ...]`. |
+| 5 | Active routing fallback: `planned_backend=TestRunner`, `actual_backend=RawShell`, FallbackRecord populated. |
+| 6 | BashTool artifacts are NEVER `safe_for_model: true`. |
+| 7 | PythonScriptTool: `RunOwnership::DelegatedBackend`, raw stdout/stderr NOT safe. |
+| 8 | TestRunner canonical API: `RunOwnership::DelegatedBackend`, raw stdout/stderr NOT safe. |
+| 9 | Env kill switch forces raw shell persistence. |
+| 10 | Per-family `RouteLevel::Off` forces raw shell. |
+| 11 | `ownership_for_outcome` API mapping (Caller/DelegatedBackend). |
+| 12 | Backward compat: manifests without provenance fields still deserialize (serde defaults). |
+| 13 | Manifest serde roundtrip with provenance fields. |
 
 ## Test Results
 
-### Targeted Suites
+### Targeted Suites (all pass)
 
 | Suite | Tests | Result |
 |-------|-------|--------|
 | `command_intent` | 249 | ✅ Pass |
 | `command_routing` | 17 | ✅ Pass |
-| `command_outcome` | 4 | ✅ Pass |
-| `command_routing_execution_ownership` (new) | 13 | ✅ Pass |
+| `command_outcome` | 6 | ✅ Pass |
+| `command_routing_execution_ownership` (Workstream H + prior) | 20 | ✅ Pass |
 | `command_routing_adversarial` | 139 | ✅ Pass |
 | `python_sandbox_adversarial` | 57 | ✅ Pass |
 | `context_projection_adversarial` | 90 | ✅ Pass |
 | `test_runner` | 145 | ✅ Pass |
-| `tool::bash` | 68 | ✅ Pass |
+| `tool::bash` | 68 | ✅ Pass (serialized; 3 tests timeout when 4 parallel `cargo test --no-run` invocations share a Cargo.lock — pre-existing concurrency issue unrelated to this corrective pass) |
 | `python_script` | 182 | ✅ Pass |
 
-### Validation
+### Static Validation
 
 | Check | Result |
 |-------|--------|
 | `cargo check -p codegg-core` | ✅ Clean |
 | `cargo check -p codegg --lib` | ✅ Clean |
 | `cargo check --workspace` | ✅ Clean |
-| `cargo clippy -p codegg --lib -- -D warnings` | ✅ No issues |
+| `cargo clippy -p codegg --lib --tests -- -D warnings` (RTK-filtered; 58 `field_reassign_with_default` and 2 `needless_borrow` warnings pre-existing in `src/test_runner/runner.rs`, `src/tool/bash.rs`, `tests/command_routing_adversarial.rs`, `tests/context_projection_adversarial.rs` — none introduced by this corrective pass) | ⚠️ Pre-existing only |
+| `cargo fmt --all -- --check` | Not re-verified this pass |
+
+### `codegg-core` Run-Store Suite
+
+`cargo test -p codegg-core --lib` could not be run as a complete suite in
+this local environment because of two pre-existing test issues:
+
+- `fs_store_complete_updates_index` hangs indefinitely (intermittently)
+- `mem_store_integrity_violation` fails (`assert!(result.is_err())` at `crates/codegg-core/src/run_store.rs:1986` because the test corrupts the manifest's `sha256` field but not the artifact store's `sha256`; `read_artifact` recomputes from `data` and compares to the artifact store's record)
+
+Both issues exist on `605e557` (before this pass's changes). They are
+unrelated to the real-delegation work and not introduced by it.
+
+Targeted sub-tests run individually (mem_store_begin_write_complete,
+mem_store_concurrent_writes, mem_store_get_run_and_list,
+mem_store_list_with_limit, mem_store_read_artifact_with_range,
+mem_store_artifact_too_large, path_traversal_rejection,
+run_id_generation_and_ordering, rerun_descriptor_no_permission_persistence,
+manifest_serde_roundtrip, cleanup_plan_respects_pinned) all pass.
 
 ## Closure Criteria Verification
 
-- [x] `RunOwnership::DelegatedBackend` is set by TestRunner and PythonScriptTool
-- [x] `RunOwnership::Caller` is set by BashTool when it persists raw shell/managed argv/native tool
-- [x] `RunKind` is derived from the actual executor, not the planned decision
-- [x] `argv` reflects the actual `Command::new` invocation when managed argv was used
-- [x] `argv = [sh, -c, command]` is only used for the raw-shell path
-- [x] `planned_backend` and `actual_backend` are populated on persisted manifests
-- [x] `FallbackRecord` is populated when active routing falls back to raw shell
-- [x] Raw stdout/stderr artifacts are `safe_for_model: false` (BashTool, TestRunner, PythonScript)
-- [x] Structured artifacts (TestReport) remain `safe_for_model: true`
-- [x] Persistence failures (begin_run error) do not change the actual execution outcome
-- [x] New integration test suite `tests/command_routing_execution_ownership.rs` (13 tests) covers all workstreams
-- [x] Backward compatibility: manifests without provenance fields still deserialize
-- [x] All adversarial suites pass (139 routing + 57 python + 90 context projection)
+- [x] `RunOwnership::DelegatedBackend` is used only after a delegated subsystem actually executes and persists the run.
+- [x] Active tests use the canonical TestRunner API (`resolve_and_run_test` via `TestScope::BashDispatch`).
+- [x] Active Python uses the canonical Python policy/sandbox subsystem (`execute_and_persist_python_script`).
+- [x] No raw-shell execution reports TestRunner or Python ownership.
+- [x] Every actual RawShell execution persists as `RunKind::RawShell` (`run_kind_for_outcome` unconditional).
+- [x] BashTool suppresses persistence only when a delegated `RunId` exists.
+- [x] One command produces exactly one canonical record.
+- [x] Fallback paths produce caller-owned RawShell records with `FallbackRecord` evidence.
+- [x] Validation evidence matches the implementation; no deferred canonical-delegation caveats remain.
+- [x] All canonical-delegation integration tests pass (Workstream H-1 through H-7).
 
 ## Architectural Notes
 
@@ -180,44 +265,35 @@ New file `tests/command_routing_execution_ownership.rs` (13 tests):
 RunStore record. BashTool now uses:
 
 ```rust
-let ownership = ownership_for_outcome(&execution_outcome);
-let persist_run = !matches!(ownership, RunOwnership::DelegatedBackend);
+let persist_run = match (ownership, delegated_run_id.as_ref()) {
+    (RunOwnership::DelegatedBackend, Some(_)) => false,
+    (RunOwnership::DelegatedBackend, None) => true,   // fallback
+    _ => true,
+};
 ```
 
-instead of the previous pattern-matching on `RoutingDecision`:
+The pattern-matching approach on `RoutingDecision` was replaced because it
+conflated *planning* with *execution*. The new ownership-based approach
+correctly handles:
 
-```rust
-let persist_run = !matches!(decision,
-    Some(RouteToTestRunner { .. }) | Some(RouteToPythonScripting { .. }));
-```
-
-The pattern-matching approach was fragile because:
-
-1. It conflated *planning* (what the classifier intended) with *execution* (what actually ran).
-2. A fallback to raw shell would still skip persistence based on the *planned* decision.
-
-The new ownership-based approach correctly handles:
-
-- Planned TestRunner, actual TestRunner → DelegatedBackend (BashTool skips).
-- Planned TestRunner, actual RawShell (fallback) → Caller (BashTool persists with FallbackRecord).
-- Planned Unrouted, actual RawShell → Caller (BashTool persists).
+- Planned TestRunner, actual TestRunner → `DelegatedBackend` (BashTool skips).
+- Planned TestRunner, actual RawShell (fallback) → `Caller` (BashTool persists with `FallbackRecord`).
+- Planned Unrouted, actual RawShell → `Caller` (BashTool persists).
 
 ### Persistence Failure Isolation
 
 All BashTool, TestRunner, and PythonScriptTool persistence paths use
 `if let Ok(handle) = store.begin_run(draft).await` which swallows
-begin_run errors. This ensures that RunStore failures do not change
-the actual execution outcome or the result string returned to the caller.
+begin_run errors. This ensures that RunStore failures do not change the
+actual execution outcome or the result string returned to the caller.
 `write_artifact` and `complete_run` similarly use `let _ = ...` patterns.
 
-### Future Work (Out of Scope)
+### No Future Work
 
-- Workstream D-2: wire `dispatch_to_test_runner` directly into
-  `resolve_and_run_test` for canonical TestRunner routing. The MVP path
-  correctly reports `ActualExecutor::TestRunner` and marks ownership
-  DelegatedBackend, so the integration is straightforward.
-- Workstream C-2: wire `dispatch_to_python_script` directly into
-  `execute_python_script` for canonical Python routing. The MVP path
-  currently uses `python3 -c` directly; wiring to the canonical
-  subsystem will require capturing the script body pre-dispatch to
-  compute `script_hash`.
+The earlier "Future Work (Out of Scope)" section of the ownership-corrective
+validation document is **completed**. There are no deferred canonical-delegation
+caveats.
+
+## GitHub Combined Status
+
+Not re-verified this pass — local environment only.

@@ -255,6 +255,69 @@ Python scripts are routed from the command intent pipeline:
 
 Registered in `src/tool/mod.rs` via `registry.register(PythonScriptTool)` in `with_options()`.
 
+## Canonical Delegation Entry Point
+
+### DelegatedPythonRun
+
+```rust
+// src/python_script/tool.rs:16-19
+pub struct DelegatedPythonRun {
+    pub result: PythonRunResult,
+    pub run_id: Option<RunId>,
+}
+```
+
+The `run_id` is `Some` when the canonical Python subsystem persisted a `RunKind::Python` record; `None` when persistence failed or no `RunStore` was provided. This is the **proof-of-persistence contract**: callers inspect `run_id` to determine whether to suppress their own persistence.
+
+```rust
+impl DelegatedPythonRun {
+    pub fn into_result(self) -> PythonRunResult { self.result }
+    pub fn result(&self) -> &PythonRunResult { &self.result }
+}
+```
+
+### execute_and_persist_python_script
+
+```rust
+// src/python_script/tool.rs:40-51
+pub async fn execute_and_persist_python_script(
+    request: &PythonScriptRequest,
+    run_store: Option<&Arc<dyn RunStore>>,
+) -> DelegatedPythonRun
+```
+
+Single entry point for canonical Python delegation. Both the model-facing `PythonScriptTool` and `BashTool`'s active routing dispatcher use this function. Calls `execute_python_script()` then `persist_python_run()`. Returns the run result plus an optional `RunId` proving the delegated record was begun.
+
+### persist_python_run
+
+```rust
+// src/python_script/tool.rs:56-60
+pub async fn persist_python_run(
+    store: &Arc<dyn RunStore>,
+    request: &PythonScriptRequest,
+    result: &PythonRunResult,
+) -> Option<RunId>
+```
+
+Returns the `RunId` if the run was successfully begun — callers use this as proof of delegated ownership.
+
+### build_python_request
+
+```rust
+// src/python_script/tool.rs:269
+fn build_python_request(input: &serde_json::Value) -> Result<PythonScriptRequest, ToolError>
+```
+
+Converts planner output (JSON) to a canonical `PythonScriptRequest`. Used by `PythonScriptTool::execute`.
+
+### Called by BashTool
+
+`BashTool::dispatch_to_python_script` at `src/tool/bash.rs:693-725` builds a `PythonScriptRequest` from the planner's validated script, mode, cwd, and workspace root, then calls `execute_and_persist_python_script` with the shared `RunStore`. This replaces the previous direct `python3 -c` invocation, ensuring policy resolution, sandbox enforcement, snapshots, and RunStore persistence all run through the canonical path.
+
+```bash
+cargo test -p codegg --lib tool::bash
+```
+
 ## Tests
 
 ```bash

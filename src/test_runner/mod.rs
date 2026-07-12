@@ -14,7 +14,9 @@ pub use parse::{failure_class_summary, ingest_stderr_line, ingest_stdout_line, T
 pub use projection::test_report_to_projection;
 pub use report::{format_test_report, format_test_report_with_cap, DEFAULT_MAX_REPORT_BYTES};
 pub use resolve::{resolve_test_command, TestResolveError};
-pub use runner::{resolve_and_run_test, run_resolved_test, TestRunError};
+pub use runner::{
+    resolve_and_run_test, run_resolved_test, DelegatedTestRun, TestRunError,
+};
 pub use types::{
     FailureClass, ResolvedTestCommand, TestEventSink, TestReport, TestRunCompletedSnapshot,
     TestRunProgressSnapshot, TestRunRequest, TestRunStartedSnapshot, TestScope, TestStatus,

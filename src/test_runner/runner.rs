@@ -119,7 +119,7 @@ pub async fn run_resolved_test(
     resolved: ResolvedTestCommand,
     sink: Option<&dyn TestEventSink>,
     run_store: Option<&Arc<dyn codegg_core::run_store::RunStore>>,
-) -> Result<TestReport, TestRunError> {
+) -> Result<DelegatedTestRun, TestRunError> {
     let timeout_secs = request.timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS);
     if timeout_secs == 0 {
         return Err(TestRunError::InvalidRequest(
@@ -240,11 +240,33 @@ pub async fn run_resolved_test(
     // Persist to RunStore (best-effort; RunStore write failure must not fail
     // the test run). This gives test runs the same RunStore lifecycle as
     // bash/python runs.
-    if let Some(store) = run_store {
-        persist_to_run_store(store, &report, &resolved, &request.workdir).await;
-    }
+    let run_id = if let Some(store) = run_store {
+        persist_to_run_store(store, &report, &resolved, &request.workdir).await
+    } else {
+        None
+    };
 
-    Ok(report)
+    Ok(DelegatedTestRun {
+        report,
+        run_id,
+    })
+}
+
+/// Result of a delegated test run. The `run_id` is `Some` iff a `RunStore`
+/// record was successfully begun — it is the proof of delegated ownership.
+#[derive(Debug, Clone)]
+pub struct DelegatedTestRun {
+    pub report: TestReport,
+    pub run_id: Option<codegg_core::run_store::RunId>,
+}
+
+impl DelegatedTestRun {
+    pub fn into_report(self) -> TestReport {
+        self.report
+    }
+    pub fn report(&self) -> &TestReport {
+        &self.report
+    }
 }
 
 #[allow(unsafe_code)]
@@ -589,19 +611,20 @@ pub async fn resolve_and_run_test(
     request: TestRunRequest,
     sink: Option<&dyn TestEventSink>,
     run_store: Option<&Arc<dyn codegg_core::run_store::RunStore>>,
-) -> Result<TestReport, TestRunError> {
+) -> Result<DelegatedTestRun, TestRunError> {
     let resolved = resolve_test_command(&request)?;
     run_resolved_test(&request, resolved, sink, run_store).await
 }
 
 /// Persist a completed test run to the RunStore. Best-effort; errors are
-/// logged but do not propagate.
+/// logged but do not propagate. Returns the `RunId` if the run was
+/// successfully begun — callers use this as proof of delegated ownership.
 async fn persist_to_run_store(
     store: &Arc<dyn codegg_core::run_store::RunStore>,
     report: &TestReport,
     resolved: &ResolvedTestCommand,
     workdir: &Path,
-) {
+) -> Option<codegg_core::run_store::RunId> {
     use codegg_core::run_store::*;
 
     let cwd = resolved.cwd.clone();
@@ -648,7 +671,7 @@ async fn persist_to_run_store(
         Ok(h) => h,
         Err(e) => {
             tracing::warn!("test runner: failed to begin RunStore run: {e}");
-            return;
+            return None;
         }
     };
 
@@ -724,7 +747,7 @@ async fn persist_to_run_store(
 
     let _ = store
         .complete_run(
-            handle,
+            handle.clone(),
             RunCompletion {
                 status,
                 completed_at: Utc::now(),
@@ -739,6 +762,8 @@ async fn persist_to_run_store(
             },
         )
         .await;
+
+    Some(handle.run_id)
 }
 
 #[cfg(test)]
@@ -778,7 +803,8 @@ mod tests {
         };
         let result = run_resolved_test(&request, resolved, None, None)
             .await
-            .unwrap();
+            .unwrap()
+            .into_report();
         assert_eq!(result.status, TestStatus::Passed);
         assert_eq!(result.exit_code, Some(0));
         assert!(result.log_dir.is_some());
@@ -802,7 +828,7 @@ mod tests {
             max_report_bytes: None,
             session_id: None,
         };
-        let result = resolve_and_run_test(request, None, None).await.unwrap();
+        let result = resolve_and_run_test(request, None, None).await.unwrap().into_report();
         assert_eq!(result.status, TestStatus::Failed);
         assert!(result.exit_code.unwrap_or(0) != 0);
         assert!(!result.failures.is_empty());
@@ -828,7 +854,8 @@ mod tests {
         };
         let result = run_resolved_test(&request, resolved, None, None)
             .await
-            .unwrap();
+            .unwrap()
+            .into_report();
         assert_eq!(result.status, TestStatus::TimedOut);
         assert!(result.timeout.is_some());
         let timeout = result.timeout.unwrap();
@@ -854,7 +881,8 @@ mod tests {
         };
         let result = run_resolved_test(&request, resolved, None, None)
             .await
-            .unwrap();
+            .unwrap()
+            .into_report();
         assert_eq!(result.status, TestStatus::TimedOut);
         assert!(result.timeout.is_some());
         let timeout = result.timeout.unwrap();
@@ -971,7 +999,8 @@ mod tests {
         };
         let result = run_resolved_test(&request, resolved, None, None)
             .await
-            .unwrap();
+            .unwrap()
+            .into_report();
         assert_eq!(result.status, TestStatus::Failed);
         assert_eq!(result.exit_code, Some(1));
         assert_eq!(result.failures[0].failure_class, FailureClass::NonzeroExit);
@@ -1000,7 +1029,8 @@ mod tests {
         };
         let result = run_resolved_test(&request, resolved, None, None)
             .await
-            .unwrap();
+            .unwrap()
+            .into_report();
         assert_eq!(result.status, TestStatus::TimedOut);
         let timeout = result.timeout.unwrap();
         assert!(timeout.last_output.is_some());
@@ -1056,7 +1086,8 @@ mod tests {
         let sink = TestSink::new();
         let result = run_resolved_test(&request, resolved, Some(&sink), None)
             .await
-            .unwrap();
+            .unwrap()
+            .into_report();
         assert_eq!(result.status, TestStatus::Passed);
         assert!(sink.started_called.load(Ordering::SeqCst));
         assert!(sink.completed_called.load(Ordering::SeqCst));
@@ -1135,7 +1166,8 @@ mod tests {
         };
         let result = run_resolved_test(&request, resolved, None, None)
             .await
-            .unwrap();
+            .unwrap()
+            .into_report();
         assert_eq!(result.status, TestStatus::TimedOut);
         assert!(result.timeout.is_some());
         assert!(result.log_dir.is_some());

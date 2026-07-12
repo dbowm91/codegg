@@ -69,6 +69,36 @@ Request → analyze risk → derive envelope → materialize to temp file
 - Command routing: `classify_command()` → `plan_execution()` → `resolve_routing()` → `RouteToPythonScripting`
 - This is the sole canonical module — the legacy `src/python_scripting.rs` has been removed
 
+## Canonical Delegation Entry Point
+
+### DelegatedPythonRun
+
+```rust
+// src/python_script/tool.rs:16-19
+pub struct DelegatedPythonRun {
+    pub result: PythonRunResult,
+    pub run_id: Option<RunId>,
+}
+```
+
+Returned by `execute_and_persist_python_script`. The `run_id` is `Some` when the canonical subsystem persisted a `RunKind::Python` record; `None` when persistence failed. This is the **proof-of-persistence contract**.
+
+### execute_and_persist_python_script
+
+```rust
+// src/python_script/tool.rs:40-51
+pub async fn execute_and_persist_python_script(
+    request: &PythonScriptRequest,
+    run_store: Option<&Arc<dyn RunStore>>,
+) -> DelegatedPythonRun
+```
+
+Single entry point for canonical Python delegation. Both `PythonScriptTool` and `BashTool::dispatch_to_python_script` use this function.
+
+### Called by BashTool
+
+`BashTool::dispatch_to_python_script` at `src/tool/bash.rs:693-725` uses `execute_and_persist_python_script` instead of direct `python3 -c`, ensuring policy resolution, sandbox enforcement, and RunStore persistence all run through the canonical path.
+
 ## Tests
 
 105 tests covering type construction, serde roundtrips, risk analysis, sandbox compatibility, snapshot capture/diff, executor behavior, projection formatting, tool parameter parsing, and cross-module classify→plan→route integration.

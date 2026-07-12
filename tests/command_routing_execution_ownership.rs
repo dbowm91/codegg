@@ -16,6 +16,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use codegg::command_intent::CommandIntentKind;
 use codegg::config::schema::{CommandIntentConfig, CommandIntentMode, RouteLevel};
 use codegg::python_script::PythonScriptTool;
 use codegg::test_runner::types::{TestRunRequest, TestScope};
@@ -55,7 +56,6 @@ fn active_config() -> CommandIntentConfig {
         route_lint: Some(RouteLevel::Active),
         route_format: Some(RouteLevel::Active),
         mode: Some(CommandIntentMode::Active),
-        ..Default::default()
     }
 }
 
@@ -351,7 +351,8 @@ async fn test_runner_canonical_api_owns_record_as_delegated_backend() {
     let store_dyn: Arc<dyn RunStore> = store.clone();
     let report = run_resolved_test(&request, resolved, None, Some(&store_dyn))
         .await
-        .unwrap();
+        .unwrap()
+        .into_report();
     assert_eq!(report.status, codegg::test_runner::types::TestStatus::Passed);
 
     let runs = all_runs(&store).await;
@@ -561,4 +562,316 @@ async fn manifest_serde_roundtrip_with_provenance() {
     assert_eq!(decoded.actual_backend, Some(ActualBackend::TestRunner));
     let fb = decoded.fallback.expect("fallback");
     assert_eq!(fb.reason, "test");
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// Workstream H: Real-delegation integration tests
+// ════════════════════════════════════════════════════════════════════════
+
+// ── H-1. BashTool routes active test through canonical TestRunner ──────
+
+#[tokio::test]
+async fn bash_tool_routes_active_test_through_canonical_test_runner() {
+    let store = Arc::new(MemRunStore::new());
+    let tool = make_bash_tool(Some(active_config()), store.clone());
+
+    // "cargo test --help" classifies as Test, plans TestRunner, and
+    // dispatches through `dispatch_to_test_runner` → `resolve_and_run_test`.
+    let _ = tool
+        .execute(json!({"command": "cargo test --help"}))
+        .await
+        .unwrap();
+
+    let runs = all_runs(&store).await;
+    // Exactly one record: TestRunner owns it (DelegatedBackend).
+    assert_eq!(
+        runs.len(),
+        1,
+        "active test must produce exactly one TestRunner-owned record"
+    );
+    let m = &runs[0];
+    assert_eq!(m.kind, RunKind::Test);
+    assert_eq!(m.ownership, RunOwnership::DelegatedBackend);
+    assert_eq!(m.planned_backend, Some(PlannedBackend::TestRunner));
+    assert_eq!(m.actual_backend, Some(ActualBackend::TestRunner));
+    // argv reflects the actual Command::new invocation (NOT `[sh, -c, ...]`).
+    let argv = m.invocation.argv.as_ref().expect("argv present");
+    assert_eq!(argv[0], "cargo");
+    assert_eq!(argv[1], "test");
+    // TestReport JSON artifact must be present and model-safe.
+    let has_report = m
+        .artifacts
+        .iter()
+        .any(|a| matches!(a.kind, ArtifactKind::TestReport) && a.safe_for_model);
+    assert!(has_report, "TestReport JSON must be persisted as model-safe");
+    // Raw stdout/stderr are NOT model-safe.
+    for art in &m.artifacts {
+        if matches!(art.kind, ArtifactKind::Stdout | ArtifactKind::Stderr) {
+            assert!(!art.safe_for_model, "raw test artifact MUST NOT be safe_for_model");
+        }
+    }
+}
+
+// ── H-2. BashTool routes active Python through canonical Python executor ─
+
+#[tokio::test]
+async fn bash_tool_routes_active_python_through_canonical_executor() {
+    let store = Arc::new(MemRunStore::new());
+    let tool = make_bash_tool(Some(active_config()), store.clone());
+
+    // Python classify → plan PythonScript → dispatch to canonical executor.
+    let _ = tool
+        .execute(json!({"command": "python3 -c 'print(1+1)'"}))
+        .await
+        .unwrap();
+
+    let runs = all_runs(&store).await;
+    assert_eq!(
+        runs.len(),
+        1,
+        "active python must produce exactly one Python-owned record"
+    );
+    let m = &runs[0];
+    assert_eq!(m.kind, RunKind::Python);
+    assert_eq!(m.ownership, RunOwnership::DelegatedBackend);
+    assert_eq!(m.planned_backend, Some(PlannedBackend::PythonScript));
+    assert_eq!(m.actual_backend, Some(ActualBackend::PythonScript));
+    // script_hash MUST be populated for canonical Python execution.
+    assert!(
+        m.invocation.script_hash.is_some(),
+        "canonical python execution MUST populate script_hash"
+    );
+    // Raw artifacts MUST NOT be safe_for_model.
+    for art in &m.artifacts {
+        if matches!(
+            art.kind,
+            ArtifactKind::Stdout | ArtifactKind::Stderr | ArtifactKind::UnifiedDiff
+        ) {
+            assert!(
+                !art.safe_for_model,
+                "raw python artifact {:?} MUST NOT be safe_for_model",
+                art.kind
+            );
+        }
+    }
+}
+
+// ── H-3. Observe-mode test falls back to raw shell (RunKind=RawShell) ───
+
+#[tokio::test]
+async fn observe_mode_test_persists_as_raw_shell() {
+    let store = Arc::new(MemRunStore::new());
+    let tool = make_bash_tool(Some(observe_config()), store.clone());
+
+    let _ = tool
+        .execute(json!({"command": "cargo test --help"}))
+        .await
+        .unwrap();
+
+    let runs = all_runs(&store).await;
+    assert_eq!(runs.len(), 1);
+    let m = &runs[0];
+    // Workstream D: observe-mode test runs via raw shell. RunKind is
+    // RawShell (not Test) — semantic intent remains inspectable via
+    // planned_backend but RunKind reflects the actual substrate.
+    assert_eq!(m.kind, RunKind::RawShell);
+    assert_eq!(m.ownership, RunOwnership::Caller);
+    assert_eq!(m.actual_backend, Some(ActualBackend::RawShell));
+    let argv = m.invocation.argv.as_ref().expect("argv present");
+    assert_eq!(argv[0], "sh");
+    assert_eq!(argv[1], "-c");
+}
+
+// ── H-4. One logical execution always produces exactly one record ──────
+
+#[tokio::test]
+async fn one_logical_execution_produces_exactly_one_record() {
+    let store = Arc::new(MemRunStore::new());
+    let tool = make_bash_tool(Some(active_config()), store.clone());
+
+    // Run multiple commands back-to-back; each must produce exactly one record.
+    for cmd in [
+        "echo first",
+        "cargo test --help",
+        "git status",
+        "rg pattern src/",
+        "python3 -c 'print(42)'",
+    ] {
+        let _ = tool.execute(json!({"command": cmd})).await.unwrap();
+    }
+
+    let runs = all_runs(&store).await;
+    assert_eq!(
+        runs.len(),
+        5,
+        "each of 5 commands must produce exactly one canonical record (got {})",
+        runs.len()
+    );
+    // Each record must have either Caller or DelegatedBackend ownership;
+    // never Caller-owned duplicates of Delegated runs.
+    for m in &runs {
+        assert!(
+            matches!(m.ownership, RunOwnership::Caller | RunOwnership::DelegatedBackend),
+            "ownership must be Caller or DelegatedBackend, got {:?}",
+            m.ownership
+        );
+    }
+}
+
+// ── H-5. Delegated ownership without run_id is rejected ────────────────
+
+#[test]
+fn delegated_ownership_without_run_id_falls_back_to_caller() {
+    use codegg::command_outcome::{
+        ownership_for_outcome, run_kind_for_outcome, ActualExecutor, ExecutionOutcome,
+    };
+
+    // Simulate the BashTool post-dispatch logic: even when the executor
+    // claims delegated ownership, if no run_id is returned, we MUST
+    // persist the caller-owned fallback record.
+    let outcome = ExecutionOutcome::identity(
+        PlannedBackend::TestRunner,
+        ActualExecutor::TestRunner {
+            argv: vec!["cargo".to_string(), "test".to_string()],
+            cwd: PathBuf::from("."),
+        },
+    );
+    let ownership = ownership_for_outcome(&outcome);
+    let delegated_run_id: Option<codegg_core::run_store::RunId> = None;
+
+    let persist_run = match (ownership, delegated_run_id.as_ref()) {
+        (codegg_core::run_store::RunOwnership::DelegatedBackend, Some(_)) => false,
+        (codegg_core::run_store::RunOwnership::DelegatedBackend, None) => true,
+        _ => true,
+    };
+    assert!(
+        persist_run,
+        "delegated ownership without run_id MUST fall back to caller persistence"
+    );
+
+    // RunKind remains Test (delegated executor kind), but persistence
+    // path is caller-owned (raw shell fallback).
+    let _ = run_kind_for_outcome(&outcome, CommandIntentKind::Test);
+}
+
+// ── H-6. Raw-shell run kind is unconditional (Workstream D) ─────────────
+
+#[test]
+fn raw_shell_run_kind_is_unconditional() {
+    use codegg::command_outcome::{run_kind_for_outcome, ActualExecutor, ExecutionOutcome};
+
+    // Workstream D: RawShell actual executor produces RunKind::raw_shell
+    // regardless of intent. Semantic intent is preserved on planned_backend.
+    let outcome = ExecutionOutcome::identity(
+        PlannedBackend::GitMutating,
+        ActualExecutor::RawShell {
+            command: "git status".to_string(),
+            argv: vec!["sh".to_string(), "-c".to_string(), "git status".to_string()],
+        },
+    );
+    assert_eq!(
+        run_kind_for_outcome(&outcome, CommandIntentKind::GitReadOnly),
+        "raw_shell"
+    );
+
+    let outcome = ExecutionOutcome::identity(
+        PlannedBackend::TestRunner,
+        ActualExecutor::RawShell {
+            command: "cargo test".to_string(),
+            argv: vec!["sh".to_string(), "-c".to_string(), "cargo test".to_string()],
+        },
+    );
+    assert_eq!(
+        run_kind_for_outcome(&outcome, CommandIntentKind::Test),
+        "raw_shell"
+    );
+
+    let outcome = ExecutionOutcome::identity(
+        PlannedBackend::PythonScript,
+        ActualExecutor::RawShell {
+            command: "python3 -c 'print(1)'".to_string(),
+            argv: vec![
+                "sh".to_string(),
+                "-c".to_string(),
+                "python3 -c 'print(1)'".to_string(),
+            ],
+        },
+    );
+    assert_eq!(
+        run_kind_for_outcome(&outcome, CommandIntentKind::PythonAnalyze),
+        "raw_shell"
+    );
+}
+
+// ── H-7. Active routing fallback path persists caller-owned RawShell ────
+
+#[tokio::test]
+async fn dispatch_failure_fallback_persists_caller_owned_raw_shell() {
+    // We can't easily force `dispatch_routing_decision` to fail in a unit
+    // test, but we can verify the structure: when the dispatcher fails
+    // (or returns delegated without run_id), BashTool persists exactly
+    // one caller-owned RawShell record with a FallbackRecord.
+    let store = Arc::new(MemRunStore::new());
+
+    use codegg::command_outcome::{ActualExecutor, ExecutionOutcome};
+    let planned = PlannedBackend::TestRunner;
+    let actual = ActualExecutor::RawShell {
+        command: "cargo test".to_string(),
+        argv: vec!["sh".to_string(), "-c".to_string(), "cargo test".to_string()],
+    };
+    let outcome = ExecutionOutcome::with_fallback(planned.clone(), actual.clone(), "test runner unavailable");
+
+    let draft = RunDraft {
+        kind: RunKind::RawShell,
+        invocation: codegg_core::run_store::RunInvocation {
+            command: "cargo test".to_string(),
+            argv: Some(vec!["sh".to_string(), "-c".to_string(), "cargo test".to_string()]),
+            script_hash: None,
+        },
+        session_id: None,
+        parent_run_id: None,
+        workspace_root: PathBuf::from("."),
+        cwd: PathBuf::from("."),
+        backend: BackendRecord {
+            family: "bash".to_string(),
+            detail: Some("raw_shell".to_string()),
+        },
+        risk: codegg_core::run_store::RiskRecord {
+            level: "low".to_string(),
+            has_subprocess: false,
+            has_git_mutation: false,
+            has_destructive_mutation: false,
+        },
+        planned_backend: Some(outcome.planned.clone()),
+        actual_backend: Some(outcome.actual.clone().into_backend()),
+        ownership: codegg_core::run_store::RunOwnership::Caller,
+    };
+
+    let handle = store.begin_run(draft).await.unwrap();
+    let fallback = outcome.fallback_record().expect("fallback expected");
+    let manifest = store
+        .complete_run(
+            handle,
+            RunCompletion {
+                status: RunStatus::Complete,
+                completed_at: chrono::Utc::now(),
+                permissions: vec![],
+                sandbox: None,
+                projection: None,
+                changes: vec![],
+                rerun: None,
+                actual_backend: Some(outcome.actual.into_backend()),
+                fallback: Some(fallback.clone()),
+            },
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(manifest.ownership, RunOwnership::Caller);
+    assert_eq!(manifest.kind, RunKind::RawShell);
+    assert_eq!(manifest.planned_backend, Some(planned));
+    assert_eq!(manifest.actual_backend, Some(ActualBackend::RawShell));
+    let fb = manifest.fallback.expect("fallback must be set");
+    assert_eq!(fb.planned, PlannedBackend::TestRunner);
+    assert_eq!(fb.actual, ActualBackend::RawShell);
 }

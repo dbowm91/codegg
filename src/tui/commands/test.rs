@@ -113,6 +113,7 @@ pub(crate) fn start_test_run(app: &mut App, scope: String, args: String) {
                 run_store.as_ref(),
             )
             .await
+            .map(|d| d.into_report())
             .map_err(|e| format!("test runner error: {e}"));
 
             match report {

@@ -68,8 +68,11 @@ pub enum TestScope {
     File(PathBuf),
     PreviousFailures,
     CustomCommand(String),
+    BashDispatch(Vec<String>),
 }
 ```
+
+`BashDispatch` is a pre-validated argv from BashTool's active routing dispatcher. The argv has already passed the planner's classification and validation, so the test-runner safety validator does NOT re-run (which would reject non-allowlisted test commands). Handled in `src/test_runner/resolve.rs:60-65`.
 
 ### TestLanguage
 
@@ -168,6 +171,49 @@ pub struct TestReport {
     pub scope_label: Option<String>,
     pub previous_run_id: Option<String>,
 }
+```
+
+## Canonical Delegation Entry Point
+
+### DelegatedTestRun
+
+```rust
+// src/test_runner/runner.rs:258-270
+pub struct DelegatedTestRun {
+    pub report: TestReport,
+    pub run_id: Option<RunId>,
+}
+```
+
+Returned by `run_resolved_test` and `resolve_and_run_test`. The `run_id` is `Some` when the canonical TestRunner persisted a `RunKind::Test` record; `None` when persistence failed or no `RunStore` was provided. This is the **proof-of-persistence contract**: callers use `run_id` to determine whether to suppress their own persistence.
+
+```rust
+impl DelegatedTestRun {
+    pub fn into_report(self) -> TestReport { self.report }
+    pub fn report(&self) -> &TestReport { &self.report }
+}
+```
+
+### persist_to_run_store
+
+`persist_to_run_store` in `src/test_runner/runner.rs:622` now returns `Option<RunId>` — `Some` on successful `complete_run` that yields the canonical run identity, `None` on failure (logged, non-fatal).
+
+### Callers
+
+All callers of `resolve_and_run_test` / `run_resolved_test` now call `.into_report()` to extract the `TestReport`:
+
+- `src/tool/test.rs` (model-facing test tool)
+- `src/tui/commands/test.rs:110` (TUI `/test` slash command)
+- Internal tests in `src/test_runner/runner.rs`
+
+Callers that suppress persistence (e.g., `BashTool::dispatch_to_test_runner`) inspect the `run_id` field on `DelegatedTestRun` before deciding whether to persist their own outer record.
+
+### Called by BashTool
+
+`BashTool::dispatch_to_test_runner` at `src/tool/bash.rs:542-572` constructs a `TestScope::BashDispatch(argv)` from the planner's validated argv, calls `resolve_and_run_test` with the shared `RunStore`, and uses the returned `DelegatedTestRun` to determine persistence ownership.
+
+```bash
+cargo test -p codegg --lib tool::bash
 ```
 
 ## Resolver API
