@@ -75,14 +75,111 @@ impl std::fmt::Display for ArtifactId {
 // ── Run Ownership ────────────────────────────────────────────────────────
 
 /// Describes who owns the canonical run record for a command execution.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+///
+/// This enum is set when a run is created and never mutated afterwards.
+/// It is the single source of truth for deciding whether the caller (BashTool)
+/// or a delegated backend (TestRunner, PythonScriptTool, etc.) is responsible
+/// for the RunStore record. Tools that delegate to a structured backend MUST
+/// set `RunOwnership::DelegatedBackend` (or `ChildOf`) and skip their own
+/// `begin_run`/`write_artifact`/`complete_run` calls to avoid duplicate records.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub enum RunOwnership {
-    /// The caller (e.g., BashTool) persists the run directly.
+    /// The caller (e.g., BashTool) persists the run directly. The caller is
+    /// responsible for `begin_run`, `write_artifact`, and `complete_run`.
+    #[default]
     Caller,
-    /// A delegated backend (e.g., TestRunner, PythonScriptTool) owns the record.
+    /// A delegated backend (e.g., TestRunner, PythonScriptTool) owns the
+    /// record. The caller MUST NOT persist its own record for this execution.
     DelegatedBackend,
-    /// This is a child run of another run.
+    /// This is a child run of another run (e.g., a tool-internal sub-process).
     ChildOf(RunId),
+}
+
+// ── Planned vs Actual Backend ───────────────────────────────────────────
+
+/// The planned backend from command-intent routing. Identifies what the
+/// classifier + planner intended to use, independent of fallback behavior.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PlannedBackend {
+    /// No command-intent routing was configured (legacy/raw path).
+    Unrouted,
+    /// Raw shell (`sh -c`).
+    RawShell,
+    /// Structured backend: TestRunner.
+    TestRunner,
+    /// Structured backend: PythonScript subsystem.
+    PythonScript,
+    /// Structured backend: Native tool (e.g., egggit).
+    NativeTool,
+    /// Direct `Command::new` argv execution (managed process).
+    ManagedArgv,
+    /// Git-mutating managed process.
+    GitMutating,
+}
+
+impl PlannedBackend {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Unrouted => "unrouted",
+            Self::RawShell => "raw_shell",
+            Self::TestRunner => "test_runner",
+            Self::PythonScript => "python_script",
+            Self::NativeTool => "native_tool",
+            Self::ManagedArgv => "managed_argv",
+            Self::GitMutating => "git_mutating",
+        }
+    }
+}
+
+/// The actual backend that executed the command.
+///
+/// This is what was REALLY used to run the command. It can differ from
+/// `PlannedBackend` when an active dispatch fails and falls back to raw
+/// shell, or when a planned structured backend owns its own record.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ActualBackend {
+    /// Raw shell (`sh -c`). This is the ultimate fallback path.
+    RawShell,
+    /// Structured backend: TestRunner.
+    TestRunner,
+    /// Structured backend: PythonScript subsystem (canonical executor).
+    PythonScript,
+    /// Structured backend: Native tool (e.g., egggit).
+    NativeTool,
+    /// Direct `Command::new` argv execution (managed process).
+    ManagedArgv,
+    /// Git-mutating managed process.
+    GitMutating,
+    /// Command was rejected before execution.
+    Rejected { reason: String },
+}
+
+impl ActualBackend {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::RawShell => "raw_shell",
+            Self::TestRunner => "test_runner",
+            Self::PythonScript => "python_script",
+            Self::NativeTool => "native_tool",
+            Self::ManagedArgv => "managed_argv",
+            Self::GitMutating => "git_mutating",
+            Self::Rejected { .. } => "rejected",
+        }
+    }
+}
+
+/// Record of a fallback event: the original plan failed and execution
+/// continued via a different backend.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FallbackRecord {
+    /// The backend that was originally planned.
+    pub planned: PlannedBackend,
+    /// The backend that actually ran the command.
+    pub actual: ActualBackend,
+    /// Why the fallback occurred.
+    pub reason: String,
 }
 
 // ── Run Kind ────────────────────────────────────────────────────────────
@@ -357,6 +454,20 @@ pub struct RunManifest {
     pub changes: Vec<ChangedPathRecord>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rerun: Option<RerunDescriptor>,
+    // ── Workstream A: planned vs actual backend provenance ────────────
+    /// Backend the planner intended to use. `None` for legacy/unrouted paths.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub planned_backend: Option<PlannedBackend>,
+    /// Backend that actually executed the command. Always set after a real run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actual_backend: Option<ActualBackend>,
+    /// Set when execution diverged from the plan (e.g., active dispatch
+    /// failed and fell back to raw shell).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fallback: Option<FallbackRecord>,
+    /// Who owns this run record. Defaults to Caller (BashTool).
+    #[serde(default)]
+    pub ownership: RunOwnership,
 }
 
 // ── Run Summary (for listing) ───────────────────────────────────────────
@@ -374,7 +485,7 @@ pub struct RunSummary {
 
 // ── Draft / Handle / Completion ─────────────────────────────────────────
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunDraft {
     pub kind: RunKind,
     pub invocation: RunInvocation,
@@ -384,6 +495,13 @@ pub struct RunDraft {
     pub cwd: PathBuf,
     pub backend: BackendRecord,
     pub risk: RiskRecord,
+    // ── Workstream A: planned vs actual backend provenance ────────────
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub planned_backend: Option<PlannedBackend>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actual_backend: Option<ActualBackend>,
+    #[serde(default)]
+    pub ownership: RunOwnership,
 }
 
 #[derive(Debug, Clone)]
@@ -393,7 +511,7 @@ pub struct RunHandle {
     pub started_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunCompletion {
     pub status: RunStatus,
     pub completed_at: DateTime<Utc>,
@@ -402,6 +520,14 @@ pub struct RunCompletion {
     pub projection: Option<ProjectionRecord>,
     pub changes: Vec<ChangedPathRecord>,
     pub rerun: Option<RerunDescriptor>,
+    // ── Workstream A: planned vs actual backend provenance ────────────
+    /// Actual backend that ran the command. May differ from `planned_backend`
+    /// on the draft if a fallback occurred. Set during `complete_run`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actual_backend: Option<ActualBackend>,
+    /// Set if execution diverged from the planned backend.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fallback: Option<FallbackRecord>,
 }
 
 // ── Query ───────────────────────────────────────────────────────────────
@@ -1093,6 +1219,10 @@ impl RunStore for FsRunStore {
             projection: None,
             changes: Vec::new(),
             rerun: None,
+            planned_backend: draft.planned_backend,
+            actual_backend: draft.actual_backend,
+            fallback: None,
+            ownership: draft.ownership,
         };
 
         let data = serde_json::to_vec_pretty(&manifest).map_err(RunStoreError::Json)?;
@@ -1216,6 +1346,16 @@ impl RunStore for FsRunStore {
         manifest.projection = completion.projection;
         manifest.changes = completion.changes;
         manifest.rerun = completion.rerun;
+        // Workstream A: promote actual_backend / fallback from completion into
+        // the manifest. If completion sets actual_backend, it overrides any
+        // value populated during begin_run. If completion sets fallback, it is
+        // persisted alongside the manifest so consumers can detect divergence.
+        if completion.actual_backend.is_some() {
+            manifest.actual_backend = completion.actual_backend;
+        }
+        if completion.fallback.is_some() {
+            manifest.fallback = completion.fallback;
+        }
 
         let data = serde_json::to_vec_pretty(&manifest).map_err(RunStoreError::Json)?;
         self.write_artifact_atomic(&run.run_dir, MANIFEST_FILENAME, &data)
@@ -1460,6 +1600,10 @@ impl RunStore for MemRunStore {
             projection: None,
             changes: Vec::new(),
             rerun: None,
+            planned_backend: draft.planned_backend,
+            actual_backend: draft.actual_backend,
+            fallback: None,
+            ownership: draft.ownership,
         };
 
         let mut runs = self.runs.write();
@@ -1537,6 +1681,13 @@ impl RunStore for MemRunStore {
         manifest.projection = completion.projection;
         manifest.changes = completion.changes;
         manifest.rerun = completion.rerun;
+        // Workstream A: same fallback propagation as FsRunStore.
+        if completion.actual_backend.is_some() {
+            manifest.actual_backend = completion.actual_backend;
+        }
+        if completion.fallback.is_some() {
+            manifest.fallback = completion.fallback;
+        }
 
         Ok(manifest.clone())
     }
@@ -1661,6 +1812,9 @@ mod tests {
                 has_git_mutation: false,
                 has_destructive_mutation: false,
             },
+            planned_backend: None,
+            actual_backend: None,
+            ownership: RunOwnership::Caller,
         }
     }
 
@@ -1673,6 +1827,8 @@ mod tests {
             projection: None,
             changes: Vec::new(),
             rerun: None,
+            actual_backend: None,
+            fallback: None,
         }
     }
 
@@ -1722,6 +1878,10 @@ mod tests {
             projection: None,
             changes: Vec::new(),
             rerun: None,
+            planned_backend: None,
+            actual_backend: None,
+            fallback: None,
+            ownership: RunOwnership::Caller,
         };
 
         let json = serde_json::to_string(&manifest).unwrap();

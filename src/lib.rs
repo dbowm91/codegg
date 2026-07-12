@@ -14,6 +14,7 @@ pub mod agent;
 pub mod auth;
 pub mod command;
 pub mod command_intent;
+pub mod command_outcome;
 pub mod command_planner;
 pub mod command_routing;
 pub mod context;

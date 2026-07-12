@@ -628,6 +628,12 @@ async fn persist_to_run_store(
             has_git_mutation: false,
             has_destructive_mutation: false,
         },
+        // Workstream A: TestRunner is the canonical delegated backend for
+        // test runs. The runner owns the record and BashTool must NOT persist
+        // its own record (BashTool checks `ownership_for_outcome()`).
+        planned_backend: Some(codegg_core::run_store::PlannedBackend::TestRunner),
+        actual_backend: Some(codegg_core::run_store::ActualBackend::TestRunner),
+        ownership: codegg_core::run_store::RunOwnership::DelegatedBackend,
     };
 
     let status = match report.status {
@@ -657,7 +663,10 @@ async fn persist_to_run_store(
                             kind: ArtifactKind::Stdout,
                             data,
                             mime_type: "text/plain".to_string(),
-                            safe_for_model: true,
+                            // Workstream G: raw stdout is NOT model-safe.
+                            // Only the test-report JSON (below) and any
+                            // post-redaction projection are model-safe.
+                            safe_for_model: false,
                         },
                     )
                     .await;
@@ -676,7 +685,8 @@ async fn persist_to_run_store(
                             kind: ArtifactKind::Stderr,
                             data,
                             mime_type: "text/plain".to_string(),
-                            safe_for_model: true,
+                            // Workstream G: raw stderr is NOT model-safe.
+                            safe_for_model: false,
                         },
                     )
                     .await;
@@ -693,6 +703,7 @@ async fn persist_to_run_store(
                     kind: ArtifactKind::TestReport,
                     data: report_json,
                     mime_type: "application/json".to_string(),
+                    // TestReport is structured and safe to surface to the model.
                     safe_for_model: true,
                 },
             )
@@ -722,6 +733,9 @@ async fn persist_to_run_store(
                 projection: None,
                 changes: vec![],
                 rerun,
+                // Workstream A: actual backend is TestRunner (canonical).
+                actual_backend: Some(codegg_core::run_store::ActualBackend::TestRunner),
+                fallback: None,
             },
         )
         .await;

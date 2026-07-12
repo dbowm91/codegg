@@ -173,6 +173,11 @@ impl Tool for PythonScriptTool {
                     has_git_mutation: false,
                     has_destructive_mutation: result.capabilities.destructive_fs,
                 },
+                // Workstream A: PythonScript is a delegated backend. It owns
+                // the canonical record; BashTool MUST NOT persist its own.
+                planned_backend: Some(codegg_core::run_store::PlannedBackend::PythonScript),
+                actual_backend: Some(codegg_core::run_store::ActualBackend::PythonScript),
+                ownership: codegg_core::run_store::RunOwnership::DelegatedBackend,
             };
 
             let status = match &result.status {
@@ -192,7 +197,10 @@ impl Tool for PythonScriptTool {
                                 kind: ArtifactKind::Stdout,
                                 data: result.stdout.as_bytes().to_vec(),
                                 mime_type: "text/plain".to_string(),
-                                safe_for_model: true,
+                                // Workstream G: raw stdout is NOT model-safe.
+                                // Only the post-redaction projection (built by
+                                // `project_python_run` below) is model-safe.
+                                safe_for_model: false,
                             },
                         )
                         .await;
@@ -207,7 +215,8 @@ impl Tool for PythonScriptTool {
                                 kind: ArtifactKind::Stderr,
                                 data: result.stderr.as_bytes().to_vec(),
                                 mime_type: "text/plain".to_string(),
-                                safe_for_model: true,
+                                // Workstream G: raw stderr is NOT model-safe.
+                                safe_for_model: false,
                             },
                         )
                         .await;
@@ -222,7 +231,8 @@ impl Tool for PythonScriptTool {
                                 kind: ArtifactKind::UnifiedDiff,
                                 data: diff.as_bytes().to_vec(),
                                 mime_type: "text/plain".to_string(),
-                                safe_for_model: true,
+                                // Diffs can contain secrets/file contents; treat as non-safe.
+                                safe_for_model: false,
                             },
                         )
                         .await;
@@ -251,6 +261,9 @@ impl Tool for PythonScriptTool {
                                 })
                                 .collect(),
                             rerun: None,
+                            // Workstream A: actual backend is PythonScript (canonical).
+                            actual_backend: Some(codegg_core::run_store::ActualBackend::PythonScript),
+                            fallback: None,
                         },
                     )
                     .await;

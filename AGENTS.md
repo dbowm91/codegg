@@ -225,6 +225,9 @@ cargo test --test python_sandbox_adversarial
 # Adversarial context projection tests (90 tests — projection poisoning, binary/special chars, Unicode edge cases, content injection)
 cargo test --test context_projection_adversarial
 
+# Command routing execution ownership tests (13 tests — planned vs actual backend, RunOwnership, DelegatedBackend ownership, raw artifact safety, fallback records, provenance serde, backward compat)
+cargo test --test command_routing_execution_ownership
+
 # Phase 09 projection contract tests
 cargo test -p codegg --lib shell::projector -- projection_id
 cargo test -p codegg --lib shell::projector -- span_role
