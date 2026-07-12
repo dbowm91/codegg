@@ -48,6 +48,7 @@ use crate::tts::Tts;
 use crate::tui::components::toast::Toast;
 use crate::tui::task_lifecycle::TuiTaskKind;
 use crate::util::fuzzy::fuzzy_score;
+use crate::util::truncate::{truncate_prefix, truncate_suffix};
 use crossterm::event::KeyEvent;
 use egglsp::{render_workflow_display, LspWorkflowInvocation, LspWorkflowRecipe};
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
@@ -1167,7 +1168,7 @@ impl App {
                 };
                 let content_preview = msg.text_content();
                 let content_preview = if content_preview.len() > 200 {
-                    format!("{}...", &content_preview[..200])
+                    format!("{}...", truncate_prefix(&content_preview, 200))
                 } else {
                     content_preview
                 };
@@ -4958,7 +4959,7 @@ impl App {
             }
             "/tui-stats" => {
                 self.ui_state.command_mode = false;
-                let by_kind: Vec<(String, usize)> = self
+                let mut by_kind: Vec<(String, usize)> = self
                     .task_registry
                     .iter()
                     .fold(
@@ -4970,6 +4971,7 @@ impl App {
                     )
                     .into_iter()
                     .collect();
+                by_kind.sort_by(|a, b| a.0.cmp(&b.0));
                 let oldest = self
                     .task_registry
                     .iter()
@@ -6992,9 +6994,10 @@ impl App {
             ClickTarget::Prompt => {
                 if let Some(ref area) = self.prompt_area {
                     let rel_x = x.saturating_sub(area.x);
-                    let char_w = 1u16;
-                    let cursor_pos = rel_x as usize / char_w as usize;
-                    self.prompt_state.prompt.set_cursor(cursor_pos.min(256));
+                    let rel_y = y.saturating_sub(area.y) as usize;
+                    let line = rel_y.saturating_sub(1) + self.prompt_state.prompt.scroll;
+                    let column = rel_x as usize + self.prompt_state.prompt.horizontal_scroll;
+                    self.prompt_state.prompt.set_cursor_at_column(line, column);
                     self.prompt_state.prompt.focus();
                 }
             }
@@ -7844,7 +7847,7 @@ impl App {
                 );
                 let preview = lines.join(" ");
                 let preview = if preview.len() > 120 {
-                    format!("{}...", &preview[..120])
+                    format!("{}...", truncate_prefix(&preview, 120))
                 } else {
                     preview
                 };
@@ -7856,7 +7859,7 @@ impl App {
                 );
                 let preview = lines.join(" ");
                 let preview = if preview.len() > 120 {
-                    format!("{}...", &preview[..120])
+                    format!("{}...", truncate_prefix(&preview, 120))
                 } else {
                     preview
                 };
@@ -7876,7 +7879,7 @@ impl App {
             }
             UiEffect::EmitChat { block } => {
                 let preview = if block.content.len() > 120 {
-                    format!("{}...", &block.content[..120])
+                    format!("{}...", truncate_prefix(&block.content, 120))
                 } else {
                     block.content.clone()
                 };
@@ -10439,8 +10442,16 @@ impl App {
         for (id, var) in active_vars {
             if let Ok(val) = std::env::var(var) {
                 let len = val.len();
-                let prefix = if len > 4 { &val[..4] } else { "..." };
-                let suffix = if len > 4 { &val[len - 4..] } else { "..." };
+                let prefix = if len > 4 {
+                    truncate_prefix(&val, 4)
+                } else {
+                    "..."
+                };
+                let suffix = if len > 4 {
+                    truncate_suffix(&val, 4)
+                } else {
+                    "..."
+                };
                 lines.push(Line::from(Span::raw(format!(
                     "    {}: {}...{} (len={})",
                     id, prefix, suffix, len
@@ -10786,7 +10797,7 @@ impl App {
                         Some(MsgPart::Text { content }) => {
                             let first_line = content.lines().next().unwrap_or("");
                             if first_line.len() > 45 {
-                                format!("{}...", &first_line[..45])
+                                format!("{}...", truncate_prefix(first_line, 45))
                             } else {
                                 first_line.to_string()
                             }
@@ -10845,7 +10856,7 @@ impl App {
                         Some(MsgPart::Text { content }) => {
                             let first_line = content.lines().next().unwrap_or("");
                             if first_line.len() > 45 {
-                                format!("{}...", &first_line[..45])
+                                format!("{}...", truncate_prefix(first_line, 45))
                             } else {
                                 first_line.to_string()
                             }

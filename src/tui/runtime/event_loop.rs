@@ -106,6 +106,11 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), crate::error::AppE
     }
 
     while app.ui_state.running {
+        // Reap on every iteration, including idle iterations. The timer
+        // branch is disabled while there is no animation, resize debounce,
+        // or toast, so timer-only reaping can retain completed task records
+        // until the next active frame.
+        app.task_registry.reap_finished();
         let loop_start = std::time::Instant::now();
         let panic_count = app.ui_state.render_panic_count;
 
@@ -355,11 +360,6 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), crate::error::AppE
                     futures::future::pending::<()>().await;
                 }
             } => {
-                // Periodic reaping: cheap (atomic is_finished checks) and
-                // keeps the active task count from drifting upward across
-                // long sessions.
-                app.task_registry.reap_finished();
-
                 if let Some(debounce_start) = app.ui_state.resize_debounce {
                     if debounce_start.elapsed() >= RESIZE_DEBOUNCE {
                         app.ui_state.resize_debounce = None;

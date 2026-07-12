@@ -26,6 +26,37 @@ pub fn truncate_bytes(text: &str, max_bytes: usize) -> String {
     format!("{}... [truncated]", &text[..safe_end])
 }
 
+/// Return the longest prefix of `text` that fits within `max_bytes` without
+/// splitting a UTF-8 code point.
+pub fn truncate_prefix(text: &str, max_bytes: usize) -> &str {
+    if text.len() <= max_bytes {
+        return text;
+    }
+
+    let safe_end = text
+        .char_indices()
+        .map(|(i, _)| i)
+        .take_while(|&i| i <= max_bytes)
+        .last()
+        .unwrap_or(0);
+    &text[..safe_end]
+}
+
+/// Return the longest suffix of `text` that fits within `max_bytes` without
+/// splitting a UTF-8 code point.
+pub fn truncate_suffix(text: &str, max_bytes: usize) -> &str {
+    if text.len() <= max_bytes {
+        return text;
+    }
+
+    let min_start = text.len().saturating_sub(max_bytes);
+    let safe_start = text
+        .char_indices()
+        .find_map(|(i, _)| (i >= min_start).then_some(i))
+        .unwrap_or(text.len());
+    &text[safe_start..]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -106,6 +137,20 @@ mod tests {
         let text = "éclair";
         let result = truncate_bytes(text, 1);
         assert_eq!(result, "... [truncated]");
+    }
+
+    #[test]
+    fn test_truncate_prefix_is_utf8_boundary_safe() {
+        assert_eq!(truncate_prefix("éclair", 1), "");
+        assert_eq!(truncate_prefix("éclair", 2), "é");
+        assert_eq!(truncate_prefix("éclair", 20), "éclair");
+    }
+
+    #[test]
+    fn test_truncate_suffix_is_utf8_boundary_safe() {
+        assert_eq!(truncate_suffix("éclair", 1), "r");
+        assert_eq!(truncate_suffix("éclair", 2), "ir");
+        assert_eq!(truncate_suffix("éclair", 20), "éclair");
     }
 
     #[test]

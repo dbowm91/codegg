@@ -32,7 +32,7 @@ pub struct TuiTaskId(pub u64);
 
 /// Category of background work, used for kind-based cancellation
 /// and diagnostics grouping.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum TuiTaskKind {
     /// Async command completions (spawn_tui_task based).
     Command,
@@ -258,7 +258,9 @@ impl TuiTaskRegistry {
             }
         }
 
-        for (kind, count) in &kind_counts {
+        let mut kind_counts: Vec<_> = kind_counts.into_iter().collect();
+        kind_counts.sort_by_key(|(kind, _)| *kind);
+        for (kind, count) in kind_counts {
             lines.push(format!("  {}: {}", kind, count));
         }
         lines.push(format!(
@@ -293,6 +295,21 @@ mod tests {
         assert_eq!(reg.active_count(), 1);
         // Give the task time to complete
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+
+    #[tokio::test]
+    async fn summary_orders_task_kinds_deterministically() {
+        let mut reg = TuiTaskRegistry::new();
+        let _command = reg.spawn(TuiTaskKind::Command, "command", async {
+            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+        });
+        let _shell = reg.spawn(TuiTaskKind::Shell, "shell", async {
+            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+        });
+
+        let summary = reg.summary();
+        assert!(summary.find("Command: 1") < summary.find("Shell: 1"));
+        reg.cancel_all();
     }
 
     #[tokio::test]

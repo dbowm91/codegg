@@ -299,7 +299,7 @@ Shell status labels use theme-aware colors for visual distinction:
 ## See Also
 
 - [tool.md](tool.md) — Agent bash tool (uses `ShellOrigin::AgentTool`)
-- [.codegg/skills/human_shell/SKILL.md](../.codegg/skills/human_shell/SKILL.md) — Human shell skill guide
+- [human-shell/SKILL.md](../.opencode/skills/human-shell/SKILL.md) — Human shell skill guide
 - [shell_output_projection_phase_01_command_event_model.md](../plans/shell_output_projection_phase_01_command_event_model.md) — Phase 1 plan this section implements
 - [shell_output_projection_phase_02_projection_trait.md](../plans/shell_output_projection_phase_02_projection_trait.md) — Phase 2 plan (projector trait + built-ins)
 - [shell_output_projection_rtk_roadmap.md](../plans/shell_output_projection_rtk_roadmap.md) — Full roadmap

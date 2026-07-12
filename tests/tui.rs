@@ -472,6 +472,34 @@ fn test_prompt_widget_set_cursor_bounds() {
 }
 
 #[test]
+fn test_prompt_widget_cursor_stays_on_utf8_boundaries() {
+    let mut widget = PromptWidget::new(Arc::new(Theme::dark()));
+    widget.set_text("é界x".to_string());
+
+    // Byte offset 1 is inside `é`; normalize to the preceding character
+    // boundary so editing after a mouse click cannot panic.
+    widget.set_cursor(1);
+    assert_eq!(widget.cursor_pos(), 0);
+    widget.insert_char('A');
+    assert_eq!(widget.get_text(), "Aé界x");
+
+    // Display columns account for the width-2 CJK character.
+    widget.set_cursor_at_column(0, 1);
+    assert_eq!(widget.cursor_pos(), 1);
+    widget.set_cursor_at_column(0, 2);
+    assert_eq!(widget.cursor_pos(), 3);
+}
+
+#[test]
+fn test_prompt_widget_cursor_column_handles_multiline_text() {
+    let mut widget = PromptWidget::new(Arc::new(Theme::dark()));
+    widget.set_text("first\n第二行".to_string());
+
+    widget.set_cursor_at_column(1, 2);
+    assert_eq!(widget.cursor_pos(), "first\n".len() + "第".len());
+}
+
+#[test]
 fn test_prompt_widget_command_mode() {
     let mut widget = PromptWidget::new(Arc::new(Theme::dark()));
     assert!(!widget.command_mode);

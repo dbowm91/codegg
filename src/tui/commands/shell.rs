@@ -5,6 +5,7 @@
 
 use super::super as app;
 use super::super::task_lifecycle::TuiTaskKind;
+use crate::util::truncate::truncate_prefix;
 
 pub(crate) fn handle_run_human_shell(app: &mut app::App, command: String, promote_after: bool) {
     use crate::shell::policy::evaluate_command;
@@ -824,10 +825,10 @@ pub(crate) fn handle_shell_expand(
             // Show output, truncating if very large
             let display = if expansion.text.len() > 8192 {
                 let truncated_len = 8192;
-                let mut truncated = expansion.text[..truncated_len].to_string();
+                let mut truncated = truncate_prefix(&expansion.text, truncated_len).to_string();
                 truncated.push_str(&format!(
                     "\n\n... (truncated, {} of {} bytes shown)",
-                    truncated_len,
+                    truncated.len(),
                     expansion.text.len()
                 ));
                 truncated

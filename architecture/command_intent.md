@@ -143,7 +143,11 @@ Git classification uses **parsed argv**, not string prefixes. This prevents fals
 
 ### CommandIntentMode
 
-`CommandIntentMode` enum (`Observe` | `Active`, default `Observe`) controls whether the bash tool only observes intent or attempts active routing. `Observe` classifies and annotates metadata; `Active` dispatches to structured backends when the command validates for routing.
+`CommandIntentMode` enum (`Observe` | `Active` | deprecated `Route`, default
+`Observe`) controls whether the bash tool only observes intent or attempts
+active routing. `Observe` classifies and annotates metadata; `Active` dispatches
+to structured backends when the command validates for routing. `Route` remains a
+backward-compatible alias for `Active`; new configuration should use `Active`.
 
 ### CommandIntentFamily
 

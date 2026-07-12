@@ -246,10 +246,7 @@ pub async fn run_resolved_test(
         None
     };
 
-    Ok(DelegatedTestRun {
-        report,
-        run_id,
-    })
+    Ok(DelegatedTestRun { report, run_id })
 }
 
 /// Result of a delegated test run. The `run_id` is `Some` iff a `RunStore`
@@ -828,7 +825,10 @@ mod tests {
             max_report_bytes: None,
             session_id: None,
         };
-        let result = resolve_and_run_test(request, None, None).await.unwrap().into_report();
+        let result = resolve_and_run_test(request, None, None)
+            .await
+            .unwrap()
+            .into_report();
         assert_eq!(result.status, TestStatus::Failed);
         assert!(result.exit_code.unwrap_or(0) != 0);
         assert!(!result.failures.is_empty());

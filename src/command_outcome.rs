@@ -13,10 +13,7 @@ use crate::command_intent::CommandIntentKind;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ActualInvocation {
     /// `sh -c <command>` — canonical raw-shell path.
-    RawShell {
-        command: String,
-        argv: Vec<String>,
-    },
+    RawShell { command: String, argv: Vec<String> },
     /// Direct `Command::new(argv[0]).args(argv[1..])` — managed process path.
     ManagedArgv {
         argv: Vec<String>,
@@ -99,7 +96,9 @@ impl ActualExecutor {
             Self::NativeTool { .. } => ActualBackend::NativeTool,
             Self::TestRunner { .. } => ActualBackend::TestRunner,
             Self::PythonScript { .. } => ActualBackend::PythonScript,
-            Self::Rejected { reason } => ActualBackend::Rejected { reason: reason.clone() },
+            Self::Rejected { reason } => ActualBackend::Rejected {
+                reason: reason.clone(),
+            },
         }
     }
 
@@ -264,10 +263,7 @@ mod tests {
         );
         assert!(!outcome.fallback);
         assert!(outcome.fallback_record().is_none());
-        assert_eq!(
-            ownership_for_outcome(&outcome),
-            RunOwnership::Caller
-        );
+        assert_eq!(ownership_for_outcome(&outcome), RunOwnership::Caller);
     }
 
     #[test]
@@ -276,11 +272,7 @@ mod tests {
             PlannedBackend::TestRunner,
             ActualExecutor::RawShell {
                 command: "cargo test".to_string(),
-                argv: vec![
-                    "sh".to_string(),
-                    "-c".to_string(),
-                    "cargo test".to_string(),
-                ],
+                argv: vec!["sh".to_string(), "-c".to_string(), "cargo test".to_string()],
             },
             "test runner unavailable",
         );
@@ -321,10 +313,7 @@ mod tests {
     #[test]
     fn rejected_outcome_is_caller_owned() {
         let outcome = ExecutionOutcome::rejected("test");
-        assert_eq!(
-            ownership_for_outcome(&outcome),
-            RunOwnership::Caller
-        );
+        assert_eq!(ownership_for_outcome(&outcome), RunOwnership::Caller);
     }
 
     #[test]

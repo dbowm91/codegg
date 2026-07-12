@@ -5,6 +5,7 @@ use super::super::components::toast::Toast;
 use crate::bus::events::AppEvent;
 use crate::permission::PermissionRequest;
 use crate::protocol::core::{CoreRequest, CoreResponse};
+use crate::util::truncate::truncate_prefix;
 
 /// Handle a batch of bus events. Returns `true` if the UI should re-render.
 pub(crate) fn handle_app_event_batch(app: &mut App, events: Vec<AppEvent>) -> bool {
@@ -66,7 +67,7 @@ fn handle_single_event(app: &mut App, event: AppEvent) -> bool {
                         "Failed to parse tool call arguments for {}: {} (raw: {:?})",
                         tool_name,
                         e,
-                        &arguments[..arguments.len().min(200)]
+                        truncate_prefix(&arguments, 200)
                     );
                     app.messages_state.messages.add_tool_call(
                         tool_id.clone(),

@@ -4,7 +4,7 @@ The `storage` module handles SQLite database initialization and connection pooli
 
 ## Overview
 
-**Location**: `src/storage/`
+**Location**: `crates/codegg-core/src/storage/`
 
 **Key Responsibilities**:
 - Database initialization
@@ -121,4 +121,4 @@ Migration versions v1-v15 are supported, covering:
 ## See Also
 
 - [session.md](session.md) - Uses storage for session data
-- [schema.rs](../src/session/schema.rs) - Migration implementation
+- [schema.rs](../crates/codegg-core/src/session/schema.rs) - Migration implementation

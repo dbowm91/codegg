@@ -92,7 +92,44 @@ impl PromptWidget {
     }
 
     pub fn set_cursor(&mut self, pos: usize) {
-        self.cursor = pos.min(self.text.len());
+        let pos = pos.min(self.text.len());
+        self.cursor = if self.text.is_char_boundary(pos) {
+            pos
+        } else {
+            self.text
+                .char_indices()
+                .map(|(boundary, _)| boundary)
+                .take_while(|&boundary| boundary < pos)
+                .last()
+                .unwrap_or(0)
+        };
+    }
+
+    /// Place the cursor at a display column on a logical prompt line.
+    ///
+    /// Mouse coordinates are cell-based while `cursor` is a UTF-8 byte
+    /// offset. Converting here keeps wide and multibyte characters from
+    /// leaving the cursor inside a code point and also makes multiline mouse
+    /// placement behave like keyboard navigation.
+    pub fn set_cursor_at_column(&mut self, line_index: usize, column: usize) {
+        let mut line_start = 0;
+        for (current_line, line) in self.text.split('\n').enumerate() {
+            if current_line == line_index {
+                let mut display_column: usize = 0;
+                for (byte_offset, ch) in line.char_indices() {
+                    let width = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+                    if column < display_column.saturating_add(width) {
+                        self.cursor = line_start + byte_offset;
+                        return;
+                    }
+                    display_column = display_column.saturating_add(width);
+                }
+                self.cursor = line_start + line.len();
+                return;
+            }
+            line_start += line.len() + 1;
+        }
+        self.cursor = self.text.len();
     }
 
     pub fn cursor_pos(&self) -> usize {

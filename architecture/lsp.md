@@ -1276,23 +1276,12 @@ Phase 10 operations compose existing LSP primitives into named workflow recipes 
 
 Each recipe uses `RecipeSettings` for tier-aware defaults and `RecipeOutcome` for rendered results.
 
-### Known Issue: Impact-Analysis "References Capped" Note Inverted
+### Impact-Analysis Reference Cap
 
-`crates/egglsp/src/evidence_collector.rs:1633` emits a `"references capped"`
-note for impact analysis when `capped_refs.len() < budget.max_references`.
-The note is **inverted**: it fires when the cap is **not** hit (the
-collected count is below the budget) and is silent when it **is** hit
-(the collected count meets or exceeds the budget). The user-visible
-effect is that impact-analysis packets carry a misleading
-`references capped` note on fully-uncovered responses and lack the note
-on responses that did hit the cap. This is purely a notes-text bug; the
-actual reference count and budget enforcement are correct.
-
-**Tracking:** logged as a known issue in
-`plans/lsp_phase_9_12_hardening_plan.md` (Workstream 7). The fix is a
-one-line comparison flip; left for a follow-up so that the
-hardening pass stays focused on integration and documentation
-reconciliation.
+The impact-analysis collector emits a `"references capped"` note only when
+the collected reference count is lower than the provider's original count.
+The cap is therefore reported when it is actually hit; the reference count
+and budget enforcement remain unchanged.
 
 ## Phase 11: LSP Context Policy
 
@@ -4017,7 +4006,7 @@ Total test count for `phase5_context_integration.rs`: 40 (33 pre-existing + 7 ne
 
 ## Phase 5 Final Closeout and Stabilization (Passes 1–9)
 
-The Phase 5 hardening produced a complete, production-shaped pipeline but left a few small stabilization items open. The final closeout narrows the surface and reasserts invariants at the boundary. The plan is at [plans/lsp_phase5_final_closeout_and_stabilization.md](../plans/lsp_phase5_final_closeout_and_stabilization.md).
+The Phase 5 hardening produced a complete, production-shaped pipeline but left a few small stabilization items open. The final closeout narrows the surface and reasserts invariants at the boundary; current follow-up and verification work is tracked in the [LSP Phase 9–12 hardening plan](../plans/lsp_phase_9_12_hardening_plan.md).
 
 ### Pass 1 — Timing-flake stabilization
 
@@ -4157,5 +4146,5 @@ After an LSP server restart, previously collected context items may be marked as
 
 - [lsp.md](lsp.md) - LSP implementation guide
 - [tool.md](tool.md) - LSP tool wrapper
-- [plans/lsp_phase1_cleanup_and_phase2_scripted_stdio_harness.md](../plans/lsp_phase1_cleanup_and_phase2_scripted_stdio_harness.md) - Phase 1 + Phase 2 plan
-- [plans/lsp_phase4_broader_compatibility_and_capability_adoption.md](../plans/lsp_phase4_broader_compatibility_and_capability_adoption.md) - Phase 4 plan
+- [LSP Phase 9–12 hardening plan](../plans/lsp_phase_9_12_hardening_plan.md) - Current hardening plan
+- [LSP Phase 13–17 corrective verification](../plans/lsp_phase_13_17_corrective_verification_plan.md) - Current verification plan

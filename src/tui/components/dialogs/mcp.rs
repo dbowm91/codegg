@@ -10,6 +10,7 @@ use crossterm::event::KeyEvent;
 use super::super::super::theme::Theme;
 use super::super::component::{Component, DialogType};
 use crate::tui::app::TuiMsg;
+use crate::util::truncate::truncate_prefix;
 
 #[derive(Debug, Clone)]
 pub struct McpServerInfo {
@@ -350,7 +351,7 @@ impl McpDialog {
                         ]));
                         if let Some(ref desc) = resource.description {
                             let d = if desc.len() > 50 {
-                                format!("      {}...", &desc[..50])
+                                format!("      {}...", truncate_prefix(desc, 50))
                             } else {
                                 format!("      {}", desc)
                             };
@@ -383,7 +384,7 @@ impl McpDialog {
                         ]));
                         if !tool.description.is_empty() {
                             let desc = if tool.description.len() > 60 {
-                                format!("{}...", &tool.description[..60])
+                                format!("{}...", truncate_prefix(&tool.description, 60))
                             } else {
                                 tool.description.clone()
                             };

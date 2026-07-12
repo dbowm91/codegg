@@ -2398,8 +2398,10 @@ impl MessagesWidget {
                         summary_parts.push(format!("risk: {}", risk_label));
                     }
                     let summary_str = format!(" ({})", summary_parts.join(", "));
-                    let detail_hint =
-                        format!(" [view: /run-detail {}]", &run_id[..run_id.len().min(8)]);
+                    let detail_hint = format!(
+                        " [view: /run-detail {}]",
+                        crate::util::truncate::truncate_prefix(run_id, 8)
+                    );
                     lines.push(Line::from(vec![
                         Span::styled(format!("  {} run: {}", icon, title), base_style),
                         Span::styled(summary_str, Style::default().fg(self.theme.muted)),

@@ -30,10 +30,7 @@ use serde_json::json;
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
-fn make_bash_tool(
-    config: Option<CommandIntentConfig>,
-    store: Arc<MemRunStore>,
-) -> BashTool {
+fn make_bash_tool(config: Option<CommandIntentConfig>, store: Arc<MemRunStore>) -> BashTool {
     // Ensure the env kill switch is NOT set. Tests must not inherit
     // `CODEGG_ROUTING_DISABLE=1` from sibling tests; each test that depends
     // on active routing must clear it before constructing the tool.
@@ -89,7 +86,10 @@ async fn observe_mode_persists_raw_shell_with_unrouted_planned() {
     let store = Arc::new(MemRunStore::new());
     let tool = make_bash_tool(Some(observe_config()), store.clone());
 
-    let _ = tool.execute(json!({"command": "echo ownership-observe-ok"})).await.unwrap();
+    let _ = tool
+        .execute(json!({"command": "echo ownership-observe-ok"}))
+        .await
+        .unwrap();
 
     let runs = all_runs(&store).await;
     assert_eq!(runs.len(), 1, "observe mode must persist exactly one run");
@@ -101,7 +101,13 @@ async fn observe_mode_persists_raw_shell_with_unrouted_planned() {
     assert!(m.fallback.is_none(), "no fallback in observe mode");
     assert_eq!(
         m.invocation.argv.as_deref(),
-        Some(&["sh".to_string(), "-c".to_string(), "echo ownership-observe-ok".to_string()][..])
+        Some(
+            &[
+                "sh".to_string(),
+                "-c".to_string(),
+                "echo ownership-observe-ok".to_string()
+            ][..]
+        )
     );
 }
 
@@ -137,7 +143,10 @@ async fn active_git_readonly_routes_to_native_tool_caller_owned() {
     let store = Arc::new(MemRunStore::new());
     let tool = make_bash_tool(Some(active_config()), store.clone());
 
-    let _ = tool.execute(json!({"command": "git status"})).await.unwrap();
+    let _ = tool
+        .execute(json!({"command": "git status"}))
+        .await
+        .unwrap();
 
     let runs = all_runs(&store).await;
     assert_eq!(runs.len(), 1, "active git must persist one record");
@@ -176,7 +185,14 @@ async fn active_search_routes_to_managed_argv_caller_owned() {
     let argv = m.invocation.argv.as_ref().expect("argv present");
     assert_eq!(argv[0], "rg");
     // MUST NOT be `[sh, -c, command]` — that was the bug.
-    assert_ne!(argv, &vec!["sh".to_string(), "-c".to_string(), "rg pattern src/".to_string()]);
+    assert_ne!(
+        argv,
+        &vec![
+            "sh".to_string(),
+            "-c".to_string(),
+            "rg pattern src/".to_string()
+        ]
+    );
 }
 
 // ── 5. Active routing fallback: planned != actual, FallbackRecord set ─
@@ -196,13 +212,18 @@ async fn active_routing_fallback_preserves_planned_and_records_actual() {
         command: "cargo test".to_string(),
         argv: vec!["sh".to_string(), "-c".to_string(), "cargo test".to_string()],
     };
-    let outcome = ExecutionOutcome::with_fallback(planned.clone(), actual.clone(), "test runner unavailable");
+    let outcome =
+        ExecutionOutcome::with_fallback(planned.clone(), actual.clone(), "test runner unavailable");
 
     let draft = RunDraft {
         kind: RunKind::RawShell,
         invocation: codegg_core::run_store::RunInvocation {
             command: "cargo test".to_string(),
-            argv: Some(vec!["sh".to_string(), "-c".to_string(), "cargo test".to_string()]),
+            argv: Some(vec![
+                "sh".to_string(),
+                "-c".to_string(),
+                "cargo test".to_string(),
+            ]),
             script_hash: None,
         },
         session_id: None,
@@ -294,17 +315,27 @@ async fn python_script_tool_owns_record_as_delegated_backend() {
         .unwrap();
 
     let runs = all_runs(&store).await;
-    assert_eq!(runs.len(), 1, "PythonScriptTool must persist its own record");
+    assert_eq!(
+        runs.len(),
+        1,
+        "PythonScriptTool must persist its own record"
+    );
     let m = &runs[0];
     assert_eq!(m.kind, RunKind::Python);
     assert_eq!(m.ownership, RunOwnership::DelegatedBackend);
     assert_eq!(m.planned_backend, Some(PlannedBackend::PythonScript));
     assert_eq!(m.actual_backend, Some(ActualBackend::PythonScript));
     // Script hash must be populated for PythonScript execution
-    assert!(m.invocation.script_hash.is_some(), "script_hash must be set");
+    assert!(
+        m.invocation.script_hash.is_some(),
+        "script_hash must be set"
+    );
     // Raw stdout MUST NOT be safe_for_model
     for art in &m.artifacts {
-        if matches!(art.kind, ArtifactKind::Stdout | ArtifactKind::Stderr | ArtifactKind::UnifiedDiff) {
+        if matches!(
+            art.kind,
+            ArtifactKind::Stdout | ArtifactKind::Stderr | ArtifactKind::UnifiedDiff
+        ) {
             assert!(
                 !art.safe_for_model,
                 "raw python artifact {:?} MUST NOT be safe_for_model",
@@ -346,7 +377,10 @@ async fn test_runner_canonical_api_owns_record_as_delegated_backend() {
         .await
         .unwrap()
         .into_report();
-    assert_eq!(report.status, codegg::test_runner::types::TestStatus::Passed);
+    assert_eq!(
+        report.status,
+        codegg::test_runner::types::TestStatus::Passed
+    );
 
     let runs = all_runs(&store).await;
     assert_eq!(runs.len(), 1, "TestRunner must persist its own record");
@@ -379,7 +413,10 @@ async fn env_kill_switch_forces_raw_shell_persistence() {
     let store = Arc::new(MemRunStore::new());
     let tool = make_bash_tool(Some(active_config()), store.clone());
 
-    let _ = tool.execute(json!({"command": "echo kill-switch-ok"})).await.unwrap();
+    let _ = tool
+        .execute(json!({"command": "echo kill-switch-ok"}))
+        .await
+        .unwrap();
 
     std::env::remove_var("CODEGG_ROUTING_DISABLE");
 
@@ -404,14 +441,20 @@ async fn per_family_off_forces_raw_shell_persistence() {
     let store = Arc::new(MemRunStore::new());
     let tool = make_bash_tool(Some(cic), store.clone());
 
-    let _ = tool.execute(json!({"command": "git status"})).await.unwrap();
+    let _ = tool
+        .execute(json!({"command": "git status"}))
+        .await
+        .unwrap();
 
     let runs = all_runs(&store).await;
     assert_eq!(runs.len(), 1);
     let m = &runs[0];
     // NativeTool was off, so dispatch falls back to raw shell.
     // Native dispatch runs git directly and reports the actual native argv.
-    assert!(matches!(m.actual_backend, Some(ActualBackend::NativeTool | ActualBackend::RawShell)));
+    assert!(matches!(
+        m.actual_backend,
+        Some(ActualBackend::NativeTool | ActualBackend::RawShell)
+    ));
 }
 
 // ── 11. CommandOutcome API: ownership_for_outcome mapping ──────────────
@@ -463,7 +506,10 @@ fn ownership_mapping_for_outcome_variants() {
             mode: "analyze".to_string(),
         },
     );
-    assert_eq!(ownership_for_outcome(&python), RunOwnership::DelegatedBackend);
+    assert_eq!(
+        ownership_for_outcome(&python),
+        RunOwnership::DelegatedBackend
+    );
 }
 
 // ── 12. Backward compat: manifests without new fields still deserialize ─
@@ -499,9 +545,7 @@ async fn manifest_backward_compat_no_provenance_fields() {
 
 #[tokio::test]
 async fn manifest_serde_roundtrip_with_provenance() {
-    use codegg_core::run_store::{
-        ActualBackend, FallbackRecord, RunId, RunManifest, RunOwnership,
-    };
+    use codegg_core::run_store::{ActualBackend, FallbackRecord, RunId, RunManifest, RunOwnership};
 
     let m = RunManifest {
         schema_version: 1,
@@ -593,11 +637,17 @@ async fn bash_tool_routes_active_test_through_canonical_test_runner() {
         .artifacts
         .iter()
         .any(|a| matches!(a.kind, ArtifactKind::TestReport) && a.safe_for_model);
-    assert!(has_report, "TestReport JSON must be persisted as model-safe");
+    assert!(
+        has_report,
+        "TestReport JSON must be persisted as model-safe"
+    );
     // Raw stdout/stderr are NOT model-safe.
     for art in &m.artifacts {
         if matches!(art.kind, ArtifactKind::Stdout | ArtifactKind::Stderr) {
-            assert!(!art.safe_for_model, "raw test artifact MUST NOT be safe_for_model");
+            assert!(
+                !art.safe_for_model,
+                "raw test artifact MUST NOT be safe_for_model"
+            );
         }
     }
 }
@@ -701,7 +751,10 @@ async fn one_logical_execution_produces_exactly_one_record() {
     // never Caller-owned duplicates of Delegated runs.
     for m in &runs {
         assert!(
-            matches!(m.ownership, RunOwnership::Caller | RunOwnership::DelegatedBackend),
+            matches!(
+                m.ownership,
+                RunOwnership::Caller | RunOwnership::DelegatedBackend
+            ),
             "ownership must be Caller or DelegatedBackend, got {:?}",
             m.ownership
         );
@@ -809,13 +862,18 @@ async fn dispatch_failure_fallback_persists_caller_owned_raw_shell() {
         command: "cargo test".to_string(),
         argv: vec!["sh".to_string(), "-c".to_string(), "cargo test".to_string()],
     };
-    let outcome = ExecutionOutcome::with_fallback(planned.clone(), actual.clone(), "test runner unavailable");
+    let outcome =
+        ExecutionOutcome::with_fallback(planned.clone(), actual.clone(), "test runner unavailable");
 
     let draft = RunDraft {
         kind: RunKind::RawShell,
         invocation: codegg_core::run_store::RunInvocation {
             command: "cargo test".to_string(),
-            argv: Some(vec!["sh".to_string(), "-c".to_string(), "cargo test".to_string()]),
+            argv: Some(vec![
+                "sh".to_string(),
+                "-c".to_string(),
+                "cargo test".to_string(),
+            ]),
             script_hash: None,
         },
         session_id: None,

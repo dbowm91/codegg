@@ -103,7 +103,7 @@ Each handler has a stale-completion test under `src/tui/mod.rs::async_cmd_tests`
 
 ### Background Task Lifecycle (Phase 7)
 
-TUI-owned background tasks are tracked via [`TuiTaskRegistry`](src/tui/task_lifecycle.rs) on `App`.
+TUI-owned background tasks are tracked via [`TuiTaskRegistry`](../src/tui/task_lifecycle.rs) on `App`.
 
 **Key types:**
 - `TuiTaskId(u64)` -- monotonically increasing task identifier
@@ -128,7 +128,9 @@ TUI-owned background tasks are tracked via [`TuiTaskRegistry`](src/tui/task_life
 - `spawn_tui_task()` -- unchanged, fire-and-forget (no tracking)
 - `spawn_registered_tui_task(tx, registry, kind, name, fut)` -- tracked variant, returns `Option<TuiTaskId>`
 
-**Periodic reaping:** The event loop wakes periodically (resize-debounce cadence) and calls `app.task_registry.reap_finished()` to keep the registry bounded and the counters accurate.
+**Reaping:** The event loop calls `app.task_registry.reap_finished()` on every
+iteration, including idle iterations. This keeps the registry bounded even
+when no animation, resize debounce, or toast timer is active.
 
 **Shutdown:** `App::prepare_shutdown()` cancels all registered tasks and kills shell handles. Called before `terminal_guard.restore()` in `runtime/event_loop::run_event_loop`.
 

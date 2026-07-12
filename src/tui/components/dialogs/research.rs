@@ -10,6 +10,7 @@ use ratatui::Frame;
 use super::super::super::theme::Theme;
 use super::super::component::{Component, DialogType};
 use crate::tui::app::TuiMsg;
+use crate::util::truncate::truncate_prefix;
 
 use crate::research::service::ResearchRunSummary;
 use crate::research::types::{Confidence, ResearchBundle, RunStatus};
@@ -323,7 +324,7 @@ impl ResearchBrowserDialog {
                 };
 
                 let question_display = if run.question.len() > 50 {
-                    format!("{}...", &run.question[..50])
+                    format!("{}...", truncate_prefix(&run.question, 50))
                 } else {
                     run.question.clone()
                 };
@@ -453,7 +454,7 @@ impl ResearchBrowserDialog {
             for src in bundle.sources.iter().take(3) {
                 let title = src.title.as_deref().unwrap_or(&src.uri);
                 let display = if title.len() > 60 {
-                    format!("    {}...", &title[..60])
+                    format!("    {}...", truncate_prefix(title, 60))
                 } else {
                     format!("    {}", title)
                 };
@@ -488,7 +489,7 @@ impl ResearchBrowserDialog {
                     format!(
                         "    [{}] {}...",
                         claim.claim_type.as_str(),
-                        &claim.text[..60]
+                        truncate_prefix(&claim.text, 60)
                     )
                 } else {
                     format!("    [{}] {}", claim.claim_type.as_str(), claim.text)
@@ -513,7 +514,7 @@ impl ResearchBrowserDialog {
             )));
             for c in bundle.contradictions.iter().take(2) {
                 let display = if c.description.len() > 60 {
-                    format!("    {}...", &c.description[..60])
+                    format!("    {}...", truncate_prefix(&c.description, 60))
                 } else {
                     format!("    {}", c.description)
                 };

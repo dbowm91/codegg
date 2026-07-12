@@ -309,7 +309,7 @@ impl SidebarWidget {
             )));
             lines.push(Line::from(vec![
                 Span::styled("id: ", Style::default().fg(self.theme.muted)),
-                Span::raw(sess.id[..8.min(sess.id.len())].to_string()),
+                Span::raw(sess.id.chars().take(8).collect::<String>()),
             ]));
             if let Some(ref url) = sess.share_url {
                 lines.push(Line::from(vec![

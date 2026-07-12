@@ -9,6 +9,7 @@ use crate::agent::resolve_agents;
 use crate::agent::AgentMode;
 use crate::config::schema::Config;
 use crate::tui::app::state::agent::AgentState;
+use crate::util::truncate::truncate_prefix;
 
 /// Format `/agents` output: visible agents grouped by mode.
 pub(crate) fn format_agents_list(agent_state: &AgentState, show_all: bool) -> Vec<String> {
@@ -174,7 +175,7 @@ pub(crate) fn format_agent_show(name: &str) -> Vec<String> {
         lines.push(String::new());
         lines.push("prompt:".to_string());
         let preview = if prompt.len() > 120 {
-            format!("{}...", &prompt[..120])
+            format!("{}...", truncate_prefix(prompt, 120))
         } else {
             prompt.clone()
         };
