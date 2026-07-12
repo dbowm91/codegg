@@ -2627,7 +2627,7 @@ impl App {
         let visible_lines = area.height.saturating_sub(2) as usize;
         self.prompt_state
             .prompt
-            .ensure_cursor_visible(visible_lines);
+            .ensure_cursor_visible_with_width(visible_lines, area.width as usize);
         frame.render_widget(&self.prompt_state.prompt, area);
 
         if self.ui_state.command_mode {

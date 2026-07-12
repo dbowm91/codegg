@@ -6,13 +6,16 @@ use codegg::tui::components::completion_overlay::{
 };
 use codegg::tui::components::component::Component;
 use codegg::tui::components::dialogs::command::CommandPalette;
+use codegg::tui::components::dialogs::help::HelpDialog;
 use codegg::tui::components::dialogs::question::{QuestionDialog, QuestionSpec};
 use codegg::tui::components::dialogs::theme::ThemePickerDialog;
 use codegg::tui::components::messages::{highlight_code, MessageRole, MessagesWidget, MsgPart};
 use codegg::tui::components::prompt::PromptWidget;
 use codegg::tui::layout::{LayoutConfig, TuiLayout};
 use codegg::tui::theme::{all_themes, find_theme, theme_names, Theme};
+use ratatui::backend::TestBackend;
 use ratatui::layout::Rect;
+use ratatui::Terminal;
 
 #[test]
 fn test_theme_from_name() {
@@ -604,6 +607,63 @@ fn test_prompt_widget_ensure_cursor_visible() {
     }
     widget.ensure_cursor_visible(3);
     assert!(widget.scroll > 0);
+}
+
+#[test]
+fn test_prompt_widget_horizontal_cursor_visibility() {
+    let mut widget = PromptWidget::new(Arc::new(Theme::dark()));
+    widget.set_text("1234567890".to_string());
+
+    widget.ensure_cursor_visible_with_width(3, 5);
+    assert_eq!(widget.horizontal_scroll, 6);
+
+    widget.cursor_home();
+    widget.ensure_cursor_visible_with_width(3, 5);
+    assert_eq!(widget.horizontal_scroll, 0);
+}
+
+#[test]
+fn test_prompt_widget_cursor_on_empty_line() {
+    let mut widget = PromptWidget::new(Arc::new(Theme::dark()));
+    widget.set_text("a\n".to_string());
+
+    let backend = TestBackend::new(12, 4);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| frame.render_widget(&widget, frame.area()))
+        .unwrap();
+
+    let cell = &terminal.backend().buffer()[(0, 2)];
+    assert!(cell.modifier.contains(ratatui::style::Modifier::REVERSED));
+}
+
+#[test]
+fn test_help_dialog_clamps_scroll_to_last_page() {
+    let theme = Arc::new(Theme::dark());
+    let lines: Vec<String> = (0..20).map(|i| format!("line {i}")).collect();
+    let mut dialog = HelpDialog::new(theme.clone(), lines);
+
+    for _ in 0..20 {
+        dialog.handle_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Down,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+    }
+
+    let backend = TestBackend::new(40, 12);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| dialog.render(frame, frame.area(), &theme))
+        .unwrap();
+
+    let text = terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .map(|cell| cell.symbol().to_string())
+        .collect::<String>();
+    assert!(text.contains("line 19"));
 }
 
 #[test]

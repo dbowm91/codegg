@@ -113,11 +113,16 @@ impl Component for HelpDialog {
         frame.render_widget(title, chunks[0]);
 
         let content_height = chunks[1].height as usize;
+        let visible_height = content_height.saturating_sub(2);
+        let max_scroll = self.help_lines.len().saturating_sub(visible_height);
+        // Key handling does not know the dialog's eventual size. Clamp here
+        // so repeated Down presses cannot scroll into a blank content pane.
+        self.scroll = self.scroll.min(max_scroll);
         let visible_lines: Vec<Line> = self
             .help_lines
             .iter()
             .skip(self.scroll)
-            .take(content_height.saturating_sub(2))
+            .take(visible_height)
             .map(|line| Line::from(Span::styled(line, Style::default().fg(theme.foreground))))
             .collect();
 

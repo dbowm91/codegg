@@ -53,7 +53,7 @@ src/
 │   ├── team.rs          # Multi-agent teams via file-based inbox
 │   └── prompts/         # Prompt templates (default.txt, anthropic.txt, etc.)
 ├── auth/                # AuthConfig, Credential, AuthResolver (re-exports from codegg-providers)
-├── command/             # Slash command registry and routing (105 built-in commands)
+├── command/             # Slash command registry and routing (106 built-in commands)
 ├── error.rs             # Central error types + AxumAppError (feature-gated)
 ├── hooks/               # Hooks system for agent loop lifecycle events
 ├── ide/                 # IDE integration (VS Code, JetBrains diff viewing)

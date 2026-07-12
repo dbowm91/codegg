@@ -10,7 +10,9 @@ use codegg::session::message::ToolStatus;
 use codegg::tui::app::state::session::{ChangedFile, DiffStatsState};
 use codegg::tui::app::App;
 use codegg::tui::app::{CompletionType, TodoEntry};
-use codegg::tui::components::completion_overlay::{CompletionItem, CompletionItemKind};
+use codegg::tui::components::completion_overlay::{
+    CompletionItem, CompletionItemKind, CompletionType as OverlayCompletionType,
+};
 use codegg::tui::components::component::Component;
 use codegg::tui::components::dialogs::info::{InfoDialog, InfoType};
 use codegg::tui::components::messages::SearchMatch;
@@ -171,6 +173,30 @@ fn info_dialog_scroll_reaches_last_line() {
     assert!(
         text.contains("line 19"),
         "scrolling to the end must render the final line, got:\n{text}"
+    );
+}
+
+#[test]
+fn completion_overlay_keeps_all_visible_rows() {
+    let theme = Theme::dark();
+    let mut overlay = codegg::tui::components::completion_overlay::CompletionOverlay::new();
+    let items = (0..8)
+        .map(|i| CompletionItem::new(format!("/item-{i}"), None))
+        .collect();
+    overlay.show(OverlayCompletionType::Slash, items, "/".to_string(), 0);
+
+    let backend = TestBackend::new(50, 20);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| {
+            overlay.render(frame, ratatui::layout::Rect::new(0, 10, 50, 10), &theme);
+        })
+        .unwrap();
+
+    let text = text_in_buffer(terminal.backend().buffer());
+    assert!(
+        text.contains("/item-7"),
+        "last visible completion was clipped:\n{text}"
     );
 }
 

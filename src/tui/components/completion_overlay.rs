@@ -306,7 +306,11 @@ impl CompletionOverlay {
             })
             .collect();
 
-        let list = List::new(list_items).block(block);
+        // The popup border belongs to the full popup, not the list's inner
+        // rectangle. Applying it to `list_area` consumed two completion rows
+        // and clipped the lower entries whenever the list reached its limit.
+        frame.render_widget(block, compl_area);
+        let list = List::new(list_items);
         frame.render_widget(list, list_area);
 
         let hint = Span::styled(

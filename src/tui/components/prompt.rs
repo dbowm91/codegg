@@ -16,6 +16,8 @@ pub struct PromptWidget {
     pub mode_indicator: Span<'static>,
     pub placeholder: String,
     pub scroll: usize,
+    /// Horizontal offset used to keep the cursor visible on long prompt lines.
+    pub horizontal_scroll: usize,
     pub command_mode: bool,
     pub waiting: bool,
     pub char_count: Option<usize>,
@@ -32,6 +34,7 @@ impl PromptWidget {
             mode_indicator: Span::raw(""),
             placeholder: "Ask anything…".to_string(),
             scroll: 0,
+            horizontal_scroll: 0,
             command_mode: false,
             waiting: false,
             char_count: None,
@@ -85,6 +88,7 @@ impl PromptWidget {
     pub fn set_text(&mut self, text: String) {
         self.text = text;
         self.cursor = self.text.len();
+        self.horizontal_scroll = 0;
     }
 
     pub fn set_cursor(&mut self, pos: usize) {
@@ -99,6 +103,7 @@ impl PromptWidget {
         self.text.clear();
         self.cursor = 0;
         self.scroll = 0;
+        self.horizontal_scroll = 0;
     }
 
     pub fn insert_char(&mut self, c: char) {
@@ -234,19 +239,48 @@ impl PromptWidget {
     }
 
     pub fn ensure_cursor_visible(&mut self, visible_lines: usize) {
+        self.ensure_cursor_visible_with_width(visible_lines, usize::MAX);
+    }
+
+    /// Keep the cursor visible vertically and horizontally.
+    ///
+    /// The one-argument variant remains useful to callers that only have a
+    /// vertical viewport. TUI rendering should use this width-aware variant
+    /// so long single-line prompts do not leave the cursor off-screen.
+    pub fn ensure_cursor_visible_with_width(&mut self, visible_lines: usize, visible_width: usize) {
         let cursor_line = self.cursor_line();
         let total_lines = self.num_lines();
         if total_lines <= visible_lines {
             self.scroll = 0;
+        } else {
+            let max_scroll = total_lines.saturating_sub(visible_lines);
+            if cursor_line < self.scroll {
+                self.scroll = cursor_line;
+            } else if cursor_line >= self.scroll + visible_lines {
+                self.scroll = cursor_line.saturating_sub(visible_lines.saturating_sub(1));
+            }
+            self.scroll = self.scroll.min(max_scroll);
+        }
+
+        if visible_width == usize::MAX || visible_width == 0 {
+            if visible_width == 0 {
+                self.horizontal_scroll = 0;
+            }
             return;
         }
-        let max_scroll = total_lines.saturating_sub(visible_lines);
-        if cursor_line < self.scroll {
-            self.scroll = cursor_line;
-        } else if cursor_line >= self.scroll + visible_lines {
-            self.scroll = cursor_line.saturating_sub(visible_lines.saturating_sub(1));
+
+        let before = &self.text[..self.cursor.min(self.text.len())];
+        let column = before
+            .rsplit('\n')
+            .next()
+            .map(UnicodeWidthStr::width)
+            .unwrap_or(0);
+
+        if column < self.horizontal_scroll {
+            self.horizontal_scroll = column;
+        } else if column >= self.horizontal_scroll.saturating_add(visible_width) {
+            self.horizontal_scroll = column.saturating_sub(visible_width.saturating_sub(1));
         }
-        self.scroll = self.scroll.min(max_scroll);
     }
 }
 
@@ -287,7 +321,7 @@ impl Widget for &PromptWidget {
             } else {
                 &self.text
             };
-            text.lines()
+            text.split('\n')
                 .map(|l| {
                     Line::from(Span::styled(
                         l.to_string(),
@@ -313,18 +347,24 @@ impl Widget for &PromptWidget {
             )));
         }
 
-        let paragraph = Paragraph::new(all_lines).scroll((self.scroll as u16, 0));
+        let paragraph = Paragraph::new(all_lines).scroll((
+            self.scroll.min(u16::MAX as usize) as u16,
+            self.horizontal_scroll.min(u16::MAX as usize) as u16,
+        ));
         paragraph.render(area, buf);
 
         if self.focused && !self.text.is_empty() {
-            let before = &self.text[..self.cursor];
+            let before = &self.text[..self.cursor.min(self.text.len())];
             let line_idx = before.chars().filter(|&c| c == '\n').count();
             let col = before
-                .lines()
-                .next_back()
+                .rsplit('\n')
+                .next()
                 .map(UnicodeWidthStr::width)
                 .unwrap_or(0);
-            let cursor_x = area.x + col as u16;
+            let cursor_x = area.x
+                + col
+                    .saturating_sub(self.horizontal_scroll)
+                    .min(area.width.saturating_sub(1) as usize) as u16;
             let visible_line_idx = line_idx.saturating_sub(self.scroll);
             let cursor_y = area.y + 1 + visible_line_idx as u16;
             if cursor_y < area.bottom() && cursor_x < area.right() {
