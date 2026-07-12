@@ -125,4 +125,4 @@ pub enum ClientError {
 
 - [server.md](server.md) - Server that accepts connections
 - `crates/codegg-protocol/src/tui.rs` - TuiMessage protocol definitions
-- `.skills/client/SKILL.md` - Detailed implementation guide
+- [tui.md](tui.md) - TUI and remote-client integration notes

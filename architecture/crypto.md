@@ -153,7 +153,7 @@ let api_key = decrypt_from_string(&encrypted, &master_key)?;
   `OPENCODE_ENCRYPTION_KEY`). The same primitives are also used by
   `auth::resolver::AuthResolver` to decrypt
   `AuthConfig::ApiKey.encrypted_value` from the provider config. See
-  `.opencode/skills/auth/SKILL.md` for the resolution order and security
+  `architecture/auth.md` for the resolution order and security
   rules around the master key.
 
 ## Dependencies

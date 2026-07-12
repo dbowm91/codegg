@@ -78,6 +78,10 @@ impl RunDetailDialog {
         &RunDetailTab::all()[self.tab_index]
     }
 
+    fn paragraph_scroll(&self) -> (u16, u16) {
+        (self.scroll.min(u16::MAX as usize) as u16, 0)
+    }
+
     fn render_summary(&self, area: Rect, buf: &mut ratatui::buffer::Buffer) {
         let cell = &self.detail.cell;
         let mut lines = vec![
@@ -166,6 +170,7 @@ impl RunDetailDialog {
         ]));
 
         let paragraph = Paragraph::new(lines)
+            .scroll(self.paragraph_scroll())
             .block(Block::default().borders(Borders::ALL).title("Summary"))
             .wrap(Wrap { trim: false });
         paragraph.render(area, buf);
@@ -218,6 +223,7 @@ impl RunDetailDialog {
         }
 
         let paragraph = Paragraph::new(lines)
+            .scroll(self.paragraph_scroll())
             .block(Block::default().borders(Borders::ALL).title("Invocation"))
             .wrap(Wrap { trim: false });
         paragraph.render(area, buf);
@@ -227,6 +233,7 @@ impl RunDetailDialog {
         let artifacts = &self.detail.artifacts;
         if artifacts.is_empty() {
             let paragraph = Paragraph::new("No artifacts.")
+                .scroll(self.paragraph_scroll())
                 .block(Block::default().borders(Borders::ALL).title("Artifacts"));
             paragraph.render(area, buf);
             return;
@@ -268,6 +275,7 @@ impl RunDetailDialog {
         }
 
         let paragraph = Paragraph::new(lines)
+            .scroll(self.paragraph_scroll())
             .block(Block::default().borders(Borders::ALL).title("Artifacts"))
             .wrap(Wrap { trim: false });
         paragraph.render(area, buf);
@@ -277,6 +285,7 @@ impl RunDetailDialog {
         let changes = &self.detail.changes;
         if changes.is_empty() {
             let paragraph = Paragraph::new("No changed files.")
+                .scroll(self.paragraph_scroll())
                 .block(Block::default().borders(Borders::ALL).title("Changes"));
             paragraph.render(area, buf);
             return;
@@ -296,6 +305,7 @@ impl RunDetailDialog {
             .collect();
 
         let paragraph = Paragraph::new(lines)
+            .scroll(self.paragraph_scroll())
             .block(Block::default().borders(Borders::ALL).title("Changes"))
             .wrap(Wrap { trim: false });
         paragraph.render(area, buf);
@@ -360,6 +370,7 @@ impl RunDetailDialog {
         }
 
         let paragraph = Paragraph::new(lines)
+            .scroll(self.paragraph_scroll())
             .block(Block::default().borders(Borders::ALL).title("Policy"))
             .wrap(Wrap { trim: false });
         paragraph.render(area, buf);
@@ -428,6 +439,7 @@ impl RunDetailDialog {
         }
 
         let paragraph = Paragraph::new(lines)
+            .scroll(self.paragraph_scroll())
             .block(Block::default().borders(Borders::ALL).title("Context"))
             .wrap(Wrap { trim: false });
         paragraph.render(area, buf);
@@ -498,6 +510,7 @@ impl RunDetailDialog {
         )));
 
         let paragraph = Paragraph::new(lines)
+            .scroll(self.paragraph_scroll())
             .block(Block::default().borders(Borders::ALL).title("Output"))
             .wrap(Wrap { trim: false });
         paragraph.render(area, buf);

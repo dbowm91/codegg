@@ -727,4 +727,4 @@ src/tool/
 - [permission.md](permission.md) - Permission checking before execution
 - [snapshot.md](snapshot.md) - File state capture before modifications
 - [security.md](security.md) - SSRF and path validation
-- [subagent.md](../.opencode/skills/subagent/SKILL.md) - SubAgentPool and TaskStore for task tool
+- [agent.md](agent.md) - SubAgentPool and TaskStore for task tool

@@ -159,4 +159,4 @@ The `record_failure()` method (circuit.rs):
 ## See Also
 
 - [provider.md](provider.md) - Uses circuit breaker for API calls via FallbackProvider
-- `.opencode/skills/resilience/SKILL.md` - Skill with usage examples
+- `architecture/resilience.md` - Usage and implementation notes

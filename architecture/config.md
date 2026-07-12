@@ -409,7 +409,7 @@ fetching path, and any provider-specific extraction logic.
 
 See
 [`search_backend.md`](search_backend.md) and
-[`.opencode/skills/search_backend/SKILL.md`](../.opencode/skills/search_backend/SKILL.md)
+[`architecture/search_backend.md`](search_backend.md)
 for the full schema and dispatch details.
 
 ## See Also

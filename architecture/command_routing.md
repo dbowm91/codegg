@@ -101,9 +101,9 @@ pub struct DispatchOutcome {
 }
 ```
 
-`delegated_run_id` is the proof-of-run-id contract:
-- `Some(run_id)` → delegated subsystem executed and owns a canonical RunStore record. BashTool skips persistence.
-- `None` paired with `DelegatedBackend` ownership → correctness violation. BashTool falls back to caller-owned persistence with a warning (`src/tool/bash.rs:1343-1354`).
+`delegated_run_id` is the canonical-record contract:
+- `Some(run_id)` → delegated subsystem executed and owns a canonical RunStore record. BashTool skips duplicate persistence.
+- `None` → the delegated subsystem executed without a canonical record (for example, no store was configured). BashTool retains that result, never re-runs the command, and uses caller persistence once when a store is available.
 
 ### TestRunner delegation flow
 
@@ -138,7 +138,7 @@ classify → plan → dispatch_to_python_script (bash.rs:693)
 Key points:
 - `execute_and_persist_python_script` (`src/python_script/tool.rs:40`) is the single canonical entry point for both the model-facing `PythonScriptTool` and BashTool's active routing dispatcher.
 - `DelegatedPythonRun` (`src/python_script/tool.rs:16`) carries `result: PythonRunResult` and `run_id: Option<RunId>`.
-- `persist_python_run` (`src/python_script/tool.rs:56`) is best-effort; errors are logged, `run_id` is `None` only when `run_store` is `None` or `begin_run` failed.
+- `persist_python_run` (`src/python_script/tool.rs:56`) is best-effort; errors are logged, and `run_id` is `None` only when `run_store` is `None` or `begin_run` failed.
 - Python projection uses `PythonProjector` via `project_python_result` for model-facing display.
 
 ### Raw-shell run-kind mapping (`src/command_outcome.rs:232-249`)
@@ -150,12 +150,12 @@ Key points:
 ```rust
 let persist_run = match (ownership, delegated_run_id.as_ref()) {
     (DelegatedBackend, Some(_)) => false,        // subsystem owns persistence
-    (DelegatedBackend, None) => true,             // fallback: caller persists
+    (DelegatedBackend, None) => self.run_store.is_some(), // caller persists once if possible
     _ => true,                                    // caller-owned
 };
 ```
 
-One logical execution always produces exactly one canonical record. A delegated backend without a `run_id` is treated as caller-owned.
+One logical execution is never retried merely because persistence is unavailable. A delegated backend without a `run_id` is treated as caller-owned only for the optional caller-side persistence attempt.
 
 ### Cross-references
 

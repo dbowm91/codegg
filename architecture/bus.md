@@ -411,4 +411,4 @@ if PermissionRegistry::respond(perm_id.clone(), PermissionDecision::AllowOnce) {
 - [permission.md](permission.md) - Permission system using PermissionRegistry
 - [tui.md](tui.md) - TUI subscribes to events and displays permission/question dialogs
 - [server.md](server.md) - Server SSE endpoint architecture
-- [.opencode/skills/event-bus/SKILL.md](../.opencode/skills/event-bus/SKILL.md) - Quick reference skill guide
+- [bus.md](bus.md) - Quick reference

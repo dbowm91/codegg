@@ -83,7 +83,7 @@ CARGO_BUILD_JOBS=1 cargo test --workspace --all-features -- --test-threads=1
 
 Run `--all-features` and `lsp-test-support` paths as separate capped invocations when possible; those are the heaviest test paths in this repo.
 
-See `architecture/testing.md` for the full test resource taxonomy, Tokio runtime flavor rules, and pool strategy guidance. Follow `.codegg/skills/testing/SKILL.md` for the test selection pattern and the capped full-suite command.
+See `architecture/testing.md` for the full test resource taxonomy, Tokio runtime flavor rules, pool strategy guidance, test selection pattern, and capped full-suite command.
 
 ## Testing
 

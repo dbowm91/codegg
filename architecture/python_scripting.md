@@ -267,7 +267,7 @@ pub struct DelegatedPythonRun {
 }
 ```
 
-The `run_id` is `Some` when the canonical Python subsystem persisted a `RunKind::Python` record; `None` when persistence failed or no `RunStore` was provided. This is the **proof-of-persistence contract**: callers inspect `run_id` to determine whether to suppress their own persistence.
+The `run_id` is `Some` when the canonical Python subsystem successfully began a `RunKind::Python` record; `None` when no record could be begun or no `RunStore` was provided. This is the **record-ownership contract**: callers inspect `run_id` to determine whether to suppress duplicate persistence, while retaining the delegated result when it is absent.
 
 ```rust
 impl DelegatedPythonRun {

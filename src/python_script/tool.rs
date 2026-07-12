@@ -250,7 +250,7 @@ impl Tool for PythonScriptTool {
                     "description": "Optional description of what this script does."
                 }
             },
-            "required": ["code", "mode"]
+            "required": ["code"]
         })
     }
 
@@ -343,6 +343,6 @@ mod tests {
         assert!(props.get("mode").is_some());
         let required = params.get("required").unwrap().as_array().unwrap();
         assert!(required.contains(&json!("code")));
-        assert!(required.contains(&json!("mode")));
+        assert!(!required.contains(&json!("mode")));
     }
 }

@@ -210,6 +210,6 @@ Store top 20 memories with superseding
 
 ## See Also
 
-- [.opencode/skills/memory/SKILL.md](../.opencode/skills/memory/SKILL.md) - User-facing documentation
+- [memory.md](memory.md) - User-facing documentation
 - [agent.md](agent.md) - Uses memory for context injection
 - [config.md](config.md) - Experimental config options

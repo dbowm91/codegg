@@ -246,7 +246,7 @@ Check against allowed_paths
 
 - [tool.md](tool.md) - Uses security validation
 - [permission.md](permission.md) - Path permissions
-- [sandbox skill](../../.opencode/skills/sandbox/SKILL.md) - Sandboxing details
+- [security.md](security.md) - Sandboxing details
 
 ## Tool Backend (MCP fallback semantics)
 

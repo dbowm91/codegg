@@ -185,7 +185,7 @@ pub struct DelegatedTestRun {
 }
 ```
 
-Returned by `run_resolved_test` and `resolve_and_run_test`. The `run_id` is `Some` when the canonical TestRunner persisted a `RunKind::Test` record; `None` when persistence failed or no `RunStore` was provided. This is the **proof-of-persistence contract**: callers use `run_id` to determine whether to suppress their own persistence.
+Returned by `run_resolved_test` and `resolve_and_run_test`. The `run_id` is `Some` when the canonical TestRunner successfully began a `RunKind::Test` record; `None` when no record could be begun or no `RunStore` was provided. This is the **record-ownership contract**: callers suppress duplicate persistence only when `run_id` is present, and retain the delegated result when it is absent.
 
 ```rust
 impl DelegatedTestRun {
@@ -196,7 +196,7 @@ impl DelegatedTestRun {
 
 ### persist_to_run_store
 
-`persist_to_run_store` in `src/test_runner/runner.rs:622` now returns `Option<RunId>` — `Some` on successful `complete_run` that yields the canonical run identity, `None` on failure (logged, non-fatal).
+`persist_to_run_store` in `src/test_runner/runner.rs:622` now returns `Option<RunId>` — `Some` after `begin_run` yields the canonical run identity, `None` when beginning the record fails (logged, non-fatal). Artifact and completion writes remain best-effort.
 
 ### Callers
 

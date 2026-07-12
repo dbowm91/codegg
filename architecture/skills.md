@@ -11,7 +11,11 @@ The `skills` module provides specialized capabilities activated via `/skill:` co
 - Skill activation via `/skill:<name>` commands
 - System prompt augmentation with skill content
 
-The `.skills/` directory at the repository root is a repo-maintained copy of agent-facing skill documentation. It mirrors the skill files that the runtime loader reads from `~/.config/codegg/skills/` (global) and `.codegg/skills/` (project). The runtime `SkillIndex::load()` loads from the global and project directories, not from `.skills/`. The `.skills/` directory exists for version-controlled documentation and is not directly consumed by the runtime skill loader.
+The runtime loader reads skills from the global config directory and the
+project-local `.codegg/skills/` directory. This repository does not maintain a
+separate checked-in `.skills/` mirror; the bundled `util` skill is an example
+of the project-local layout. `SkillIndex::load()` loads from the global and
+project directories directly.
 
 ## Key Types
 
@@ -143,4 +147,4 @@ The `assemble_system_prompt()` in `src/agent/prompt.rs` accepts skill names but 
 ## See Also
 
 - [tool.md](tool.md) - `/skill:` tool
-- `.skills/skills/SKILL.md` - Detailed skill system guide
+- `src/skills/mod.rs` - Runtime loader implementation

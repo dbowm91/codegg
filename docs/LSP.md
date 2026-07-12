@@ -1,6 +1,6 @@
 # LSP (Language Server Protocol)
 
-> **Note:** This document is partially outdated. For comprehensive LSP documentation, see `architecture/lsp.md` and `.codegg/skills/lsp/SKILL.md`. The phase 2 stdio test layout now lives under `crates/egglsp/tests/`, with the fake server built as the `egglsp-test-server` bin target from the `egglsp` package.
+> **Note:** This document is partially outdated. For comprehensive LSP documentation, see [`architecture/lsp.md`](../architecture/lsp.md). The phase 2 stdio test layout now lives under `crates/egglsp/tests/`, with the fake server built as the `egglsp-test-server` bin target from the `egglsp` package.
 
 codegg integrates with Language Server Protocol (LSP) to provide IDE-like features including diagnostics, code navigation, and intelligent completions.
 

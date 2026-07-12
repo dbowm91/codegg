@@ -112,22 +112,15 @@ async fn active_test_command_routes_to_test_runner_as_delegated() {
     let store = Arc::new(MemRunStore::new());
     let tool = make_bash_tool(Some(active_config()), store.clone());
 
-    // Active routing will dispatch to TestRunner dispatch. For MVP, the
-    // TestRunner dispatcher still executes via raw shell internally, but
-    // it reports ActualExecutor::TestRunner and BashTool MUST mark
-    // ownership = DelegatedBackend so it does NOT persist its own record.
-    //
-    // (Workstream D-2 will wire this directly into resolve_and_run_test.)
+    // Active routing dispatches directly to the canonical TestRunner.
     let _ = tool
-        .execute(json!({"command": "cargo test --no-run"}))
+        .execute(json!({"command": "cargo test --help"}))
         .await
         .unwrap();
 
     let runs = all_runs(&store).await;
-    // BashTool must NOT have persisted a record — TestRunner is delegated.
-    // Note: the dispatch path still routes to test_runner which currently
-    // does not call into the real TestRunner subsystem (MVP), so we expect
-    // zero BashTool records for this command.
+    // BashTool must NOT have persisted a duplicate — TestRunner owns the
+    // canonical record.
     for m in &runs {
         assert_eq!(
             m.ownership,
@@ -417,10 +410,7 @@ async fn per_family_off_forces_raw_shell_persistence() {
     assert_eq!(runs.len(), 1);
     let m = &runs[0];
     // NativeTool was off, so dispatch falls back to raw shell.
-    // In MVP, dispatch_to_native_tool just runs git via Command::new directly
-    // and reports ActualBackend::NativeTool — so this test verifies the
-    // MVP path is consistent. When Workstream D-2 wires real routing,
-    // this test will need to be updated.
+    // Native dispatch runs git directly and reports the actual native argv.
     assert!(matches!(m.actual_backend, Some(ActualBackend::NativeTool | ActualBackend::RawShell)));
 }
 

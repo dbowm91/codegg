@@ -67,12 +67,22 @@ impl Component for PluginDialog {
     }
 
     fn render(&mut self, frame: &mut Frame, area: Rect, _theme: &Arc<Theme>) {
+        let chunks = Layout::vertical([
+            Constraint::Length(3),
+            Constraint::Min(1),
+            Constraint::Length(1),
+        ])
+        .split(area);
+
         let title_block = Block::default()
             .borders(Borders::ALL)
             .title(format!(" {} ", self.title))
             .border_style(Style::default().fg(self.theme.border));
 
-        let visible_lines = (area.height as usize).saturating_sub(5);
+        // The content paragraph has its own two-row border. Derive the
+        // viewport from the actual content chunk so the footer does not make
+        // the last rows unreachable.
+        let visible_lines = (chunks[1].height as usize).saturating_sub(2);
         let total_lines = self.lines.len();
         let max_scroll = total_lines.saturating_sub(visible_lines);
 
@@ -118,13 +128,6 @@ impl Component for PluginDialog {
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(self.theme.border)),
         );
-
-        let chunks = Layout::vertical([
-            Constraint::Length(3),
-            Constraint::Min(1),
-            Constraint::Length(1),
-        ])
-        .split(area);
 
         frame.render_widget(title_block, chunks[0]);
         frame.render_widget(content_para, chunks[1]);

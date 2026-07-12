@@ -474,4 +474,4 @@ These timeouts are configured client-side.
 - [client.md](client.md) - Remote TUI client, WebSocket connection, resume handshake
 - [protocol.md](protocol.md) - CoreRequest/CoreResponse and TuiMessage protocol envelopes
 - [bus.md](bus.md) - GlobalEventBus, PermissionRegistry, QuestionRegistry
-- `.opencode/skills/server/SKILL.md` - Implementation guide
+- `architecture/server.md` - Implementation guide

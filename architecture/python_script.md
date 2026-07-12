@@ -4,7 +4,7 @@ Module-based first-class Python scripting MVP with safety analysis, capability e
 
 ## Source
 
-`src/python_script/` (7 files)
+`src/python_script/` (8 files)
 
 ## Module Structure
 
@@ -81,7 +81,7 @@ pub struct DelegatedPythonRun {
 }
 ```
 
-Returned by `execute_and_persist_python_script`. The `run_id` is `Some` when the canonical subsystem persisted a `RunKind::Python` record; `None` when persistence failed. This is the **proof-of-persistence contract**.
+Returned by `execute_and_persist_python_script`. The `run_id` is `Some` when the canonical subsystem successfully began a `RunKind::Python` record; `None` when no record could be begun or no `RunStore` was provided. This is the **record-ownership contract**: callers suppress duplicate persistence only when `run_id` is present.
 
 ### execute_and_persist_python_script
 

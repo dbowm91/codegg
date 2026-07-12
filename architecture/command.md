@@ -279,7 +279,7 @@ pub async fn load_command_from_file(path: &Path) -> Result<Command, String>
 
 ## See Also
 
-- [.opencode/skills/command/SKILL.md](../.opencode/skills/command/SKILL.md) - Agent guidance for command module
+- [command.md](command.md) - Agent guidance for command module
 
 - [tui.md](tui.md) - TUI command input handling
-- [agent-loop/SKILL.md](../.opencode/skills/agent-loop/SKILL.md) - Agent execution with command templates
+- [agent.md](agent.md) - Agent execution with command templates

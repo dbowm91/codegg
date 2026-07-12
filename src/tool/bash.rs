@@ -33,10 +33,9 @@ use crate::tool::{Tool, ToolCategory};
 /// a delegated subsystem owns a canonical RunStore record.
 ///
 /// `delegated_run_id == None` paired with `ActualExecutor::TestRunner` or
-/// `PythonScript` indicates a correctness violation: the delegated
-/// dispatcher did not actually delegate. `BashTool::execute` MUST treat
-/// such outcomes as a fallback rather than silently suppressing
-/// persistence.
+/// `PythonScript` means the backend executed without obtaining a canonical
+/// RunStore record. `BashTool::execute` keeps that result (never retries the
+/// command) and uses caller persistence only when a store is available.
 #[derive(Debug, Clone)]
 pub struct DispatchOutcome {
     pub result: String,
@@ -453,8 +452,8 @@ impl BashTool {
         &self,
         command: &str,
         canonical_workdir: Option<&Path>,
+        timeout: Duration,
     ) -> Result<(String, std::process::Output), ToolError> {
-        let timeout = self.timeout;
         let output = tokio::time::timeout(timeout, async {
             let mut cmd = Command::new("sh");
             cmd.env_clear();
@@ -544,6 +543,7 @@ async fn dispatch_to_test_runner(
     argv: &[String],
     cwd: Option<&Path>,
     _validated_command: Option<&str>,
+    timeout: Duration,
 ) -> Result<DispatchOutcome, ToolError> {
     self.record_routing_metric(RoutingMetric {
         family: CommandIntentFamily::Tests,
@@ -555,7 +555,7 @@ async fn dispatch_to_test_runner(
         .map(Path::to_path_buf)
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
 
-    let timeout_secs = self.timeout.as_secs();
+    let timeout_secs = timeout.as_secs();
     let stall_timeout_secs = (timeout_secs / 2).max(15);
 
     // Build a TestRunRequest from the planner-validated argv. We use
@@ -620,11 +620,12 @@ async fn dispatch_to_native_tool(
     &self,
     command: &str,
     canonical_workdir: Option<&Path>,
+    timeout: Duration,
 ) -> Result<DispatchOutcome, ToolError> {
     let argv: Vec<&str> = command.split_whitespace().collect();
     if argv.is_empty() {
         let (result, output) = self
-            .execute_via_raw_shell(command, canonical_workdir)
+            .execute_via_raw_shell(command, canonical_workdir, timeout)
             .await?;
         return Ok(DispatchOutcome {
             result,
@@ -643,7 +644,7 @@ async fn dispatch_to_native_tool(
 
     let argv_owned: Vec<String> = argv.iter().map(|s| s.to_string()).collect();
     let tool_name = argv_owned[0].clone();
-    let output = tokio::time::timeout(self.timeout, async {
+    let output = tokio::time::timeout(timeout, async {
         let mut cmd = Command::new(argv[0]);
         cmd.args(&argv[1..]);
         if let Some(dir) = canonical_workdir {
@@ -694,8 +695,8 @@ async fn dispatch_to_python_script(
     &self,
     script: &str,
     mode: &str,
-    timeout_secs: Option<u64>,
     canonical_workdir: Option<&Path>,
+    timeout: Duration,
 ) -> Result<DispatchOutcome, ToolError> {
     let exec_mode = match mode {
         "analyze" => PythonExecutionMode::Analyze,
@@ -713,7 +714,7 @@ async fn dispatch_to_python_script(
         mode: exec_mode,
         cwd,
         workspace_root: None,
-        timeout_secs,
+        timeout_secs: Some(timeout.as_secs()),
         session_id: None,
         intent: Some(format!("command-intent:{mode}")),
     };
@@ -766,17 +767,16 @@ async fn dispatch_to_managed_process(
     &self,
     argv: &[String],
     cwd: Option<&Path>,
-    timeout_secs: Option<u64>,
+    timeout: Duration,
 ) -> Result<DispatchOutcome, ToolError> {
     if argv.is_empty() {
         return Err(ToolError::Execution("empty argv".to_string()));
     }
 
-    let timeout_duration = Duration::from_secs(timeout_secs.unwrap_or(120));
     let argv_owned = argv.to_vec();
     let cwd_owned = cwd.map(|p| p.to_path_buf());
 
-    let output = tokio::time::timeout(timeout_duration, async {
+    let output = tokio::time::timeout(timeout, async {
         let mut cmd = Command::new(&argv_owned[0]);
         cmd.args(&argv_owned[1..]);
         if let Some(dir) = &cwd_owned {
@@ -826,6 +826,7 @@ async fn dispatch_to_shell(
     &self,
     command: &str,
     canonical_workdir: Option<&Path>,
+    timeout: Duration,
 ) -> Result<DispatchOutcome, ToolError> {
     self.record_routing_metric(RoutingMetric {
         family: CommandIntentFamily::Tests, // generic
@@ -837,7 +838,9 @@ async fn dispatch_to_shell(
         "-c".to_string(),
         command.to_string(),
     ];
-    let (result, output) = self.execute_via_raw_shell(command, canonical_workdir).await?;
+    let (result, output) = self
+        .execute_via_raw_shell(command, canonical_workdir, timeout)
+        .await?;
     Ok(DispatchOutcome {
         result,
         output,
@@ -855,6 +858,7 @@ async fn dispatch_routing_decision(
     decision: &RoutingDecision,
     _plan: &CommandPlan,
     canonical_workdir: Option<&Path>,
+    timeout: Duration,
 ) -> Result<DispatchOutcome, ToolError> {
     match decision {
         RoutingDecision::RouteToTestRunner {
@@ -866,17 +870,17 @@ async fn dispatch_routing_decision(
                 argv,
                 canonical_workdir,
                 validated_command.as_deref(),
+                timeout,
             )
             .await
         }
         RoutingDecision::RouteToNativeTool { command, .. } => {
-            self.dispatch_to_native_tool(command, canonical_workdir)
+            self.dispatch_to_native_tool(command, canonical_workdir, timeout)
                 .await
         }
         RoutingDecision::RouteToPythonScripting {
             script,
             mode,
-            timeout_secs,
             ..
         } => {
             let mode_str = match mode {
@@ -885,19 +889,20 @@ async fn dispatch_routing_decision(
                 crate::command_planner::PythonModeGuess::Verify => "verify",
                 crate::command_planner::PythonModeGuess::Unknown => "analyze",
             };
-            self.dispatch_to_python_script(script, mode_str, *timeout_secs, canonical_workdir)
+            self.dispatch_to_python_script(script, mode_str, canonical_workdir, timeout)
                 .await
         }
         RoutingDecision::RouteToManagedProcess {
             argv,
             cwd,
-            timeout_secs,
+            ..
         } => {
-            self.dispatch_to_managed_process(argv, Some(cwd), *timeout_secs)
+            self.dispatch_to_managed_process(argv, Some(cwd), timeout)
                 .await
         }
         RoutingDecision::RouteToShell { command, .. } => {
-            self.dispatch_to_shell(command, canonical_workdir).await
+            self.dispatch_to_shell(command, canonical_workdir, timeout)
+                .await
         }
         RoutingDecision::Rejected { reason } => Err(ToolError::Execution(format!(
             "command rejected: {}",
@@ -1088,7 +1093,7 @@ impl Tool for BashTool {
         };
 
         let timeout_secs = input["timeout"].as_u64().unwrap_or(120);
-        let _timeout = Duration::from_secs(timeout_secs);
+        let execution_timeout = Duration::from_secs(timeout_secs.max(1));
 
         let workdir = input["workdir"].as_str().map(|s| s.to_string());
 
@@ -1214,57 +1219,37 @@ impl Tool for BashTool {
                     decision_ref,
                     plan_ref,
                     canonical_workdir.as_deref(),
+                    execution_timeout,
                 )
                 .await
             {
                 Ok(outcome) => {
-                    // Workstream E: if the dispatcher claims delegated
-                    // ownership but did not return a run_id, fall back to
-                    // raw shell with caller-owned persistence. This prevents
-                    // silently losing records due to a misconfigured
-                    // dispatcher.
+                    // A missing RunId means persistence was unavailable, not
+                    // that execution failed. The delegated backend has already
+                    // run the command; retrying through the shell here would
+                    // execute tests/scripts twice and could repeat mutations.
                     let is_delegated_intent = matches!(
-                        outcome.executor,
+                        &outcome.executor,
                         ActualExecutor::TestRunner { .. } | ActualExecutor::PythonScript { .. }
                     );
                     if is_delegated_intent && outcome.delegated_run_id.is_none() {
                         tracing::warn!(
                             "Delegated dispatcher for {:?} returned no RunId; \
-                             falling back to raw shell",
+                             retaining the delegated result and using caller persistence when available",
                             outcome.executor
                         );
                         if let Some(ref intent) = intent {
                             self.record_routing_metric(RoutingMetric {
                                 family: intent_kind_to_family(intent.kind)
                                     .unwrap_or(CommandIntentFamily::Tests),
-                                decision: "active_routing_delegation_no_runid_fallback"
-                                    .to_string(),
-                                fallback: true,
+                                decision: "active_routing_delegation_without_runid".to_string(),
+                                fallback: self.run_store.is_some(),
                             });
                         }
-                        let (result, output) = self
-                            .execute_via_raw_shell(command, canonical_workdir.as_deref())
-                            .await?;
-                        let argv = vec![
-                            "sh".to_string(),
-                            "-c".to_string(),
-                            command.to_string(),
-                        ];
-                        let actual = ActualExecutor::RawShell {
-                            command: command.to_string(),
-                            argv: argv.clone(),
-                        };
-                        let outcome = ExecutionOutcome::with_fallback(
-                            planned_backend,
-                            actual,
-                            "delegated dispatcher did not return RunId",
-                        );
-                        (result, output, outcome, None)
-                    } else {
-                        let exec_outcome =
-                            ExecutionOutcome::identity(planned_backend, outcome.executor.clone());
-                        (outcome.result, outcome.output, exec_outcome, outcome.delegated_run_id)
                     }
+                    let exec_outcome =
+                        ExecutionOutcome::identity(planned_backend, outcome.executor.clone());
+                    (outcome.result, outcome.output, exec_outcome, outcome.delegated_run_id)
                 }
                 Err(e) => {
                     // Fallback to raw shell on dispatch failure.
@@ -1283,7 +1268,11 @@ impl Tool for BashTool {
                         e
                     );
                     let (result, output) = self
-                        .execute_via_raw_shell(command, canonical_workdir.as_deref())
+                        .execute_via_raw_shell(
+                            command,
+                            canonical_workdir.as_deref(),
+                            execution_timeout,
+                        )
                         .await?;
                     let argv = vec![
                         "sh".to_string(),
@@ -1310,7 +1299,11 @@ impl Tool for BashTool {
                 command.to_string(),
             ];
             let (result, output) = self
-                .execute_via_raw_shell(command, canonical_workdir.as_deref())
+                .execute_via_raw_shell(
+                    command,
+                    canonical_workdir.as_deref(),
+                    execution_timeout,
+                )
                 .await?;
             let planned = plan_to_planned_backend(
                 plan.as_ref().map(|p| &p.backend),
@@ -1333,6 +1326,10 @@ impl Tool for BashTool {
         // Determine RunKind and ownership from the ACTUAL execution outcome (not
         // the planned decision). Workstream B: persistence provenance must
         // reflect what ran, not what was planned.
+        let delegated_executor = matches!(
+            &execution_outcome.actual,
+            ActualExecutor::TestRunner { .. } | ActualExecutor::PythonScript { .. }
+        );
         let ownership = ownership_for_outcome(&execution_outcome);
 
         // Workstream E: persistence suppression requires PROOF of delegated
@@ -1343,12 +1340,13 @@ impl Tool for BashTool {
         let persist_run = match (ownership, delegated_run_id.as_ref()) {
             (codegg_core::run_store::RunOwnership::DelegatedBackend, Some(_)) => false,
             (codegg_core::run_store::RunOwnership::DelegatedBackend, None) => {
-                // Delegated claimed but no run_id: treat as caller-owned so
-                // we never silently lose persistence.
+                // The backend already executed. If a shared store exists,
+                // persist the result once from the caller; without a store
+                // there is nowhere for BashTool to persist it.
                 tracing::warn!(
-                    "delegated ownership without run_id — falling back to caller persistence"
+                    "delegated ownership without run_id — using caller persistence when available"
                 );
-                true
+                self.run_store.is_some()
             }
             _ => true,
         };
@@ -1356,7 +1354,11 @@ impl Tool for BashTool {
         // when used below in the persistence draft — the value was
         // consumed by the match above. We rely on the fact that
         // ownership_for_outcome is a pure function.
-        let ownership = ownership_for_outcome(&execution_outcome);
+        let ownership = if delegated_executor && delegated_run_id.is_none() {
+            codegg_core::run_store::RunOwnership::Caller
+        } else {
+            ownership_for_outcome(&execution_outcome)
+        };
 
         // Persist to run store if available and this is not a delegated backend.
         if persist_run {
@@ -1898,7 +1900,7 @@ mod tests {
         cic.route_tests = Some(RouteLevel::Observe);
 
         let tool = BashTool::new().with_command_intent_config(cic);
-        let input = serde_json::json!({"command": "cargo test --no-run"});
+        let input = serde_json::json!({"command": "cargo test --help"});
         let result = tool.execute(input).await.unwrap();
         assert!(result.contains("intent: test"));
         assert!(result.contains("backend: test-runner"));
@@ -1913,7 +1915,7 @@ mod tests {
         cic.route_tests = Some(RouteLevel::Off);
 
         let tool = BashTool::new().with_command_intent_config(cic);
-        let input = serde_json::json!({"command": "cargo test --no-run"});
+        let input = serde_json::json!({"command": "cargo test --help"});
         let result = tool.execute(input).await.unwrap();
         assert!(result.contains("intent: test"));
         assert!(result.contains("routing: disabled"));
@@ -2101,7 +2103,7 @@ mod tests {
 
         let tool = BashTool::new().with_command_intent_config(cic);
         // Use a test command so family_enabled = true for metadata annotation.
-        let input = serde_json::json!({"command": "cargo test --no-run"});
+        let input = serde_json::json!({"command": "cargo test --help"});
         let result = tool.execute(input).await.unwrap();
         assert!(result.contains("intent: test"), "must classify as test");
         assert!(
@@ -2257,12 +2259,12 @@ mod tests {
         cic.mode = Some(crate::config::schema::CommandIntentMode::Active);
 
         let tool = BashTool::new().with_command_intent_config(cic);
-        let input = serde_json::json!({"command": "cargo test --no-run"});
+        let input = serde_json::json!({"command": "cargo test --help"});
         let result = tool.execute(input).await.unwrap();
-        // Test command should execute (MVP: via raw shell with test runner metadata)
+        // Test command should execute through the canonical TestRunner.
         assert!(
-            result.contains("[exit code:"),
-            "command must produce exit code in output"
+            result.starts_with("Test run "),
+            "command must produce a structured test report"
         );
         assert!(
             result.contains("mode: active"),

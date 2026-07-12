@@ -276,4 +276,4 @@ Snapshot can be enabled via config:
 
 - [agent.md](agent.md) - Integration with agent loop
 - [tool.md](tool.md) - File-modifying tools
-- `.opencode/skills/snapshot/SKILL.md` - Skill guide for agents
+- `architecture/snapshot.md` - Snapshot implementation guide

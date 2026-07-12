@@ -170,6 +170,18 @@ async fn test_bash_tool_custom_timeout() {
 }
 
 #[tokio::test]
+async fn test_bash_tool_input_timeout_overrides_tool_default() {
+    let tool = BashTool::new().with_timeout(Duration::from_secs(5));
+    let result = tool
+        .execute(serde_json::json!({
+            "command": "sleep 2",
+            "timeout": 1
+        }))
+        .await;
+    assert!(matches!(result, Err(ToolError::Timeout(_))));
+}
+
+#[tokio::test]
 async fn test_bash_tool_parameters() {
     let tool = BashTool::new();
     let params = tool.parameters();

@@ -395,7 +395,7 @@ These `tracing::debug!` / `tracing::warn!` lines log only
 `config(encrypted)`, `user_store`, ...) and the env var name; they
 **never** log secret prefix or suffix of the resolved key. New log
 lines that touch auth must follow the same rule — see
-`.opencode/skills/auth/SKILL.md` for the security policy.
+`architecture/auth.md` for the security policy.
 
 ### 9. Copilot (`src/provider/copilot.rs`)
 

@@ -240,6 +240,10 @@ pub struct ToolRegistryOptions {
     /// When `Some`, Python and Bash tools persist structured run manifests
     /// with artifact handles to the filesystem index.
     pub run_store: Option<Arc<dyn codegg_core::run_store::RunStore>>,
+    /// Optional command-intent classification and routing configuration.
+    /// When `Some`, the Bash tool annotates commands and can actively route
+    /// enabled families to their canonical backends.
+    pub command_intent: Option<crate::config::schema::CommandIntentConfig>,
 }
 
 impl ToolRegistry {
@@ -264,6 +268,11 @@ impl ToolRegistry {
             crate::tool::bash::BashTool::default().with_run_store(store.clone())
         } else {
             crate::tool::bash::BashTool::default()
+        };
+        let bash_tool = if let Some(command_intent) = options.command_intent.clone() {
+            bash_tool.with_command_intent_config(command_intent)
+        } else {
+            bash_tool
         };
         registry.register(bash_tool);
         registry.register(crate::tool::read::ReadTool::default());
@@ -532,6 +541,7 @@ impl ToolRegistry {
             evidence_config: integrated.evidence,
             deterministic_config: integrated.deterministic,
             preflight_config: integrated.preflight,
+            command_intent: config.command_intent.clone(),
             ..ToolRegistryOptions::default()
         })
     }
@@ -635,6 +645,7 @@ impl ToolRegistry {
             deterministic_config: integrated.deterministic,
             preflight_config: integrated.preflight,
             run_store: None,
+            command_intent: config.command_intent.clone(),
         })
     }
 
@@ -668,6 +679,7 @@ impl ToolRegistry {
             deterministic_config: None,
             preflight_config: None,
             run_store: None,
+            command_intent: None,
         })
     }
 

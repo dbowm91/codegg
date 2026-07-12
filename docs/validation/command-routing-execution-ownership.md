@@ -58,10 +58,10 @@ pub struct DelegatedPythonRun {
 
 Contract rules:
 
-1. `RunOwnership::DelegatedBackend` is valid only when the delegated subsystem actually executed and persisted a canonical record.
-2. A delegated result must carry a real `run_id` (or equivalent proof).
+1. `RunOwnership::DelegatedBackend` is valid when the delegated subsystem actually executed and successfully began its canonical record. If no RunStore record can be begun, the caller retains the result and may persist it once when a store is available.
+2. A delegated result carries a real `run_id` when the canonical record exists.
 3. BashTool never infers delegated ownership from the planned routing decision alone.
-4. If delegated execution cannot start or cannot prove ownership, BashTool falls back to caller-owned persistence with a warning log.
+4. If delegated execution cannot start, BashTool falls back to raw shell. If execution succeeds without a RunStore record, BashTool never retries the command; it uses caller-owned persistence once when possible.
 
 ### Workstream B: Canonical TestRunner wiring
 
@@ -173,7 +173,7 @@ ownership + 7 new real-delegation tests):
 
 | ID | Test | Asserts |
 |----|------|---------|
-| H-1 | `bash_tool_routes_active_test_through_canonical_test_runner` | Active `cargo test --no-run` invokes canonical TestRunner; argv matches; one canonical Test record; no shell reconstruction. |
+| H-1 | `bash_tool_routes_active_test_through_canonical_test_runner` | Active `cargo test --help` invokes canonical TestRunner; argv matches; one canonical Test record; no shell reconstruction. |
 | H-2 | `bash_tool_routes_active_python_through_canonical_executor` | Active Python script invokes canonical PythonScript executor; one Python record; raw stdout marked unsafe. |
 | H-3 | `observe_mode_test_persists_as_raw_shell` | Observe-mode test command persists caller-owned `RawShell` record (not delegated). |
 | H-4 | `one_logical_execution_produces_exactly_one_record` | After a delegated execution, the RunStore contains exactly one canonical record owned by the delegated subsystem. |
@@ -213,7 +213,7 @@ ownership + 7 new real-delegation tests):
 | `python_sandbox_adversarial` | 57 | ✅ Pass |
 | `context_projection_adversarial` | 90 | ✅ Pass |
 | `test_runner` | 145 | ✅ Pass |
-| `tool::bash` | 68 | ✅ Pass (serialized; 3 tests timeout when 4 parallel `cargo test --no-run` invocations share a Cargo.lock — pre-existing concurrency issue unrelated to this corrective pass) |
+| `tool::bash` | 68 | ✅ Pass (serialized; command-routing tests use `cargo test --help` to avoid nested Cargo build contention) |
 | `python_script` | 182 | ✅ Pass |
 
 ### Static Validation

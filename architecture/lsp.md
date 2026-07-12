@@ -1771,7 +1771,7 @@ This pass closes the gap between "implemented by commit message" and "verified b
 | 4 — Context diagnostics | `LspContextDiagnostics` inspectable on demand via `/lsp-context-diagnostics`; normal agent prompts remain compact (no diagnostic bloat). |
 | 5 — Disk-cache / lifecycle decision consistency | Disk cache remains decision-only; `/lsp-start` and `/lsp-replay-docs` are NOT registered; `/lsp-restart` and `/lsp-stop` remain functional. |
 | 6 — Safety-boundary static sweep | 0 disallowed matches; `mark_preview_applied` only called after `all_succeeded`. |
-| 7 — Docs and roadmap reconciliation | This section; `AGENTS.md`, `.opencode/skills/lsp/SKILL.md` (v1.9.0), `README.md`, `CHANGELOG.md`, and `plans/lsp_phase_13_17_roadmap.md` updated. |
+| 7 — Docs and roadmap reconciliation | This section; `AGENTS.md`, `README.md`, `CHANGELOG.md`, and `plans/lsp_phase_13_17_roadmap.md` updated. |
 | 8 — Focused test matrix | All targeted tests pass; formatting clean. |
 
 ### New Tests Added (52 total)
@@ -3705,7 +3705,7 @@ compatibility report.
 | Pass 8 | Code-action previewable-only assertions | `run_code_action_check` drives a non-empty range based on `code_action_position`; opt-in `code_action_min_edit_bearing: usize` (default 0) makes null / empty / 0-edit-bearing responses fail. Command-only results are classified as `KnownLimitation` unless `code_action_allow_command_only` is set. |
 | Pass 9 | Real `decode_semantic_tokens` in the harness | Smoke harness decodes the raw delta-encoded stream via `egglsp::decode_semantic_tokens` with the server's `SemanticTokenLegendSnapshot`, asserts each `(line, col, length)` tuple is in-range against the file's line/byte content, and verifies the legend is non-empty. A second optional check records the per-token-type breakdown for human-readable reports. |
 | Pass 10 | Per-server actionable shutdown evidence | `ForceKilled` / `TimeoutExpired` outcomes are classified against the fixture's `shutdown_requirement`: clangd's daemon-mode hang → `KnownLimitation` with a 5-line stderr-tail excerpt surfaced in the `SmokeCheck.detail` and on `LspCompatibilityReport.stderr_tail`. |
-| Pass 11 | Docs + final closure | `architecture/lsp.md`, `.opencode/skills/lsp/SKILL.md`, `AGENTS.md`, `README.md` updated; lib + integration suites green; this section added. |
+| Pass 11 | Docs + final closure | `architecture/lsp.md`, `AGENTS.md`, `README.md` updated; lib + integration suites green; this section added. |
 
 ### Architectural invariants preserved
 
@@ -3730,7 +3730,7 @@ compatibility report.
 ### Pass 11 — Docs + final closure checklist
 
 - [x] `architecture/lsp.md` updated with this section
-- [x] `.opencode/skills/lsp/SKILL.md` references Phase 4 closure
+- [x] `architecture/lsp.md` references Phase 4 closure
 - [x] `AGENTS.md` module row updated to summarize closure
 - [x] `README.md` Phase 4 paragraph extended with closure summary
 - [x] `cargo test -p egglsp --lib -- --skip aggregate_grace` green (532 lib tests)
@@ -3761,13 +3761,13 @@ matrix on every run.
 | Pass 8 | Strengthened rename smoke | `RenameEvaluation` enum (`Pass { matched_files, range_covers_pos }` / `NoFileMatch` / `RangeMissesIdentifier`); `identifier_range_at` walks the line text to find identifier bounds; `evaluate_rename_workspace_edit` walks both `WorkspaceEdit.changes` and `document_changes` and verifies the response touches at least one expected file AND the edit range covers the identifier at `pos`. |
 | Pass 9 | Full 25-operation matrix | `populate_operation_matrix` walks every `LspSemanticOperation` variant and emits a default `LspOperationCompatibility` for any variant not already exercised. Consumers see a complete matrix (advertised vs exercised vs never-tested) per server. |
 | Pass 10 | Execute and preserve the full matrix | All 4 pinned servers exercised end-to-end (rust-analyzer, basedpyright, typescript-language-server, clangd). One JSON per server is preserved under `target/lsp-compatibility/`. |
-| Pass 11 | Docs + final closure | This section, `AGENTS.md` module row, and `.opencode/skills/lsp/SKILL.md` updated. |
+| Pass 11 | Docs + final closure | This section, `AGENTS.md` module row, and `README.md` updated. |
 
 ### Pass 11 — Final closure checklist
 
 - [x] `architecture/lsp.md` updated with this section
 - [x] `AGENTS.md` module row updated to summarize closure
-- [x] `.opencode/skills/lsp/SKILL.md` references Phase 4 final closure (Passes 1–11)
+- [x] `architecture/lsp.md` references Phase 4 final closure (Passes 1–11)
 - [x] `crates/egglsp/src/position.rs` shared by `signature_help` and `decode_semantic_tokens`
 - [x] `LspCompatibilityReport.shutdown_trace: Option<LspShutdownTrace>` populated by harness
 - [x] `LspCompatibilityReport.operation_support` covers all 25 `LspSemanticOperation` variants
@@ -3834,7 +3834,7 @@ addresses the remaining Phase 4 evidence-integrity gaps:
 | Pass 7 | Negotiated position encoding | `LspClient::position_encoding()` returns the live negotiated encoding (`PositionEncoding::{Utf8, Utf16, Utf32}`); `set_position_encoding()` records it during `initialize`. `LspCapabilityDetails.position_encoding` carries the negotiated value when the server advertises it. `LspCompatibilityReport.position_encoding` and `position_encoding_assumed` record the negotiated value and whether UTF-16 was assumed. Semantic-token bounds now use `client.position_encoding()` instead of assuming UTF-16. |
 | Pass 8 | Fixture-aware fallback requirements | `RealServerFixture::requirement_for(op)` derives `RequiredIfAdvertised` for operations the fixture opts into (implementation targets, rename expectation, format-preview request, code-action min-edit-bearing, type-hierarchy targets) and `Optional` otherwise. `populate_operation_matrix` uses this so the fallback records reflect fixture expectations and the closure detects advertised-but-unexercised coverage gaps. |
 | Pass 9 | Matrix manifest preservation | `update_matrix_manifest()` writes `target/lsp-compatibility/matrix-manifest.json` per server (commit SHA, `GITHUB_RUN_ID`, per-server artifact path + version + position encoding + record counts). The CI workflow `.github/workflows/lsp-real-server.yml` adds a `matrix-summary` job that downloads all per-server artifacts, verifies the manifest exists, and uploads it as `lsp-compat-matrix-manifest`. |
-| Pass 10 | Regression + docs | All passes pass `cargo check` and the production integration suite (`production_protocol_stdio`, `production_semantic_stdio`, `production_service_stdio`, `supervisor_restart_stdio`, `empty_diagnostics_readiness`). Two pre-existing flaky unit tests (`smoke_harness_force_kills_hung_server` and rust-analyzer `typeHierarchy/prepare` against the installed version) remain red and are unrelated to this cleanup. This section, `AGENTS.md`, and `.opencode/skills/lsp/SKILL.md` document the new evidence. |
+| Pass 10 | Regression + docs | All passes pass `cargo check` and the production integration suite (`production_protocol_stdio`, `production_semantic_stdio`, `production_service_stdio`, `supervisor_restart_stdio`, `empty_diagnostics_readiness`). Two pre-existing flaky unit tests (`smoke_harness_force_kills_hung_server` and rust-analyzer `typeHierarchy/prepare` against the installed version) remain red and are unrelated to this cleanup. This section, `AGENTS.md`, and `README.md` document the new evidence. |
 
 ### Phase 4 final closure definition (Pass 10)
 
@@ -4155,7 +4155,7 @@ After an LSP server restart, previously collected context items may be marked as
 
 ## See Also
 
-- [.opencode/skills/lsp/SKILL.md](../.opencode/skills/lsp/SKILL.md) - LSP skill guide
+- [lsp.md](lsp.md) - LSP implementation guide
 - [tool.md](tool.md) - LSP tool wrapper
 - [plans/lsp_phase1_cleanup_and_phase2_scripted_stdio_harness.md](../plans/lsp_phase1_cleanup_and_phase2_scripted_stdio_harness.md) - Phase 1 + Phase 2 plan
 - [plans/lsp_phase4_broader_compatibility_and_capability_adoption.md](../plans/lsp_phase4_broader_compatibility_and_capability_adoption.md) - Phase 4 plan

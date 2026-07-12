@@ -73,6 +73,7 @@ pub fn build_session_tool_registry(
         deterministic_config: integrated.deterministic,
         preflight_config: integrated.preflight,
         run_store,
+        command_intent: config.command_intent.clone(),
     });
 
     // Register the task/subagent tool when a runtime is available.

@@ -11,8 +11,11 @@ use codegg::tui::app::state::session::{ChangedFile, DiffStatsState};
 use codegg::tui::app::App;
 use codegg::tui::app::{CompletionType, TodoEntry};
 use codegg::tui::components::completion_overlay::{CompletionItem, CompletionItemKind};
+use codegg::tui::components::component::Component;
+use codegg::tui::components::dialogs::info::{InfoDialog, InfoType};
 use codegg::tui::components::messages::SearchMatch;
 use codegg::tui::route::Route;
+use codegg::tui::theme::Theme;
 use codegg::tui::Dialog;
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
@@ -143,6 +146,32 @@ fn app_with_tool_calls() -> App {
     );
 
     app
+}
+
+#[test]
+fn info_dialog_scroll_reaches_last_line() {
+    let theme = std::sync::Arc::new(Theme::dark());
+    let lines: Vec<String> = (0..20).map(|i| format!("line {i}")).collect();
+    let mut dialog = InfoDialog::new(theme.clone(), InfoType::Stats, lines);
+
+    for _ in 0..20 {
+        dialog.handle_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Down,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+    }
+
+    let backend = TestBackend::new(40, 12);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| dialog.render(frame, frame.area(), &theme))
+        .unwrap();
+
+    let text = text_in_buffer(terminal.backend().buffer());
+    assert!(
+        text.contains("line 19"),
+        "scrolling to the end must render the final line, got:\n{text}"
+    );
 }
 
 /// Create a test app with streaming active.

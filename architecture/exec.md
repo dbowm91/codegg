@@ -177,4 +177,4 @@ Currently `mcp_service` is hardcoded to `None`, meaning MCP tools are not availa
 ## See Also
 
 - [agent.md](agent.md) - AgentLoop used for execution
-- [.opencode/skills/exec/SKILL.md](../.opencode/skills/exec/SKILL.md) - Skill guidance for exec mode
+- [exec.md](exec.md) - Exec-mode guidance

@@ -122,5 +122,5 @@ tts.speak("Task completed successfully").await?;
 
 ## See Also
 
-- [.opencode/skills/tts/SKILL.md](../.opencode/skills/tts/SKILL.md) - TTS skill with UI integration details
+- [tts.md](tts.md) - TTS with UI integration details
 - [tui.md](tui.md) - TUI notifications that could trigger TTS

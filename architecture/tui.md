@@ -154,7 +154,7 @@ Sidebar git metadata (branch, dirty) is computed in the background rather than o
 
 Multi-line command results no longer get joined into a single toast. Toasts are a short-feedback channel; collapsing a 30-line shell list or memory summary into one toast eats the toast column and pushes other toasts out before they can be read.
 
-`App::show_short_or_info(info_type, lines)` (`src/tui/app/mod.rs`) routes output to either a short toast (≤3 lines) or the scrollable `InfoDialog`. The dialog is reused if already open — re-opening it pushes focus only once, not per command. Empty input returns an "Usage:" warning toast. Use this helper for any handler that may emit a non-trivial number of lines; reserve raw `toasts.info(joined)` for genuinely single-line responses (`/status`, `/cost`).
+`App::show_short_or_info(info_type, lines)` (`src/tui/app/mod.rs`) routes output to either a short toast (≤3 lines) or the scrollable `InfoDialog`. The dialog is reused if already open — re-opening it pushes focus only once, not per command. Callers should provide their own empty-state or usage message before invoking the helper. Use this helper for any handler that may emit a non-trivial number of lines; reserve raw `toasts.info(joined)` for genuinely single-line responses (`/status`, `/cost`).
 
 ### Remote TUI Snapshot Sequencing
 
@@ -1024,4 +1024,4 @@ cargo test --test tui_render
 - [agent.md](agent.md) - AgentLoop that processes TUI commands
 - [bus.md](bus.md) - GlobalEventBus and event types
 - [session.md](session.md) - Session storage
-- `.opencode/skills/tui/SKILL.md` - Detailed TUI development guide
+- `architecture/tui.md` - Detailed TUI development guide

@@ -214,6 +214,40 @@ fn with_session_config_defaults_preserves_resolved_backends() {
     );
 }
 
+#[tokio::test]
+async fn with_session_config_defaults_wires_command_intent_to_bash() {
+    use codegg::config::schema::{CommandIntentMode, RouteLevel};
+    use serde_json::json;
+
+    let mut config = codegg::config::schema::Config::default();
+    config.command_intent = Some(codegg::config::schema::CommandIntentConfig {
+        mode: Some(CommandIntentMode::Active),
+        route_safe_commands: Some(true),
+        route_tests: Some(RouteLevel::Active),
+        ..Default::default()
+    });
+    let todo_state =
+        std::sync::Arc::new(tokio::sync::Mutex::new(codegg::task_state::TodoState::new()));
+    let registry = ToolRegistry::with_session_config_defaults(
+        &config,
+        todo_state,
+        codegg::model_profile::types::TaskStatePolicy::explicit_todo(),
+        None,
+        None,
+    );
+
+    let output = registry
+        .get("bash")
+        .expect("bash must be registered")
+        .execute(json!({"command": "cargo test --help"}))
+        .await
+        .expect("active routing should execute the supervised test path");
+    assert!(
+        output.starts_with("Test run passed."),
+        "configured active routing must reach TestRunner, got: {output}"
+    );
+}
+
 #[test]
 fn disabling_lsp_does_not_remove_other_tools() {
     let mut backends = ToolBackendConfig::all_native();
