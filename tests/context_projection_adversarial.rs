@@ -717,14 +717,14 @@ fn deeply_nested_dollar_parens_does_not_crash() {
 fn deeply_nested_backticks_does_not_crash() {
     // Nested backtick-like patterns
     let cmd = "echo `echo `echo `echo test```";
-    let shape = parse_shell_words(&cmd);
+    let shape = parse_shell_words(cmd);
     assert!(matches!(shape, ShellShape::ComplexShell { .. }));
 }
 
 #[test]
 fn mixed_operators_and_substitution_does_not_crash() {
     let cmd = "echo $(echo $(echo $(cat /etc/passwd))) | grep root && rm -rf /";
-    let shape = parse_shell_words(&cmd);
+    let shape = parse_shell_words(cmd);
     assert!(matches!(shape, ShellShape::ComplexShell { .. }));
     let intent = classify_command(cmd);
     assert_eq!(intent.kind, CommandIntentKind::RawShell);

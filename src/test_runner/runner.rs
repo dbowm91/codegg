@@ -960,10 +960,12 @@ mod tests {
 
     #[test]
     fn build_summary_counts_from_parse_state() {
-        let mut state = TestParseState::default();
-        state.tests_seen = 10;
-        state.tests_passed = 8;
-        state.tests_failed = 2;
+        let state = TestParseState {
+            tests_seen: 10,
+            tests_passed: 8,
+            tests_failed: 2,
+            ..Default::default()
+        };
 
         let summary = build_summary(&state, Some(1));
         assert_eq!(summary, "8 passed, 2 failed");

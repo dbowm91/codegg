@@ -1069,8 +1069,19 @@ impl FsRunStore {
         Ok(())
     }
 
-    async fn rewrite_index(&self, entries: &[IndexEntry]) -> Result<(), RunStoreError> {
-        let _lock = self.lock.lock().await;
+    /// Rewrite the JSONL index file under the serialization lock.
+    ///
+    /// **Atomicity contract**: callers MUST hold `self.lock` for the
+    /// duration of the call (this method is invoked from inside an
+    /// already-held lock guard at every call site). Holding the same
+    /// `tokio::sync::Mutex` across `load_index` + `rewrite_index` from a
+    /// single task is the only correct way to serialize index mutations;
+    /// `tokio::sync::Mutex` is **not reentrant**, so calling
+    /// `self.lock.lock().await` twice from the same task deadlocks the
+    /// current task permanently. The historical
+    /// `fs_store_complete_updates_index` hang was caused by exactly this
+    /// re-acquire in `complete_run`.
+    async fn rewrite_index_locked(&self, entries: &[IndexEntry]) -> Result<(), RunStoreError> {
         let path = self.index_path();
         let tmp_path = path.with_extension("jsonl.tmp");
 
@@ -1367,7 +1378,7 @@ impl RunStore for FsRunStore {
             entry.status = manifest.status.clone();
             entry.completed_at = manifest.completed_at;
         }
-        self.rewrite_index(&entries).await?;
+        self.rewrite_index_locked(&entries).await?;
 
         Ok(manifest)
     }
@@ -1977,13 +1988,47 @@ mod tests {
         };
         let artifact_ref = store.write_artifact(&handle, artifact).await.unwrap();
 
-        let mut runs = store.runs.write();
-        let manifest = runs.get_mut(&handle.run_id).unwrap();
-        manifest.artifacts[0].sha256 = "bad_hash".to_string();
-        drop(runs);
+        let valid = store.read_artifact(&artifact_ref.artifact_id, None).await;
+        assert!(
+            valid.is_ok(),
+            "pre-condition: uncorrupted artifact must read successfully",
+        );
+        let valid_chunk = valid.unwrap();
+        assert_eq!(valid_chunk.data, b"data");
+        assert_eq!(valid_chunk.total_bytes, 4);
+
+        {
+            let mut artifacts = store.artifacts.write();
+            let (_, _, record) = artifacts.get_mut(&artifact_ref.artifact_id).unwrap();
+            let original_sha = record.sha256.clone();
+            record.sha256 = "bad_hash".to_string();
+            assert_ne!(record.sha256, original_sha);
+        }
 
         let result = store.read_artifact(&artifact_ref.artifact_id, None).await;
-        assert!(result.is_err());
+        assert!(result.is_err(), "corrupted sha256 must surface an error");
+        let err = result.err().unwrap();
+        match err {
+            RunStoreError::IntegrityViolation(msg) => {
+                assert!(
+                    msg.contains(artifact_ref.artifact_id.as_str()),
+                    "integrity error must identify the artifact id, got: {}",
+                    msg
+                );
+            }
+            other => panic!("expected IntegrityViolation, got {:?}", other),
+        }
+
+        let ranged = store
+            .read_artifact(
+                &artifact_ref.artifact_id,
+                Some(ByteRange { start: 0, end: 2 }),
+            )
+            .await;
+        assert!(
+            ranged.is_err(),
+            "ranged reads must also be rejected when integrity fails",
+        );
     }
 
     #[tokio::test]
@@ -2151,5 +2196,66 @@ mod tests {
         let runs = store.list_runs(RunQuery::default()).await.unwrap();
         assert_eq!(runs.len(), 1);
         assert_eq!(runs[0].status, RunStatus::Complete);
+    }
+
+    /// Regression for the workstream-A deadlock: `complete_run` previously
+    /// acquired `self.lock` and then called `rewrite_index`, which tried to
+    /// acquire the same non-reentrant `tokio::sync::Mutex` from the same
+    /// task. The second `.await` would never resolve. Running the lifecycle
+    /// repeatedly exercises the path.
+    #[tokio::test]
+    async fn fs_store_complete_updates_index_repeated() {
+        for i in 0..25 {
+            let tmp = tempfile::tempdir().unwrap();
+            let store = FsRunStore::new(tmp.path().to_path_buf());
+
+            let handle = store.begin_run(test_draft(RunKind::Test)).await.unwrap();
+            let completed = store.complete_run(handle, test_completion()).await.unwrap();
+            assert_eq!(completed.status, RunStatus::Complete, "iteration {i}");
+
+            let runs = store.list_runs(RunQuery::default()).await.unwrap();
+            assert_eq!(runs.len(), 1, "iteration {i}");
+            assert_eq!(runs[0].status, RunStatus::Complete, "iteration {i}");
+        }
+    }
+
+    /// Parity test with `mem_store_integrity_violation`: filesystem store
+    /// must reject reads when the persisted artifact bytes do not match the
+    /// recorded SHA-256 in the manifest.
+    #[tokio::test]
+    async fn fs_store_integrity_violation() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = FsRunStore::new(tmp.path().to_path_buf());
+
+        let handle = store
+            .begin_run(test_draft(RunKind::RawShell))
+            .await
+            .unwrap();
+        let artifact = ArtifactInput {
+            kind: ArtifactKind::Stdout,
+            data: b"hello".to_vec(),
+            mime_type: "text/plain".to_string(),
+            safe_for_model: true,
+        };
+        let artifact_ref = store.write_artifact(&handle, artifact).await.unwrap();
+
+        let valid = store.read_artifact(&artifact_ref.artifact_id, None).await;
+        assert!(valid.is_ok());
+
+        let stdout_path = handle.run_dir.join("stdout.log");
+        assert!(stdout_path.exists());
+        fs::write(&stdout_path, b"tampered")
+            .await
+            .expect("corrupt artifact bytes on disk");
+
+        let result = store.read_artifact(&artifact_ref.artifact_id, None).await;
+        assert!(
+            result.is_err(),
+            "tampered artifact must surface integrity error"
+        );
+        match result.err().unwrap() {
+            RunStoreError::IntegrityViolation(_) => {}
+            other => panic!("expected IntegrityViolation, got {:?}", other),
+        }
     }
 }
