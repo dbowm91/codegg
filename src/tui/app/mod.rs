@@ -5,6 +5,7 @@ mod types;
 pub use types::{CompletionType, Dialog, HistoryEntry, SessionStatus, TodoEntry, TuiMsg};
 
 pub mod state;
+pub use state::session::GitSidebarInfo;
 pub use state::*;
 
 use super::components::component::DialogType;
@@ -380,6 +381,12 @@ pub enum TuiCommand {
         root: Option<String>,
         branch: Option<String>,
         dirty: bool,
+        staged_count: usize,
+        unstaged_count: usize,
+        untracked_count: usize,
+        conflicted_count: usize,
+        ahead: Option<i32>,
+        behind: Option<i32>,
         error: Option<String>,
     },
     RunHumanShell {
@@ -2825,10 +2832,19 @@ impl App {
                 .root
                 .clone()
                 .or_else(|| Some(sess.project_id.clone()));
-            self.sidebar
-                .set_git_info(cached.branch.clone(), cached.dirty, display_root);
+            self.sidebar.set_git_info(GitSidebarInfo {
+                root: display_root,
+                branch: cached.branch.clone(),
+                dirty: cached.dirty,
+                staged_count: cached.staged_count,
+                unstaged_count: cached.unstaged_count,
+                untracked_count: cached.untracked_count,
+                conflicted_count: cached.conflicted_count,
+                ahead: cached.ahead,
+                behind: cached.behind,
+            });
         } else {
-            self.sidebar.set_git_info(None, false, None);
+            self.sidebar.set_git_info(GitSidebarInfo::default());
         }
 
         let derived = &self.session_state_derived;

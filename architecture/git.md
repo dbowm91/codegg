@@ -127,6 +127,46 @@ Metadata enum identifying command provenance: `NativeTool`, `BashTranslation`, `
 
 Phase B consumers (`command_intent`, `command_planner`, `command_routing`, `BashTool`, native Git tool) must consume these types directly. There must be no duplicate parser logic in downstream crates — `parse_git_argv` and `render_argv` are the single source of truth for Git argv parsing and rendering.
 
+## Phase C — Structured reads (egggit)
+
+Phase C extends `egggit` with typed, machine-readable read operations beyond the original `status`/`diff`/`changed_files` surface.
+
+### New modules
+
+| Module | Purpose |
+|--------|---------|
+| `status_v2` | Rich structured status via `git status --porcelain=v2 -z --branch`. Returns `RichRepoStatus` with branch/detached state, HEAD oid, upstream, ahead/behind, staged/unstaged/untracked/conflict entries, and `DirtySummary`/`OperationState` types. |
+| `log` | `log_commits()` → `Vec<CommitInfo>` with oid, parents, author/committer, timestamp, subject, and decorations. |
+| `blame` | `blame_file()` → `BlameResult` with per-line `BlameEntry` (oid, author, timestamp, line range). |
+| `refs` | `list_branches()`, `list_tags()`, `list_remotes()` → typed `BranchInfo`, `TagInfo`, `RemoteInfo` with upstream/ahead-behind for branches. |
+
+All modules are read-only, async, and delegate to `git` subprocess calls with NUL-delimited or explicit-record-separator output for safe machine parsing.
+
+### GitExecutionService
+
+`src/git_service.rs` provides `GitExecutionService` — a unified executor that:
+
+- Accepts a typed `GitOperation` and repository root;
+- Delegates read-only operations to `egggit` for structured parsing;
+- Falls back to subprocess execution for mutations and unsupported operations;
+- Returns `GitExecutionResult` with `GitPayload` (status, diff, log, branches, tags, remotes, blame, etc.), raw stdout/stderr, exit code, and `ProjectionHints`.
+
+`GitPayload` is the structured payload enum carried on successful read results. Downstream consumers (TUI, tools, projectors) consume `GitPayload` variants instead of parsing raw output.
+
+### Structured git tool actions
+
+`src/tool/git.rs` (`GitTool`) maps subcommands to structured reads via `try_structured_read()`. Read-only subcommands (`status`, `diff`, `log`, `show`, `blame`, `branch`, `tag`, `remote`, `worktree`, `stash`, `rev-parse`, `for-each-ref`) attempt structured execution first; failures fall back to raw subprocess output. Mutations always use raw subprocess execution.
+
+### TUI sidebar structured status
+
+The TUI Git sidebar now consumes `RichRepoStatus` from `status_v2` rather than parsing raw `git status` output. Staged/unstaged/untracked/conflict counts and ahead/behind state are surfaced directly from the structured result. Background execution, timeout, generation-based stale completion rejection, and render purity are preserved.
+
+### Review tool read-only classification
+
+`ReviewTool` uses the unified diff request from `GitExecutionService` and is classified as read-only with model inference. Permission handling reflects repository reads rather than mutations.
+
 ## Test coverage
 
 331 tests across `parser`, `operation`, `risk`, `path`, `ref_name`, and `render` modules. Parser tests include property-based testing via `proptest`. Risk classification tests verify each variant produces the expected `RiskSet`. Path/ref tests exercise rejection of all invalid input categories.
+
+Phase C adds dedicated test modules for `status_v2`, `log`, `blame`, and `refs` in `egggit`, plus `git_service` tests in the root crate covering `GitExecutionService` and `GitPayload` construction.

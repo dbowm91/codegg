@@ -1,5 +1,6 @@
 //! Command dispatch: routes TuiCommand variants to handler functions.
 
+use super::super::app::state::session::GitSidebarInfo;
 use super::super::app::{App, TuiCommand};
 
 #[allow(unused_imports)]
@@ -264,10 +265,27 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
             root,
             branch,
             dirty,
+            staged_count,
+            unstaged_count,
+            untracked_count,
+            conflicted_count,
+            ahead,
+            behind,
             error,
         } => {
+            let info = GitSidebarInfo {
+                root,
+                branch,
+                dirty,
+                staged_count,
+                unstaged_count,
+                untracked_count,
+                conflicted_count,
+                ahead,
+                behind,
+            };
             super::super::commands::git_sidebar::apply_git_sidebar_refresh(
-                app, generation, root, branch, dirty, error,
+                app, generation, error, info,
             );
         }
         TuiCommand::SessionsReloaded {

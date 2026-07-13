@@ -1,6 +1,6 @@
 use crate::session::events::AgentPlan;
 use crate::session::Session;
-use crate::tui::app::state::session::DiffStatsState;
+use crate::tui::app::state::session::{DiffStatsState, GitSidebarInfo};
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -49,6 +49,12 @@ pub struct SidebarWidget {
     pub file_changes: Vec<SidebarFileChange>,
     pub git_branch: Option<String>,
     pub git_dirty: bool,
+    pub git_staged_count: usize,
+    pub git_unstaged_count: usize,
+    pub git_untracked_count: usize,
+    pub git_conflicted_count: usize,
+    pub git_ahead: Option<i32>,
+    pub git_behind: Option<i32>,
     pub project_root: Option<String>,
     pub goal: Option<String>,
     pub plan: Option<AgentPlan>,
@@ -74,6 +80,12 @@ impl SidebarWidget {
             file_changes: Vec::new(),
             git_branch: None,
             git_dirty: false,
+            git_staged_count: 0,
+            git_unstaged_count: 0,
+            git_untracked_count: 0,
+            git_conflicted_count: 0,
+            git_ahead: None,
+            git_behind: None,
             project_root: None,
             goal: None,
             plan: None,
@@ -119,10 +131,16 @@ impl SidebarWidget {
         self.file_changes = changes;
     }
 
-    pub fn set_git_info(&mut self, branch: Option<String>, dirty: bool, root: Option<String>) {
-        self.git_branch = branch;
-        self.git_dirty = dirty;
-        self.project_root = root;
+    pub fn set_git_info(&mut self, info: GitSidebarInfo) {
+        self.git_branch = info.branch;
+        self.git_dirty = info.dirty;
+        self.project_root = info.root;
+        self.git_staged_count = info.staged_count;
+        self.git_unstaged_count = info.unstaged_count;
+        self.git_untracked_count = info.untracked_count;
+        self.git_conflicted_count = info.conflicted_count;
+        self.git_ahead = info.ahead;
+        self.git_behind = info.behind;
     }
 
     pub fn set_goal(&mut self, goal: Option<String>) {
@@ -235,6 +253,17 @@ impl SidebarWidget {
         if self.git_branch.is_some() && self.git_dirty {
             targets.push(HoveredElement::None);
         }
+        if self.git_branch.is_some()
+            && (self.git_staged_count > 0
+                || self.git_unstaged_count > 0
+                || self.git_untracked_count > 0
+                || self.git_conflicted_count > 0)
+        {
+            targets.push(HoveredElement::None);
+        }
+        if self.git_branch.is_some() && (self.git_ahead.is_some() || self.git_behind.is_some()) {
+            targets.push(HoveredElement::None);
+        }
 
         targets.push(HoveredElement::None);
         targets.push(HoveredElement::None);
@@ -333,10 +362,43 @@ impl SidebarWidget {
                 Span::raw(clean_inline_text(branch, width.saturating_sub(10))),
             ]));
             if self.git_dirty {
-                lines.push(Line::from(vec![
-                    Span::styled("status: ", Style::default().fg(self.theme.warning)),
-                    Span::raw("dirty"),
-                ]));
+                let mut status_spans = vec![Span::styled(
+                    "status: ",
+                    Style::default().fg(self.theme.warning),
+                )];
+                let mut parts = Vec::new();
+                if self.git_staged_count > 0 {
+                    parts.push(format!("{} staged", self.git_staged_count));
+                }
+                if self.git_unstaged_count > 0 {
+                    parts.push(format!("{} unstaged", self.git_unstaged_count));
+                }
+                if self.git_untracked_count > 0 {
+                    parts.push(format!("{} untracked", self.git_untracked_count));
+                }
+                if self.git_conflicted_count > 0 {
+                    parts.push(format!("{} conflicted", self.git_conflicted_count));
+                }
+                if parts.is_empty() {
+                    parts.push("dirty".to_string());
+                }
+                status_spans.push(Span::raw(parts.join(", ")));
+                lines.push(Line::from(status_spans));
+            }
+            if self.git_ahead.is_some() || self.git_behind.is_some() {
+                let mut sync_spans = vec![Span::styled(
+                    "sync: ",
+                    Style::default().fg(self.theme.muted),
+                )];
+                let mut sync_parts = Vec::new();
+                if let Some(ahead) = self.git_ahead {
+                    sync_parts.push(format!("↑{ahead}"));
+                }
+                if let Some(behind) = self.git_behind {
+                    sync_parts.push(format!("↓{behind}"));
+                }
+                sync_spans.push(Span::raw(sync_parts.join(" ")));
+                lines.push(Line::from(sync_spans));
             }
         } else {
             lines.push(Line::from(Span::styled(

@@ -265,11 +265,18 @@ fn app_with_sidebar() -> App {
     ];
 
     // Git info
-    app.sidebar.set_git_info(
-        Some("main".into()),
-        true,
-        Some("/Users/test/project".into()),
-    );
+    app.sidebar
+        .set_git_info(codegg::tui::app::state::session::GitSidebarInfo {
+            branch: Some("main".into()),
+            dirty: true,
+            root: Some("/Users/test/project".into()),
+            staged_count: 1,
+            unstaged_count: 2,
+            untracked_count: 0,
+            conflicted_count: 0,
+            ahead: Some(3),
+            behind: Some(1),
+        });
 
     app
 }

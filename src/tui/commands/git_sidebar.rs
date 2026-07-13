@@ -5,6 +5,7 @@
 //! filesystem/git probing happens here, in spawned background tasks,
 //! and results are committed via a typed completion command.
 
+use crate::tui::app::state::session::GitSidebarInfo;
 use crate::tui::app::App;
 use crate::tui::app::TuiCommand;
 use crate::tui::async_cmd::spawn_registered_tui_task;
@@ -41,29 +42,26 @@ pub(crate) fn start_refresh_git_sidebar(app: &mut App) {
             .await;
 
             let payload = match result {
-                Ok(Ok(info)) => Some((info.root, info.branch, info.dirty, None)),
-                Ok(Err(e)) => Some((None, None, false, Some(e.to_string()))),
-                Err(_elapsed) => Some((None, None, false, Some("git probe timed out".to_string()))),
+                Ok(Ok(info)) => Some(info),
+                Ok(Err(e)) => Some(GitProbeInfo::error(e.to_string())),
+                Err(_elapsed) => Some(GitProbeInfo::error("git probe timed out".to_string())),
             };
 
-            if let Some((root, branch, dirty, error)) = payload {
-                if let Some(err) = error {
-                    Some(TuiCommand::GitSidebarRefreshFinished {
-                        generation,
-                        root: None,
-                        branch: None,
-                        dirty: false,
-                        error: Some(err),
-                    })
-                } else {
-                    Some(TuiCommand::GitSidebarRefreshFinished {
-                        generation,
-                        root,
-                        branch,
-                        dirty,
-                        error: None,
-                    })
-                }
+            if let Some(info) = payload {
+                let error = info.error;
+                Some(TuiCommand::GitSidebarRefreshFinished {
+                    generation,
+                    root: info.root,
+                    branch: info.branch,
+                    dirty: info.dirty,
+                    staged_count: info.staged_count,
+                    unstaged_count: info.unstaged_count,
+                    untracked_count: info.untracked_count,
+                    conflicted_count: info.conflicted_count,
+                    ahead: info.ahead,
+                    behind: info.behind,
+                    error,
+                })
             } else {
                 None
             }
@@ -76,30 +74,58 @@ struct GitProbeInfo {
     root: Option<String>,
     branch: Option<String>,
     dirty: bool,
+    staged_count: usize,
+    unstaged_count: usize,
+    untracked_count: usize,
+    conflicted_count: usize,
+    ahead: Option<i32>,
+    behind: Option<i32>,
+    error: Option<String>,
+}
+
+impl GitProbeInfo {
+    fn error(msg: String) -> Self {
+        Self {
+            root: None,
+            branch: None,
+            dirty: false,
+            staged_count: 0,
+            unstaged_count: 0,
+            untracked_count: 0,
+            conflicted_count: 0,
+            ahead: None,
+            behind: None,
+            error: Some(msg),
+        }
+    }
 }
 
 async fn probe_git_status(project_dir: std::path::PathBuf) -> anyhow::Result<GitProbeInfo> {
     let git_root = crate::worktree::find_git_root(&project_dir);
     if git_root.is_none() {
-        return Ok(GitProbeInfo {
-            root: None,
-            branch: None,
-            dirty: false,
-        });
+        return Ok(GitProbeInfo::error(String::new()));
     }
     let root = git_root.expect("checked is_some above");
-    let status = egggit::status::repo_status(&root)
+    let status = egggit::status_v2::rich_repo_status(&root)
         .await
         .map_err(|e| anyhow::anyhow!("git status failed: {}", e))?;
-    let branch = if status.branch.is_empty() {
+    let branch = if status.branch.is_none() {
         Some("detached".to_string())
     } else {
-        Some(status.branch)
+        status.branch
     };
+    let dirty = !status.is_clean;
     Ok(GitProbeInfo {
         root: Some(root.to_string_lossy().into_owned()),
         branch,
-        dirty: status.is_dirty,
+        dirty,
+        staged_count: status.dirty_summary.staged_count,
+        unstaged_count: status.dirty_summary.unstaged_count,
+        untracked_count: status.dirty_summary.untracked_count,
+        conflicted_count: status.dirty_summary.conflicted_count,
+        ahead: status.ahead,
+        behind: status.behind,
+        error: None,
     })
 }
 
@@ -109,10 +135,8 @@ async fn probe_git_status(project_dir: std::path::PathBuf) -> anyhow::Result<Git
 pub(crate) fn apply_git_sidebar_refresh(
     app: &mut App,
     generation: u64,
-    root: Option<String>,
-    branch: Option<String>,
-    dirty: bool,
     error: Option<String>,
+    info: GitSidebarInfo,
 ) {
     if let Some(err) = error {
         app.session_state
@@ -122,5 +146,5 @@ pub(crate) fn apply_git_sidebar_refresh(
     }
     app.session_state
         .git_sidebar
-        .apply_refresh(generation, root, branch, dirty);
+        .apply_refresh(generation, info);
 }

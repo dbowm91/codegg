@@ -5,7 +5,9 @@ use std::time::Duration;
 use tokio::process::Command;
 
 use crate::error::ToolError;
+use crate::git_service::{GitExecutionService, GitPayload};
 use crate::tool::{Tool, ToolCategory};
+use codegg_git::parse_git_argv;
 
 pub struct GitTool {
     timeout: Duration,
@@ -29,6 +31,47 @@ impl GitTool {
         self.timeout = timeout;
         self
     }
+
+    /// Determine if the given subcommand is a read-only operation.
+    fn is_read_only(subcommand: &str) -> bool {
+        matches!(
+            subcommand,
+            "status"
+                | "diff"
+                | "log"
+                | "show"
+                | "blame"
+                | "branch"
+                | "tag"
+                | "remote"
+                | "worktree"
+                | "stash"
+                | "rev-parse"
+                | "for-each-ref"
+        )
+    }
+
+    /// Try to execute a structured read via GitExecutionService.
+    async fn try_structured_read(
+        &self,
+        subcommand: &str,
+        args: &[String],
+    ) -> Option<Result<String, ToolError>> {
+        let full_argv = {
+            let mut v = vec!["git".to_string(), subcommand.to_string()];
+            v.extend_from_slice(args);
+            v
+        };
+
+        let operation = parse_git_argv(&full_argv).ok()?;
+        let service = GitExecutionService::new().with_timeout(self.timeout);
+        let root = self.workdir.as_path();
+
+        match service.execute(&operation, root).await {
+            Ok(result) => Some(Ok(format_structured_result(subcommand, &result))),
+            Err(_) => None, // Fall back to raw execution
+        }
+    }
 }
 
 impl Default for GitTool {
@@ -44,7 +87,7 @@ impl Tool for GitTool {
     }
 
     fn description(&self) -> &str {
-        "Execute git commands and operations"
+        "Execute git commands and operations. Read-only operations (status, diff, log, show, blame, branch, tag, remote, worktree) return structured results."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -106,6 +149,18 @@ impl Tool for GitTool {
             )));
         }
 
+        // Try structured read for read-only operations
+        if Self::is_read_only(subcommand) {
+            let tool = GitTool {
+                timeout,
+                workdir: workdir.clone(),
+            };
+            if let Some(result) = tool.try_structured_read(subcommand, &args).await {
+                return result;
+            }
+        }
+
+        // Fall back to raw execution
         let full_args = {
             let mut full = vec![subcommand.to_string()];
             full.extend(args);
@@ -157,4 +212,99 @@ impl Tool for GitTool {
 
         Ok(result)
     }
+}
+
+/// Format a structured git execution result into a human-readable string.
+fn format_structured_result(
+    _subcommand: &str,
+    result: &crate::git_service::GitExecutionResult,
+) -> String {
+    let mut output = String::new();
+
+    match &result.payload {
+        Some(GitPayload::Status(status)) => {
+            output.push_str(&format!("Branch: {}\n", &status.branch));
+            output.push_str(&format!(
+                "HEAD: {}\n",
+                status.commit_hash.as_deref().unwrap_or("unknown")
+            ));
+            output.push_str(&format!(
+                "Dirty: {}\n",
+                if status.is_dirty { "yes" } else { "no" }
+            ));
+            if status.stash_count > 0 {
+                output.push_str(&format!("Stashes: {}\n", status.stash_count));
+            }
+        }
+        Some(GitPayload::DiffSummary(summary)) => {
+            output.push_str(&format!(
+                "{} file(s) changed, +{} -{}\n",
+                summary.files_changed, summary.insertions, summary.deletions
+            ));
+            for file in &summary.files {
+                output.push_str(&format!("  {} ({})\n", file.path, file.kind));
+            }
+        }
+        Some(GitPayload::DiffText(text)) => {
+            output.push_str(text);
+        }
+        Some(GitPayload::Log(commits)) => {
+            for commit in commits {
+                output.push_str(&format!(
+                    "{} {}\n",
+                    &commit.hash[..7.min(commit.hash.len())],
+                    commit.message
+                ));
+            }
+        }
+        Some(GitPayload::Branches(branches)) => {
+            for branch in branches {
+                let marker = if branch.current { "* " } else { "  " };
+                output.push_str(&format!("{}{}\n", marker, branch.name));
+            }
+        }
+        Some(GitPayload::Tags(tags)) => {
+            for tag in tags {
+                output.push_str(&format!("{}\n", tag));
+            }
+        }
+        Some(GitPayload::Remotes(remotes)) => {
+            for remote in remotes {
+                if let Some(url) = &remote.url {
+                    output.push_str(&format!("{}\t{}\n", remote.name, url));
+                } else {
+                    output.push_str(&format!("{}\n", remote.name));
+                }
+            }
+        }
+        Some(GitPayload::Worktrees(worktrees)) => {
+            for wt in worktrees {
+                let marker = if wt.is_current { "* " } else { "  " };
+                output.push_str(&format!("{}{} ({})\n", marker, wt.path, wt.branch));
+            }
+        }
+        Some(GitPayload::Stashes(stashes)) => {
+            for stash in stashes {
+                let msg = stash.message.as_deref().unwrap_or("");
+                output.push_str(&format!("{}: {}\n", stash.ref_name, msg));
+            }
+        }
+        Some(GitPayload::ChangedFiles(files)) => {
+            for file in files {
+                output.push_str(&format!("{} ({})\n", file.path, file.kind));
+            }
+        }
+        _ => {
+            // Fall back to raw output
+            output.push_str(&result.stdout);
+        }
+    }
+
+    if !result.stderr.is_empty() {
+        output.push_str("\n--- stderr ---\n");
+        output.push_str(&result.stderr);
+    }
+
+    output.push_str(&format!("\n\n[exit code: {}]", result.exit_code));
+    output
 }

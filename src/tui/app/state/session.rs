@@ -101,6 +101,22 @@ pub struct SessionState {
     pub git_sidebar: GitSidebarState,
 }
 
+/// Git sidebar metadata passed from the background probe to the
+/// cached state. Grouped into a struct to keep function signatures
+/// concise.
+#[derive(Debug, Clone, Default)]
+pub struct GitSidebarInfo {
+    pub root: Option<String>,
+    pub branch: Option<String>,
+    pub dirty: bool,
+    pub staged_count: usize,
+    pub unstaged_count: usize,
+    pub untracked_count: usize,
+    pub conflicted_count: usize,
+    pub ahead: Option<i32>,
+    pub behind: Option<i32>,
+}
+
 /// Cached sidebar git metadata. Stale generations are dropped at apply
 /// time so a slow git refresh cannot overwrite a newer session/project
 /// state.
@@ -109,6 +125,12 @@ pub struct GitSidebarState {
     pub root: Option<String>,
     pub branch: Option<String>,
     pub dirty: bool,
+    pub staged_count: usize,
+    pub unstaged_count: usize,
+    pub untracked_count: usize,
+    pub conflicted_count: usize,
+    pub ahead: Option<i32>,
+    pub behind: Option<i32>,
     pub last_refreshed: Option<std::time::Instant>,
     pub loading: bool,
     pub error: Option<String>,
@@ -129,19 +151,19 @@ impl GitSidebarState {
     /// Apply a refresh result. Returns true when the result was
     /// current (i.e. matched the active generation). Stale results
     /// are dropped.
-    pub fn apply_refresh(
-        &mut self,
-        generation: u64,
-        root: Option<String>,
-        branch: Option<String>,
-        dirty: bool,
-    ) -> bool {
+    pub fn apply_refresh(&mut self, generation: u64, info: GitSidebarInfo) -> bool {
         if generation != self.generation {
             return false;
         }
-        self.root = root;
-        self.branch = branch;
-        self.dirty = dirty;
+        self.root = info.root;
+        self.branch = info.branch;
+        self.dirty = info.dirty;
+        self.staged_count = info.staged_count;
+        self.unstaged_count = info.unstaged_count;
+        self.untracked_count = info.untracked_count;
+        self.conflicted_count = info.conflicted_count;
+        self.ahead = info.ahead;
+        self.behind = info.behind;
         self.last_refreshed = Some(std::time::Instant::now());
         self.loading = false;
         self.error = None;
@@ -183,14 +205,28 @@ mod tests {
         let g = s.begin_refresh();
         let applied = s.apply_refresh(
             g,
-            Some("/tmp/repo".to_string()),
-            Some("main".to_string()),
-            true,
+            GitSidebarInfo {
+                root: Some("/tmp/repo".to_string()),
+                branch: Some("main".to_string()),
+                dirty: true,
+                staged_count: 2,
+                unstaged_count: 3,
+                untracked_count: 1,
+                conflicted_count: 0,
+                ahead: Some(5),
+                behind: Some(1),
+            },
         );
         assert!(applied);
         assert_eq!(s.root.as_deref(), Some("/tmp/repo"));
         assert_eq!(s.branch.as_deref(), Some("main"));
         assert!(s.dirty);
+        assert_eq!(s.staged_count, 2);
+        assert_eq!(s.unstaged_count, 3);
+        assert_eq!(s.untracked_count, 1);
+        assert_eq!(s.conflicted_count, 0);
+        assert_eq!(s.ahead, Some(5));
+        assert_eq!(s.behind, Some(1));
         assert!(!s.loading);
         assert!(s.last_refreshed.is_some());
     }
@@ -202,9 +238,17 @@ mod tests {
         let g1 = s.begin_refresh();
         s.apply_refresh(
             g1,
-            Some("/a".to_string()),
-            Some("feature".to_string()),
-            true,
+            GitSidebarInfo {
+                root: Some("/a".to_string()),
+                branch: Some("feature".to_string()),
+                dirty: true,
+                staged_count: 1,
+                unstaged_count: 2,
+                untracked_count: 3,
+                conflicted_count: 0,
+                ahead: None,
+                behind: None,
+            },
         );
 
         // Second refresh begins; bumps generation.
@@ -212,7 +256,20 @@ mod tests {
         assert_ne!(g1, g2);
 
         // Stale completion with g1 is dropped.
-        let applied = s.apply_refresh(g1, Some("/b".to_string()), Some("main".to_string()), false);
+        let applied = s.apply_refresh(
+            g1,
+            GitSidebarInfo {
+                root: Some("/b".to_string()),
+                branch: Some("main".to_string()),
+                dirty: false,
+                staged_count: 0,
+                unstaged_count: 0,
+                untracked_count: 0,
+                conflicted_count: 0,
+                ahead: None,
+                behind: None,
+            },
+        );
         assert!(!applied);
         // State still reflects the first refresh.
         assert_eq!(s.root.as_deref(), Some("/a"));
@@ -220,7 +277,7 @@ mod tests {
         assert!(s.dirty);
 
         // Current completion with g2 succeeds.
-        let applied = s.apply_refresh(g2, None, None, false);
+        let applied = s.apply_refresh(g2, GitSidebarInfo::default());
         assert!(applied);
         assert!(s.root.is_none());
         assert!(s.branch.is_none());
@@ -251,5 +308,16 @@ mod tests {
         let g = s.begin_refresh();
         assert_eq!(g, u64::MAX, "must saturate, not wrap");
         assert_eq!(s.generation, u64::MAX);
+    }
+
+    #[test]
+    fn default_git_sidebar_state_has_zero_counts() {
+        let s = GitSidebarState::default();
+        assert_eq!(s.staged_count, 0);
+        assert_eq!(s.unstaged_count, 0);
+        assert_eq!(s.untracked_count, 0);
+        assert_eq!(s.conflicted_count, 0);
+        assert!(s.ahead.is_none());
+        assert!(s.behind.is_none());
     }
 }

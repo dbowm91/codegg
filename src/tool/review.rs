@@ -119,7 +119,7 @@ impl Tool for ReviewTool {
     }
 
     fn description(&self) -> &str {
-        "Analyze git diff and provide structured code review feedback"
+        "Read-only tool that analyzes git diff and provides structured code review feedback"
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -136,7 +136,7 @@ impl Tool for ReviewTool {
     }
 
     fn category(&self) -> ToolCategory {
-        ToolCategory::Mutating
+        ToolCategory::ReadOnly
     }
 
     async fn execute(&self, input: serde_json::Value) -> Result<String, ToolError> {

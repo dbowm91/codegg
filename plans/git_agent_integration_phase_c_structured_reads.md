@@ -1,5 +1,7 @@
 # Git Agent Integration Phase C — Structured Read Operations
 
+> **Status: Complete.** All deliverables implemented. `egggit` modules (`status_v2`, `log`, `blame`, `refs`) provide structured reads. `GitExecutionService` delegates reads to `egggit` and falls back to subprocess for mutations. `GitTool` uses structured-first execution. TUI sidebar consumes `RichRepoStatus`. `ReviewTool` is classified as read-only.
+
 ## Objective
 
 Move common Git inspection onto the unified Git service and return structured repository facts rather than relying primarily on human-oriented stdout. Expand `egggit` only where needed for reusable read-only primitives, then migrate Bash routing, native tools, projectors, commit/review preparation, prompt context, and TUI consumers to those results.

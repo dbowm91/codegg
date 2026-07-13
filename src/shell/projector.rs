@@ -1733,32 +1733,135 @@ impl CommandOutputProjector for GitStatusProjector {
         let mut conflicted: Vec<String> = Vec::new();
         let mut branch_info: Option<String> = None;
 
+        let is_v2 = output.starts_with("# branch.oid");
+
         for line in output.lines() {
             if line.is_empty() {
                 continue;
             }
-            // Branch info line: ## branch...upstream [ahead N, behind M]
-            if let Some(rest) = line.strip_prefix("## ") {
-                branch_info = Some(rest.to_string());
-                continue;
-            }
-            // Porcelain v1: XY filename
-            if line.len() >= 3 {
-                let xy: Vec<char> = line.chars().take(2).collect();
-                let filename = line[3..].to_string();
-                let x = xy[0];
-                let y = xy[1];
 
-                if x == '?' && y == '?' {
-                    untracked.push(filename);
-                } else if x == 'U' || y == 'U' || (x == 'A' && y == 'A') || (x == 'D' && y == 'D') {
-                    conflicted.push(format!("{} {}", &line[..2], filename));
-                } else {
-                    if x != ' ' && x != '?' {
-                        staged.push(format!("{} {}", x, filename));
+            if is_v2 {
+                // Porcelain v2 parsing
+                if let Some(rest) = line.strip_prefix("# branch.oid ") {
+                    branch_info = Some(format!("HEAD {}", rest.trim()));
+                    continue;
+                }
+                if let Some(rest) = line.strip_prefix("# branch.head ") {
+                    let head = rest.trim();
+                    if head != "(detached)" {
+                        if let Some(ref mut info) = branch_info {
+                            *info = format!("{head} ({info})");
+                        }
+                    } else {
+                        branch_info = Some("detached HEAD".to_string());
                     }
-                    if y != ' ' && y != '?' {
-                        unstaged.push(format!("{} {}", y, filename));
+                    continue;
+                }
+                if let Some(rest) = line.strip_prefix("# branch.upstream ") {
+                    if let Some(ref mut info) = branch_info {
+                        *info = format!("{} upstream {}", info.trim(), rest.trim());
+                    }
+                    continue;
+                }
+                if let Some(rest) = line.strip_prefix("# branch.ab ") {
+                    if let Some(ref mut info) = branch_info {
+                        *info = format!("{} {}", info.trim(), rest.trim());
+                    }
+                    continue;
+                }
+                // File status lines
+                if let Some(rest) = line.strip_prefix("1 ") {
+                    // Regular file: 1 XY mH mI mW hH hI path
+                    let parts: Vec<&str> = rest.splitn(8, ' ').collect();
+                    if parts.len() >= 8 {
+                        let xy = parts[0];
+                        let x = xy.chars().next().unwrap_or('.');
+                        let y = xy.chars().nth(1).unwrap_or('.');
+                        let path = parts[7];
+                        if x != '.' && x != '?' {
+                            staged.push(format!("{} {}", x, path));
+                        }
+                        if y != '.' && y != '?' {
+                            unstaged.push(format!("{} {}", y, path));
+                        }
+                    }
+                } else if let Some(inner) = line.strip_prefix("2 ") {
+                    // Rename: 2 XY ... source dest (last two fields)
+                    let parts: Vec<&str> = inner.splitn(11, ' ').collect();
+                    if parts.len() >= 4 {
+                        let xy = parts[0];
+                        let x = xy.chars().next().unwrap_or('.');
+                        let y = xy.chars().nth(1).unwrap_or('.');
+                        let source = parts[parts.len() - 2];
+                        let dest = parts[parts.len() - 1];
+                        if x != '.' && x != '?' {
+                            staged.push(format!("{} {} -> {}", x, source, dest));
+                        }
+                        if y != '.' && y != '?' {
+                            unstaged.push(format!("{} {} -> {}", y, source, dest));
+                        }
+                    }
+                } else if let Some(inner) = line.strip_prefix("3 ") {
+                    // Copy: 3 XY ... source dest (last two fields)
+                    let parts: Vec<&str> = inner.splitn(11, ' ').collect();
+                    if parts.len() >= 4 {
+                        let xy = parts[0];
+                        let x = xy.chars().next().unwrap_or('.');
+                        let y = xy.chars().nth(1).unwrap_or('.');
+                        let source = parts[parts.len() - 2];
+                        let dest = parts[parts.len() - 1];
+                        if x != '.' && x != '?' {
+                            staged.push(format!("{} {} -> {}", x, source, dest));
+                        }
+                        if y != '.' && y != '?' {
+                            unstaged.push(format!("{} {} -> {}", y, source, dest));
+                        }
+                    }
+                } else if let Some(rest) = line.strip_prefix("u ") {
+                    // Unmerged: u XY m1 m2 m3 mW h1 h2 h3 path
+                    let parts: Vec<&str> = rest.splitn(10, ' ').collect();
+                    if parts.len() >= 10 {
+                        let path = parts[9];
+                        conflicted.push(format!("UU {}", path));
+                    } else if !rest.is_empty() {
+                        // Fallback: take the last token as the path
+                        let path = rest.rsplit_once(' ').map_or(rest, |(_, p)| p);
+                        conflicted.push(format!("UU {}", path));
+                    }
+                } else if let Some(rest) = line.strip_prefix("? ") {
+                    untracked.push(rest.to_string());
+                } else if line.starts_with("! ") {
+                    // Ignored — skip
+                }
+            } else {
+                // Porcelain v1 parsing
+                // Branch info line: ## branch...upstream [ahead N, behind M]
+                if let Some(rest) = line.strip_prefix("## ") {
+                    branch_info = Some(rest.to_string());
+                    continue;
+                }
+                // Porcelain v1: XY filename
+                if line.len() >= 3 {
+                    let xy: Vec<char> = line.chars().take(2).collect();
+                    let filename = line[3..].to_string();
+                    let x = xy[0];
+                    let y = xy[1];
+
+                    if x == '?' && y == '?' {
+                        untracked.push(filename);
+                    } else if x == 'U'
+                        || y == 'U'
+                        || (x == 'A' && y == 'A')
+                        || (x == 'D' && y == 'D')
+                    {
+                        conflicted.push(format!("{} {}", &line[..2], filename));
+                    } else {
+                        if x != ' ' && x != '?' {
+                            staged.push(format!("{} {}", x, filename));
+                        }
+                        if y != ' ' && y != '?' {
+                            unstaged.push(format!("{} {}", y, filename));
+                        }
                     }
                 }
             }
@@ -5197,5 +5300,303 @@ mod tests {
         let decision =
             evaluate_promotion(&result, ProjectionTarget::ModelContext, &budget, 0, 10000);
         assert_eq!(decision, PromotionDecision::RequireUserConfirmation);
+    }
+
+    // -----------------------------------------------------------------------
+    // Git projector porcelain v2 tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn git_status_projector_v2_clean_repo() {
+        let mut store = CommandOutputStore::new();
+        let stdout = b"# branch.oid abc1234\n# branch.head main\n# branch.upstream origin/main\n# branch.ab +0 -0\n";
+        let run = make_run_with_cmd(
+            &mut store,
+            "git status --porcelain=v2 --branch",
+            Some(vec![
+                "git".into(),
+                "status".into(),
+                "--porcelain=v2".into(),
+                "--branch".into(),
+            ]),
+            stdout.to_vec(),
+            Vec::new(),
+            CommandExit::Code(0),
+            Duration::ZERO,
+        );
+        let policy = ProjectionPolicy::conservative();
+        let request = ProjectionRequest::for_target(&run, ProjectionTarget::ModelContext, &policy);
+        let result = GitStatusProjector.project(request, &store).unwrap();
+        assert_eq!(result.kind, ProjectionKind::Structured);
+        assert!(result.text.contains("Staged: 0"));
+        assert!(result.text.contains("Unstaged: 0"));
+        assert!(result.text.contains("Untracked: 0"));
+        assert!(result.text.contains("Conflicts: 0"));
+        assert!(result.text.contains("main"));
+        assert!(result.text.contains("abc1234"));
+    }
+
+    #[test]
+    fn git_status_projector_v2_staged_unstaged_untracked_conflicted() {
+        let mut store = CommandOutputStore::new();
+        let stdout = b"# branch.oid abc1234\n\
+                       # branch.head main\n\
+                       # branch.upstream origin/main\n\
+                       # branch.ab +1 -0\n\
+                       1 .M N... 100644 100644 100644 abc1234 def5678 staged_file.rs\n\
+                       1 M. N... 100644 100644 100644 abc1234 def5678 unstaged_file.rs\n\
+                       ? untracked_file.rs\n\
+                       u UU N... 100644 100644 100644 100644 abc1234 def5678 conflict_file.rs\n";
+        let run = make_run_with_cmd(
+            &mut store,
+            "git status --porcelain=v2 --branch",
+            Some(vec![
+                "git".into(),
+                "status".into(),
+                "--porcelain=v2".into(),
+                "--branch".into(),
+            ]),
+            stdout.to_vec(),
+            Vec::new(),
+            CommandExit::Code(0),
+            Duration::ZERO,
+        );
+        let policy = ProjectionPolicy::conservative();
+        let request = ProjectionRequest::for_target(&run, ProjectionTarget::ModelContext, &policy);
+        let result = GitStatusProjector.project(request, &store).unwrap();
+        assert!(result.text.contains("Staged: 1"));
+        assert!(result.text.contains("M staged_file.rs"));
+        assert!(result.text.contains("Unstaged: 1"));
+        assert!(result.text.contains("M unstaged_file.rs"));
+        assert!(result.text.contains("Untracked: 1"));
+        assert!(result.text.contains("untracked_file.rs"));
+        assert!(result.text.contains("Conflicts: 1"));
+        assert!(result.text.contains("conflict_file.rs"));
+    }
+
+    #[test]
+    fn git_status_projector_v2_detached_head() {
+        let mut store = CommandOutputStore::new();
+        let stdout = b"# branch.oid abc1234\n# branch.head (detached)\n";
+        let run = make_run_with_cmd(
+            &mut store,
+            "git status --porcelain=v2 --branch",
+            Some(vec![
+                "git".into(),
+                "status".into(),
+                "--porcelain=v2".into(),
+                "--branch".into(),
+            ]),
+            stdout.to_vec(),
+            Vec::new(),
+            CommandExit::Code(0),
+            Duration::ZERO,
+        );
+        let policy = ProjectionPolicy::conservative();
+        let request = ProjectionRequest::for_target(&run, ProjectionTarget::ModelContext, &policy);
+        let result = GitStatusProjector.project(request, &store).unwrap();
+        assert!(result.text.contains("Branch: detached HEAD"));
+    }
+
+    #[test]
+    fn git_status_projector_v2_rename() {
+        let mut store = CommandOutputStore::new();
+        let stdout = b"# branch.oid abc1234\n# branch.head main\n\
+                       2 RM N... 100644 100644 100644 abc1234 def5678 R100 old_name.rs new_name.rs\n";
+        let run = make_run_with_cmd(
+            &mut store,
+            "git status --porcelain=v2",
+            Some(vec!["git".into(), "status".into(), "--porcelain=v2".into()]),
+            stdout.to_vec(),
+            Vec::new(),
+            CommandExit::Code(0),
+            Duration::ZERO,
+        );
+        let policy = ProjectionPolicy::conservative();
+        let request = ProjectionRequest::for_target(&run, ProjectionTarget::ModelContext, &policy);
+        let result = GitStatusProjector.project(request, &store).unwrap();
+        assert!(result.text.contains("Staged: 1"));
+        assert!(result.text.contains("R old_name.rs -> new_name.rs"));
+    }
+
+    #[test]
+    fn git_diff_projector_empty_output() {
+        let mut store = CommandOutputStore::new();
+        let run = make_run_with_cmd(
+            &mut store,
+            "git diff",
+            Some(vec!["git".into(), "diff".into()]),
+            b"".to_vec(),
+            Vec::new(),
+            CommandExit::Code(0),
+            Duration::ZERO,
+        );
+        let policy = ProjectionPolicy::conservative();
+        let request = ProjectionRequest::for_target(&run, ProjectionTarget::ModelContext, &policy);
+        let result = GitDiffProjector.project(request, &store).unwrap();
+        assert_eq!(result.kind, ProjectionKind::Structured);
+        assert!(result.text.contains("(no diff output)"));
+    }
+
+    #[test]
+    fn git_log_projector_empty_output() {
+        let mut store = CommandOutputStore::new();
+        let run = make_run_with_cmd(
+            &mut store,
+            "git log",
+            Some(vec!["git".into(), "log".into()]),
+            b"".to_vec(),
+            Vec::new(),
+            CommandExit::Code(0),
+            Duration::ZERO,
+        );
+        let policy = ProjectionPolicy::conservative();
+        let request = ProjectionRequest::for_target(&run, ProjectionTarget::ModelContext, &policy);
+        let result = GitLogProjector.project(request, &store).unwrap();
+        assert_eq!(result.kind, ProjectionKind::Structured);
+        assert!(result.text.contains("(no commits found)"));
+    }
+
+    #[test]
+    fn git_status_projector_v1_empty_output() {
+        let mut store = CommandOutputStore::new();
+        let run = make_run_with_cmd(
+            &mut store,
+            "git status",
+            Some(vec!["git".into(), "status".into()]),
+            b"".to_vec(),
+            Vec::new(),
+            CommandExit::Code(0),
+            Duration::ZERO,
+        );
+        let policy = ProjectionPolicy::conservative();
+        let request = ProjectionRequest::for_target(&run, ProjectionTarget::ModelContext, &policy);
+        let result = GitStatusProjector.project(request, &store).unwrap();
+        assert!(result.text.contains("Staged: 0"));
+        assert!(result.text.contains("Unstaged: 0"));
+        assert!(result.text.contains("Untracked: 0"));
+        assert!(result.text.contains("Conflicts: 0"));
+    }
+
+    #[test]
+    fn git_status_projector_v2_empty_output() {
+        let mut store = CommandOutputStore::new();
+        let run = make_run_with_cmd(
+            &mut store,
+            "git status --porcelain=v2",
+            Some(vec!["git".into(), "status".into(), "--porcelain=v2".into()]),
+            b"".to_vec(),
+            Vec::new(),
+            CommandExit::Code(0),
+            Duration::ZERO,
+        );
+        let policy = ProjectionPolicy::conservative();
+        let request = ProjectionRequest::for_target(&run, ProjectionTarget::ModelContext, &policy);
+        let result = GitStatusProjector.project(request, &store).unwrap();
+        assert!(result.text.contains("Staged: 0"));
+        assert!(result.text.contains("Unstaged: 0"));
+        assert!(result.text.contains("Untracked: 0"));
+        assert!(result.text.contains("Conflicts: 0"));
+    }
+
+    #[test]
+    fn git_diff_projector_small_diff_with_hunks() {
+        let mut store = CommandOutputStore::new();
+        let stdout = b"diff --git a/src/main.rs b/src/main.rs\n\
+                       index abc1234..def5678 100644\n\
+                       --- a/src/main.rs\n\
+                       +++ b/src/main.rs\n\
+                       @@ -1,3 +1,4 @@\n\
+                       fn main() {\n\
+                       +    let x = 1;\n\
+                        }\n";
+        let run = make_run_with_cmd(
+            &mut store,
+            "git diff",
+            Some(vec!["git".into(), "diff".into()]),
+            stdout.to_vec(),
+            Vec::new(),
+            CommandExit::Code(0),
+            Duration::ZERO,
+        );
+        let policy = ProjectionPolicy::conservative();
+        let request = ProjectionRequest::for_target(&run, ProjectionTarget::ModelContext, &policy);
+        let result = GitDiffProjector.project(request, &store).unwrap();
+        assert_eq!(result.kind, ProjectionKind::Structured);
+        assert!(result.text.contains("1 file(s) changed"));
+        assert!(result.text.contains("src/main.rs"));
+        assert!(result.text.contains("+1/-0"));
+    }
+
+    #[test]
+    fn git_log_projector_empty_log_output() {
+        let mut store = CommandOutputStore::new();
+        let run = make_run_with_cmd(
+            &mut store,
+            "git log --oneline",
+            Some(vec!["git".into(), "log".into(), "--oneline".into()]),
+            b"\n".to_vec(),
+            Vec::new(),
+            CommandExit::Code(0),
+            Duration::ZERO,
+        );
+        let policy = ProjectionPolicy::conservative();
+        let request = ProjectionRequest::for_target(&run, ProjectionTarget::ModelContext, &policy);
+        let result = GitLogProjector.project(request, &store).unwrap();
+        assert!(result.text.contains("(no commits found)"));
+    }
+
+    #[test]
+    fn git_status_projector_v2_ignored_files_skipped() {
+        let mut store = CommandOutputStore::new();
+        let stdout = b"# branch.oid abc1234\n# branch.head main\n\
+                       ! target/\n\
+                       ! .env\n\
+                       1 .M N... 100644 100644 100644 abc1234 def5678 src/main.rs\n";
+        let run = make_run_with_cmd(
+            &mut store,
+            "git status --porcelain=v2 --ignored",
+            Some(vec![
+                "git".into(),
+                "status".into(),
+                "--porcelain=v2".into(),
+                "--ignored".into(),
+            ]),
+            stdout.to_vec(),
+            Vec::new(),
+            CommandExit::Code(0),
+            Duration::ZERO,
+        );
+        let policy = ProjectionPolicy::conservative();
+        let request = ProjectionRequest::for_target(&run, ProjectionTarget::ModelContext, &policy);
+        let result = GitStatusProjector.project(request, &store).unwrap();
+        assert!(result.text.contains("Unstaged: 1"));
+        assert!(!result.text.contains("target/"));
+        assert!(!result.text.contains(".env"));
+    }
+
+    #[test]
+    fn git_status_projector_v2_only_untracked() {
+        let mut store = CommandOutputStore::new();
+        let stdout = b"# branch.oid abc1234\n# branch.head main\n\
+                       ? new_file.txt\n\
+                       ? another_file.log\n";
+        let run = make_run_with_cmd(
+            &mut store,
+            "git status --porcelain=v2",
+            Some(vec!["git".into(), "status".into(), "--porcelain=v2".into()]),
+            stdout.to_vec(),
+            Vec::new(),
+            CommandExit::Code(0),
+            Duration::ZERO,
+        );
+        let policy = ProjectionPolicy::conservative();
+        let request = ProjectionRequest::for_target(&run, ProjectionTarget::ModelContext, &policy);
+        let result = GitStatusProjector.project(request, &store).unwrap();
+        assert!(result.text.contains("Staged: 0"));
+        assert!(result.text.contains("Unstaged: 0"));
+        assert!(result.text.contains("Untracked: 2"));
+        assert!(result.text.contains("new_file.txt"));
+        assert!(result.text.contains("another_file.log"));
     }
 }

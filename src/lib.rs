@@ -22,6 +22,7 @@ pub mod core;
 pub mod eggsact;
 pub mod error;
 pub mod exec;
+pub mod git_service;
 pub mod hooks;
 pub mod ide;
 pub mod lsp;

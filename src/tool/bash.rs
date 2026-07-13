@@ -1773,13 +1773,10 @@ mod tests {
     }
 
     #[test]
-    fn plan_git_readonly_routes_to_native_tool() {
+    fn plan_git_readonly_routes_to_git_backend() {
         let intent = classify_command("git status");
         let plan = plan_execution(&intent);
-        assert!(matches!(
-            plan.backend,
-            ExecutionBackend::NativeTool { tool_name } if tool_name == "egggit"
-        ));
+        assert!(matches!(plan.backend, ExecutionBackend::Git { .. }));
     }
 
     #[test]
@@ -1914,7 +1911,7 @@ mod tests {
         let input = serde_json::json!({"command": "git status"});
         let result = tool.execute(input).await.unwrap();
         assert!(result.contains("intent: git-readonly"));
-        assert!(result.contains("backend: native-tool"));
+        assert!(result.contains("backend: git"));
         assert!(result.contains("routing: enabled"));
     }
 

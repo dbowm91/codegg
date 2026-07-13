@@ -36,7 +36,7 @@ cargo cksplit      # check protocol + config + providers + root
 | `codegg-providers` | LLM provider implementations, auth types, CircuitBreaker (re-exported as `codegg::provider`) |
 | `codegg-git` | Typed Git operation model, argv parser, and risk classification |
 | `egglsp` | LSP client/service/operations (authoritative implementation) |
-| `egggit` | Read-only git facts (status, diff, changed files) |
+| `egggit` | Read-only git facts: status (v2 rich structured), diff, changed files, log, blame, refs (branches/tags/remotes), worktree |
 | `eggsentry` | Security scanning (secrets, commands, deps) |
 | `eggcontext` | Token counting and context utilities |
 | `egglsp-test-server` | Fake LSP server binary for integration tests (NOT a workspace member; binary in root Cargo.toml behind `lsp-test-support` feature) |
@@ -111,6 +111,11 @@ cargo test -p codegg-providers
 cargo test -p eggsentry
 cargo test -p eggcontext
 cargo test -p egggit
+cargo test -p egggit status_v2
+cargo test -p egggit log
+cargo test -p egggit blame
+cargo test -p egggit refs
+cargo test -p codegg git_service
 cargo test -p codegg-git
 cargo test -p egglsp
 
@@ -498,6 +503,13 @@ CI runs on push/PR to dev/main: `agent-assets` → `fmt` → `check` → `clippy
 
 - **Security review workflow** (`src/security/workflow/`): Read-only, never mutates files. Risk markers become review prompts, never findings.
 - **Security finding synthesis**: Evidence-based, requires 2+ evidence dimensions. Same-file scoping only. Different-file evidence never supports a finding.
+
+### Git
+
+- **GitExecutionService is the canonical read executor**: `src/git_service.rs` provides `GitExecutionService` which delegates to `egggit` for structured parsing and falls back to subprocess execution for mutations. All structured git reads (status, diff, log, blame, refs, branches, tags, remotes) flow through this service. Downstream consumers should consume `GitPayload` variants, not raw stdout.
+- **egggit is read-only, mutations stay in Codegg**: `egggit` modules (`status_v2`, `log`, `blame`, `refs`, `diff`, `worktree`) never mutate repository state. Commit, checkout, branch create/delete, stash push/pop, and all other mutations are handled by `GitExecutionService` subprocess fallback under the permission flow.
+- **status_v2 replaces raw status parsing**: `status_v2::rich_status()` returns `RichRepoStatus` with branch state, ahead/behind, staged/unstaged/untracked/conflict entries. TUI sidebar and prompt context consume this directly. The legacy `status::RepoStatus` remains available for backward compatibility.
+- **GitTool structured-first execution**: `src/tool/git.rs` attempts structured execution via `try_structured_read()` for all read-only subcommands before falling back to raw subprocess output. Mutations always use raw execution.
 
 ### Human Shell
 
