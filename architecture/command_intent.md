@@ -120,15 +120,13 @@ Classification uses `looks_like_*` / `classify_*` helper pairs. Key patterns:
 - **File read**: `cat`, `less`, `more`, `head`, `tail` (with outside-workspace rejection)
 - **Build**: `cargo build/check/clippy/fmt/run`, `make`, `cmake`, `npm/pnpm run`
 
-### Git Classification (argv-based)
+### Git Classification
 
-Git classification uses **parsed argv**, not string prefixes. This prevents false positives like `git push --dry-run` being classified as safe.
+`classify_git()` delegates to **codegg-git's typed parser** (`crates/codegg-git`) for accurate risk assessment. The parser parses git argv into a structured `GitOperation` with typed subcommands, flags, and argument positions, enabling precise read-only vs. mutating classification without string-prefix heuristics.
 
-- `git branch` — read-only only for: no args, `--list`, `-l`, `--show-current`, `--contains`, `--merged`, `--all`, `--remotes`, `--sort=...` (without name arg). Mutating for: `-d`, `-D`, `-m`, `-M`, `--delete`, `--move`, creating a branch (`<name>`)
-- `git tag` — read-only only for: no args, `--list`, `-l`. Mutating for: `-d`, `--delete`, creating a tag (`<name>`)
-- `git remote` — read-only only for: no args, `-v`, `show`, `get-url`, `prune`. Mutating for: `add`, `remove`, `rm`, `rename`, `set-url`
-- `git stash` — read-only only for `list`/`ls`. All other stash commands are mutating
-- `git push` → High risk; `git pull` → Medium risk; `git reset --hard` → High risk; `git clean -f` → High risk
+When the typed parser fails (unknown subcommand, malformed argv, or parse error), classification **falls back to lightweight heuristics** — first-token matching on known subcommands with conservative risk assignment (falls through to `RawShell` for unrecognized forms).
+
+Known mutating operations identified by the typed parser include: `add`, `commit`, `stash` (non-list forms), `branch` (create/delete/rename), `tag` (create/delete), `remote` (add/remove/rename/set-url), `push`, `pull`, `reset`, `clean`, `checkout` (branch switching), `switch`, `restore`, `merge`, `rebase`, `cherry-pick`, `revert`. Risk levels are derived from the operation type and flags (e.g., `--hard` on `reset`, `-f` on `clean`).
 
 ### Search/read Classification
 

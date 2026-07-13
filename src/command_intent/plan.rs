@@ -1,5 +1,8 @@
 use std::path::PathBuf;
 
+use codegg_git::risk::RiskSet;
+use codegg_git::{GitCommandOrigin, GitOperation, GitRiskClass};
+
 use super::{CommandIntent, CommandIntentKind, ExecutionCapability, IntentConfidence, RiskLevel};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -86,7 +89,132 @@ pub struct CommandPermissionRequest {
     pub default_decision: PermissionDefault,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+/// A typed Git execution request carrying the parsed operation, argv,
+/// repository context, and risk metadata. This is the unified Git backend
+/// that replaces both `NativeTool { "egggit" }` for reads and
+/// `GitMutating { "git", argv }` for mutations.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct GitExecutionRequest {
+    /// The typed parsed operation from codegg-git.
+    pub operation: GitOperation,
+    /// The original tokenized argv (preserved for audit and re-execution).
+    pub argv: Vec<String>,
+    /// The raw command string as entered by the user or model.
+    pub command: String,
+    /// Where this git command originated.
+    pub origin: GitCommandOrigin,
+    /// Risk classes derived from the typed operation.
+    pub risk_set: RiskSet,
+    /// Whether the operation is read-only.
+    pub is_read_only: bool,
+    /// Canonical repository root (resolved before planning).
+    pub repository_root: Option<PathBuf>,
+    /// The fallback argv for managed-unsupported operations (when the
+    /// typed parser produces `ManagedGitArgv` or `RawShellRequired`).
+    pub managed_argv: Option<Vec<String>>,
+}
+
+impl GitExecutionRequest {
+    /// Create a request from parsed argv using the typed parser.
+    pub fn from_argv(
+        argv: Vec<String>,
+        command: String,
+        origin: GitCommandOrigin,
+    ) -> Result<Self, codegg_git::ParseError> {
+        let operation = codegg_git::parse_git_argv(&argv)?;
+        let risk_set = operation.risk_classes();
+        let is_read_only = risk_set.contains(&GitRiskClass::ReadOnly)
+            && !risk_set
+                .classes()
+                .iter()
+                .any(|c| *c != GitRiskClass::ReadOnly);
+        let managed_argv = match &operation {
+            GitOperation::ManagedGitArgv { argv, .. } => Some(argv.clone()),
+            GitOperation::RawShellRequired { argv } => Some(argv.clone()),
+            _ => None,
+        };
+        Ok(Self {
+            operation,
+            argv,
+            command,
+            origin,
+            risk_set,
+            is_read_only,
+            repository_root: None,
+            managed_argv,
+        })
+    }
+
+    /// Create a request from an already-parsed `GitOperation`.
+    pub fn from_operation(
+        operation: GitOperation,
+        argv: Vec<String>,
+        command: String,
+        origin: GitCommandOrigin,
+    ) -> Self {
+        let risk_set = operation.risk_classes();
+        let is_read_only = risk_set.contains(&GitRiskClass::ReadOnly)
+            && !risk_set
+                .classes()
+                .iter()
+                .any(|c| *c != GitRiskClass::ReadOnly);
+        let managed_argv = match &operation {
+            GitOperation::ManagedGitArgv { argv, .. } => Some(argv.clone()),
+            GitOperation::RawShellRequired { argv } => Some(argv.clone()),
+            _ => None,
+        };
+        Self {
+            operation,
+            argv,
+            command,
+            origin,
+            risk_set,
+            is_read_only,
+            repository_root: None,
+            managed_argv,
+        }
+    }
+
+    /// Whether this request requires network access.
+    pub fn requires_network(&self) -> bool {
+        self.risk_set.requires_network()
+    }
+
+    /// Whether this request involves destructive operations.
+    pub fn is_destructive(&self) -> bool {
+        self.risk_set.is_destructive()
+    }
+
+    /// Derive a `RiskLevel` from the risk set.
+    pub fn risk_level(&self) -> RiskLevel {
+        if self.is_read_only {
+            RiskLevel::Safe
+        } else if self.is_destructive() {
+            RiskLevel::High
+        } else if self.requires_network() {
+            RiskLevel::Medium
+        } else {
+            RiskLevel::Low
+        }
+    }
+
+    /// Derive `ExecutionCapability` flags from the risk set.
+    pub fn capabilities(&self) -> Vec<ExecutionCapability> {
+        let mut caps = vec![ExecutionCapability::ReadWorkspace];
+        if !self.is_read_only {
+            caps.push(ExecutionCapability::GitMutation);
+        }
+        if self.requires_network() {
+            caps.push(ExecutionCapability::Network);
+        }
+        if self.is_destructive() {
+            caps.push(ExecutionCapability::DestructiveFileMutation);
+        }
+        caps
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ExecutionBackend {
     RawShell {
         command: String,
@@ -105,6 +233,14 @@ pub enum ExecutionBackend {
         script: String,
         mode_guess: PythonModeGuess,
     },
+    /// Unified Git backend — carries a typed request for all Git operations.
+    /// Replaces the split between `NativeTool { "egggit" }` for reads and
+    /// `GitMutating { "git", argv }` for mutations.
+    Git {
+        request: GitExecutionRequest,
+    },
+    /// Legacy variant retained during migration. Prefer `Git`.
+    #[deprecated(note = "Use ExecutionBackend::Git instead")]
     GitMutating {
         tool_name: String,
         argv: Vec<String>,
@@ -130,6 +266,8 @@ impl ExecutionBackend {
             Self::NativeTool { .. } => "native-tool",
             Self::TestRunner { .. } => "test-runner",
             Self::PythonScript { .. } => "python-script",
+            Self::Git { .. } => "git",
+            #[allow(deprecated)]
             Self::GitMutating { .. } => "git-mutating",
             Self::Reject { .. } => "reject",
         }
@@ -137,6 +275,14 @@ impl ExecutionBackend {
 
     pub fn is_executable(&self) -> bool {
         !matches!(self, Self::Reject { .. })
+    }
+
+    /// If this is a `Git` backend, return the request.
+    pub fn as_git_request(&self) -> Option<&GitExecutionRequest> {
+        match self {
+            Self::Git { request } => Some(request),
+            _ => None,
+        }
     }
 }
 
@@ -271,28 +417,43 @@ fn select_backend(intent: &CommandIntent) -> ExecutionBackend {
             script: intent.command.clone(),
             mode_guess: PythonModeGuess::Verify,
         },
-        CommandIntentKind::GitReadOnly => ExecutionBackend::NativeTool {
-            tool_name: "egggit".to_string(),
-        },
-        CommandIntentKind::GitMutating => {
-            // Route safe git mutations to structured GitMutating backend;
-            // dangerous mutations (push, reset --hard, clean -f, etc.) stay as RawShell.
+        CommandIntentKind::GitReadOnly => {
+            // Unified Git backend: parse argv into typed request.
             if let Some(argv) = &intent.parsed_argv {
-                let subcmd = argv.get(1).map(String::as_str).unwrap_or("");
-                let is_dangerous = matches!(subcmd, "push" | "pull" | "remote" | "tag")
-                    || (subcmd == "reset" && argv.iter().any(|a| a == "--hard"))
-                    || (subcmd == "clean"
-                        && argv.iter().any(|a| a == "-f" || a == "-fd" || a == "-fx"))
-                    || (subcmd == "branch" && argv.iter().any(|a| a == "-D" || a == "--delete"));
-
-                if is_dangerous {
-                    ExecutionBackend::RawShell {
-                        command: intent.command.clone(),
+                match GitExecutionRequest::from_argv(
+                    argv.clone(),
+                    intent.command.clone(),
+                    GitCommandOrigin::BashTranslation,
+                ) {
+                    Ok(request) => ExecutionBackend::Git { request },
+                    Err(_) => {
+                        // Parser failure: conservative fallback to managed argv.
+                        ExecutionBackend::ManagedArgv {
+                            argv: argv.clone(),
+                            cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+                        }
                     }
-                } else {
-                    ExecutionBackend::GitMutating {
-                        tool_name: "git".to_string(),
-                        argv: argv.clone(),
+                }
+            } else {
+                ExecutionBackend::NativeTool {
+                    tool_name: "egggit".to_string(),
+                }
+            }
+        }
+        CommandIntentKind::GitMutating => {
+            // Unified Git backend: parse argv into typed request.
+            if let Some(argv) = &intent.parsed_argv {
+                match GitExecutionRequest::from_argv(
+                    argv.clone(),
+                    intent.command.clone(),
+                    GitCommandOrigin::BashTranslation,
+                ) {
+                    Ok(request) => ExecutionBackend::Git { request },
+                    Err(_) => {
+                        // Parser failure: conservative fallback to raw shell.
+                        ExecutionBackend::RawShell {
+                            command: intent.command.clone(),
+                        }
                     }
                 }
             } else {
@@ -498,7 +659,7 @@ fn select_projector(intent: &CommandIntent, backend: &ExecutionBackend) -> Proje
             }
         }
         CommandIntentKind::GitMutating => {
-            if matches!(backend, ExecutionBackend::GitMutating { .. }) {
+            if matches!(backend, ExecutionBackend::Git { .. }) {
                 ProjectorRoute::Raw
             } else {
                 ProjectorRoute::Truncated
@@ -626,21 +787,18 @@ mod tests {
     }
 
     #[test]
-    fn git_status_routes_to_native() {
+    fn git_status_routes_to_git_backend() {
         let intent = classify_command("git status");
         let plan = plan_execution(&intent);
-        assert!(matches!(
-            plan.backend,
-            ExecutionBackend::NativeTool { ref tool_name } if tool_name == "egggit"
-        ));
+        assert!(matches!(plan.backend, ExecutionBackend::Git { .. }));
         assert!(!plan.requires_any_permission());
     }
 
     #[test]
-    fn git_diff_routes_to_native_with_diff_projector() {
+    fn git_diff_routes_to_git_backend_with_diff_projector() {
         let intent = classify_command("git diff HEAD~1");
         let plan = plan_execution(&intent);
-        assert!(matches!(plan.backend, ExecutionBackend::NativeTool { .. }));
+        assert!(matches!(plan.backend, ExecutionBackend::Git { .. }));
         assert_eq!(plan.projector, ProjectorRoute::GitDiff);
     }
 
@@ -843,125 +1001,110 @@ mod tests {
     // ── Git mutation routing tests (Workstream E) ────────────────────
 
     #[test]
-    fn git_add_routes_to_git_mutating() {
+    fn git_add_routes_to_git_backend() {
         let intent = classify_command("git add src/main.rs");
         let plan = plan_execution(&intent);
         assert!(matches!(
             plan.backend,
-            ExecutionBackend::GitMutating {
-                tool_name,
-                argv,
-            } if tool_name == "git" && argv[0] == "git" && argv[1] == "add"
+            ExecutionBackend::Git { request } if request.argv[0] == "git" && request.argv[1] == "add"
         ));
     }
 
     #[test]
-    fn git_commit_routes_to_git_mutating() {
+    fn git_commit_routes_to_git_backend() {
         let intent = classify_command("git commit -m 'fix'");
         let plan = plan_execution(&intent);
         assert!(matches!(
             plan.backend,
-            ExecutionBackend::GitMutating {
-                tool_name,
-                argv,
-            } if tool_name == "git" && argv[1] == "commit"
+            ExecutionBackend::Git { request } if request.argv[1] == "commit"
         ));
     }
 
     #[test]
-    fn git_stash_routes_to_git_mutating() {
+    fn git_stash_routes_to_git_backend() {
         let intent = classify_command("git stash push -m 'wip'");
         let plan = plan_execution(&intent);
         assert!(matches!(
             plan.backend,
-            ExecutionBackend::GitMutating {
-                tool_name,
-                argv,
-            } if tool_name == "git" && argv[1] == "stash"
+            ExecutionBackend::Git { request } if request.argv[1] == "stash"
         ));
     }
 
     #[test]
-    fn git_checkout_routes_to_git_mutating() {
+    fn git_checkout_routes_to_git_backend() {
         let intent = classify_command("git checkout main");
         let plan = plan_execution(&intent);
         assert!(matches!(
             plan.backend,
-            ExecutionBackend::GitMutating {
-                tool_name,
-                argv,
-            } if tool_name == "git" && argv[1] == "checkout"
+            ExecutionBackend::Git { request } if request.argv[1] == "checkout"
         ));
     }
 
     #[test]
-    fn git_switch_routes_to_git_mutating() {
+    fn git_switch_routes_to_git_backend() {
         let intent = classify_command("git switch -c new-branch");
         let plan = plan_execution(&intent);
         assert!(matches!(
             plan.backend,
-            ExecutionBackend::GitMutating {
-                tool_name,
-                argv,
-            } if tool_name == "git" && argv[1] == "switch"
+            ExecutionBackend::Git { request } if request.argv[1] == "switch"
         ));
     }
 
     #[test]
-    fn git_restore_routes_to_git_mutating() {
+    fn git_restore_routes_to_git_backend() {
         let intent = classify_command("git restore src/main.rs");
         let plan = plan_execution(&intent);
         assert!(matches!(
             plan.backend,
-            ExecutionBackend::GitMutating {
-                tool_name,
-                argv,
-            } if tool_name == "git" && argv[1] == "restore"
+            ExecutionBackend::Git { request } if request.argv[1] == "restore"
         ));
     }
 
     #[test]
-    fn git_push_stays_raw_shell() {
+    fn git_push_routes_to_git_backend() {
         let intent = classify_command("git push origin main");
         let plan = plan_execution(&intent);
-        assert!(matches!(plan.backend, ExecutionBackend::RawShell { .. }));
+        assert!(matches!(plan.backend, ExecutionBackend::Git { .. }));
     }
 
     #[test]
-    fn git_reset_hard_stays_raw_shell() {
+    fn git_reset_hard_routes_to_git_backend() {
         let intent = classify_command("git reset --hard HEAD~1");
         let plan = plan_execution(&intent);
-        assert!(matches!(plan.backend, ExecutionBackend::RawShell { .. }));
+        assert!(matches!(plan.backend, ExecutionBackend::Git { .. }));
     }
 
     #[test]
-    fn git_clean_f_stays_raw_shell() {
+    fn git_clean_f_routes_to_git_backend() {
         let intent = classify_command("git clean -f");
         let plan = plan_execution(&intent);
-        assert!(matches!(plan.backend, ExecutionBackend::RawShell { .. }));
+        assert!(matches!(plan.backend, ExecutionBackend::Git { .. }));
     }
 
     #[test]
-    fn git_branch_d_stays_raw_shell() {
+    fn git_branch_d_routes_to_git_backend() {
         let intent = classify_command("git branch -D old-branch");
         let plan = plan_execution(&intent);
-        assert!(matches!(plan.backend, ExecutionBackend::RawShell { .. }));
+        assert!(matches!(plan.backend, ExecutionBackend::Git { .. }));
     }
 
     #[test]
-    fn git_merge_routes_to_git_mutating() {
+    fn git_merge_routes_to_git_backend() {
         let intent = classify_command("git merge feature-branch");
         let plan = plan_execution(&intent);
-        assert!(matches!(plan.backend, ExecutionBackend::GitMutating { .. }));
+        assert!(matches!(plan.backend, ExecutionBackend::Git { .. }));
     }
 
     #[test]
-    fn git_mutating_backend_label() {
-        let backend = ExecutionBackend::GitMutating {
-            tool_name: "git".to_string(),
-            argv: vec!["git".to_string(), "add".to_string()],
-        };
-        assert_eq!(backend.label(), "git-mutating");
+    fn git_backend_label() {
+        let request = GitExecutionRequest::from_argv(
+            vec!["git".to_string(), "add".to_string()],
+            "git add".to_string(),
+            GitCommandOrigin::BashTranslation,
+        )
+        .unwrap();
+        let backend = ExecutionBackend::Git { request };
+        assert_eq!(backend.label(), "git");
         assert!(backend.is_executable());
     }
 
@@ -1015,6 +1158,7 @@ mod tests {
     fn git_push_fails_active_routing_validation() {
         let intent = classify_command("git push origin main");
         let plan = plan_execution(&intent);
+        // push requires permission (GitMutation → Ask), so fails validation
         let result = plan.validate_for_active_routing();
         assert!(result.is_err());
     }
@@ -1023,6 +1167,7 @@ mod tests {
     fn git_reset_hard_fails_active_routing_validation() {
         let intent = classify_command("git reset --hard HEAD~1");
         let plan = plan_execution(&intent);
+        // reset --hard has DestructiveFileMutation capability → Deny, so fails
         let result = plan.validate_for_active_routing();
         assert!(result.is_err());
     }

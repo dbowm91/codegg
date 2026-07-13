@@ -114,7 +114,10 @@ pub enum PlannedBackend {
     NativeTool,
     /// Direct `Command::new` argv execution (managed process).
     ManagedArgv,
-    /// Git-mutating managed process.
+    /// Unified Git backend.
+    Git,
+    /// Git-mutating managed process (legacy, prefer `Git`).
+    #[deprecated(note = "Use PlannedBackend::Git instead")]
     GitMutating,
 }
 
@@ -127,6 +130,8 @@ impl PlannedBackend {
             Self::PythonScript => "python_script",
             Self::NativeTool => "native_tool",
             Self::ManagedArgv => "managed_argv",
+            Self::Git => "git",
+            #[allow(deprecated)]
             Self::GitMutating => "git_mutating",
         }
     }
@@ -150,7 +155,10 @@ pub enum ActualBackend {
     NativeTool,
     /// Direct `Command::new` argv execution (managed process).
     ManagedArgv,
-    /// Git-mutating managed process.
+    /// Unified Git backend.
+    Git,
+    /// Git-mutating managed process (legacy, prefer `Git`).
+    #[deprecated(note = "Use ActualBackend::Git instead")]
     GitMutating,
     /// Command was rejected before execution.
     Rejected { reason: String },
@@ -164,6 +172,8 @@ impl ActualBackend {
             Self::PythonScript => "python_script",
             Self::NativeTool => "native_tool",
             Self::ManagedArgv => "managed_argv",
+            Self::Git => "git",
+            #[allow(deprecated)]
             Self::GitMutating => "git_mutating",
             Self::Rejected { .. } => "rejected",
         }

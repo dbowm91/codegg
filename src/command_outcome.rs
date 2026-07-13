@@ -36,6 +36,11 @@ pub enum ActualInvocation {
         mode: String,
         argv: Vec<String>,
     },
+    /// Unified Git invocation — typed operation + argv.
+    Git {
+        argv: Vec<String>,
+        operation_label: String,
+    },
 }
 
 impl ActualInvocation {
@@ -46,6 +51,7 @@ impl ActualInvocation {
             Self::NativeTool { .. } => "native_tool",
             Self::TestRunner { .. } => "test_runner",
             Self::PythonScript { .. } => "python_script",
+            Self::Git { .. } => "git",
         }
     }
 }
@@ -83,6 +89,11 @@ pub enum ActualExecutor {
         script_hash: Option<String>,
         mode: String,
     },
+    /// Unified Git executor — carries typed operation + argv.
+    Git {
+        argv: Vec<String>,
+        operation_label: String,
+    },
     Rejected {
         reason: String,
     },
@@ -96,6 +107,7 @@ impl ActualExecutor {
             Self::NativeTool { .. } => ActualBackend::NativeTool,
             Self::TestRunner { .. } => ActualBackend::TestRunner,
             Self::PythonScript { .. } => ActualBackend::PythonScript,
+            Self::Git { .. } => ActualBackend::Git,
             Self::Rejected { reason } => ActualBackend::Rejected {
                 reason: reason.clone(),
             },
@@ -129,6 +141,13 @@ impl ActualExecutor {
                 script_hash: script_hash.clone(),
                 mode: mode.clone(),
                 argv: vec!["python3".to_string(), "<script>".to_string()],
+            },
+            Self::Git {
+                argv,
+                operation_label,
+            } => ActualInvocation::Git {
+                argv: argv.clone(),
+                operation_label: operation_label.clone(),
             },
             Self::Rejected { .. } => ActualInvocation::RawShell {
                 command: "<rejected>".to_string(),
@@ -217,6 +236,7 @@ pub fn ownership_for_outcome(outcome: &ExecutionOutcome) -> RunOwnership {
         ActualExecutor::RawShell { .. }
         | ActualExecutor::ManagedArgv { .. }
         | ActualExecutor::NativeTool { .. }
+        | ActualExecutor::Git { .. }
         | ActualExecutor::Rejected { .. } => RunOwnership::Caller,
     }
 }
@@ -234,6 +254,7 @@ pub fn run_kind_for_outcome(outcome: &ExecutionOutcome, intent_kind: CommandInte
     match &outcome.actual {
         ActualExecutor::RawShell { .. } => "raw_shell".to_string(),
         ActualExecutor::ManagedArgv { .. } => match intent_kind {
+            GitReadOnly => "git_read".to_string(),
             GitMutating => "git_mutation".to_string(),
             SearchReadOnly | FileRead => "search".to_string(),
             _ => "managed_process".to_string(),
@@ -244,6 +265,11 @@ pub fn run_kind_for_outcome(outcome: &ExecutionOutcome, intent_kind: CommandInte
         },
         ActualExecutor::TestRunner { .. } => "test".to_string(),
         ActualExecutor::PythonScript { .. } => "python".to_string(),
+        ActualExecutor::Git { .. } => match intent_kind {
+            GitReadOnly => "git_read".to_string(),
+            GitMutating => "git_mutation".to_string(),
+            _ => "git".to_string(),
+        },
         ActualExecutor::Rejected { .. } => "raw_shell".to_string(),
     }
 }

@@ -1,3 +1,4 @@
+use crate::command_intent::plan::GitExecutionRequest;
 use crate::command_planner::{CommandPlan, ExecutionBackend, PythonModeGuess};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -23,6 +24,11 @@ pub enum RoutingDecision {
     RouteToManagedProcess {
         argv: Vec<String>,
         cwd: std::path::PathBuf,
+        timeout_secs: Option<u64>,
+    },
+    /// Unified Git routing — carries the typed request for all Git operations.
+    RouteToGit {
+        request: GitExecutionRequest,
         timeout_secs: Option<u64>,
     },
     Rejected {
@@ -63,7 +69,13 @@ pub fn resolve_routing(plan: &CommandPlan) -> RoutingDecision {
             cwd: cwd.clone(),
             timeout_secs: plan.timeout_secs,
         },
-        ExecutionBackend::GitMutating { tool_name: _, argv } => {
+        ExecutionBackend::Git { request } => RoutingDecision::RouteToGit {
+            request: request.clone(),
+            timeout_secs: plan.timeout_secs,
+        },
+        #[allow(deprecated)]
+        ExecutionBackend::GitMutating { argv, .. } => {
+            // Legacy path: convert to managed process for backward compat.
             RoutingDecision::RouteToManagedProcess {
                 argv: argv.clone(),
                 cwd: std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
@@ -101,15 +113,18 @@ mod tests {
     }
 
     #[test]
-    fn git_status_routes_to_native() {
+    fn git_status_routes_to_git() {
         let intent = classify_command("git status");
         let plan = plan_execution(&intent);
         let decision = resolve_routing(&plan);
         match decision {
-            RoutingDecision::RouteToNativeTool { tool_name, .. } => {
-                assert_eq!(tool_name, "egggit");
+            RoutingDecision::RouteToGit { request, .. } => {
+                assert_eq!(
+                    request.operation,
+                    codegg_git::GitOperation::Status { short: false }
+                );
             }
-            _ => panic!("expected RouteToNativeTool"),
+            _ => panic!("expected RouteToGit"),
         }
     }
 
@@ -208,84 +223,84 @@ mod tests {
     // ── Git mutation routing tests (Workstream E) ────────────────────
 
     #[test]
-    fn git_add_routes_to_managed_process() {
+    fn git_add_routes_to_git() {
         let intent = classify_command("git add src/main.rs");
         let plan = plan_execution(&intent);
         let decision = resolve_routing(&plan);
         match decision {
-            RoutingDecision::RouteToManagedProcess { argv, .. } => {
-                assert_eq!(argv[0], "git");
-                assert_eq!(argv[1], "add");
-                assert_eq!(argv[2], "src/main.rs");
+            RoutingDecision::RouteToGit { request, .. } => {
+                assert_eq!(request.argv[0], "git");
+                assert_eq!(request.argv[1], "add");
+                assert_eq!(request.argv[2], "src/main.rs");
             }
-            _ => panic!("expected RouteToManagedProcess, got {:?}", decision),
+            _ => panic!("expected RouteToGit, got {:?}", decision),
         }
     }
 
     #[test]
-    fn git_commit_routes_to_managed_process() {
+    fn git_commit_routes_to_git() {
         let intent = classify_command("git commit -m 'fix'");
         let plan = plan_execution(&intent);
         let decision = resolve_routing(&plan);
         match decision {
-            RoutingDecision::RouteToManagedProcess { argv, .. } => {
-                assert_eq!(argv[0], "git");
-                assert_eq!(argv[1], "commit");
+            RoutingDecision::RouteToGit { request, .. } => {
+                assert_eq!(request.argv[0], "git");
+                assert_eq!(request.argv[1], "commit");
             }
-            _ => panic!("expected RouteToManagedProcess, got {:?}", decision),
+            _ => panic!("expected RouteToGit, got {:?}", decision),
         }
     }
 
     #[test]
-    fn git_push_routes_to_shell() {
+    fn git_push_routes_to_git() {
         let intent = classify_command("git push origin main");
         let plan = plan_execution(&intent);
         let decision = resolve_routing(&plan);
-        assert!(matches!(decision, RoutingDecision::RouteToShell { .. }));
+        assert!(matches!(decision, RoutingDecision::RouteToGit { .. }));
     }
 
     #[test]
-    fn git_reset_hard_routes_to_shell() {
+    fn git_reset_hard_routes_to_git() {
         let intent = classify_command("git reset --hard HEAD~1");
         let plan = plan_execution(&intent);
         let decision = resolve_routing(&plan);
-        assert!(matches!(decision, RoutingDecision::RouteToShell { .. }));
+        assert!(matches!(decision, RoutingDecision::RouteToGit { .. }));
     }
 
     #[test]
-    fn git_clean_f_routes_to_shell() {
+    fn git_clean_f_routes_to_git() {
         let intent = classify_command("git clean -f");
         let plan = plan_execution(&intent);
         let decision = resolve_routing(&plan);
-        assert!(matches!(decision, RoutingDecision::RouteToShell { .. }));
+        assert!(matches!(decision, RoutingDecision::RouteToGit { .. }));
     }
 
     #[test]
-    fn git_checkout_routes_to_managed_process() {
+    fn git_checkout_routes_to_git() {
         let intent = classify_command("git checkout main");
         let plan = plan_execution(&intent);
         let decision = resolve_routing(&plan);
         match decision {
-            RoutingDecision::RouteToManagedProcess { argv, .. } => {
-                assert_eq!(argv[0], "git");
-                assert_eq!(argv[1], "checkout");
-                assert_eq!(argv[2], "main");
+            RoutingDecision::RouteToGit { request, .. } => {
+                assert_eq!(request.argv[0], "git");
+                assert_eq!(request.argv[1], "checkout");
+                assert_eq!(request.argv[2], "main");
             }
-            _ => panic!("expected RouteToManagedProcess, got {:?}", decision),
+            _ => panic!("expected RouteToGit, got {:?}", decision),
         }
     }
 
     #[test]
-    fn git_stash_routes_to_managed_process() {
+    fn git_stash_routes_to_git() {
         let intent = classify_command("git stash");
         let plan = plan_execution(&intent);
         let decision = resolve_routing(&plan);
         match decision {
-            RoutingDecision::RouteToManagedProcess { argv, .. } => {
-                assert_eq!(argv[0], "git");
-                assert_eq!(argv[1], "stash");
+            RoutingDecision::RouteToGit { request, .. } => {
+                assert_eq!(request.argv[0], "git");
+                assert_eq!(request.argv[1], "stash");
             }
-            _ => panic!("expected RouteToManagedProcess, got {:?}", decision),
+            _ => panic!("expected RouteToGit, got {:?}", decision),
         }
     }
 }

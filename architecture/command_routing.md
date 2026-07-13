@@ -30,6 +30,10 @@ pub enum RoutingDecision {
         tool_name: String,
         command: String,
     },
+    RouteToGit {
+        request: GitExecutionRequest,
+        timeout_secs: Option<u64>,
+    },
     RouteToManagedProcess {
         argv: Vec<String>,
         cwd: PathBuf,
@@ -40,6 +44,8 @@ pub enum RoutingDecision {
     },
 }
 ```
+
+`RouteToGit` is the unified git routing variant, replacing the former pattern where `GitReadOnly` routed through `RouteToNativeTool` (egggit) and `GitMutating` routed through `RouteToManagedProcess`. All git commands now map to `RouteToGit`.
 
 ## Routing Resolution
 
@@ -54,7 +60,7 @@ Maps `ExecutionBackend` → `RoutingDecision`:
 | `TestRunner { validated_command }` | `RouteToTestRunner { argv, scope_label: "command-intent:<label>", validated_command }` |
 | `PythonScript { script, mode_guess }` | `RouteToPythonScripting { script, mode, timeout_secs }` |
 | `NativeTool { tool_name }` | `RouteToNativeTool { tool_name, command }` |
-| `GitMutating { tool_name, argv }` | `RouteToManagedProcess { argv, cwd, timeout_secs }` |
+| `Git { request }` | `RouteToGit { request, timeout_secs }` |
 | `ManagedArgv { argv, cwd }` | `RouteToManagedProcess { argv, cwd, timeout_secs }` |
 | `RawShell { command }` | `RouteToShell { command, timeout_secs }` |
 | `Reject { reason }` | `Rejected { reason }` |

@@ -139,7 +139,7 @@ async fn active_test_command_routes_to_test_runner_as_delegated() {
 // ── 3. Active routing: GitRead routes to NativeTool (Caller-owned) ────
 
 #[tokio::test]
-async fn active_git_readonly_routes_to_native_tool_caller_owned() {
+async fn active_git_readonly_routes_to_git_caller_owned() {
     let store = Arc::new(MemRunStore::new());
     let tool = make_bash_tool(Some(active_config()), store.clone());
 
@@ -153,10 +153,11 @@ async fn active_git_readonly_routes_to_native_tool_caller_owned() {
     let m = &runs[0];
     assert_eq!(m.kind, RunKind::GitRead);
     assert_eq!(m.ownership, RunOwnership::Caller);
-    assert_eq!(m.planned_backend, Some(PlannedBackend::NativeTool));
-    assert_eq!(m.actual_backend, Some(ActualBackend::NativeTool));
+    assert_eq!(m.planned_backend, Some(PlannedBackend::Git));
+    // Actual backend is ManagedArgv because RouteToGit dispatches via managed process
+    assert_eq!(m.actual_backend, Some(ActualBackend::ManagedArgv));
     assert!(m.fallback.is_none());
-    // argv should be the actual native-tool invocation (no sh -c wrapping)
+    // argv should be the actual git invocation (no sh -c wrapping)
     let argv = m.invocation.argv.as_ref().expect("argv present");
     assert_eq!(argv[0], "git");
     assert_eq!(argv[1], "status");
@@ -449,12 +450,8 @@ async fn per_family_off_forces_raw_shell_persistence() {
     let runs = all_runs(&store).await;
     assert_eq!(runs.len(), 1);
     let m = &runs[0];
-    // NativeTool was off, so dispatch falls back to raw shell.
-    // Native dispatch runs git directly and reports the actual native argv.
-    assert!(matches!(
-        m.actual_backend,
-        Some(ActualBackend::NativeTool | ActualBackend::RawShell)
-    ));
+    // Per-family Off triggers kill switch, so dispatch falls back to raw shell.
+    assert_eq!(m.actual_backend, Some(ActualBackend::RawShell));
 }
 
 // ── 11. CommandOutcome API: ownership_for_outcome mapping ──────────────

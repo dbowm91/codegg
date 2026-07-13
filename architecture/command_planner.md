@@ -17,10 +17,12 @@ pub enum ExecutionBackend {
     NativeTool { tool_name: String },
     TestRunner { validated_command: Option<String> },
     PythonScript { script: String, mode_guess: PythonModeGuess },
-    GitMutating { tool_name: String, argv: Vec<String> },
+    Git { request: GitExecutionRequest },
     Reject { reason: String },
 }
 ```
+
+`GitExecutionRequest` carries a typed git operation (from codegg-git's parser), the raw argv, the command origin, and a risk set — replacing the former `NativeTool { "egggit" }` (for reads) and `GitMutating { "git", argv }` (for mutations) with a unified backend. All git commands — both reads and mutations — now plan through `ExecutionBackend::Git`.
 
 Methods: `label()` → `&str`, `is_executable()` → `bool`.
 
@@ -83,17 +85,15 @@ pub fn plan_execution(intent: &CommandIntent) -> CommandPlan
 |------------|---------|-------------|
 | Test | `TestRunner { validated_command }` | command string validated |
 | PythonAnalyze/Transform/Verify | `PythonScript { script, mode_guess }` | command string |
-| GitReadOnly | `NativeTool { tool_name: "egggit" }` | n/a |
-| GitMutating (safe) | `GitMutating { tool_name, argv }` | `parsed_argv` |
-| GitMutating (dangerous) | `RawShell { command }` | command string |
+| GitReadOnly | `Git { request }` | `parsed_argv` (typed operation + risk from codegg-git) |
+| GitMutating (safe) | `Git { request }` | `parsed_argv` (typed operation + risk from codegg-git) |
+| GitMutating (dangerous) | `Git { request }` | `parsed_argv` (typed operation + risk from codegg-git) |
 | SearchReadOnly, FileRead | `ManagedArgv { argv, cwd }` | `parsed_argv` (fallback to whitespace split) |
 | Build, Lint, Format | `ManagedArgv { argv, cwd }` | `parsed_argv` (fallback to whitespace split) |
 | FileWrite, FileEdit, RawShell | `RawShell { command }` | command string |
 | Rejected | `Reject { reason }` | n/a |
 
-Safe git mutations (→ `GitMutating`): add, commit, stash, checkout, switch, restore, merge, rebase, cherry-pick, revert.
-
-Dangerous git mutations (→ `RawShell`): push, pull, reset --hard, clean -f, branch -D.
+All git commands — reads, safe mutations, and dangerous mutations — plan through the unified `ExecutionBackend::Git` backend. The `GitExecutionRequest` carries the typed operation, argv, origin, and risk set produced by codegg-git's parser, enabling downstream routing to handle git operations uniformly.
 
 `ManagedArgv` backends use `intent.parsed_argv` from the shell shape parser, falling back to whitespace splitting if `None`.
 

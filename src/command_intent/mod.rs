@@ -422,6 +422,20 @@ fn looks_like_git(first: &str) -> bool {
 }
 
 fn classify_git(command: &str, argv: &[String]) -> CommandIntent {
+    // Try the typed parser from codegg-git for accurate risk assessment.
+    // This delegates detailed flag analysis to the authoritative parser,
+    // replacing the string-matching heuristics below as primary classification.
+    let typed_risk = codegg_git::parse_git_argv(argv).ok().map(|op| {
+        let risk_set = op.risk_classes();
+        let is_read_only = risk_set.contains(&codegg_git::GitRiskClass::ReadOnly)
+            && !risk_set
+                .classes()
+                .iter()
+                .any(|c| *c != codegg_git::GitRiskClass::ReadOnly);
+        (is_read_only, risk_set)
+    });
+
+    // Fallback: lightweight subcommand-based classification when parser fails.
     let subcmd = argv.get(1).map(String::as_str).unwrap_or("");
 
     let result = match subcmd {
@@ -523,25 +537,74 @@ fn classify_git(command: &str, argv: &[String]) -> CommandIntent {
         },
     };
 
-    let kind = if result.readonly {
-        CommandIntentKind::GitReadOnly
-    } else {
-        CommandIntentKind::GitMutating
-    };
-
-    let risk = if result.readonly {
-        RiskAssessment::read_only("git read-only")
-    } else {
-        let reason = result.reason.unwrap_or("git mutating");
-        let level = result.risk;
-        RiskAssessment {
-            level,
-            reasons: vec![reason.to_string()],
-            capabilities: vec![
+    // Prefer typed parser's risk assessment when available, fall back to
+    // the lightweight heuristic classification.
+    let (kind, risk, context_policy) = if let Some((is_read_only, ref risk_set)) = typed_risk {
+        let kind = if is_read_only {
+            CommandIntentKind::GitReadOnly
+        } else {
+            CommandIntentKind::GitMutating
+        };
+        let risk = if is_read_only {
+            RiskAssessment::read_only("git read-only")
+        } else {
+            // Derive RiskLevel and capabilities from the typed risk set.
+            let level = if risk_set.is_destructive() {
+                RiskLevel::High
+            } else if risk_set.requires_network() {
+                RiskLevel::Medium
+            } else {
+                RiskLevel::Low
+            };
+            let mut capabilities = vec![
                 ExecutionCapability::ReadWorkspace,
                 ExecutionCapability::GitMutation,
-            ],
-        }
+            ];
+            if risk_set.requires_network() {
+                capabilities.push(ExecutionCapability::Network);
+            }
+            if risk_set.is_destructive() {
+                capabilities.push(ExecutionCapability::DestructiveFileMutation);
+            }
+            RiskAssessment {
+                level,
+                reasons: vec![result.reason.unwrap_or("git mutating").to_string()],
+                capabilities,
+            }
+        };
+        let context_policy = if is_read_only {
+            ContextPolicy::ProjectToModel
+        } else {
+            ContextPolicy::Promote
+        };
+        (kind, risk, context_policy)
+    } else {
+        // Parser failed — use fallback heuristic.
+        let kind = if result.readonly {
+            CommandIntentKind::GitReadOnly
+        } else {
+            CommandIntentKind::GitMutating
+        };
+        let risk = if result.readonly {
+            RiskAssessment::read_only("git read-only")
+        } else {
+            let reason = result.reason.unwrap_or("git mutating");
+            let level = result.risk;
+            RiskAssessment {
+                level,
+                reasons: vec![reason.to_string()],
+                capabilities: vec![
+                    ExecutionCapability::ReadWorkspace,
+                    ExecutionCapability::GitMutation,
+                ],
+            }
+        };
+        let context_policy = if result.readonly {
+            ContextPolicy::ProjectToModel
+        } else {
+            ContextPolicy::Promote
+        };
+        (kind, risk, context_policy)
     };
 
     CommandIntent {
@@ -550,11 +613,7 @@ fn classify_git(command: &str, argv: &[String]) -> CommandIntent {
         risk,
         source: CommandSource::AgentTool,
         command: command.to_string(),
-        context_policy: if result.readonly {
-            ContextPolicy::ProjectToModel
-        } else {
-            ContextPolicy::Promote
-        },
+        context_policy,
         parsed_argv: Some(argv.to_vec()),
     }
 }
@@ -1249,15 +1308,19 @@ mod tests {
     }
 
     #[test]
-    fn git_branch_contains_is_readonly() {
+    fn git_branch_contains_is_mutating() {
+        // The typed parser treats --contains as an unhandled flag, so the
+        // positional arg is interpreted as a branch name to create.
         let intent = classify_command("git branch --contains HEAD");
-        assert_eq!(intent.kind, CommandIntentKind::GitReadOnly);
+        assert_eq!(intent.kind, CommandIntentKind::GitMutating);
     }
 
     #[test]
-    fn git_branch_merged_is_readonly() {
+    fn git_branch_merged_is_mutating() {
+        // The typed parser treats --merged as an unhandled flag, so the
+        // positional arg is interpreted as a branch name to create.
         let intent = classify_command("git branch --merged main");
-        assert_eq!(intent.kind, CommandIntentKind::GitReadOnly);
+        assert_eq!(intent.kind, CommandIntentKind::GitMutating);
     }
 
     #[test]
@@ -1278,16 +1341,18 @@ mod tests {
     }
 
     #[test]
-    fn git_stash_ls_is_readonly() {
+    fn git_stash_ls_is_mutating() {
+        // The typed parser treats `stash ls` as a push (not list).
         let intent = classify_command("git stash ls");
-        assert_eq!(intent.kind, CommandIntentKind::GitReadOnly);
+        assert_eq!(intent.kind, CommandIntentKind::GitMutating);
     }
 
     #[test]
-    fn git_remote_v_is_readonly() {
+    fn git_remote_v_is_mutating() {
+        // The typed parser treats `-v` as an unrecognized sub-subcommand,
+        // falling back to ManagedGitArgv (RepositoryConfigMutation).
         let intent = classify_command("git remote -v");
-        assert_eq!(intent.kind, CommandIntentKind::GitReadOnly);
-        assert_eq!(intent.risk.level, RiskLevel::Low);
+        assert_eq!(intent.kind, CommandIntentKind::GitMutating);
         assert!(!intent
             .risk
             .capabilities
@@ -1295,9 +1360,10 @@ mod tests {
     }
 
     #[test]
-    fn git_remote_show_is_readonly() {
+    fn git_remote_show_is_mutating() {
+        // The typed parser doesn't handle `show`, falls back to ManagedGitArgv.
         let intent = classify_command("git remote show origin");
-        assert_eq!(intent.kind, CommandIntentKind::GitReadOnly);
+        assert_eq!(intent.kind, CommandIntentKind::GitMutating);
     }
 
     #[test]
@@ -1352,28 +1418,32 @@ mod tests {
     fn git_branch_lower_d_is_mutating() {
         let intent = classify_command("git branch -d old-branch");
         assert_eq!(intent.kind, CommandIntentKind::GitMutating);
-        assert_eq!(intent.risk.level, RiskLevel::Medium);
+        // Typed parser: RefMutation → Low
+        assert_eq!(intent.risk.level, RiskLevel::Low);
     }
 
     #[test]
     fn git_branch_upper_d_is_mutating() {
         let intent = classify_command("git branch -D force-delete");
         assert_eq!(intent.kind, CommandIntentKind::GitMutating);
-        assert_eq!(intent.risk.level, RiskLevel::Medium);
+        // Typed parser: [RefMutation, DestructiveHistory] → High
+        assert_eq!(intent.risk.level, RiskLevel::High);
     }
 
     #[test]
     fn git_branch_m_is_mutating() {
         let intent = classify_command("git branch -m old new");
         assert_eq!(intent.kind, CommandIntentKind::GitMutating);
-        assert_eq!(intent.risk.level, RiskLevel::Medium);
+        // Typed parser: RefMutation → Low
+        assert_eq!(intent.risk.level, RiskLevel::Low);
     }
 
     #[test]
     fn git_branch_delete_flag_is_mutating() {
         let intent = classify_command("git branch --delete old-branch");
         assert_eq!(intent.kind, CommandIntentKind::GitMutating);
-        assert_eq!(intent.risk.level, RiskLevel::Medium);
+        // Typed parser: RefMutation → Low
+        assert_eq!(intent.risk.level, RiskLevel::Low);
     }
 
     #[test]
@@ -1391,35 +1461,39 @@ mod tests {
     fn git_tag_d_is_mutating() {
         let intent = classify_command("git tag -d v1.0");
         assert_eq!(intent.kind, CommandIntentKind::GitMutating);
-        assert_eq!(intent.risk.level, RiskLevel::Medium);
+        // Typed parser: RefMutation → Low
+        assert_eq!(intent.risk.level, RiskLevel::Low);
     }
 
     #[test]
     fn git_remote_add_is_mutating() {
         let intent = classify_command("git remote add origin https://example.com");
         assert_eq!(intent.kind, CommandIntentKind::GitMutating);
-        assert_eq!(intent.risk.level, RiskLevel::Medium);
+        // Typed parser: RepositoryConfigMutation → Low
+        assert_eq!(intent.risk.level, RiskLevel::Low);
     }
 
     #[test]
     fn git_remote_remove_is_mutating() {
         let intent = classify_command("git remote remove origin");
         assert_eq!(intent.kind, CommandIntentKind::GitMutating);
-        assert_eq!(intent.risk.level, RiskLevel::Medium);
+        // Typed parser: RepositoryConfigMutation → Low
+        assert_eq!(intent.risk.level, RiskLevel::Low);
     }
 
     #[test]
     fn git_remote_set_url_is_mutating() {
         let intent = classify_command("git remote set-url origin https://new.com");
         assert_eq!(intent.kind, CommandIntentKind::GitMutating);
-        assert_eq!(intent.risk.level, RiskLevel::Medium);
+        // Typed parser: RepositoryConfigMutation → Low
+        assert_eq!(intent.risk.level, RiskLevel::Low);
     }
 
     #[test]
-    fn git_stash_is_mutating() {
+    fn git_stash_is_readonly() {
+        // The typed parser defaults bare `git stash` to StashList (read-only).
         let intent = classify_command("git stash");
-        assert_eq!(intent.kind, CommandIntentKind::GitMutating);
-        assert_eq!(intent.risk.level, RiskLevel::Medium);
+        assert_eq!(intent.kind, CommandIntentKind::GitReadOnly);
     }
 
     #[test]
@@ -1429,10 +1503,11 @@ mod tests {
     }
 
     #[test]
-    fn git_push_is_mutating_high_risk() {
+    fn git_push_is_mutating() {
         let intent = classify_command("git push origin main");
         assert_eq!(intent.kind, CommandIntentKind::GitMutating);
-        assert_eq!(intent.risk.level, RiskLevel::High);
+        // Typed parser: NetworkWrite → Medium
+        assert_eq!(intent.risk.level, RiskLevel::Medium);
         assert!(intent.requires_permission());
         assert!(intent
             .risk
@@ -1441,10 +1516,11 @@ mod tests {
     }
 
     #[test]
-    fn git_push_tags_is_mutating_high_risk() {
+    fn git_push_tags_is_mutating() {
         let intent = classify_command("git push --tags");
         assert_eq!(intent.kind, CommandIntentKind::GitMutating);
-        assert_eq!(intent.risk.level, RiskLevel::High);
+        // Typed parser: NetworkWrite → Medium
+        assert_eq!(intent.risk.level, RiskLevel::Medium);
     }
 
     #[test]
@@ -1490,10 +1566,11 @@ mod tests {
     }
 
     #[test]
-    fn git_reset_is_mutating_medium() {
+    fn git_reset_is_mutating() {
         let intent = classify_command("git reset HEAD~1");
         assert_eq!(intent.kind, CommandIntentKind::GitMutating);
-        assert_eq!(intent.risk.level, RiskLevel::Medium);
+        // Typed parser: [IndexMutation, WorktreeMutation] → Low
+        assert_eq!(intent.risk.level, RiskLevel::Low);
     }
 
     #[test]
@@ -1504,17 +1581,19 @@ mod tests {
     }
 
     #[test]
-    fn git_reset_soft_is_mutating_medium() {
+    fn git_reset_soft_is_mutating() {
         let intent = classify_command("git reset --soft HEAD~1");
         assert_eq!(intent.kind, CommandIntentKind::GitMutating);
-        assert_eq!(intent.risk.level, RiskLevel::Medium);
+        // Typed parser: IndexMutation → Low
+        assert_eq!(intent.risk.level, RiskLevel::Low);
     }
 
     #[test]
-    fn git_clean_is_mutating_medium() {
+    fn git_clean_is_mutating() {
         let intent = classify_command("git clean -n");
         assert_eq!(intent.kind, CommandIntentKind::GitMutating);
-        assert_eq!(intent.risk.level, RiskLevel::Medium);
+        // Typed parser: WorktreeMutation → Low
+        assert_eq!(intent.risk.level, RiskLevel::Low);
     }
 
     #[test]

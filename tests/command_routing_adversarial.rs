@@ -503,8 +503,8 @@ fn git_add_and_rm_never_routes_to_git_mutation() {
     let intent = classify_command("git add . && rm -rf /");
     let plan = plan_execution(&intent);
     assert!(
-        !matches!(plan.backend, ExecutionBackend::GitMutating { .. }),
-        "git add && rm must not route to GitMutating"
+        !matches!(plan.backend, ExecutionBackend::Git { .. }),
+        "git add && rm must not route to Git"
     );
     assert!(
         !matches!(plan.backend, ExecutionBackend::TestRunner { .. }),
@@ -827,7 +827,7 @@ fn smuggled_commands_never_route_to_structured_backends() {
                 plan.backend,
                 ExecutionBackend::TestRunner { .. }
                     | ExecutionBackend::ManagedArgv { .. }
-                    | ExecutionBackend::GitMutating { .. }
+                    | ExecutionBackend::Git { .. }
                     | ExecutionBackend::PythonScript { .. }
             ),
             "smuggled command '{}' must not route to structured backend, got {:?}",
@@ -1454,12 +1454,12 @@ fn validation_fail_condition_6_outside_workspace() {
 #[test]
 fn validation_fail_condition_7_pending_permissions() {
     // Condition 7: no pending Ask/Deny permissions
-    // Use git merge which gets GitMutating backend (not RawShell) but requires permission
+    // Use git merge which gets Git backend (not RawShell) but requires permission
     let intent = classify_command("git merge feature-branch");
     let plan = plan_execution(&intent);
     assert!(
-        matches!(plan.backend, ExecutionBackend::GitMutating { .. }),
-        "git merge should have GitMutating backend"
+        matches!(plan.backend, ExecutionBackend::Git { .. }),
+        "git merge should have Git backend"
     );
     assert!(
         plan.requires_any_permission(),
@@ -1505,7 +1505,7 @@ fn git_add_passes_validation() {
     let intent = classify_command("git add src/main.rs");
     let plan = plan_execution(&intent);
     assert!(plan.validate_for_active_routing().is_ok());
-    assert!(matches!(plan.backend, ExecutionBackend::GitMutating { .. }));
+    assert!(matches!(plan.backend, ExecutionBackend::Git { .. }));
 }
 
 #[test]
@@ -1514,7 +1514,7 @@ fn git_commit_requires_permission_before_routing() {
     let plan = plan_execution(&intent);
     // commit may run hooks and mutate state; permission required before active routing
     assert!(plan.validate_for_active_routing().is_err());
-    assert!(matches!(plan.backend, ExecutionBackend::GitMutating { .. }));
+    assert!(matches!(plan.backend, ExecutionBackend::Git { .. }));
     assert!(plan.requires_any_permission());
 }
 
@@ -1524,7 +1524,7 @@ fn git_checkout_requires_permission_before_routing() {
     let plan = plan_execution(&intent);
     // checkout may overwrite worktree; permission required before active routing
     assert!(plan.validate_for_active_routing().is_err());
-    assert!(matches!(plan.backend, ExecutionBackend::GitMutating { .. }));
+    assert!(matches!(plan.backend, ExecutionBackend::Git { .. }));
     assert!(plan.requires_any_permission());
 }
 
@@ -1534,7 +1534,7 @@ fn git_switch_requires_permission_before_routing() {
     let plan = plan_execution(&intent);
     // switch may overwrite worktree; permission required before active routing
     assert!(plan.validate_for_active_routing().is_err());
-    assert!(matches!(plan.backend, ExecutionBackend::GitMutating { .. }));
+    assert!(matches!(plan.backend, ExecutionBackend::Git { .. }));
     assert!(plan.requires_any_permission());
 }
 
@@ -1544,7 +1544,7 @@ fn git_stash_requires_permission_before_routing() {
     let plan = plan_execution(&intent);
     // stash push mutates state; permission required before active routing
     assert!(plan.validate_for_active_routing().is_err());
-    assert!(matches!(plan.backend, ExecutionBackend::GitMutating { .. }));
+    assert!(matches!(plan.backend, ExecutionBackend::Git { .. }));
     assert!(plan.requires_any_permission());
 }
 
@@ -1554,7 +1554,7 @@ fn git_restore_requires_permission_before_routing() {
     let plan = plan_execution(&intent);
     // restore may overwrite worktree; permission required before active routing
     assert!(plan.validate_for_active_routing().is_err());
-    assert!(matches!(plan.backend, ExecutionBackend::GitMutating { .. }));
+    assert!(matches!(plan.backend, ExecutionBackend::Git { .. }));
     assert!(plan.requires_any_permission());
 }
 
@@ -1608,10 +1608,7 @@ fn full_pipeline_git_status() {
     let plan = plan_execution(&intent);
     assert!(plan.validate_for_active_routing().is_ok());
     let decision = resolve_routing(&plan);
-    assert!(matches!(
-        decision,
-        RoutingDecision::RouteToNativeTool { tool_name, .. } if tool_name == "egggit"
-    ));
+    assert!(matches!(decision, RoutingDecision::RouteToGit { .. }));
 }
 
 #[test]
@@ -1654,10 +1651,11 @@ fn full_pipeline_smuggled_command_fails_at_planning() {
 fn full_pipeline_git_push_fails_at_validation() {
     let intent = classify_command("git push origin main");
     let plan = plan_execution(&intent);
-    // Classification succeeds, planning produces RawShell, but validation fails
+    // Classification succeeds, planning produces Git backend, but validation fails
+    // (push requires permission via GitMutation → Ask)
     assert!(plan.validate_for_active_routing().is_err());
     let decision = resolve_routing(&plan);
-    assert!(matches!(decision, RoutingDecision::RouteToShell { .. }));
+    assert!(matches!(decision, RoutingDecision::RouteToGit { .. }));
 }
 
 // ── 55. Config interaction: master toggle + per-family ─────────────

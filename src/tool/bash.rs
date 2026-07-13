@@ -101,6 +101,8 @@ fn plan_to_planned_backend(
         Some(ExecutionBackend::PythonScript { .. }) => PlannedBackend::PythonScript,
         Some(ExecutionBackend::NativeTool { .. }) => PlannedBackend::NativeTool,
         Some(ExecutionBackend::ManagedArgv { .. }) => PlannedBackend::ManagedArgv,
+        Some(ExecutionBackend::Git { .. }) => PlannedBackend::Git,
+        #[allow(deprecated)]
         Some(ExecutionBackend::GitMutating { .. }) => PlannedBackend::GitMutating,
         Some(ExecutionBackend::Reject { .. }) => PlannedBackend::Unrouted,
     }
@@ -119,6 +121,7 @@ fn decision_to_planned_backend(
         Some(RoutingDecision::RouteToPythonScripting { .. }) => PlannedBackend::PythonScript,
         Some(RoutingDecision::RouteToNativeTool { .. }) => PlannedBackend::NativeTool,
         Some(RoutingDecision::RouteToManagedProcess { .. }) => PlannedBackend::ManagedArgv,
+        Some(RoutingDecision::RouteToGit { .. }) => PlannedBackend::Git,
         Some(RoutingDecision::RouteToShell { .. }) => PlannedBackend::RawShell,
         Some(RoutingDecision::Rejected { .. }) => PlannedBackend::Unrouted,
     }
@@ -889,6 +892,15 @@ impl BashTool {
                 self.dispatch_to_managed_process(argv, Some(cwd), timeout)
                     .await
             }
+            RoutingDecision::RouteToGit { request, .. } => {
+                // Unified Git dispatch: execute via managed argv (direct
+                // Command::new, no shell). For managed/unsupported operations
+                // (managed_argv fallback), use the fallback argv. For typed
+                // operations, use the original argv.
+                let argv = request.managed_argv.as_ref().unwrap_or(&request.argv);
+                self.dispatch_to_managed_process(argv, canonical_workdir, timeout)
+                    .await
+            }
             RoutingDecision::RouteToShell { command, .. } => {
                 self.dispatch_to_shell(command, canonical_workdir, timeout)
                     .await
@@ -1387,6 +1399,7 @@ impl Tool for BashTool {
                     ActualExecutor::PythonScript { .. } => {
                         vec!["python3".to_string(), "<script>".to_string()]
                     }
+                    ActualExecutor::Git { argv, .. } => argv.clone(),
                     ActualExecutor::Rejected { .. } => vec![],
                 };
                 let script_hash = match &execution_outcome.actual {
@@ -1412,6 +1425,9 @@ impl Tool for BashTool {
                     ActualExecutor::PythonScript { mode, .. } => {
                         ("python_script".to_string(), Some(mode.clone()))
                     }
+                    ActualExecutor::Git {
+                        operation_label, ..
+                    } => ("git".to_string(), Some(operation_label.clone())),
                     ActualExecutor::Rejected { reason } => {
                         ("bash".to_string(), Some(format!("rejected:{reason}")))
                     }
@@ -1790,10 +1806,7 @@ mod tests {
         let intent = classify_command("git status");
         let plan = plan_execution(&intent);
         let decision = resolve_routing(&plan);
-        assert!(matches!(
-            decision,
-            RoutingDecision::RouteToNativeTool { tool_name, .. } if tool_name == "egggit"
-        ));
+        assert!(matches!(decision, RoutingDecision::RouteToGit { .. }));
     }
 
     #[test]
