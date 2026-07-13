@@ -1,9 +1,9 @@
 # Testing Architecture
 
-Codegg's test suite contains ~1,219 async tests across 94 files with wildly different resource profiles. Unbounded parallelism has been observed to spawn 50-70 threads plus many subprocesses, with some processes consuming 1-2 GiB of memory. The default CI command intentionally serializes execution:
+Codegg's test suite contains ~1,219 async tests across 94 files with wildly different resource profiles. Unbounded parallelism has been observed to spawn 50-70 threads plus many subprocesses, with some processes consuming 1-2 GiB of memory. The default CI command uses limited parallelism:
 
 ```bash
-cargo test --workspace --all-features -- --test-threads=1
+cargo test --workspace --all-features -- --test-threads=4
 ```
 
 This document defines the test taxonomy, resource model, and guidance for adding new tests.
@@ -18,7 +18,7 @@ This document defines the test taxonomy, resource model, and guidance for adding
 | `plugin-heavy` | Wasmtime runtime, plugin install/registry/management | Serial | `tests/plugin.rs`, `src/plugin/management.rs` |
 | `adversarial` | Command routing, Python sandbox, context projection adversarial tests | Serial | `tests/command_routing_adversarial.rs` (139), `tests/python_sandbox_adversarial.rs` (57), `tests/context_projection_adversarial.rs` (90) |
 | `real-lsp` | Actual language server smoke tests (rust-analyzer, pyright, gopls) | Manual/scheduled only | `crates/egglsp/tests/real_server_smoke.rs` |
-| `release-full` | Conservative full validation for main/tags | Serial | `cargo test --workspace --all-features -- --test-threads=1` |
+| `release-full` | Conservative full validation for main/tags | Serial | `cargo test --workspace --all-features -- --test-threads=4` |
 
 ## Why Serial by Default
 
@@ -135,7 +135,7 @@ cargo test -p egggit -p eggsentry -p codegg-config -p codegg-protocol
 cargo test -p codegg-core
 
 # Full serial validation (conservative, CI baseline)
-CARGO_BUILD_JOBS=1 cargo test --workspace --all-features -- --test-threads=1
+CARGO_BUILD_JOBS=1 cargo test --workspace --all-features -- --test-threads=4
 
 # LSP integration (fake server, serial)
 cargo test -p egglsp --features lsp-test-support --test scenario_engine
@@ -209,7 +209,7 @@ The CI pipeline runs jobs in sequence: `agent-assets` → `fmt` → `check` → 
 Runs the full serial workspace suite:
 
 ```bash
-cargo test --workspace --all-features -- --test-threads=1
+cargo test --workspace --all-features -- --test-threads=4
 ```
 
 This is the primary validation gate. All test resource classes are covered here.
@@ -254,7 +254,7 @@ The closure pass evaluation determined that splitting the CI into resource lanes
 
 1. **Documentation is sufficient** — the test resource taxonomy, process-heavy file headers, and audit scripts provide visibility into resource usage without CI complexity.
 2. **Regression guards are in place** — `check-tokio-test-flavors.py` prevents new bare tokio tests, and `audit_tokio_tests.py` identifies concurrency-sensitive tests.
-3. **Serial execution is reliable** — `--test-threads=1` eliminates resource contention issues entirely.
+3. **Limited parallelism is reliable** — `--test-threads=4` balances speed with resource control.
 4. **Wall-clock is acceptable** — the full serial suite completes within CI timeout limits.
 
 ### Future Considerations

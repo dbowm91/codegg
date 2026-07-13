@@ -60,7 +60,7 @@ jobs:
       # Full workspace test suite (all features, serial). Shell projection tests
       # (harness, phase10, redactor, rtk) are included in this run — no separate
       # rerun needed. See architecture/testing.md for the test taxonomy.
-      - run: cargo test --workspace --all-features -- --test-threads=1
+      - run: cargo test --workspace --all-features -- --test-threads=4
 
   plugin-focused:
     runs-on: ubuntu-latest

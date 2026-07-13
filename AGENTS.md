@@ -7,7 +7,7 @@ Rust 1.81+ required. Edition 2021. Tokio async runtime.
 ```bash
 cargo build --all-features           # build
 cargo clippy --all-features -- -D warnings  # lint (errors in CI)
-CARGO_BUILD_JOBS=1 cargo test --workspace --all-features -- --test-threads=1  # full suite, capped
+CARGO_BUILD_JOBS=1 cargo test --workspace --all-features -- --test-threads=4  # full suite, capped
 cargo fmt                            # format
 ```
 
@@ -73,13 +73,13 @@ Changes to server/plugin modules need `--all-features` testing. LSP integration 
 
 The workspace test matrix is large (~1,219 async tests across 94 files). Prefer the narrowest crate, test file, or test name that covers a change before reaching for a workspace-wide run.
 
-When you do need the full suite locally, cap Cargo's build parallelism and keep the test harness serial:
+When you do need the full suite locally, cap Cargo's build parallelism and limit test threads:
 
 ```bash
-CARGO_BUILD_JOBS=1 cargo test --workspace --all-features -- --test-threads=1
+CARGO_BUILD_JOBS=1 cargo test --workspace --all-features -- --test-threads=4
 ```
 
-`--test-threads=1` only serializes cases inside each test binary. `CARGO_BUILD_JOBS=1` is what prevents the compile/link fan-out that drives the RAM and iowait spikes.
+`--test-threads=4` limits concurrent test execution per binary. `CARGO_BUILD_JOBS=1` prevents the compile/link fan-out that drives the RAM and iowait spikes.
 
 Run `--all-features` and `lsp-test-support` paths as separate capped invocations when possible; those are the heaviest test paths in this repo.
 
@@ -271,7 +271,7 @@ python3 scripts/generate_builtin_agents.py --check      # staleness + schema val
 python3 scripts/check_builtin_agents.py                 # verify TOML matches generated.rs
 cargo fmt --check                                        # formatting check
 cargo check --workspace                                  # compilation check
-CARGO_BUILD_JOBS=1 cargo test --workspace -- --test-threads=1  # all tests, capped
+CARGO_BUILD_JOBS=1 cargo test --workspace -- --test-threads=4  # all tests, capped
 ```
 
 ## User/Project Agent Customization
