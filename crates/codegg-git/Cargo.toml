@@ -1,0 +1,14 @@
+[package]
+name = "codegg-git"
+version = "0.1.0"
+edition = "2021"
+description = "Typed Git operation model, argv parser, and risk classification for Codegg."
+license = "MIT"
+rust-version = "1.81"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+
+[dev-dependencies]
+proptest = "1"

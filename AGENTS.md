@@ -20,12 +20,13 @@ cargo ckcore       # check -p codegg-core
 cargo ckprotocol   # check -p codegg-protocol
 cargo ckconfig     # check -p codegg-config
 cargo ckproviders  # check -p codegg-providers
+cargo ckgit        # check -p codegg-git
 cargo cksplit      # check protocol + config + providers + root
 ```
 
 ## Workspace Crates
 
-9 crates under `crates/`:
+10 crates under `crates/`:
 
 | Crate | Purpose |
 |-------|---------|
@@ -33,6 +34,7 @@ cargo cksplit      # check protocol + config + providers + root
 | `codegg-config` | Config schema, paths, loading, validation, file watching |
 | `codegg-protocol` | CoreRequest, CoreResponse, CoreEvent, TuiMessage, UiNode, UiEffect, PluginManifestDto, PluginInvocation, PluginResponse (re-exported as `codegg::protocol`) |
 | `codegg-providers` | LLM provider implementations, auth types, CircuitBreaker (re-exported as `codegg::provider`) |
+| `codegg-git` | Typed Git operation model, argv parser, and risk classification |
 | `egglsp` | LSP client/service/operations (authoritative implementation) |
 | `egggit` | Read-only git facts (status, diff, changed files) |
 | `eggsentry` | Security scanning (secrets, commands, deps) |
@@ -109,6 +111,7 @@ cargo test -p codegg-providers
 cargo test -p eggsentry
 cargo test -p eggcontext
 cargo test -p egggit
+cargo test -p codegg-git
 cargo test -p egglsp
 
 # TUI render regression tests (headless, no terminal needed)
@@ -591,6 +594,10 @@ Add to `crates/egglsp/src/server.rs`. Each server needs a `LspRule` entry with c
 
 ### New Native Tool Crates
 Follow the library-first, MCP-second pattern in `architecture/native_crates.md`. Durable tool domains live in workspace crates under `crates/` and are consumed directly in-process by Codegg's tool wrappers.
+
+### New Git Operations
+`codegg-git` (`crates/codegg-git`) is the typed Git operation model, argv parser, and risk classification crate. Phase B (command intent/routing) should consume these types directly rather than re-implementing Git argv parsing or risk heuristics inline. See `architecture/command_intent.md` for the classification contract.
+
 3. **Line numbers are fragile** — References like `watcher.rs:157` can be off by several lines. Use code search.
 4. **Count from source, not docs** — Tool/server/command counts drift. Count actual entries in `with_options()`, `server_definitions()`, `CommandRegistry`.
 5. **Don't assume tool registration** — Not every tool in `/tool` is in the default registry.

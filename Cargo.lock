@@ -1030,6 +1030,7 @@ dependencies = [
  "clap_complete",
  "codegg-config",
  "codegg-core",
+ "codegg-git",
  "codegg-protocol",
  "codegg-providers",
  "comrak",
@@ -1150,6 +1151,15 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "codegg-git"
+version = "0.1.0"
+dependencies = [
+ "proptest",
+ "serde",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

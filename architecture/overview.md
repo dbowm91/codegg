@@ -32,6 +32,7 @@ CodeGG is a high-performance AI coding agent built in Rust, designed for termina
 │  │  └────────┘ └───────┘ │ └───────┘ └──────┘ │ Crates │       │  │
 │  │                                         ┌─── egglsp        │  │
 │  │                                         │    egggit        │  │
+│  │                                         │    codegg-git    │  │
 │  │                                         │    eggsentry        │  │
 │  │                                         │    eggcontext    │  │
 │  │                                         └──────────────────┘  │
@@ -56,6 +57,7 @@ binaries without changing the model-facing tool names.
 | `crates/egggit` | Read-only git facts (status, diff, changed files, worktrees) | `status.rs`, `diff.rs`, `worktree.rs` |
 | `crates/eggsentry` | Deterministic security scanning (secrets, commands, deps, unsafe code) | `scanner.rs`, `command.rs`, `finding.rs`, `profile.rs` |
 | `crates/eggcontext` | Token counting and context utilities (tiktoken-based) | `lib.rs` |
+| `crates/codegg-git` | Typed Git operation model, argv parser, and risk classification | `lib.rs` |
 
 Codegg-side thin wrappers (`src/tool/lsp.rs`, `src/tool/git.rs`,
 `src/tool/security.rs`, etc.) consume these crates. The model-facing
@@ -175,7 +177,7 @@ hidden by default — see [MCP](mcp.md)).
 |------|-------|----------|
 | Tools (default registry) | ~40 | `tool/mod.rs:with_options()` |
 | LSP servers | 39 | `crates/egglsp/src/server.rs` |
-| Native tool crates | 9 | `crates/` (codegg-core, codegg-config, codegg-protocol, codegg-providers, egglsp, egggit, eggsentry, eggcontext, egglsp-test-server) |
+| Native tool crates | 10 | `crates/` (codegg-core, codegg-config, codegg-protocol, codegg-providers, egglsp, egggit, eggsentry, eggcontext, codegg-git, egglsp-test-server) |
 | UiState fields | 30 | `tui/app/state/ui.rs:40-98` |
 | AppEvent variants | 42 | `crates/codegg-core/src/bus/events.rs:61-265` |
 | Built-in commands | 105 | `tui/command.rs` (assertion at line 517) |
@@ -261,7 +263,7 @@ User Input → TUI Event Loop → App::on_key() → State Mutation → Render
 - [MCP](mcp.md) - Model Context Protocol
 - [Memory](memory.md) - Persistent memory system
 - [Model Profile & Task State](model_profile_task_state.md) - Model behavioral profiles, todo/task state machine
-- [Native Crates](native_crates.md) — Workspace crates (egglsp, egggit, eggsentry, eggcontext, codegg-config, codegg-protocol, codegg-providers), backend contract, raw MCP exposure policy, diagnostics
+- [Native Crates](native_crates.md) — Workspace crates (egglsp, egggit, eggsentry, eggcontext, codegg-config, codegg-protocol, codegg-providers, codegg-git), backend contract, raw MCP exposure policy, diagnostics
 - [Permission](permission.md) - Access control and modes
 - [Plugin](plugin.md) - WASM plugin system
 - [Protocol](protocol.md) - Shared request/response envelopes

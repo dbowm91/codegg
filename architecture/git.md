@@ -1,105 +1,132 @@
-# Git Module
+# codegg-git — Typed Git Operation Model
 
-The `git` module previously provided Git session management for tracking repository state and worktree operations. As of the [native tool crate extraction](native_crates.md), this module has been **removed** from `src/`. Read-only git facts (`repo_status`, `diff_summary`, `changed_files`, `file_diff`, `validate_patch`, `list_worktrees`) now live in the `egggit` workspace crate (`crates/egggit/`). **Mutating worktree operations have been removed** — worktree is now read-only in `codegg-core`.
+`codegg-git` provides a typed vocabulary for Git commands consumed by the
+command-intent classifier, command planner, routing, BashTool dispatch,
+the native Git tool, and provenance tracking. It is a pure data-model
+and parser library with no dependencies on TUI, provider, Bash, or agent types.
 
-The Codegg `git` tool (`src/tool/git.rs`) remains a low-level command wrapper and continues to expose the model-facing `git` name unchanged. The `commit` and `review` tools consume `egggit` for diff facts and keep their mutation/permission flow in codegg. Native tool calls (including `git`, `commit`, and `review`) execute through `ToolRegistry::execute_capture(...)` in `AgentLoop::execute_tool_calls`; structured provenance is recorded via `tracing::debug!` without changing the model-facing string output.
+## Module structure
 
-## Overview
+### `operation.rs` — `GitOperation` enum
 
-**Location**: `crates/egggit/` (read-only git facts) and `crates/codegg-core/src/worktree.rs` (read-only)
+The central type. 47 variants organized by domain:
 
-**Key Responsibilities**:
-- Read-only git facts via the `egggit` crate (status, diff summary, changed files, file diff, patch validation, worktree list)
-- Read-only worktree support in `codegg-core` (list worktrees via `egggit::list_worktrees`)
-- Git status information for prompt injection (consumed from `egggit::repo_status`)
-- Mutating operations (commit) stay in codegg under the permission flow
+| Domain | Variants |
+|--------|----------|
+| Read-only inspection | `Status`, `Diff`, `DiffStaged`, `Show`, `Log`, `Blame`, `ChangedFiles` |
+| Listing | `BranchList`, `RemoteList`, `RemoteGetUrl`, `TagList`, `WorktreeList` |
+| Staging | `Add`, `Reset` (with `ResetMode`: `Soft`/`Mixed`/`Hard`/`Merge`/`Keep`) |
+| Commit | `Commit` |
+| Stash | `StashList`, `StashShow`, `StashPush`, `StashApply`, `StashPop`, `StashDrop` |
+| Checkout/Switch/Restore | `Checkout`, `Switch`, `Restore` |
+| Branch/Tag create/delete | `BranchCreate`, `BranchDelete`, `BranchRename`, `TagCreate`, `TagDelete`, `TagForceDelete` |
+| Merge/Rebase/Cherry-pick/Revert | `Merge`, `Rebase`, `CherryPick`, `Revert` |
+| Network | `Fetch`, `Pull`, `Push` |
+| Hard reset variants | `ResetHard`, `ResetMixed`, `ResetSoft`, `ResetMerge`, `ResetKeep` |
+| Clean | `Clean` |
+| Remote | `RemoteAdd`, `RemoteRemove`, `RemoteSetUrl` |
+| Config | `ConfigGet`, `ConfigSet`, `ConfigUnset` |
+| In-progress control | `Abort`, `Continue`, `Skip` |
+| Fallbacks | `ManagedGitArgv { argv, risk }`, `RawShellRequired { argv }` |
 
-## Key Types
+Key methods:
+- `risk_classes(&self) -> RiskSet` — derives risk from operation variant and flags (e.g. `Push { force: true }` → `NetworkWrite + DestructiveHistory`).
+- `subcommand_name(&self) -> &'static str` — returns the git subcommand string for display.
 
-### GitSession
+### `risk.rs` — `GitRiskClass` and `RiskSet`
+
+`GitRiskClass` has 11 variants:
+
+| Variant | Meaning |
+|---------|---------|
+| `ReadOnly` | No side effects |
+| `IndexMutation` | Staging index changes (add, reset paths, stash create) |
+| `WorktreeMutation` | Working tree file changes (checkout paths, restore, stash apply/pop) |
+| `RefMutation` | Branch/tag create, rename, delete |
+| `HistoryIntegration` | Commit history rewriting (merge, rebase, cherry-pick, revert, reset --hard) |
+| `NetworkRead` | Fetch from remote |
+| `NetworkWrite` | Push to remote |
+| `RepositoryConfigMutation` | `git config`, remote add/remove |
+| `DestructiveWorktree` | Unrecoverable worktree changes (clean -f, checkout --force, reset --hard) |
+| `DestructiveHistory` | Unrecoverable history changes (force push, reset --hard, branch -D) |
+| `OutsideProject` | References paths outside the project root |
+
+`RiskSet` wraps `Vec<GitRiskClass>` with `is_destructive()` (any `DestructiveWorktree` or `DestructiveHistory`) and `requires_network()` (any `NetworkRead` or `NetworkWrite`).
+
+### `parser.rs` — `parse_git_argv`
 
 ```rust
-pub struct GitSession {
-    pub session_id: String,
-    pub worktree_path: Option<PathBuf>,
-    pub git_root: PathBuf,
-    pub status: GitStatus,
-    pub auto_worktree: bool,
-}
+pub fn parse_git_argv(argv: &[String]) -> Result<GitOperation, ParseError>
 ```
 
-Represents a Git session tied to a CodeGG session. Optionally creates a worktree under `.git/worktrees/{session_id}` for isolated file operations.
+Parses a pre-tokenized `git` argv slice into a `GitOperation`. Input is already split argv — no shell splitting. The parser never executes commands.
 
-### GitStatus
+Handles 25 subcommands (`status`, `diff`, `show`, `log`, `blame`, `branch`, `tag`, `remote`, `stash`, `checkout`, `switch`, `restore`, `commit`, `add`, `reset`, `clean`, `merge`, `rebase`, `cherry-pick`, `revert`, `fetch`, `pull`, `push`, `config`, `worktree`). Unknown subcommands fall back to `ManagedGitArgv` with conservative risk classification.
+
+### `render.rs` — `render_argv`
 
 ```rust
-pub struct GitStatus {
-    pub branch: String,
-    pub is_dirty: bool,
-    pub commit_hash: Option<String>,
-    pub stash_count: usize,
-}
+pub fn render_argv(op: &GitOperation) -> Vec<String>
 ```
 
-Current repository state snapshot.
+Renders a `GitOperation` back into a `git` argv slice. Every variant produces a complete argv beginning with `"git"`. Paths are placed after a literal `"--"` separator when required by git's grammar. No shell quoting is performed — output is raw string tokens suitable for `Command::args()`. Rendering is deterministic.
 
-## Components
+### `path.rs` — Path safety types
 
-### GitSession Creation
+| Type | Purpose |
+|------|---------|
+| `RepoRoot` | Canonical repository root. Created via `RepoRoot::new(path)` which canonicalizes the path. |
+| `RepoPath` | Repository-relative literal path. Rejects NUL bytes, absolute paths, parent traversal (`..`), and paths resolving outside the repository root. Normalizes `./` prefixes. |
+| `Pathspec` | Raw advanced pathspec for glob/regex patterns where literal path validation isn't possible. Rejects NUL bytes and empty strings. |
 
-`GitSession::new()` initializes a session by:
-1. Running `git status` to get branch, dirty status, commit hash, and stash count
-2. Optionally setting a worktree path if `auto_worktree` is enabled
-3. All git commands use `env_clear()` with only `PATH` set for security
+`PathError` has 5 variants: `NullByte`, `AbsolutePath`, `PathEscape`, `Empty`, `NotUtf8`.
 
-### Status Refresh
+### `ref_name.rs` — Ref safety types
 
-`refresh_status()` re-runs `git status` to update the session's state snapshot.
+| Type | Validation |
+|------|-----------|
+| `BranchName` | `validate_ref_name`: rejects empty, leading `-`, `..`, `.lock` suffix, `~^:?*[\` chars, NUL bytes |
+| `RefName` | Same validation as `BranchName` |
+| `RemoteName` | Rejects empty, leading `-`, NUL, `..`, spaces |
+| `ObjectId` | 40-char hex (SHA-1) or 64-char hex (SHA-256), rejects non-hex and wrong length |
+| `RevisionExpr` | Raw string, only rejects empty (too many forms to validate) |
 
-### Worktree Operations
+`RefError` has 7 variants: `Empty`, `IllegalCharacters`, `StartsWithDash`, `DoubleDot`, `LockSuffix`, `SpecialCharacters`, `InvalidObjectId`.
 
-- `create_worktree(branch)` - Delegates to `worktree::create_worktree()`
-- `remove_worktree()` - Delegates to `worktree::remove_worktree()`
-- Both require `auto_worktree` to be enabled (worktree_path is Some)
+### `error.rs` — `ParseError`
 
-### Prompt Injection
+9 variants covering all parser failure modes:
 
-`format_for_prompt()` generates a formatted string for inclusion in system prompts:
-```
-[Git Info]
-Branch: main
-Status: dirty (uncommitted changes)
-Commit: abc1234
-Stash: 2 entries
-Worktree: /path/to/worktree/
-```
+| Variant | Meaning |
+|---------|---------|
+| `MalformedArgv` | Empty argv or non-git executable |
+| `UnsupportedGlobalOption` | Global option the parser can't handle |
+| `UnsupportedSubcommand` | Unrecognized git subcommand |
+| `AmbiguousSyntax` | Multiple parse interpretations |
+| `UnsafePath` | Path failed safety validation |
+| `MissingRequiredArgument` | Required flag/argument absent |
+| `ContradictoryFlags` | Mutually exclusive flags combined |
+| `RequiresManagedFallback` | Operation must use `ManagedGitArgv` fallback |
+| `MustRemainRawShell` | Command requires shell semantics |
 
-### Git Root Discovery
+### `origin.rs` — `GitCommandOrigin`
 
-`get_git_root(start)` delegates to `worktree::find_git_root()` to walk up the directory tree.
+Metadata enum identifying command provenance: `NativeTool`, `BashTranslation`, `Workflow`, `Tui`. Does not change operation semantics.
 
-## Integration with Other Modules
+## Key invariants
 
-### Worktree Module
+1. **Side-effect free.** Parsing and rendering never execute commands or access the filesystem (beyond `RepoRoot` canonicalization at construction time).
+2. **No TUI/provider/Bash/agent dependency.** The crate is a pure data-model and parser library.
+3. **Path/ref safety types reject dangerous inputs.** NUL bytes, absolute paths, parent traversal (`..`), and paths resolving outside the repository root are rejected at parse time.
+4. **Parser uses pre-tokenized argv.** No whitespace splitting — input is `&[String]` from a prior tokenizer.
+5. **Rendering is deterministic.** `render_argv` produces a canonical argv for each variant with no shell quoting.
+6. **ManagedGitArgv fallback.** Commands the parser cannot fully represent preserve the original argv with a conservative `RiskSet` derived from heuristic classification.
+7. **RawShellRequired.** Commands requiring shell semantics (pipes, redirects, command substitution) are flagged as `RawShellRequired` and cannot be dispatched to structured backends.
 
-`GitSession` delegates worktree creation and removal to `worktree::create_worktree()` and `worktree::remove_worktree()`.
+## Crate boundary
 
-### Agent Loop
+Phase B consumers (`command_intent`, `command_planner`, `command_routing`, `BashTool`, native Git tool) must consume these types directly. There must be no duplicate parser logic in downstream crates — `parse_git_argv` and `render_argv` are the single source of truth for Git argv parsing and rendering.
 
-Git status is injected into system prompts via `format_for_prompt()` during prompt assembly.
+## Test coverage
 
-### Session Module
-
-Git session state is associated with CodeGG sessions for tracking repository context.
-
-## Implementation Notes
-
-- All git commands use `env_clear()` with only `PATH` inherited for security
-- Branch detection returns "detached" for detached HEAD states
-- Stash count is determined by counting lines starting with "stash@"
-- Worktree path is `.git/worktrees/{session_id}` format
-
-## See Also
-
-- [worktree.md](worktree.md) - Git worktree creation and management
-- [agent.md](agent.md) - Git info injection into prompts
+331 tests across `parser`, `operation`, `risk`, `path`, `ref_name`, and `render` modules. Parser tests include property-based testing via `proptest`. Risk classification tests verify each variant produces the expected `RiskSet`. Path/ref tests exercise rejection of all invalid input categories.
