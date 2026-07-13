@@ -83,6 +83,16 @@ CARGO_BUILD_JOBS=1 cargo test --workspace --all-features -- --test-threads=1
 
 Run `--all-features` and `lsp-test-support` paths as separate capped invocations when possible; those are the heaviest test paths in this repo.
 
+**RunStore-specific guidance** (`crates/codegg-core/src/run_store.rs`): the
+authoritative artifact checksum lives on the *artifact store* record
+(`MemArtifactEntry.sha256` for `MemRunStore`, `ArtifactRecord.sha256`
+from the persisted manifest for `FsRunStore`), not on the manifest
+copy that `RunManifest.artifacts` carries. Tests verifying integrity
+MUST mutate either the bytes on disk or the in-store record.
+`FsRunStore.lock: tokio::sync::Mutex<()>` is **not reentrant**; callers
+acquire it once and call `rewrite_index_locked` directly. See
+`architecture/run_store.md` Invariants.
+
 See `architecture/testing.md` for the full test resource taxonomy, Tokio runtime flavor rules, pool strategy guidance, test selection pattern, and capped full-suite command.
 
 ## Testing

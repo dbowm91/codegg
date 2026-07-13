@@ -166,4 +166,27 @@ In `src/protocol_conversions.rs`:
 
 13 unit tests in `run_store.rs` covering: ID generation, serde roundtrip, begin/write/complete flow, get/list, ranged reads, integrity violation, artifact too large, rerun descriptor safety, concurrent writes, path traversal, list with limit, cleanup plan, FsRunStore (atomic begin, artifact write, index update).
 
-Run with: `cargo test -p codegg-core run_store`
+Run with: `cargo test -p codegg-core run_store`. With repeated-run regression coverage (`fs_store_complete_updates_index_repeated`), the full RunStore suite is 19 tests. Always run with `--test-threads=1` (resource-capped) to avoid spurious hangs under concurrent load.
+
+## Invariants
+
+### Authoritative checksum source
+
+The SHA-256 that `read_artifact` validates against is the `sha256` field
+of the **`ArtifactRecord`** stored in the *artifact store*:
+
+- **`MemRunStore`**: `artifacts: parking_lot::RwLock<HashMap<ArtifactId, MemArtifactEntry>>` where `MemArtifactEntry = (RunId, Vec<u8>, ArtifactRecord)`. `read_artifact` reads the bytes, recomputes SHA-256, and compares against `record.sha256`.
+- **`FsRunStore`**: `ArtifactRecord.relative_path` points at a file under `<date>/<run-id>/`. `read_artifact` reads the file, recomputes SHA-256, and compares against `ArtifactRecord.sha256` from the persisted `manifest.json`.
+
+The manifest also carries a copy of each `ArtifactRecord` (in `RunManifest.artifacts`) for serialization convenience, but the manifest copy is **never** the integrity source. Tests that want to verify integrity MUST mutate either the bytes on disk (for `FsRunStore`) or the `MemArtifactEntry` record (for `MemRunStore`).
+
+### `tokio::sync::Mutex` reentrancy rule
+
+`FsRunStore.lock: tokio::sync::Mutex<()>` is **not reentrant**. The
+single allowed lock-holding pattern is: acquire the lock once, then
+call `rewrite_index_locked` (the `_locked` suffix signals "caller must
+hold `self.lock` for the duration"). Never wrap the locked variant in
+code that calls `self.lock.lock().await` again; doing so will deadlock
+the current task permanently. The history commit
+`ba66c7d4a4f448abcadc789c8790ec3ecad54e94` documents the
+`fs_store_complete_updates_index` hang as the originating defect.

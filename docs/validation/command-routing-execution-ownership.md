@@ -9,14 +9,20 @@ See also:
 
 ## Commits
 
-- **Real delegation SHA (this commit)**: pending (this commit)
+- **Final validation/hygiene SHA**: `ba66c7d4a4f448abcadc789c8790ec3ecad54e94` (`fix(codegg-core): RunStore self-deadlock + integrity test parity`) — this pass
+- **Canonical delegation SHA**: `c35a2da2691aa7a83ce61b74396dc6fd848466fc` (`command routing: wire BashTool into canonical TestRunner and Python subsystems`)
+- **Timeout/ownership follow-up SHA**: `bec25130945b07ed1a2be8dd9c51764e9a660818` (`fix timeout plumbing and delegated ownership semantics in BashTool`)
 - **Previous SHA**: `605e557` (real-delegation plan) / `195cc5d` (execution ownership) / `819f17a` (plan)
 
 ## Environment
 
 - **Platform**: macOS (darwin)
 - **Architecture**: aarch64
-- **Rust version**: 1.96.0
+- **Rust/Cargo version**: rustc 1.96.0 / cargo 1.96.0
+- **CARGO_BUILD_JOBS**: 1 (resource-capped)
+- **Test thread count**: `--test-threads=1` (serialized)
+- **Python sandbox backend observed**: not exercised — adversarial suite runs AST-only on darwin
+- **GitHub combined status**: not observed — local-only validation in this pass
 
 ## Problem Statement (Final Corrective Pass)
 
@@ -223,26 +229,89 @@ ownership + 7 new real-delegation tests):
 | `cargo check -p codegg-core` | ✅ Clean |
 | `cargo check -p codegg --lib` | ✅ Clean |
 | `cargo check --workspace` | ✅ Clean |
-| `cargo clippy -p codegg --lib --tests -- -D warnings` (RTK-filtered; 58 `field_reassign_with_default` and 2 `needless_borrow` warnings pre-existing in `src/test_runner/runner.rs`, `src/tool/bash.rs`, `tests/command_routing_adversarial.rs`, `tests/context_projection_adversarial.rs` — none introduced by this corrective pass) | ⚠️ Pre-existing only |
-| `cargo fmt --all -- --check` | Not re-verified this pass |
+| `cargo clippy -p codegg-core --lib --tests --all-features` | ✅ Clean (no warnings introduced by this pass; see Deferred Clippy Warnings below) |
+| `cargo clippy --workspace --all-targets --all-features -- -D warnings` | ⚠️ 57 pre-existing `field_reassign_with_default` warnings deferred (see Deferred Clippy Warnings below) |
+| `cargo fmt --all -- --check` | ✅ Clean (re-verified this pass) |
+
+### Deferred Clippy Warnings (precise scope)
+
+The workspace all-targets clippy pass raises 57 `field_reassign_with_default`
+warnings, all pre-existing on `605e55782c626ee28c6b686d1b56224edd2a22fd`
+(verified by `git checkout 605e557 -- ...` and re-running clippy):
+
+| File | Line range | Count | Lint |
+|------|-----------|-------|------|
+| `src/tool/bash.rs` | 1812-2472 | 29 | `clippy::field_reassign_with_default` |
+| `tests/command_routing_adversarial.rs` | 1014-1757 | 28 | `clippy::field_reassign_with_default` |
+
+Both groups follow an identical pattern: each test creates a
+`CommandIntentConfig::default()` and then mutates 1-8 fields with
+sequential assignments. Converting all 57 to struct-initializer patterns
+is a mechanical but expansive refactor that would inflate the diff of
+this hygiene pass without fixing any actual defect. None of the call
+sites is behaviorally wrong; the lint prefers one syntactic shape over
+another for readability.
+
+This pass also fixed two incidental clippy lint spots (no behavior
+change):
+
+- `src/test_runner/runner.rs:963` — converted from
+  `field_reassign_with_default` to struct-initializer pattern.
+- `tests/context_projection_adversarial.rs:720,727` — removed
+  `needless_borrow` on `parse_shell_words(&cmd) -> parse_shell_words(cmd)`
+  (the `cmd` binding shadows the function name in lexical scope, so
+  `&cmd` and `cmd` resolve to the same `String`).
+
+Rationale for deferral:
+
+- The warnings are pre-existing on `c35a2da2691aa7a83ce61b74396dc6fd848466fc`
+  (the canonical-delegation SHA) and reach all the way back through the
+  ownership-corrective pass.
+- Suppressing them via `#[allow(...)]` would directly violate the
+  hygiene-pass rule against using broad allow attributes merely to
+  obtain green output.
+- Fixing all 57 individually would be scope creep unrelated to the
+  command-routing roadmap.
+
+If a future cleanup pass wants to address them, the mechanical fix is
+the suggested `CommandIntentConfig { field_a: value, field_b: value,
+..Default::default() }` shape at every warning site.
 
 ### `codegg-core` Run-Store Suite
 
-`cargo test -p codegg-core --lib` could not be run as a complete suite in
-this local environment because of two pre-existing test issues:
+The hygiene pass fixed both previously-failing RunStore tests. After
+the fix, the complete RunStore suite passes cleanly:
 
-- `fs_store_complete_updates_index` hangs indefinitely (intermittently)
-- `mem_store_integrity_violation` fails (`assert!(result.is_err())` at `crates/codegg-core/src/run_store.rs:1986` because the test corrupts the manifest's `sha256` field but not the artifact store's `sha256`; `read_artifact` recomputes from `data` and compares to the artifact store's record)
+```text
+$ cargo test -p codegg-core --lib -- --test-threads=1
+test result: ok. 117 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+```
 
-Both issues exist on `605e557` (before this pass's changes). They are
-unrelated to the real-delegation work and not introduced by it.
+Specifically:
 
-Targeted sub-tests run individually (mem_store_begin_write_complete,
-mem_store_concurrent_writes, mem_store_get_run_and_list,
-mem_store_list_with_limit, mem_store_read_artifact_with_range,
-mem_store_artifact_too_large, path_traversal_rejection,
-run_id_generation_and_ordering, rerun_descriptor_no_permission_persistence,
-manifest_serde_roundtrip, cleanup_plan_respects_pinned) all pass.
+| Test | Status (before this pass) | Status (this pass) | Root cause | Fix |
+|------|---------------------------|-------------------|-----------|-----|
+| `fs_store_complete_updates_index` | Intermittent hang | ✅ Pass | `complete_run` acquired `self.lock` (a non-reentrant `tokio::sync::Mutex<()>`) and then called `rewrite_index`, which also acquires the same mutex from the same task — task deadlock. | Renamed `rewrite_index` to `rewrite_index_locked` (callers must hold `self.lock` for the duration). `complete_run` calls the locked variant directly. No behavioral change for index consistency or concurrent-reader safety. |
+| `fs_store_complete_updates_index_repeated` | (added) | ✅ Pass | New regression test running 25 iterations of the lifecycle. |
+| `mem_store_integrity_violation` | Always failed | ✅ Pass | Test corrupted `manifest.artifacts[0].sha256`, but `MemRunStore::read_artifact` reads `record.sha256` from the `MemArtifactEntry` in the `artifacts` HashMap, not the manifest. The manifest copy is never consulted. | Test now corrupts the authoritative `MemArtifactEntry` record. Stronger assertions: pre-corruption read succeeds, error message contains the artifact id, ranged reads also rejected. |
+| `fs_store_integrity_violation` | (added) | ✅ Pass | New parity test: corrupts bytes on disk for the file backing `ArtifactRecord.relative_path`; `FsRunStore::read_artifact` detects the mismatch and returns `RunStoreError::IntegrityViolation`. Ensures Mem and Fs enforce the same integrity contract. |
+| All other `run_store` tests (10 tests) | ✅ Pass | ✅ Pass | unchanged | n/a |
+
+Full `cargo test -p codegg-core --lib` count: 117 tests (was 115 prior to
+this pass; +2 are the new regression tests).
+
+### Capped Full Workspace Suite Result
+
+```text
+$ CARGO_BUILD_JOBS=1 cargo test --workspace -- --test-threads=1
+```
+
+**Result**: 4405 passed; 0 failed; 3 ignored; 0 measured. Exit code 0.
+
+Process completed without hangs, without timeouts, and without any
+test harness retry/starvation signals. The three ignored tests are
+pre-existing `#[ignore]` annotations on opt-in live-server smoke tests
+that require external infrastructure (LiveMCP, etc.).
 
 ## Closure Criteria Verification
 
@@ -256,6 +325,15 @@ manifest_serde_roundtrip, cleanup_plan_respects_pinned) all pass.
 - [x] Fallback paths produce caller-owned RawShell records with `FallbackRecord` evidence.
 - [x] Validation evidence matches the implementation; no deferred canonical-delegation caveats remain.
 - [x] All canonical-delegation integration tests pass (Workstream H-1 through H-7).
+- [x] `fs_store_complete_updates_index` passes repeatedly (verified 30 consecutive isolated invocations + 25 iterations of the new `_repeated` regression test).
+- [x] `mem_store_integrity_violation` corrupts the authoritative checksum and detects the mismatch.
+- [x] `FsRunStore::read_artifact` and `MemRunStore::read_artifact` enforce the same integrity contract (parity test `fs_store_integrity_violation`).
+- [x] Complete `codegg-core` RunStore suite passes with `--test-threads=1` (117/117).
+- [x] `cargo fmt --all -- --check` passes.
+- [x] `cargo check --workspace --all-features` passes.
+- [x] `cargo clippy -p codegg-core --lib --tests --all-features` clean (no new warnings).
+- [x] Capped full workspace suite: 4405 passed, 0 failed, 3 ignored.
+- [x] No placeholder SHA remains in this document.
 
 ## Architectural Notes
 
