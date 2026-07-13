@@ -2035,11 +2035,11 @@ impl CommandOutputProjector for GitDiffProjector {
             })?;
         let output = String::from_utf8_lossy(bytes);
 
-        // Parse unified diff: collect file headers and stats.
         let mut files: Vec<DiffFile> = Vec::new();
         let mut current_file: Option<DiffFile> = None;
-        let mut current_hunks: Vec<String> = Vec::new();
+        let mut current_hunks: Vec<DiffHunk> = Vec::new();
         let mut current_hunk_lines: Vec<String> = Vec::new();
+        let mut current_hunk: Option<DiffHunk> = None;
         let mut in_hunk = false;
         let mut additions: u32 = 0;
         let mut deletions: u32 = 0;
@@ -2049,7 +2049,16 @@ impl CommandOutputProjector for GitDiffProjector {
                 // Save previous file
                 if let Some(mut f) = current_file.take() {
                     if !current_hunk_lines.is_empty() {
-                        current_hunks.push(current_hunk_lines.join("\n"));
+                        if let Some(mut h) = current_hunk.take() {
+                            h.lines = current_hunk_lines.clone();
+                            current_hunks.push(h);
+                            current_hunk_lines.clear();
+                        }
+                    }
+                    if let Some(h) = current_hunk.take() {
+                        let mut h = h;
+                        h.lines = current_hunk_lines.clone();
+                        current_hunks.push(h);
                         current_hunk_lines.clear();
                     }
                     if !current_hunks.is_empty() {
@@ -2072,15 +2081,50 @@ impl CommandOutputProjector for GitDiffProjector {
                 };
                 current_file = Some(DiffFile {
                     path: path.to_string(),
+                    old_path: None,
+                    is_binary: false,
                     additions: 0,
                     deletions: 0,
                     hunks: Vec::new(),
                 });
+            } else if let Some(stripped) = line.strip_prefix("rename from ") {
+                if let Some(f) = &mut current_file {
+                    f.old_path = Some(stripped.to_string());
+                }
+            } else if line.starts_with("rename to ") || line.starts_with("copy from ")
+                || line.starts_with("copy to ")
+            {
+                // rename to / copy from / copy to — skip, we already have old_path
+            } else if line == "Binary files differ"
+                || (line.starts_with("Binary files ") && line.ends_with(" differ"))
+            {
+                if let Some(f) = &mut current_file {
+                    f.is_binary = true;
+                }
             } else if line.starts_with("@@") {
+                // Close current hunk
                 if !current_hunk_lines.is_empty() {
-                    current_hunks.push(current_hunk_lines.join("\n"));
+                    if let Some(mut h) = current_hunk.take() {
+                        h.lines = current_hunk_lines.clone();
+                        current_hunks.push(h);
+                        current_hunk_lines.clear();
+                    }
+                }
+                if let Some(h) = current_hunk.take() {
+                    let mut h = h;
+                    h.lines = current_hunk_lines.clone();
+                    current_hunks.push(h);
                     current_hunk_lines.clear();
                 }
+                // Parse hunk header: @@ -old_start,old_lines +new_start,new_lines @@
+                let (old_start, old_lines, new_start, new_lines) = parse_hunk_header(line);
+                current_hunk = Some(DiffHunk {
+                    old_start,
+                    old_lines,
+                    new_start,
+                    new_lines,
+                    lines: Vec::new(),
+                });
                 in_hunk = true;
                 current_hunk_lines.push(line.to_string());
             } else if line.starts_with('+') && !line.starts_with("+++") {
@@ -2097,12 +2141,22 @@ impl CommandOutputProjector for GitDiffProjector {
                 current_hunk_lines.push(line.to_string());
             }
         }
-        // Save last file
-        if let Some(mut f) = current_file.take() {
-            if !current_hunk_lines.is_empty() {
-                current_hunks.push(current_hunk_lines.join("\n"));
+        // Save last hunk
+        if !current_hunk_lines.is_empty() {
+            if let Some(mut h) = current_hunk.take() {
+                h.lines = current_hunk_lines.clone();
+                current_hunks.push(h);
                 current_hunk_lines.clear();
             }
+        }
+        if let Some(h) = current_hunk.take() {
+            let mut h = h;
+            h.lines = current_hunk_lines.clone();
+            current_hunks.push(h);
+            current_hunk_lines.clear();
+        }
+        // Save last file
+        if let Some(mut f) = current_file.take() {
             if !current_hunks.is_empty() {
                 f.hunks = current_hunks;
             }
@@ -2120,13 +2174,28 @@ impl CommandOutputProjector for GitDiffProjector {
             let _ = writeln!(text, "{} file(s) changed", files.len());
             text.push('\n');
             for f in &files {
-                let _ = writeln!(text, "{} (+{}/-{}):", f.path, f.additions, f.deletions);
+                if f.is_binary {
+                    let _ = writeln!(text, "{} (binary):", f.path);
+                } else if let Some(old) = &f.old_path {
+                    let _ = writeln!(
+                        text,
+                        "{} (+{}/-{}) (renamed from {}):",
+                        f.path, f.additions, f.deletions, old
+                    );
+                } else {
+                    let _ =
+                        writeln!(text, "{} (+{}/-{}):", f.path, f.additions, f.deletions);
+                }
                 // For diffs with ≤5 files, show up to 3 hunks per file.
-                // For larger diffs, only show stats.
-                if files.len() <= 5 {
+                if files.len() <= 5 && !f.is_binary {
                     let shown_hunks = f.hunks.iter().take(3);
                     for hunk in shown_hunks {
-                        for hunk_line in hunk.lines() {
+                        let _ = writeln!(
+                            text,
+                            "  @@ -{},{} +{},{} @@",
+                            hunk.old_start, hunk.old_lines, hunk.new_start, hunk.new_lines
+                        );
+                        for hunk_line in &hunk.lines {
                             let _ = writeln!(text, "  {hunk_line}");
                         }
                     }
@@ -2156,12 +2225,64 @@ impl CommandOutputProjector for GitDiffProjector {
     }
 }
 
+/// Parse a `@@ -old_start,old_lines +new_start,new_lines @@` hunk header.
+fn parse_hunk_header(line: &str) -> (u32, u32, u32, u32) {
+    let inner = line
+        .strip_prefix("@@ ")
+        .and_then(|s| s.strip_suffix(" @@"))
+        .unwrap_or(line);
+    // inner looks like "-1,5 +1,6" or "-1 +1,6"
+    let (old_part, new_part) = if let Some(idx) = inner.find(" +") {
+        (&inner[..idx], &inner[idx + 1..])
+    } else {
+        (inner, "")
+    };
+    let parse_range = |s: &str| -> (u32, u32) {
+        let s = s.strip_prefix('-').unwrap_or(s);
+        if let Some((start, count)) = s.split_once(',') {
+            let start = start.parse().unwrap_or(1);
+            let count = count.parse().unwrap_or(1);
+            (start, count)
+        } else {
+            let start = s.parse().unwrap_or(1);
+            (start, 1)
+        }
+    };
+    let (old_start, old_lines) = parse_range(old_part);
+    let (new_start, new_lines) = parse_range(new_part);
+    (old_start, old_lines, new_start, new_lines)
+}
+
+/// Extract decorations from a log line like "subject (HEAD -> main, origin/main)".
+/// Returns (subject, optional_decorations_string).
+fn extract_decorations(line: &str) -> (&str, Option<String>) {
+    if let Some(idx) = line.rfind(" (") {
+        let candidate = &line[idx + 1..];
+        if candidate.ends_with(')') {
+            let decos = &candidate[1..candidate.len() - 1];
+            return (&line[..idx], Some(format!("({decos})")));
+        }
+    }
+    (line, None)
+}
+
+#[derive(Debug, Clone)]
+struct DiffHunk {
+    old_start: u32,
+    old_lines: u32,
+    new_start: u32,
+    new_lines: u32,
+    lines: Vec<String>,
+}
+
 #[derive(Debug)]
 struct DiffFile {
     path: String,
+    old_path: Option<String>,
+    is_binary: bool,
     additions: u32,
     deletions: u32,
-    hunks: Vec<String>,
+    hunks: Vec<DiffHunk>,
 }
 
 // --- GitLogProjector -----------------------------------------------------
@@ -2224,7 +2345,8 @@ impl CommandOutputProjector for GitLogProjector {
             // Detect commit hash line: "commit <hex>" or just a bare hex hash
             // (oneline format).
             if let Some(rest) = line.strip_prefix("commit ") {
-                let hash = rest.trim().to_string();
+                let (hash_part, decos) = extract_decorations(rest.trim());
+                let hash = hash_part.trim().to_string();
                 if !hash.is_empty() && hash.len() >= 7 {
                     if let Some(c) = current.take() {
                         commits.push(c);
@@ -2234,7 +2356,13 @@ impl CommandOutputProjector for GitLogProjector {
                         subject: String::new(),
                         author: String::new(),
                         date: String::new(),
+                        is_merge: false,
+                        decorations: decos,
                     });
+                }
+            } else if let Some(merge_info) = line.strip_prefix("Merge: ") {
+                if let Some(c) = &mut current {
+                    c.is_merge = !merge_info.trim().is_empty();
                 }
             } else if let Some(author) = line.strip_prefix("Author: ") {
                 if let Some(c) = &mut current {
@@ -2246,15 +2374,34 @@ impl CommandOutputProjector for GitLogProjector {
                 }
             } else if !line.starts_with(' ') && !line.is_empty() && current.is_some() {
                 // Non-indented, non-empty line after commit header = subject
-                // (works for --oneline too: "<hash> <subject>")
                 if let Some(c) = &mut current {
                     if c.subject.is_empty() {
-                        c.subject = line.trim().to_string();
+                        let (subject, decos) = extract_decorations(line.trim());
+                        c.subject = subject.to_string();
+                        if let Some(d) = decos {
+                            c.decorations = Some(d);
+                        }
                     }
                 }
-            } else if let Some(c) = &mut current {
-                // Indented body line — we only track subject, so skip body.
-                let _ = c;
+            } else if !line.starts_with(' ') && !line.is_empty() && current.is_none() {
+                // Oneline format: bare "<hex> <subject>" without "commit " prefix.
+                let trimmed = line.trim();
+                if let Some(space_idx) = trimmed.find(' ') {
+                    let hex_part = &trimmed[..space_idx];
+                    if hex_part.len() >= 7
+                        && hex_part.chars().all(|c| c.is_ascii_hexdigit())
+                    {
+                        let subject = trimmed[space_idx + 1..].trim();
+                        commits.push(CommitEntry {
+                            hash: hex_part.to_string(),
+                            subject: subject.to_string(),
+                            author: String::new(),
+                            date: String::new(),
+                            is_merge: false,
+                            decorations: None,
+                        });
+                    }
+                }
             }
         }
         if let Some(c) = current.take() {
@@ -2276,7 +2423,15 @@ impl CommandOutputProjector for GitLogProjector {
             }
             text.push('\n');
             for c in &commits {
-                let _ = writeln!(text, "{} {}", &c.hash[..7.min(c.hash.len())], c.subject);
+                let short_hash = &c.hash[..7.min(c.hash.len())];
+                if let Some(decos) = &c.decorations {
+                    let _ = writeln!(text, "{short_hash} {decos} {}", c.subject);
+                } else {
+                    let _ = writeln!(text, "{short_hash} {}", c.subject);
+                }
+                if c.is_merge {
+                    let _ = writeln!(text, "  Merge commit");
+                }
                 if !c.author.is_empty() || !c.date.is_empty() {
                     let _ = writeln!(text, "  {} {}", c.author, c.date);
                 }
@@ -2315,6 +2470,8 @@ struct CommitEntry {
     subject: String,
     author: String,
     date: String,
+    is_merge: bool,
+    decorations: Option<String>,
 }
 
 // --- CargoCheckProjector -------------------------------------------------
@@ -5598,5 +5755,229 @@ mod tests {
         assert!(result.text.contains("Untracked: 2"));
         assert!(result.text.contains("new_file.txt"));
         assert!(result.text.contains("another_file.log"));
+    }
+
+    // --- GitDiffProjector: binary, rename, hunk headers, empty ----------
+
+    #[test]
+    fn git_diff_binary_file_shows_binary_indicator() {
+        let mut store = CommandOutputStore::new();
+        let stdout = b"diff --git a/image.png b/image.png\n\
+                        index abc1234..def5678 100644\n\
+                        Binary files a/image.png and b/image.png differ\n\
+                        diff --git a/src/main.rs b/src/main.rs\n\
+                        index 111..222 100644\n\
+                        --- a/src/main.rs\n\
+                        +++ b/src/main.rs\n\
+                        @@ -1,3 +1,4 @@\n\
+                        fn main() {\n\
+                        +    let x = 1;\n\
+                         }\n";
+        let run = make_run_with_cmd(
+            &mut store,
+            "git diff",
+            Some(vec!["git".into(), "diff".into()]),
+            stdout.to_vec(),
+            Vec::new(),
+            CommandExit::Code(0),
+            Duration::ZERO,
+        );
+        let policy = ProjectionPolicy::conservative();
+        let request = ProjectionRequest::for_target(&run, ProjectionTarget::ModelContext, &policy);
+        let result = GitDiffProjector.project(request, &store).unwrap();
+        assert_eq!(result.kind, ProjectionKind::Structured);
+        assert!(result.text.contains("2 file(s) changed"));
+        assert!(result.text.contains("image.png (binary)"));
+        assert!(result.text.contains("src/main.rs (+1/-0)"));
+    }
+
+    #[test]
+    fn git_diff_rename_detection() {
+        let mut store = CommandOutputStore::new();
+        let stdout = b"diff --git a/old_name.rs b/new_name.rs\n\
+                        similarity index 95%\n\
+                        rename from old_name.rs\n\
+                        rename to new_name.rs\n\
+                        index abc1234..def5678 100644\n\
+                        --- a/old_name.rs\n\
+                        +++ b/new_name.rs\n\
+                        @@ -1,3 +1,3 @@\n\
+                        fn main() {\n\
+                        -    old;\n\
+                        +    new;\n\
+                         }\n";
+        let run = make_run_with_cmd(
+            &mut store,
+            "git diff --find-renames",
+            Some(vec!["git".into(), "diff".into(), "--find-renames".into()]),
+            stdout.to_vec(),
+            Vec::new(),
+            CommandExit::Code(0),
+            Duration::ZERO,
+        );
+        let policy = ProjectionPolicy::conservative();
+        let request = ProjectionRequest::for_target(&run, ProjectionTarget::ModelContext, &policy);
+        let result = GitDiffProjector.project(request, &store).unwrap();
+        assert!(result.text.contains("new_name.rs"));
+        assert!(result.text.contains("renamed from old_name.rs"));
+        assert!(result.text.contains("+1/-1"));
+    }
+
+    #[test]
+    fn git_diff_hunk_headers() {
+        let mut store = CommandOutputStore::new();
+        let stdout = b"diff --git a/src/main.rs b/src/main.rs\n\
+                        index abc1234..def5678 100644\n\
+                        --- a/src/main.rs\n\
+                        +++ b/src/main.rs\n\
+                        @@ -10,5 +10,6 @@\n\
+                        fn main() {\n\
+                        +    let x = 1;\n\
+                         }\n\
+                         @@ -20,3 +21,4 @@\n\
+                        fn helper() {\n\
+                        +    let y = 2;\n\
+                         }\n";
+        let run = make_run_with_cmd(
+            &mut store,
+            "git diff",
+            Some(vec!["git".into(), "diff".into()]),
+            stdout.to_vec(),
+            Vec::new(),
+            CommandExit::Code(0),
+            Duration::ZERO,
+        );
+        let policy = ProjectionPolicy::conservative();
+        let request = ProjectionRequest::for_target(&run, ProjectionTarget::ModelContext, &policy);
+        let result = GitDiffProjector.project(request, &store).unwrap();
+        assert!(result.text.contains("@@ -10,5 +10,6 @@"));
+        assert!(result.text.contains("@@ -20,3 +21,4 @@"));
+        assert!(result.text.contains("+2/-0"));
+    }
+
+    #[test]
+    fn git_diff_empty_output() {
+        let mut store = CommandOutputStore::new();
+        let run = make_run_with_cmd(
+            &mut store,
+            "git diff",
+            Some(vec!["git".into(), "diff".into()]),
+            b"".to_vec(),
+            Vec::new(),
+            CommandExit::Code(0),
+            Duration::ZERO,
+        );
+        let policy = ProjectionPolicy::conservative();
+        let request = ProjectionRequest::for_target(&run, ProjectionTarget::ModelContext, &policy);
+        let result = GitDiffProjector.project(request, &store).unwrap();
+        assert_eq!(result.kind, ProjectionKind::Structured);
+        assert!(result.text.contains("(no diff output)"));
+    }
+
+    // --- GitLogProjector: author/date, merge, decorations, oneline ------
+
+    #[test]
+    fn git_log_with_author_date() {
+        let mut store = CommandOutputStore::new();
+        let stdout = b"commit abc1234567890\n\
+                        Author: Alice <alice@example.com>\n\
+                        Date:   Mon Jan 1 12:00:00 2024\n\
+                        \n\
+                        Initial commit\n";
+        let run = make_run_with_cmd(
+            &mut store,
+            "git log",
+            Some(vec!["git".into(), "log".into()]),
+            stdout.to_vec(),
+            Vec::new(),
+            CommandExit::Code(0),
+            Duration::ZERO,
+        );
+        let policy = ProjectionPolicy::conservative();
+        let request = ProjectionRequest::for_target(&run, ProjectionTarget::ModelContext, &policy);
+        let result = GitLogProjector.project(request, &store).unwrap();
+        assert!(result.text.contains("abc1234"));
+        assert!(result.text.contains("Initial commit"));
+        assert!(result.text.contains("Alice"));
+        assert!(result.text.contains("Mon Jan 1 12:00:00 2024"));
+    }
+
+    #[test]
+    fn git_log_merge_commit() {
+        let mut store = CommandOutputStore::new();
+        let stdout = b"commit abc1234567890\n\
+                        Merge: 1111111 2222222\n\
+                        Author: Alice <alice@example.com>\n\
+                        Date:   Mon Jan 1 12:00:00 2024\n\
+                        \n\
+                        Merge feature into main\n";
+        let run = make_run_with_cmd(
+            &mut store,
+            "git log",
+            Some(vec!["git".into(), "log".into()]),
+            stdout.to_vec(),
+            Vec::new(),
+            CommandExit::Code(0),
+            Duration::ZERO,
+        );
+        let policy = ProjectionPolicy::conservative();
+        let request = ProjectionRequest::for_target(&run, ProjectionTarget::ModelContext, &policy);
+        let result = GitLogProjector.project(request, &store).unwrap();
+        assert!(result.text.contains("abc1234"));
+        assert!(result.text.contains("Merge feature into main"));
+        assert!(result.text.contains("Merge commit"));
+    }
+
+    #[test]
+    fn git_log_decorations() {
+        let mut store = CommandOutputStore::new();
+        let stdout = b"commit abc1234567890 (HEAD -> main, origin/main, tag: v1.0)\n\
+                        Author: Alice <alice@example.com>\n\
+                        Date:   Mon Jan 1 12:00:00 2024\n\
+                        \n\
+                        Release v1.0\n";
+        let run = make_run_with_cmd(
+            &mut store,
+            "git log --decorate",
+            Some(vec![
+                "git".into(),
+                "log".into(),
+                "--decorate".into(),
+            ]),
+            stdout.to_vec(),
+            Vec::new(),
+            CommandExit::Code(0),
+            Duration::ZERO,
+        );
+        let policy = ProjectionPolicy::conservative();
+        let request = ProjectionRequest::for_target(&run, ProjectionTarget::ModelContext, &policy);
+        let result = GitLogProjector.project(request, &store).unwrap();
+        assert!(result.text.contains("abc1234"));
+        assert!(result.text.contains("(HEAD -> main, origin/main, tag: v1.0)"));
+        assert!(result.text.contains("Release v1.0"));
+    }
+
+    #[test]
+    fn git_log_oneline_format() {
+        let mut store = CommandOutputStore::new();
+        let stdout = b"abc1234 Initial commit\n\
+                        def5678 Add feature\n\
+                        aab0123 Fix bug\n";
+        let run = make_run_with_cmd(
+            &mut store,
+            "git log --oneline",
+            Some(vec!["git".into(), "log".into(), "--oneline".into()]),
+            stdout.to_vec(),
+            Vec::new(),
+            CommandExit::Code(0),
+            Duration::ZERO,
+        );
+        let policy = ProjectionPolicy::conservative();
+        let request = ProjectionRequest::for_target(&run, ProjectionTarget::ModelContext, &policy);
+        let result = GitLogProjector.project(request, &store).unwrap();
+        assert!(result.text.contains("3 commit(s)"));
+        assert!(result.text.contains("abc1234 Initial commit"));
+        assert!(result.text.contains("def5678 Add feature"));
+        assert!(result.text.contains("aab0123 Fix bug"));
     }
 }

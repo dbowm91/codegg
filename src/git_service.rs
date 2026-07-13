@@ -42,6 +42,10 @@ pub enum GitPayload {
     DiffSummary(DiffSummaryPayload),
     /// Raw diff text.
     DiffText(String),
+    /// Structured diff result with parsed files and hunks.
+    DiffResult(DiffResultPayload),
+    /// Structured show result.
+    Show(ShowPayload),
     /// Changed files list.
     ChangedFiles(Vec<ChangedFilePayload>),
     /// Log entries.
@@ -93,6 +97,68 @@ pub struct ChangedFilePayload {
     pub path: String,
     /// Kind of change.
     pub kind: String,
+}
+
+/// A structured diff result with parsed files and hunks.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiffResultPayload {
+    /// Files changed in the diff.
+    pub files: Vec<DiffFilePayload>,
+    /// Total insertions across all files.
+    pub total_insertions: usize,
+    /// Total deletions across all files.
+    pub total_deletions: usize,
+}
+
+/// A single file within a structured diff.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiffFilePayload {
+    /// File path.
+    pub path: String,
+    /// Old file path (for renames/copies).
+    pub old_path: Option<String>,
+    /// Kind of change (added, modified, deleted, renamed, copied).
+    pub kind: String,
+    /// Whether this is a binary file.
+    pub is_binary: bool,
+    /// Number of lines added.
+    pub additions: usize,
+    /// Number of lines removed.
+    pub deletions: usize,
+    /// Parsed hunks (empty for binary files or stat-only diffs).
+    pub hunks: Vec<DiffHunkPayload>,
+}
+
+/// A single hunk within a diff.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiffHunkPayload {
+    /// Old file start line.
+    pub old_start: u32,
+    /// Old file line count.
+    pub old_lines: u32,
+    /// New file start line.
+    pub new_start: u32,
+    /// New file line count.
+    pub new_lines: u32,
+    /// Hunk content lines (with +/-/ prefix).
+    pub lines: Vec<String>,
+}
+
+/// Structured payload for `git show`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ShowPayload {
+    /// Commit hash.
+    pub hash: String,
+    /// Author name.
+    pub author: String,
+    /// Author date.
+    pub date: String,
+    /// Commit message.
+    pub message: String,
+    /// Files changed (if --stat or patch included).
+    pub files: Vec<ChangedFilePayload>,
+    /// Raw patch text.
+    pub patch: String,
 }
 
 /// A single log commit entry.
@@ -214,6 +280,9 @@ impl GitExecutionService {
             }
             GitOperation::WorktreeList => self.execute_worktrees(repository_root).await,
             GitOperation::StashList => self.execute_stash_list(repository_root).await,
+            GitOperation::Show { rev } => {
+                self.execute_show(rev.as_str(), repository_root).await
+            }
             // Fallback: raw subprocess execution for mutations and unsupported
             _ => self.execute_raw(operation, repository_root).await,
         }
@@ -305,10 +374,58 @@ impl GitExecutionService {
 
         let raw = self.run_git_raw(&argv, repository_root).await?;
 
-        let payload = if let Some(summary) = diff_summary {
-            Some(GitPayload::DiffSummary(summary))
+        // For non-stat, non-name-only diffs, try to parse unified diff output
+        let payload = if !is_stat && !is_name_only {
+            if let Some(summary) = diff_summary {
+                // Try structured parsing of unified diff for richer results
+                if raw.stdout.contains("diff --git ") {
+                    match parse_diff_output(&raw.stdout) {
+                        Ok(diff_result) => Some(GitPayload::DiffResult(diff_result)),
+                        Err(_) => Some(GitPayload::DiffSummary(summary)),
+                    }
+                } else {
+                    Some(GitPayload::DiffSummary(summary))
+                }
+            } else {
+                Some(GitPayload::DiffText(raw.stdout.clone()))
+            }
         } else {
             Some(GitPayload::DiffText(raw.stdout.clone()))
+        };
+
+        Ok(GitExecutionResult {
+            operation: op_label,
+            payload,
+            stdout: raw.stdout.clone(),
+            stderr: raw.stderr,
+            exit_code: raw.exit_code,
+            repository_root: repository_root.display().to_string(),
+            success: raw.exit_code == 0,
+            projection_hints: ProjectionHints {
+                projector: Some("git-diff".to_string()),
+                truncatable: true,
+                estimated_size: raw.stdout.len(),
+            },
+        })
+    }
+
+    async fn execute_show(
+        &self,
+        rev: &str,
+        repository_root: &Path,
+    ) -> Result<GitExecutionResult, GitServiceError> {
+        let argv = render_argv(&GitOperation::Show {
+            rev: codegg_git::ref_name::RevisionExpr::new(rev)
+                .map_err(|e| GitServiceError::Repository(e.to_string()))?,
+        });
+        let op_label = "show".to_string();
+
+        let raw = self.run_git_raw(&argv, repository_root).await?;
+
+        let payload = if raw.exit_code == 0 {
+            Some(GitPayload::Show(parse_show_output(rev, &raw.stdout)))
+        } else {
+            None
         };
 
         Ok(GitExecutionResult {
@@ -757,6 +874,233 @@ fn parse_log_output(stdout: &str) -> Vec<CommitInfoPayload> {
         .collect()
 }
 
+/// Parse unified diff output into a structured [`DiffResultPayload`].
+///
+/// Handles `diff --git` headers, rename/copy detection, binary files,
+/// `@@` hunk headers, and +/- line counting.
+fn parse_diff_output(stdout: &str) -> Result<DiffResultPayload, DiffParseError> {
+    let mut files: Vec<DiffFilePayload> = Vec::new();
+    let mut total_insertions: usize = 0;
+    let mut total_deletions: usize = 0;
+
+    let lines: Vec<&str> = stdout.lines().collect();
+    let mut i = 0;
+
+    while i < lines.len() {
+        let line = lines[i];
+
+        if line.starts_with("diff --git ") {
+            // Parse "diff --git a/path b/path"
+            let path = parse_diff_header_path(line);
+            let mut file = DiffFilePayload {
+                path: path.clone(),
+                old_path: None,
+                kind: "modified".to_string(),
+                is_binary: false,
+                additions: 0,
+                deletions: 0,
+                hunks: Vec::new(),
+            };
+
+            i += 1;
+            let mut is_binary = false;
+
+            // Scan ahead for file metadata before hunks
+            while i < lines.len() {
+                let l = lines[i];
+                if l.starts_with("@@ ") {
+                    break;
+                } else if let Some(rest) = l.strip_prefix("new file mode ") {
+                    file.kind = "added".to_string();
+                    let _ = rest;
+                } else if let Some(rest) = l.strip_prefix("deleted file mode ") {
+                    file.kind = "deleted".to_string();
+                    let _ = rest;
+                } else if let Some(rest) = l.strip_prefix("rename from ") {
+                    file.old_path = Some(rest.to_string());
+                    file.kind = "renamed".to_string();
+                } else if let Some(rest) = l.strip_prefix("rename to ") {
+                    file.path = rest.to_string();
+                } else if let Some(rest) = l.strip_prefix("copy from ") {
+                    file.old_path = Some(rest.to_string());
+                    file.kind = "copied".to_string();
+                } else if let Some(rest) = l.strip_prefix("copy to ") {
+                    file.path = rest.to_string();
+                } else if l.starts_with("Binary files ") && l.ends_with(" differ") {
+                    file.is_binary = true;
+                    is_binary = true;
+                }
+                i += 1;
+            }
+
+            if is_binary {
+                files.push(file);
+            } else {
+                // Parse hunks
+                while i < lines.len() {
+                    let l = lines[i];
+                    if l.starts_with("diff --git ") {
+                        break;
+                    }
+                    if let Some(hunk) = parse_hunk_header(l) {
+                        i += 1;
+                        let mut hunk_lines = Vec::new();
+                        while i < lines.len() {
+                            let cl = lines[i];
+                            if cl.starts_with("@@ ") || cl.starts_with("diff --git ") {
+                                break;
+                            }
+                            if let Some(first) = cl.chars().next() {
+                                match first {
+                                    '+' => file.additions += 1,
+                                    '-' => file.deletions += 1,
+                                    _ => {}
+                                }
+                            }
+                            hunk_lines.push(cl.to_string());
+                            i += 1;
+                        }
+                        file.hunks.push(DiffHunkPayload {
+                            old_start: hunk.0,
+                            old_lines: hunk.1,
+                            new_start: hunk.2,
+                            new_lines: hunk.3,
+                            lines: hunk_lines,
+                        });
+                        continue;
+                    }
+                    i += 1;
+                }
+
+                total_insertions += file.additions;
+                total_deletions += file.deletions;
+                files.push(file);
+            }
+        } else {
+            i += 1;
+        }
+    }
+
+    if files.is_empty() {
+        return Err(DiffParseError::NoFilesFound);
+    }
+
+    Ok(DiffResultPayload {
+        files,
+        total_insertions,
+        total_deletions,
+    })
+}
+
+/// Parse the file path from a `diff --git a/path b/path` header.
+fn parse_diff_header_path(line: &str) -> String {
+    // "diff --git a/path b/path" → "path"
+    let rest = &line["diff --git a/".len()..];
+    if let Some(end) = rest.find(" b/") {
+        rest[..end].to_string()
+    } else {
+        rest.to_string()
+    }
+}
+
+/// Parse a `@@` hunk header line, returning (old_start, old_lines, new_start, new_lines).
+fn parse_hunk_header(line: &str) -> Option<(u32, u32, u32, u32)> {
+    if !line.starts_with("@@ ") {
+        return None;
+    }
+    let rest = &line[3..];
+    let at_idx = rest.find(" @@")?;
+    let range_part = &rest[..at_idx];
+    let (old_range, new_range) = range_part.split_once(' ')?;
+
+    let parse_range = |s: &str| -> Option<(u32, u32)> {
+        let s = s.strip_prefix('-').or_else(|| s.strip_prefix('+')).unwrap_or(s);
+        match s.split_once(',') {
+            Some((start_str, count_str)) => {
+                let start: u32 = start_str.parse().ok()?;
+                let count: u32 = count_str.parse().ok()?;
+                Some((start, count))
+            }
+            None => {
+                let start: u32 = s.parse().ok()?;
+                Some((start, 1))
+            }
+        }
+    };
+
+    let (old_start, old_lines) = parse_range(old_range)?;
+    let (new_start, new_lines) = parse_range(new_range)?;
+    Some((old_start, old_lines, new_start, new_lines))
+}
+
+/// Parse `git show` output into a structured [`ShowPayload`].
+fn parse_show_output(_rev: &str, stdout: &str) -> ShowPayload {
+    let mut hash = String::new();
+    let mut author = String::new();
+    let mut date = String::new();
+    let mut message = String::new();
+    let mut files: Vec<ChangedFilePayload> = Vec::new();
+    let mut patch = String::new();
+    let mut in_patch = false;
+
+    for line in stdout.lines() {
+        if let Some(rest) = line.strip_prefix("commit ") {
+            if hash.is_empty() {
+                hash = rest.trim().to_string();
+            }
+        } else if let Some(rest) = line.strip_prefix("Author: ") {
+            author = rest.trim().to_string();
+        } else if let Some(rest) = line.strip_prefix("AuthorDate: ") {
+            date = rest.trim().to_string();
+        } else if let Some(rest) = line.strip_prefix("CommitDate: ") {
+            if date.is_empty() {
+                date = rest.trim().to_string();
+            }
+        } else if line.starts_with("    ") && message.is_empty() {
+            message = line.trim().to_string();
+        } else if line.starts_with("diff --git ") {
+            in_patch = true;
+            patch.push_str(line);
+            patch.push('\n');
+        } else if in_patch {
+            patch.push_str(line);
+            patch.push('\n');
+        } else if let Some(rest) = line.strip_prefix(" delete mode ") {
+            let path = rest.trim().to_string();
+            if !path.is_empty() {
+                files.push(ChangedFilePayload {
+                    path,
+                    kind: "deleted".to_string(),
+                });
+            }
+        } else if let Some(rest) = line.strip_prefix(" create mode ") {
+            let path = rest.trim().to_string();
+            if !path.is_empty() {
+                files.push(ChangedFilePayload {
+                    path,
+                    kind: "added".to_string(),
+                });
+            }
+        }
+    }
+
+    ShowPayload {
+        hash,
+        author,
+        date,
+        message,
+        files,
+        patch,
+    }
+}
+
+/// Error type for diff parsing.
+#[derive(Debug, thiserror::Error)]
+pub enum DiffParseError {
+    #[error("no files found in diff output")]
+    NoFilesFound,
+}
+
 // ── Error type ───────────────────────────────────────────────────
 
 #[derive(Debug, thiserror::Error)]
@@ -835,7 +1179,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn execute_diff_returns_summary() {
+    async fn execute_diff_returns_structured_result() {
         let dir = TempDir::new().unwrap();
         init_repo(dir.path());
         commit_file(dir.path(), "a.txt", "hello");
@@ -858,10 +1202,92 @@ mod tests {
 
         assert!(result.success);
         match result.payload.unwrap() {
+            GitPayload::DiffResult(diff) => {
+                assert_eq!(diff.files.len(), 1);
+                assert_eq!(diff.files[0].path, "a.txt");
+                assert_eq!(diff.files[0].kind, "modified");
+                assert!(diff.files[0].additions > 0 || diff.files[0].deletions > 0);
+                assert!(diff.total_insertions > 0 || diff.total_deletions > 0);
+            }
             GitPayload::DiffSummary(summary) => {
+                // Fallback: egggit summary still works
                 assert_eq!(summary.files_changed, 1);
             }
-            other => panic!("expected DiffSummary, got {:?}", other),
+            other => panic!("expected DiffResult or DiffSummary, got {:?}", other),
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn execute_show_returns_metadata() {
+        let dir = TempDir::new().unwrap();
+        init_repo(dir.path());
+        commit_file(dir.path(), "a.txt", "hello world");
+
+        let svc = GitExecutionService::new();
+        let result = svc
+            .execute(
+                &GitOperation::Show {
+                    rev: codegg_git::ref_name::RevisionExpr::new("HEAD").unwrap(),
+                },
+                dir.path(),
+            )
+            .await
+            .unwrap();
+
+        assert!(result.success);
+        assert_eq!(result.exit_code, 0);
+        match result.payload.unwrap() {
+            GitPayload::Show(show) => {
+                assert!(!show.hash.is_empty());
+                assert!(show.author.contains("Test") || show.author.contains("test"));
+                assert!(!show.message.is_empty());
+            }
+            other => panic!("expected Show, got {:?}", other),
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn diff_rename_detection_populates_old_path() {
+        let dir = TempDir::new().unwrap();
+        init_repo(dir.path());
+        commit_file(dir.path(), "old.txt", "content");
+        StdCommand::new("git")
+            .args(["mv", "old.txt", "new.txt"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        StdCommand::new("git")
+            .args(["commit", "-m", "rename file"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+
+        let svc = GitExecutionService::new();
+        let result = svc
+            .execute(
+                &GitOperation::Diff {
+                    staged: false,
+                    stat: false,
+                    name_only: false,
+                    base_ref: Some(
+                        codegg_git::ref_name::RevisionExpr::new("HEAD~1").unwrap(),
+                    ),
+                    paths: vec![],
+                },
+                dir.path(),
+            )
+            .await
+            .unwrap();
+
+        assert!(result.success);
+        match result.payload.unwrap() {
+            GitPayload::DiffResult(diff) => {
+                assert_eq!(diff.files.len(), 1);
+                let file = &diff.files[0];
+                assert_eq!(file.kind, "renamed");
+                assert!(file.old_path.is_some(), "old_path should be set for renames");
+            }
+            other => panic!("expected DiffResult, got {:?}", other),
         }
     }
 
@@ -1116,5 +1542,273 @@ mod tests {
 
         let err = GitServiceError::Timeout("30s".into());
         assert!(err.to_string().contains("30s"));
+    }
+
+    // ── Edge-case fixtures ────────────────────────────────────────
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn detached_head_status() {
+        let dir = TempDir::new().unwrap();
+        init_repo(dir.path());
+        commit_file(dir.path(), "a.txt", "first");
+        commit_file(dir.path(), "b.txt", "second");
+
+        // Get the first commit hash and detach HEAD
+        let output = StdCommand::new("git")
+            .args(["rev-parse", "HEAD~1"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        let hash = String::from_utf8_lossy(&output.stdout).trim().to_string();
+
+        StdCommand::new("git")
+            .args(["checkout", &hash])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+
+        let svc = GitExecutionService::new();
+        let result = svc
+            .execute(&GitOperation::Status { short: false }, dir.path())
+            .await
+            .unwrap();
+
+        assert!(result.success);
+        match result.payload.unwrap() {
+            GitPayload::Status(status) => {
+                // Detached HEAD shows as hash, not branch name
+                assert!(!status.branch.is_empty());
+                assert!(!status.is_dirty);
+            }
+            other => panic!("expected Status, got {:?}", other),
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn diff_binary_file() {
+        let dir = TempDir::new().unwrap();
+        init_repo(dir.path());
+
+        // Create a binary file (with null bytes)
+        let binary_content: Vec<u8> = vec![0x00, 0x01, 0x02, 0xFF, 0xFE, 0xFD];
+        std::fs::write(dir.path().join("binary.bin"), &binary_content).unwrap();
+        StdCommand::new("git")
+            .args(["add", "binary.bin"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        StdCommand::new("git")
+            .args(["commit", "-m", "add binary"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+
+        // Modify the binary file
+        let new_content: Vec<u8> = vec![0x00, 0x01, 0x02, 0x03, 0xFF, 0xFE, 0xFD, 0xFC];
+        std::fs::write(dir.path().join("binary.bin"), &new_content).unwrap();
+
+        let svc = GitExecutionService::new();
+        let result = svc
+            .execute(
+                &GitOperation::Diff {
+                    staged: false,
+                    stat: false,
+                    name_only: false,
+                    base_ref: None,
+                    paths: vec![],
+                },
+                dir.path(),
+            )
+            .await
+            .unwrap();
+
+        assert!(result.success);
+        // Binary diffs produce DiffResult or DiffText depending on git version
+        match result.payload.unwrap() {
+            GitPayload::DiffResult(diff_result) => {
+                assert_eq!(diff_result.files.len(), 1);
+                assert!(diff_result.files[0].is_binary);
+            }
+            GitPayload::DiffText(text) => {
+                // Some git versions output raw text for binary diffs
+                assert!(text.contains("Binary") || text.contains("bin"));
+            }
+            other => panic!("expected DiffResult or DiffText, got {:?}", other),
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn status_unborn_repo() {
+        let dir = TempDir::new().unwrap();
+        // Init but don't commit anything
+        StdCommand::new("git")
+            .args(["init", "--initial-branch=main"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+
+        let svc = GitExecutionService::new();
+        let result = svc
+            .execute(&GitOperation::Status { short: false }, dir.path())
+            .await
+            .unwrap();
+
+        assert!(result.success);
+        match result.payload.unwrap() {
+            GitPayload::Status(status) => {
+                assert_eq!(status.branch, "main");
+                assert!(!status.is_dirty);
+            }
+            other => panic!("expected Status, got {:?}", other),
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn diff_renamed_file() {
+        let dir = TempDir::new().unwrap();
+        init_repo(dir.path());
+        commit_file(dir.path(), "old_name.txt", "content");
+
+        // Rename the file
+        StdCommand::new("git")
+            .args(["mv", "old_name.txt", "new_name.txt"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+
+        let svc = GitExecutionService::new();
+        let result = svc
+            .execute(
+                &GitOperation::Diff {
+                    staged: true,
+                    stat: false,
+                    name_only: false,
+                    base_ref: None,
+                    paths: vec![],
+                },
+                dir.path(),
+            )
+            .await
+            .unwrap();
+
+        assert!(result.success);
+        match result.payload.unwrap() {
+            GitPayload::DiffResult(diff_result) => {
+                assert_eq!(diff_result.files.len(), 1);
+                let file = &diff_result.files[0];
+                assert_eq!(file.kind, "renamed");
+                assert!(file.old_path.is_some());
+            }
+            GitPayload::DiffText(text) => {
+                // Raw diff should contain rename indicators
+                assert!(text.contains("rename") || text.contains("old_name"));
+            }
+            other => panic!("expected DiffResult or DiffText, got {:?}", other),
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn show_commit_metadata() {
+        let dir = TempDir::new().unwrap();
+        init_repo(dir.path());
+        commit_file(dir.path(), "a.txt", "hello world");
+
+        let svc = GitExecutionService::new();
+        let result = svc
+            .execute(
+                &GitOperation::Show {
+                    rev: codegg_git::ref_name::RevisionExpr::new("HEAD").unwrap(),
+                },
+                dir.path(),
+            )
+            .await
+            .unwrap();
+
+        assert!(result.success);
+        match result.payload.unwrap() {
+            GitPayload::Show(show) => {
+                assert!(!show.hash.is_empty());
+                assert!(show.author.contains("Test") || show.author.contains("test"));
+                assert!(show.message.contains("add a.txt"));
+            }
+            other => panic!("expected Show, got {:?}", other),
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn log_oneline_format() {
+        let dir = TempDir::new().unwrap();
+        init_repo(dir.path());
+        commit_file(dir.path(), "a.txt", "first");
+        commit_file(dir.path(), "b.txt", "second");
+
+        let svc = GitExecutionService::new();
+        let result = svc
+            .execute(
+                &GitOperation::Log {
+                    oneline: true,
+                    max_count: Some(2),
+                    paths: vec![],
+                },
+                dir.path(),
+            )
+            .await
+            .unwrap();
+
+        assert!(result.success);
+        match result.payload.unwrap() {
+            GitPayload::Log(commits) => {
+                assert_eq!(commits.len(), 2);
+                // Each commit should have a hash and message
+                for c in &commits {
+                    assert!(!c.hash.is_empty());
+                    assert!(!c.message.is_empty());
+                }
+            }
+            other => panic!("expected Log, got {:?}", other),
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn branch_list_with_detached_head() {
+        let dir = TempDir::new().unwrap();
+        init_repo(dir.path());
+        commit_file(dir.path(), "a.txt", "first");
+        commit_file(dir.path(), "b.txt", "second");
+
+        // Detach HEAD
+        let output = StdCommand::new("git")
+            .args(["rev-parse", "HEAD~1"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        let hash = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        StdCommand::new("git")
+            .args(["checkout", &hash])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+
+        let svc = GitExecutionService::new();
+        let result = svc
+            .execute(
+                &GitOperation::BranchList {
+                    remotes: false,
+                    all: false,
+                },
+                dir.path(),
+            )
+            .await
+            .unwrap();
+
+        assert!(result.success);
+        match result.payload.unwrap() {
+            GitPayload::Branches(branches) => {
+                // Should still list branches, but none marked as current
+                // (detached HEAD means no branch is checked out)
+                assert!(!branches.is_empty());
+            }
+            other => panic!("expected Branches, got {:?}", other),
+        }
     }
 }

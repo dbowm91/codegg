@@ -248,6 +248,43 @@ fn format_structured_result(
         Some(GitPayload::DiffText(text)) => {
             output.push_str(text);
         }
+        Some(GitPayload::DiffResult(result)) => {
+            output.push_str(&format!(
+                "{} file(s) changed, +{} -{}\n",
+                result.files.len(),
+                result.total_insertions,
+                result.total_deletions
+            ));
+            for file in &result.files {
+                let binary = if file.is_binary { " [binary]" } else { "" };
+                let rename = file
+                    .old_path
+                    .as_deref()
+                    .map(|old| format!(" (was {})", old))
+                    .unwrap_or_default();
+                output.push_str(&format!(
+                    "  {} ({}){}{}\n",
+                    file.path, file.kind, rename, binary
+                ));
+            }
+        }
+        Some(GitPayload::Show(show)) => {
+            let short_hash = if show.hash.len() > 7 {
+                &show.hash[..7]
+            } else {
+                &show.hash
+            };
+            output.push_str(&format!("commit {}\n", short_hash));
+            output.push_str(&format!("Author: {}\n", show.author));
+            output.push_str(&format!("Date: {}\n\n", show.date));
+            output.push_str(&format!("{}\n\n", show.message));
+            if !show.files.is_empty() {
+                output.push_str(&format!("{} file(s) changed\n", show.files.len()));
+            }
+            if !show.patch.is_empty() {
+                output.push_str(&show.patch);
+            }
+        }
         Some(GitPayload::Log(commits)) => {
             for commit in commits {
                 output.push_str(&format!(

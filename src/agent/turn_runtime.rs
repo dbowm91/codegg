@@ -275,6 +275,13 @@ impl TurnRuntime for DefaultTurnRuntime {
             }
         }
 
+        // ── Git repository context ──────────────────────────────────
+        let git_ctx = build_git_context_for_path(
+            &std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+        )
+        .await;
+        system.push_str(&git_ctx);
+
         if plan_mode {
             system.push_str("\n\n");
             system.push_str(crate::agent::prompt::plan_mode_contract());
@@ -454,6 +461,93 @@ fn infer_workflow_from_input(
     } else {
         egglsp::workflow_recipes::LspWorkflowRecipe::ReviewDiff
     }
+}
+
+/// Build a brief git context block for the system prompt.
+///
+/// Returns an empty string if not in a git repo or if git info is unavailable.
+async fn build_git_context_for_path(cwd: &std::path::Path) -> String {
+    let root = match egggit::worktree::find_git_root(cwd) {
+        Some(r) => r,
+        None => return String::new(),
+    };
+
+    let status = match egggit::status_v2::rich_repo_status(&root).await {
+        Ok(s) => s,
+        Err(_) => return String::new(),
+    };
+
+    let mut ctx = String::from("\n\n## Git Repository Context\n");
+    ctx.push_str(&format!("- Root: {}\n", root.display()));
+
+    match &status.branch {
+        Some(branch) => ctx.push_str(&format!("- Branch: {}\n", branch)),
+        None => ctx.push_str("- Branch: (detached HEAD)\n"),
+    }
+
+    if let Some(ref hash) = status.head {
+        let short = if hash.len() >= 7 { &hash[..7] } else { hash };
+        ctx.push_str(&format!("- HEAD: {}\n", short));
+    }
+
+    if status.is_clean {
+        ctx.push_str("- Dirty: no\n");
+    } else {
+        let ds = &status.dirty_summary;
+        let mut parts = Vec::new();
+        if ds.staged_count > 0 {
+            parts.push(format!("{} staged", ds.staged_count));
+        }
+        if ds.unstaged_count > 0 {
+            parts.push(format!("{} unstaged", ds.unstaged_count));
+        }
+        if ds.untracked_count > 0 {
+            parts.push(format!("{} untracked", ds.untracked_count));
+        }
+        if ds.conflicted_count > 0 {
+            parts.push(format!("{} conflicted", ds.conflicted_count));
+        }
+        if !parts.is_empty() {
+            ctx.push_str(&format!("- Dirty: {}\n", parts.join(", ")));
+        }
+    }
+
+    if matches!(
+        status.operation_state,
+        Some(egggit::OperationState::Merge { .. })
+    ) {
+        ctx.push_str("- WARNING: Merge in progress\n");
+    } else if matches!(
+        status.operation_state,
+        Some(egggit::OperationState::Rebase { .. })
+    ) {
+        ctx.push_str("- WARNING: Rebase in progress\n");
+    } else if matches!(
+        status.operation_state,
+        Some(egggit::OperationState::CherryPick { .. })
+    ) {
+        ctx.push_str("- WARNING: Cherry-pick in progress\n");
+    } else if matches!(
+        status.operation_state,
+        Some(egggit::OperationState::Revert { .. })
+    ) {
+        ctx.push_str("- WARNING: Revert in progress\n");
+    } else if matches!(status.operation_state, Some(egggit::OperationState::Bisect)) {
+        ctx.push_str("- WARNING: Bisect in progress\n");
+    }
+
+    if let Some(ahead) = status.ahead {
+        if ahead > 0 {
+            ctx.push_str(&format!("- Ahead of upstream by {} commit(s)\n", ahead));
+        }
+    }
+    if let Some(behind) = status.behind {
+        if behind > 0 {
+            ctx.push_str(&format!("- Behind upstream by {} commit(s)\n", behind));
+        }
+    }
+
+    ctx
 }
 
 /// Build the LSP context section that gets appended to the system
