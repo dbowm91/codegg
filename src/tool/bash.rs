@@ -102,8 +102,6 @@ fn plan_to_planned_backend(
         Some(ExecutionBackend::NativeTool { .. }) => PlannedBackend::NativeTool,
         Some(ExecutionBackend::ManagedArgv { .. }) => PlannedBackend::ManagedArgv,
         Some(ExecutionBackend::Git { .. }) => PlannedBackend::Git,
-        #[allow(deprecated)]
-        Some(ExecutionBackend::GitMutating { .. }) => PlannedBackend::GitMutating,
         Some(ExecutionBackend::Reject { .. }) => PlannedBackend::Unrouted,
     }
 }

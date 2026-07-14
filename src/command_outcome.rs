@@ -357,7 +357,7 @@ mod tests {
         );
 
         let outcome = ExecutionOutcome::identity(
-            PlannedBackend::GitMutating,
+            PlannedBackend::Git,
             ActualExecutor::ManagedArgv {
                 argv: vec!["git".to_string(), "commit".to_string()],
                 cwd: None,

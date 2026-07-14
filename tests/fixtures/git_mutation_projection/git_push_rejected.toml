@@ -1,0 +1,56 @@
+[fixture]
+name = "git_push_rejected"
+projector = "network"
+
+[input_json]
+subcommand = "push"
+exit_code = 1
+success = false
+stdout = ""
+stderr = "remote: error: GH006: Protected branch update failed for refs/heads/main.\nremote: error: Required status check \"ci/build\" is expected.\nTo https://github.com/user/repo\n ! [remote rejected] main -> main (hook declined)\nerror: failed to push some refs to 'https://github.com/user/repo'\n"
+duration_ms = 3400
+
+[input_json.outcome]
+Rejected = { reason = "remote rejected: hook declined" }
+
+[input_json.delta]
+commits_created = []
+refs_created = []
+refs_deleted = []
+paths_staged = []
+paths_unstaged = []
+conflicts = []
+
+[input_json.delta.before]
+head = "abc1234567890"
+branch = "main"
+detached = false
+staged_count = 0
+unstaged_count = 0
+untracked_count = 0
+conflicted_count = 0
+captured_at = "2025-01-15T10:30:00Z"
+
+[input_json.delta.after]
+head = "abc1234567890"
+branch = "main"
+detached = false
+staged_count = 0
+unstaged_count = 0
+untracked_count = 0
+conflicted_count = 0
+captured_at = "2025-01-15T10:30:03Z"
+
+[input_json.operation]
+Push = { set_upstream = false, force = false, force_with_lease = false, tags = false, delete = false }
+
+[expect]
+output = """\
+git push — rejected
+  before: HEAD=abc1234 branch=main (0 staged, 0 unstaged, 0 untracked, 0 conflicts)
+  after:  HEAD=abc1234 branch=main (0 staged, 0 unstaged, 0 untracked, 0 conflicts)
+  rejected: remote rejected: hook declined
+  exit code: 1
+  stderr: remote: error: GH006: Protected branch update failed for refs/heads/main. remote: error: Required status check "ci/build" is expected. To https://github.com/user/repo  ! [remote rejected] main -> main (hook declined) error: failed to push some refs to 'https://github.com/user/repo'
+  duration: 3400 ms
+"""

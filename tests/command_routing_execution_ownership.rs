@@ -805,7 +805,7 @@ fn raw_shell_run_kind_is_unconditional() {
     // Workstream D: RawShell actual executor produces RunKind::raw_shell
     // regardless of intent. Semantic intent is preserved on planned_backend.
     let outcome = ExecutionOutcome::identity(
-        PlannedBackend::GitMutating,
+        PlannedBackend::Git,
         ActualExecutor::RawShell {
             command: "git status".to_string(),
             argv: vec!["sh".to_string(), "-c".to_string(), "git status".to_string()],

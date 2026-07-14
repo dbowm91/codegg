@@ -1,0 +1,56 @@
+[fixture]
+name = "git_recover_abort"
+projector = "recovery"
+action = "abort"
+family = "rebase"
+
+[input_json]
+subcommand = "rebase"
+exit_code = 0
+success = true
+stdout = ""
+stderr = ""
+duration_ms = 18
+
+[input_json.outcome]
+Completed = {}
+
+[input_json.delta]
+commits_created = []
+refs_created = []
+refs_deleted = []
+paths_staged = []
+paths_unstaged = ["src/main.rs", "src/lib.rs", "Cargo.toml"]
+conflicts = []
+
+[input_json.delta.before]
+head = "abc1234567890"
+branch = "feature/auth"
+detached = false
+staged_count = 0
+unstaged_count = 0
+untracked_count = 0
+conflicted_count = 2
+captured_at = "2025-01-15T10:30:00Z"
+
+[input_json.delta.after]
+head = "abc1234567890"
+branch = "feature/auth"
+detached = false
+staged_count = 0
+unstaged_count = 3
+untracked_count = 0
+conflicted_count = 0
+captured_at = "2025-01-15T10:30:00Z"
+
+[input_json.operation]
+Rebase = { upstream = "origin/main", interactive = false, abort = true, continue_op = false, skip = false }
+
+[expect]
+output = """\
+git recover (abort) — operation: rebase — completed
+  before: HEAD=abc1234 branch=feature/auth (conflicts=2)
+  after:  HEAD=abc1234 branch=feature/auth (conflicts=0)
+  next: operation aborted; repository back to clean state
+  duration: 18 ms
+"""

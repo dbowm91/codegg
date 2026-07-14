@@ -1,0 +1,55 @@
+[fixture]
+name = "git_branch_create"
+projector = "mutation"
+
+[input_json]
+subcommand = "branch"
+exit_code = 0
+success = true
+stdout = ""
+stderr = ""
+duration_ms = 12
+
+[input_json.outcome]
+Completed = {}
+
+[input_json.delta]
+commits_created = []
+refs_created = ["feature/auth"]
+refs_deleted = []
+paths_staged = []
+paths_unstaged = []
+conflicts = []
+
+[input_json.delta.before]
+head = "abc1234567890"
+branch = "main"
+detached = false
+staged_count = 0
+unstaged_count = 0
+untracked_count = 0
+conflicted_count = 0
+captured_at = "2025-01-15T10:30:00Z"
+
+[input_json.delta.after]
+head = "abc1234567890"
+branch = "main"
+detached = false
+staged_count = 0
+unstaged_count = 0
+untracked_count = 0
+conflicted_count = 0
+captured_at = "2025-01-15T10:30:00Z"
+
+[input_json.operation]
+BranchCreate = { name = "feature/auth", force = false }
+
+[expect]
+output = """\
+git branch — completed
+  before: HEAD=abc1234 branch=main (0 staged, 0 unstaged, 0 untracked, 0 conflicts)
+  after:  HEAD=abc1234 branch=main (0 staged, 0 unstaged, 0 untracked, 0 conflicts)
+  refs created:
+    - feature/auth
+  duration: 12 ms
+"""

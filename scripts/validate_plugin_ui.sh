@@ -35,7 +35,7 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings \
     || fail "clippy reported warnings."
 
 step "cargo test --workspace --all-features"
-cargo test --workspace --all-features -- --test-threads=4 || fail "workspace tests failed."
+cargo test --workspace --all-features -- --test-threads=8 || fail "workspace tests failed."
 
 step "Plugin install path / policy tests"
 cargo test -p codegg --lib plugin::install:: --all-features \

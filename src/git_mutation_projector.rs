@@ -386,4 +386,122 @@ mod tests {
         assert!(summary.contains("aborted"));
         assert!(summary.contains("clean state"));
     }
+
+    // ── Golden fixture tests ──────────────────────────────────────────
+
+    use crate::git_mutations::MutationResult;
+    use serde::Deserialize;
+
+    #[derive(Deserialize)]
+    struct GoldenFixture {
+        fixture: GoldenFixtureInfo,
+        input_json: MutationResult,
+        expect: GoldenExpect,
+    }
+
+    #[derive(Deserialize)]
+    struct GoldenFixtureInfo {
+        name: String,
+        projector: String,
+        #[serde(default)]
+        action: Option<String>,
+        #[serde(default)]
+        family: Option<String>,
+    }
+
+    #[derive(Deserialize)]
+    struct GoldenExpect {
+        output: String,
+    }
+
+    fn fixture_dir() -> std::path::PathBuf {
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/git_mutation_projection")
+    }
+
+    fn discover_golden_fixtures() -> Vec<(String, std::path::PathBuf)> {
+        let dir = fixture_dir();
+        let mut fixtures = Vec::new();
+        if !dir.is_dir() {
+            return fixtures;
+        }
+        for entry in std::fs::read_dir(&dir).expect("fixture dir readable") {
+            let entry = entry.expect("dir entry readable");
+            let path = entry.path();
+            if path.is_file() && path.extension().and_then(|e| e.to_str()) == Some("toml") {
+                let name = path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("unknown")
+                    .to_string();
+                fixtures.push((name, path));
+            }
+        }
+        fixtures.sort_by(|a, b| a.0.cmp(&b.0));
+        fixtures
+    }
+
+    fn load_golden_fixture(path: &std::path::Path) -> GoldenFixture {
+        let content = std::fs::read_to_string(path)
+            .unwrap_or_else(|e| panic!("Failed to read fixture {}: {}", path.display(), e));
+        toml::from_str(&content)
+            .unwrap_or_else(|e| panic!("Failed to parse fixture {}: {}", path.display(), e))
+    }
+
+    #[test]
+    fn golden_fixtures_parse() {
+        let fixtures = discover_golden_fixtures();
+        assert!(
+            !fixtures.is_empty(),
+            "No golden fixtures found in {:?}",
+            fixture_dir()
+        );
+        for (name, path) in &fixtures {
+            let f = load_golden_fixture(path);
+            assert_eq!(f.fixture.name, *name, "Fixture name mismatch in {}", name);
+            assert!(
+                matches!(
+                    f.fixture.projector.as_str(),
+                    "mutation" | "network" | "destructive" | "recovery"
+                ),
+                "Fixture {} has unknown projector '{}'",
+                name,
+                f.fixture.projector
+            );
+        }
+    }
+
+    #[test]
+    fn golden_fixtures_match_projector_output() {
+        let fixtures = discover_golden_fixtures();
+        assert!(!fixtures.is_empty(), "No golden fixtures found");
+
+        for (name, path) in &fixtures {
+            let f = load_golden_fixture(path);
+            let actual = match f.fixture.projector.as_str() {
+                "mutation" => project_mutation(&f.input_json),
+                "network" => project_network_mutation(&f.input_json),
+                "destructive" => project_destructive_mutation(&f.input_json),
+                "recovery" => {
+                    let action = f
+                        .fixture
+                        .action
+                        .as_deref()
+                        .expect("recovery fixture must specify action");
+                    let family = f
+                        .fixture
+                        .family
+                        .as_deref()
+                        .expect("recovery fixture must specify family");
+                    project_recovery(&f.input_json, action, family)
+                }
+                _ => unreachable!(),
+            };
+            assert_eq!(
+                actual, f.expect.output,
+                "Golden fixture '{}' output mismatch.\n--- expected ---\n{}\n--- actual ---\n{}",
+                name, f.expect.output, actual
+            );
+        }
+    }
 }

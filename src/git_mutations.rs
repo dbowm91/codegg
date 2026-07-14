@@ -256,6 +256,8 @@ pub enum GitMutationError {
     Ref(String),
     #[error("operation timed out after {0}s")]
     Timeout(u64),
+    #[error("state mismatch: expected operation '{expected}' but found '{actual}' on disk")]
+    StateMismatch { expected: String, actual: String },
 }
 
 impl From<GitServiceError> for GitMutationError {

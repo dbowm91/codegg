@@ -462,4 +462,4 @@ Recovery operations are persisted via the new `persist_recovery()` helper. Each 
 | `src/tui/app/state/session.rs` | 3 (extended) | Sidebar info with operation-state fields. |
 | `tests/tui_render.rs` | 99 (existing) | Validated against new GitSidebarInfo field set. |
 
-The full test matrix (Phase F + previous phases) passes locally in capped invocations (`CARGO_BUILD_JOBS=1 cargo test --workspace --all-features -- --test-threads=4`).
+The full test matrix (Phase F + previous phases) passes locally in capped invocations (`CARGO_BUILD_JOBS=1 cargo test --workspace --all-features -- --test-threads=8`).

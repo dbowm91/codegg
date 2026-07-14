@@ -92,7 +92,7 @@ pub struct CommandPermissionRequest {
 /// A typed Git execution request carrying the parsed operation, argv,
 /// repository context, and risk metadata. This is the unified Git backend
 /// that replaces both `NativeTool { "egggit" }` for reads and
-/// `GitMutating { "git", argv }` for mutations.
+/// legacy `GitMutating` for mutations.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct GitExecutionRequest {
     /// The typed parsed operation from codegg-git.
@@ -234,16 +234,8 @@ pub enum ExecutionBackend {
         mode_guess: PythonModeGuess,
     },
     /// Unified Git backend — carries a typed request for all Git operations.
-    /// Replaces the split between `NativeTool { "egggit" }` for reads and
-    /// `GitMutating { "git", argv }` for mutations.
     Git {
         request: GitExecutionRequest,
-    },
-    /// Legacy variant retained during migration. Prefer `Git`.
-    #[deprecated(note = "Use ExecutionBackend::Git instead")]
-    GitMutating {
-        tool_name: String,
-        argv: Vec<String>,
     },
     Reject {
         reason: String,
@@ -267,8 +259,6 @@ impl ExecutionBackend {
             Self::TestRunner { .. } => "test-runner",
             Self::PythonScript { .. } => "python-script",
             Self::Git { .. } => "git",
-            #[allow(deprecated)]
-            Self::GitMutating { .. } => "git-mutating",
             Self::Reject { .. } => "reject",
         }
     }

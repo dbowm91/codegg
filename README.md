@@ -216,7 +216,7 @@ cargo test --workspace --all-features
 For a resource-capped full run, use:
 
 ```bash
-CARGO_BUILD_JOBS=1 cargo test --workspace --all-features -- --test-threads=4
+CARGO_BUILD_JOBS=1 cargo test --workspace --all-features -- --test-threads=8
 ```
 
 See [AGENTS.md](AGENTS.md) for crate boundaries, feature gates, test

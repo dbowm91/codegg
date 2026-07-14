@@ -219,20 +219,35 @@ async fn detect_state(repo_root: &Path) -> Result<RepositoryOperationState, GitM
 
 /// Cross-check that the requested action is legal for the state we are
 /// running against. Defends against TOCTOU between detection and
-/// execution by re-reading state immediately before the action runs.
-fn assert_action_matches(
-    state: &RepositoryOperationState,
+/// execution by re-reading state from disk immediately before the
+/// action runs. If the re-read state disagrees with the state that was
+/// originally detected, a [`GitMutationError::StateMismatch`] is
+/// returned so that a stale or concurrently-mutated operation cannot
+/// slip through.
+pub fn assert_action_matches(
+    repo_root: &Path,
+    expected_state: &RepositoryOperationState,
     action: RecoveryAction,
 ) -> Result<(), GitMutationError> {
-    if !state.action_available(action) {
+    // Re-read state from disk to close the TOCTOU window between the
+    // original detection and the actual recovery action.
+    let fresh_state = detect_operation_state_for_root(repo_root)
+        .map_err(|e| GitMutationError::Repository(e.to_string()))?;
+    if fresh_state != *expected_state {
+        return Err(GitMutationError::StateMismatch {
+            expected: expected_state.label().to_string(),
+            actual: fresh_state.label().to_string(),
+        });
+    }
+    if !fresh_state.action_available(action) {
         return Err(GitMutationError::Precondition(format!(
             "action '{}' is not legal for operation '{}'",
             action.label(),
-            state.label()
+            fresh_state.label()
         )));
     }
     // Additional family-specific cross-checks.
-    match (state.family(), action) {
+    match (fresh_state.family(), action) {
         (OperationFamily::Merge, RecoveryAction::Skip) => {
             return Err(GitMutationError::Precondition(
                 "merge does not support skip (use continue or abort)".to_string(),
@@ -241,7 +256,7 @@ fn assert_action_matches(
         (OperationFamily::Bisect, _) | (OperationFamily::ApplyMailbox, _) => {
             return Err(GitMutationError::Precondition(format!(
                 "operation '{}' is not model-driven; manage it manually",
-                state.family().label()
+                fresh_state.family().label()
             )));
         }
         (OperationFamily::Unknown, _) => {
@@ -262,7 +277,7 @@ async fn run_recovery(
     op: GitOperation,
     action: RecoveryAction,
 ) -> Result<MutationResult, GitMutationError> {
-    assert_action_matches(state, action)?;
+    assert_action_matches(repo_root, state, action)?;
     let result = exec.execute(&op, repo_root).await?;
     // Post-flight classification: the underlying executor classifies on
     // exit code, but recovery benefits from a result-aware label so the

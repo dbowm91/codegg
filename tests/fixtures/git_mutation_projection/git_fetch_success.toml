@@ -1,0 +1,58 @@
+[fixture]
+name = "git_fetch_success"
+projector = "network"
+
+[input_json]
+subcommand = "fetch"
+exit_code = 0
+success = true
+stdout = "From https://github.com/user/repo\n   abc1234..def5678  main       -> origin/main\n * [new branch]      feature/x  -> origin/feature/x\n"
+stderr = ""
+duration_ms = 1250
+
+[input_json.outcome]
+Completed = {}
+
+[input_json.delta]
+commits_created = []
+refs_created = []
+refs_deleted = []
+paths_staged = []
+paths_unstaged = []
+conflicts = []
+
+[input_json.delta.before]
+head = "abc1234567890"
+branch = "main"
+detached = false
+staged_count = 0
+unstaged_count = 0
+untracked_count = 0
+conflicted_count = 0
+captured_at = "2025-01-15T10:30:00Z"
+
+[input_json.delta.after]
+head = "abc1234567890"
+branch = "main"
+detached = false
+staged_count = 0
+unstaged_count = 0
+untracked_count = 0
+conflicted_count = 0
+captured_at = "2025-01-15T10:30:01Z"
+
+[input_json.operation]
+Fetch = { refspecs = [], all = true }
+
+[expect]
+output = """\
+git fetch — completed
+  before: HEAD=abc1234 branch=main (0 staged, 0 unstaged, 0 untracked, 0 conflicts)
+  after:  HEAD=abc1234 branch=main (0 staged, 0 unstaged, 0 untracked, 0 conflicts)
+  stdout: From https://github.com/user/repo    abc1234..def5678  main       -> origin/main  * [new branch]      feature/x  -> origin/feature/x
+  duration: 1250 ms
+  network output:
+    From https://github.com/user/repo
+       abc1234..def5678  main       -> origin/main
+     * [new branch]      feature/x  -> origin/feature/x
+"""

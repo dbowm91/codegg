@@ -1,0 +1,56 @@
+[fixture]
+name = "git_clean_preview"
+projector = "destructive"
+
+[input_json]
+subcommand = "clean"
+exit_code = 0
+success = true
+stdout = "Would remove target/debug/\nWould remove .env.local\nWould remove test_output.log\n"
+stderr = ""
+duration_ms = 34
+
+[input_json.outcome]
+NoOp = {}
+
+[input_json.delta]
+commits_created = []
+refs_created = []
+refs_deleted = []
+paths_staged = []
+paths_unstaged = []
+conflicts = []
+
+[input_json.delta.before]
+head = "abc1234567890"
+branch = "main"
+detached = false
+staged_count = 0
+unstaged_count = 0
+untracked_count = 3
+conflicted_count = 0
+captured_at = "2025-01-15T10:30:00Z"
+
+[input_json.delta.after]
+head = "abc1234567890"
+branch = "main"
+detached = false
+staged_count = 0
+unstaged_count = 0
+untracked_count = 3
+conflicted_count = 0
+captured_at = "2025-01-15T10:30:00Z"
+
+[input_json.operation]
+Clean = { force = true, dry_run = true, dirs = true, ignored = false, paths = [] }
+
+[expect]
+output = """\
+git clean — no-op
+  before: HEAD=abc1234 branch=main (0 staged, 0 unstaged, 3 untracked, 0 conflicts)
+  after:  HEAD=abc1234 branch=main (0 staged, 0 unstaged, 3 untracked, 0 conflicts)
+  no state change
+  stdout: Would remove target/debug/ Would remove .env.local Would remove test_output.log
+  duration: 34 ms
+  destructive: this operation rewrote history or removed files; recovery is `git reflog` + `git reset --hard <sha>`.
+"""

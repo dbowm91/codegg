@@ -1,0 +1,56 @@
+[fixture]
+name = "git_recover_skip"
+projector = "recovery"
+action = "skip"
+family = "cherry-pick"
+
+[input_json]
+subcommand = "cherry-pick"
+exit_code = 0
+success = true
+stdout = ""
+stderr = ""
+duration_ms = 9
+
+[input_json.outcome]
+Completed = {}
+
+[input_json.delta]
+commits_created = []
+refs_created = []
+refs_deleted = []
+paths_staged = []
+paths_unstaged = []
+conflicts = []
+
+[input_json.delta.before]
+head = "abc1234567890"
+branch = "main"
+detached = false
+staged_count = 0
+unstaged_count = 0
+untracked_count = 0
+conflicted_count = 1
+captured_at = "2025-01-15T10:30:00Z"
+
+[input_json.delta.after]
+head = "abc1234567890"
+branch = "main"
+detached = false
+staged_count = 0
+unstaged_count = 0
+untracked_count = 0
+conflicted_count = 0
+captured_at = "2025-01-15T10:30:00Z"
+
+[input_json.operation]
+CherryPick = { revisions = ["abc1234"], continue_op = false, abort = false, skip = true }
+
+[expect]
+output = """\
+git recover (skip) — operation: cherry-pick — completed
+  before: HEAD=abc1234 branch=main (conflicts=1)
+  after:  HEAD=abc1234 branch=main (conflicts=0)
+  next: step skipped; operation advanced
+  duration: 9 ms
+"""

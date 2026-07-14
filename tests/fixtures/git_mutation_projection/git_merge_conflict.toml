@@ -1,0 +1,58 @@
+[fixture]
+name = "git_merge_conflict"
+projector = "mutation"
+
+[input_json]
+subcommand = "merge"
+exit_code = 1
+success = false
+stdout = ""
+stderr = "CONFLICT (content): Merge conflict in src/main.rs\nAutomatic merge failed; fix conflicts and then commit the result.\n"
+duration_ms = 234
+
+[input_json.outcome]
+Conflict = {}
+
+[input_json.delta]
+commits_created = []
+refs_created = []
+refs_deleted = []
+paths_staged = []
+paths_unstaged = []
+conflicts = ["src/main.rs"]
+
+[input_json.delta.before]
+head = "abc1234567890"
+branch = "main"
+detached = false
+staged_count = 0
+unstaged_count = 0
+untracked_count = 0
+conflicted_count = 0
+captured_at = "2025-01-15T10:30:00Z"
+
+[input_json.delta.after]
+head = "abc1234567890"
+branch = "main"
+detached = false
+staged_count = 0
+unstaged_count = 0
+untracked_count = 0
+conflicted_count = 1
+captured_at = "2025-01-15T10:30:02Z"
+
+[input_json.operation]
+Merge = { revisions = ["feature/api"], no_ff = false, abort = false }
+
+[expect]
+output = """\
+git merge — conflict
+  before: HEAD=abc1234 branch=main (0 staged, 0 unstaged, 0 untracked, 0 conflicts)
+  after:  HEAD=abc1234 branch=main (0 staged, 0 unstaged, 0 untracked, 1 conflicts)
+  conflicts:
+    - src/main.rs
+  recovery: resolve conflicts, then `git add <path>` and `git merge --continue`.
+  exit code: 1
+  stderr: CONFLICT (content): Merge conflict in src/main.rs Automatic merge failed; fix conflicts and then commit the result.
+  duration: 234 ms
+"""

@@ -1,0 +1,56 @@
+[fixture]
+name = "git_recover_continue"
+projector = "recovery"
+action = "continue"
+family = "merge"
+
+[input_json]
+subcommand = "merge"
+exit_code = 0
+success = true
+stdout = ""
+stderr = ""
+duration_ms = 45
+
+[input_json.outcome]
+Completed = {}
+
+[input_json.delta]
+commits_created = ["def5678901234"]
+refs_created = []
+refs_deleted = []
+paths_staged = []
+paths_unstaged = []
+conflicts = []
+
+[input_json.delta.before]
+head = "abc1234567890"
+branch = "main"
+detached = false
+staged_count = 0
+unstaged_count = 0
+untracked_count = 0
+conflicted_count = 1
+captured_at = "2025-01-15T10:30:00Z"
+
+[input_json.delta.after]
+head = "def5678901234"
+branch = "main"
+detached = false
+staged_count = 0
+unstaged_count = 0
+untracked_count = 0
+conflicted_count = 0
+captured_at = "2025-01-15T10:30:01Z"
+
+[input_json.operation]
+Merge = { revisions = ["feature/api"], no_ff = false, abort = false }
+
+[expect]
+output = """\
+git recover (continue) — operation: merge — completed
+  before: HEAD=abc1234 branch=main (conflicts=1)
+  after:  HEAD=def5678 branch=main (conflicts=0)
+  next: operation continued cleanly
+  duration: 45 ms
+"""

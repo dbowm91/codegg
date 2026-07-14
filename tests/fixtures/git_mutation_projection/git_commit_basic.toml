@@ -1,0 +1,55 @@
+[fixture]
+name = "git_commit_basic"
+projector = "mutation"
+
+[input_json]
+subcommand = "commit"
+exit_code = 0
+success = true
+stdout = "[main a1b2c3d] fix: resolve import cycle\n 2 files changed, 15 insertions(+), 3 deletions(-)\n"
+stderr = ""
+duration_ms = 87
+
+[input_json.outcome]
+Completed = {}
+
+[input_json.delta]
+commits_created = ["a1b2c3d4567890"]
+refs_created = []
+refs_deleted = []
+paths_staged = []
+paths_unstaged = []
+conflicts = []
+
+[input_json.delta.before]
+head = "abc1234567890"
+branch = "main"
+detached = false
+staged_count = 2
+unstaged_count = 0
+untracked_count = 0
+conflicted_count = 0
+captured_at = "2025-01-15T10:30:00Z"
+
+[input_json.delta.after]
+head = "a1b2c3d4567890"
+branch = "main"
+detached = false
+staged_count = 0
+unstaged_count = 0
+untracked_count = 0
+conflicted_count = 0
+captured_at = "2025-01-15T10:30:01Z"
+
+[input_json.operation]
+Commit = { message = "fix: resolve import cycle", amend = false, allow_empty = false }
+
+[expect]
+output = """\
+git commit — completed
+  before: HEAD=abc1234 branch=main (2 staged, 0 unstaged, 0 untracked, 0 conflicts)
+  after:  HEAD=a1b2c3d branch=main (0 staged, 0 unstaged, 0 untracked, 0 conflicts)
+  commits created:
+    - a1b2c3d4567890
+  duration: 87 ms
+"""

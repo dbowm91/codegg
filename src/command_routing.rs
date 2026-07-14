@@ -73,15 +73,6 @@ pub fn resolve_routing(plan: &CommandPlan) -> RoutingDecision {
             request: request.clone(),
             timeout_secs: plan.timeout_secs,
         },
-        #[allow(deprecated)]
-        ExecutionBackend::GitMutating { argv, .. } => {
-            // Legacy path: convert to managed process for backward compat.
-            RoutingDecision::RouteToManagedProcess {
-                argv: argv.clone(),
-                cwd: std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
-                timeout_secs: plan.timeout_secs,
-            }
-        }
         ExecutionBackend::RawShell { command } => RoutingDecision::RouteToShell {
             command: command.clone(),
             timeout_secs: plan.timeout_secs,

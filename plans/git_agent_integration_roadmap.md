@@ -356,9 +356,23 @@ Implement staging, commit, branch, switch, restore, stash, merge, rebase, cherry
 
 Add fetch/pull/push, remotes, selected configuration changes, reset, clean, forced deletion, and force-push policy with local bare-remote tests.
 
-### Phase F — conflicts, recovery, ergonomics, and closure
+### Phase F — conflicts, recovery, ergonomics, and closure ✅
 
 Add operation-state discovery, continue/abort/skip flows, conflict projections, TUI/prompt integration, compatibility cleanup, docs, and closure validation.
+
+#### Phase F completion summary
+
+- **Completion date:** 2026-07-14
+- **Key deliverables:**
+  - `RepositoryOperationState` with eight operation families (merge, rebase, cherry-pick, revert, bisect, apply-mailbox, sequencer, unknown) and `RecoveryAction` enum
+  - `ConflictEntry`, `ConflictKind`, `ConflictShape`, `ConflictReport` typed conflict model
+  - `continue_in_progress`, `abort_in_progress_typed`, `skip_in_progress` recovery functions
+  - `git` tool exposes `operation_state` and `recover` parameters
+  - TUI sidebar caches operation state, available actions, and conflicted paths
+  - Agent prompts updated with Phase F git workflow guidance
+  - RunStore persistence for recovery actions (`RunKind::GitMutation`)
+  - Schema snapshot tests pinning mutation and recover enums
+- **Handoff artifact:** [`architecture/git_phase_f_handoff.md`](../architecture/git_phase_f_handoff.md)
 
 ## Cross-phase invariants
 
@@ -388,11 +402,15 @@ The roadmap is complete when:
 - permissions distinguish operation risk precisely;
 - status and mutation outcomes are structured and verifiable;
 - commit and review no longer duplicate Git execution logic;
-- conflicts and active operations have first-class recovery commands;
+- [x] conflicts and active operations have first-class recovery commands;
 - projection and RunStore retain Git semantics end to end;
 - destructive and remote operations have adversarial integration coverage;
 - obsolete generic paths are removed or explicitly retained as documented compatibility escapes;
 - architecture and agent documentation describe the final model accurately.
+
+## Completion status
+
+**Phases A–F complete** (as of 2026-07-14). All six phases of the Git agent integration roadmap have been implemented.
 
 ## Handoff notes
 

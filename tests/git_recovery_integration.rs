@@ -449,3 +449,80 @@ fn recommended_actions_for_both_added_submodule_includes_take_ours() {
     assert!(actions.contains(&RecommendedConflictAction::TakeOurs));
     assert!(actions.contains(&RecommendedConflictAction::TakeTheirs));
 }
+
+// ── TOCTOU defense ──────────────────────────────────────────────────
+
+#[test]
+fn toctou_defense_detects_state_mismatch() {
+    if !git_available() {
+        return;
+    }
+    // Set up a rebase in progress so the initial detection returns Rebase.
+    let dir = tempfile::TempDir::new().unwrap();
+    init_repo(dir.path());
+    write_file(dir.path(), "f.txt", "base\n");
+    commit(dir.path(), "first");
+    Command::new("git")
+        .args(["checkout", "-b", "topic"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    write_file(dir.path(), "f.txt", "topic-1\n");
+    commit(dir.path(), "topic1");
+    write_file(dir.path(), "f.txt", "topic-2\n");
+    commit(dir.path(), "topic2");
+    Command::new("git")
+        .args(["checkout", "main"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    write_file(dir.path(), "f.txt", "main-edit\n");
+    commit(dir.path(), "main edit");
+    Command::new("git")
+        .args(["checkout", "topic"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    let r = Command::new("git")
+        .args(["rebase", "main"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(!r.status.success(), "rebase must conflict");
+
+    // Initial detection: state should be Rebase.
+    let initial_state = detect_operation_state_for_root(dir.path()).unwrap();
+    assert!(
+        matches!(initial_state, RepositoryOperationState::Rebase(_)),
+        "expected Rebase, got {initial_state:?}"
+    );
+
+    // Now simulate the TOCTOU window: externally abort the rebase so the
+    // on-disk state changes to None.
+    let abort = Command::new("git")
+        .args(["rebase", "--abort"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(abort.status.success(), "rebase --abort must succeed");
+    let post_abort_state = detect_operation_state_for_root(dir.path()).unwrap();
+    assert!(
+        post_abort_state.is_clean(),
+        "repo should be clean after abort"
+    );
+
+    // Pass the stale initial_state to assert_action_matches. The function
+    // re-reads state from disk and should detect the mismatch.
+    let result = codegg::git_recovery::assert_action_matches(
+        dir.path(),
+        &initial_state,
+        RecoveryAction::Abort,
+    );
+    match result {
+        Err(codegg::git_mutations::GitMutationError::StateMismatch { expected, actual }) => {
+            assert_eq!(expected, "rebase");
+            assert_eq!(actual, "none");
+        }
+        other => panic!("expected StateMismatch error, got {other:?}"),
+    }
+}
