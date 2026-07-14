@@ -2091,7 +2091,8 @@ impl CommandOutputProjector for GitDiffProjector {
                 if let Some(f) = &mut current_file {
                     f.old_path = Some(stripped.to_string());
                 }
-            } else if line.starts_with("rename to ") || line.starts_with("copy from ")
+            } else if line.starts_with("rename to ")
+                || line.starts_with("copy from ")
                 || line.starts_with("copy to ")
             {
                 // rename to / copy from / copy to — skip, we already have old_path
@@ -2183,8 +2184,7 @@ impl CommandOutputProjector for GitDiffProjector {
                         f.path, f.additions, f.deletions, old
                     );
                 } else {
-                    let _ =
-                        writeln!(text, "{} (+{}/-{}):", f.path, f.additions, f.deletions);
+                    let _ = writeln!(text, "{} (+{}/-{}):", f.path, f.additions, f.deletions);
                 }
                 // For diffs with ≤5 files, show up to 3 hunks per file.
                 if files.len() <= 5 && !f.is_binary {
@@ -2388,9 +2388,7 @@ impl CommandOutputProjector for GitLogProjector {
                 let trimmed = line.trim();
                 if let Some(space_idx) = trimmed.find(' ') {
                     let hex_part = &trimmed[..space_idx];
-                    if hex_part.len() >= 7
-                        && hex_part.chars().all(|c| c.is_ascii_hexdigit())
-                    {
+                    if hex_part.len() >= 7 && hex_part.chars().all(|c| c.is_ascii_hexdigit()) {
                         let subject = trimmed[space_idx + 1..].trim();
                         commits.push(CommitEntry {
                             hash: hex_part.to_string(),
@@ -5939,11 +5937,7 @@ mod tests {
         let run = make_run_with_cmd(
             &mut store,
             "git log --decorate",
-            Some(vec![
-                "git".into(),
-                "log".into(),
-                "--decorate".into(),
-            ]),
+            Some(vec!["git".into(), "log".into(), "--decorate".into()]),
             stdout.to_vec(),
             Vec::new(),
             CommandExit::Code(0),
@@ -5953,7 +5947,9 @@ mod tests {
         let request = ProjectionRequest::for_target(&run, ProjectionTarget::ModelContext, &policy);
         let result = GitLogProjector.project(request, &store).unwrap();
         assert!(result.text.contains("abc1234"));
-        assert!(result.text.contains("(HEAD -> main, origin/main, tag: v1.0)"));
+        assert!(result
+            .text
+            .contains("(HEAD -> main, origin/main, tag: v1.0)"));
         assert!(result.text.contains("Release v1.0"));
     }
 

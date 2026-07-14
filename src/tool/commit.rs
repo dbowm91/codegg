@@ -1,73 +1,56 @@
 use async_trait::async_trait;
 use futures::StreamExt;
 use serde_json::json;
-use tokio::process::Command;
+use std::path::PathBuf;
 
 use crate::config::schema::Config;
 use crate::error::ToolError;
+use crate::git_mutation_projector::project_mutation;
+use crate::git_mutations::{CommitSelection, GitEnvPolicy, GitMutationError, GitMutationExecutor};
+use crate::git_mutations_ops::{commit_with_selection, stage_all, stage_paths};
 use crate::provider::{
     register_builtin_with_config, ChatEvent, ChatRequest, ContentPart, Message, ProviderRegistry,
 };
 use crate::tool::{Tool, ToolCategory};
 
+/// Native tool that creates a commit. Refactored around the typed
+/// `CommitSelection` enum so the model can explicitly request
+/// "stage all", "stage paths", or "use the index as-is" without
+/// duplicating Git subprocess logic.
 pub struct CommitTool {
-    workdir: std::path::PathBuf,
+    workdir: PathBuf,
+    run_store: Option<std::sync::Arc<dyn codegg_core::run_store::RunStore>>,
 }
 
 impl CommitTool {
     pub fn new() -> Self {
         Self {
-            workdir: std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+            workdir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            run_store: None,
         }
     }
 
-    pub fn with_workdir(mut self, dir: std::path::PathBuf) -> Self {
+    pub fn with_workdir(mut self, dir: PathBuf) -> Self {
         self.workdir = dir;
         self
     }
 
-    async fn get_diff(&self, all: bool) -> Result<String, ToolError> {
-        // `all` means "stage all changes", so the diff we want is
-        // the staged slice. Otherwise we want HEAD vs working tree
-        // (both staged and unstaged).
-        let mode = if all {
-            egggit::DiffMode::Staged
-        } else {
-            egggit::DiffMode::Head
-        };
-        let diff = egggit::diff_text(&self.workdir, mode)
-            .await
-            .map_err(|e| ToolError::Execution(format!("git diff failed: {e}")))?;
-        if diff.is_empty() {
-            return Err(ToolError::Execution("no changes to commit".to_string()));
-        }
-        Ok(diff)
+    pub fn with_run_store(
+        mut self,
+        store: std::sync::Arc<dyn codegg_core::run_store::RunStore>,
+    ) -> Self {
+        self.run_store = Some(store);
+        self
     }
 
-    async fn stage_all(&self) -> Result<(), ToolError> {
-        let mut cmd = Command::new("git");
-        cmd.env_clear();
-        if let Some(path) = std::env::var_os("PATH") {
-            cmd.env("PATH", path);
-        } else {
-            cmd.env("PATH", "/usr/local/bin:/usr/bin:/bin");
-        }
-        cmd.kill_on_drop(true);
-        let output = cmd
-            .args(["add", "-A"])
-            .current_dir(&self.workdir)
-            .output()
-            .await
-            .map_err(|e| ToolError::Execution(format!("git add failed: {}", e)))?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(ToolError::Execution(format!("git add failed: {}", stderr)));
-        }
-
-        Ok(())
+    /// Build a `GitMutationExecutor` rooted at this tool's workdir.
+    fn executor(&self) -> GitMutationExecutor {
+        GitMutationExecutor::new().with_env_policy(GitEnvPolicy::default())
     }
 
+    /// Generate a commit message from the staged diff via the LLM.
+    /// Message generation is a separate concern from the commit
+    /// itself; this method does not own repository mutation.
     async fn generate_commit_message(&self, diff: &str) -> Result<String, ToolError> {
         let config = Config::load().unwrap_or_default();
         let mut registry = ProviderRegistry::new();
@@ -134,52 +117,23 @@ impl CommitTool {
         Ok(message.to_string())
     }
 
-    async fn run_commit(
-        &self,
-        message: &str,
-        co_authored: bool,
-        amend: bool,
-    ) -> Result<String, ToolError> {
-        let mut args = vec!["commit"];
-
-        let full_message = if co_authored {
-            format!("{}\n\nCo-Authored-By: Codegg AI <codegg@ai>", message)
-        } else {
-            message.to_string()
-        };
-
-        args.push("-m");
-        args.push(&full_message);
-
-        if amend {
-            args.push("--amend");
-        }
-
-        let mut cmd = Command::new("git");
-        cmd.env_clear();
-        if let Some(path) = std::env::var_os("PATH") {
-            cmd.env("PATH", path);
-        } else {
-            cmd.env("PATH", "/usr/local/bin:/usr/bin:/bin");
-        }
-        cmd.kill_on_drop(true);
-        let output = cmd
-            .args(&args)
-            .current_dir(&self.workdir)
-            .output()
+    /// Fetch the staged diff text for the LLM prompt.
+    async fn get_staged_diff(&self) -> Result<String, ToolError> {
+        let diff = egggit::diff_text(&self.workdir, egggit::DiffMode::Staged)
             .await
-            .map_err(|e| ToolError::Execution(format!("git commit failed: {}", e)))?;
+            .map_err(|e| ToolError::Execution(format!("git diff failed: {e}")))?;
+        Ok(diff)
+    }
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-
-        if output.status.success() {
-            Ok(format!("Committed: {}", stdout.trim()))
-        } else {
-            Err(ToolError::Execution(format!(
-                "commit failed: {} {}",
-                stdout, stderr
-            )))
+    /// Map a `GitMutationError` to a `ToolError`.
+    fn map_mutation_err(e: GitMutationError) -> ToolError {
+        match e {
+            GitMutationError::Precondition(s) => ToolError::Execution(format!("precondition: {s}")),
+            GitMutationError::Path(s) => ToolError::Execution(format!("path error: {s}")),
+            GitMutationError::Ref(s) => ToolError::Execution(format!("ref error: {s}")),
+            GitMutationError::Repository(s) => ToolError::Execution(format!("repository: {s}")),
+            GitMutationError::Execution(s) => ToolError::Execution(s),
+            GitMutationError::Timeout(s) => ToolError::Execution(format!("timed out after {s}s")),
         }
     }
 }
@@ -190,6 +144,24 @@ impl Default for CommitTool {
     }
 }
 
+/// Expose the model-facing selection as JSON-friendly variant strings.
+#[derive(Debug, Clone, Copy)]
+enum SelectionKind {
+    AlreadyStaged,
+    StagePaths,
+    StageAll,
+}
+
+impl SelectionKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::AlreadyStaged => "already-staged",
+            Self::StagePaths => "stage-paths",
+            Self::StageAll => "stage-all",
+        }
+    }
+}
+
 #[async_trait]
 impl Tool for CommitTool {
     fn name(&self) -> &str {
@@ -197,16 +169,22 @@ impl Tool for CommitTool {
     }
 
     fn description(&self) -> &str {
-        "Generate a commit message from git diff and commit changes"
+        "Create a git commit. Selection controls staging: already-staged (default), stage-paths, or stage-all. LLM generates the message unless `message` is provided."
     }
 
     fn parameters(&self) -> serde_json::Value {
         json!({
             "type": "object",
             "properties": {
-                "all": {
-                    "type": "boolean",
-                    "description": "Stage all changes before committing (default: false)"
+                "selection": {
+                    "type": "string",
+                    "enum": ["already-staged", "stage-paths", "stage-all"],
+                    "description": "How to select staged content (default: already-staged)"
+                },
+                "paths": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Literal repo-relative paths to stage before committing (only with selection=stage-paths)"
                 },
                 "message": {
                     "type": "string",
@@ -223,6 +201,10 @@ impl Tool for CommitTool {
                 "allow_amend": {
                     "type": "boolean",
                     "description": "Required safety acknowledgement when amend=true"
+                },
+                "allow_empty": {
+                    "type": "boolean",
+                    "description": "Allow creating a commit with no staged changes (default: false)"
                 }
             },
             "required": []
@@ -234,11 +216,21 @@ impl Tool for CommitTool {
     }
 
     async fn execute(&self, input: serde_json::Value) -> Result<String, ToolError> {
-        let all = input["all"].as_bool().unwrap_or(false);
         let amend = input["amend"].as_bool().unwrap_or(false);
         let allow_amend = input["allow_amend"].as_bool().unwrap_or(false);
         let co_authored = input["co_authored"].as_bool().unwrap_or(false);
+        let allow_empty = input["allow_empty"].as_bool().unwrap_or(false);
         let manual_message = input["message"].as_str();
+        let selection_kind = match input["selection"].as_str() {
+            Some("stage-paths") => SelectionKind::StagePaths,
+            Some("stage-all") => SelectionKind::StageAll,
+            Some("already-staged") | None => SelectionKind::AlreadyStaged,
+            Some(other) => {
+                return Err(ToolError::Execution(format!(
+                    "unknown selection '{other}'; expected one of already-staged, stage-paths, stage-all"
+                )));
+            }
+        };
 
         if amend && !allow_amend {
             return Err(ToolError::Execution(
@@ -246,18 +238,158 @@ impl Tool for CommitTool {
             ));
         }
 
-        if all {
-            self.stage_all().await?;
-        }
-
-        let diff = self.get_diff(all || !amend).await?;
+        let selection = match selection_kind {
+            SelectionKind::AlreadyStaged => CommitSelection::AlreadyStaged,
+            SelectionKind::StageAll => CommitSelection::StageAll,
+            SelectionKind::StagePaths => {
+                let paths: Vec<String> = input["paths"]
+                    .as_array()
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_str().map(String::from))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if paths.is_empty() {
+                    return Err(ToolError::Execution(
+                        "selection=stage-paths requires a non-empty paths array".to_string(),
+                    ));
+                }
+                CommitSelection::StagePaths(paths)
+            }
+        };
 
         let message = if let Some(msg) = manual_message {
             msg.to_string()
+        } else if amend {
+            // When amending, default to the previous commit message if not
+            // provided. Fetch it via show.
+            fetch_head_message(&self.workdir).await?
         } else {
+            // For non-amend with StageAll, stage first so get_staged_diff
+            // sees the changes.
+            let needs_paths = match &selection {
+                CommitSelection::StageAll => {
+                    let exec = self.executor();
+                    stage_all(&exec, &self.workdir)
+                        .await
+                        .map_err(Self::map_mutation_err)?;
+                    None
+                }
+                CommitSelection::StagePaths(paths) => Some(paths.clone()),
+                _ => None,
+            };
+            if let Some(paths) = needs_paths {
+                let exec = self.executor();
+                stage_paths(&exec, &self.workdir, paths)
+                    .await
+                    .map_err(Self::map_mutation_err)?;
+            }
+            let diff = self.get_staged_diff().await?;
+            if diff.is_empty() {
+                return Err(ToolError::Execution("no changes to commit".to_string()));
+            }
             self.generate_commit_message(&diff).await?
         };
 
-        self.run_commit(&message, co_authored, amend).await
+        let final_message = if co_authored {
+            format!("{}\n\nCo-Authored-By: Codegg AI <codegg@ai>", message)
+        } else {
+            message
+        };
+
+        let exec = self.executor();
+        let outcome = commit_with_selection(
+            &exec,
+            &self.workdir,
+            selection,
+            &final_message,
+            amend,
+            allow_empty,
+        )
+        .await
+        .map_err(Self::map_mutation_err)?;
+
+        // Project the mutation result into a structured summary.
+        let summary = project_mutation(&outcome.mutation);
+        let mut response = summary;
+
+        // Best-effort persistence to RunStore.
+        let repo_root = crate::git_mutations::resolve_repo_root(&self.workdir)
+            .map(|r| r.as_path().to_path_buf())
+            .unwrap_or_else(|_| self.workdir.clone());
+        let _ = crate::git_run_store::persist_mutation(
+            &self.run_store,
+            &outcome.mutation,
+            &self.workdir,
+            &repo_root,
+            "commit_tool",
+            Some(selection_kind.label().to_string()),
+        )
+        .await;
+        if let Some(oid) = &outcome.created_oid {
+            response.push_str(&format!("\ncreated_oid: {oid}"));
+        }
+        if outcome.amended {
+            response.push_str("\namended: true");
+        }
+        if outcome.empty {
+            response.push_str("\nempty: true");
+        }
+        Ok(response)
+    }
+}
+
+/// Fetch the previous commit's full message via `git log -1 --format=%B`.
+async fn fetch_head_message(workdir: &std::path::Path) -> Result<String, ToolError> {
+    use tokio::process::Command;
+    let mut cmd = Command::new("git");
+    cmd.env_clear();
+    if let Some(path) = std::env::var_os("PATH") {
+        cmd.env("PATH", path);
+    } else {
+        cmd.env("PATH", "/usr/local/bin:/usr/bin:/bin");
+    }
+    cmd.kill_on_drop(true);
+    let output = cmd
+        .args(["log", "-1", "--format=%B"])
+        .current_dir(workdir)
+        .output()
+        .await
+        .map_err(|e| ToolError::Execution(format!("git log failed: {e}")))?;
+    if !output.status.success() {
+        return Err(ToolError::Execution(format!(
+            "git log exited with {:?}",
+            output.status.code()
+        )));
+    }
+    let msg = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if msg.is_empty() {
+        return Err(ToolError::Execution(
+            "amend requested but HEAD has no message to reuse".to_string(),
+        ));
+    }
+    Ok(msg)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn selection_kind_label_round_trip() {
+        assert_eq!(SelectionKind::AlreadyStaged.label(), "already-staged");
+        assert_eq!(SelectionKind::StagePaths.label(), "stage-paths");
+        assert_eq!(SelectionKind::StageAll.label(), "stage-all");
+    }
+
+    #[test]
+    fn map_mutation_err_includes_kind() {
+        let e = GitMutationError::Precondition("no staged changes".to_string());
+        let msg = match e {
+            GitMutationError::Precondition(s) => format!("precondition: {s}"),
+            _ => unreachable!(),
+        };
+        assert!(msg.contains("precondition"), "got: {msg}");
     }
 }

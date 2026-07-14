@@ -5,6 +5,9 @@ use std::time::Duration;
 use tokio::process::Command;
 
 use crate::error::ToolError;
+use crate::git_mutation_projector::project_mutation;
+use crate::git_mutations::{GitEnvPolicy, GitMutationError, GitMutationExecutor};
+use crate::git_mutations_ops as gm_ops;
 use crate::git_service::{GitExecutionService, GitPayload};
 use crate::tool::{Tool, ToolCategory};
 use codegg_git::parse_git_argv;
@@ -12,6 +15,7 @@ use codegg_git::parse_git_argv;
 pub struct GitTool {
     timeout: Duration,
     workdir: PathBuf,
+    run_store: Option<std::sync::Arc<dyn codegg_core::run_store::RunStore>>,
 }
 
 impl GitTool {
@@ -19,6 +23,7 @@ impl GitTool {
         Self {
             timeout: Duration::from_secs(30),
             workdir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            run_store: None,
         }
     }
 
@@ -29,6 +34,14 @@ impl GitTool {
 
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
+        self
+    }
+
+    pub fn with_run_store(
+        mut self,
+        store: std::sync::Arc<dyn codegg_core::run_store::RunStore>,
+    ) -> Self {
+        self.run_store = Some(store);
         self
     }
 
@@ -87,7 +100,7 @@ impl Tool for GitTool {
     }
 
     fn description(&self) -> &str {
-        "Execute git commands and operations. Read-only operations (status, diff, log, show, blame, branch, tag, remote, worktree) return structured results."
+        "Execute git commands and operations. Read-only operations (status, diff, log, show, blame, branch, tag, remote, worktree) return structured results. Mutations may use either the curated `mutation` action or pass a `subcommand` + `args` for raw execution; mutations are routed through a typed executor with snapshot, state-delta, and env hardening."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -96,12 +109,67 @@ impl Tool for GitTool {
             "properties": {
                 "subcommand": {
                     "type": "string",
-                    "description": "Git subcommand (e.g., status, log, diff, branch, add, commit, checkout)"
+                    "description": "Git subcommand (e.g., status, log, diff, branch, add, commit, checkout). May be empty when using the typed mutation API."
                 },
                 "args": {
                     "type": "array",
                     "items": {"type": "string"},
                     "description": "Arguments to pass to the git subcommand"
+                },
+                "mutation": {
+                    "type": "string",
+                    "enum": [
+                        "stage_paths", "stage_all", "stage_tracked",
+                        "unstage_paths", "unstage_all",
+                        "commit", "commit_amend",
+                        "branch_create", "branch_switch", "branch_create_and_switch", "branch_delete",
+                        "detach",
+                        "restore_worktree", "restore_staged", "restore_both",
+                        "stash_push", "stash_apply", "stash_pop", "stash_drop",
+                        "merge", "rebase", "cherry_pick", "revert", "abort"
+                    ],
+                    "description": "Typed mutation action. Preferred over raw subcommand for local mutations."
+                },
+                "paths": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Repo-relative paths (used by stage_paths, unstage_paths, restore_*)"
+                },
+                "name": {
+                    "type": "string",
+                    "description": "Branch, tag, or stash name (used by branch_*, tag_*, stash_*)"
+                },
+                "target": {
+                    "type": "string",
+                    "description": "Revision (HEAD~1, branch, sha, etc.) for switch / detach / cherry-pick / revert / rebase from / merge"
+                },
+                "rev": {
+                    "type": "string",
+                    "description": "Revision expression for cherry-pick or revert"
+                },
+                "from": {
+                    "type": "string",
+                    "description": "Revision expression for merge (default current)"
+                },
+                "message": {
+                    "type": "string",
+                    "description": "Commit/merge message"
+                },
+                "no_edit": {
+                    "type": "boolean",
+                    "description": "Skip editor / keep conflict state for revert"
+                },
+                "force": {
+                    "type": "boolean",
+                    "description": "Force flag for branch_delete (lowercase -d → -D)"
+                },
+                "include_untracked": {
+                    "type": "boolean",
+                    "description": "Pass --include-untracked to stash push"
+                },
+                "keep_index": {
+                    "type": "boolean",
+                    "description": "Pass --keep-index to stash push"
                 },
                 "workdir": {
                     "type": "string",
@@ -112,7 +180,7 @@ impl Tool for GitTool {
                     "description": "Timeout in seconds (default: 30)"
                 }
             },
-            "required": ["subcommand"]
+            "required": []
         })
     }
 
@@ -121,19 +189,6 @@ impl Tool for GitTool {
     }
 
     async fn execute(&self, input: serde_json::Value) -> Result<String, ToolError> {
-        let subcommand = input["subcommand"]
-            .as_str()
-            .ok_or_else(|| ToolError::Execution("missing 'subcommand' parameter".to_string()))?;
-
-        let args: Vec<String> = input["args"]
-            .as_array()
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                    .collect()
-            })
-            .unwrap_or_default();
-
         let workdir = input["workdir"]
             .as_str()
             .map(PathBuf::from)
@@ -149,11 +204,32 @@ impl Tool for GitTool {
             )));
         }
 
+        // Typed mutation API — preferred over raw argv for local mutations.
+        if let Some(mutation) = input["mutation"].as_str() {
+            return self
+                .dispatch_mutation(mutation, &input, &workdir, timeout_secs)
+                .await;
+        }
+
+        let subcommand = input["subcommand"]
+            .as_str()
+            .ok_or_else(|| ToolError::Execution("missing 'subcommand' parameter".to_string()))?;
+
+        let args: Vec<String> = input["args"]
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default();
+
         // Try structured read for read-only operations
         if Self::is_read_only(subcommand) {
             let tool = GitTool {
                 timeout,
                 workdir: workdir.clone(),
+                run_store: self.run_store.clone(),
             };
             if let Some(result) = tool.try_structured_read(subcommand, &args).await {
                 return result;
@@ -211,6 +287,192 @@ impl Tool for GitTool {
         ));
 
         Ok(result)
+    }
+}
+
+impl GitTool {
+    /// Dispatch a typed mutation action. All branches run through the
+    /// shared `GitMutationExecutor`, which captures snapshots, computes
+    /// state deltas, and applies env hardening.
+    async fn dispatch_mutation(
+        &self,
+        mutation: &str,
+        input: &serde_json::Value,
+        workdir: &std::path::Path,
+        timeout_secs: u64,
+    ) -> Result<String, ToolError> {
+        let exec = GitMutationExecutor::new()
+            .with_env_policy(GitEnvPolicy::default())
+            .with_timeout(Duration::from_secs(timeout_secs.max(1)));
+        let paths = || -> Vec<String> {
+            input["paths"]
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        let name = input["name"].as_str();
+        let target = input["target"].as_str();
+        let rev = input["rev"].as_str();
+        let from = input["from"].as_str();
+        let _ = from; // reserved for future merge --from support
+        let message = input["message"].as_str();
+        let no_edit = input["no_edit"].as_bool().unwrap_or(false);
+        let force = input["force"].as_bool().unwrap_or(false);
+        let include_untracked = input["include_untracked"].as_bool().unwrap_or(false);
+        let keep_index = input["keep_index"].as_bool().unwrap_or(false);
+
+        let result = match mutation {
+            "stage_paths" => gm_ops::stage_paths(&exec, workdir, paths()).await,
+            "stage_all" => gm_ops::stage_all(&exec, workdir).await,
+            "stage_tracked" => gm_ops::stage_tracked(&exec, workdir).await,
+            "unstage_paths" => gm_ops::unstage_paths(&exec, workdir, paths()).await,
+            "unstage_all" => gm_ops::unstage_all(&exec, workdir).await,
+            "commit" => {
+                let sel = if !paths().is_empty() {
+                    crate::git_mutations::CommitSelection::StagePaths(paths())
+                } else {
+                    crate::git_mutations::CommitSelection::StageAll
+                };
+                let msg = message
+                    .ok_or_else(|| {
+                        ToolError::Execution("commit requires 'message' parameter".to_string())
+                    })?
+                    .to_string();
+                gm_ops::commit_with_selection(
+                    &exec,
+                    workdir,
+                    sel,
+                    &msg,
+                    false,
+                    input["allow_empty"].as_bool().unwrap_or(false),
+                )
+                .await
+                .map(|o| o.mutation)
+            }
+            "commit_amend" => {
+                let msg = message.unwrap_or("HEAD");
+                gm_ops::commit_with_selection(
+                    &exec,
+                    workdir,
+                    crate::git_mutations::CommitSelection::AlreadyStaged,
+                    msg,
+                    true,
+                    input["allow_empty"].as_bool().unwrap_or(false),
+                )
+                .await
+                .map(|o| o.mutation)
+            }
+            "branch_create" => {
+                let n = name.ok_or_else(|| branch_param("name"))?;
+                gm_ops::branch_create(&exec, workdir, n, target, force).await
+            }
+            "branch_switch" => {
+                let n = name.ok_or_else(|| branch_param("name"))?;
+                gm_ops::switch_branch(&exec, workdir, n, force).await
+            }
+            "branch_create_and_switch" => {
+                let n = name.ok_or_else(|| branch_param("name"))?;
+                gm_ops::create_and_switch(&exec, workdir, n, target).await
+            }
+            "branch_delete" => {
+                let n = name.ok_or_else(|| branch_param("name"))?;
+                gm_ops::branch_delete(&exec, workdir, n, force).await
+            }
+            "detach" => {
+                let t = target.ok_or_else(|| branch_param("target"))?;
+                gm_ops::detach_at(&exec, workdir, t).await
+            }
+            "restore_worktree" => gm_ops::restore_worktree(&exec, workdir, paths(), target).await,
+            "restore_staged" => gm_ops::restore_staged(&exec, workdir, paths()).await,
+            "restore_both" => gm_ops::restore_both(&exec, workdir, paths(), target).await,
+            "stash_push" => {
+                gm_ops::stash_push(&exec, workdir, message, include_untracked, Vec::new()).await
+            }
+            "stash_apply" => {
+                let n = name.unwrap_or("stash@{0}");
+                gm_ops::stash_apply(&exec, workdir, Some(n), keep_index).await
+            }
+            "stash_pop" => {
+                let n = name.unwrap_or("stash@{0}");
+                gm_ops::stash_pop(&exec, workdir, Some(n), keep_index).await
+            }
+            "stash_drop" => {
+                let n = name.ok_or_else(|| branch_param("name"))?;
+                gm_ops::stash_drop(&exec, workdir, n).await
+            }
+            "merge" => {
+                let revs = match target {
+                    Some(t) => vec![t.to_string()],
+                    None => vec!["HEAD".to_string()],
+                };
+                gm_ops::merge(
+                    &exec,
+                    workdir,
+                    revs,
+                    input["no_ff"].as_bool().unwrap_or(false),
+                    None,
+                )
+                .await
+            }
+            "rebase" => {
+                let upstream = target.map(String::from);
+                gm_ops::rebase(&exec, workdir, upstream.as_deref(), upstream.as_deref()).await
+            }
+            "cherry_pick" => {
+                let revs = rev
+                    .map(|r| vec![r.to_string()])
+                    .or_else(|| target.map(|t| vec![t.to_string()]))
+                    .ok_or_else(|| branch_param("rev"))?;
+                gm_ops::cherry_pick(&exec, workdir, revs).await
+            }
+            "revert" => {
+                let revs = rev
+                    .map(|r| vec![r.to_string()])
+                    .or_else(|| target.map(|t| vec![t.to_string()]))
+                    .ok_or_else(|| branch_param("rev"))?;
+                gm_ops::revert(&exec, workdir, revs, no_edit).await
+            }
+            "abort" => gm_ops::abort_in_progress(&exec, workdir).await,
+            other => {
+                return Err(ToolError::Execution(format!(
+                    "unknown mutation action: {other}"
+                )))
+            }
+        }
+        .map_err(map_mutation_err)?;
+        // Best-effort persistence to RunStore.
+        let repo_root = crate::git_mutations::resolve_repo_root(workdir)
+            .map(|r| r.as_path().to_path_buf())
+            .unwrap_or_else(|_| workdir.to_path_buf());
+        let _ = crate::git_run_store::persist_mutation(
+            &self.run_store,
+            &result,
+            workdir,
+            &repo_root,
+            "git_native",
+            Some(mutation.to_string()),
+        )
+        .await;
+        Ok(project_mutation(&result))
+    }
+}
+
+fn branch_param(label: &str) -> ToolError {
+    ToolError::Execution(format!("mutation requires '{label}' parameter"))
+}
+
+fn map_mutation_err(e: GitMutationError) -> ToolError {
+    match e {
+        GitMutationError::Precondition(s) => ToolError::Execution(format!("precondition: {s}")),
+        GitMutationError::Path(s) => ToolError::Execution(format!("path: {s}")),
+        GitMutationError::Ref(s) => ToolError::Execution(format!("ref: {s}")),
+        GitMutationError::Repository(s) => ToolError::Execution(format!("repository: {s}")),
+        GitMutationError::Execution(s) => ToolError::Execution(s),
+        GitMutationError::Timeout(s) => ToolError::Execution(format!("timed out after {s}s")),
     }
 }
 

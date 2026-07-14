@@ -358,7 +358,12 @@ impl ToolRegistry {
             crate::python_script::tool::PythonScriptTool::new()
         };
         registry.register(python_tool);
-        registry.register(crate::tool::git::GitTool::default());
+        let git_tool = if let Some(ref store) = options.run_store {
+            crate::tool::git::GitTool::default().with_run_store(store.clone())
+        } else {
+            crate::tool::git::GitTool::default()
+        };
+        registry.register(git_tool);
 
         // --- LSP: consult resolved backend config. ---
         let lsp_backend = options
@@ -420,7 +425,12 @@ impl ToolRegistry {
             }
         }
 
-        registry.register(crate::tool::commit::CommitTool::new());
+        let commit_tool = if let Some(ref store) = options.run_store {
+            crate::tool::commit::CommitTool::new().with_run_store(store.clone())
+        } else {
+            crate::tool::commit::CommitTool::new()
+        };
+        registry.register(commit_tool);
 
         // --- Security: consult resolved backend config. ---
         let sec_backend = options

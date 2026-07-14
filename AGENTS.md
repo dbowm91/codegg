@@ -507,9 +507,10 @@ CI runs on push/PR to dev/main: `agent-assets` → `fmt` → `check` → `clippy
 ### Git
 
 - **GitExecutionService is the canonical read executor**: `src/git_service.rs` provides `GitExecutionService` which delegates to `egggit` for structured parsing and falls back to subprocess execution for mutations. All structured git reads (status, diff, log, blame, refs, branches, tags, remotes) flow through this service. Downstream consumers should consume `GitPayload` variants, not raw stdout.
-- **egggit is read-only, mutations stay in Codegg**: `egggit` modules (`status_v2`, `log`, `blame`, `refs`, `diff`, `worktree`) never mutate repository state. Commit, checkout, branch create/delete, stash push/pop, and all other mutations are handled by `GitExecutionService` subprocess fallback under the permission flow.
+- **egggit is read-only, mutations stay in Codegg**: `egggit` modules (`status_v2`, `log`, `blame`, `refs`, `diff`, `worktree`) never mutate repository state. Commit, checkout, branch create/delete, stash push/pop, and all other mutations are handled by the `git_mutations` executor (`src/git_mutations.rs`) under the permission flow.
 - **status_v2 replaces raw status parsing**: `status_v2::rich_status()` returns `RichRepoStatus` with branch state, ahead/behind, staged/unstaged/untracked/conflict entries. TUI sidebar and prompt context consume this directly. The legacy `status::RepoStatus` remains available for backward compatibility.
-- **GitTool structured-first execution**: `src/tool/git.rs` attempts structured execution via `try_structured_read()` for all read-only subcommands before falling back to raw subprocess output. Mutations always use raw execution.
+- **GitTool structured-first execution**: `src/tool/git.rs` attempts structured execution via `try_structured_read()` for all read-only subcommands before falling back to raw subprocess output.
+- **Phase D: typed mutations with state deltas**: `src/tool/git.rs` accepts a `mutation` action (`stage_paths`, `stage_all`, `commit`, `branch_create`, `merge`, `rebase`, `cherry_pick`, `revert`, `abort`, etc.). All mutations route through `GitMutationExecutor` in `src/git_mutations.rs`, which captures `RepoSnapshot` before/after, computes `StateDelta`, pins env (`GIT_TERMINAL_PROMPT=0`, `GIT_EDITOR=true`, `GIT_SEQUENCE_EDITOR=true`), and persists to `RunStore` with `RunKind::GitMutation`, `PlannedBackend::Git`, `RunOwnership::DelegatedBackend`. See `architecture/git.md` Phase D section. The raw `subcommand` path is still available for passthrough.
 
 ### Human Shell
 

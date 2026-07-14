@@ -224,6 +224,7 @@ pub struct ProjectionHints {
 }
 
 /// The unified git execution service.
+#[derive(Clone)]
 pub struct GitExecutionService {
     timeout: Duration,
 }
@@ -280,9 +281,7 @@ impl GitExecutionService {
             }
             GitOperation::WorktreeList => self.execute_worktrees(repository_root).await,
             GitOperation::StashList => self.execute_stash_list(repository_root).await,
-            GitOperation::Show { rev } => {
-                self.execute_show(rev.as_str(), repository_root).await
-            }
+            GitOperation::Show { rev } => self.execute_show(rev.as_str(), repository_root).await,
             // Fallback: raw subprocess execution for mutations and unsupported
             _ => self.execute_raw(operation, repository_root).await,
         }
@@ -851,10 +850,10 @@ impl Default for GitExecutionService {
 }
 
 /// Raw captured output from a git subprocess.
-struct RawGitOutput {
-    stdout: String,
-    stderr: String,
-    exit_code: i32,
+pub(crate) struct RawGitOutput {
+    pub stdout: String,
+    pub stderr: String,
+    pub exit_code: i32,
 }
 
 // ── Output parsing helpers ───────────────────────────────────────
@@ -1014,7 +1013,10 @@ fn parse_hunk_header(line: &str) -> Option<(u32, u32, u32, u32)> {
     let (old_range, new_range) = range_part.split_once(' ')?;
 
     let parse_range = |s: &str| -> Option<(u32, u32)> {
-        let s = s.strip_prefix('-').or_else(|| s.strip_prefix('+')).unwrap_or(s);
+        let s = s
+            .strip_prefix('-')
+            .or_else(|| s.strip_prefix('+'))
+            .unwrap_or(s);
         match s.split_once(',') {
             Some((start_str, count_str)) => {
                 let start: u32 = start_str.parse().ok()?;
@@ -1269,9 +1271,7 @@ mod tests {
                     staged: false,
                     stat: false,
                     name_only: false,
-                    base_ref: Some(
-                        codegg_git::ref_name::RevisionExpr::new("HEAD~1").unwrap(),
-                    ),
+                    base_ref: Some(codegg_git::ref_name::RevisionExpr::new("HEAD~1").unwrap()),
                     paths: vec![],
                 },
                 dir.path(),
@@ -1285,7 +1285,10 @@ mod tests {
                 assert_eq!(diff.files.len(), 1);
                 let file = &diff.files[0];
                 assert_eq!(file.kind, "renamed");
-                assert!(file.old_path.is_some(), "old_path should be set for renames");
+                assert!(
+                    file.old_path.is_some(),
+                    "old_path should be set for renames"
+                );
             }
             other => panic!("expected DiffResult, got {:?}", other),
         }

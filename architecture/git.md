@@ -170,3 +170,51 @@ The TUI Git sidebar now consumes `RichRepoStatus` from `status_v2` rather than p
 331 tests across `parser`, `operation`, `risk`, `path`, `ref_name`, and `render` modules. Parser tests include property-based testing via `proptest`. Risk classification tests verify each variant produces the expected `RiskSet`. Path/ref tests exercise rejection of all invalid input categories.
 
 Phase C adds dedicated test modules for `status_v2`, `log`, `blame`, and `refs` in `egggit`, plus `git_service` tests in the root crate covering `GitExecutionService` and `GitPayload` construction.
+
+## Phase D — Local Mutation Executor
+
+Phase D adds typed local mutation execution on top of the read-only infrastructure from Phases A–C. Mutating Git operations no longer shell out to ad-hoc argv; they flow through `src/git_mutations.rs` and `src/git_mutations_ops.rs`, which capture pre/post snapshots, compute a `StateDelta`, pin environment variables, and route runs through `RunStore` for audit and `can_rerun` support.
+
+### Mutation framework (`src/git_mutations.rs`)
+
+| Type | Purpose |
+|------|---------|
+| `GitEnvPolicy` | Pinned env vars cleared/forced for every `git` invocation (`GIT_TERMINAL_PROMPT=0`, `GIT_EDITOR=true`, `GIT_SEQUENCE_EDITOR=true`, plus `PATH` from host). |
+| `RepoSnapshot` | Captured state from `git status --porcelain=v2 -z --branch` — head, branch, detached flag, counts of staged/unstaged/untracked/conflicted. |
+| `StateDelta` | Diff between two snapshots plus computed facts (commits created, refs created/deleted, paths staged/unstaged, conflicts). |
+| `MutationOutcome` | Completed / NoOp / FastForward / Conflict / Rejected (with reason). |
+| `MutationResult` | Full record: operation, subcommand label, delta, outcome, stdout/stderr, exit code, duration. |
+| `CommitSelection` | `AlreadyStaged \| StagePaths(Vec<String>) \| StageAll` (defaultable). |
+| `GitMutationExecutor` | The runner. Captures before snapshot, renders argv via `codegg-git::render_argv`, applies `GitEnvPolicy`, runs the command, parses stderr for conflict hints, captures after snapshot, computes delta, classifies outcome. |
+
+### Typed helpers (`src/git_mutations_ops.rs`)
+
+Typed wrappers over `GitMutationExecutor`:
+
+* `stage_paths`, `stage_all`, `stage_tracked`
+* `unstage_paths`, `unstage_all`
+* `commit_with_selection` → `CommitOutcome { mutation, created_oid, amended, empty }`
+* `branch_create`, `switch_branch`, `create_and_switch`, `detach_at`, `branch_delete`
+* `restore_worktree`, `restore_staged`, `restore_both` (with optional `<source>`)
+* `stash_push` (message, include-untracked, paths), `stash_apply`, `stash_pop`, `stash_drop`
+* `merge` (revisions, no-ff, allowlisted strategies), `rebase`, `cherry_pick`, `revert`, `abort_in_progress`
+* `tag_delete`
+* `describe_for_permission` produces a one-line summary suitable for permission prompts.
+
+### Projector (`src/git_mutation_projector.rs`)
+
+`project_mutation(&MutationResult) -> String` formats a structured summary: operation label, before/after snapshot, commits/refs created, paths affected, conflicts, recovery hints, duration.
+
+### Tool integration
+
+* **GitTool** (`src/tool/git.rs`) gains a typed `mutation` action with all variants above (e.g., `"stage_paths"`, `"branch_create"`, `"merge"`, `"revert"`, `"abort"`) plus the existing raw `subcommand` path. Mutations are routed through `GitExecutionService` via `git_mutations_ops` and persisted to `RunStore` with `RunKind::GitMutation`, `PlannedBackend::Git`, `ActualBackend::Git`, `RunOwnership::DelegatedBackend`.
+* **CommitTool** (`src/tool/commit.rs`) refactored onto `commit_with_selection` with the new `selection` parameter (`already-staged` default, `stage-paths`, `stage-all`). Stage operations for `stage-paths`/`stage-all` go through `git_mutations_ops::stage_paths` / `stage_all` before LLM-generated messages are produced.
+* **ReviewTool** (`src/tool/review.rs`) refactored off `egggit::diff_text` and onto `GitExecutionService::execute` returning a typed `GitPayload::DiffText | DiffSummary | DiffResult`.
+
+### RunStore integration (`src/git_run_store.rs`)
+
+`persist_mutation(store, &MutationResult, workdir, repo_root, backend_family, detail) -> Option<RunId>` writes a `RunDraft { kind: RunKind::GitMutation, ... }` with stdout/stderr artifacts (model-unsafe), state-delta JSON (model-safe), structured summary JSON (model-safe), rerun descriptor carrying `render_argv(&operation)`, and a `RunCompletion` mapping `MutationOutcome::Conflict` and non-zero exits to `RunStatus::Failed` (with conflicts surfaced through `MutationResult.delta.conflicts`). Failures are logged at WARN level and never block the mutation itself.
+
+### Tests
+
+`tests/git_mutations_integration.rs` covers stage/unstage, commit (normal + amend + empty), branch create/switch/delete (with refuse-current), stash push/apply, merge (fast-forward and conflict), rebase, cherry-pick, revert, restore, env-policy (no `GIT_EDITOR` leakage), and projector summary formatting. Tests skip gracefully when `git` is unavailable so CI on minimal containers still passes. 12 tests currently; full suite remains green (7015 tests workspace-wide).

@@ -1,14 +1,18 @@
 use async_trait::async_trait;
 use futures::StreamExt;
 use serde_json::json;
+use std::fmt::Write as _;
 
 use crate::agent::EMERGENCY_DEFAULT_MODEL;
 use crate::config::schema::Config;
 use crate::error::ToolError;
+use crate::git_service::{DiffFilePayload, DiffResultPayload, GitExecutionService, GitPayload};
 use crate::provider::{
     register_builtin_with_config, ChatEvent, ChatRequest, ContentPart, Message, ProviderRegistry,
 };
 use crate::tool::{Tool, ToolCategory};
+
+use codegg_git::GitOperation;
 
 pub struct ReviewTool {
     workdir: std::path::PathBuf,
@@ -22,18 +26,50 @@ impl ReviewTool {
     }
 
     async fn get_diff(&self, staged: bool) -> Result<String, ToolError> {
-        let mode = if staged {
-            egggit::DiffMode::Staged
+        let svc = GitExecutionService::new();
+        let operation = if staged {
+            GitOperation::DiffStaged {
+                stat: false,
+                name_only: false,
+                paths: Vec::new(),
+            }
         } else {
-            egggit::DiffMode::Head
+            GitOperation::Diff {
+                staged: false,
+                stat: false,
+                name_only: false,
+                base_ref: None,
+                paths: Vec::new(),
+            }
         };
-        let diff = egggit::diff_text(&self.workdir, mode)
+        let result = svc
+            .execute(&operation, &self.workdir)
             .await
             .map_err(|e| ToolError::Execution(format!("git diff failed: {e}")))?;
-        if diff.is_empty() {
+        // Prefer the typed DiffText payload; fall back to stdout when the
+        // service returns a parsed-only payload (DiffSummary/DiffResult).
+        let text = match result.payload {
+            Some(GitPayload::DiffText(text)) => text,
+            Some(GitPayload::DiffResult(diff)) => {
+                // Render a textual representation from parsed fields.
+                render_structured_diff(&diff)
+            }
+            Some(GitPayload::DiffSummary(summary)) => {
+                let mut s = format!(
+                    "{} files changed, {} insertions(+), {} deletions(-)\n",
+                    summary.files_changed, summary.insertions, summary.deletions
+                );
+                for f in &summary.files {
+                    s.push_str(&format!("  {} {}\n", f.kind, f.path));
+                }
+                s
+            }
+            _ => result.stdout,
+        };
+        if text.trim().is_empty() {
             return Err(ToolError::Execution("no changes to review".to_string()));
         }
-        Ok(diff)
+        Ok(text)
     }
 
     async fn analyze_diff(&self, diff: &str) -> Result<String, ToolError> {
@@ -110,6 +146,22 @@ impl Default for ReviewTool {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Render a structured diff result as plain text for LLM consumption.
+fn render_structured_diff(diff: &DiffResultPayload) -> String {
+    let mut out = String::new();
+    let _ = writeln!(
+        out,
+        "{} files changed, {} insertions(+), {} deletions(-)",
+        diff.files.len(),
+        diff.total_insertions,
+        diff.total_deletions
+    );
+    for DiffFilePayload { path, .. } in &diff.files {
+        let _ = writeln!(out, "  {path}");
+    }
+    out
 }
 
 #[async_trait]
