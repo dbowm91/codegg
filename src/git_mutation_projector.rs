@@ -181,6 +181,64 @@ pub fn project_destructive_mutation(result: &MutationResult) -> String {
     out
 }
 
+/// Format a recovery operation summary (continue/abort/skip).
+///
+/// Highlights the operation-aware recovery semantics, the legal
+/// recovery actions that remain available after this one completed,
+/// and a one-line next-step hint tailored to the outcome.
+pub fn project_recovery(result: &MutationResult, action: &str, family: &str) -> String {
+    let mut out = String::new();
+    let _ = writeln!(
+        out,
+        "git recover ({action}) — operation: {family} — {}",
+        result.outcome.label()
+    );
+    let _ = writeln!(
+        out,
+        "  before: HEAD={} branch={} (conflicts={})",
+        short(&result.delta.before.head),
+        result.delta.before.branch,
+        result.delta.before.conflicted_count
+    );
+    let _ = writeln!(
+        out,
+        "  after:  HEAD={} branch={} (conflicts={})",
+        short(&result.delta.after.head),
+        result.delta.after.branch,
+        result.delta.after.conflicted_count
+    );
+    let next_label = match &result.outcome {
+        MutationOutcome::Completed => match action {
+            "abort" => "operation aborted; repository back to clean state",
+            "continue" => "operation continued cleanly",
+            "skip" => "step skipped; operation advanced",
+            _ => "operation completed",
+        },
+        MutationOutcome::NoOp => "no action taken (state already aligned with request)",
+        MutationOutcome::Conflict => {
+            "still in progress — resolve conflict markers, \
+            stage resolutions with `git add <path>`, then re-run `recover: continue`"
+        }
+        MutationOutcome::FastForward { .. } => "operation advanced HEAD",
+        MutationOutcome::Rejected { reason } => {
+            let _ = writeln!(out, "  rejected: {reason}");
+            "recovery rejected by policy or git"
+        }
+    };
+    let _ = writeln!(out, "  next: {next_label}");
+    if result.exit_code != 0 {
+        let _ = writeln!(out, "  exit code: {}", result.exit_code);
+    }
+    if !result.success && !result.stderr.is_empty() {
+        let trimmed = result.stderr.trim();
+        if !trimmed.is_empty() {
+            let _ = writeln!(out, "  stderr: {}", one_line(trimmed));
+        }
+    }
+    let _ = writeln!(out, "  duration: {} ms", result.duration_ms);
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -297,5 +355,35 @@ mod tests {
         assert!(summary.contains("git reset"));
         assert!(summary.contains("destructive:"));
         assert!(summary.contains("git reflog"));
+    }
+
+    #[test]
+    fn recovery_projector_includes_action_and_family() {
+        let r = fake_result();
+        let summary = project_recovery(&r, "abort", "merge");
+        assert!(summary.contains("git recover (abort)"));
+        assert!(summary.contains("operation: merge"));
+        assert!(summary.contains("next:"));
+    }
+
+    #[test]
+    fn recovery_projector_continue_with_conflict_suggests_resolve() {
+        let mut r = fake_result();
+        r.outcome = MutationOutcome::Conflict;
+        r.success = false;
+        r.exit_code = 1;
+        r.delta.after.conflicted_count = 1;
+        let summary = project_recovery(&r, "continue", "merge");
+        assert!(summary.contains("conflicts=1"));
+        assert!(summary.contains("resolve conflict markers"));
+        assert!(summary.contains("recover: continue"));
+    }
+
+    #[test]
+    fn recovery_projector_abort_completed_message() {
+        let r = fake_result();
+        let summary = project_recovery(&r, "abort", "rebase");
+        assert!(summary.contains("aborted"));
+        assert!(summary.contains("clean state"));
     }
 }

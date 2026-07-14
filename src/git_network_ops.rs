@@ -45,7 +45,8 @@ use crate::git_network_policy::{redact_url_credentials, NETWORK_ALLOWED_ENV_VARS
 pub struct NetworkEnvPolicy {
     /// Base local-mutation policy.
     pub base: GitEnvPolicy,
-}impl NetworkEnvPolicy {
+}
+impl NetworkEnvPolicy {
     /// Build a `Command` from argv and repository root with the
     /// network policy applied. The caller receives the `Command` with
     /// `args` and `current_dir` already set.

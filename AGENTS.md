@@ -115,8 +115,11 @@ cargo test -p egggit status_v2
 cargo test -p egggit log
 cargo test -p egggit blame
 cargo test -p egggit refs
+cargo test -p egggit operation_state
+cargo test -p egggit conflict
 cargo test -p codegg git_service
 cargo test -p codegg-git
+cargo test --test git_recovery_integration
 cargo test -p egglsp
 
 # TUI render regression tests (headless, no terminal needed)
@@ -512,6 +515,7 @@ CI runs on push/PR to dev/main: `agent-assets` → `fmt` → `check` → `clippy
 - **GitTool structured-first execution**: `src/tool/git.rs` attempts structured execution via `try_structured_read()` for all read-only subcommands before falling back to raw subprocess output.
 - **Phase D: typed mutations with state deltas**: `src/tool/git.rs` accepts a `mutation` action (`stage_paths`, `stage_all`, `commit`, `branch_create`, `merge`, `rebase`, `cherry_pick`, `revert`, `abort`, etc.). All mutations route through `GitMutationExecutor` in `src/git_mutations.rs`, which captures `RepoSnapshot` before/after, computes `StateDelta`, pins env (`GIT_TERMINAL_PROMPT=0`, `GIT_EDITOR=true`, `GIT_SEQUENCE_EDITOR=true`), and persists to `RunStore` with `RunKind::GitMutation`, `PlannedBackend::Git`, `RunOwnership::DelegatedBackend`. See `architecture/git.md` Phase D section. The raw `subcommand` path is still available for passthrough.
 - **Phase E: network, configuration, destructive operations**: `src/git_network_policy.rs` provides `NetworkEnvPolicy` for env hardening, `classify_network_failure()` for stderr classification, and `redact_url_credentials()` for sanitizing remote URLs before they reach the persistence layer. `src/git_network_ops.rs` adds typed helpers for `fetch`/`pull`/`push`/`remote_*`/`config_*`/`reset_*`/`clean_preview`/`clean`. All Phase E mutations are exposed as new `mutation` action entries in `src/tool/git.rs` and persist to RunStore with `RunKind::GitMutation`. `PushForce::Force` and `CleanRequest::is_broad()` are tagged destructive and rejected by tool-side policy (`ToolError::Execution`). Config keys are gated by `CONFIG_KEY_ALLOWLIST` and `CONFIG_DENIED_KEY_PATTERNS` (denies `credential.*`, `http.*`, `url.*`, `core.gitProxy`); global-only keys (`user.*`, `gpg.format`) are rejected when `scope=local`. See `architecture/git.md` Phase E section.
+- **Phase F: conflicts, recovery, ergonomics, closure**: `crates/egggit/src/operation_state.rs` exposes `RepositoryOperationState` (eight families: merge, rebase, cherry-pick, revert, bisect, apply-mailbox, sequencer, unknown) plus `RecoveryAction::{Continue, Abort, Skip}` with operation-aware availability checks. `crates/egggit/src/conflict.rs` defines typed `ConflictEntry`, `ConflictKind`, `ConflictShape`, `ConflictReport` (no auto-resolve — agents edit markers, stage with `mutation: "stage_paths"`, then recover). `src/git_recovery.rs` exposes `continue_in_progress`, `abort_in_progress_typed`, `skip_in_progress` that detect state, dispatch the correct typed `GitOperation`, refuse cross-operation misuse, and persist via `git_run_store::persist_recovery` (RunKind::GitMutation, backend.detail = `"recover:<action>"`). The `git` tool gains `operation_state` (typed state probe) and `recover` (continue|abort|skip) parameters, both persisted to RunStore. TUI sidebar (`src/tui/commands/git_sidebar.rs` + `src/tui/app/state/session.rs`) caches `operation_state_label`, `available_actions`, and `conflicted_paths` from the typed probe. `project_recovery()` in `src/git_mutation_projector.rs` formats the result. Agent prompts (`assets/prompts/agents/general.md`) now carry Phase F git workflow guidance. Schema snapshot tests in `tool::git::schema_tests` pin mutation enum, recover enum, and description. See `architecture/git.md` Phase F section.
 
 ### Human Shell
 

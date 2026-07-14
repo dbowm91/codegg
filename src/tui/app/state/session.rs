@@ -115,6 +115,16 @@ pub struct GitSidebarInfo {
     pub conflicted_count: usize,
     pub ahead: Option<i32>,
     pub behind: Option<i32>,
+    /// Active operation family (`"merge"`, `"rebase"`, `"cherry-pick"`,
+    /// `"revert"`, `"bisect"`, `"apply-mailbox"`, `"sequencer"`,
+    /// `"unknown"`, or `None`).
+    pub operation_state_label: Option<String>,
+    /// Legal recovery actions for the current operation state
+    /// (e.g. `["continue", "abort"]`).
+    pub available_actions: Vec<String>,
+    /// Conflicted paths from the typed conflict model. Empty when not
+    /// in a conflicted state.
+    pub conflicted_paths: Vec<String>,
 }
 
 /// Cached sidebar git metadata. Stale generations are dropped at apply
@@ -135,6 +145,13 @@ pub struct GitSidebarState {
     pub loading: bool,
     pub error: Option<String>,
     pub generation: u64,
+    /// Active operation family (Phase F). `None` when the repo is clean.
+    pub operation_state_label: Option<String>,
+    /// Legal recovery actions for the active operation.
+    pub available_actions: Vec<String>,
+    /// Conflicted paths from the typed conflict model. Empty when not
+    /// in a conflicted state.
+    pub conflicted_paths: Vec<String>,
 }
 
 #[allow(dead_code)]
@@ -162,6 +179,9 @@ impl GitSidebarState {
         self.unstaged_count = info.unstaged_count;
         self.untracked_count = info.untracked_count;
         self.conflicted_count = info.conflicted_count;
+        self.operation_state_label = info.operation_state_label;
+        self.available_actions = info.available_actions;
+        self.conflicted_paths = info.conflicted_paths;
         self.ahead = info.ahead;
         self.behind = info.behind;
         self.last_refreshed = Some(std::time::Instant::now());
@@ -215,6 +235,9 @@ mod tests {
                 conflicted_count: 0,
                 ahead: Some(5),
                 behind: Some(1),
+                operation_state_label: None,
+                available_actions: Vec::new(),
+                conflicted_paths: Vec::new(),
             },
         );
         assert!(applied);
@@ -248,6 +271,9 @@ mod tests {
                 conflicted_count: 0,
                 ahead: None,
                 behind: None,
+                operation_state_label: None,
+                available_actions: Vec::new(),
+                conflicted_paths: Vec::new(),
             },
         );
 
@@ -268,6 +294,9 @@ mod tests {
                 conflicted_count: 0,
                 ahead: None,
                 behind: None,
+                operation_state_label: None,
+                available_actions: Vec::new(),
+                conflicted_paths: Vec::new(),
             },
         );
         assert!(!applied);

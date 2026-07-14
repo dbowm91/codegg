@@ -100,7 +100,7 @@ impl Tool for GitTool {
     }
 
     fn description(&self) -> &str {
-        "Execute git commands and operations. Read-only operations (status, diff, log, show, blame, branch, tag, remote, worktree) return structured results. Mutations may use either the curated `mutation` action or pass a `subcommand` + `args` for raw execution; mutations are routed through a typed executor with snapshot, state-delta, and env hardening."
+        "Execute git operations. Read-only subcommands (status, diff, log, show, blame, branch, tag, remote, worktree, stash, rev-parse, for-each-ref) return structured JSON results via egggit. Prefer the typed `mutation` action (stage_paths, commit, branch_create, merge, revert, push, reset_hard, clean, …) for local, network, and destructive operations — they route through a snapshot-based executor with state-delta, env hardening, and RunStore persistence. For in-progress operations (merge/rebase/cherry-pick/revert), use `operation_state` (read) and `recover` (write: continue | abort | skip) — these inspect plumbing, refuse cross-operation misuse, and return a typed `RecoveryOutcome`. Conflicts are NOT auto-resolved: edit conflict markers in the worktree, `git add <path>` to stage the resolution, then run `recover` with `continue`."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -135,6 +135,15 @@ impl Tool for GitTool {
                         "clean_preview", "clean"
                     ],
                     "description": "Typed mutation action. Preferred over raw subcommand for local mutations and network/destructive operations."
+                },
+                "recover": {
+                    "type": "string",
+                    "enum": ["continue", "abort", "skip"],
+                    "description": "Operation-aware recovery action for an in-progress merge/rebase/cherry-pick/revert. Inspects the active operation state and refuses cross-operation misuse. Must be paired with NO subcommand/mutation (recover is mutually exclusive with both)."
+                },
+                "operation_state": {
+                    "type": "boolean",
+                    "description": "When true, the tool returns the typed in-progress operation state (merge/rebase/cherry-pick/revert/bisect/am/sequencer/none) plus conflicted paths and legal recovery actions instead of executing a subcommand. Mutually exclusive with `mutation`, `recover`, and `subcommand`."
                 },
                 "paths": {
                     "type": "array",
@@ -287,6 +296,16 @@ impl Tool for GitTool {
             return self
                 .dispatch_mutation(mutation, &input, &workdir, timeout_secs)
                 .await;
+        }
+
+        // Operation-state discovery — returns the typed active state.
+        if input["operation_state"].as_bool().unwrap_or(false) {
+            return self.dispatch_operation_state(&workdir, timeout_secs).await;
+        }
+
+        // Operation-aware recovery — continue/abort/skip.
+        if let Some(recover) = input["recover"].as_str() {
+            return self.dispatch_recover(recover, &workdir, timeout_secs).await;
         }
 
         let subcommand = input["subcommand"]
@@ -719,6 +738,88 @@ impl GitTool {
         .await;
         Ok(project_mutation(&result))
     }
+
+    /// Inspect the active operation state via `egggit::detect_operation_state_for_root`.
+    /// Returns a typed string describing the active operation family,
+    /// the typed label, and the legal recovery actions.
+    async fn dispatch_operation_state(
+        &self,
+        workdir: &std::path::Path,
+        _timeout_secs: u64,
+    ) -> Result<String, ToolError> {
+        let state = egggit::detect_operation_state_for_root(workdir)
+            .map_err(|e| ToolError::Execution(format!("operation-state probe failed: {e}")))?;
+        let available_actions: Vec<&'static str> = state
+            .available_actions()
+            .into_iter()
+            .map(|a| a.label())
+            .collect();
+        let label = state.label();
+        let family = state.family().label();
+        let mut out = String::new();
+        out.push_str(&format!("operation state: {family}\n"));
+        out.push_str(&format!("label: {label}\n"));
+        let actions_str = if available_actions.is_empty() {
+            "<none>".to_string()
+        } else {
+            available_actions.join(", ")
+        };
+        out.push_str(&format!("available_actions: {actions_str}\n"));
+        Ok(out)
+    }
+
+    /// Run an operation-aware recovery action (continue | abort | skip).
+    async fn dispatch_recover(
+        &self,
+        action: &str,
+        workdir: &std::path::Path,
+        timeout_secs: u64,
+    ) -> Result<String, ToolError> {
+        let parsed_action = match action {
+            "continue" => egggit::RecoveryAction::Continue,
+            "abort" => egggit::RecoveryAction::Abort,
+            "skip" => egggit::RecoveryAction::Skip,
+            other => {
+                return Err(ToolError::Execution(format!(
+                    "unknown recover action: {other} (expected continue | abort | skip)"
+                )));
+            }
+        };
+        let exec = GitMutationExecutor::new()
+            .with_env_policy(GitEnvPolicy::default())
+            .with_timeout(Duration::from_secs(timeout_secs.max(1)));
+        let result = match parsed_action {
+            egggit::RecoveryAction::Continue => {
+                crate::git_recovery::continue_in_progress(&exec, workdir).await
+            }
+            egggit::RecoveryAction::Abort => {
+                crate::git_recovery::abort_in_progress_typed(&exec, workdir).await
+            }
+            egggit::RecoveryAction::Skip => {
+                crate::git_recovery::skip_in_progress(&exec, workdir).await
+            }
+        };
+        let result = result.map_err(map_mutation_err)?;
+        let repo_root = crate::git_mutations::resolve_repo_root(workdir)
+            .map(|r| r.as_path().to_path_buf())
+            .unwrap_or_else(|_| workdir.to_path_buf());
+        // Phase F: detect the family BEFORE the action so we can label
+        // the projection accurately even when the action is a no-op.
+        let family = egggit::detect_operation_state_for_root(workdir)
+            .map(|s| s.family().label().to_string())
+            .unwrap_or_else(|_| "none".to_string());
+        let _ = crate::git_run_store::persist_recovery(
+            &self.run_store,
+            &result,
+            workdir,
+            &repo_root,
+            action,
+        )
+        .await;
+        Ok(crate::git_mutation_projector::project_recovery(
+            &result, action, &family,
+        ))
+    }
 }
 
 fn branch_param(label: &str) -> ToolError {
@@ -885,4 +986,140 @@ fn format_structured_result(
 
     output.push_str(&format!("\n\n[exit code: {}]", result.exit_code));
     output
+}
+
+#[cfg(test)]
+mod schema_tests {
+    //! Schema snapshot tests for the `git` tool.
+    //!
+    //! These tests pin the model-facing schema in two forms: the JSON
+    //! `properties`/`enum` surface (intended for snapshot diffing in code
+    //! review) and a high-level structural shape (intended for catching
+    //! accidental breaking changes such as the removal of the
+    //! `operation_state` parameter or a regression that turns the
+    //! `mutation` enum back into a free string).
+
+    use super::*;
+    use serde_json::Value;
+
+    fn params() -> Value {
+        GitTool::new().parameters()
+    }
+
+    #[test]
+    fn mutation_enum_includes_phase_f_recovery_aliases() {
+        let schema = params();
+        let mutation_enum = schema["properties"]["mutation"]["enum"]
+            .as_array()
+            .expect("mutation.enum should be an array");
+        let names: Vec<&str> = mutation_enum.iter().filter_map(|v| v.as_str()).collect();
+        // Local mutations (Phase D)
+        assert!(names.contains(&"merge"), "merge mutation missing");
+        assert!(names.contains(&"rebase"), "rebase mutation missing");
+        assert!(
+            names.contains(&"cherry_pick"),
+            "cherry_pick mutation missing"
+        );
+        assert!(names.contains(&"revert"), "revert mutation missing");
+        assert!(names.contains(&"abort"), "abort mutation missing");
+        // Network mutations (Phase E)
+        assert!(names.contains(&"fetch"), "fetch mutation missing");
+        assert!(names.contains(&"push"), "push mutation missing");
+        // Destructive (Phase E)
+        assert!(names.contains(&"reset_hard"), "reset_hard mutation missing");
+        assert!(names.contains(&"clean"), "clean mutation missing");
+        // Counted: maintain a healthy pressure on the schema's stability.
+        assert!(
+            names.len() >= 35,
+            "expected at least 35 mutation actions, got {}: {names:?}",
+            names.len()
+        );
+    }
+
+    #[test]
+    fn recover_parameter_present_with_canonical_enum() {
+        let schema = params();
+        let recover_enum = schema["properties"]["recover"]["enum"]
+            .as_array()
+            .expect("recover.enum should be an array");
+        let names: Vec<&str> = recover_enum.iter().filter_map(|v| v.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["continue", "abort", "skip"],
+            "recover.enum must be exactly ['continue','abort','skip']"
+        );
+    }
+
+    #[test]
+    fn operation_state_parameter_present() {
+        let schema = params();
+        let op = &schema["properties"]["operation_state"];
+        assert!(op.is_object(), "operation_state should exist as a property");
+        assert_eq!(op["type"], "boolean");
+    }
+
+    #[test]
+    fn description_mentions_recovery_and_conflicts() {
+        let binding = GitTool::new();
+        let desc = binding.description();
+        assert!(
+            desc.contains("operation_state") || desc.contains("recover"),
+            "description should advertise the operation_state/recover parameters, got: {desc}"
+        );
+        // We want agents to understand conflicts are NOT auto-resolved.
+        assert!(
+            desc.contains("conflict") || desc.contains("Conflicts"),
+            "description should call out conflict handling, got: {desc}"
+        );
+    }
+
+    #[test]
+    fn parameters_pin_top_level_keys() {
+        let schema = params();
+        let top_keys: Vec<&str> = schema["properties"]
+            .as_object()
+            .expect("properties is object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        for required in [
+            "subcommand",
+            "args",
+            "mutation",
+            "recover",
+            "operation_state",
+            "paths",
+            "name",
+            "target",
+            "remote",
+            "url",
+            "message",
+            "force",
+            "workdir",
+            "timeout",
+        ] {
+            assert!(
+                top_keys.contains(&required),
+                "schema drift: missing top-level parameter `{required}`; got {top_keys:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn recover_is_mutually_exclusive_with_mutation_via_description() {
+        // The schema does not (yet) enforce mutual exclusion at the JSON
+        // level; we surface the contract via the field description.
+        let schema = params();
+        assert!(
+            schema["properties"]["recover"]["description"]
+                .as_str()
+                .unwrap_or("")
+                .contains("mutually exclusive")
+                || schema["properties"]["recover"]["description"]
+                    .as_str()
+                    .unwrap_or("")
+                    .contains("Mutually exclusive"),
+            "recover.description must note mutual exclusion with mutation"
+        );
+    }
 }

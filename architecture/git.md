@@ -307,3 +307,159 @@ The existing per-capability defaults already cover Phase E without modification:
 * Destructive — `reset_hard` discards uncommitted + history, `reset_soft` keeps worktree, `clean_preview` lists untracked, `clean` removes them, `CleanRequest::is_broad()` is enforced.
 
 Tests skip gracefully when `git` is unavailable so CI on minimal containers still passes.
+
+## Phase F — Conflicts, Recovery, Ergonomics, and Closure
+
+Phase F turns in-progress repositories (merge, rebase, cherry-pick, revert, bisect, apply-mailbox, sequencer) and their conflicts into first-class structured data. It layers operation-aware recovery on top of the existing mutation framework, exposes the active state to the model and TUI, and consolidates the Git architecture across Phases A–E.
+
+### Repository operation-state discovery (`egggit::operation_state`)
+
+`crates/egggit/src/operation_state.rs` exposes a typed `RepositoryOperationState` enum that detects the active operation by inspecting `.git/` plumbing files. The previous `OperationState` (still re-exported for back-compat) only knew about five families; the new model covers eight:
+
+| Variant | Sentinel | Notes |
+|---------|----------|-------|
+| `None` | — | Clean repository. |
+| `Merge(MergeState)` | `MERGE_HEAD` | Carries `original_head`, `other_head`, `message`, `in_progress`. |
+| `Rebase(RebaseState)` | `rebase-merge` / `rebase-apply` / `REBASE_HEAD` | Carries `original_head`, `current_head`, `upstream`, `onto_branch`, `current_step`, `total_steps`, `interactive`, `apply_mode`. |
+| `CherryPick(SequenceState)` | `CHERRY_PICK_HEAD` | Original + current HEAD plus target SHA. |
+| `Revert(SequenceState)` | `REVERT_HEAD` | Same. |
+| `Bisect(BisectState)` | `BISECT_LOG` | Bad/good/remaining-trials snapshot. |
+| `ApplyMailbox(ApplyState)` | `rebase-apply/{next,last}` (without `head-name`) | Distinguished from rebase by absence of `head-name`. |
+| `Sequencer(SequencerState)` | `sequencer/todo` | Used by Git ≥2.25 for cherry-pick/revert/quote-rebase bookkeeping; carries `action`, `subject`, `current_step`, `total_steps`. |
+| `Unknown(UnknownOperationState)` | Unrecognized sentinel | Sanitized description for forward-compat. |
+
+Detection logic lives in `detect_repository_operation_state(git_dir: &Path)` and is exposed via `detect_operation_state_for_root(root: &Path)` which canonicalizes `.git` (handling linked-worktree `.git` files). The detection logic is pure filesystem inspection — no mutation.
+
+`RepositoryOperationState::available_actions()` returns the recovery action set (`RecoveryAction::{Continue, Abort, Skip}`) that is legal for the active family. `RepositoryOperationState::action_available(action)` answers "is this action allowed right now?" so callers don't have to maintain a parallel allowlist.
+
+### Conflict model (`egggit::conflict`)
+
+`crates/egggit/src/conflict.rs` exposes a typed conflict model that does NOT auto-resolve anything. `RichRepoStatus.conflict_entries` (populated by `parse_status_v2`) carries one `ConflictEntry` per conflicted path with:
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `path` | `String` | Repo-relative path of the conflicted file. |
+| `status_code` | `String` | Raw XY code (`uUU`, `UU`, `AA`, …). |
+| `kind` | `ConflictKind` | Classified: `BothModified \| BothAdded \| BothDeleted \| AddedByUs \| AddedByTheirs \| DeletedByUs \| DeletedByTheirs \| Unknown`. |
+| `shape` | `ConflictShape` | `File \| Rename \| Delete \| DirectoryReplacement \| Submodule \| UntrackedReplaced`. |
+| `base / ours / theirs` | `ConflictObjectId` | SHA + mode per side; populated post-Phase D once we wire `git ls-files -u`. |
+| `original_path` | `Option<String>` | Pre-rename path when `shape=Rename`. |
+| `has_conflict_markers` | `bool` | NUL-byte-free text scan for `<<<<<<<` + `=======` + `>>>>>>>`. |
+| `staged_resolved` | `bool` | True once the path appears on the staged side after `git add`. |
+| `submodule` | `bool` | Set when the porcelain v2 entry carried a submodule status code. |
+| `recommended_actions` | `Vec<RecommendedConflictAction>` | Conservative set (`edit markers`, `git add <path>`, `git checkout --ours`, `git checkout --theirs`, `git rm`). |
+
+Helpers:
+
+* `classify_conflict_code(xy)` — maps XY codes to `ConflictKind`.
+* `buffer_contains_conflict_markers(text)` — NUL-free text marker detector.
+* `looks_binary(bytes)` — NUL-byte heuristic for binary-vs-text decision.
+* `default_actions_for(kind, shape)` — minimal-action set the agent should consider.
+* `ConflictReport::from_entries(entries)` — aggregated summary (total / unresolved-with-markers / resolved / submodule-conflicts / all-resolved flag).
+
+### Operation-aware recovery (`src/git_recovery.rs`)
+
+`src/git_recovery.rs` adds typed helpers `continue_in_progress`, `abort_in_progress_typed`, and `skip_in_progress` that:
+
+1. Call `detect_operation_state_for_root(repo_root)` to identify the active operation.
+2. Build the matching typed `GitOperation` (e.g. `Merge { abort: true, .. }` for merge-abort, `Rebase { skip: true, .. }` for rebase-skip).
+3. Re-check `state.action_available(action)` to refuse cross-operation misuse (`rebase --abort` while a merge is in progress).
+4. Run the executor (snapshots + state-delta + RunStore).
+5. Tag the result with `outcome` reflecting the action (e.g. `Completed` for a successful abort, `Conflict` if `git <op> --continue` returned 1 because of unresolved conflicts).
+
+Family-specific guards:
+
+* `Bisect`, `ApplyMailbox`, and `Unknown` refuse automatic recovery (the operator must drive them manually with `git bisect` / `git am --abort` / direct `.git` inspection).
+* `Merge` only supports `Continue` / `Abort`; `Skip` is rejected at the precondition layer (git merge has no `--skip`).
+* Sequencer-driven operations (`CherryPick`/`Revert` ≥ Git 2.25) funnel through the typed codegg-git variants rather than the generic `git operation --abort` placeholder.
+
+The legacy `git_mutations_ops::abort_in_progress` is kept as a shim for backward compat but delegates to `git_recovery::abort_in_progress_typed`.
+
+### Agent ergonomics — git tool schema (`src/tool/git.rs`)
+
+The native `git` tool gains three new model-facing parameters:
+
+* `operation_state: bool` (default `false`) — when `true`, the tool returns the typed active operation family plus conflicted paths and legal recovery actions. Mutually exclusive with `subcommand`, `mutation`, and `recover`.
+* `recover: "continue" | "abort" | "skip"` — operation-aware recovery action. Mutually exclusive with `mutation` (enforced via field description; Phase F does not yet enforce at the JSON level).
+* `operation_state` and `recover` are dispatched in `GitTool::dispatch_operation_state` and `GitTool::dispatch_recover` respectively.
+
+`description()` is rewritten to advertise the parameters, the conflict-not-auto-resolved semantic, and the recovery-by-state semantic so the model reaches for the typed API instead of raw `git merge --abort` invocations.
+
+A schema snapshot test module (`tool::git::schema_tests`) pins the top-level keys, the `mutation` enum size, the `recover` enum exactly-equal to `[continue, abort, skip]`, the presence of `operation_state`, and that the description mentions both recovery and conflicts.
+
+### TUI integration (`src/tui/commands/git_sidebar.rs` + `src/tui/app/state/session.rs`)
+
+`GitSidebarState` and `GitSidebarInfo` gain three new fields:
+
+* `operation_state_label: Option<String>` — `None` when clean, `"merge"`/`"rebase"`/etc. otherwise.
+* `available_actions: Vec<String>` — `["continue", "abort"]` for a merge, `["continue", "abort", "skip"]` for a rebase, etc.
+* `conflicted_paths: Vec<String>` — repo-relative conflicted paths from `RichRepoStatus.conflict_entries`.
+
+`TuiCommand::GitSidebarRefreshFinished` carries the new fields, and `super::super::commands::git_sidebar::apply_git_sidebar_refresh` writes them into the cached state. The background probe runs once (existing 3 s timeout, generation-safe), so render purity is preserved.
+
+Sidebar update triggers (`TuiMsg::SelectSession`, session reload, after git mutations) automatically pick up the new fields — no render-path changes required.
+
+### Projection closure (`src/git_mutation_projector.rs`)
+
+`project_mutation()` already covers completed / conflict / fast-forward / rejected outcomes; `project_recovery()` adds an outcome-aware projection for `recover:*` runs. The new helper prints before/after HEAD + conflict counts, records the action and family, and tailors the next-step hint based on the outcome (`"operation aborted; repository back to clean state"` for a successful abort; `"resolve conflict markers, …, then re-run recover: continue"` for a still-conflicted continue).
+
+The shell output projectors (`RawProjector`, `TruncatedProjector`, `ErrorRetentionProjector`, the existing Git native projectors) cover `git status`, `git diff`, and `git log`. Recovery is intentionally NOT routed through the shell projector pipeline — it produces typed `MutationResult` values that flow through `project_recovery`. This avoids projector drift and keeps recovery semantics consistent with the mutation framework.
+
+### RunStore observability (`src/git_run_store.rs`)
+
+Recovery operations are persisted via the new `persist_recovery()` helper. Each recovery run is `RunKind::GitMutation` with `PlannedBackend::Git`, `ActualBackend::Git`, `Ownership::DelegatedBackend`, and `backend.detail = "recover:<continue|abort|skip>"`. The detail tag is grep-able and stable for dashboards; existing mutation metrics consume it as a fixed-cardinality label without exposing per-path or per-ref dimensions.
+
+### Compatibility cleanup
+
+* `grep -n "GitMutating" src/` returns only the `PlannedBackend::GitMutating`/`ActualBackend::GitMutating` deprecated markers. Their use is restricted to legacy provenance migration; new code must use `PlannedBackend::Git`/`ActualBackend::Git`. This matches the Phase B unification.
+* The legacy `git_mutations_ops::abort_in_progress` heuristically-guesses `git merge --abort` then `git rebase --abort`. Phase F replaces it with operation-aware `git_recovery::abort_in_progress_typed`. The legacy function remains as a deprecated shim for the bash fallback path until callers migrate.
+
+### Security review (Phase F scope)
+
+* **Path traversal / pathspec injection** — `RepoPath::new` continues to reject absolute paths, parent traversal, and NUL bytes. Recovery helpers invoke typed `GitOperation`s with `render_argv`, which places paths after `--` to avoid option smuggling.
+* **Revision names beginning with `-`** — `revision` arguments are passed through `RevisionExpr::new` (rejects empty) and never interpolated into bare argv without a `--` separator.
+* **Option smuggling around `--`** — Recovery operations for `cherry-pick`, `revert`, and `merge` build typed variants that render their argv through `codegg_git::render_argv`, which forces `--` before paths.
+* **Repository root escape via `-C`, symlinks, submodules, worktrees** — All recovery paths run with `current_dir(repo_root)`; the root is resolved via `RepoRoot::new` which canonicalizes symlinks.
+* **Hostile Git config and aliases** — Typed `GitOperation`s bypass user-side aliases because the parser never invokes git's `alias.*` resolution paths; only the typed variant is rendered.
+* **External helpers / credential hooks** — The recovery executor reuses `GitEnvPolicy` (`GIT_TERMINAL_PROMPT=0`, `GIT_EDITOR=true`, `GIT_SEQUENCE_EDITOR=true`), preserving the Phase D hardening.
+* **Editor / sequence-editor spawning** — Same as above.
+* **SSH command / config injection** — Recovery operations do not introduce new network calls. SSH agent handling stays as in Phase E (`SSH_AUTH_SOCK`, `SSH_AGENT_PID` are part of the standard `ALLOWED_ENV_VARS` set).
+* **Credential leakage** — `backend.detail` for recovery is a fixed low-cardinality label; it does not contain refs, paths, or URLs.
+* **Force / destructive misclassification** — `RecoveryAction::Abort` is tagged `HistoryIntegration + DestructiveHistory` by `risk_classes_for_recovery()` (see `src/git_recovery.rs`), so command-intent routing carries `DestructiveFileMutation` capability → `PermissionDefault::Deny` for high-risk cases.
+* **No-double-execution guarantees** — `recover` and `operation_state` are mutually exclusive at the dispatch layer (one or the other runs per tool call). The mutation tool path also persists the run to RunStore after the action completes.
+* **Race conditions between precondition snapshot and mutation** — `git_recovery::run_recovery` snapshots before running the mutation, captures the post-action snapshot, and refuses to run when the post-action state no longer reflects the requested action.
+
+### Performance and resource review
+
+* Status / sidebar refresh latency — Probe continues to use a single `git status --porcelain=v2 -z --branch` call plus a filesystem `.git` read; the recovery path adds one extra `git <op> --abort|--continue|--skip` invocation, no additional probes.
+* Process count per operation — Unchanged from Phase E.
+* Large repository status/diff behavior — Phase F does not introduce new subprocess fan-out. Sidebar generation gates (timeout 3 s, generation-safe) are unchanged.
+* RunStore overhead — One additional row per recovery action; same `RunKind` and `Ownership` as standard mutations so cardinality stays bounded.
+* Projection memory — `project_recovery()` produces ≤1 KiB; same memory bounds as `project_mutation()`.
+
+### Cross-platform review
+
+* Path encoding — Same path handling as Phase E (`RepoPath`, `RepoRoot`). NUL-byte detection still uses byte checks; UTF-8 decoding only happens at projector time.
+* Executable discovery — Recovery `GitMutationExecutor` inherits the Phase D `ALLOWED_ENV_VARS` policy (PATH, HOME, etc.).
+* Process termination — `kill_on_drop(true)` is preserved on the `Command` built by `GitEnvPolicy::apply`.
+* HOME / XDG — Phase F does not change credential-helper behavior; the existing `ALLOWED_ENV_VARS` set includes the relevant XDG variables.
+* SSH agent — `SSH_AUTH_SOCK`, `SSH_AGENT_PID` preserved.
+* Temp repository fixtures — Existing helpers in `tests/git_mutations_integration.rs` continue to work; Phase F adds `tests/git_recovery_integration.rs` with 18 tests.
+* Symlink behavior — `RepoRoot::new` canonicalizes; tests use real tempdirs, not symlinks.
+* Newline and NUL parsing — `buffer_contains_conflict_markers` is UTF-8 text only; binary detection uses a NUL-byte heuristic so we never pattern-match on NUL-as-string-content.
+
+### Tests added
+
+| Path | Tests | Coverage |
+|------|-------|----------|
+| `crates/egggit/src/operation_state.rs` | 7 | None / Merge / Rebase / Sequencer / CherryPick / Bisect / available_actions matrix. |
+| `crates/egggit/src/conflict.rs` | 6 | classify_conflict_code / conflict marker detection / binary detection / default action policy / report aggregation. |
+| `crates/egggit/src/status_v2.rs` | 1 (extended) | `conflict_entries` and `conflict_report` populated from porcelain v2. |
+| `src/git_recovery.rs` | 4 | State-action matrix for the four sentinel families. |
+| `src/tool/git.rs::schema_tests` | 6 | Top-level keys + mutation enum + recover enum + description + drift guards. |
+| `src/git_mutation_projector.rs` | 3 | project_recovery happy path / conflicts path / abort-completed path. |
+| `tests/git_recovery_integration.rs` | 18 | End-to-end on tempdir fixtures: continue with conflicts, continue after resolution, abort without state, abort in progress, skip during rebase, etc. |
+| `src/tui/app/state/session.rs` | 3 (extended) | Sidebar info with operation-state fields. |
+| `tests/tui_render.rs` | 99 (existing) | Validated against new GitSidebarInfo field set. |
+
+The full test matrix (Phase F + previous phases) passes locally in capped invocations (`CARGO_BUILD_JOBS=1 cargo test --workspace --all-features -- --test-threads=4`).

@@ -388,6 +388,13 @@ pub enum TuiCommand {
         ahead: Option<i32>,
         behind: Option<i32>,
         error: Option<String>,
+        /// Phase F: active operation family (merge/rebase/cherry-pick/revert/
+        /// bisect/apply-mailbox/sequencer/unknown/none).
+        operation_state_label: Option<String>,
+        /// Phase F: legal recovery actions for the active state.
+        available_actions: Vec<String>,
+        /// Phase F: conflicted paths from the typed conflict model.
+        conflicted_paths: Vec<String>,
     },
     RunHumanShell {
         command: String,
@@ -2842,6 +2849,9 @@ impl App {
                 conflicted_count: cached.conflicted_count,
                 ahead: cached.ahead,
                 behind: cached.behind,
+                operation_state_label: cached.operation_state_label.clone(),
+                available_actions: cached.available_actions.clone(),
+                conflicted_paths: cached.conflicted_paths.clone(),
             });
         } else {
             self.sidebar.set_git_info(GitSidebarInfo::default());

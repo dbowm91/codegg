@@ -272,6 +272,9 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
             ahead,
             behind,
             error,
+            operation_state_label,
+            available_actions,
+            conflicted_paths,
         } => {
             let info = GitSidebarInfo {
                 root,
@@ -283,6 +286,9 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
                 conflicted_count,
                 ahead,
                 behind,
+                operation_state_label,
+                available_actions,
+                conflicted_paths,
             };
             super::super::commands::git_sidebar::apply_git_sidebar_refresh(
                 app, generation, error, info,

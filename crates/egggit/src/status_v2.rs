@@ -1,3 +1,7 @@
+use crate::conflict::{
+    classify_conflict_code, default_actions_for, ConflictEntry, ConflictObjectId, ConflictReport,
+    ConflictShape,
+};
 use crate::EgggitError;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -27,8 +31,20 @@ pub struct RichRepoStatus {
     pub ignored: Vec<StatusEntry>,
     /// Conflict entries.
     pub conflicted: Vec<StatusEntry>,
+    /// Typed conflict entries (richer than `conflicted`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub conflict_entries: Vec<ConflictEntry>,
+    /// Aggregated conflict report (`None` when no conflicts).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conflict_report: Option<ConflictReport>,
     /// Active operation state (merge, rebase, cherry-pick, revert, bisect).
     pub operation_state: Option<OperationState>,
+    /// Typed in-progress operation state (Phase F).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repository_operation_state: Option<crate::operation_state::RepositoryOperationState>,
+    /// Legal recovery actions for the current operation state.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub available_actions: Vec<crate::operation_state::RecoveryAction>,
     /// Whether the repository is in a clean state.
     pub is_clean: bool,
     /// High-level dirty summary.
@@ -349,6 +365,19 @@ pub fn parse_status_v2(output: &str, root: &str) -> RichRepoStatus {
     }
 
     let operation_state = detect_operation_state(Path::new(root));
+    let repository_operation_state =
+        crate::operation_state::detect_operation_state_for_root(Path::new(root)).ok();
+    let available_actions = repository_operation_state
+        .as_ref()
+        .map(|s| s.available_actions())
+        .unwrap_or_default();
+
+    let conflict_entries = build_conflict_entries(&conflicted);
+    let conflict_report = if conflict_entries.is_empty() {
+        None
+    } else {
+        Some(ConflictReport::from_entries(conflict_entries.clone()))
+    };
 
     let is_clean =
         staged.is_empty() && unstaged.is_empty() && untracked.is_empty() && conflicted.is_empty();
@@ -372,10 +401,51 @@ pub fn parse_status_v2(output: &str, root: &str) -> RichRepoStatus {
         untracked,
         ignored,
         conflicted,
+        conflict_entries,
+        conflict_report,
         operation_state,
+        repository_operation_state,
+        available_actions,
         is_clean,
         dirty_summary,
     }
+}
+
+/// Build typed `ConflictEntry` records from porcelain v2 conflict entries.
+fn build_conflict_entries(entries: &[StatusEntry]) -> Vec<ConflictEntry> {
+    entries
+        .iter()
+        .map(|e| {
+            let kind = classify_conflict_code(&e.xy_status);
+            let shape = if e.submodule_status.is_some() {
+                ConflictShape::Submodule
+            } else if e.old_path.is_some() {
+                ConflictShape::Rename
+            } else {
+                ConflictShape::File
+            };
+            // Submodule detection: porcelain v2 reports a submodule
+            // status code (e.g. "M.", "UU", ".M") in the `M...` portion
+            // when the path is a submodule gitlink. We only have
+            // `submodule_status` populated when conflict_stages are
+            // present, so treat presence as a strong signal here.
+            let submodule = e.submodule_status.is_some();
+            ConflictEntry {
+                path: e.path.clone(),
+                status_code: e.xy_status.clone(),
+                kind,
+                shape,
+                base: ConflictObjectId::absent(),
+                ours: ConflictObjectId::absent(),
+                theirs: ConflictObjectId::absent(),
+                original_path: e.old_path.clone(),
+                has_conflict_markers: false,
+                staged_resolved: false,
+                submodule,
+                recommended_actions: default_actions_for(kind, shape),
+            }
+        })
+        .collect()
 }
 
 async fn run_git_async(
@@ -535,6 +605,23 @@ mod tests {
         assert_eq!(status.conflicted[0].path, "conflict.txt");
         assert!(status.staged.is_empty());
         assert!(status.unstaged.is_empty());
+        assert!(!status.conflict_entries.is_empty());
+        let entry = &status.conflict_entries[0];
+        assert_eq!(entry.path, "conflict.txt");
+        assert_eq!(entry.status_code, "uAU");
+        // Submodule status absent → not a submodule conflict.
+        assert!(!entry.submodule);
+        assert!(!entry.recommended_actions.is_empty());
+    }
+
+    #[test]
+    fn conflict_report_populated_when_unmerged() {
+        let output = "# branch.oid abc123\0# branch.head main\0u UU N... 100644 100644 100644 1 abc123 abc123 a.txt\0u AA N... 100644 100644 100644 1 abc123 abc123 b.txt\0";
+        let status = parse_status_v2(output, "/tmp/repo");
+        let report = status.conflict_report.expect("report present");
+        assert_eq!(report.total, 2);
+        assert_eq!(report.entries.len(), 2);
+        assert_eq!(status.available_actions.len(), 0); // /tmp/repo has no MERGE_HEAD etc.
     }
 
     #[test]

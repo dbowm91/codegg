@@ -61,6 +61,9 @@ pub(crate) fn start_refresh_git_sidebar(app: &mut App) {
                     ahead: info.ahead,
                     behind: info.behind,
                     error,
+                    operation_state_label: info.operation_state_label,
+                    available_actions: info.available_actions,
+                    conflicted_paths: info.conflicted_paths,
                 })
             } else {
                 None
@@ -81,6 +84,9 @@ struct GitProbeInfo {
     ahead: Option<i32>,
     behind: Option<i32>,
     error: Option<String>,
+    operation_state_label: Option<String>,
+    available_actions: Vec<String>,
+    conflicted_paths: Vec<String>,
 }
 
 impl GitProbeInfo {
@@ -96,6 +102,9 @@ impl GitProbeInfo {
             ahead: None,
             behind: None,
             error: Some(msg),
+            operation_state_label: None,
+            available_actions: Vec::new(),
+            conflicted_paths: Vec::new(),
         }
     }
 }
@@ -115,6 +124,25 @@ async fn probe_git_status(project_dir: std::path::PathBuf) -> anyhow::Result<Git
         status.branch
     };
     let dirty = !status.is_clean;
+    // Phase F: surface typed operation state + conflicted paths from the
+    // structured probe. The sidebar reads these from cache only.
+    let operation_state_label = status.repository_operation_state.as_ref().and_then(|s| {
+        if s.is_clean() {
+            None
+        } else {
+            Some(s.family().label().to_string())
+        }
+    });
+    let available_actions = status
+        .available_actions
+        .iter()
+        .map(|a| a.label().to_string())
+        .collect();
+    let conflicted_paths = status
+        .conflict_entries
+        .iter()
+        .map(|e| e.path.clone())
+        .collect();
     Ok(GitProbeInfo {
         root: Some(root.to_string_lossy().into_owned()),
         branch,
@@ -126,6 +154,9 @@ async fn probe_git_status(project_dir: std::path::PathBuf) -> anyhow::Result<Git
         ahead: status.ahead,
         behind: status.behind,
         error: None,
+        operation_state_label,
+        available_actions,
+        conflicted_paths,
     })
 }
 

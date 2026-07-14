@@ -8,6 +8,12 @@
 //! that go through `GitExecutionService` are not currently persisted
 //! because they already surface structured payloads through the existing
 //! `format_structured_result` formatter).
+//!
+//! Phase F: Phase F also persists recovery runs via the same `kind =
+//! RunKind::GitMutation` path but a distinct `backend.detail` of the
+//! form `"recover:<continue|abort|skip>"`. This lets operators
+//! distinguish initial mutations from recovery actions in metrics
+//! dashboards without changing the run-kind surface.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -186,4 +192,30 @@ async fn begin_run_safe(store: &Arc<dyn RunStore>, draft: RunDraft) -> Option<Ru
             None
         }
     }
+}
+
+/// Persist a recovery operation (`continue`/`abort`/`skip`) as a RunStore run.
+///
+/// Same provenance as [`persist_mutation`] but tagged in `backend.detail` so
+/// dashboards can distinguish recovery actions from initial mutations.
+pub async fn persist_recovery(
+    store: &Option<Arc<dyn RunStore>>,
+    result: &MutationResult,
+    workdir: &Path,
+    repo_root: &Path,
+    action: &str,
+) -> Option<RunId> {
+    let detail = format!("recover:{action}");
+    // Delegate to the standard mutation persist path, which already
+    // wires RunKind::GitMutation + DelegatedBackend. We override the
+    // backend_detail so the run row is grep-able.
+    persist_mutation(
+        store,
+        result,
+        workdir,
+        repo_root,
+        "git_native_recovery",
+        Some(detail),
+    )
+    .await
 }

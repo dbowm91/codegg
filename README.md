@@ -15,9 +15,13 @@ in the [architecture docs](architecture/overview.md) and the linked guides.
   responsive background work.
 - File, search, git, shell, Python, LSP, security, deterministic, and MCP
   tools. The `eggsearch` integration provides search/evidence backends;
-  `eggsact` provides in-process deterministic tools; and native `eggit`,
-  `eggcontext`, `eggsentry`, and `egglsp` crates keep core functionality local
-  and testable.
+  `eggsact` provides in-process deterministic tools; and native `egggit`,
+  `eggcontext`, `eggsentry`, `egglsp`, and `codegg-git` crates keep core
+  functionality local and testable. The `git` tool supports typed reads
+  (status, diff, log, show, blame) plus the full mutation surface
+  (stage/commit/branch/stash/merge/rebase/cherry-pick/revert/fetch/pull/push/
+  reset/clean) with operation-aware continue/abort/skip recovery for
+  in-progress operations.
 - Human shell commands with explicit promotion: `!command` runs locally and
   stays out of model context; `!!command` promotes the result. Output is
   retained, bounded, redacted, and projected through native or RTK-backed

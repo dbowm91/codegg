@@ -27,6 +27,7 @@ pub mod git_mutations;
 pub mod git_mutations_ops;
 pub mod git_network_ops;
 pub mod git_network_policy;
+pub mod git_recovery;
 pub mod git_run_store;
 pub mod git_service;
 pub mod hooks;

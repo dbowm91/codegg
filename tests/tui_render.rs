@@ -276,6 +276,9 @@ fn app_with_sidebar() -> App {
             conflicted_count: 0,
             ahead: Some(3),
             behind: Some(1),
+            operation_state_label: None,
+            available_actions: Vec::new(),
+            conflicted_paths: Vec::new(),
         });
 
     app
