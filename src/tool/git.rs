@@ -126,9 +126,15 @@ impl Tool for GitTool {
                         "detach",
                         "restore_worktree", "restore_staged", "restore_both",
                         "stash_push", "stash_apply", "stash_pop", "stash_drop",
-                        "merge", "rebase", "cherry_pick", "revert", "abort"
+                        "merge", "rebase", "cherry_pick", "revert", "abort",
+                        "fetch", "pull", "push",
+                        "remote_add", "remote_remove", "remote_set_url", "remote_rename",
+                        "config_get", "config_set", "config_unset",
+                        "reset_soft", "reset_mixed", "reset_hard", "reset_merge", "reset_keep",
+                        "reset_paths",
+                        "clean_preview", "clean"
                     ],
-                    "description": "Typed mutation action. Preferred over raw subcommand for local mutations."
+                    "description": "Typed mutation action. Preferred over raw subcommand for local mutations and network/destructive operations."
                 },
                 "paths": {
                     "type": "array",
@@ -170,6 +176,78 @@ impl Tool for GitTool {
                 "keep_index": {
                     "type": "boolean",
                     "description": "Pass --keep-index to stash push"
+                },
+                "remote": {
+                    "type": "string",
+                    "description": "Remote name (fetch, pull, push, remote_*)"
+                },
+                "url": {
+                    "type": "string",
+                    "description": "URL (remote_add, remote_set_url, push)"
+                },
+                "old_name": {
+                    "type": "string",
+                    "description": "Old remote name (remote_rename)"
+                },
+                "refspecs": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Refspecs to fetch or push (fetch, push)"
+                },
+                "all": {
+                    "type": "boolean",
+                    "description": "Pass --all (fetch, push)"
+                },
+                "prune": {
+                    "type": "boolean",
+                    "description": "Pass --prune (fetch)"
+                },
+                "strategy": {
+                    "type": "string",
+                    "enum": ["ff-only", "rebase", "merge", "ff"],
+                    "description": "Pull strategy (pull)"
+                },
+                "force_with_lease": {
+                    "type": "boolean",
+                    "description": "Pass --force-with-lease to push (safer than --force)"
+                },
+                "force_push": {
+                    "type": "boolean",
+                    "description": "Pass --force to push (DANGEROUS, requires explicit permission)"
+                },
+                "set_upstream": {
+                    "type": "boolean",
+                    "description": "Pass --set-upstream to push"
+                },
+                "key": {
+                    "type": "string",
+                    "description": "Config key (config_get, config_set, config_unset) — must be allowlisted"
+                },
+                "value": {
+                    "type": "string",
+                    "description": "Config value (config_set)"
+                },
+                "scope": {
+                    "type": "string",
+                    "enum": ["local", "global", "worktree"],
+                    "description": "Config scope (default: local)"
+                },
+                "mode": {
+                    "type": "string",
+                    "enum": ["soft", "mixed", "hard", "merge", "keep"],
+                    "description": "Reset mode (used by reset_* actions)"
+                },
+                "dry_run": {
+                    "type": "boolean",
+                    "description": "Pass --dry-run (clean_preview)"
+                },
+                "ignored": {
+                    "type": "boolean",
+                    "description": "Include ignored files (clean, clean_preview)"
+                },
+                "directories": {
+                    "type": "boolean",
+                    "description": "Remove untracked directories (clean, clean_preview)"
                 },
                 "workdir": {
                     "type": "string",
@@ -325,6 +403,31 @@ impl GitTool {
         let include_untracked = input["include_untracked"].as_bool().unwrap_or(false);
         let keep_index = input["keep_index"].as_bool().unwrap_or(false);
 
+        // Phase E parameters (network, config, destructive).
+        let remote = input["remote"].as_str();
+        let url = input["url"].as_str();
+        let old_name = input["old_name"].as_str();
+        let all = input["all"].as_bool().unwrap_or(false);
+        let prune = input["prune"].as_bool().unwrap_or(false);
+        let strategy = input["strategy"].as_str();
+        let force_with_lease = input["force_with_lease"].as_bool().unwrap_or(false);
+        let force_push = input["force_push"].as_bool().unwrap_or(false);
+        let set_upstream = input["set_upstream"].as_bool().unwrap_or(false);
+        let refspecs: Vec<String> = input["refspecs"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let key = input["key"].as_str();
+        let value = input["value"].as_str();
+        let scope = input["scope"].as_str();
+        let dry_run = input["dry_run"].as_bool().unwrap_or(false);
+        let ignored = input["ignored"].as_bool().unwrap_or(false);
+        let directories = input["directories"].as_bool().unwrap_or(false);
+
         let result = match mutation {
             "stage_paths" => gm_ops::stage_paths(&exec, workdir, paths()).await,
             "stage_all" => gm_ops::stage_all(&exec, workdir).await,
@@ -437,6 +540,163 @@ impl GitTool {
                 gm_ops::revert(&exec, workdir, revs, no_edit).await
             }
             "abort" => gm_ops::abort_in_progress(&exec, workdir).await,
+
+            // ---- Phase E: network operations ----
+            "fetch" => {
+                crate::git_network_ops::fetch(&exec, workdir, remote, refspecs, prune, all).await
+            }
+            "pull" => {
+                let pull_strategy = match strategy {
+                    Some("ff-only") => crate::git_network_ops::PullStrategy::FastForwardOnly,
+                    Some("rebase") => crate::git_network_ops::PullStrategy::Rebase,
+                    Some("merge") => crate::git_network_ops::PullStrategy::Merge,
+                    Some("ff") => crate::git_network_ops::PullStrategy::FastForwardOnly,
+                    None => crate::git_network_ops::PullStrategy::Merge,
+                    Some(other) => {
+                        return Err(ToolError::Execution(format!(
+                            "unknown pull strategy: {other}"
+                        )));
+                    }
+                };
+                crate::git_network_ops::pull(&exec, workdir, remote, target, pull_strategy, false)
+                    .await
+            }
+            "push" => {
+                let push_force = if force_push {
+                    crate::git_network_ops::PushForce::Force
+                } else if force_with_lease {
+                    crate::git_network_ops::PushForce::ForceWithLease { expected_sha: None }
+                } else {
+                    crate::git_network_ops::PushForce::Normal
+                };
+                let req = crate::git_network_ops::PushRequest {
+                    remote: remote.map(String::from),
+                    branch: target.map(String::from),
+                    set_upstream,
+                    force: push_force,
+                    tags: all,
+                    delete: false,
+                    dry_run: false,
+                };
+                crate::git_network_ops::push(&exec, workdir, req).await
+            }
+
+            // ---- Phase E: remote management ----
+            "remote_add" => {
+                let r = remote.ok_or_else(|| branch_param("remote"))?;
+                let u = url.ok_or_else(|| branch_param("url"))?;
+                crate::git_network_ops::remote_add(&exec, workdir, r, u).await
+            }
+            "remote_remove" => {
+                let r = remote.ok_or_else(|| branch_param("remote"))?;
+                crate::git_network_ops::remote_remove(&exec, workdir, r).await
+            }
+            "remote_set_url" => {
+                let r = remote.ok_or_else(|| branch_param("remote"))?;
+                let u = url.ok_or_else(|| branch_param("url"))?;
+                crate::git_network_ops::remote_set_url(&exec, workdir, r, u, false).await
+            }
+            "remote_rename" => {
+                let r = remote.ok_or_else(|| branch_param("remote"))?;
+                let o = old_name.ok_or_else(|| branch_param("old_name"))?;
+                crate::git_network_ops::remote_rename(&exec, workdir, o, r).await
+            }
+
+            // ---- Phase E: git config ----
+            "config_get" => {
+                let k = key.ok_or_else(|| branch_param("key"))?;
+                let local = scope_unwrap_local(scope);
+                crate::git_network_ops::config_get(&exec, workdir, k, local).await
+            }
+            "config_set" => {
+                let k = key.ok_or_else(|| branch_param("key"))?;
+                let v = value.ok_or_else(|| branch_param("value"))?;
+                let local = scope_unwrap_local(scope);
+                crate::git_network_ops::config_set(&exec, workdir, k, v, local).await
+            }
+            "config_unset" => {
+                let k = key.ok_or_else(|| branch_param("key"))?;
+                let local = scope_unwrap_local(scope);
+                crate::git_network_ops::config_unset(&exec, workdir, k, local).await
+            }
+
+            // ---- Phase E: destructive reset/clean ----
+            "reset_soft" => {
+                let t = target.unwrap_or("HEAD");
+                crate::git_network_ops::reset_soft(&exec, workdir, Some(t)).await
+            }
+            "reset_mixed" => {
+                let t = target.unwrap_or("HEAD");
+                crate::git_network_ops::reset_mixed(&exec, workdir, Some(t)).await
+            }
+            "reset_hard" => {
+                let t = target.ok_or_else(|| branch_param("target"))?;
+                crate::git_network_ops::reset_hard(&exec, workdir, Some(t)).await
+            }
+            "reset_merge" => {
+                let t = target.ok_or_else(|| branch_param("target"))?;
+                crate::git_network_ops::reset_merge(&exec, workdir, Some(t)).await
+            }
+            "reset_keep" => {
+                let t = target.ok_or_else(|| branch_param("target"))?;
+                crate::git_network_ops::reset_keep(&exec, workdir, Some(t)).await
+            }
+            "reset_paths" => crate::git_network_ops::reset_paths(&exec, workdir, paths()).await,
+            "clean_preview" => {
+                let _ = (ignored, directories);
+                let preview = crate::git_network_ops::clean_preview(&exec, workdir, paths())
+                    .await
+                    .map_err(map_mutation_err)?;
+                let mut out = String::new();
+                if preview.is_empty() {
+                    out.push_str("clean preview: nothing to remove\n");
+                } else {
+                    out.push_str(&format!(
+                        "clean preview: {} entries would be removed\n",
+                        preview.len()
+                    ));
+                    for entry in &preview.entries {
+                        out.push_str(&format!("  - {} ({:?})\n", entry.path, entry.kind));
+                    }
+                }
+                return Ok(out);
+            }
+            "clean" => {
+                let req = crate::git_network_ops::CleanRequest {
+                    force: !dry_run,
+                    dirs: directories,
+                    ignored,
+                    paths: paths(),
+                };
+                if req.is_broad() {
+                    return Err(ToolError::Execution(
+                        "broad ignored cleanup (clean --include-ignored at root) is rejected \
+                         by policy; scope to specific paths or remove --ignored"
+                            .to_string(),
+                    ));
+                }
+                if dry_run {
+                    let preview =
+                        crate::git_network_ops::clean_preview(&exec, workdir, req.paths.clone())
+                            .await
+                            .map_err(map_mutation_err)?;
+                    let mut out = String::new();
+                    if preview.is_empty() {
+                        out.push_str("clean preview: nothing to remove\n");
+                    } else {
+                        out.push_str(&format!(
+                            "clean preview: {} entries would be removed\n",
+                            preview.len()
+                        ));
+                        for entry in &preview.entries {
+                            out.push_str(&format!("  - {} ({:?})\n", entry.path, entry.kind));
+                        }
+                    }
+                    return Ok(out);
+                }
+                crate::git_network_ops::clean(&exec, workdir, req).await
+            }
+
             other => {
                 return Err(ToolError::Execution(format!(
                     "unknown mutation action: {other}"
@@ -463,6 +723,25 @@ impl GitTool {
 
 fn branch_param(label: &str) -> ToolError {
     ToolError::Execution(format!("mutation requires '{label}' parameter"))
+}
+
+/// Resolve the `scope` JSON parameter (local | global | worktree) into
+/// the local-only boolean expected by git_network_ops.
+///
+/// Anything other than `local` is rejected because Phase E intentionally
+/// disallows global config writes (those belong in `~/.gitconfig`
+/// outside the repo boundary).
+fn scope_unwrap_local(scope: Option<&str>) -> bool {
+    match scope {
+        None | Some("local") => true,
+        _ => {
+            tracing::warn!(
+                "scope={scope:?} requested but Phase E only allows local scope; \
+                 defaulting to local"
+            );
+            true
+        }
+    }
 }
 
 fn map_mutation_err(e: GitMutationError) -> ToolError {

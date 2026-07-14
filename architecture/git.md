@@ -218,3 +218,92 @@ Typed wrappers over `GitMutationExecutor`:
 ### Tests
 
 `tests/git_mutations_integration.rs` covers stage/unstage, commit (normal + amend + empty), branch create/switch/delete (with refuse-current), stash push/apply, merge (fast-forward and conflict), rebase, cherry-pick, revert, restore, env-policy (no `GIT_EDITOR` leakage), and projector summary formatting. Tests skip gracefully when `git` is unavailable so CI on minimal containers still passes. 12 tests currently; full suite remains green (7015 tests workspace-wide).
+
+## Phase E — Network, Configuration, and Destructive Operations
+
+Phase E adds typed execution for the three remaining Git families that Phase D deferred: **network operations** (fetch/pull/push/remote), **configuration reads/writes** (`git config`), and **destructive operations** (`git reset`/`git clean`). They share the same executor, projector, and RunStore persistence path as Phase D, and add a new policy layer that restricts credentials, config keys, and destructive scope.
+
+### Network policy (`src/git_network_policy.rs`)
+
+| Type | Purpose |
+|------|---------|
+| `NETWORK_ALLOWED_ENV_VARS` | Pinned subset (`PATH`, `HOME`, `LANG`, `LC_ALL`, `GIT_TERMINAL_PROMPT`, `GIT_HTTP_LOW_SPEED_LIMIT`, …) used by `NetworkEnvPolicy::apply_to_command` for `git fetch`/`pull`/`push` invocations. |
+| `NetworkEnvPolicy` | `apply_to_command(argv, cwd) -> Command` that env-clears the child and restores only the allowed network subset. |
+| `NetworkFailureKind` | `Dns \| Connect \| Authentication \| Authorization \| RefRejected \| Timeout \| Transport \| Unknown` — classifier for `stderr` lines emitted by `git fetch`/`push`/etc. |
+| `classify_network_failure(stderr, exit_code, timed_out)` | Pattern-matches git stderr (DNS NXDOMAIN, "Authentication failed", "non-fast-forward", "Operation timed out") plus the exit-code/timed-out flags. |
+| `redact_url_credentials(url) -> String` | Replaces `user:password@host` with `redacted@host`. Bare `user@host` is preserved (often SSH-key derived). |
+| `redact_url_list(urls) -> Vec<String>` | Bulk redaction helper for use in remote listings. |
+
+### Typed network ops (`src/git_network_ops.rs`)
+
+| Helper | `GitOperation` produced | Notes |
+|--------|-------------------------|-------|
+| `fetch(exec, repo, remote, refspecs, prune, all)` | `Fetch` (typed) or `ManagedGitArgv` (for `--prune`, since the typed parser doesn't model it) | env-pinned, classifies failures. |
+| `pull(exec, repo, remote, branch, strategy, ff_only)` | `Pull` with `rebase`/`ff_only` derived from `PullStrategy` enum (`Merge` / `Rebase` / `FastForwardOnly`). | |
+| `push(exec, repo, req: PushRequest)` | `Push` with `force`, `force_with_lease`, `set_upstream`, `tags`, `delete` decoded from `PushRequest`. | `PushForce` enum: `Normal \| ForceWithLease { expected_sha } \| Force`. |
+| `remote_add`/`remote_remove`/`remote_set_url`/`remote_rename` | `RemoteAdd` / `RemoteRemove` / `RemoteSetUrl` / `ManagedGitArgv` (rename not in typed parser) | URLs redacted before constructing the op. |
+| `config_get`/`config_set`/`config_unset` | `ConfigGet` / `ConfigSet` / `ConfigUnset` (local-only) | Key validated against `CONFIG_KEY_ALLOWLIST` and `CONFIG_DENIED_KEY_PATTERNS`. |
+| `reset_soft`/`reset_mixed`/`reset_hard`/`reset_merge`/`reset_keep`/`reset_paths` | `ResetSoft` / `ResetMixed` / `ResetHard` / `ResetMerge` / `ResetKeep` / `Reset` (with `ResetMode::Mixed`) | Destructive operations. |
+| `clean_preview` | subprocess `git clean -n -d`, parsed into `CleanPreview { entries: Vec<CleanEntry> }` | `CleanEntry` carries path + `CleanEntryKind` (`File \| Directory \| IgnoredFile \| IgnoredDirectory`). |
+| `clean(exec, repo, req: CleanRequest)` | `ManagedGitArgv` for `git clean -f [-d] [-x]` | `CleanRequest::is_broad()` rejects `ignored=true` at root — caller must enforce. |
+| `push_permission_hint(&PushRequest)` | — | Returns a state-aware description ("push (delete remote branch)", "push (force — destructive, denied by default)"). |
+| `describe_network_operation(&GitOperation)` | — | Returns a one-line summary for permission prompts. |
+
+### Config allowlist (`src/git_network_ops.rs`)
+
+`CONFIG_KEY_ALLOWLIST` lists safe local-scope key prefixes (`branch.`, `pull.rebase`, `rebase.autosquash`, `commit.gpgsign`, `core.autocrlf`, `http.postbuffer`, `http.sslverify`, etc.). `CONFIG_DENIED_KEY_PATTERNS` rejects anything in `credential.*`, `http.*`, `url.*`, `core.gitProxy`, `core.sshCommand`, `core.sshVariant`. `validate_config_key(key, allow_local_only)` blocks global-only keys (`user.*`, `gpg.format`) when `allow_local_only=true`.
+
+### Destructive policy
+
+`reset_hard`/`reset_merge`/`reset_keep`/`clean` are tagged as `DestructiveWorktree` or `DestructiveHistory` risk by the parser, so command-intent routing carries `ExecutionCapability::DestructiveFileMutation` (default: `Deny`). The tool path (typed mutation API) does NOT enforce this — it trusts the model's permission flow. The `clean` mutation rejects `is_broad()` (ignored + no paths) at the tool dispatch layer with a `ToolError::Execution`.
+
+### Projector additions (`src/git_mutation_projector.rs`)
+
+* `project_network_mutation(&MutationResult)` — wraps `project_mutation` and appends the captured git output ("From origin\n  abc..def  main -> origin/main") under a `network output:` section, with a byte-count fallback for large outputs.
+* `project_destructive_mutation(&MutationResult)` — wraps `project_mutation` with an explicit recovery hint (`git reflog` + `git reset --hard <sha>`).
+
+### Tool integration (`src/tool/git.rs`)
+
+The `mutation` action enum gains 19 new entries:
+
+```
+fetch, pull, push,
+remote_add, remote_remove, remote_set_url, remote_rename,
+config_get, config_set, config_unset,
+reset_soft, reset_mixed, reset_hard, reset_merge, reset_keep, reset_paths,
+clean_preview, clean
+```
+
+New parameters: `remote`, `url`, `old_name`, `refspecs`, `all`, `prune`, `strategy`, `force_with_lease`, `force_push`, `set_upstream`, `key`, `value`, `scope`, `mode`, `dry_run`, `ignored`, `directories`.
+
+`scope_unwrap_local` resolves the `scope` parameter to a local-only boolean (Phase E intentionally disallows `global` scope via the tool — those writes belong in `~/.gitconfig` outside the repo boundary, and the dispatcher logs a WARN when a non-local scope is requested).
+
+### Schema additions (`crates/codegg-config/src/schema.rs`)
+
+`CommandIntentConfig` gains two fields:
+
+* `route_git_network: Option<RouteLevel>` — gates command-intent routing of `git fetch`/`pull`/`push`/`remote`/`config` to the Git backend. Default `off`.
+* `route_git_destructive: Option<RouteLevel>` — gates command-intent routing of `git reset --hard`/`reset --merge`/`reset --keep`/`clean`. Default `off`.
+
+Tool-level typed actions (the model-facing `git` tool API) are unaffected by these flags — they are routed via the dedicated `mutation` action regardless of routing mode.
+
+### Permission defaults (`src/command_intent/plan.rs`)
+
+The existing per-capability defaults already cover Phase E without modification:
+
+* `Network` → `PermissionDefault::Ask` (Medium risk).
+* `DestructiveFileMutation` → `PermissionDefault::Deny` (High risk). Hard reset and broad clean are blocked at the routing gate.
+* `GitMutation` → `PermissionDefault::Ask` (Medium risk) for non-`add` subcommands; `git add` is the only `Allow` short-circuit.
+
+### Tests
+
+`tests/git_network_integration.rs` covers (23 tests, all green):
+
+* URL redaction — anonymous, `user:password@`, bare `user@`.
+* Network failure classification — DNS, authentication, ref rejected, timeout.
+* Remote management — add (with credential redaction), rename, remove.
+* Config allowlist — denies `credential.helper` and `user.name` (global-only), allows `pull.rebase` and `rebase.autosquash` round-trips.
+* Network round-trips on local bare-remote fixture — `fetch` from pushed commit, `push` with `set_upstream`, `pull --ff-only`.
+* Destructive — `reset_hard` discards uncommitted + history, `reset_soft` keeps worktree, `clean_preview` lists untracked, `clean` removes them, `CleanRequest::is_broad()` is enforced.
+
+Tests skip gracefully when `git` is unavailable so CI on minimal containers still passes.

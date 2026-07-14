@@ -145,6 +145,42 @@ fn one_line(s: &str) -> String {
     s.replace('\n', " ").replace('\r', "")
 }
 
+/// Format a network operation summary (fetch/pull/push/remote/config).
+///
+/// These operations don't create local commits, but they do change refs
+/// (fetch/push) or repository config (remote/config). We surface those
+/// deltas in a compact form.
+pub fn project_network_mutation(result: &MutationResult) -> String {
+    let mut out = project_mutation(result);
+    if !result.stdout.trim().is_empty() {
+        // Pull/fetch summary lines (e.g. "Updating abc..def\nFast-forward").
+        let trimmed = result.stdout.trim();
+        if !trimmed.is_empty() && trimmed.lines().count() <= 8 {
+            let _ = writeln!(out, "  network output:");
+            for line in trimmed.lines() {
+                let _ = writeln!(out, "    {line}");
+            }
+        } else {
+            let _ = writeln!(out, "  network output: {} bytes (truncated)", trimmed.len());
+        }
+    }
+    out
+}
+
+/// Format a destructive operation summary (reset/clean).
+///
+/// Highlights the destructive nature, lists removed paths when known,
+/// and prints the recovery instruction.
+pub fn project_destructive_mutation(result: &MutationResult) -> String {
+    let mut out = project_mutation(result);
+    let _ = writeln!(
+        out,
+        "  destructive: this operation rewrote history or removed files; \
+         recovery is `git reflog` + `git reset --hard <sha>`."
+    );
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -231,5 +267,35 @@ mod tests {
         let summary = project_mutation(&r);
         assert!(summary.contains("rejected"));
         assert!(summary.contains("exit code: 1"));
+    }
+
+    #[test]
+    fn network_projector_includes_stdout() {
+        let mut r = fake_result();
+        r.subcommand = "fetch".to_string();
+        r.operation = GitOperation::Fetch {
+            remote: None,
+            refspecs: vec![],
+            all: true,
+        };
+        r.stdout = "From origin\n   abc1234..def5678  main -> origin/main\n".to_string();
+        r.delta.commits_created.clear();
+        let summary = project_network_mutation(&r);
+        assert!(summary.contains("git fetch"));
+        assert!(summary.contains("From origin"));
+        assert!(summary.contains("network output:"));
+    }
+
+    #[test]
+    fn destructive_projector_warns_recovery() {
+        let mut r = fake_result();
+        r.subcommand = "reset".to_string();
+        r.operation = GitOperation::ResetHard {
+            rev: Some("HEAD~3".to_string()),
+        };
+        let summary = project_destructive_mutation(&r);
+        assert!(summary.contains("git reset"));
+        assert!(summary.contains("destructive:"));
+        assert!(summary.contains("git reflog"));
     }
 }

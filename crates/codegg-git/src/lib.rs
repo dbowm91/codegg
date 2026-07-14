@@ -26,4 +26,4 @@ pub use parser::parse_git_argv;
 pub use path::{RepoPath, RepoRoot};
 pub use ref_name::{BranchName, ObjectId, RefName, RemoteName};
 pub use render::render_argv;
-pub use risk::GitRiskClass;
+pub use risk::{GitRiskClass, RiskSet};

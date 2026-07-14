@@ -2113,6 +2113,14 @@ pub struct CommandIntentConfig {
     pub route_lint: Option<RouteLevel>,
     /// Route level for format commands (cargo fmt, etc.).
     pub route_format: Option<RouteLevel>,
+    /// Phase E: network git operations (fetch, pull, push, remote).
+    /// Default: `off` (these operations are always available via the
+    /// typed `git` tool action API; command-intent routing only routes
+    /// when this is set to `observe` or `active`).
+    pub route_git_network: Option<RouteLevel>,
+    /// Phase E: destructive git operations (reset, clean).
+    /// Default: `off`.
+    pub route_git_destructive: Option<RouteLevel>,
 }
 
 impl Default for CommandIntentConfig {
@@ -2127,6 +2135,8 @@ impl Default for CommandIntentConfig {
             route_build: None,
             route_lint: None,
             route_format: None,
+            route_git_network: None,
+            route_git_destructive: None,
         }
     }
 }

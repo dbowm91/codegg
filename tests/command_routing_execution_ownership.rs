@@ -52,6 +52,8 @@ fn active_config() -> CommandIntentConfig {
         route_build: Some(RouteLevel::Active),
         route_lint: Some(RouteLevel::Active),
         route_format: Some(RouteLevel::Active),
+        route_git_network: Some(RouteLevel::Active),
+        route_git_destructive: Some(RouteLevel::Active),
         mode: Some(CommandIntentMode::Active),
     }
 }
