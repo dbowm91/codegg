@@ -42,9 +42,7 @@ pub fn create_worktree(
     }
     args.push(branch);
 
-    let output = std::process::Command::new("git")
-        .args(&args)
-        .current_dir(git_root)
+    let output = hardened_git_command(&args, git_root)
         .output()
         .map_err(|e| AppError::Worktree(format!("failed to create worktree: {e}")))?;
 
@@ -63,9 +61,7 @@ pub fn remove_worktree(git_root: &Path, path: &Path, force: bool) -> Result<(), 
     if force {
         args.push("--force");
     }
-    let output = std::process::Command::new("git")
-        .args(&args)
-        .current_dir(git_root)
+    let output = hardened_git_command(&args, git_root)
         .output()
         .map_err(|e| AppError::Worktree(format!("failed to remove worktree: {e}")))?;
 
@@ -76,6 +72,83 @@ pub fn remove_worktree(git_root: &Path, path: &Path, force: bool) -> Result<(), 
     }
 
     Ok(())
+}
+
+/// Build a `git` subprocess with a hardened environment: explicitly
+/// allowed vars only, command-bearing `GIT_*` vars stripped, pin
+/// `GIT_TERMINAL_PROMPT=0` to block credential-prompt hangs, and
+/// pin `GIT_PAGER=cat`/`PAGER=cat` to avoid paginator stalls.
+///
+/// This mirrors the root crate's `GitEnvPolicy::apply_sync` shape, but
+/// kept local because `codegg-core` cannot depend on root-crate
+/// helpers. The two lists are kept in sync manually.
+fn hardened_git_command(args: &[&str], git_root: &Path) -> std::process::Command {
+    const ALLOWED_ENV_VARS: &[&str] = &[
+        "PATH",
+        "HOME",
+        "XDG_CONFIG_HOME",
+        "XDG_DATA_HOME",
+        "XDG_CACHE_HOME",
+        "LANG",
+        "LC_ALL",
+        "LC_MESSAGES",
+        "TZ",
+        "TMPDIR",
+        "USER",
+        "LOGNAME",
+        "SSH_AUTH_SOCK",
+        "SSH_AGENT_PID",
+        "LANGUAGE",
+    ];
+    const STRIPPED_ENV_VARS: &[&str] = &[
+        "GIT_ASKPASS",
+        "GIT_SSH_COMMAND",
+        "GIT_SSH_VARIANT",
+        "GIT_PROXY_COMMAND",
+        "GIT_CONFIG_COUNT",
+        "GIT_CONFIG_KEY_0",
+        "GIT_CONFIG_KEY_1",
+        "GIT_CONFIG_KEY_2",
+        "GIT_CONFIG_KEY_3",
+        "GIT_CONFIG_KEY_4",
+        "GIT_CONFIG_KEY_5",
+        "GIT_CONFIG_VALUE_0",
+        "GIT_CONFIG_VALUE_1",
+        "GIT_CONFIG_VALUE_2",
+        "GIT_CONFIG_VALUE_3",
+        "GIT_CONFIG_VALUE_4",
+        "GIT_CONFIG_VALUE_5",
+        "GIT_CONFIG_GLOBAL",
+        "GIT_CONFIG_SYSTEM",
+        "GIT_CONFIG_NOSYSTEM",
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_COMMON_DIR",
+        "GIT_INDEX_FILE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_PAGER",
+        "PAGER",
+    ];
+    let mut cmd = std::process::Command::new("git");
+    cmd.args(args).current_dir(git_root).env_clear();
+    for key in ALLOWED_ENV_VARS {
+        if let Some(v) = std::env::var_os(key) {
+            cmd.env(key, v);
+        }
+    }
+    for key in STRIPPED_ENV_VARS {
+        cmd.env_remove(key);
+    }
+    cmd.env("GIT_TERMINAL_PROMPT", "0");
+    cmd.env("GIT_EDITOR", "true");
+    cmd.env("GIT_SEQUENCE_EDITOR", "true");
+    cmd.env_remove("EDITOR");
+    cmd.env_remove("VISUAL");
+    cmd.env("GPG_TTY", "");
+    cmd.env("GIT_PAGER", "cat");
+    cmd.env("PAGER", "cat");
+    cmd
 }
 
 pub fn find_git_root(start: &Path) -> Option<std::path::PathBuf> {

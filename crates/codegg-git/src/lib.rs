@@ -18,6 +18,7 @@ pub mod path;
 pub mod ref_name;
 pub mod render;
 pub mod risk;
+pub mod sensitive;
 
 pub use error::ParseError;
 pub use operation::GitOperation;
@@ -27,3 +28,4 @@ pub use path::{RepoPath, RepoRoot};
 pub use ref_name::{BranchName, ObjectId, RefName, RemoteName};
 pub use render::render_argv;
 pub use risk::{GitRiskClass, RiskSet};
+pub use sensitive::{redact_url_credentials, RedactedUrl};

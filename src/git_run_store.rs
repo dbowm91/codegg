@@ -24,6 +24,7 @@ use codegg_core::run_store::{
 };
 
 use crate::git_mutations::MutationResult;
+use crate::git_network_policy::sanitize_argv_for_run_store;
 
 /// Persist a completed `MutationResult` to the `RunStore`.
 ///
@@ -50,6 +51,11 @@ pub async fn persist_mutation(
     };
 
     let argv = codegg_git::render_argv(&result.operation);
+    // Defense in depth: sanitize the URL-bearing argv before it lands
+    // in `RunStore` (the raw URL still reaches git's child process via
+    // render_argv above). The redacted argv is what the audit/replay
+    // log surfaces.
+    let argv = sanitize_argv_for_run_store(argv);
     let command = argv.join(" ");
     let started_at = chrono::Utc::now();
     let status = if result.success {
@@ -160,6 +166,11 @@ pub async fn persist_mutation(
             })
             .collect(),
         rerun: Some(codegg_core::run_store::RerunDescriptor {
+            // Rerun descriptor's argv must match the argv that
+            // reached git (so an authenticated replay doesn't get
+            // a 401). The raw URL survives here for the canonical
+            // re-render path; other surfaces (`command`/`argv`
+            // above) keep the redacted form.
             argv: Some(codegg_git::render_argv(&result.operation)),
             script_source_ref: None,
             backend_family: backend_family.to_string(),

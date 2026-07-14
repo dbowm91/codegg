@@ -621,7 +621,7 @@ pub fn render_argv(op: &GitOperation) -> Vec<String> {
                 "remote".into(),
                 "add".into(),
                 name.as_str().into(),
-                url.clone(),
+                url.expose_secret().to_string(),
             ]
         }
 
@@ -640,7 +640,7 @@ pub fn render_argv(op: &GitOperation) -> Vec<String> {
                 v.push("--add".into());
             }
             v.push(name.as_str().into());
-            v.push(url.clone());
+            v.push(url.expose_secret().to_string());
             v
         }
 
@@ -748,6 +748,7 @@ mod tests {
     use crate::operation::GitOperation;
     use crate::path::{Pathspec, RepoPath, RepoRoot};
     use crate::ref_name::{BranchName, RemoteName, RevisionExpr};
+    use crate::sensitive::RedactedUrl;
 
     fn root() -> RepoRoot {
         RepoRoot::new("/tmp").unwrap()
@@ -928,7 +929,7 @@ mod tests {
     fn remote_add() {
         let op = GitOperation::RemoteAdd {
             name: rn("upstream"),
-            url: "https://example.com/repo.git".into(),
+            url: RedactedUrl::new("https://example.com/repo.git"),
         };
         assert_eq!(
             render_argv(&op),
@@ -939,6 +940,34 @@ mod tests {
                 "upstream",
                 "https://example.com/repo.git"
             ]
+        );
+    }
+
+    #[test]
+    fn remote_add_with_credentials_passes_raw_to_argv() {
+        // Execution argv must carry the raw URL even after redaction;
+        // Debug/Serialize must never expose it.
+        let op = GitOperation::RemoteAdd {
+            name: rn("upstream"),
+            url: RedactedUrl::new("https://user:secret@host.example/r.git"),
+        };
+        let argv = render_argv(&op);
+        assert!(
+            argv.iter()
+                .any(|tok| tok == "https://user:secret@host.example/r.git"),
+            "execution argv lost the raw credential-bearing URL: {argv:?}"
+        );
+        assert!(
+            argv.iter().any(|tok| tok.contains("secret")),
+            "redaction should not erase credential before arg construction"
+        );
+        // Debug output must not show the raw credential.
+        let dbg = format!("{:?}", op);
+        assert!(!dbg.contains("secret"), "Debug leaked raw secret: {dbg}");
+        let json = serde_json::to_string(&op).unwrap();
+        assert!(
+            !json.contains("secret"),
+            "Serialize leaked raw secret: {json}"
         );
     }
 
@@ -957,7 +986,7 @@ mod tests {
     fn remote_set_url() {
         let op = GitOperation::RemoteSetUrl {
             name: rn("origin"),
-            url: "git@new.git".into(),
+            url: RedactedUrl::new("git@new.git"),
             append: false,
         };
         assert_eq!(
@@ -967,10 +996,34 @@ mod tests {
     }
 
     #[test]
+    fn remote_set_url_with_credentials_passes_raw_to_argv() {
+        let op = GitOperation::RemoteSetUrl {
+            name: rn("origin"),
+            url: RedactedUrl::new("https://user:secret@host.example/r.git"),
+            append: false,
+        };
+        let argv = render_argv(&op);
+        // Execution argv keeps the raw URL.
+        assert!(
+            argv.iter()
+                .any(|tok| tok == "https://user:secret@host.example/r.git"),
+            "execution argv lost raw URL: {argv:?}"
+        );
+        // Debug and Serialize stay redacted.
+        let dbg = format!("{:?}", op);
+        assert!(!dbg.contains("secret"), "Debug leaked raw secret: {dbg}");
+        let json = serde_json::to_string(&op).unwrap();
+        assert!(
+            !json.contains("secret"),
+            "Serialize leaked raw secret: {json}"
+        );
+    }
+
+    #[test]
     fn remote_set_url_append() {
         let op = GitOperation::RemoteSetUrl {
             name: rn("origin"),
-            url: "git@mirror.git".into(),
+            url: RedactedUrl::new("git@mirror.git"),
             append: true,
         };
         assert_eq!(

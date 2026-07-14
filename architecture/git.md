@@ -462,4 +462,14 @@ Recovery operations are persisted via the new `persist_recovery()` helper. Each 
 | `src/tui/app/state/session.rs` | 3 (extended) | Sidebar info with operation-state fields. |
 | `tests/tui_render.rs` | 99 (existing) | Validated against new GitSidebarInfo field set. |
 
-The full test matrix (Phase F + previous phases) passes locally in capped invocations (`CARGO_BUILD_JOBS=1 cargo test --workspace --all-features -- --test-threads=8`).
+### Phase F corrective security closure
+
+Two Phase F security-review findings were resolved post-merge by the corrective closure pass:
+
+1. **`remote_set_url` credential leakage** — `GitOperation::RemoteAdd.url` and `GitOperation::RemoteSetUrl.url` are now typed as `codegg_git::RedactedUrl` (a newtype carrying both raw and redacted forms), instead of `String`. `Debug`, `Display`, `Serialize`, and any externally observable surface see only the redacted form. The raw form is reachable exclusively through `RedactedUrl::expose_secret()`, which is consumed exclusively at the final `render_argv` boundary. `remote_add()` and `remote_set_url()` in `src/git_network_ops.rs` wrap the incoming URL via `RedactedUrl::new(url)` before constructing the typed operation; `MutationResult` produced by both helpers flows through `sanitize_truncate_for_result` in `src/git_mutations.rs`, which applies `redact_url_credentials_in_text` to stdout/stderr before they reach `RunStore`. The RunStore audit log additionally flows through `sanitize_argv_for_run_store` (in `src/git_network_policy.rs`), which redacts URL-bearing tokens in the persisted `command`/`argv` fields without affecting the rerun descriptor's raw argv (the rerun path needs the raw URL for re-execution to authenticate).
+
+2. **Raw fallback path missing hardened env policy** — Every Codegg-owned `git` subprocess now flows through `GitEnvPolicy::apply()` (tokio async) or the new `GitEnvPolicy::apply_sync()` (synchronous TUI probes). The policy's default includes `strip_command_bearers = true`, which removes `GIT_ASKPASS`, `GIT_SSH_COMMAND`, `GIT_PROXY_COMMAND`, all `GIT_CONFIG_*` injection vectors, `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`, `GIT_OBJECT_DIRECTORY`, `GIT_PAGER`, and `PAGER` from the inherited environment. Affected callers: `src/tool/git.rs::run_raw_subcommand`, `src/git_service.rs::run_git_raw`, `src/tool/commit.rs::fetch_head_message`, `src/core/daemon.rs::SnapshotWorkspace`, the TUI `handle_diff_command` / `handle_revert_command`, and `crates/codegg-core/src/worktree.rs::create_worktree` / `remove_worktree` (the worktree crate keeps a local mirror because `codegg-core` cannot depend on root-crate helpers).
+
+The two-stage `apply`/`apply_sync` split ensures both the TUI's synchronous dialog probes and the daemon's async subprocess path share the exact same allowlist (`ALLOWED_ENV_VARS`) and hard-deny set (`ALWAYS_STRIPPED_ENV_VARS`, expanded to 27 vars in the closure). See `docs/validation/git-security-review.md` for the full resolution notes and `architecture/git_phase_f_handoff.md` for the original Phase F review context.
+
+

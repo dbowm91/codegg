@@ -1,6 +1,7 @@
 use crate::path::{Pathspec, RepoPath};
 use crate::ref_name::{BranchName, RemoteName, RevisionExpr};
 use crate::risk::{GitRiskClass, RiskSet};
+use crate::sensitive::RedactedUrl;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
@@ -219,14 +220,14 @@ pub enum GitOperation {
     // ── Remote ──
     RemoteAdd {
         name: RemoteName,
-        url: String,
+        url: RedactedUrl,
     },
     RemoteRemove {
         name: RemoteName,
     },
     RemoteSetUrl {
         name: RemoteName,
-        url: String,
+        url: RedactedUrl,
         append: bool,
     },
 
@@ -847,12 +848,38 @@ mod tests {
     fn remote_add_is_config_mutation() {
         let op = GitOperation::RemoteAdd {
             name: RemoteName::new("origin").unwrap(),
-            url: "https://example.com".into(),
+            url: RedactedUrl::new("https://example.com"),
         };
         let risk = op.risk_classes();
         assert!(risk.contains(&GitRiskClass::RepositoryConfigMutation));
         assert!(!risk.is_destructive());
         assert_eq!(op.subcommand_name(), "remote");
+    }
+
+    #[test]
+    fn remote_url_variants_hide_raw_secret_in_debug_and_serde() {
+        let cred = "https://user:secret_token_abc@example.com/r.git";
+        let add_op = GitOperation::RemoteAdd {
+            name: RemoteName::new("origin").unwrap(),
+            url: RedactedUrl::new(cred),
+        };
+        let set_op = GitOperation::RemoteSetUrl {
+            name: RemoteName::new("origin").unwrap(),
+            url: RedactedUrl::new(cred),
+            append: false,
+        };
+        for op in [&add_op, &set_op] {
+            let dbg = format!("{op:?}");
+            assert!(
+                !dbg.contains("secret_token_abc"),
+                "Debug leaked raw secret for {op:?}\ndebug={dbg}"
+            );
+            let json = serde_json::to_string(op).expect("serialize");
+            assert!(
+                !json.contains("secret_token_abc"),
+                "Serialize leaked raw secret for {op:?}\njson={json}"
+            );
+        }
     }
 
     #[test]

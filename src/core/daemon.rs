@@ -2090,13 +2090,13 @@ impl CoreDaemon {
 
                 let git_root = crate::worktree::find_git_root(&path);
 
-                let git_status = git_root.as_ref().and_then(|root| {
-                    std::process::Command::new("git")
-                        .args(["status", "--porcelain"])
-                        .current_dir(root)
-                        .output()
-                        .ok()
-                        .map(|output| {
+                let git_status = match git_root.as_ref() {
+                    Some(root) => {
+                        let argv: Vec<String> =
+                            vec!["git".into(), "status".into(), "--porcelain".into()];
+                        let mut cmd =
+                            crate::git_mutations::GitEnvPolicy::default().apply(&argv, root);
+                        cmd.output().await.ok().map(|output| {
                             let stdout = String::from_utf8_lossy(&output.stdout);
                             let changed_files = stdout.lines().count();
                             serde_json::json!({
@@ -2104,7 +2104,9 @@ impl CoreDaemon {
                                 "changed_files": changed_files,
                             })
                         })
-                });
+                    }
+                    None => None,
+                };
 
                 let worktrees: Vec<serde_json::Value> = match git_root.as_ref() {
                     Some(root) => crate::worktree::list_worktrees(root)

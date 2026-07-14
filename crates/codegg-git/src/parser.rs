@@ -556,7 +556,7 @@ fn parse_remote(ctx: &mut ParseCtx) -> Result<GitOperation, ParseError> {
                 name: RemoteName::new(&name).map_err(|e| ParseError::MalformedArgv {
                     reason: e.to_string(),
                 })?,
-                url,
+                url: crate::sensitive::RedactedUrl::new(url),
             })
         }
         "remove" | "rm" => {
@@ -588,7 +588,7 @@ fn parse_remote(ctx: &mut ParseCtx) -> Result<GitOperation, ParseError> {
                         name: RemoteName::new(&name).map_err(|e| ParseError::MalformedArgv {
                             reason: e.to_string(),
                         })?,
-                        url,
+                        url: crate::sensitive::RedactedUrl::new(url),
                         append,
                     });
                 }
@@ -2105,7 +2105,7 @@ mod tests {
             result,
             GitOperation::RemoteAdd {
                 name: RemoteName::new("origin").unwrap(),
-                url: "https://example.com".into(),
+                url: crate::sensitive::RedactedUrl::new("https://example.com"),
             }
         );
     }
@@ -2135,7 +2135,7 @@ mod tests {
             result,
             GitOperation::RemoteSetUrl {
                 name: RemoteName::new("origin").unwrap(),
-                url: "https://new-url.com".into(),
+                url: crate::sensitive::RedactedUrl::new("https://new-url.com"),
                 append: false,
             }
         );
@@ -2156,7 +2156,7 @@ mod tests {
             result,
             GitOperation::RemoteSetUrl {
                 name: RemoteName::new("origin").unwrap(),
-                url: "https://extra.com".into(),
+                url: crate::sensitive::RedactedUrl::new("https://extra.com"),
                 append: true,
             }
         );

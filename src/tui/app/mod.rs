@@ -8799,8 +8799,6 @@ impl App {
             }
         };
 
-        let env_path = std::env::var_os("PATH").unwrap_or_default();
-
         if let Some(file_path) = path {
             let abs_path = if std::path::Path::new(file_path).is_absolute() {
                 std::path::PathBuf::from(file_path)
@@ -8808,11 +8806,10 @@ impl App {
                 project_dir.join(file_path)
             };
 
-            let old_content = std::process::Command::new("git")
-                .env_clear()
-                .env("PATH", &env_path)
-                .args(["show", &format!("HEAD:{}", file_path)])
-                .current_dir(&git_root)
+            let show_argv: Vec<String> =
+                vec!["git".into(), "show".into(), format!("HEAD:{}", file_path)];
+            let old_content = crate::git_mutations::GitEnvPolicy::default()
+                .apply_sync(&show_argv, &git_root)
                 .output()
                 .ok()
                 .filter(|o| o.status.success())
@@ -8833,11 +8830,9 @@ impl App {
                 title: title.into_boxed_str(),
             });
         } else {
-            let output = std::process::Command::new("git")
-                .env_clear()
-                .env("PATH", &env_path)
-                .args(["diff"])
-                .current_dir(&git_root)
+            let diff_argv: Vec<String> = vec!["git".into(), "diff".into()];
+            let output = crate::git_mutations::GitEnvPolicy::default()
+                .apply_sync(&diff_argv, &git_root)
                 .output();
 
             match output {
@@ -8952,11 +8947,15 @@ impl App {
             }
         };
 
-        let output = std::process::Command::new("git")
-            .env_clear()
-            .env("PATH", std::env::var_os("PATH").unwrap_or_default())
-            .args(["checkout", "HEAD", "--", path])
-            .current_dir(&git_root)
+        let checkout_argv: Vec<String> = vec![
+            "git".into(),
+            "checkout".into(),
+            "HEAD".into(),
+            "--".into(),
+            path.to_string(),
+        ];
+        let output = crate::git_mutations::GitEnvPolicy::default()
+            .apply_sync(&checkout_argv, &git_root)
             .output();
 
         match output {

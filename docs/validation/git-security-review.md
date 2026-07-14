@@ -134,13 +134,21 @@ Focused review of 14 threat classes from `plans/git_agent_integration_phase_f_co
 ### Issue: `remote_set_url` does not redact credentials
 
 **Evidence:**
-- `src/git_network_ops.rs:345` — `remote_add()` calls `redact_url_credentials(url)` before constructing the `RemoteAdd` operation. The sanitized URL is what gets stored.
-- `src/git_network_ops.rs:376` — `remote_set_url()` does NOT call `redact_url_credentials()`. The raw URL is passed directly to `RemoteSetUrl { url: url.to_string(), .. }`.
-- `src/git_run_store.rs:52-53` — The `command` field in `RunDraft` is `argv.join(" ")`, which includes the URL from the rendered operation. If the URL contains credentials, they persist in RunStore.
+- `src/git_network_ops.rs:349-360` (`remote_add`) and `src/git_network_ops.rs:377-392` (`remote_set_url`) wrap the URL via `codegg_git::RedactedUrl::new(url)` before constructing the typed operation. The raw value reaches git's argv via `expose_secret()` inside `codegg-git::render_argv`; all display/serialization surfaces see only the redacted form.
+- `src/git_run_store.rs:52-53` — The `command` field in `RunDraft` is `argv.join(" ")` after the rendered operation goes through `sanitize_argv_for_run_store(argv)`. Audit surfaces are structurally blocked from carrying raw credentials.
 
 **Impact:** A URL with embedded credentials (e.g., `https://user:token@host/repo.git`) passed to `remote_set_url` will be stored in the `MutationResult.operation` field and persisted to RunStore in plaintext.
 
 **Recommendation:** Add `let sanitized_url = redact_url_credentials(url);` before constructing the `RemoteSetUrl` operation in `remote_set_url()`, matching the `remote_add()` pattern.
+
+---
+
+**Resolution:** See **Resolutions §1** below. The fix is structural:
+`RemoteAdd.url` and `RemoteSetUrl.url` are now `RedactedUrl` (not `String`),
+so the raw value can only escape via `expose_secret()` consumed at the
+final `render_argv` boundary. The `RunDraft.command`/`RunDraft.argv`
+audit fields additionally flow through `sanitize_argv_for_run_store`
+before being persisted.
 
 ---
 
@@ -224,19 +232,73 @@ Focused review of 14 threat classes from `plans/git_agent_integration_phase_f_co
 
 ## Open Issues
 
-### 1. `remote_set_url` credential leakage (unmitigated)
+_All previously identified open issues from the Phase F security review
+have been resolved by the corrective security closure pass (see the
+adjacent **Resolutions** section)._
 
-**Severity:** Medium
-**Location:** `src/git_network_ops.rs:367-382`
-**Description:** `remote_set_url()` passes the raw URL to `GitOperation::RemoteSetUrl` without calling `redact_url_credentials()`. Credentials in the URL persist in `MutationResult` and are written to RunStore.
-**Recommendation:** Add `let sanitized_url = redact_url_credentials(url);` before constructing the operation, matching the `remote_add()` pattern at line 345.
+## Resolutions (Phase F Closure)
 
-### 2. Raw fallback path has reduced env hardening (design limitation)
+### 1. `remote_set_url` credential leakage — RESOLVED
 
-**Severity:** Low
-**Location:** `src/tool/git.rs:349-365`
-**Description:** The raw subcommand fallback uses `env_clear()` + only `PATH` restoration, missing `GIT_EDITOR=true` pinning, `GPG_TTY` clearing, and `EDITOR`/`VISUAL` removal.
-**Recommendation:** Consider applying the full `GitEnvPolicy` to the raw fallback path, or document the reduced hardening in the tool description.
+**Original Severity:** Medium
+**Original Location:** `src/git_network_ops.rs:367-382`
+**Issue:** `remote_set_url()` passed the raw URL directly to
+`GitOperation::RemoteSetUrl { url: url.to_string() }`, allowing
+credentials to flow into `MutationResult` and RunStore.
+
+**Fix:** Introduced `codegg_git::RedactedUrl` newtype
+(`crates/codegg-git/src/sensitive.rs`). The struct carries both the
+raw and redacted forms of the URL; only `RedactedUrl::expose_secret()`
+returns the raw, and it is consumed exclusively at the final
+`render_argv` boundary. `Debug`, `Display`, `Serialize`, and any
+externally observable surface see only the redacted form.
+
+`GitOperation::RemoteAdd.url` and `GitOperation::RemoteSetUrl.url`
+are now typed as `RedactedUrl` rather than `String`. Both
+`remote_add()` and `remote_set_url()` wrap the incoming URL via
+`RedactedUrl::new(url)` before constructing the typed operation. The
+raw URL still reaches git's argv (so authentication still works), but
+every persistence, log, projection, error-conversion, and serialization
+path is now structurally blocked from emitting it.
+
+Defense in depth: `MutationResult` produced by both helpers flows
+through `sanitize_truncate_for_result` in `src/git_mutations.rs`,
+which applies `redact_url_credentials_in_text` to stdout/stderr before
+they reach `RunStore`. The same redaction helper now also runs on
+`run_git_raw` (`src/git_service.rs`) for any read-side stdio.
+
+### 2. Raw fallback path missing hardened env policy — RESOLVED
+
+**Original Severity:** Low
+**Original Location:** `src/tool/git.rs:349-365`
+**Issue:** Raw subprocess fallback used `env_clear()` + `PATH`
+restoration only, missing command-bearer stripping,
+`GIT_EDITOR=true` pinning, `GPG_TTY` clearing, and `EDITOR`/`VISUAL`
+removal.
+
+**Fix:** Every Codegg-owned `git` subprocess now flows through
+`GitEnvPolicy::apply()` (tokio async paths) or the new
+`GitEnvPolicy::apply_sync()` (synchronous paths). The policy is the
+single source of truth for env hardening. Affected callers:
+
+| Site | Before | After |
+|------|--------|-------|
+| `src/tool/git.rs::run_raw_subcommand` | env_clear + PATH | `GitEnvPolicy::default().apply(...)` |
+| `src/git_mutations.rs` (typed mutations) | env_clear + PATH | already used policy; **added** `strip_command_bearers` flag to default |
+| `src/git_service.rs::run_git_raw` | env_clear + PATH | `GitEnvPolicy::default().apply(...)` |
+| `src/tool/commit.rs::fetch_head_message` | env_clear + PATH | `GitEnvPolicy::default().apply(...)` |
+| `src/core/daemon.rs::SnapshotWorkspace` | env_clear + PATH | `GitEnvPolicy::default().apply(...)` |
+| `src/tui/app/mod.rs` (diff/checkout/show) | env_clear + PATH | `GitEnvPolicy::default().apply_sync(...)` |
+| `crates/codegg-core/src/worktree.rs` | env_clear + PATH | local `hardened_git_command` mirror (codegg-core cannot depend on root crate) |
+
+The policy's default now includes `strip_command_bearers = true`,
+which removes `GIT_ASKPASS`, `GIT_SSH_COMMAND`,
+`GIT_PROXY_COMMAND`, all `GIT_CONFIG_*` injection vectors,
+`GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`,
+`GIT_OBJECT_DIRECTORY`, `GIT_PAGER`, and `PAGER` from the inherited
+environment. The two-stage `apply`/`apply_sync` split ensures both
+the TUI's synchronous dialog probes and the daemon's async
+subprocess path share the exact same allowlist and hard-deny set.
 
 ---
 

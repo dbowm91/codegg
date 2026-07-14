@@ -26,6 +26,7 @@ use codegg_git::{render_argv, GitOperation, GitRiskClass};
 use serde::{Deserialize, Serialize};
 use tokio::process::Command;
 
+use crate::git_network_policy::redact_url_credentials_in_text;
 use crate::git_service::{GitExecutionService, GitServiceError, RawGitOutput};
 
 // ── Process environment policy ───────────────────────────────────────
@@ -52,6 +53,51 @@ pub const ALLOWED_ENV_VARS: &[&str] = &[
     "LANGUAGE",
 ];
 
+/// Environment variables that are NEVER passed to a Codegg-owned
+/// `git` child, regardless of the kind of operation. These are
+/// command-bearing variables that could be used by a hostile parent
+/// to inject helper/editor/filter/credential commands.
+///
+/// Network operations extend the baseline with `NETWORK_ALLOWED_ENV_VARS`
+/// (`src/git_network_policy::NETWORK_ALLOWED_ENV_VARS`) which is a
+/// reviewed allowlist for credential helpers, SSH agent, and proxy
+/// variables required for remote access.
+pub const ALWAYS_STRIPPED_ENV_VARS: &[&str] = &[
+    // credential helpers (never auto-restored for local ops)
+    "GIT_ASKPASS",
+    "GIT_SSH_COMMAND",
+    "GIT_SSH_VARIANT",
+    "GIT_PROXY_COMMAND",
+    // git config injection vectors
+    "GIT_CONFIG_COUNT",
+    "GIT_CONFIG_KEY_0",
+    "GIT_CONFIG_KEY_1",
+    "GIT_CONFIG_KEY_2",
+    "GIT_CONFIG_KEY_3",
+    "GIT_CONFIG_KEY_4",
+    "GIT_CONFIG_KEY_5",
+    "GIT_CONFIG_VALUE_0",
+    "GIT_CONFIG_VALUE_1",
+    "GIT_CONFIG_VALUE_2",
+    "GIT_CONFIG_VALUE_3",
+    "GIT_CONFIG_VALUE_4",
+    "GIT_CONFIG_VALUE_5",
+    "GIT_CONFIG_PARAMETERS",
+    // alternate askpass
+    "SSH_ASKPASS",
+    "GIT_TOOL",
+    // repository working-tree overrides (would let parent escape cwd)
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_COMMON_DIR",
+    // pager (prevent paginated output stalls)
+    "GIT_PAGER",
+    "PAGER",
+];
+
 /// Process-environment policy applied to every mutation subprocess.
 #[derive(Debug, Clone)]
 pub struct GitEnvPolicy {
@@ -63,6 +109,9 @@ pub struct GitEnvPolicy {
     /// When true, strip `EDITOR`/`VISUAL` from the parent environment
     /// before launching git.
     pub strip_editors: bool,
+    /// When true, explicitly unset the variables in
+    /// [`ALWAYS_STRIPPED_ENV_VARS`] before launching git.
+    pub strip_command_bearers: bool,
 }
 
 impl Default for GitEnvPolicy {
@@ -71,26 +120,36 @@ impl Default for GitEnvPolicy {
             terminal_prompt_disabled: true,
             pin_editor: true,
             strip_editors: true,
+            strip_command_bearers: true,
         }
     }
 }
 
 impl GitEnvPolicy {
-    /// Build a `Command` from argv and repository root with the policy
-    /// applied. The caller receives the `Command` with `args` and
+    /// Build an async `Command` from argv and repository root with the
+    /// policy applied. The caller receives the `Command` with `args` and
     /// `current_dir` already set; the helper is the single source of
     /// truth for env hardening.
+    ///
+    /// All Codegg-owned `git` subprocesses — typed mutations, managed
+    /// argv fallback, raw subcommand fallback, and snapshot capture —
+    /// MUST flow through `apply()`. Network operations apply the
+    /// baseline plus `NETWORK_ALLOWED_ENV_VARS` via
+    /// [`crate::git_network_policy::NetworkEnvPolicy::apply_to_command`].
     pub fn apply(&self, argv: &[String], cwd: &Path) -> Command {
         let mut cmd = Command::new(&argv[0]);
         cmd.args(&argv[1..]).current_dir(cwd);
         cmd.env_clear();
-
         for key in ALLOWED_ENV_VARS {
             if let Some(v) = std::env::var_os(key) {
                 cmd.env(key, v);
             }
         }
-
+        if self.strip_command_bearers {
+            for key in ALWAYS_STRIPPED_ENV_VARS {
+                cmd.env_remove(key);
+            }
+        }
         if self.terminal_prompt_disabled {
             cmd.env("GIT_TERMINAL_PROMPT", "0");
         }
@@ -103,7 +162,44 @@ impl GitEnvPolicy {
             cmd.env_remove("VISUAL");
         }
         cmd.env("GPG_TTY", "");
+        cmd.env("GIT_PAGER", "cat");
+        cmd.env("PAGER", "cat");
         cmd.kill_on_drop(true);
+        cmd
+    }
+
+    /// Synchronous variant of [`apply`] used by callers that need a
+    /// `std::process::Command` (e.g. TUI/dialog synchronous probes).
+    /// Drops `kill_on_drop` since `std::process::Command` has no
+    /// equivalent; downstream callers should still observe timeouts.
+    pub fn apply_sync(&self, argv: &[String], cwd: &Path) -> std::process::Command {
+        let mut cmd = std::process::Command::new(&argv[0]);
+        cmd.args(&argv[1..]).current_dir(cwd);
+        cmd.env_clear();
+        for key in ALLOWED_ENV_VARS {
+            if let Some(v) = std::env::var_os(key) {
+                cmd.env(key, v);
+            }
+        }
+        if self.strip_command_bearers {
+            for key in ALWAYS_STRIPPED_ENV_VARS {
+                cmd.env_remove(key);
+            }
+        }
+        if self.terminal_prompt_disabled {
+            cmd.env("GIT_TERMINAL_PROMPT", "0");
+        }
+        if self.pin_editor {
+            cmd.env("GIT_EDITOR", "true");
+            cmd.env("GIT_SEQUENCE_EDITOR", "true");
+        }
+        if self.strip_editors {
+            cmd.env_remove("EDITOR");
+            cmd.env_remove("VISUAL");
+        }
+        cmd.env("GPG_TTY", "");
+        cmd.env("GIT_PAGER", "cat");
+        cmd.env("PAGER", "cat");
         cmd
     }
 }
@@ -496,8 +592,8 @@ impl GitMutationExecutor {
         let outcome = classify_outcome(operation, &before, &after, raw.exit_code);
         let delta = compute_delta(operation, &before, &after, &raw, &outcome);
 
-        let stdout = truncate_for_result(&raw.stdout, 64 * 1024);
-        let stderr = truncate_for_result(&raw.stderr, 64 * 1024);
+        let stdout = sanitize_truncate_for_result(&raw.stdout, 64 * 1024);
+        let stderr = sanitize_truncate_for_result(&raw.stderr, 64 * 1024);
         let start = std::time::Instant::now();
 
         Ok(MutationResult {
@@ -562,6 +658,15 @@ fn truncate_for_result(s: &str, max_bytes: usize) -> String {
 /// Public alias used by sibling modules (e.g. raw-mutation helpers).
 pub(crate) fn truncate_for_public(s: &str, max_bytes: usize) -> String {
     truncate_for_result(s, max_bytes)
+}
+
+/// Defense-in-depth: redact any URL-embedded credentials, then truncate.
+/// This is the single boundary through which every Git-emitted byte
+/// reaches `MutationResult.stdout`/`stderr`, RunStore artifacts, and
+/// downstream projectors. The raw URL still reaches the Git child via
+/// `RedactedUrl::expose_secret` at the argv construction site.
+fn sanitize_truncate_for_result(s: &str, max_bytes: usize) -> String {
+    truncate_for_result(&redact_url_credentials_in_text(s), max_bytes)
 }
 
 /// Classify the outcome of a mutation given before/after snapshots.

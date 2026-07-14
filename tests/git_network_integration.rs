@@ -16,7 +16,8 @@ use std::time::Duration;
 use codegg::git_mutations::{GitEnvPolicy, GitMutationExecutor};
 use codegg::git_network_ops::{self, CleanRequest, PushForce, PushRequest};
 use codegg::git_network_policy::{
-    classify_network_failure, redact_url_credentials, NetworkFailureKind,
+    classify_network_failure, redact_url_credentials, redact_url_credentials_in_text,
+    NetworkFailureKind,
 };
 
 fn git_available() -> bool {
@@ -146,7 +147,7 @@ fn classify_timeout_kind() {
 // ── Remote add / remove / rename ────────────────────────────────────
 
 #[tokio::test(flavor = "current_thread")]
-async fn remote_add_redacts_credentials_in_url() {
+async fn remote_add_persisted_artifacts_are_sanitized() {
     if !git_available() {
         eprintln!("git not available — skipping");
         return;
@@ -162,12 +163,37 @@ async fn remote_add_redacts_credentials_in_url() {
     .await
     .expect("remote_add");
     assert!(res.success, "remote_add should succeed: {}", res.stderr);
-    // URL stored on disk should not contain raw credentials.
-    let listed = run_git(&["remote", "get-url", "private"], dir.path())
-        .output()
-        .expect("get-url");
-    let url = String::from_utf8_lossy(&listed.stdout).trim().to_string();
-    assert!(!url.contains("pw"), "leaked password in stored URL: {url}");
+    // Threat model boundary: the URL with credentials MUST reach git's
+    // argv (otherwise auth breaks), but Codegg-owned persisted surfaces
+    // (MutationResult.stdout/stderr, RunStore artifacts, projection,
+    // error conversion) MUST contain only the redacted form.
+    assert!(
+        !res.stdout.contains("u:pw"),
+        "MutationResult.stdout leaked raw URL: {}",
+        res.stdout
+    );
+    assert!(
+        !res.stderr.contains("u:pw"),
+        "MutationResult.stderr leaked raw URL: {}",
+        res.stderr
+    );
+    assert!(
+        !format!("{:?}", res.operation).contains("pw"),
+        "MutationResult.operation leaked raw URL: {:?}",
+        res.operation
+    );
+    // Sanitized argv forms what lands in RunStore audit logs.
+    let argv = codegg_git::render_argv(&res.operation);
+    let sanitized = codegg::git_network_policy::sanitize_argv_for_run_store(argv);
+    let last = sanitized.last().expect("argv has URL slot");
+    assert!(
+        last.contains("redacted@private.example.com"),
+        "URL in audit argv must be redacted: {sanitized:?}"
+    );
+    assert!(
+        !last.contains("pw"),
+        "audit argv leaked password: {sanitized:?}"
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -506,6 +532,112 @@ async fn clean_broad_ignored_request_is_rejected_by_policy() {
     );
 }
 
+// ── Corrective security closure: credential leak + env hardening ────
+//
+// These tests pin the boundary added by the corrective security closure
+// plan for Phase F findings:
+//   1. remote_set_url credential leakage via un-redacted URL path
+//   2. raw/compat Git fallback missing hardened env policy
+
+#[test]
+fn redacted_url_hides_raw_secret_in_debug_and_serde() {
+    use codegg_git::RedactedUrl;
+    let raw = "https://alice:hunter2@github.com/org/repo.git";
+    let url = RedactedUrl::new(raw.to_string());
+    let debug = format!("{url:?}");
+    let display = format!("{url}");
+    assert!(
+        !debug.contains("hunter2"),
+        "Debug must not leak credential: {debug}"
+    );
+    assert!(
+        !display.contains("hunter2"),
+        "Display must not leak credential: {display}"
+    );
+    assert!(
+        debug.contains("REDACTED") || debug.contains("github.com"),
+        "Debug should show redaction marker: {debug}"
+    );
+    let json = serde_json::to_string(&url).expect("serialize");
+    assert!(
+        !json.contains("hunter2"),
+        "Serialize must not leak credential: {json}"
+    );
+    // Serde round-trip is intentionally lossy: serializing stores the
+    // redacted form (this is what lands in logs/audit storage). The
+    // `expose_secret()` raw access is process-local only.
+    let _round_trip: RedactedUrl = serde_json::from_str(&json).expect("deserialize");
+    assert_eq!(
+        url.expose_secret(),
+        raw,
+        "expose_secret still returns raw in-process"
+    );
+}
+
+#[test]
+fn redacted_url_display_keeps_path_visible() {
+    use codegg_git::RedactedUrl;
+    let url = RedactedUrl::new("https://bob:secret@host.example.com/team/proj.git");
+    let display = format!("{url}");
+    assert!(
+        display.contains("host.example.com/team/proj.git"),
+        "path must remain visible: {display}"
+    );
+    assert!(!display.contains("secret"));
+}
+
+#[test]
+fn redact_url_credentials_in_text_strips_inline_url_credentials() {
+    let dirty = "fatal: could not push to https://a:b@example.com/x.git\nother";
+    let cleaned = redact_url_credentials_in_text(dirty);
+    assert!(
+        !cleaned.contains("a:b@"),
+        "must strip inline userinfo: {cleaned}"
+    );
+    assert!(cleaned.contains("example.com"), "host preserved: {cleaned}");
+}
+
+#[test]
+fn redact_url_credentials_in_text_passthrough_when_clean() {
+    let clean = "nothing to redact here\njust plain log lines";
+    let result = redact_url_credentials_in_text(clean);
+    // Helper normalizes whitespace via split_whitespace/join (newline
+    // token handling); but token contents must be unchanged.
+    let in_tokens: Vec<&str> = clean.split_whitespace().collect();
+    let out_tokens: Vec<&str> = result.split_whitespace().collect();
+    assert_eq!(in_tokens, out_tokens, "token contents must match");
+    assert!(!result.contains("REDACTED"));
+}
+
+#[test]
+fn git_env_policy_strips_command_bearers_when_default() {
+    use codegg::git_mutations::ALLOWED_ENV_VARS;
+    let policy = GitEnvPolicy::default();
+    // Sanity: the default flag-set must include strip_command_bearers
+    // so that operators who reach for `apply()` get the hardening for
+    // free. (If this changes, all `Command::new("git")` sites need a
+    // re-review.)
+    assert!(
+        policy.strip_command_bearers,
+        "default GitEnvPolicy must strip command-bearing GIT_* vars"
+    );
+}
+
+#[test]
+fn git_env_policy_allowed_env_vars_is_a_known_safe_allowlist() {
+    // The allowlist must never grow GIT_ASKPASS / GIT_SSH_COMMAND.
+    for key in codegg::git_mutations::ALLOWED_ENV_VARS {
+        assert!(
+            !key.starts_with("GIT_ASKPASS"),
+            "GIT_ASKPASS must never be in allowed allowlist"
+        );
+        assert!(
+            !key.contains("SSH_COMMAND"),
+            "GIT_SSH_COMMAND must never be in allowed allowlist"
+        );
+    }
+}
+
 mod fs_utils {
     use std::fs;
     use std::path::Path;
@@ -515,11 +647,5 @@ mod fs_utils {
             fs::create_dir_all(parent).expect("mkdir");
         }
         fs::write(path, content).expect("write");
-    }
-
-    pub fn ensure_parent(path: &Path) {
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).expect("mkdir");
-        }
     }
 }

@@ -27,10 +27,10 @@ use tokio::process::Command;
 
 use crate::git_mutations::{
     resolve_repo_root, validate_repo_path, GitEnvPolicy, GitMutationError, GitMutationExecutor,
-    MutationResult, ALLOWED_ENV_VARS,
+    MutationResult, ALLOWED_ENV_VARS, ALWAYS_STRIPPED_ENV_VARS,
 };
 use crate::git_mutations_ops::run_raw_mutation;
-use crate::git_network_policy::{redact_url_credentials, NETWORK_ALLOWED_ENV_VARS};
+use crate::git_network_policy::NETWORK_ALLOWED_ENV_VARS;
 
 // ── Network environment policy ─────────────────────────────────────
 
@@ -62,11 +62,21 @@ impl NetworkEnvPolicy {
             }
         }
 
-        // Restore network-specific env vars.
+        // Restore network-specific env vars (SSH agent, proxy,
+        // credential-helper essentials for remote access).
         for key in NETWORK_ALLOWED_ENV_VARS {
             if let Some(v) = std::env::var_os(key) {
                 cmd.env(key, v);
             }
+        }
+
+        // Strip command-bearers that are not in NETWORK_ALLOWED_ENV_VARS,
+        // even though they might have been set in the parent. This is
+        // defense-in-depth: ensuring that even if someone forgets to add
+        // a key to the allowed list, hostile injection vectors remain
+        // stripped.
+        for key in ALWAYS_STRIPPED_ENV_VARS {
+            cmd.env_remove(key);
         }
 
         // Apply same flags as GitEnvPolicy::default().
@@ -82,6 +92,8 @@ impl NetworkEnvPolicy {
             cmd.env_remove("VISUAL");
         }
         cmd.env("GPG_TTY", "");
+        cmd.env("GIT_PAGER", "cat");
+        cmd.env("PAGER", "cat");
         cmd.kill_on_drop(true);
         cmd
     }
@@ -329,9 +341,11 @@ pub fn push_permission_hint(req: &PushRequest) -> String {
 
 // ── Remote management ──────────────────────────────────────────────
 
-/// Add a new remote. The URL is sanitized with
-/// [`redact_url_credentials`] before constructing the operation (so
-/// the raw credential never reaches the persistence layer).
+/// Add a new remote. The URL is wrapped in a [`codegg_git::RedactedUrl`]
+/// before constructing the operation so the raw credential never
+/// crosses the [`Debug`]/[`Serialize`]/display boundary; the raw value
+/// reaches the Git child process only via `RedactedUrl::expose_secret`
+/// at the final argv construction in `render_argv`.
 pub async fn remote_add(
     exec: &GitMutationExecutor,
     repo_root: &Path,
@@ -340,12 +354,9 @@ pub async fn remote_add(
 ) -> Result<MutationResult, GitMutationError> {
     let _ = resolve_repo_root(repo_root)?;
     let rn = RemoteName::new(name)?;
-    // Redact before constructing the operation — the sanitized URL is
-    // what gets stored in MutationResult and persisted.
-    let sanitized_url = redact_url_credentials(url);
     let op = GitOperation::RemoteAdd {
         name: rn,
-        url: sanitized_url,
+        url: codegg_git::RedactedUrl::new(url),
     };
     exec.execute(&op, repo_root).await
 }
@@ -363,7 +374,9 @@ pub async fn remote_remove(
 }
 
 /// Set the URL of an existing remote. When `append` is true, the URL
-/// is added as an additional push URL (`--add`).
+/// is added as an additional push URL (`--add`). The URL is wrapped in
+/// a [`codegg_git::RedactedUrl`] so the raw credential reaches git's
+/// argv only and never crosses display/serialization paths.
 pub async fn remote_set_url(
     exec: &GitMutationExecutor,
     repo_root: &Path,
@@ -375,7 +388,7 @@ pub async fn remote_set_url(
     let rn = RemoteName::new(name)?;
     let op = GitOperation::RemoteSetUrl {
         name: rn,
-        url: url.to_string(),
+        url: codegg_git::RedactedUrl::new(url),
         append,
     };
     exec.execute(&op, repo_root).await
@@ -922,16 +935,20 @@ pub fn describe_network_operation(operation: &codegg_git::GitOperation) -> Strin
             parts.join("; ")
         }
         RemoteAdd { name, url } => {
-            format!("add remote '{}' → {}", name.as_str(), url)
+            format!("add remote '{}' → {}", name.as_str(), url.display())
         }
         RemoteRemove { name } => {
             format!("remove remote '{}'", name.as_str())
         }
         RemoteSetUrl { name, url, append } => {
             if *append {
-                format!("add push URL for remote '{}' → {}", name.as_str(), url)
+                format!(
+                    "add push URL for remote '{}' → {}",
+                    name.as_str(),
+                    url.display()
+                )
             } else {
-                format!("set URL for remote '{}' → {}", name.as_str(), url)
+                format!("set URL for remote '{}' → {}", name.as_str(), url.display())
             }
         }
         ConfigSet { key, value, .. } => {
@@ -1142,23 +1159,94 @@ mod tests {
         assert!(validate_config_key("init.defaultBranch", true).is_ok());
     }
 
-    // ── redact_url_credentials is called inside remote_add ─────────
-    // (verify the sanitization happens before operation construction)
+    // ── URL redaction: RedactedUrl boundary ─────────────────────────
+    // (verify both remote_add and remote_set_url wrap the URL in a
+    //  RedactedUrl whose Debug/Serialize/Display never expose the raw
+    //  credential, while the underlying Git argv still receives it)
 
     #[test]
-    fn remote_add_url_is_redacted() {
-        // Simulate what remote_add does: redact before constructing op.
+    fn remote_add_url_is_wrapped_in_redacted_form() {
+        use codegg_git::RedactedUrl;
+        // Simulate what remote_add does: wrap in RedactedUrl before constructing op.
         let url = "https://user:secret@github.com/repo.git";
-        let sanitized = redact_url_credentials(url);
-        assert_eq!(sanitized, "https://redacted@github.com/repo.git");
-        assert!(!sanitized.contains("secret"));
+        let wrapped = RedactedUrl::new(url);
+        assert_eq!(wrapped.display(), "https://redacted@github.com/repo.git");
+        assert!(!wrapped.display().contains("secret"));
+        assert_eq!(wrapped.expose_secret(), url);
+
+        let op = GitOperation::RemoteAdd {
+            name: RemoteName::new("origin").unwrap(),
+            url: wrapped,
+        };
+        let dbg = format!("{op:?}");
+        assert!(
+            !dbg.contains("secret"),
+            "Debug output of RemoteAdd leaked raw URL: {dbg}"
+        );
+        let json = serde_json::to_string(&op).unwrap();
+        assert!(
+            !json.contains("secret"),
+            "Serialize output of RemoteAdd leaked raw URL: {json}"
+        );
+
+        // The execution argv still receives the raw URL.
+        let argv = codegg_git::render_argv(&op);
+        assert!(
+            argv.iter().any(|tok| tok.contains("secret")),
+            "render_argv should still pass the raw URL to git's argv: {argv:?}"
+        );
     }
 
     #[test]
-    fn remote_add_url_without_credentials_passthrough() {
+    fn remote_set_url_is_wrapped_in_redacted_form() {
+        use codegg_git::RedactedUrl;
+        // Regression for the Phase F unmitigated finding: remote_set_url
+        // previously stored the raw URL directly. It must now mirror the
+        // remote_add redaction boundary.
+        let url = "https://user:secret@github.com/repo.git";
+        let wrapped = RedactedUrl::new(url);
+        assert_eq!(wrapped.display(), "https://redacted@github.com/repo.git");
+        assert!(!wrapped.display().contains("secret"));
+
+        let op = GitOperation::RemoteSetUrl {
+            name: RemoteName::new("origin").unwrap(),
+            url: wrapped,
+            append: false,
+        };
+        let dbg = format!("{op:?}");
+        assert!(
+            !dbg.contains("secret"),
+            "Debug output of RemoteSetUrl leaked raw URL: {dbg}"
+        );
+        let json = serde_json::to_string(&op).unwrap();
+        assert!(
+            !json.contains("secret"),
+            "Serialize output of RemoteSetUrl leaked raw URL: {json}"
+        );
+
+        // The execution argv still receives the raw URL — git needs it to
+        // actually run the request.
+        let argv = codegg_git::render_argv(&op);
+        assert!(
+            argv.iter().any(|tok| tok.contains("secret")),
+            "render_argv should still pass the raw URL to git's argv: {argv:?}"
+        );
+    }
+
+    #[test]
+    fn remote_url_without_credentials_passthrough_redacted() {
+        use codegg_git::RedactedUrl;
         let url = "https://github.com/repo.git";
-        let sanitized = redact_url_credentials(url);
-        assert_eq!(sanitized, url);
+        let wrapped = RedactedUrl::new(url);
+        assert_eq!(wrapped.display(), url);
+        assert!(!wrapped.was_redacted());
+
+        let op = GitOperation::RemoteAdd {
+            name: RemoteName::new("origin").unwrap(),
+            url: wrapped,
+        };
+        let argv = codegg_git::render_argv(&op);
+        assert!(argv.contains(&url.to_string()));
     }
 
     // ── CleanRequest::is_broad ─────────────────────────────────────

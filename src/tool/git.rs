@@ -2,7 +2,6 @@ use async_trait::async_trait;
 use serde_json::json;
 use std::path::PathBuf;
 use std::time::Duration;
-use tokio::process::Command;
 
 use crate::error::ToolError;
 use crate::git_mutation_projector::project_mutation;
@@ -346,19 +345,19 @@ impl Tool for GitTool {
             full_args
         );
 
+        // Apply the shared Git env policy so the raw fallback path is
+        // hardened identically to typed mutations, ending the prior
+        // raw-fallback hardening gap (Phase F design limitation).
+        let env_policy = GitEnvPolicy::default();
+        let argv_for_run: Vec<String> = {
+            let mut v = vec!["git".to_string()];
+            v.extend(full_args.clone());
+            v
+        };
+
         let output = tokio::time::timeout(timeout, async {
-            let mut cmd = Command::new("git");
-            cmd.env_clear();
-            if let Some(path) = std::env::var_os("PATH") {
-                cmd.env("PATH", path);
-            } else {
-                cmd.env("PATH", "/usr/local/bin:/usr/bin:/bin");
-            }
-            cmd.args(&full_args)
-                .current_dir(&workdir)
-                .kill_on_drop(true)
-                .output()
-                .await
+            let mut cmd = env_policy.apply(&argv_for_run, &workdir);
+            cmd.output().await
         })
         .await
         .map_err(|_| ToolError::Timeout(format!("git command timed out after {}s", timeout_secs)))?

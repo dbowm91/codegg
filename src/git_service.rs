@@ -10,7 +10,9 @@ use std::time::Duration;
 
 use codegg_git::{render_argv, GitOperation};
 use serde::{Deserialize, Serialize};
-use tokio::process::Command;
+
+use crate::git_mutations::GitEnvPolicy;
+use crate::git_network_policy::redact_url_credentials_in_text;
 
 /// The result of executing a git operation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -647,10 +649,16 @@ impl GitExecutionService {
                 GitPayload::Remotes(remotes)
             }
             GitOperation::RemoteGetUrl { remote } => {
+                // Defense-in-depth: the raw URL was already passed
+                // through `redact_url_credentials_in_text` in
+                // `run_git_raw`, but the trim() here is a final safety
+                // pass before the value reaches `format_structured_result`
+                // and the model context.
                 let url = raw.stdout.trim().to_string();
+                let safe_url = crate::git_network_policy::redact_url_credentials(&url);
                 GitPayload::Remotes(vec![RemotePayload {
                     name: remote.as_str().to_string(),
-                    url: Some(url),
+                    url: Some(safe_url),
                 }])
             }
             _ => GitPayload::None,
@@ -808,21 +816,10 @@ impl GitExecutionService {
         let root = repository_root.to_path_buf();
         let argv_owned = argv.to_vec();
         let timeout = self.timeout;
+        let env = GitEnvPolicy::default();
 
         let output = tokio::time::timeout(timeout, async {
-            let mut cmd = Command::new(&argv_owned[0]);
-            cmd.args(&argv_owned[1..]);
-            cmd.current_dir(&root);
-            // Harden environment: clear and restore only PATH.
-            cmd.env_clear();
-            if let Some(path) = std::env::var_os("PATH") {
-                cmd.env("PATH", path);
-            } else {
-                cmd.env("PATH", "/usr/local/bin:/usr/bin:/bin");
-            }
-            // Prevent git from prompting for credentials.
-            cmd.env("GIT_TERMINAL_PROMPT", "0");
-            cmd.kill_on_drop(true);
+            let mut cmd = env.apply(&argv_owned, &root);
             cmd.output().await
         })
         .await
@@ -836,8 +833,13 @@ impl GitExecutionService {
         .map_err(|e| GitServiceError::Execution(format!("failed to spawn git: {e}")))?;
 
         Ok(RawGitOutput {
-            stdout: String::from_utf8_lossy(&output.stdout).to_string(),
-            stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+            // Defense-in-depth: redact any URL-embedded credentials from
+            // git-emitted bytes before they reach Tool output, payload
+            // parsers, projection, or RunStore. The corresponding argv
+            // boundary in `codegg-git::render_argv` keeps the raw URL only
+            // long enough to invoke the child process.
+            stdout: redact_url_credentials_in_text(&String::from_utf8_lossy(&output.stdout)),
+            stderr: redact_url_credentials_in_text(&String::from_utf8_lossy(&output.stderr)),
             exit_code: output.status.code().unwrap_or(-1),
         })
     }

@@ -345,18 +345,15 @@ impl Tool for CommitTool {
 
 /// Fetch the previous commit's full message via `git log -1 --format=%B`.
 async fn fetch_head_message(workdir: &std::path::Path) -> Result<String, ToolError> {
-    use tokio::process::Command;
-    let mut cmd = Command::new("git");
-    cmd.env_clear();
-    if let Some(path) = std::env::var_os("PATH") {
-        cmd.env("PATH", path);
-    } else {
-        cmd.env("PATH", "/usr/local/bin:/usr/bin:/bin");
-    }
-    cmd.kill_on_drop(true);
+    use crate::git_mutations::GitEnvPolicy;
+    let argv: Vec<String> = vec![
+        "git".into(),
+        "log".into(),
+        "-1".into(),
+        "--format=%B".into(),
+    ];
+    let mut cmd = GitEnvPolicy::default().apply(&argv, workdir);
     let output = cmd
-        .args(["log", "-1", "--format=%B"])
-        .current_dir(workdir)
         .output()
         .await
         .map_err(|e| ToolError::Execution(format!("git log failed: {e}")))?;
