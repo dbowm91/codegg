@@ -209,7 +209,7 @@ async fn mem_runstore_does_not_leak_sentinel() {
         .invocation
         .argv
         .as_ref()
-        .map(|v| v.clone())
+        .cloned()
         .unwrap_or_default();
     let command_string: String = manifest.invocation.command.clone();
 

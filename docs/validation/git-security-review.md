@@ -316,6 +316,59 @@ subprocess path share the exact same allowlist and hard-deny set.
 
 ---
 
+## URL Flow Inventory
+
+Every path through which a remote URL enters or exits Codegg, showing the
+redaction boundary. The raw value is transient; only the redacted form
+reaches durable storage, model-visible output, projections, or tracing.
+
+### Entry points (raw URL enters)
+
+| Operation | Entry site | Type | Raw needed by child? |
+|-----------|-----------|------|---------------------|
+| `remote add` | `git_network_ops.rs::remote_add()` | `String` param → `RedactedUrl::new(url)` | Yes — `expose_secret()` at `render_argv` |
+| `remote set-url` | `git_network_ops.rs::remote_set_url()` | `String` param → `RedactedUrl::new(url)` | Yes — `expose_secret()` at `render_argv` |
+| `remote get-url` | `egggit::refs` | Read from `.git/config` | N/A — output only |
+| `remote list` | `egggit::refs` | Read from `.git/config` | N/A — output only |
+| `fetch` failure | stderr from git child | Git echoes URL in error text | N/A — already in child output |
+| `pull` failure | stderr from git child | Git echoes URL in error text | N/A — already in child output |
+| `push` rejection | stderr from git child | Git echoes URL in error text | N/A — already in child output |
+| `config --get remote.*.url` | `egggit::refs` | Read from `.git/config` | N/A — output only |
+
+### Redaction boundaries (raw → redacted)
+
+| Boundary | Site | Mechanism |
+|----------|------|-----------|
+| **Type boundary** | `RedactedUrl::new(url)` in `sensitive.rs` | Raw stored internally; `Debug`/`Display`/`Serialize` emit redacted form only |
+| **Execution boundary** | `render_argv()` in `render.rs` | `expose_secret()` consumed here — raw reaches git child process only |
+| **Result sanitization** | `sanitize_truncate_for_result()` in `git_mutations.rs` | `redact_url_credentials_in_text()` applied to `MutationResult.stdout/stderr` |
+| **Service sanitization** | `run_git_raw()` in `git_service.rs` | `redact_url_credentials_in_text()` applied to read-side stdout/stderr |
+| **Persistence sanitization** | `sanitize_argv_for_run_store()` in `git_network_policy.rs` | Redacts URL-bearing tokens in audit `argv`/`command` fields |
+| **Projector sanitization** | `git_mutation_projector.rs` | Credential-bearing URLs in `MutationResult` are redacted before projection |
+
+### Sinks (redacted-only)
+
+| Sink | Site | What is stored/displayed |
+|------|------|------------------------|
+| `RunStore` invocation argv | `git_run_store.rs:53-58` | `sanitize_argv_for_run_store(render_argv(...))` — redacted |
+| `RunStore` invocation command | `git_run_store.rs:59` | `argv.join(" ")` — redacted |
+| `MutationResult.stdout/stderr` | `sanitize_truncate_for_result()` | `redact_url_credentials_in_text()` applied |
+| `GitOperation` Debug | `RedactedUrl::Debug` | Redacted form only |
+| `GitOperation` Serialize | `RedactedUrl::Serialize` | Redacted form only |
+| Tool output to model | `ToolError` messages | `sanitize_truncate_for_result()` applied |
+| Tracing events | All callers use redacted `MutationResult` fields | No raw URL reaches `tracing::*` macros |
+| TUI projections | `git_mutation_projector.rs` | Redacted `MutationResult` input |
+
+### Unredacted exceptions
+
+| Path | Why unredacted | Guard |
+|------|---------------|-------|
+| `render_argv()` output | Git child process needs raw URL for authentication | Consumed by `Command::args()` only; never persisted directly |
+| `RedactedUrl::expose_secret()` | Single escape hatch for execution boundary | Only called in `render.rs::render_argv()` |
+| Rerun descriptor argv | Re-execution needs raw URL to authenticate | `RunStore` separates rerun argv from audit surfaces; rerun is not model-visible |
+
+---
+
 ## Test Coverage
 
 The following test suites cover security-relevant behavior:

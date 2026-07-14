@@ -372,6 +372,49 @@ pub fn sanitize_argv_for_run_store(argv: Vec<String>) -> Vec<String> {
 mod sanitize_argv {
     use super::sanitize_argv_for_run_store;
 
+    /// B4: render_argv is the ONLY path from typed GitOperation to raw argv.
+    /// sanitize_argv_for_run_store is the ONLY gate before persistence.
+    /// This test proves the two boundaries hold: execution gets the raw URL,
+    /// RunStore gets only the redacted form.
+    #[test]
+    fn render_argv_to_persistence_boundary() {
+        use codegg_git::{render_argv, GitOperation, RedactedUrl, RemoteName};
+
+        let op = GitOperation::RemoteSetUrl {
+            name: RemoteName::new("origin").unwrap(),
+            url: RedactedUrl::new("https://user:SECRET_TOKEN@host.example.com/r.git"),
+            append: false,
+        };
+
+        // Execution path: render_argv must produce the raw URL so git can authenticate.
+        let exec_argv = render_argv(&op);
+        assert!(
+            exec_argv
+                .iter()
+                .any(|tok| tok == "https://user:SECRET_TOKEN@host.example.com/r.git"),
+            "execution argv must retain raw URL for git child process: {exec_argv:?}"
+        );
+
+        // Persistence gate: sanitize_argv_for_run_store must strip credentials.
+        let persist_argv = sanitize_argv_for_run_store(exec_argv.clone());
+        assert!(
+            !persist_argv.iter().any(|tok| tok.contains("SECRET_TOKEN")),
+            "persisted argv must not contain raw credential: {persist_argv:?}"
+        );
+        assert!(
+            persist_argv
+                .iter()
+                .any(|tok| tok.contains("redacted@host.example.com")),
+            "persisted argv should contain redacted form: {persist_argv:?}"
+        );
+
+        // Debug/Serialize must never expose raw credential.
+        let debug = format!("{:?}", op);
+        assert!(!debug.contains("SECRET_TOKEN"), "Debug leaked: {debug}");
+        let json = serde_json::to_string(&op).unwrap();
+        assert!(!json.contains("SECRET_TOKEN"), "Serialize leaked: {json}");
+    }
+
     #[test]
     fn redacts_url_in_argv() {
         let argv = vec![
