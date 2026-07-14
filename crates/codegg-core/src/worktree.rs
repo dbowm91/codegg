@@ -99,6 +99,14 @@ fn hardened_git_command(args: &[&str], git_root: &Path) -> std::process::Command
         "SSH_AUTH_SOCK",
         "SSH_AGENT_PID",
         "LANGUAGE",
+        // HTTPS certificate passthrough (kept in sync with the root
+        // crate's GitEnvPolicy::ALLOWED_ENV_VARS).
+        "SSL_CERT_FILE",
+        "SSL_CERT_DIR",
+        "CURL_CA_BUNDLE",
+        "REQUESTS_CA_BUNDLE",
+        "GIT_SSL_CAINFO",
+        "GIT_SSL_CAPATH",
     ];
     const STRIPPED_ENV_VARS: &[&str] = &[
         "GIT_ASKPASS",

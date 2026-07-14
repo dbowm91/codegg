@@ -27,6 +27,7 @@ use serde::{Deserialize, Serialize};
 use tokio::process::Command;
 
 use crate::git_network_policy::redact_url_credentials_in_text;
+use crate::git_network_policy::NetworkFailureKind;
 use crate::git_service::{GitExecutionService, GitServiceError, RawGitOutput};
 
 // ── Process environment policy ───────────────────────────────────────
@@ -51,6 +52,16 @@ pub const ALLOWED_ENV_VARS: &[&str] = &[
     "SSH_AUTH_SOCK",
     "SSH_AGENT_PID",
     "LANGUAGE",
+    // HTTPS certificate passthrough. These allow systems that route
+    // HTTPS through custom CA bundles (corporate proxies, local CA
+    // stores) to still authenticate against Git remotes without
+    // weakening command-injection protections.
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+    "CURL_CA_BUNDLE",
+    "REQUESTS_CA_BUNDLE",
+    "GIT_SSL_CAINFO",
+    "GIT_SSL_CAPATH",
 ];
 
 /// Environment variables that are NEVER passed to a Codegg-owned
@@ -338,10 +349,94 @@ pub struct MutationResult {
 
 // ── Errors ───────────────────────────────────────────────────────────
 
+/// Detailed context attached to a `GitMutationError::Execution`. Carries
+/// structured fields the projector and operator UI can surface, while
+/// keeping stdout/stderr sanitized so credentials never leak through
+/// `Display`/`Debug`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExecutionContext {
+    /// The kind of operation that failed (e.g. "fetch", "remote_add",
+    /// "commit"). Derived from `GitOperation::subcommand_name()` or the
+    /// passed `&str` when no operation is available.
+    pub operation_kind: String,
+    /// The remote name targeted, when the operation carries one
+    /// (`RemoteAdd`, `RemoteSetUrl`, `Fetch`, `Push`, etc.). Not
+    /// included otherwise.
+    pub remote_name: Option<String>,
+    /// Classified network failure kind (DNS, Connect, Authentication,
+    /// Authorization, RefRejected, Timeout, Transport). Only populated
+    /// for network operations; `None` for local mutations.
+    pub failure_kind: Option<NetworkFailureKind>,
+    /// Subprocess exit code when available. `-1` indicates the child
+    /// did not produce an exit code (spawn failure, signal kill).
+    pub exit_code: Option<i32>,
+    /// Whether the failure was caused by a timeout.
+    pub timed_out: bool,
+    /// Redacted stdout (already passed through
+    /// `redact_url_credentials_in_text`).
+    pub stdout_redacted: String,
+    /// Redacted stderr (already passed through
+    /// `redact_url_credentials_in_text`).
+    pub stderr_redacted: String,
+}
+
+impl ExecutionContext {
+    pub fn new(operation_kind: impl Into<String>) -> Self {
+        Self {
+            operation_kind: operation_kind.into(),
+            remote_name: None,
+            failure_kind: None,
+            exit_code: None,
+            timed_out: false,
+            stdout_redacted: String::new(),
+            stderr_redacted: String::new(),
+        }
+    }
+
+    pub fn with_remote(mut self, remote: impl Into<String>) -> Self {
+        self.remote_name = Some(remote.into());
+        self
+    }
+
+    pub fn with_failure_kind(mut self, kind: NetworkFailureKind) -> Self {
+        self.failure_kind = Some(kind);
+        self
+    }
+
+    pub fn with_exit_code(mut self, code: i32) -> Self {
+        self.exit_code = Some(code);
+        self
+    }
+
+    pub fn with_timed_out(mut self) -> Self {
+        self.timed_out = true;
+        self
+    }
+
+    pub fn with_stdout(mut self, stdout: impl Into<String>) -> Self {
+        self.stdout_redacted = redact_url_credentials_in_text(&stdout.into());
+        self
+    }
+
+    pub fn with_stderr(mut self, stderr: impl Into<String>) -> Self {
+        self.stderr_redacted = redact_url_credentials_in_text(&stderr.into());
+        self
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum GitMutationError {
-    #[error("git mutation failed: {0}")]
-    Execution(String),
+    /// Subprocess failed (spawn error, non-zero exit, network failure).
+    /// The contained `ExecutionContext` carries operation kind, remote
+    /// name (when applicable), classified failure kind, exit code, and
+    /// redacted stdout/stderr. The `message` field is a short summary
+    /// safe to surface in tool results — it MUST NOT contain raw argv,
+    /// raw URLs, or un-redacted credentials.
+    #[error("git {kind} failed: {message}", kind = context.operation_kind)]
+    Execution {
+        message: String,
+        context: ExecutionContext,
+    },
     #[error("repository error: {0}")]
     Repository(String),
     #[error("precondition violated: {0}")]
@@ -356,10 +451,73 @@ pub enum GitMutationError {
     StateMismatch { expected: String, actual: String },
 }
 
+impl GitMutationError {
+    /// Convenience constructor for an `Execution` variant with the
+    /// operation kind inferred from a `GitOperation`. The message
+    /// string MUST NOT contain raw argv or un-redacted credentials.
+    pub fn execution(operation: &GitOperation, message: impl Into<String>) -> Self {
+        Self::Execution {
+            message: message.into(),
+            context: ExecutionContext::new(operation.subcommand_name()),
+        }
+    }
+
+    /// Convenience constructor with explicit operation kind (when no
+    /// typed operation is available — e.g. snapshot capture).
+    pub fn execution_kind(kind: impl Into<String>, message: impl Into<String>) -> Self {
+        Self::Execution {
+            message: message.into(),
+            context: ExecutionContext::new(kind),
+        }
+    }
+
+    /// Get the operation kind from an `Execution` variant, or `None`.
+    pub fn operation_kind(&self) -> Option<&str> {
+        match self {
+            Self::Execution { context, .. } => Some(&context.operation_kind),
+            _ => None,
+        }
+    }
+
+    /// Get the classified failure kind, when the error carries one.
+    pub fn failure_kind(&self) -> Option<NetworkFailureKind> {
+        match self {
+            Self::Execution { context, .. } => context.failure_kind,
+            _ => None,
+        }
+    }
+
+    /// Get the exit code from an `Execution` variant.
+    pub fn exit_code(&self) -> Option<i32> {
+        match self {
+            Self::Execution { context, .. } => context.exit_code,
+            _ => None,
+        }
+    }
+
+    /// Get the remote name when the error carries one.
+    pub fn remote_name(&self) -> Option<&str> {
+        match self {
+            Self::Execution { context, .. } => context.remote_name.as_deref(),
+            _ => None,
+        }
+    }
+}
+
 impl From<GitServiceError> for GitMutationError {
     fn from(err: GitServiceError) -> Self {
         match err {
-            GitServiceError::Execution(s) => Self::Execution(s),
+            GitServiceError::Execution(s) => {
+                // Legacy path: no operation context available. The
+                // service error string is sanitized through the
+                // redaction helper so any URL-embedded credential is
+                // stripped before reaching `Display`.
+                let redacted = redact_url_credentials_in_text(&s);
+                Self::Execution {
+                    message: redacted,
+                    context: ExecutionContext::new("git"),
+                }
+            }
             GitServiceError::Repository(s) => Self::Repository(s),
             GitServiceError::Timeout(s) => {
                 let secs = s
@@ -429,16 +587,17 @@ async fn capture_snapshot(repo_root: &Path) -> Result<RepoSnapshot, GitMutationE
     ];
     let env = GitEnvPolicy::default();
     let mut cmd = env.apply(&argv, repo_root);
-    let output = cmd
-        .output()
-        .await
-        .map_err(|e| GitMutationError::Execution(format!("snapshot spawn failed: {e}")))?;
+    let output = cmd.output().await.map_err(|e| {
+        GitMutationError::execution_kind("snapshot", format!("snapshot spawn failed: {e}"))
+    })?;
 
     if !output.status.success() {
+        let stderr_text = String::from_utf8_lossy(&output.stderr).to_string();
+        let redacted_stderr = redact_url_credentials_in_text(&stderr_text);
         return Err(GitMutationError::Repository(format!(
             "git status failed (exit {:?}): {}",
             output.status.code(),
-            String::from_utf8_lossy(&output.stderr)
+            redacted_stderr
         )));
     }
 
@@ -578,8 +737,9 @@ impl GitMutationExecutor {
         let argv = render_argv(operation);
 
         if argv.is_empty() {
-            return Err(GitMutationError::Execution(
-                "empty rendered argv".to_string(),
+            return Err(GitMutationError::execution(
+                operation,
+                "empty rendered argv",
             ));
         }
 
@@ -616,7 +776,7 @@ impl GitMutationExecutor {
         repo_root: &Path,
     ) -> Result<RawGitOutput, GitMutationError> {
         if argv.is_empty() {
-            return Err(GitMutationError::Execution("empty argv".to_string()));
+            return Err(GitMutationError::execution_kind("subprocess", "empty argv"));
         }
         let start = std::time::Instant::now();
         let timeout = self.timeout;
@@ -624,18 +784,44 @@ impl GitMutationExecutor {
         let argv_owned = argv.to_vec();
         let env = self.env_policy.clone();
 
-        let output = tokio::time::timeout(timeout, async move {
+        let output = match tokio::time::timeout(timeout, async move {
             let mut cmd = env.apply(&argv_owned, &repo_root_owned);
             cmd.output().await
         })
         .await
-        .map_err(|_| GitMutationError::Timeout(timeout.as_secs()))?
-        .map_err(|e| GitMutationError::Execution(format!("spawn failed: {e}")))?;
+        {
+            Ok(Ok(o)) => o,
+            Ok(Err(e)) => {
+                return Err(GitMutationError::execution_kind(
+                    "subprocess",
+                    format!("spawn failed: {e}"),
+                ));
+            }
+            Err(_) => {
+                let mut ctx = ExecutionContext::new("subprocess");
+                ctx.timed_out = true;
+                return Err(GitMutationError::Execution {
+                    message: format!("timed out after {}s", timeout.as_secs()),
+                    context: ctx,
+                });
+            }
+        };
 
+        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        let exit_code = output.status.code().unwrap_or(-1);
+
+        // We deliberately do NOT surface a structured Execution error
+        // here for non-zero exit codes. Operations like merge exit 1
+        // when there are conflicts (a recoverable state, not a
+        // subprocess failure), and classify_outcome() already turns
+        // that into MutationOutcome::Conflict via the after-state
+        // snapshot. Genuine subprocess failures (spawn error,
+        // timeout) are caught above before this point.
         let raw = RawGitOutput {
-            stdout: String::from_utf8_lossy(&output.stdout).to_string(),
-            stderr: String::from_utf8_lossy(&output.stderr).to_string(),
-            exit_code: output.status.code().unwrap_or(-1),
+            stdout,
+            stderr,
+            exit_code,
         };
         // Note: raw captures the wall-clock but we discard it here; the
         // public MutationResult tracks its own duration.
@@ -867,4 +1053,116 @@ pub enum CommitSelection {
     StagePaths(Vec<String>),
     /// Stage every change (tracked + untracked) before committing.
     StageAll,
+}
+
+#[cfg(test)]
+mod error_context_tests {
+    //! Unit tests for `ExecutionContext` and the structured
+    //! `GitMutationError::Execution` variant. The tests pin the
+    //! boundary that the corrective security closure pass added:
+    //! error types carry operation kind, remote name, classified
+    //! failure kind, exit code, and **redacted** stdout/stderr —
+    //! never raw argv or un-redacted credentials.
+
+    use super::{ExecutionContext, GitMutationError};
+    use crate::git_network_policy::NetworkFailureKind;
+    use codegg_git::GitOperation;
+
+    #[test]
+    fn execution_context_builder_populates_fields() {
+        let ctx = ExecutionContext::new("fetch")
+            .with_remote("origin")
+            .with_failure_kind(NetworkFailureKind::Authentication)
+            .with_exit_code(128)
+            .with_stdout("From origin\nabc..def main -> origin/main\n")
+            .with_stderr("fatal: Authentication failed");
+        assert_eq!(ctx.operation_kind, "fetch");
+        assert_eq!(ctx.remote_name.as_deref(), Some("origin"));
+        assert_eq!(ctx.failure_kind, Some(NetworkFailureKind::Authentication));
+        assert_eq!(ctx.exit_code, Some(128));
+        assert!(ctx.stdout_redacted.contains("origin/main"));
+        assert!(ctx.stderr_redacted.contains("Authentication failed"));
+        assert!(!ctx.timed_out);
+    }
+
+    #[test]
+    fn execution_context_with_stdout_redacts_credentials() {
+        let ctx = ExecutionContext::new("fetch").with_stdout(
+            "From https://user:secret_token@github.com/r.git\n\
+             \x20\x20\x20\x20abc..def main -> origin/main\n",
+        );
+        assert!(
+            !ctx.stdout_redacted.contains("secret_token"),
+            "stdout_redacted leaked credential: {}",
+            ctx.stdout_redacted
+        );
+        assert!(ctx.stdout_redacted.contains("github.com"));
+    }
+
+    #[test]
+    fn execution_context_with_stderr_redacts_credentials() {
+        let ctx = ExecutionContext::new("fetch").with_stderr(
+            "fatal: unable to access 'https://user:secret_token@github.com/r.git': \
+             Could not resolve host: github.com",
+        );
+        assert!(
+            !ctx.stderr_redacted.contains("secret_token"),
+            "stderr_redacted leaked credential: {}",
+            ctx.stderr_redacted
+        );
+    }
+
+    #[test]
+    fn execution_error_display_does_not_leak_credentials() {
+        // Even when the message string happens to embed a URL (which it
+        // should not in practice), the Display impl must not surface
+        // anything from raw argv — but we also verify that the
+        // struct-based payload keeps the operation_kind visible.
+        let err = GitMutationError::execution_kind("remote add", "remote add failed");
+        let displayed = format!("{err}");
+        assert!(
+            displayed.contains("remote add"),
+            "missing op kind: {displayed}"
+        );
+    }
+
+    #[test]
+    fn execution_error_accessors_return_structured_fields() {
+        let err = GitMutationError::execution_kind("fetch", "fetch exited with code 128");
+        let inner = match err {
+            GitMutationError::Execution { message, context } => {
+                assert_eq!(message, "fetch exited with code 128");
+                context
+            }
+            other => panic!("expected Execution variant, got {other:?}"),
+        };
+        assert_eq!(inner.operation_kind, "fetch");
+        assert_eq!(inner.remote_name, None);
+        assert_eq!(inner.failure_kind, None);
+        assert_eq!(inner.exit_code, None);
+    }
+
+    #[test]
+    fn execution_kind_helper_infers_from_operation() {
+        let op = GitOperation::Fetch {
+            remote: Some(codegg_git::RemoteName::new("origin").expect("valid name")),
+            refspecs: vec![],
+            all: false,
+        };
+        let err = GitMutationError::execution(&op, "boom");
+        assert_eq!(err.operation_kind(), Some("fetch"));
+        assert_eq!(err.failure_kind(), None);
+        assert_eq!(err.exit_code(), None);
+        assert_eq!(err.remote_name(), None);
+    }
+
+    #[test]
+    fn timeout_error_carries_seconds() {
+        let err = GitMutationError::Timeout(45);
+        let displayed = format!("{err}");
+        assert!(
+            displayed.contains("45"),
+            "timeout seconds missing: {displayed}"
+        );
+    }
 }

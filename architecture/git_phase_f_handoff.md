@@ -4,6 +4,16 @@
 
 Phase F complete. Commit `08709d3` — `feat: Phase F — conflicts, recovery, ergonomics, and closure`. Branch: `main`.
 
+### Corrective security closure (post-merge)
+
+Two Phase F security-review findings were resolved post-merge in commit `cb192e9` — `feat: Phase F corrective security closure — RedactedUrl + hardened env policy`:
+
+1. **`remote_set_url` credential leakage** — `GitOperation::RemoteAdd.url` and `GitOperation::RemoteSetUrl.url` are now typed as `codegg_git::RedactedUrl` (a newtype carrying both raw and redacted forms). `Debug`/`Display`/`Serialize` see only the redacted form; raw is reachable exclusively via `RedactedUrl::expose_secret()` consumed at `render_argv`. Defense-in-depth sanitizers (`redact_url_credentials_in_text`, `sanitize_argv_for_run_store`, `sanitize_truncate_for_result`) keep credential leaks out of `MutationResult.stdout/stderr` and RunStore artifacts.
+
+2. **Raw fallback missing hardened env policy** — Every Codegg-owned `git` subprocess now flows through `GitEnvPolicy::apply()` (tokio async) or the new `GitEnvPolicy::apply_sync()` (synchronous TUI probes). The policy's default includes `strip_command_bearers = true`, which removes 27 command-bearing vars (`GIT_ASKPASS`, `GIT_SSH_COMMAND`, `GIT_PROXY_COMMAND`, all `GIT_CONFIG_*` injection vectors, `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`, `GIT_OBJECT_DIRECTORY`, `GIT_PAGER`, `PAGER`, etc.). Affected callers: `src/tool/git.rs::run_raw_subcommand`, `src/git_service.rs::run_git_raw`, `src/tool/commit.rs::fetch_head_message`, `src/core/daemon.rs::SnapshotWorkspace`, the TUI `handle_diff_command` / `handle_revert_command`, and `crates/codegg-core/src/worktree.rs` (local mirror, since `codegg-core` cannot depend on root-crate helpers).
+
+See `architecture/git.md` "Phase F corrective security closure" subsection for the full fix description, and `docs/validation/git-security-review.md` "Resolutions (Phase F Closure)" section for the resolution notes per finding.
+
 ## Final Architecture and Crate Boundaries
 
 ```

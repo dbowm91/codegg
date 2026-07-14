@@ -472,4 +472,22 @@ Two Phase F security-review findings were resolved post-merge by the corrective 
 
 The two-stage `apply`/`apply_sync` split ensures both the TUI's synchronous dialog probes and the daemon's async subprocess path share the exact same allowlist (`ALLOWED_ENV_VARS`) and hard-deny set (`ALWAYS_STRIPPED_ENV_VARS`, expanded to 27 vars in the closure). See `docs/validation/git-security-review.md` for the full resolution notes and `architecture/git_phase_f_handoff.md` for the original Phase F review context.
 
+### Shell boundary honesty
+
+The corrective closure pass established a hard invariant between the **direct Git execution path** and the **shell-owned execution path**:
+
+- **Direct Git execution** (typed `GitMutationExecutor`, BashTool → Git backend, managed argv fallback, raw subcommand fallback) flows through `GitEnvPolicy::apply()` / `apply_sync()`. The resulting run is tagged `PlannedBackend::Git`, `ActualBackend::Git`, `RunOwnership::DelegatedBackend`, and the RunStore audit argv is redacted via `sanitize_argv_for_run_store`.
+- **Shell-owned Git expressions** (anything with pipes, redirects, command substitution, semicolons, env assignments, or quoted glob patterns) are NOT silently rewritten as `ActualBackend::Git`. They remain `ActualBackend::RawShell` and inherit the shell execution policy (`src/shell/policy.rs`), which has its own redaction boundary (`src/shell/redactor.rs::apply_redaction_hook`) and command-classification rules (`src/command_intent/shell_shape.rs`).
+
+The classification boundary is `src/command_intent/shell_shape.rs::parse_shell_words` + `has_shell_operators()`. When parsing succeeds and no operators are detected, the command is eligible for active Git routing; when parsing fails or operators are present, the command falls back to raw shell. This separation prevents commands like `git push && rm -rf .` from being misrepresented as a `Git` execution just because the leading token is `git`.
+
+Operators that disqualify direct Git routing:
+
+- `|`, `;`, `&`, `&&`, `||`
+- `$`, `${`, `$(`, `` ` ``
+- `>`, `<`, `>>`
+- newlines, NUL bytes, quotes paired across the line
+
+The Rust tool surface (typed mutations, recovery, raw fallback) and the BashTool translation layer both honor this boundary — they never upgrade a shell-owned command to `ActualBackend::Git`. RunStore provenance reflects the actual executor, not the intent family.
+
 

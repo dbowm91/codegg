@@ -132,7 +132,7 @@ impl CommitTool {
             GitMutationError::Path(s) => ToolError::Execution(format!("path error: {s}")),
             GitMutationError::Ref(s) => ToolError::Execution(format!("ref error: {s}")),
             GitMutationError::Repository(s) => ToolError::Execution(format!("repository: {s}")),
-            GitMutationError::Execution(s) => ToolError::Execution(s),
+            GitMutationError::Execution { message, .. } => ToolError::Execution(message),
             GitMutationError::Timeout(s) => ToolError::Execution(format!("timed out after {s}s")),
             GitMutationError::StateMismatch { expected, actual } => ToolError::Execution(format!(
                 "state mismatch: expected operation '{expected}' but found '{actual}' on disk"

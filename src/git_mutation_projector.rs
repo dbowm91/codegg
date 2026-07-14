@@ -387,6 +387,126 @@ mod tests {
         assert!(summary.contains("clean state"));
     }
 
+    // ── D2: Credential-bearing output redaction in projection ────────
+    //
+    // The corrective security closure pass requires that no
+    // credential-bearing URL survives in projected output. The
+    // projector itself does not redact — the redaction happens
+    // upstream at `sanitize_truncate_for_result` in
+    // `git_mutations::execute`. These tests verify the projector
+    // faithfully renders already-redacted input without
+    // reintroducing credentials.
+
+    fn credential_result(subcommand: &str, stdout: &str, stderr: &str) -> MutationResult {
+        let mut r = fake_result();
+        r.subcommand = subcommand.to_string();
+        r.operation = GitOperation::Fetch {
+            remote: Some(codegg_git::RemoteName::new("origin").expect("valid")),
+            refspecs: vec![],
+            all: false,
+        };
+        // Simulate the production boundary: stdout/stderr have
+        // already been passed through `redact_url_credentials_in_text`
+        // before reaching the projector.
+        r.stdout = crate::git_network_policy::redact_url_credentials_in_text(stdout);
+        r.stderr = crate::git_network_policy::redact_url_credentials_in_text(stderr);
+        r
+    }
+
+    #[test]
+    fn projection_does_not_reintroduce_credentials_from_redacted_stdout() {
+        // Input has credentials; redactor strips them; projector must
+        // render the redacted form without re-introducing the
+        // credential segment.
+        let mut r = credential_result(
+            "fetch",
+            "From https://user:secret_token@github.com/r.git\n\
+             \x20\x20\x20\x20abc1234..def5678  main -> origin/main\n",
+            "",
+        );
+        // For stdout to render in the projector, success must be true
+        // AND delta.commits_created must be empty.
+        r.success = true;
+        r.delta.commits_created.clear();
+        assert!(
+            !r.stdout.contains("secret_token"),
+            "sanitize step did not strip credential: {}",
+            r.stdout
+        );
+        let summary = project_mutation(&r);
+        assert!(
+            !summary.contains("secret_token"),
+            "projected stdout leaked credential: {summary}"
+        );
+        assert!(
+            summary.contains("github.com"),
+            "expected host to remain visible: {summary}"
+        );
+    }
+
+    #[test]
+    fn projection_does_not_reintroduce_credentials_from_redacted_stderr() {
+        let mut r = credential_result(
+            "fetch",
+            "",
+            "fatal: unable to access 'https://u:pw@host.example.com/r.git/': \
+             Authentication failed",
+        );
+        // For stderr to render in the projector, success must be false.
+        r.success = false;
+        r.exit_code = 128;
+        assert!(
+            !r.stderr.contains("u:pw"),
+            "sanitize step did not strip credential: {}",
+            r.stderr
+        );
+        let summary = project_mutation(&r);
+        assert!(
+            !summary.contains("u:pw"),
+            "projected stderr leaked credential: {summary}"
+        );
+        assert!(
+            summary.contains("host.example.com"),
+            "expected host to remain visible: {summary}"
+        );
+    }
+
+    #[test]
+    fn network_projector_does_not_reintroduce_credentials() {
+        let mut r = credential_result(
+            "fetch",
+            "From https://alice:hunter2@host.example.com/r.git\n\
+             \x20\x20\x20\x20abc..def  main -> origin/main\n",
+            "",
+        );
+        r.success = true;
+        r.delta.commits_created.clear();
+        let summary = project_network_mutation(&r);
+        assert!(
+            !summary.contains("hunter2"),
+            "network projector leaked credential: {summary}"
+        );
+    }
+
+    #[test]
+    fn recovery_projector_does_not_reintroduce_credentials_in_stderr() {
+        let mut r = credential_result(
+            "recover",
+            "",
+            "fatal: unable to access 'https://user:secret@host/x.git': DNS failure",
+        );
+        r.outcome = MutationOutcome::Rejected {
+            reason: "git exited with code 128".to_string(),
+        };
+        r.success = false;
+        r.exit_code = 128;
+        let summary = project_recovery(&r, "continue", "fetch");
+        assert!(
+            !summary.contains("user:secret"),
+            "recovery projector leaked credential: {summary}"
+        );
+    }
+
     // ── Golden fixture tests ──────────────────────────────────────────
 
     use crate::git_mutations::MutationResult;

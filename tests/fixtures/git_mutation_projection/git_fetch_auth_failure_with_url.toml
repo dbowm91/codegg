@@ -1,0 +1,56 @@
+[fixture]
+name = "git_fetch_auth_failure_with_url"
+projector = "mutation"
+
+[input_json]
+subcommand = "fetch"
+exit_code = 128
+success = false
+stdout = ""
+stderr = "fatal: unable to access 'https://redacted@github.com/private/r.git/': Authentication failed"
+duration_ms = 5432
+
+[input_json.outcome]
+Rejected = { reason = "git exited with code 128" }
+
+[input_json.delta]
+commits_created = []
+refs_created = []
+refs_deleted = []
+paths_staged = []
+paths_unstaged = []
+conflicts = []
+
+[input_json.delta.before]
+head = "abc1234567890"
+branch = "main"
+detached = false
+staged_count = 0
+unstaged_count = 0
+untracked_count = 0
+conflicted_count = 0
+captured_at = "2025-01-15T10:30:00Z"
+
+[input_json.delta.after]
+head = "abc1234567890"
+branch = "main"
+detached = false
+staged_count = 0
+unstaged_count = 0
+untracked_count = 0
+conflicted_count = 0
+captured_at = "2025-01-15T10:30:01Z"
+
+[input_json.operation]
+Fetch = { remote = "origin", refspecs = [], all = false }
+
+[expect]
+output = """\
+git fetch — rejected
+  before: HEAD=abc1234 branch=main (0 staged, 0 unstaged, 0 untracked, 0 conflicts)
+  after:  HEAD=abc1234 branch=main (0 staged, 0 unstaged, 0 untracked, 0 conflicts)
+  rejected: git exited with code 128
+  exit code: 128
+  stderr: fatal: unable to access 'https://redacted@github.com/private/r.git/': Authentication failed
+  duration: 5432 ms
+"""

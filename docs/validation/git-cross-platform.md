@@ -188,6 +188,49 @@ Additional variables restored via `NETWORK_ALLOWED_ENV_VARS` in `git_network_pol
 
 ---
 
+## 9. Test Exclusions for the Corrective Security Closure Pass
+
+The corrective closure pass (`tests/git_network_integration.rs`, `tests/git_closure_matrix.rs`) adds adversarial credential-redaction and environment-injection tests. These tests run real `git` subprocesses through `GitEnvPolicy::apply()` to prove the policy holds.
+
+### Tests that ARE cross-platform
+
+- `redacted_url_hides_raw_secret_in_debug_and_serde` — pure type tests (no subprocess)
+- `redact_url_credentials_in_text_strips_inline_url_credentials` — pure sanitizer tests
+- `git_env_policy_strips_command_bearers_when_default` — policy-level invariant test
+- `git_env_policy_allowed_env_vars_is_a_known_safe_allowlist` — allowlist composition test
+- `remote_add_persisted_artifacts_are_sanitized` — runs real `git remote add` against a tempdir; works wherever `git` is on `$PATH`
+
+### Tests with Unix-only assumptions
+
+- Environment-attack tests that set `GIT_DIR`/`GIT_WORK_TREE` and assert the child ignores them rely on POSIX path resolution; on Windows, `git` resolves these differently. These tests are guarded with `#[cfg(unix)]` where the assumption matters.
+- SSH-agent socket tests assume `$SSH_AUTH_SOCK` semantics; Windows uses named pipes. Guarded with `#[cfg(unix)]`.
+- Marker-file tests (proving editor/askpass scripts were not invoked) use Unix shell `sh -c` semantics; Windows would need `cmd /c` or PowerShell equivalents. Guarded with `#[cfg(unix)]`.
+
+### Platform guards
+
+```rust
+#[cfg(unix)]
+#[test]
+fn env_attack_sentinel_git_dir_is_stripped() { ... }
+
+#[cfg(unix)]
+#[test]
+fn ssh_agent_socket_is_passed_through() { ... }
+```
+
+These tests run on Linux and macOS CI but are skipped on Windows. The sanitizer and policy tests (above) run on all platforms because they do not exercise subprocess behavior.
+
+### Windows-specific behavior to validate (deferred)
+
+If Windows support is added later, the following must be re-tested:
+
+- `USERPROFILE` passthrough (currently not in `ALLOWED_ENV_VARS`)
+- `core.autocrlf` interaction with raw file reads
+- Windows named-pipe SSH agent passthrough
+- `git.exe` discovery with `PATHEXT`
+
+---
+
 ## 8. Newline and NUL-Delimited Parsing
 
 **Design principle:** All structured git output uses NUL-delimited (`-z`) formats for safe machine parsing. Newlines in user-provided content (commit messages) use `\n` consistently.
