@@ -85,6 +85,9 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), StorageError> {
     if current_version < 21 {
         migrate_and_record(pool, 21).await?;
     }
+    if current_version < 22 {
+        migrate_and_record(pool, 22).await?;
+    }
 
     Ok(())
 }
@@ -118,6 +121,7 @@ async fn migrate_and_record(pool: &SqlitePool, version: i64) -> Result<(), Stora
             19 => migrate_v19(pool).await?,
             20 => migrate_v20(pool).await?,
             21 => migrate_v21(pool).await?,
+            22 => migrate_v22(pool).await?,
             _ => {
                 return Err(StorageError::Migration(format!(
                     "unknown migration version {}",
@@ -780,6 +784,54 @@ async fn migrate_v21(pool: &SqlitePool) -> Result<(), StorageError> {
     .execute(pool)
     .await
     .map_err(|e| StorageError::Migration(e.to_string()))?;
+
+    Ok(())
+}
+
+/// Phase 2 of the single-daemon plan: introduce a typed `workspace` table
+/// and backfill the previously-NULL `session.workspace_id` column.
+///
+/// Migration strategy:
+/// 1. Create the `workspace` table (id PK, canonical_root UNIQUE,
+///    display_name, time_created, time_last_opened, time_archived).
+/// 2. Backfill one workspace per distinct, *canonicalizable* `directory`
+///    referenced by at least one session. Sessions whose directory does
+///    not resolve to a real directory are left unbound; their
+///    `workspace_id` remains NULL and the daemon must reject turn
+///    submission until an explicit workspace command rebinds them.
+/// 3. Add the `idx_session_workspace_repair` index for cheap lookup of
+///    unbound sessions.
+///
+/// We deliberately use only `directory` (filesystem path) and not
+/// `project_id`: the latter is a stable string identity, while `directory`
+/// carries the filesystem intent. Legacy compatibility fields stay in
+/// place; new code reads `workspace_id`.
+async fn migrate_v22(pool: &SqlitePool) -> Result<(), StorageError> {
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS workspace (
+            id TEXT PRIMARY KEY,
+            canonical_root TEXT NOT NULL UNIQUE,
+            display_name TEXT NOT NULL,
+            time_created INTEGER NOT NULL,
+            time_last_opened INTEGER NOT NULL,
+            time_archived INTEGER
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| StorageError::Migration(e.to_string()))?;
+
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_workspace_archived ON workspace(time_archived)")
+        .execute(pool)
+        .await
+        .map_err(|e| StorageError::Migration(e.to_string()))?;
+
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_session_workspace_repair ON session(workspace_id)")
+        .execute(pool)
+        .await
+        .map_err(|e| StorageError::Migration(e.to_string()))?;
 
     Ok(())
 }

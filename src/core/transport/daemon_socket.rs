@@ -227,6 +227,8 @@ async fn handle_client(
                                     event_replay: true,
                                     session_management: true,
                                     permission_routing: true,
+                                    workspace_registration: true,
+                                    workspace_snapshots: true,
                                 },
                                 client_id: client_id.clone(),
                             });

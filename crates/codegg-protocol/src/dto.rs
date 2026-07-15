@@ -218,3 +218,21 @@ pub struct SessionTemplate {
     #[serde(default)]
     pub tags: Option<Vec<String>>,
 }
+
+/// Wire-format snapshot of a registered workspace.
+///
+/// Phase 2 of the single-daemon plan adds this as a first-class peer of
+/// `SessionSnapshot`. Clients decide whether to surface workspace metadata
+/// in their UI by inspecting `ServerCapabilities.workspace_registration`
+/// during the `ClientHello`/`ServerHello` handshake.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkspaceSnapshot {
+    pub workspace_id: String,
+    pub canonical_root: String,
+    pub display_name: String,
+    pub created_at: i64,
+    pub last_opened_at: i64,
+    #[serde(default)]
+    pub archived_at: Option<i64>,
+    pub active_sessions: usize,
+}

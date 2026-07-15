@@ -244,6 +244,12 @@ pub struct ToolRegistryOptions {
     /// When `Some`, the Bash tool annotates commands and can actively route
     /// enabled families to their canonical backends.
     pub command_intent: Option<crate::config::schema::CommandIntentConfig>,
+    /// Phase 2: canonical workspace root for filesystem tools. When
+    /// `Some`, tools that previously inferred their `allowed_root` from
+    /// `std::env::current_dir()` should prefer this value. New code
+    /// should always set this; older call sites that omit it are
+    /// tracked by the `check_daemon_cwd_usage` static guard.
+    pub workspace_root: Option<std::path::PathBuf>,
 }
 
 impl ToolRegistry {
@@ -656,6 +662,7 @@ impl ToolRegistry {
             preflight_config: integrated.preflight,
             run_store: None,
             command_intent: config.command_intent.clone(),
+            workspace_root: None,
         })
     }
 
@@ -690,6 +697,7 @@ impl ToolRegistry {
             preflight_config: None,
             run_store: None,
             command_intent: None,
+            workspace_root: None,
         })
     }
 

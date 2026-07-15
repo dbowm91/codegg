@@ -1339,7 +1339,9 @@ pub(crate) async fn handle_load_session_messages(app: &mut App, session_id: Stri
             | Ok(CoreResponse::SnapshotDaemon { .. })
             | Ok(CoreResponse::ModelsSnapshot { .. })
             | Ok(CoreResponse::Events { .. })
-            | Ok(CoreResponse::ResyncRequired { .. }) => None,
+            | Ok(CoreResponse::ResyncRequired { .. })
+            | Ok(CoreResponse::WorkspaceList { .. })
+            | Ok(CoreResponse::WorkspaceSnapshot { .. }) => None,
             Err(e) => {
                 app.messages_state
                     .toasts

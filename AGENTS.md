@@ -9,6 +9,8 @@ cargo build --all-features           # build
 cargo clippy --all-features -- -D warnings  # lint (errors in CI)
 CARGO_BUILD_JOBS=1 cargo test --workspace --all-features -- --test-threads=14  # full suite, capped
 cargo test --test single_daemon_lifecycle  # singleton daemon lifecycle
+python3 scripts/check_daemon_cwd_usage.py   # static cwd-use guard for Phase 2
+cargo test --test workspace_isolation       # two-workspace isolation and binding tests
 cargo fmt                            # format
 ```
 
@@ -31,7 +33,7 @@ cargo cksplit      # check protocol + config + providers + root
 
 | Crate | Purpose |
 |-------|---------|
-| `codegg-core` | Domain types: bus, error, goal, memory, session, storage, snapshot, worktree, task_state, model_profile, resilience, protocol_conversions, run_store |
+| `codegg-core` | Domain types: bus, error, goal, memory, session, storage, snapshot, worktree, workspace, task_state, model_profile, resilience, protocol_conversions, run_store |
 | `codegg-config` | Config schema, paths, loading, validation, file watching |
 | `codegg-protocol` | CoreRequest, CoreResponse, CoreEvent, TuiMessage, UiNode, UiEffect, PluginManifestDto, PluginInvocation, PluginResponse (re-exported as `codegg::protocol`) |
 | `codegg-providers` | LLM provider implementations, auth types, CircuitBreaker (re-exported as `codegg::provider`) |
@@ -443,6 +445,17 @@ CI runs on push/PR to dev/main: `agent-assets` → `fmt` → `check` → `clippy
 - **Stop verifies liveness**: `daemon stop` probes the socket before sending SIGTERM. It refuses to unlink paths it does not own.
 - **Production invariant**: No two `codegg` daemons can be active for one user scope. This is enforced by the advisory lock, not by PID files.
 - See `plans/single-daemon-phase-01-singleton-lifecycle-and-default-transport.md` and `src/core/instance.rs` for the full contract.
+
+### Workspace Registry (Phase 2)
+
+- **WorkspaceId**: typed `String` newtype identifying a registered workspace (`crates/codegg-core/src/workspace.rs`).
+- **WorkspaceRegistry**: daemon-owned, deduplicates canonical roots via `get_or_register`. Rejects nonexistent paths and symlink aliases.
+- **ExecutionContext**: immutable, passed by `Arc` through `TurnRunInput` to every daemon execution path. Replaces `std::env::current_dir()` reasoning. Carries `workspace_root`, `workspace_id`, `session_id`, and path policy.
+- **Session binding**: `CoreDaemon::bind_runtime_for_session` resolves a session_id to a `SessionRuntime` via `SessionStore` + `WorkspaceRegistry`. `TurnSubmit`, `AgentSelect`, and `ModelSelect` reject unbound sessions.
+- **Storage migration v22**: adds `workspace` table and `workspace_id` index on `session`. Existing sessions are lazily resolved on next access; their `directory` is canonicalized into a workspace record.
+- **Protocol**: `WorkspaceSnapshot` DTO, `CoreRequest::WorkspaceRegister|WorkspaceList|WorkspaceArchive|WorkspaceSnapshotRequest`, `SessionSnapshot::workspace_id` + `directory`, `ServerCapabilities::workspace_registration` + `workspace_snapshots`.
+- **Static guard**: `scripts/check_daemon_cwd_usage.py` scans protected modules for `std::env::current_dir()` usage. Existing legacy uses in tool `default()` constructors are allowlisted; new production-path uses fail CI.
+- See `plans/single-daemon-phase-02-workspace-registry-and-execution-context.md` and `crates/codegg-core/src/workspace.rs` for the full contract.
 
 ### Module Splits
 

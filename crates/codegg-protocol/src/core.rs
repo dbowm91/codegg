@@ -47,6 +47,16 @@ pub enum CoreResponse {
     SessionList {
         sessions: Vec<crate::dto::Session>,
     },
+    /// Phase 2: registered workspaces returned from `WorkspaceList`.
+    /// Clients that don't yet advertise the workspace capability simply
+    /// ignore this variant (or destructure it for future-proofing).
+    WorkspaceList {
+        workspaces: Vec<crate::dto::WorkspaceSnapshot>,
+    },
+    /// Phase 2: snapshot of a single registered workspace.
+    WorkspaceSnapshot {
+        workspace: crate::dto::WorkspaceSnapshot,
+    },
     Error {
         code: String,
         message: String,
@@ -90,6 +100,10 @@ pub enum CoreResponse {
 pub struct SessionSnapshot {
     pub session_id: String,
     pub project_id: String,
+    #[serde(default)]
+    pub workspace_id: Option<String>,
+    #[serde(default)]
+    pub directory: String,
     pub status: String,
     pub selected_model: Option<String>,
     pub selected_agent: Option<String>,
@@ -235,6 +249,24 @@ pub enum CoreRequest {
     },
     WorktreeList {
         project_dir: String,
+    },
+    /// Phase 2: register or look up the workspace rooted at `root`.
+    /// Returns the same workspace id on every call (idempotent).
+    WorkspaceRegister {
+        root: String,
+    },
+    /// Phase 2: list registered workspaces (archived ones opt-in).
+    WorkspaceList {
+        include_archived: bool,
+    },
+    /// Phase 2: archive a workspace. Subsequent turn submissions for its
+    /// sessions are rejected until the workspace is rebound or restored.
+    WorkspaceArchive {
+        workspace_id: String,
+    },
+    /// Phase 2: snapshot a single workspace by id.
+    WorkspaceSnapshotRequest {
+        workspace_id: String,
     },
     GoalSet {
         session_id: String,

@@ -110,3 +110,21 @@ pub fn dtos_to_provider_messages(
 ) -> Vec<codegg_providers::Message> {
     messages.into_iter().map(dto_to_provider_message).collect()
 }
+
+/// Convert a registered `WorkspaceRecord` into the wire DTO. The active
+/// session count is provided by the daemon snapshot builder because the
+/// record itself does not own a session index.
+pub fn workspace_record_to_dto(
+    record: &crate::workspace::WorkspaceRecord,
+    active_sessions: usize,
+) -> codegg_protocol::dto::WorkspaceSnapshot {
+    codegg_protocol::dto::WorkspaceSnapshot {
+        workspace_id: record.id.as_str().to_string(),
+        canonical_root: record.canonical_root.to_string_lossy().into_owned(),
+        display_name: record.display_name.clone(),
+        created_at: record.created_at.timestamp_millis(),
+        last_opened_at: record.last_opened_at.timestamp_millis(),
+        archived_at: record.archived_at.map(|d| d.timestamp_millis()),
+        active_sessions,
+    }
+}

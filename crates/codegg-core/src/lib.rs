@@ -12,4 +12,5 @@ pub mod session;
 pub mod snapshot;
 pub mod storage;
 pub mod task_state;
+pub mod workspace;
 pub mod worktree;

@@ -42,6 +42,10 @@ pub struct ClientCapabilities {
     pub plugin_ui_code: bool,
     #[serde(default)]
     pub plugin_ui_progress: bool,
+    /// Phase 2: client understands workspace registration requests and the
+    /// `WorkspaceList`/`WorkspaceSnapshot` response variants.
+    #[serde(default)]
+    pub workspace_registration: bool,
 }
 
 impl ClientCapabilities {
@@ -78,6 +82,15 @@ pub struct ServerCapabilities {
     pub event_replay: bool,
     pub session_management: bool,
     pub permission_routing: bool,
+    /// Phase 2: daemon supports workspace registration and snapshots.
+    /// Clients without this capability fall back to the legacy
+    /// `SnapshotWorkspace { project_dir }` flow.
+    #[serde(default)]
+    pub workspace_registration: bool,
+    /// Phase 2: daemon emits `WorkspaceSnapshot` records in turn snapshots
+    /// when available.
+    #[serde(default)]
+    pub workspace_snapshots: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

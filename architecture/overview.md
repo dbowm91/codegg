@@ -130,6 +130,7 @@ hidden by default — see [MCP](mcp.md)).
 | [tui/](tui.md) | Terminal user interface (Ratatui) | `app/mod.rs`, `components/` |
 | [upgrade/](upgrade.md) | Self-upgrade via GitHub releases | `mod.rs` |
 | [util/](util.md) | Clipboard, fuzzy search, pricing, metrics | `mod.rs` |
+| [workspace/](workspace.md) | Workspace registry, canonical root tracking, and execution context — in `crates/codegg-core` | `workspace.rs` |
 | [worktree/](worktree.md) | Git worktree management (read-only facts in `crates/egggit`) | `mod.rs` |
 
 ## Key Types
@@ -163,8 +164,15 @@ hidden by default — see [MCP](mcp.md)).
 - PermissionRegistry and QuestionRegistry are **synchronous** (`fn`, not `async fn`)
 
 ### Session
-- SQLite storage with WAL mode, 15 migrations
-- Tables (13): `migration_version`, `project`, `session`, `message`, `part`, `todo`, `permission`, `session_share`, `cached_models`, `task`, `checkpoints`, `snapshot`, `usage`
+- SQLite storage with WAL mode, 22 migrations
+- Tables (14): `migration_version`, `project`, `session`, `message`, `part`, `todo`, `permission`, `session_share`, `cached_models`, `task`, `checkpoints`, `snapshot`, `usage`, `workspace`
+
+### Workspace (Phase 2)
+- `WorkspaceId` — typed `String` newtype identifying a registered workspace
+- `WorkspaceRegistry` — daemon-owned, deduplicates canonical roots via `get_or_register`; rejects nonexistent paths and symlink aliases
+- `ExecutionContext` — immutable, passed by `Arc` through `TurnRunInput`; carries `workspace_root`, `workspace_id`, `session_id`, and path policy
+- `WorkspaceSnapshot` — DTO for protocol serialization of workspace state
+- Storage migration v22 adds the `workspace` table and `workspace_id` index on `session`
 
 ### Provider
 - `Provider` trait with `chat()` streaming method
@@ -288,3 +296,4 @@ User Input → TUI Event Loop → App::on_key() → State Mutation → Render
 - [Upgrade](upgrade.md) - Self-upgrade functionality
 - [Util](util.md) - Utility functions
 - [Worktree](worktree.md) - Git worktree management
+- [Workspace](workspace.md) - Workspace registry, execution context, and daemon workspace binding

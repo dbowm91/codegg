@@ -241,6 +241,26 @@ Production locations: macOS `$HOME/Library/Application Support/codegg`, Linux `$
 
 The `PROTOCOL_VERSION = 2` constant is unchanged in this phase. The `generation` UUID lives in the on-disk metadata file, not in the wire protocol.
 
+### Workspace Registry and Execution Context (Phase 2)
+
+Phase 2 introduces workspace identity as a first-class daemon concept. A daemon may now serve multiple distinct workspaces (project roots) and must track which workspace each execution context targets.
+
+**`WorkspaceRegistry`** (`crates/codegg-core/src/workspace.rs`) is daemon-owned and deduplicates canonical roots via `get_or_register`. Rejects nonexistent paths and symlink aliases. `CoreDaemon` holds `workspaces: Arc<WorkspaceRegistry>`.
+
+**`ExecutionContext`** (`crates/codegg-core/src/workspace.rs`) is immutable and passed by `Arc` through `TurnRunInput` to every daemon execution path. Replaces `std::env::current_dir()` reasoning. Carries `workspace_root`, `workspace_id`, `session_id`, and path policy. `TurnRunInput` has `execution: Arc<ExecutionContext>`.
+
+**`WorkspaceId`** is a typed `String` newtype identifying a registered workspace.
+
+**Session binding**: `CoreDaemon::bind_runtime_for_session` resolves a `session_id` to a `SessionRuntime` via `SessionStore` + `WorkspaceRegistry`. `TurnSubmit`, `AgentSelect`, and `ModelSelect` reject unbound sessions.
+
+**Storage migration v22**: adds a `workspace` table and `workspace_id` index on `session`. Existing sessions are lazily resolved on next access; their `directory` is canonicalized into a workspace record.
+
+**Protocol**: `WorkspaceSnapshot` DTO, `CoreRequest::WorkspaceRegister|WorkspaceList|WorkspaceArchive|WorkspaceSnapshotRequest`, `SessionSnapshot::workspace_id` + `directory`, `ServerCapabilities::workspace_registration` + `workspace_snapshots`.
+
+**Static guard**: `scripts/check_daemon_cwd_usage.py` scans protected modules for `std::env::current_dir()` usage. Existing legacy uses in tool `default()` constructors are allowlisted; new production-path uses fail CI.
+
+See `plans/single-daemon-phase-02-workspace-registry-and-execution-context.md` and `crates/codegg-core/src/workspace.rs` for the full contract.
+
 ### Implementation Notes
 
 - The core protocol version is currently `2` (`PROTOCOL_VERSION` in `crates/codegg-protocol/src/core.rs`).

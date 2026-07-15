@@ -115,6 +115,13 @@ pub struct TurnRunInput {
     /// Shared plugin service for lifecycle hook dispatch.
     /// `None` when plugin system is disabled.
     pub plugin_service: Option<Arc<crate::plugin::service::PluginService>>,
+    /// Phase 2: immutable daemon-resolved execution context. Replaces
+    /// any `std::env::current_dir()` reasoning in this runtime. The
+    /// workspace root is the single source of truth for filesystem
+    /// and process execution. Required: callers that build a turn
+    /// outside `CoreDaemon::TurnSubmit` should construct a context
+    /// via `codegg_core::workspace::ExecutionContext::new`.
+    pub execution: Arc<codegg_core::workspace::ExecutionContext>,
 }
 
 /// Minimal output from a turn execution.
@@ -171,6 +178,7 @@ impl TurnRuntime for DefaultTurnRuntime {
             lsp_service,
             lsp_context_input,
             plugin_service,
+            execution,
         } = input;
 
         // ── Provider resolution ──────────────────────────────────────
@@ -204,6 +212,7 @@ impl TurnRuntime for DefaultTurnRuntime {
             task_tool_runtime.as_ref(),
             task_state_policy.clone(),
             Some(model.clone()),
+            Arc::clone(&execution),
         );
 
         // ── Memory context ───────────────────────────────────────────
@@ -265,8 +274,7 @@ impl TurnRuntime for DefaultTurnRuntime {
 
         // ── LSP context ──────────────────────────────────────────────
         if let Some(ref svc) = lsp_service {
-            use std::path::PathBuf;
-            let root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+            let root = execution.workspace_root.clone();
             let lsp_ctx =
                 assemble_lsp_context_for_turn(svc, lsp_context_input, &model_profile.family, root)
                     .await;
@@ -276,10 +284,7 @@ impl TurnRuntime for DefaultTurnRuntime {
         }
 
         // ── Git repository context ──────────────────────────────────
-        let git_ctx = build_git_context_for_path(
-            &std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
-        )
-        .await;
+        let git_ctx = build_git_context_for_path(&execution.workspace_root).await;
         system.push_str(&git_ctx);
 
         if plan_mode {

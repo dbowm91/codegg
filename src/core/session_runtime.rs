@@ -4,6 +4,8 @@ use std::path::PathBuf;
 use std::sync::atomic::AtomicUsize;
 use tokio::sync::{mpsc, watch, RwLock};
 
+use codegg_core::workspace::WorkspaceId;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RuntimeSessionStatus {
     Idle,
@@ -11,9 +13,25 @@ pub enum RuntimeSessionStatus {
     Paused,
 }
 
+/// Per-session runtime state used by `CoreDaemon`.
+///
+/// **Phase 2**: `workspace_id` and `workspace_root` are the authoritative
+/// identity for execution. `project_id` and `directory` remain as
+/// compatibility projections for legacy session metadata and external
+/// snapshot consumers (clients and tests that still expect the old
+/// fields). When both are present, the workspace identity wins.
 pub struct SessionRuntime {
     pub session_id: String,
+    pub workspace_id: WorkspaceId,
+    pub workspace_root: PathBuf,
+    /// Compatibility projection of the session's stored `project_id`.
+    /// Pre-Phase-2 clients and CLI output still read this. New code
+    /// should prefer `workspace_id`.
     pub project_id: String,
+    /// Compatibility projection of the session's stored `directory`. This
+    /// is always equal to `workspace_root` for sessions created or
+    /// rebound through `WorkspaceRegistry`. May differ for legacy
+    /// sessions whose directory no longer exists on disk.
     pub directory: PathBuf,
     pub status: RwLock<RuntimeSessionStatus>,
     pub selected_model: RwLock<Option<String>>,
@@ -58,32 +76,66 @@ impl SessionRuntimeRegistry {
         }
     }
 
+    /// Construct a workspace-bound runtime. This is the canonical entry
+    /// point used by the daemon once a session has been resolved to a
+    /// `WorkspaceRecord`.
+    ///
+    /// `project_id` and `directory` are stored as compatibility
+    /// projections; they MUST equal the workspace identity for new
+    /// sessions.
     pub fn get_or_create(
         &self,
         session_id: &str,
-        project_id: &str,
+        workspace_id: WorkspaceId,
+        workspace_root: PathBuf,
+        project_id: String,
         directory: PathBuf,
     ) -> std::sync::Arc<SessionRuntime> {
-        self.sessions
-            .entry(session_id.to_string())
-            .or_insert_with(|| {
-                std::sync::Arc::new(SessionRuntime {
-                    session_id: session_id.to_string(),
-                    project_id: project_id.to_string(),
-                    directory,
-                    status: RwLock::new(RuntimeSessionStatus::Idle),
-                    selected_model: RwLock::new(None),
-                    selected_agent: RwLock::new(None),
-                    active_turn: RwLock::new(None),
-                    attached_clients: DashMap::new(),
-                    pending_permissions: DashSet::new(),
-                    pending_questions: DashSet::new(),
-                    last_input_tokens: RwLock::new(None),
-                    last_output_tokens: RwLock::new(None),
-                    active_subagent_count: AtomicUsize::new(0),
-                })
-            })
-            .clone()
+        let key = session_id.to_string();
+        if let Some(existing) = self.sessions.get(&key) {
+            return existing.clone();
+        }
+        let arc = std::sync::Arc::new(SessionRuntime {
+            session_id: session_id.to_string(),
+            workspace_id,
+            workspace_root,
+            project_id,
+            directory,
+            status: RwLock::new(RuntimeSessionStatus::Idle),
+            selected_model: RwLock::new(None),
+            selected_agent: RwLock::new(None),
+            active_turn: RwLock::new(None),
+            attached_clients: DashMap::new(),
+            pending_permissions: DashSet::new(),
+            pending_questions: DashSet::new(),
+            last_input_tokens: RwLock::new(None),
+            last_output_tokens: RwLock::new(None),
+            active_subagent_count: AtomicUsize::new(0),
+        });
+        self.sessions.insert(key, arc.clone());
+        arc
+    }
+
+    /// Test helper: build a minimal workspace-bound runtime without
+    /// going through `WorkspaceRegistry`. Production callers must use
+    /// `CoreDaemon::bind_runtime` (which resolves/registers the
+    /// directory) or the full `get_or_create` constructor.
+    #[cfg(test)]
+    pub fn get_or_create_for_test(
+        &self,
+        session_id: &str,
+        workspace_root: PathBuf,
+    ) -> std::sync::Arc<SessionRuntime> {
+        let workspace_id =
+            WorkspaceId::new_unchecked(format!("test-ws-{}", uuid::Uuid::new_v4().simple()));
+        let path_str = workspace_root.to_string_lossy().into_owned();
+        self.get_or_create(
+            session_id,
+            workspace_id,
+            workspace_root,
+            path_str.clone(),
+            PathBuf::from(path_str),
+        )
     }
 
     pub fn get(&self, session_id: &str) -> Option<std::sync::Arc<SessionRuntime>> {
@@ -107,12 +159,22 @@ impl SessionRuntimeRegistry {
 mod tests {
     use super::*;
 
+    fn ws_id() -> WorkspaceId {
+        WorkspaceId::new_unchecked("ws-test-1")
+    }
+
     #[test]
     fn registry_creates_and_gets() {
         let reg = SessionRuntimeRegistry::new();
-        let rt = reg.get_or_create("s1", "p1", PathBuf::from("/tmp"));
+        let rt = reg.get_or_create(
+            "s1",
+            ws_id(),
+            PathBuf::from("/tmp"),
+            "p1".into(),
+            PathBuf::from("/tmp"),
+        );
         assert_eq!(rt.session_id, "s1");
-        assert_eq!(rt.project_id, "p1");
+        assert_eq!(rt.workspace_id.as_str(), "ws-test-1");
 
         let got = reg.get("s1");
         assert!(got.is_some());
@@ -120,9 +182,35 @@ mod tests {
     }
 
     #[test]
+    fn registry_dedupes_session_id() {
+        let reg = SessionRuntimeRegistry::new();
+        let a = reg.get_or_create(
+            "s1",
+            ws_id(),
+            PathBuf::from("/tmp"),
+            "p1".into(),
+            PathBuf::from("/tmp"),
+        );
+        let b = reg.get_or_create(
+            "s1",
+            ws_id(),
+            PathBuf::from("/tmp"),
+            "p1".into(),
+            PathBuf::from("/tmp"),
+        );
+        assert!(std::sync::Arc::ptr_eq(&a, &b));
+    }
+
+    #[test]
     fn registry_remove() {
         let reg = SessionRuntimeRegistry::new();
-        reg.get_or_create("s1", "p1", PathBuf::from("/tmp"));
+        reg.get_or_create(
+            "s1",
+            ws_id(),
+            PathBuf::from("/tmp"),
+            "p1".into(),
+            PathBuf::from("/tmp"),
+        );
         assert!(reg.get("s1").is_some());
 
         reg.remove("s1");
@@ -132,7 +220,13 @@ mod tests {
     #[test]
     fn runtime_starts_idle() {
         let reg = SessionRuntimeRegistry::new();
-        let rt = reg.get_or_create("s1", "p1", PathBuf::from("/tmp"));
+        let rt = reg.get_or_create(
+            "s1",
+            ws_id(),
+            PathBuf::from("/tmp"),
+            "p1".into(),
+            PathBuf::from("/tmp"),
+        );
         assert_eq!(*rt.status.blocking_read(), RuntimeSessionStatus::Idle);
         assert!(rt.active_turn.blocking_read().is_none());
     }
@@ -140,7 +234,13 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn pending_permissions_tracked() {
         let reg = SessionRuntimeRegistry::new();
-        let rt = reg.get_or_create("s1", "p1", PathBuf::from("/tmp"));
+        let rt = reg.get_or_create(
+            "s1",
+            ws_id(),
+            PathBuf::from("/tmp"),
+            "p1".into(),
+            PathBuf::from("/tmp"),
+        );
         rt.pending_permissions.insert("perm-1".to_string());
         rt.pending_permissions.insert("perm-2".to_string());
         assert_eq!(rt.pending_permissions.len(), 2);

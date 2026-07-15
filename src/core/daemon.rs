@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -8,6 +9,8 @@ use chrono::Utc;
 use super::event_log::EventFilter;
 use super::runtime_deps::CoreRuntimeDeps;
 use crate::core::session_runtime::RuntimeSessionStatus;
+
+use codegg_core::workspace::{WorkspaceRecord, WorkspaceRegistry};
 
 pub struct CoreDaemon {
     pub daemon_id: String,
@@ -24,6 +27,11 @@ pub struct CoreDaemon {
     pub notification_router: Arc<super::notification::NotificationRouter>,
     pub audio_arbiter: Option<Arc<super::notification::AudioArbiter>>,
     pub started_at: Instant,
+    /// Phase 2: daemon-owned workspace registry. Every persisted session
+    /// is bound to exactly one workspace before any execution is
+    /// permitted. The registry deduplicates canonical project roots and
+    /// gates turn submission behind a valid `WorkspaceId`.
+    pub workspaces: Arc<WorkspaceRegistry>,
 }
 
 impl CoreDaemon {
@@ -66,6 +74,19 @@ impl CoreDaemon {
         } else {
             None
         };
+        // Workspace registry: prefer the on-disk SQLite store when a
+        // session DB pool is available; fall back to an in-memory store
+        // for standalone / in-process test daemons.
+        let workspaces = match deps.pool {
+            Some(ref p) => {
+                let store = Arc::new(codegg_core::workspace::SqliteWorkspaceStore::new(p.clone()));
+                WorkspaceRegistry::new_for_tests(store)
+            }
+            None => {
+                let store = Arc::new(codegg_core::workspace::InMemoryWorkspaceStore::new());
+                WorkspaceRegistry::new_for_tests(store)
+            }
+        };
         Self {
             daemon_id,
             generation,
@@ -77,7 +98,89 @@ impl CoreDaemon {
             notification_router,
             audio_arbiter,
             started_at: Instant::now(),
+            workspaces,
         }
+    }
+
+    /// Rehydrate the workspace registry from its backing store. Daemon
+    /// construction synchronously creates a registry with the store
+    /// attached; the in-memory cache is empty until this method is called.
+    /// Existing CLI/socket entry points invoke this after `with_deps` so
+    /// existing `workspace` rows survive restarts.
+    pub async fn hydrate_workspace_registry(
+        &self,
+    ) -> Result<(), codegg_core::workspace::WorkspaceError> {
+        self.workspaces.hydrate_from_store().await
+    }
+
+    /// Resolve a session's directory to a workspace, registering one if
+    /// the directory is a real, canonicalizable directory. Returns an
+    /// `AppError` when the directory is not a workspace (e.g. a stale
+    /// session whose directory no longer exists). All daemon execution
+    /// paths go through this helper.
+    pub async fn workspace_for_session_directory(
+        &self,
+        session_id: &str,
+        session_directory: &str,
+    ) -> Result<Arc<WorkspaceRecord>, AppError> {
+        let path = std::path::Path::new(session_directory);
+        self.workspaces.get_or_register(path).await.map_err(|e| {
+            AppError::Other(anyhow::anyhow!(
+                "session {} has no workspace ({}): {}",
+                session_id,
+                session_directory,
+                e
+            ))
+        })
+    }
+
+    /// Bind a `SessionRuntime` to a workspace record. Stores
+    /// compatibility projections for `project_id` and `directory`. Idempotent
+    /// when an existing runtime already carries the same workspace.
+    pub fn bind_runtime(
+        &self,
+        session_id: &str,
+        workspace: Arc<WorkspaceRecord>,
+        project_id: String,
+        directory: std::path::PathBuf,
+    ) -> Arc<crate::core::session_runtime::SessionRuntime> {
+        self.sessions.get_or_create(
+            session_id,
+            workspace.id.clone(),
+            workspace.canonical_root.clone(),
+            project_id,
+            directory,
+        )
+    }
+
+    /// Resolve a session_id to a bound runtime, looking up the session in
+    /// storage, resolving its workspace, and creating the runtime. Returns
+    /// `Err` when the session is unbound and the directory cannot be
+    /// turned into a workspace (e.g., the directory no longer exists).
+    pub async fn bind_runtime_for_session(
+        &self,
+        session_id: &str,
+    ) -> Result<Arc<crate::core::session_runtime::SessionRuntime>, AppError> {
+        let pool = self.pool.clone().ok_or_else(|| {
+            AppError::Other(anyhow::anyhow!(
+                "no database pool available for session lookup"
+            ))
+        })?;
+        let store = crate::session::SessionStore::new(pool);
+        let session = store
+            .get(session_id)
+            .await
+            .map_err(|e| AppError::Other(anyhow::anyhow!("session store error: {}", e)))?
+            .ok_or_else(|| AppError::Other(anyhow::anyhow!("session not found: {}", session_id)))?;
+        let workspace = self
+            .workspace_for_session_directory(session_id, &session.directory)
+            .await?;
+        Ok(self.bind_runtime(
+            session_id,
+            workspace,
+            session.project_id.clone(),
+            PathBuf::from(&session.directory),
+        ))
     }
 
     /// Legacy constructor for backward compatibility. Prefer `with_deps`.
@@ -523,11 +626,18 @@ impl CoreDaemon {
                     });
                 };
 
-                let runtime = self.sessions.get_or_create(
-                    &session_id,
-                    &session_id,
-                    std::path::PathBuf::from("."),
-                );
+                let runtime = match self.bind_runtime_for_session(&session_id).await {
+                    Ok(rt) => rt,
+                    Err(e) => {
+                        return Ok(CoreResponse::Error {
+                            code: "session_unbound".to_string(),
+                            message: format!(
+                                "session {} has no resolvable workspace: {}",
+                                session_id, e
+                            ),
+                        });
+                    }
+                };
 
                 let turn_id = {
                     let mut active = runtime.active_turn.write().await;
@@ -565,6 +675,27 @@ impl CoreDaemon {
                     )
                     .await;
 
+                // Build an immutable execution context from the bound
+                // runtime's workspace identity. The context flows through
+                // every daemon-owned execution path inside the turn.
+                let workspace_record = codegg_core::workspace::WorkspaceRecord {
+                    id: runtime.workspace_id.clone(),
+                    canonical_root: runtime.workspace_root.clone(),
+                    display_name: runtime
+                        .workspace_root
+                        .file_name()
+                        .map(|s| s.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| runtime.workspace_root.to_string_lossy().into_owned()),
+                    created_at: chrono::Utc::now(),
+                    last_opened_at: chrono::Utc::now(),
+                    archived_at: None,
+                };
+                let execution = codegg_core::workspace::ExecutionContext::new(
+                    Arc::new(workspace_record),
+                    Some(session_id.clone()),
+                    Default::default(),
+                );
+
                 // Delegate to the injected turn runtime which handles tool
                 // registry, agent loop construction, and background spawning.
                 let plugin_service = crate::plugin::create_default_plugin_service().await;
@@ -584,6 +715,7 @@ impl CoreDaemon {
                     lsp_service: self.deps.lsp_service.clone(),
                     lsp_context_input: None,
                     plugin_service,
+                    execution,
                 };
                 let turn_output = self.deps.turn_runtime.run_turn(turn_input).await?;
 
@@ -673,11 +805,31 @@ impl CoreDaemon {
                 let store = crate::session::SessionStore::new(pool);
                 match store.get(&session_id).await {
                     Ok(Some(session)) => {
-                        self.sessions.get_or_create(
-                            &session_id,
-                            &session.project_id,
-                            std::path::PathBuf::from(&session.directory),
-                        );
+                        // Resolve or register a workspace for this session's
+                        // directory. Falls back to a session-unbound error
+                        // when the directory is no longer a canonicalizable
+                        // workspace (which the client can repair with an
+                        // explicit WorkspaceRegister request).
+                        match self
+                            .workspace_for_session_directory(&session_id, &session.directory)
+                            .await
+                        {
+                            Ok(workspace) => {
+                                self.bind_runtime(
+                                    &session_id,
+                                    workspace,
+                                    session.project_id.clone(),
+                                    PathBuf::from(&session.directory),
+                                );
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    session_id = %session_id,
+                                    error = %e,
+                                    "session loaded but workspace could not be resolved; turn submission will be rejected until rebound",
+                                );
+                            }
+                        }
                         Ok(CoreResponse::Session {
                             session: crate::protocol_conversions::session_to_dto(session),
                         })
@@ -1886,11 +2038,18 @@ impl CoreDaemon {
                 session_id,
                 agent_name,
             } => {
-                let runtime = self.sessions.get_or_create(
-                    &session_id,
-                    &session_id,
-                    std::path::PathBuf::from("."),
-                );
+                let runtime = match self.bind_runtime_for_session(&session_id).await {
+                    Ok(rt) => rt,
+                    Err(e) => {
+                        return Ok(CoreResponse::Error {
+                            code: "session_unbound".to_string(),
+                            message: format!(
+                                "session {} has no resolvable workspace: {}",
+                                session_id, e
+                            ),
+                        });
+                    }
+                };
                 {
                     let mut selected = runtime.selected_agent.write().await;
                     *selected = Some(agent_name.clone());
@@ -1903,11 +2062,18 @@ impl CoreDaemon {
                 Ok(CoreResponse::Ack)
             }
             CoreRequest::ModelSelect { session_id, model } => {
-                let runtime = self.sessions.get_or_create(
-                    &session_id,
-                    &session_id,
-                    std::path::PathBuf::from("."),
-                );
+                let runtime = match self.bind_runtime_for_session(&session_id).await {
+                    Ok(rt) => rt,
+                    Err(e) => {
+                        return Ok(CoreResponse::Error {
+                            code: "session_unbound".to_string(),
+                            message: format!(
+                                "session {} has no resolvable workspace: {}",
+                                session_id, e
+                            ),
+                        });
+                    }
+                };
                 {
                     let mut selected = runtime.selected_model.write().await;
                     *selected = Some(model.clone());
@@ -2072,6 +2238,8 @@ impl CoreDaemon {
                         snapshots.push(crate::protocol::core::SessionSnapshot {
                             session_id: sid.clone(),
                             project_id: runtime.project_id.clone(),
+                            workspace_id: Some(runtime.workspace_id.as_str().to_string()),
+                            directory: runtime.directory.to_string_lossy().into_owned(),
                             status,
                             selected_model: model,
                             selected_agent: agent,
@@ -2298,10 +2466,9 @@ mod tests {
             _ => panic!("expected Session"),
         };
 
-        let runtime =
-            daemon
-                .sessions
-                .get_or_create(&session_id, &session_id, std::path::PathBuf::new());
+        let runtime = daemon
+            .sessions
+            .get_or_create_for_test(&session_id, std::path::PathBuf::new());
         assert!(runtime.active_turn.read().await.is_none());
     }
 
@@ -2717,11 +2884,9 @@ mod tests {
     #[tokio::test]
     async fn turn_cancel_wrong_id_rejected() {
         let daemon = test_daemon().await;
-        let runtime = daemon.sessions.get_or_create(
-            "s-cancel-wrong",
-            "s-cancel-wrong",
-            std::path::PathBuf::from("."),
-        );
+        let runtime = daemon
+            .sessions
+            .get_or_create_for_test("s-cancel-wrong", std::path::PathBuf::from("."));
         let (cancel_tx, _cancel_rx, _steer_rx) = install_active_turn(&runtime, "turn-real").await;
 
         let req = crate::core::new_request(
@@ -2757,11 +2922,9 @@ mod tests {
     #[tokio::test]
     async fn turn_cancel_correct_id_succeeds() {
         let daemon = test_daemon().await;
-        let runtime = daemon.sessions.get_or_create(
-            "s-cancel-ok",
-            "s-cancel-ok",
-            std::path::PathBuf::from("."),
-        );
+        let runtime = daemon
+            .sessions
+            .get_or_create_for_test("s-cancel-ok", std::path::PathBuf::from("."));
         let (cancel_tx, _cancel_rx, _steer_rx) = install_active_turn(&runtime, "turn-good").await;
 
         let req = crate::core::new_request(
@@ -2785,11 +2948,9 @@ mod tests {
     async fn turn_cancel_no_active_turn() {
         let daemon = test_daemon().await;
         // Register the session but do not install an active turn.
-        daemon.sessions.get_or_create(
-            "s-cancel-none",
-            "s-cancel-none",
-            std::path::PathBuf::from("."),
-        );
+        daemon
+            .sessions
+            .get_or_create_for_test("s-cancel-none", std::path::PathBuf::from("."));
 
         let req = crate::core::new_request(
             "req-cancel".into(),
@@ -2810,11 +2971,9 @@ mod tests {
     #[tokio::test]
     async fn turn_steer_wrong_id_rejected() {
         let daemon = test_daemon().await;
-        let runtime = daemon.sessions.get_or_create(
-            "s-steer-wrong",
-            "s-steer-wrong",
-            std::path::PathBuf::from("."),
-        );
+        let runtime = daemon
+            .sessions
+            .get_or_create_for_test("s-steer-wrong", std::path::PathBuf::from("."));
         let (_cancel_tx, _cancel_rx, _steer_rx) =
             install_active_turn(&runtime, "turn-real-steer").await;
 
@@ -2838,11 +2997,9 @@ mod tests {
     #[tokio::test]
     async fn turn_steer_correct_id_succeeds() {
         let daemon = test_daemon().await;
-        let runtime = daemon.sessions.get_or_create(
-            "s-steer-ok",
-            "s-steer-ok",
-            std::path::PathBuf::from("."),
-        );
+        let runtime = daemon
+            .sessions
+            .get_or_create_for_test("s-steer-ok", std::path::PathBuf::from("."));
         let (_cancel_tx, _cancel_rx, mut steer_rx) =
             install_active_turn(&runtime, "turn-good-steer").await;
 
@@ -2880,7 +3037,20 @@ mod tests {
             ..Default::default()
         };
 
-        let session_id = "s-submit-started".to_string();
+        // Pre-create a session so TurnSubmit can resolve its workspace.
+        let workspace_dir = tempfile::tempdir().unwrap();
+        let create_req = crate::core::new_request(
+            "req-create".into(),
+            CoreRequest::SessionCreate {
+                directory: workspace_dir.path().to_string_lossy().into_owned(),
+                title: None,
+            },
+        );
+        let session_id = match daemon.handle_request(create_req).await.unwrap() {
+            CoreResponse::Session { session } => session.id,
+            other => panic!("expected Session, got {:?}", other),
+        };
+
         let req = crate::core::new_request(
             "req-submit".into(),
             CoreRequest::TurnSubmit {
@@ -2932,11 +3102,9 @@ mod tests {
     #[tokio::test]
     async fn bridge_attaches_turn_id_for_text_delta() {
         let daemon = test_daemon().await;
-        let runtime = daemon.sessions.get_or_create(
-            "s-bridge-delta",
-            "s-bridge-delta",
-            std::path::PathBuf::from("."),
-        );
+        let runtime = daemon
+            .sessions
+            .get_or_create_for_test("s-bridge-delta", std::path::PathBuf::from("."));
         let turn_id = "turn-bridge-delta".to_string();
         let (_cancel_tx, _cancel_rx, _steer_rx) = install_active_turn(&runtime, &turn_id).await;
 
@@ -2974,11 +3142,9 @@ mod tests {
         // and emit notifications, but it does not flow through
         // `map_app_event_to_core_event`.
         let daemon = test_daemon().await;
-        let runtime = daemon.sessions.get_or_create(
-            "s-bridge-finished",
-            "s-bridge-finished",
-            std::path::PathBuf::from("."),
-        );
+        let runtime = daemon
+            .sessions
+            .get_or_create_for_test("s-bridge-finished", std::path::PathBuf::from("."));
         let turn_id = "turn-bridge-finished".to_string();
         let (_cancel_tx, _cancel_rx, _steer_rx) = install_active_turn(&runtime, &turn_id).await;
 
@@ -3042,11 +3208,9 @@ mod tests {
     #[tokio::test]
     async fn bridge_keeps_turn_id_from_event_when_present() {
         let daemon = test_daemon().await;
-        let runtime = daemon.sessions.get_or_create(
-            "s-bridge-explicit",
-            "s-bridge-explicit",
-            std::path::PathBuf::from("."),
-        );
+        let runtime = daemon
+            .sessions
+            .get_or_create_for_test("s-bridge-explicit", std::path::PathBuf::from("."));
         let active_turn_id = "turn-active".to_string();
         let (_cancel_tx, _cancel_rx, _steer_rx) =
             install_active_turn(&runtime, &active_turn_id).await;
@@ -3080,11 +3244,9 @@ mod tests {
     async fn bridge_no_active_turn_keeps_empty_turn_id() {
         let daemon = test_daemon().await;
         // No active turn installed for this session.
-        daemon.sessions.get_or_create(
-            "s-bridge-none",
-            "s-bridge-none",
-            std::path::PathBuf::from("."),
-        );
+        daemon
+            .sessions
+            .get_or_create_for_test("s-bridge-none", std::path::PathBuf::from("."));
 
         let app_event = crate::bus::events::AppEvent::TextDelta {
             session_id: "s-bridge-none".into(),
@@ -3141,9 +3303,11 @@ mod tests {
         std::env::set_var("OPENAI_API_KEY", "test-key-not-used");
 
         let fake = Arc::new(FakeTurnRuntime::new());
-        let deps = CoreRuntimeDeps::new(None, None, None, None)
+        let pool = in_memory_pool().await;
+        let deps = CoreRuntimeDeps::new(Some(pool), None, None, None)
             .with_turn_runtime(Arc::clone(&fake) as Arc<dyn TurnRuntime>);
         let daemon = CoreDaemon::with_deps(deps);
+        daemon.hydrate_workspace_registry().await.unwrap();
 
         let agent = crate::agent::Agent {
             name: "test".into(),
@@ -3151,7 +3315,20 @@ mod tests {
             ..Default::default()
         };
 
-        let session_id = "s-inject-test".to_string();
+        // Pre-create a session so TurnSubmit can resolve its workspace.
+        let workspace_dir = tempfile::tempdir().unwrap();
+        let create_req = crate::core::new_request(
+            "req-inject-create".into(),
+            CoreRequest::SessionCreate {
+                directory: workspace_dir.path().to_string_lossy().into_owned(),
+                title: None,
+            },
+        );
+        let session_id = match daemon.handle_request(create_req).await.unwrap() {
+            CoreResponse::Session { session } => session.id,
+            other => panic!("expected Session, got {:?}", other),
+        };
+
         let req = crate::core::new_request(
             "req-inject".into(),
             CoreRequest::TurnSubmit {

@@ -17,6 +17,7 @@ This document defines the test taxonomy, resource model, and guidance for adding
 | `process-heavy` | Fake LSP stdio, supervisor restart, daemon sockets, subprocess spawning | Serial (`--test-threads=1`) | `tests/lsp.rs`, `tests/lsp_composite_stdio.rs`, `tests/supervisor_restart_stdio.rs` |
 | `plugin-heavy` | Wasmtime runtime, plugin install/registry/management | Serial | `tests/plugin.rs`, `src/plugin/management.rs` |
 | `adversarial` | Command routing, Python sandbox, context projection adversarial tests | Serial | `tests/command_routing_adversarial.rs` (139), `tests/python_sandbox_adversarial.rs` (57), `tests/context_projection_adversarial.rs` (90) |
+| `workspace` | Two-workspace isolation and unbound session rejection | Serial | `tests/workspace_isolation.rs` |
 | `real-lsp` | Actual language server smoke tests (rust-analyzer, pyright, gopls) | Manual/scheduled only | `crates/egglsp/tests/real_server_smoke.rs` |
 | `release-full` | Conservative full validation for main/tags | Serial | `cargo test --workspace --all-features -- --test-threads=14` |
 
@@ -121,6 +122,7 @@ Classify every new test against these resource classes before writing it:
 | `plugin-heavy` | `current_thread` | none | Serial | Default | Wasmtime runtime, plugin install/registry |
 | `adversarial` | `current_thread` | none | Serial | Default | Command routing, Python sandbox, context projection adversarial tests |
 | `real-lsp` | `multi_thread` with bounded workers | none | Manual/scheduled | Separate | Actual language server subprocesses |
+| `workspace` | `current_thread` | `isolated_pool()` | Serial | Default | Workspace isolation, unbound session rejection |
 | `release-full` | varies | varies | Serial | Default | Full workspace `--all-features` sweep |
 
 **Quick decision**: If the test spawns `tokio::process::Command` or `tokio::spawn`, use `multi_thread`. If it touches SQLite, use `isolated_pool()`. If it needs installed binaries, it's `real-lsp` (never in default CI). Adversarial tests (command routing, Python sandbox, context projection) are `current_thread` and serial — they exercise security boundaries with crafted inputs.
@@ -143,6 +145,9 @@ cargo test --features lsp-test-support --test lsp_composite_stdio
 
 # Plugin tests (serial)
 cargo test -p codegg --lib plugin --all-features
+
+# Workspace isolation tests (serial)
+cargo test --test workspace_isolation
 
 # Adversarial tests (serial)
 cargo test --test command_routing_adversarial

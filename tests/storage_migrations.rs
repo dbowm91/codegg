@@ -72,7 +72,7 @@ async fn migration_rerun_resumes_after_mid_migration_failure() {
     .fetch_one(&pool)
     .await
     .expect("failed to read final migration version");
-    assert_eq!(final_version, 21, "expected latest migration version");
+    assert_eq!(final_version, 22, "expected latest migration version");
 
     let allowed_paths_exists: i64 = sqlx::query(
         "SELECT COUNT(*) AS cnt FROM pragma_table_info('task') WHERE name = 'allowed_paths'",
