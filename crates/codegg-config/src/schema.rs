@@ -1217,10 +1217,35 @@ pub struct NotificationAudioConfig {
 #[serde(default)]
 pub struct DaemonConfig {
     pub enabled: Option<bool>,
+    /// Auto-start the user-scoped singleton daemon when a frontend (TUI,
+    /// HTTP server) tries to connect and none is running. Default `true`
+    /// for production; may be set to `false` to opt out and require
+    /// explicit `codegg daemon start` invocations.
     pub auto_start: Option<bool>,
     pub socket: Option<String>,
     pub project_scope: Option<String>,
     pub event_log_capacity: Option<usize>,
+    /// Per-instance daemon mode for the connecting frontend.
+    /// - `daemon_client` (default): connect-or-start against the user-scoped
+    ///   singleton daemon.
+    /// - `standalone_inproc`: run the core in-process; visible non-production mode.
+    /// - `standalone_stdio`: spawn a `core-stdio` subprocess; compatibility.
+    pub mode: Option<DaemonModeConfig>,
+    /// How long to wait for a freshly started daemon to become ready.
+    /// Default: 10000 ms.
+    pub startup_timeout_ms: Option<u64>,
+    /// How long to wait for graceful shutdown of the daemon accept loop
+    /// before forcing exit. Default: 5000 ms.
+    pub shutdown_timeout_ms: Option<u64>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DaemonModeConfig {
+    #[default]
+    DaemonClient,
+    StandaloneInproc,
+    StandaloneStdio,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq)]

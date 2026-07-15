@@ -2,6 +2,48 @@
 
 Common issues and solutions for codegg.
 
+## Daemon Issues
+
+### Daemon already running
+
+**Symptoms:** Second `codegg` invocation connects to the existing daemon instead of starting a new one.
+
+**This is expected behavior.** Codegg runs exactly one user-scoped daemon per OS user (singleton invariant). The second invocation connects to the running daemon via `connect_or_start_daemon`.
+
+**Solutions:**
+1. Use `codegg daemon status` to see the active daemon's identity, PID, generation, and uptime.
+2. Use `codegg daemon stop` to stop the running daemon if needed.
+3. Use `--standalone` to bypass the daemon and run an in-process core (non-production mode).
+
+### Stale socket after crash
+
+**Symptoms:** Daemon refuses to start; lock file exists but socket is unreachable.
+
+**Solutions:**
+1. A new daemon start automatically removes stale sockets when the lock is free — try starting again.
+2. If the lock is still held by a dead process, check `codegg daemon status` for the PID and verify the process is alive (`ps -p <pid>`).
+3. Manually remove the lock file only if you are sure no daemon is running: `rm ~/.config/codegg/daemon.lock` (or the equivalent path for your OS).
+
+### Daemon not reachable
+
+**Symptoms:** `codegg` reports it cannot connect to the daemon.
+
+**Solutions:**
+1. Run `codegg daemon status` to check if the daemon is running.
+2. Check `CODEGG_DAEMON_HOME` if you have overridden the daemon path.
+3. Verify the lock file is not held by a dead process: `ls -la <daemon-home>/daemon.lock`.
+4. Try `codegg daemon start` to start a fresh daemon.
+
+### Server mode refuses to start
+
+**Symptoms:** `codegg server` exits with an error about `--standalone-core`.
+
+**Explanation:** In Phase 1, the HTTP server requires `--standalone-core` to construct its own core. Without it, the server would silently create a second daemon that defeats the singleton invariant.
+
+**Solutions:**
+1. Use `codegg server --standalone-core --host 127.0.0.1 --port 8080`.
+2. Daemon-proxying server mode (where the server forwards to the singleton daemon) is planned for a later phase.
+
 ## Session Issues
 
 ### Session not responding

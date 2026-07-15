@@ -10,6 +10,7 @@ use crate::protocol::core::{
 pub mod client_registry;
 pub mod daemon;
 pub mod event_log;
+pub mod instance;
 pub mod notification;
 pub mod runtime_deps;
 pub mod session_runtime;

@@ -11,6 +11,11 @@ use crate::core::session_runtime::RuntimeSessionStatus;
 
 pub struct CoreDaemon {
     pub daemon_id: String,
+    /// Identity generation captured at lock acquisition. Distinct from
+    /// `daemon_id` so two processes that happen to roll the same 8-hex
+    /// suffix are still distinguishable. Set by [`Self::with_deps_and_identity`]
+    /// or generated on demand by [`Self::with_deps`].
+    pub generation: String,
     pub pool: Option<sqlx::SqlitePool>,
     pub deps: CoreRuntimeDeps,
     pub event_log: Arc<super::event_log::EventLog>,
@@ -25,6 +30,17 @@ impl CoreDaemon {
     /// Construct a `CoreDaemon` from a bundled [`CoreRuntimeDeps`].
     pub fn with_deps(deps: CoreRuntimeDeps) -> Self {
         let daemon_id = format!("codegg-{}", &uuid::Uuid::new_v4().to_string()[..8]);
+        Self::with_deps_and_identity(deps, daemon_id, uuid::Uuid::new_v4().to_string())
+    }
+
+    /// Construct a `CoreDaemon` with caller-provided `daemon_id` and
+    /// `generation` strings. Used by the singleton-lifecycle path so the
+    /// metadata on disk matches the daemon in memory.
+    pub fn with_deps_and_identity(
+        deps: CoreRuntimeDeps,
+        daemon_id: String,
+        generation: String,
+    ) -> Self {
         let config = crate::config::schema::Config::load().unwrap_or_default();
         let capacity = config
             .daemon
@@ -52,6 +68,7 @@ impl CoreDaemon {
         };
         Self {
             daemon_id,
+            generation,
             pool: deps.pool.clone(),
             deps,
             event_log,

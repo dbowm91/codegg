@@ -12,6 +12,8 @@ The `client` module provides the WebSocket client for remote TUI connections.
 - Session attach/detach
 - Server health checking
 
+Both the remote TUI client (`src/client/`) and the local `SocketCoreClient` connect through the user-scoped singleton daemon. The canonical entry point is `connect_or_start_daemon` (`src/core/instance.rs`), which connects to the running daemon or auto-starts one. The `SnapshotDaemon` request/response surfaces `daemon_id`, `uptime_secs`, `active_sessions`, and `connected_clients`; the `daemon status` CLI prints `generation` and `started_at` from the on-disk metadata file.
+
 ## Components
 
 ### mod.rs

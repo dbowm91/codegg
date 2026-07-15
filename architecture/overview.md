@@ -73,12 +73,13 @@ hidden by default — see [MCP](mcp.md)).
 
 ## Core Protocol
 
-- **Protocol Version**: 1 (defined in `crates/codegg-protocol/src/core.rs`)
+- **Protocol Version**: 2 (defined in `crates/codegg-protocol/src/core.rs`)
 - **Request/Response Separation**: `CoreRequest` / `CoreResponse` via `RequestEnvelope<T>` and `EventEnvelope<T>`
 - **Transport Adapters** (in `core/transport/`):
-  - `InprocCoreClient` - In-process communication (used by TUI)
-  - `StdioCoreClient` - Subprocess communication
-  - `SocketCoreClient` - Network communication
+  - `SocketCoreClient` - Unix socket to the singleton daemon (default via `connect_or_start_daemon`)
+  - `InprocCoreClient` - In-process communication (`--standalone` / tests only)
+  - `StdioCoreClient` - Subprocess communication (`--stdio`)
+- **Singleton daemon**: Exactly one user-scoped daemon per OS user. `connect_or_start_daemon` (`src/core/instance.rs`) is the canonical entry point. `DaemonInstanceGuard` holds `flock(LOCK_EX | LOCK_NB)` for the daemon's lifetime.
 
 ## Module Map
 

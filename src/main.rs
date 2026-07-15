@@ -100,8 +100,24 @@ struct Cli {
     verbose: u8,
 
     /// Core transport mode for TUI: inproc or stdio
+    ///
+    /// DEPRECATED: prefer `--standalone` (in-process) or `--stdio` (subprocess).
+    /// The singleton daemon is the default for ordinary TUI startup.
+    /// `socket` is still honored for explicit attach.
     #[arg(long = "core-transport", value_enum)]
     core_transport: Option<CoreTransport>,
+
+    /// Run the core in-process without contacting the singleton daemon.
+    /// Visible non-production mode; global scheduling is not available.
+    /// Mutually exclusive with `--core-transport socket|stdio`.
+    #[arg(long = "standalone")]
+    standalone: bool,
+
+    /// Spawn a `core-stdio` subprocess and exchange JSONL over stdio.
+    /// Compatibility/testing mode; treated as standalone (does not touch
+    /// the singleton lock).
+    #[arg(long = "stdio")]
+    stdio: bool,
 
     /// Core transport endpoint (required for socket mode), e.g. unix:///tmp/codegg-core.sock
     #[arg(long = "core-endpoint")]
@@ -156,6 +172,10 @@ enum Commands {
         /// Port to bind to
         #[arg(long, short = 'p')]
         port: Option<u16>,
+        /// Construct an independent core for the server instead of
+        /// proxying to the singleton daemon. Visible non-production mode.
+        #[arg(long = "standalone-core")]
+        standalone_core: bool,
     },
     /// Attach to a remote codegg server
     #[cfg(feature = "server")]
@@ -451,12 +471,16 @@ async fn main() -> Result<(), AppError> {
             Commands::Import { file } => cmd_import(file).await?,
             Commands::Upgrade => cmd_upgrade().await?,
             #[cfg(feature = "server")]
-            Commands::Server { host, port } => {
+            Commands::Server {
+                host,
+                port,
+                standalone_core,
+            } => {
                 let config = Config::load().unwrap_or_default();
                 let port = port
                     .or_else(|| config.server.as_ref().and_then(|s| s.port))
                     .unwrap_or(3000);
-                cmd_server(host, port).await?;
+                cmd_server(host, port, *standalone_core).await?;
             }
             #[cfg(feature = "server")]
             Commands::Attach { url, token } => {
@@ -518,41 +542,99 @@ async fn main() -> Result<(), AppError> {
                     run_daemon(endpoint.clone()).await;
                 }
                 DaemonCommand::Stop { endpoint } => {
-                    let ep = resolve_endpoint(endpoint.clone());
-                    let pid_file = std::path::Path::new(&ep).with_extension("pid");
-                    match tokio::fs::read_to_string(&pid_file).await {
-                        Ok(pid_str) => {
-                            if let Ok(pid) = pid_str.trim().parse::<u32>() {
-                                // Check if process is alive before sending signal
-                                let kill_result = unsafe { libc::kill(pid as i32, libc::SIGTERM) };
-                                if kill_result == 0 {
-                                    println!("Sent SIGTERM to daemon (PID {})", pid);
-                                    let _ = tokio::fs::remove_file(&pid_file).await;
-                                } else {
-                                    eprintln!(
-                                        "Daemon process {} not found (may have already exited)",
-                                        pid
-                                    );
-                                    let _ = tokio::fs::remove_file(&pid_file).await;
+                    use codegg::core::instance::DaemonPaths;
+                    let override_ep = endpoint
+                        .clone()
+                        .or_else(|| std::env::var("CODEGG_CORE_ENDPOINT").ok());
+                    let paths = if let Some(ep) = override_ep {
+                        DaemonPaths::resolve().with_socket(std::path::PathBuf::from(
+                            ep.strip_prefix("unix://").unwrap_or(&ep),
+                        ))
+                    } else {
+                        DaemonPaths::resolve()
+                    };
+                    let pid_file = paths.socket_path.with_extension("pid");
+                    let md = codegg::core::instance::read_metadata_for_paths(&paths);
+
+                    // Try the metadata record first; fall back to the
+                    // legacy PID file. Verify the socket actually answers
+                    // before signaling — never trust a stale PID alone.
+                    let candidate_pid: Option<u32> = if let Some(ref m) = md {
+                        Some(m.pid)
+                    } else {
+                        tokio::fs::read_to_string(&pid_file)
+                            .await
+                            .ok()
+                            .and_then(|s| s.trim().parse::<u32>().ok())
+                    };
+
+                    match candidate_pid {
+                        Some(pid) => {
+                            // Probe socket to confirm daemon is alive.
+                            let probe = codegg::core::transport::SocketCoreClient::connect(
+                                &paths.endpoint_uri(),
+                            )
+                            .await;
+                            match probe {
+                                Ok(_client) => {
+                                    let kill_result =
+                                        unsafe { libc::kill(pid as i32, libc::SIGTERM) };
+                                    if kill_result == 0 {
+                                        println!(
+                                            "Sent SIGTERM to daemon (PID {}, generation {})",
+                                            pid,
+                                            md.as_ref()
+                                                .map(|m| m.generation.as_str())
+                                                .unwrap_or("?")
+                                        );
+                                        let _ = tokio::fs::remove_file(&pid_file).await;
+                                    } else {
+                                        eprintln!(
+                                            "Daemon process {} not found (may have already exited)",
+                                            pid
+                                        );
+                                        let _ = tokio::fs::remove_file(&pid_file).await;
+                                        let _ = tokio::fs::remove_file(&paths.socket_path).await;
+                                    }
                                 }
-                            } else {
-                                eprintln!("Invalid PID in {}", pid_file.display());
+                                Err(_) => {
+                                    eprintln!(
+                                        "PID {} present but daemon socket {} is unreachable; not signaling.",
+                                        pid,
+                                        paths.socket_path.display()
+                                    );
+                                    eprintln!(
+                                        "Use 'codegg daemon status' for diagnostics or remove stale paths manually."
+                                    );
+                                    std::process::exit(1);
+                                }
                             }
                         }
-                        Err(_) => {
-                            eprintln!("No daemon PID file found at {}", pid_file.display());
+                        None => {
+                            eprintln!(
+                                "No daemon metadata or PID file found at {}",
+                                paths.root.display()
+                            );
                             eprintln!("Is the daemon running?");
                         }
                     }
                 }
                 DaemonCommand::Status { endpoint } => {
-                    let ep = resolve_endpoint(endpoint.clone());
-                    let pid_file = std::path::Path::new(&ep).with_extension("pid");
-                    match codegg::core::transport::SocketCoreClient::connect(&format!(
-                        "unix://{}",
-                        ep
-                    ))
-                    .await
+                    use codegg::core::instance::DaemonPaths;
+                    let override_ep = endpoint
+                        .clone()
+                        .or_else(|| std::env::var("CODEGG_CORE_ENDPOINT").ok());
+                    let paths = if let Some(ep) = override_ep {
+                        DaemonPaths::resolve().with_socket(std::path::PathBuf::from(
+                            ep.strip_prefix("unix://").unwrap_or(&ep),
+                        ))
+                    } else {
+                        DaemonPaths::resolve()
+                    };
+                    let pid_file = paths.socket_path.with_extension("pid");
+                    let md = codegg::core::instance::read_metadata_for_paths(&paths);
+                    match codegg::core::transport::SocketCoreClient::connect(&paths.endpoint_uri())
+                        .await
                     {
                         Ok(client) => {
                             let req = codegg::core::new_request(
@@ -569,6 +651,16 @@ async fn main() -> Result<(), AppError> {
                                 }) => {
                                     println!("Daemon is running");
                                     println!("  Daemon ID: {}", daemon_id);
+                                    if let Some(ref m) = md {
+                                        println!("  Generation: {}", m.generation);
+                                        println!("  PID: {}", m.pid);
+                                        println!("  Started: {}", m.started_at.to_rfc3339());
+                                        println!("  Protocol: v{}", m.protocol_version);
+                                        println!("  Binary: {}", m.binary_version);
+                                    } else {
+                                        println!("  PID file: {}", pid_file.display());
+                                    }
+                                    println!("  Endpoint: {}", paths.endpoint_uri());
                                     println!("  Uptime: {}s", uptime_secs);
                                     println!("  Active sessions: {}", active_sessions.len());
                                     println!("  Connected clients: {}", connected_clients.len());
@@ -593,6 +685,12 @@ async fn main() -> Result<(), AppError> {
                         }
                         Err(e) => {
                             eprintln!("Daemon is not running or unreachable: {}", e);
+                            if let Some(ref m) = md {
+                                eprintln!(
+                                    "Metadata exists: id={}, generation={}, pid={}",
+                                    m.daemon_id, m.generation, m.pid
+                                );
+                            }
                             if let Ok(pid) = tokio::fs::read_to_string(&pid_file).await {
                                 eprintln!("Stale PID file found: {}", pid.trim());
                             }
@@ -1334,26 +1432,68 @@ async fn run_single_shot(prompt: &str, cli: &Cli) -> Result<(), AppError> {
 }
 
 async fn launch_tui(cli: &Cli) -> Result<(), AppError> {
+    use codegg::core::instance::{connect_or_start_daemon, ConnectOrStartOptions, CoreRuntimeMode};
+
     let project_dir = env::current_dir()
         .ok()
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_default();
 
-    let core_transport = cli
-        .core_transport
-        .map(|m| match m {
-            CoreTransport::Inproc => "inproc".to_string(),
-            CoreTransport::Stdio => "stdio".to_string(),
-            CoreTransport::Socket => "socket".to_string(),
-        })
-        .unwrap_or_else(|| {
-            std::env::var("CODEGG_CORE_TRANSPORT")
-                .unwrap_or_else(|_| "inproc".to_string())
-                .to_lowercase()
-        });
-    let is_socket_mode = core_transport == "socket";
-
     let config = Config::load().unwrap_or_default();
+
+    // Resolve the runtime mode with explicit overrides winning over
+    // config, and the daemon-client mode being the default for plain
+    // `codegg` invocations.
+    let legacy_transport = cli.core_transport.map(|m| match m {
+        CoreTransport::Inproc => "inproc".to_string(),
+        CoreTransport::Stdio => "stdio".to_string(),
+        CoreTransport::Socket => "socket".to_string(),
+    });
+    let env_transport = std::env::var("CODEGG_CORE_TRANSPORT").ok();
+    let config_mode = config
+        .daemon
+        .as_ref()
+        .and_then(|d| d.mode)
+        .map(|m| match m {
+            codegg::config::schema::DaemonModeConfig::DaemonClient => CoreRuntimeMode::DaemonClient,
+            codegg::config::schema::DaemonModeConfig::StandaloneInproc => {
+                CoreRuntimeMode::StandaloneInproc
+            }
+            codegg::config::schema::DaemonModeConfig::StandaloneStdio => {
+                CoreRuntimeMode::StandaloneStdio
+            }
+        });
+
+    let runtime_mode: CoreRuntimeMode = if cli.standalone {
+        if legacy_transport.is_some() || cli.stdio {
+            eprintln!("--standalone conflicts with --core-transport or --stdio; ignoring transport override");
+        }
+        CoreRuntimeMode::StandaloneInproc
+    } else if cli.stdio {
+        CoreRuntimeMode::StandaloneStdio
+    } else if let Some(t) = legacy_transport.as_deref().or(env_transport.as_deref()) {
+        match t.to_lowercase().as_str() {
+            "inproc" => {
+                eprintln!(
+                    "warning: --core-transport inproc is deprecated; use --standalone instead"
+                );
+                CoreRuntimeMode::StandaloneInproc
+            }
+            "stdio" => {
+                eprintln!("warning: --core-transport stdio is deprecated; use --stdio instead");
+                CoreRuntimeMode::StandaloneStdio
+            }
+            "socket" => CoreRuntimeMode::DaemonClient,
+            _ => CoreRuntimeMode::DaemonClient,
+        }
+    } else {
+        config_mode.unwrap_or(CoreRuntimeMode::DaemonClient)
+    };
+
+    // Legacy `is_socket_mode` boolean preserved for downstream branches.
+    let is_socket_mode = runtime_mode.is_daemon_client();
+    let is_stdio_mode = runtime_mode.is_stdio();
+
     let notification_mgr = crate::tui::components::notification::NotificationManager::new(
         config.notifications.clone().unwrap_or_default(),
     );
@@ -1487,7 +1627,7 @@ async fn launch_tui(cli: &Cli) -> Result<(), AppError> {
         None
     };
 
-    let core_client: Arc<dyn CoreClient> = if core_transport == "stdio" {
+    let core_client: Arc<dyn CoreClient> = if is_stdio_mode {
         let exe = std::env::current_exe()
             .map_err(|e| AppError::Other(anyhow::anyhow!("cannot resolve current exe: {}", e)))?;
         let args = vec!["core-stdio".to_string()];
@@ -1500,82 +1640,54 @@ async fn launch_tui(cli: &Cli) -> Result<(), AppError> {
         {
             Ok(client) => Arc::new(client),
             Err(e) => {
-                tracing::warn!(
-                    "failed to initialize stdio core transport ({}), falling back to inproc",
-                    e
-                );
-                Arc::new(codegg::core::InprocCoreClient::new(
-                    app.subagent_pool.clone(),
-                    memory_store.as_ref().cloned(),
-                    app.bg_scheduler.clone(),
-                    pool.clone(),
-                    config.clone(),
-                    lsp_service.clone(),
-                ))
+                eprintln!("failed to initialize stdio core transport: {}", e);
+                eprintln!("stdio mode is standalone: it does not connect to the singleton daemon.");
+                std::process::exit(1);
             }
         }
     } else if is_socket_mode {
-        let endpoint = cli
-            .core_endpoint
-            .clone()
-            .or_else(|| std::env::var("CODEGG_CORE_ENDPOINT").ok())
-            .unwrap_or_else(|| format!("unix://{}", default_socket_path()));
-        match codegg::core::transport::SocketCoreClient::connect(&endpoint).await {
-            Ok(client) => {
-                // Mark the app as RemoteCore now that we have a live connection.
-                app.ui_state.mode = codegg::tui::app::state::AppMode::RemoteCore { endpoint };
-                Arc::new(client)
+        // DaemonClient mode. Try to connect to an existing daemon; if
+        // `auto_start` is enabled (default true), spawn one and wait.
+        let paths = codegg::core::instance::DaemonPaths::resolve();
+        let auto_start = config
+            .daemon
+            .as_ref()
+            .and_then(|d| d.auto_start)
+            .unwrap_or(true);
+        let startup_timeout = std::time::Duration::from_millis(
+            config
+                .daemon
+                .as_ref()
+                .and_then(|d| d.startup_timeout_ms)
+                .unwrap_or(10_000),
+        );
+        let outcome = connect_or_start_daemon(ConnectOrStartOptions {
+            paths,
+            autostart: auto_start,
+            startup_timeout,
+            poll_interval: std::time::Duration::from_millis(100),
+        })
+        .await;
+        match outcome {
+            Ok(out) => {
+                app.ui_state.mode = codegg::tui::app::state::AppMode::RemoteCore {
+                    endpoint: out.endpoint.clone(),
+                };
+                Arc::new(out.client)
             }
             Err(e) => {
-                if cli.core_transport.is_some() {
-                    // Check if auto_start is enabled in daemon config
-                    let auto_start = config
-                        .daemon
-                        .as_ref()
-                        .and_then(|d| d.auto_start)
-                        .unwrap_or(false);
-                    if auto_start {
-                        tracing::info!("Auto-starting daemon...");
-                        let _ = tokio::process::Command::new(
-                            std::env::current_exe().unwrap_or_default(),
-                        )
-                        .args(["daemon", "start"])
-                        .spawn();
-                        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                        match codegg::core::transport::SocketCoreClient::connect(&endpoint).await {
-                            Ok(client) => {
-                                app.ui_state.mode =
-                                    codegg::tui::app::state::AppMode::RemoteCore { endpoint };
-                                Arc::new(client)
-                            }
-                            Err(e) => {
-                                eprintln!("Daemon auto-start failed: {}", e);
-                                eprintln!("Start the daemon with: codegg daemon start");
-                                std::process::exit(1);
-                            }
-                        }
-                    } else {
-                        eprintln!("Failed to connect to core daemon at {}: {}", endpoint, e);
-                        eprintln!("Start the daemon with: codegg daemon start");
-                        std::process::exit(1);
-                    }
-                } else {
-                    tracing::warn!(
-                        "failed to initialize socket core transport ({}), falling back to inproc",
-                        e
-                    );
-                    Arc::new(codegg::core::InprocCoreClient::new(
-                        app.subagent_pool.clone(),
-                        memory_store.as_ref().cloned(),
-                        app.bg_scheduler.clone(),
-                        pool.clone(),
-                        config.clone(),
-                        lsp_service.clone(),
-                    ))
-                }
+                eprintln!("Daemon not available: {}", e);
+                eprintln!(
+                    "Start it manually with `codegg daemon start`, set [daemon].auto_start = true, \
+                     or pass --standalone for an in-process core."
+                );
+                std::process::exit(1);
             }
         }
     } else {
+        // StandaloneInproc mode (explicit --standalone). Build a local core
+        // backed by the SQLite pool and stores we initialized above. The
+        // singleton daemon is not involved.
         Arc::new(codegg::core::InprocCoreClient::new(
             app.subagent_pool.clone(),
             memory_store.as_ref().cloned(),
@@ -1865,6 +1977,9 @@ async fn cmd_research(
 }
 
 async fn run_daemon(endpoint: Option<String>) {
+    use codegg::core::instance::{current_process_metadata, DaemonInstanceGuard, DaemonPaths};
+    use tokio_util::sync::CancellationToken;
+
     let config = Config::load().unwrap_or_default();
     let project_dir = match config
         .daemon
@@ -1881,6 +1996,75 @@ async fn run_daemon(endpoint: Option<String>) {
             .unwrap_or_default(),
     };
 
+    // Resolve paths. Honor explicit --endpoint or CODEGG_CORE_ENDPOINT only
+    // when an alternate endpoint is genuinely requested; the default
+    // resolves to the user-scoped singleton location.
+    let override_endpoint = endpoint
+        .clone()
+        .or_else(|| std::env::var("CODEGG_CORE_ENDPOINT").ok());
+    let paths = if let Some(ep) = override_endpoint {
+        let p = std::path::PathBuf::from(ep.strip_prefix("unix://").unwrap_or(&ep));
+        // Custom endpoint — reuse CODEGG_DAEMON_HOME if set, otherwise
+        // fall through to default. This keeps lock paths consistent with
+        // the chosen socket in the common case.
+        DaemonPaths::resolve().with_socket(p)
+    } else {
+        DaemonPaths::resolve()
+    };
+
+    // Step 1: acquire the singleton lock first, BEFORE binding the socket.
+    paths.ensure_root().unwrap_or_else(|e| {
+        eprintln!("Failed to prepare daemon home: {}", e);
+        std::process::exit(1);
+    });
+    let mut guard = match DaemonInstanceGuard::try_acquire(&paths) {
+        Ok(Some(g)) => g,
+        Ok(None) => {
+            // A healthy daemon is already running. Connect to it and exit 0.
+            match codegg::core::transport::SocketCoreClient::connect(&paths.endpoint_uri()).await {
+                Ok(_client) => {
+                    eprintln!(
+                        "Daemon already running (lock held at {}); not starting a second instance.",
+                        paths.lock_path.display()
+                    );
+                    std::process::exit(0);
+                }
+                Err(e) => {
+                    eprintln!(
+                        "Daemon lock is held but socket is unreachable: {}. \
+                         Refusing to remove the lock. Use 'codegg daemon status' for diagnostics.",
+                        e
+                    );
+                    std::process::exit(1);
+                }
+            }
+        }
+        Err(e) => {
+            eprintln!("Failed to acquire daemon lock: {}", e);
+            std::process::exit(1);
+        }
+    };
+
+    // Step 2: inspect any existing socket path before binding.
+    if paths.socket_path.exists() {
+        // Try a quick health probe. If it answers, treat as invariant
+        // violation — the lock said we own it, but a listener says
+        // otherwise. Refuse to unlink.
+        match codegg::core::transport::SocketCoreClient::connect(&paths.endpoint_uri()).await {
+            Ok(_client) => {
+                eprintln!(
+                    "Existing socket {} responds to connection; refusing to unlink.",
+                    paths.socket_path.display()
+                );
+                std::process::exit(1);
+            }
+            Err(_) => {
+                let _ = std::fs::remove_file(&paths.socket_path);
+            }
+        }
+    }
+
+    // Step 3: build the runtime stack.
     let pool = match storage::init(&project_dir).await {
         Ok(p) => p,
         Err(e) => {
@@ -1922,52 +2106,86 @@ async fn run_daemon(endpoint: Option<String>) {
         std::time::Duration::from_secs(10),
     );
 
-    let daemon = Arc::new(codegg::core::daemon::CoreDaemon::new(
-        Some(pool),
-        Some(subagent_pool),
-        Some(memory_store),
-        Some(scheduler),
+    let daemon_id = format!("codegg-{}", &uuid::Uuid::new_v4().to_string()[..8]);
+    let daemon = Arc::new(codegg::core::daemon::CoreDaemon::with_deps_and_identity(
+        codegg::core::runtime_deps::CoreRuntimeDeps::new(
+            Some(pool),
+            Some(subagent_pool),
+            Some(memory_store),
+            Some(scheduler),
+        ),
+        daemon_id.clone(),
+        guard.generation.clone(),
     ));
 
     daemon.start_event_bridge();
     daemon.recover_state().await;
 
-    let ep = endpoint
-        .or_else(|| std::env::var("CODEGG_CORE_ENDPOINT").ok())
-        .unwrap_or_else(default_socket_path);
+    // Step 4: bind the socket (now that we own the lock).
+    let listener = match codegg::core::transport::daemon_socket::bind_listener(&paths.socket_path) {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("Failed to bind daemon socket: {}", e);
+            std::process::exit(1);
+        }
+    };
 
-    if let Some(parent) = std::path::Path::new(&ep).parent() {
-        let _ = tokio::fs::create_dir_all(parent).await;
+    // Step 5: write metadata atomically.
+    let metadata = current_process_metadata(
+        daemon.daemon_id.clone(),
+        guard.generation.clone(),
+        paths.socket_path.clone(),
+    );
+    if let Err(e) = guard.write_metadata(&metadata) {
+        tracing::warn!("Failed to write daemon metadata: {}", e);
     }
 
-    let _ = tokio::fs::remove_file(&ep).await;
-
-    // Write PID file for stop/status commands
-    let pid_file = std::path::Path::new(&ep).with_extension("pid");
+    // Backward-compat: also write the legacy PID file at <socket>.pid.
+    // New tooling should read daemon.json, but external scripts may rely
+    // on the pid file for `kill`.
+    let pid_file = paths.socket_path.with_extension("pid");
     tokio::fs::write(&pid_file, std::process::id().to_string())
         .await
         .ok();
 
-    tracing::info!("Starting core daemon on {}", ep);
-    println!("Core daemon listening on {}", ep);
+    tracing::info!(
+        "Starting core daemon (id={}, generation={}) on {}",
+        daemon.daemon_id,
+        guard.generation,
+        paths.socket_path.display()
+    );
+    println!(
+        "Core daemon listening on {} (id={})",
+        paths.socket_path.display(),
+        daemon.daemon_id
+    );
 
-    // Spawn cleanup task for SIGTERM/SIGINT
-    let pid_file_cleanup = pid_file.clone();
-    let ep_cleanup = ep.clone();
+    // Step 6: signal handling — graceful shutdown via CancellationToken.
+    let shutdown = CancellationToken::new();
+    let shutdown_signal = shutdown.clone();
     tokio::spawn(async move {
         let _ = tokio::signal::ctrl_c().await;
-        let _ = tokio::fs::remove_file(&pid_file_cleanup).await;
-        let _ = tokio::fs::remove_file(&ep_cleanup).await;
-        std::process::exit(0);
+        tracing::info!("Received SIGINT/SIGTERM; shutting down daemon");
+        shutdown_signal.cancel();
     });
 
-    if let Err(e) = codegg::core::transport::daemon_socket::run_core_socket(daemon, &ep).await {
+    let serve_result = codegg::core::transport::daemon_socket::run_core_socket_with_listener(
+        Arc::clone(&daemon),
+        listener,
+        &paths.socket_path,
+        shutdown.clone(),
+    )
+    .await;
+
+    // Cleanup: drop socket, pid, metadata. Guard's Drop removes metadata;
+    // we explicitly remove the socket and pid file here.
+    let _ = std::fs::remove_file(&paths.socket_path);
+    let _ = std::fs::remove_file(&pid_file);
+    drop(guard);
+    if let Err(e) = serve_result {
         eprintln!("Daemon error: {}", e);
-        let _ = tokio::fs::remove_file(&pid_file).await;
         std::process::exit(1);
     }
-    // Clean up PID file on normal exit
-    let _ = tokio::fs::remove_file(&pid_file).await;
 }
 
 async fn run_core_stdio() -> Result<(), AppError> {
@@ -2046,7 +2264,29 @@ fn parse_model(model: &str) -> (String, String) {
 }
 
 #[cfg(feature = "server")]
-async fn cmd_server(host: &str, port: u16) -> Result<(), AppError> {
+async fn cmd_server(host: &str, port: u16, standalone_core: bool) -> Result<(), AppError> {
+    if !standalone_core {
+        // Phase 1 invariant: the HTTP server must not silently construct a
+        // second production core. Proxying to the singleton daemon is the
+        // preferred default, but the full ServerState/CoreClient adapter
+        // lands in a later phase; until then we refuse to start the server
+        // without an explicit standalone opt-in.
+        eprintln!("Server mode requires an explicit --standalone-core flag in Phase 1.");
+        eprintln!(
+            "  --standalone-core : construct an independent server-side core (development only)."
+        );
+        eprintln!(
+            "  Daemon-proxying server mode will land in a later phase; tracked by the \
+             single-daemon roadmap."
+        );
+        std::process::exit(2);
+    }
+
+    eprintln!(
+        "warning: --standalone-core constructs an independent server-side core; \
+         this defeats the single-daemon invariant and is for development use only."
+    );
+
     let project_dir = std::env::current_dir()
         .ok()
         .map(|p| p.to_string_lossy().to_string())

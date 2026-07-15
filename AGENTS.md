@@ -7,7 +7,8 @@ Rust 1.81+ required. Edition 2021. Tokio async runtime.
 ```bash
 cargo build --all-features           # build
 cargo clippy --all-features -- -D warnings  # lint (errors in CI)
-CARGO_BUILD_JOBS=1 cargo test --workspace --all-features -- --test-threads=8  # full suite, capped
+CARGO_BUILD_JOBS=1 cargo test --workspace --all-features -- --test-threads=14  # full suite, capped
+cargo test --test single_daemon_lifecycle  # singleton daemon lifecycle
 cargo fmt                            # format
 ```
 
@@ -78,10 +79,10 @@ The workspace test matrix is large (~1,219 async tests across 94 files). Prefer 
 When you do need the full suite locally, cap Cargo's build parallelism and limit test threads:
 
 ```bash
-CARGO_BUILD_JOBS=1 cargo test --workspace --all-features -- --test-threads=8
+CARGO_BUILD_JOBS=1 cargo test --workspace --all-features -- --test-threads=14
 ```
 
-`--test-threads=8` limits concurrent test execution per binary. `CARGO_BUILD_JOBS=1` prevents the compile/link fan-out that drives the RAM and iowait spikes.
+`--test-threads=14` limits concurrent test execution per binary. `CARGO_BUILD_JOBS=1` prevents the compile/link fan-out that drives the RAM and iowait spikes.
 
 Run `--all-features` and `lsp-test-support` paths as separate capped invocations when possible; those are the heaviest test paths in this repo.
 
@@ -284,7 +285,7 @@ python3 scripts/generate_builtin_agents.py --check      # staleness + schema val
 python3 scripts/check_builtin_agents.py                 # verify TOML matches generated.rs
 cargo fmt --check                                        # formatting check
 cargo check --workspace                                  # compilation check
-CARGO_BUILD_JOBS=1 cargo test --workspace -- --test-threads=8  # all tests, capped
+CARGO_BUILD_JOBS=1 cargo test --workspace -- --test-threads=14  # all tests, capped
 ```
 
 ## User/Project Agent Customization
@@ -431,6 +432,17 @@ CI runs on push/PR to dev/main: `agent-assets` → `fmt` → `check` → `clippy
 
 - **PermissionRegistry/QuestionRegistry are synchronous**: `register()`, `respond()`, `answer_question()` are `fn`, not `async fn`. Do NOT `await` them.
 - **Registration-before-publish**: When publishing `PermissionPending` or `QuestionPending`, register the responder BEFORE publishing the event.
+
+### Daemon lifecycle
+
+- **Singleton invariant**: Exactly one user-scoped Codegg daemon is active per OS user. The lock is at `daemon.lock` in the user-scoped runtime directory (macOS: `$HOME/Library/Application Support/codegg`, Linux: `${XDG_RUNTIME_DIR:-/tmp}/codegg`). Override with `CODEGG_DAEMON_HOME`.
+- **Connect-or-start default**: Plain `codegg` uses `connect_or_start_daemon` (`src/core/instance.rs`) to connect to the running daemon or auto-start one. `--standalone` runs an in-process core; `--stdio` uses the hidden `core-stdio` path. `--core-transport inproc|stdio` is deprecated and emits a warning.
+- **Server requires `--standalone-core`**: The HTTP server does not silently construct its own daemon. Without `--standalone-core`, it exits with an actionable error. Daemon-proxying server mode lands in a later phase.
+- **Lock is authoritative**: `DaemonInstanceGuard` holds `flock(LOCK_EX | LOCK_NB)` for the daemon's lifetime. `daemon.json` metadata (daemon_id, generation, pid, socket_path, protocol_version, started_at, binary_version) is diagnostic only.
+- **PID file is legacy**: The old `<socket>.pid` file is still written for backward compat with external scripts, but the authoritative identity is the metadata record + lock.
+- **Stop verifies liveness**: `daemon stop` probes the socket before sending SIGTERM. It refuses to unlink paths it does not own.
+- **Production invariant**: No two `codegg` daemons can be active for one user scope. This is enforced by the advisory lock, not by PID files.
+- See `plans/single-daemon-phase-01-singleton-lifecycle-and-default-transport.md` and `src/core/instance.rs` for the full contract.
 
 ### Module Splits
 

@@ -52,6 +52,8 @@ The server is started via `run_server()` in `http.rs`:
 pub async fn run_server(host: &str, port: u16) -> Result<(), ServerRuntimeError>
 ```
 
+**Phase 1 (singleton daemon)**: The server requires `--standalone-core` to construct its own daemon. Without it, the server exits with an actionable error rather than silently creating a second core that defeats the singleton invariant. Daemon-proxying server mode (where the server forwards to the user-scoped singleton daemon) lands in a later phase.
+
 This function:
 1. Initializes the SQLite database pool
 2. Loads configuration from `Config::load()`

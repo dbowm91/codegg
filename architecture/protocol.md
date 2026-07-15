@@ -342,6 +342,52 @@ The protocol uses explicit versioning constants in `crates/codegg-protocol/src/`
 
 Envelopes (`RequestEnvelope`, `EventEnvelope`) include `protocol_version` to detect mismatches between client and server. See "Phase 15: Plugin UI Multi-Frontend" below for the rationale behind the version bumps.
 
+## ClientHello/ServerHello Handshake
+
+Both types live in `crates/codegg-protocol/src/frames.rs` and are variants of `CoreFrame`.
+
+### ClientHello
+
+```rust
+pub struct ClientHello {
+    pub client_name: String,
+    pub client_kind: ClientKind,       // Tui | Gui | Web | Cli | Automation
+    pub protocol_version: u32,
+    pub capabilities: ClientCapabilities,
+}
+```
+
+`ClientCapabilities` includes fields for visual/desktop notifications, audio, TTS, multi-session view, and plugin UI capability flags (dialog, toast, panel, status_item, table, markdown, code, progress). All default to `false` via `#[serde(default)]`.
+
+### ServerHello
+
+```rust
+pub struct ServerHello {
+    pub daemon_id: String,             // per-process 8-hex suffix identity
+    pub protocol_version: u32,
+    pub server_capabilities: ServerCapabilities,
+    pub client_id: String,             // negotiated client_id assigned by daemon
+}
+```
+
+`daemon_id` is the short per-process identity (e.g. `codegg-aabbccdd`). The full `generation` UUID is kept in the on-disk metadata file (`daemon.json`), not in the wire protocol. `client_id` is assigned by the daemon's `ClientRegistry` during the handshake.
+
+### SnapshotDaemon
+
+`CoreRequest::SnapshotDaemon` is a read-only probe. The daemon responds with `CoreResponse::SnapshotDaemon`:
+
+```rust
+CoreResponse::SnapshotDaemon {
+    event_seq: u64,
+    daemon_id: String,
+    uptime_secs: u64,
+    active_sessions: Vec<SessionSnapshot>,
+    connected_clients: Vec<ClientSnapshot>,
+}
+```
+
+This is used by `connect_or_start_daemon` for readiness verification and by `daemon status` for diagnostics. The `generation` and `started_at` fields are not on the wire — they are read from the on-disk `daemon.json` metadata file by the CLI.
+
 ## Implementation Notes
 
 - `CoreRequest` and `CoreResponse` use `#[serde(tag = "type")]` for JSON discrimination

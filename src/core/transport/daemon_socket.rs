@@ -1,7 +1,9 @@
+use std::path::Path;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixListener;
 use tokio::sync::{broadcast, RwLock};
+use tokio_util::sync::CancellationToken;
 
 use crate::core::daemon::CoreDaemon;
 use crate::core::event_log::EventFilter;
@@ -9,30 +11,69 @@ use crate::error::AppError;
 use crate::protocol::core::{CoreEvent, EventEnvelope};
 use crate::protocol::frames::{CoreFrame, ServerCapabilities, ServerHello};
 
-pub async fn run_core_socket(daemon: Arc<CoreDaemon>, endpoint: &str) -> Result<(), AppError> {
-    let listener = UnixListener::bind(endpoint).map_err(|e| {
+/// Bind a Unix-domain socket listener to `endpoint`. Returns the bound
+/// `UnixListener` plus the absolute path. Used by the singleton lifecycle
+/// path so the caller can decide when to bind (after lock acquisition)
+/// and can pass a pre-bound listener to [`run_core_socket_with_listener`].
+pub fn bind_listener(endpoint: &Path) -> Result<UnixListener, AppError> {
+    if let Some(parent) = endpoint.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    UnixListener::bind(endpoint).map_err(|e| {
         AppError::Other(anyhow::anyhow!(
             "failed to bind socket '{}': {}",
-            endpoint,
+            endpoint.display(),
             e
         ))
-    })?;
+    })
+}
 
-    tracing::info!("Core daemon listening on {}", endpoint);
+/// Serve a pre-bound listener until `shutdown` is cancelled. This is the
+/// lifecycle-aware variant of [`run_core_socket`]; it never deletes paths
+/// it does not own and stops accepting new connections cleanly when the
+/// token fires.
+pub async fn run_core_socket_with_listener(
+    daemon: Arc<CoreDaemon>,
+    listener: UnixListener,
+    endpoint: &Path,
+    shutdown: CancellationToken,
+) -> Result<(), AppError> {
+    tracing::info!("Core daemon listening on {}", endpoint.display());
 
     loop {
-        let (stream, _addr) = listener
-            .accept()
-            .await
-            .map_err(|e| AppError::Other(anyhow::anyhow!("accept failed: {}", e)))?;
-
-        let daemon = Arc::clone(&daemon);
-        tokio::spawn(async move {
-            if let Err(e) = handle_client(daemon, stream).await {
-                tracing::error!("Client handler error: {}", e);
+        tokio::select! {
+            biased;
+            _ = shutdown.cancelled() => {
+                tracing::info!("Core daemon accept loop cancelled");
+                break;
             }
-        });
+            accept = listener.accept() => {
+                let (stream, _addr) = accept
+                    .map_err(|e| AppError::Other(anyhow::anyhow!("accept failed: {}", e)))?;
+                let daemon = Arc::clone(&daemon);
+                tokio::spawn(async move {
+                    if let Err(e) = handle_client(daemon, stream).await {
+                        tracing::error!("Client handler error: {}", e);
+                    }
+                });
+            }
+        }
     }
+    Ok(())
+}
+
+/// Backwards-compatible serve entry point. Binds and serves without
+/// lifecycle cancellation. The singleton-lifecycle path uses
+/// [`run_core_socket_with_listener`] instead.
+pub async fn run_core_socket(daemon: Arc<CoreDaemon>, endpoint: &str) -> Result<(), AppError> {
+    let listener = bind_listener(std::path::Path::new(endpoint))?;
+    run_core_socket_with_listener(
+        daemon,
+        listener,
+        std::path::Path::new(endpoint),
+        CancellationToken::new(),
+    )
+    .await
 }
 
 /// Match an event envelope against a single subscription filter.

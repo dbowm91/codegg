@@ -205,15 +205,45 @@ Defined in `crates/codegg-protocol/src/core.rs`.
 
 | Mode | Description |
 |------|-------------|
-| In-Process | Default. Keeps the core in the same binary via `InprocCoreClient`. |
-| Stdio | Started with `core-stdio` command. Reads/writes JSONL on stdin/stdout. |
-| Socket | Connects to a Unix socket endpoint with reconnect-and-retry-once. |
+| DaemonClient (default) | Connects to (or auto-starts) the user-scoped singleton daemon via `connect_or_start_daemon` (`src/core/instance.rs`). Uses `SocketCoreClient`. |
+| StandaloneInproc | Runs the core in the current process via `InprocCoreClient`. Visible non-production mode; requires `--standalone`. |
+| StandaloneStdio | Spawns `codegg core-stdio` via `StdioCoreClient`. Compatibility/testing; requires `--stdio`. |
 
-Selection: `--core-transport` flag → `CODEGG_CORE_TRANSPORT` env → default `inproc`.
+Selection: `CoreRuntimeMode` enum (default `DaemonClient`). `--standalone` maps to `StandaloneInproc`; `--stdio` maps to `StandaloneStdio`. Legacy `--core-transport inproc|stdio` still parses but emits a deprecation warning.
+
+### Singleton Lifecycle
+
+Phase 1 establishes the production invariant that exactly one user-scoped Codegg daemon owns execution at a time. All implementation lives in `src/core/instance.rs`.
+
+**`DaemonPaths`** resolves all per-user daemon artifacts:
+
+| Path | Purpose |
+|------|---------|
+| `daemon.lock` | Advisory exclusive lock (`flock(LOCK_EX \| LOCK_NB)`) — authoritative identity |
+| `daemon.json` | Atomic metadata record (diagnostic only) |
+| `core.sock` | Unix domain socket the daemon binds |
+| `daemon.log` | Debug log (best-effort) |
+
+Production locations: macOS `$HOME/Library/Application Support/codegg`, Linux `${XDG_RUNTIME_DIR:-/tmp}/codegg`. Override via `CODEGG_DAEMON_HOME`.
+
+**`DaemonInstanceGuard`** is an RAII guard that holds the flock for the daemon's lifetime. On drop it removes the metadata file (if owned by this guard) and releases the lock. The OS also releases the flock automatically on process exit.
+
+**`DaemonInstanceMetadata`** (`daemon.json`) carries: `daemon_id`, `generation` (UUID), `pid`, `socket_path`, `protocol_version`, `started_at`, `binary_version`. Written atomically (temp file + rename) after socket bind. The lock is authoritative; metadata is diagnostic.
+
+**`connect_or_start_daemon`** is the canonical frontend entry point (`src/core/instance.rs`). It tries connecting to the user-scoped endpoint; if absent and autostart is enabled, spawns a child daemon process (`codegg daemon start`) and polls for readiness with a bounded timeout. Returns a live `SocketCoreClient` on success.
+
+**`CoreRuntimeMode`** enum:
+- `DaemonClient` (default) — connect-or-start against the singleton daemon
+- `StandaloneInproc` — in-process core, no daemon interaction (`--standalone`)
+- `StandaloneStdio` — `core-stdio` subprocess (`--stdio`)
+
+`InprocCoreClient` is now only used by tests, embedding, and `--standalone` mode. The default TUI uses `SocketCoreClient` through `connect_or_start_daemon`.
+
+The `PROTOCOL_VERSION = 2` constant is unchanged in this phase. The `generation` UUID lives in the on-disk metadata file, not in the wire protocol.
 
 ### Implementation Notes
 
-- The core protocol version is currently `1`.
+- The core protocol version is currently `2` (`PROTOCOL_VERSION` in `crates/codegg-protocol/src/core.rs`).
 - Local TUI flows should prefer `CoreClient` over direct store access when a request already exists in `CoreRequest`.
 - The in-process client subscribes to the GlobalEventBus and forwards events to the channel receiver. Actual event publishing happens inside `tokio::spawn` within turn execution handlers.
 - `CoreDaemon` uses `CoreRuntimeDeps` to bundle runtime dependencies. The legacy `new(pool, subagent_pool, memory_store, bg_scheduler)` constructor is retained for backward compatibility. Prefer `from_parts(pool, memory_store, legacy_agent, turn_runtime)` for new code, or `with_turn_runtime()` to override the default turn runtime.

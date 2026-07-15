@@ -45,15 +45,36 @@ architecture and subsystem guides are the source of truth for details.
 
 Rust 1.81 or newer is required.
 
+### Singleton daemon
+
+Codegg runs a single user-scoped daemon per OS user. The first `codegg`
+invocation acquires an advisory lock and starts the daemon; subsequent
+invocations connect to the running daemon automatically (connect-or-start).
+Use `codegg daemon start|stop|status` to manage the daemon lifecycle.
+
+Lock and metadata paths:
+
+| OS | Default location |
+|----|-----------------|
+| macOS | `$HOME/Library/Application Support/codegg/daemon.lock` |
+| Linux | `${XDG_RUNTIME_DIR:-/tmp}/codegg/daemon.lock` |
+
+Override with `CODEGG_DAEMON_HOME`. Use `--standalone` to run an in-process
+core without the daemon (visible non-production mode), or `--stdio` for the
+hidden `core-stdio` compatibility path. The legacy `--core-transport inproc|stdio`
+flags are deprecated and emit a warning.
+
 ```bash
 git clone https://github.com/anomalyco/codegg
 cd codegg
 cargo install --path .
 
-codegg                         # start a new session
+codegg                         # start a new session (connect-or-start)
 codegg -c                      # resume the most recent session
 codegg -m anthropic/claude-sonnet-4-20250514
 codegg --run "Explain this code"
+codegg daemon status           # show daemon identity, PID, generation
+codegg daemon stop             # stop the running daemon
 ```
 
 For a source checkout without installing:
@@ -185,9 +206,11 @@ codegg server --host 127.0.0.1 --port 8080
 codegg attach http://127.0.0.1:8080 --token TOKEN
 ```
 
-The TUI can use in-process or stdio core transport, and can connect to a Unix
-socket with `--core-transport socket --core-endpoint ...`. See
-[server architecture](architecture/server.md) and
+The TUI connects to the user-scoped singleton daemon by default. Use
+`--standalone` for an in-process core or `--stdio` for the compatibility
+stdio path. The HTTP server requires `--standalone-core` to construct its
+own core in Phase 1; daemon-proxying server mode is planned for a later
+phase. See [server architecture](architecture/server.md) and
 [client architecture](architecture/client.md).
 
 ## Safety and context
@@ -220,7 +243,7 @@ cargo test --workspace --all-features
 For a resource-capped full run, use:
 
 ```bash
-CARGO_BUILD_JOBS=1 cargo test --workspace --all-features -- --test-threads=8
+CARGO_BUILD_JOBS=1 cargo test --workspace --all-features -- --test-threads=14
 ```
 
 See [AGENTS.md](AGENTS.md) for crate boundaries, feature gates, test

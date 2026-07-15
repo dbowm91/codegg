@@ -18,10 +18,12 @@ The `tui` module provides the terminal user interface using Ratatui.
 
 The TUI no longer talks directly to session storage for most migrated flows. Instead, it routes session, history, task, memory, and worktree actions through `CoreClient` so the same logic can run in-process, over stdio, or over a socket transport.
 
-Local transport selection is handled by `--core-transport` or `CODEGG_CORE_TRANSPORT`:
-- `inproc` keeps the core in the same process
-- `stdio` spawns `codegg core-stdio`
-- `socket` connects to a Unix socket endpoint supplied by `--core-endpoint` or `CODEGG_CORE_ENDPOINT`
+Local transport selection is handled by `CoreRuntimeMode` (default `DaemonClient`):
+- `DaemonClient` (default) — connects to or auto-starts the user-scoped singleton daemon via `connect_or_start_daemon` (`src/core/instance.rs`). Uses `SocketCoreClient`.
+- `StandaloneInproc` — keeps the core in the same process via `InprocCoreClient`. Requires `--standalone`.
+- `StandaloneStdio` — spawns `codegg core-stdio` via `StdioCoreClient`. Requires `--stdio`.
+
+Legacy `--core-transport inproc|stdio` flags still parse but emit a deprecation warning. `InprocCoreClient` is now only used when `--standalone` is passed (tests and embedding).
 
 ## Async Command Pattern
 
