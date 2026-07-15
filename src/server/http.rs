@@ -159,7 +159,7 @@ pub async fn run_server(
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_default();
 
-    let pool = crate::storage::init(&project_dir)
+    let pool = crate::storage::init_legacy_project_store(std::path::Path::new(&project_dir))
         .await
         .map_err(|e| crate::error::ServerRuntimeError::Shutdown(e.to_string()))?;
 

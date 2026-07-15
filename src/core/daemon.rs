@@ -11,6 +11,9 @@ use super::runtime_deps::CoreRuntimeDeps;
 use crate::core::session_runtime::RuntimeSessionStatus;
 
 use codegg_core::workspace::{WorkspaceRecord, WorkspaceRegistry};
+use codegg_core::workspace_services::{
+    ProductionWorkspaceServicesFactory, WorkspaceServiceRegistry,
+};
 
 pub struct CoreDaemon {
     pub daemon_id: String,
@@ -32,6 +35,13 @@ pub struct CoreDaemon {
     /// permitted. The registry deduplicates canonical project roots and
     /// gates turn submission behind a valid `WorkspaceId`.
     pub workspaces: Arc<WorkspaceRegistry>,
+    /// Phase 3: workspace services registry. The daemon owns the
+    /// canonical [`WorkspaceServiceRegistry`] which lazily activates
+    /// per-workspace `WorkspaceServices` bundles and shares them
+    /// across sessions, the TUI, and remote clients. Created during
+    /// `with_deps_and_identity` if the caller did not supply one via
+    /// `CoreRuntimeDeps::with_workspace_services`.
+    pub workspace_services: Arc<WorkspaceServiceRegistry>,
 }
 
 impl CoreDaemon {
@@ -87,6 +97,22 @@ impl CoreDaemon {
                 WorkspaceRegistry::new_for_tests(store)
             }
         };
+
+        // Phase 3: workspace services registry. Use the one supplied
+        // via `with_workspace_services` if present; otherwise create
+        // one with the production factory and the configured policy.
+        let workspace_services = deps.workspace_services.clone().unwrap_or_else(|| {
+            WorkspaceServiceRegistry::new(
+                workspaces.clone(),
+                Arc::new(ProductionWorkspaceServicesFactory),
+                deps.workspace_service_policy.clone(),
+            )
+        });
+        // Keep `deps.workspace_services` in sync so callers reading the
+        // field observe the active registry.
+        let mut deps = deps;
+        deps.workspace_services = Some(workspace_services.clone());
+
         Self {
             daemon_id,
             generation,
@@ -99,6 +125,7 @@ impl CoreDaemon {
             audio_arbiter,
             started_at: Instant::now(),
             workspaces,
+            workspace_services,
         }
     }
 
@@ -2315,6 +2342,218 @@ impl CoreDaemon {
                         "worktrees": worktrees,
                     }),
                 })
+            }
+            CoreRequest::WorkspaceRegister { root } => {
+                let path = std::path::PathBuf::from(&root);
+                match self.workspaces.get_or_register(&path).await {
+                    Ok(record) => {
+                        let dto = codegg_core::protocol_conversions::workspace_record_to_dto(
+                            &record,
+                            0,
+                        );
+                        Ok(CoreResponse::WorkspaceSnapshot { workspace: dto })
+                    }
+                    Err(e) => Ok(CoreResponse::Error {
+                        code: "workspace_register_failed".to_string(),
+                        message: e.to_string(),
+                    }),
+                }
+            }
+            CoreRequest::WorkspaceList { include_archived } => {
+                match self.workspaces.list(include_archived).await {
+                    Ok(records) => {
+                        let dtos = records
+                            .iter()
+                            .map(|r| {
+                                let snap = self.workspace_services.peek(&r.id);
+                                codegg_core::protocol_conversions::workspace_record_with_services_to_dto(
+                                    r,
+                                    0,
+                                    snap.as_ref(),
+                                )
+                            })
+                            .collect();
+                        Ok(CoreResponse::WorkspaceList { workspaces: dtos })
+                    }
+                    Err(e) => Ok(CoreResponse::Error {
+                        code: "workspace_list_failed".to_string(),
+                        message: e.to_string(),
+                    }),
+                }
+            }
+            CoreRequest::WorkspaceArchive { workspace_id } => {
+                let id = codegg_core::workspace::WorkspaceId::new_unchecked(workspace_id);
+                match self.workspaces.archive(&id).await {
+                    Ok(()) => Ok(CoreResponse::Ack),
+                    Err(e) => Ok(CoreResponse::Error {
+                        code: "workspace_archive_failed".to_string(),
+                        message: e.to_string(),
+                    }),
+                }
+            }
+            CoreRequest::WorkspaceSnapshotRequest { workspace_id } => {
+                let id = codegg_core::workspace::WorkspaceId::new_unchecked(workspace_id);
+                match self.workspaces.resolve(&id).await {
+                    Some(record) => {
+                        let snap = self.workspace_services.peek(&id);
+                        let dto = codegg_core::protocol_conversions::workspace_record_with_services_to_dto(
+                            &record,
+                            0,
+                            snap.as_ref(),
+                        );
+                        Ok(CoreResponse::WorkspaceSnapshot { workspace: dto })
+                    }
+                    None => Ok(CoreResponse::Error {
+                        code: "workspace_not_found".to_string(),
+                        message: format!("workspace {} not found", id),
+                    }),
+                }
+            }
+            CoreRequest::WorkspaceServicesSnapshot => {
+                let snaps = self.workspace_services.list_active();
+                let dtos = snaps
+                    .iter()
+                    .map(codegg_core::protocol_conversions::workspace_service_snapshot_to_dto)
+                    .collect();
+                Ok(CoreResponse::WorkspaceServicesSnapshot { services: dtos })
+            }
+            CoreRequest::WorkspaceConfigReload { workspace_id } => {
+                let id = codegg_core::workspace::WorkspaceId::new_unchecked(workspace_id);
+                match self.workspace_services.reload_config(&id) {
+                    Ok(result) => {
+                        let diagnostics = result
+                            .diagnostics
+                            .iter()
+                            .map(codegg_core::protocol_conversions::config_diagnostic_to_dto)
+                            .collect();
+                        Ok(CoreResponse::WorkspaceConfigReload {
+                            workspace_id: result.workspace_id.to_string(),
+                            previous_revision: result.previous_revision,
+                            new_revision: result.new_revision,
+                            diagnostics,
+                        })
+                    }
+                    Err(e) => Ok(CoreResponse::Error {
+                        code: "workspace_config_reload_failed".to_string(),
+                        message: e.to_string(),
+                    }),
+                }
+            }
+            CoreRequest::RunList { workspace_id, query } => {
+                let id = codegg_core::workspace::WorkspaceId::new_unchecked(workspace_id);
+                match self.workspace_services.acquire(&id).await {
+                    Ok(lease) => {
+                        let run_query = codegg_core::protocol_conversions::run_query_from_dto(query);
+                        let workspace_id_str = lease.workspace_id().to_string();
+                        match lease.run_store().list_runs(run_query).await {
+                            Ok(summaries) => {
+                                let dtos = summaries
+                                    .iter()
+                                    .map(|s| {
+                                        codegg_core::protocol_conversions::run_summary_to_dto(
+                                            s,
+                                            Some(&workspace_id_str),
+                                        )
+                                    })
+                                    .collect();
+                                drop(lease);
+                                Ok(CoreResponse::RunList {
+                                    workspace_id: workspace_id_str,
+                                    runs: dtos,
+                                })
+                            }
+                            Err(e) => Ok(CoreResponse::Error {
+                                code: "run_list_failed".to_string(),
+                                message: e.to_string(),
+                            }),
+                        }
+                    }
+                    Err(e) => Ok(CoreResponse::Error {
+                        code: "workspace_not_active".to_string(),
+                        message: e.to_string(),
+                    }),
+                }
+            }
+            CoreRequest::RunGet { workspace_id, run_id } => {
+                let id = codegg_core::workspace::WorkspaceId::new_unchecked(workspace_id);
+                match self.workspace_services.acquire(&id).await {
+                    Ok(lease) => {
+                        let workspace_id_str = lease.workspace_id().to_string();
+                        let run_id_typed = codegg_core::run_store::RunId::new_unchecked(run_id);
+                        match lease.run_store().get_run(&run_id_typed).await {
+                            Ok(Some(manifest)) => {
+                                let dto =
+                                    codegg_core::protocol_conversions::run_manifest_to_dto(
+                                        &manifest,
+                                        Some(&workspace_id_str),
+                                    );
+                                drop(lease);
+                                Ok(CoreResponse::RunGet {
+                                    workspace_id: workspace_id_str,
+                                    run: Some(dto),
+                                })
+                            }
+                            Ok(None) => Ok(CoreResponse::RunGet {
+                                workspace_id: workspace_id_str,
+                                run: None,
+                            }),
+                            Err(e) => Ok(CoreResponse::Error {
+                                code: "run_get_failed".to_string(),
+                                message: e.to_string(),
+                            }),
+                        }
+                    }
+                    Err(e) => Ok(CoreResponse::Error {
+                        code: "workspace_not_active".to_string(),
+                        message: e.to_string(),
+                    }),
+                }
+            }
+            CoreRequest::RunArtifactRead {
+                workspace_id,
+                artifact_id,
+                start,
+                end,
+            } => {
+                let id = codegg_core::workspace::WorkspaceId::new_unchecked(workspace_id);
+                match self.workspace_services.acquire(&id).await {
+                    Ok(lease) => {
+                        let workspace_id_str = lease.workspace_id().to_string();
+                        let artifact_id_typed =
+                            codegg_core::run_store::ArtifactId::new_unchecked(artifact_id);
+                        let range = if end <= start {
+                            None
+                        } else {
+                            Some(codegg_core::run_store::ByteRange { start, end })
+                        };
+                        match lease
+                            .run_store()
+                            .read_artifact(&artifact_id_typed, range)
+                            .await
+                        {
+                            Ok(chunk) => {
+                                drop(lease);
+                                let data_b64 =
+                                    base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &chunk.data);
+                                Ok(CoreResponse::RunArtifactChunk {
+                                    workspace_id: workspace_id_str,
+                                    artifact_id: artifact_id_typed.to_string(),
+                                    data_b64,
+                                    byte_offset: chunk.byte_offset,
+                                    total_bytes: chunk.total_bytes,
+                                })
+                            }
+                            Err(e) => Ok(CoreResponse::Error {
+                                code: "run_artifact_read_failed".to_string(),
+                                message: e.to_string(),
+                            }),
+                        }
+                    }
+                    Err(e) => Ok(CoreResponse::Error {
+                        code: "workspace_not_active".to_string(),
+                        message: e.to_string(),
+                    }),
+                }
             }
             CoreRequest::NotificationSpeak {
                 text,

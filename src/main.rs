@@ -19,7 +19,7 @@ use codegg::upgrade;
 use serde::{Deserialize, Serialize};
 use std::env;
 use std::io::Read;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tracing_subscriber::util::SubscriberInitExt;
@@ -824,7 +824,7 @@ async fn cmd_sessions(archived: bool) -> Result<(), AppError> {
         .ok()
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_default();
-    let pool = storage::init(&project_dir).await?;
+    let pool = storage::init_legacy_project_store(Path::new(&project_dir)).await?;
     let store = SessionStore::new(pool);
 
     let sessions = if archived {
@@ -865,7 +865,7 @@ async fn cmd_session_view(id: &str) -> Result<(), AppError> {
         .ok()
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_default();
-    let pool = storage::init(&project_dir).await?;
+    let pool = storage::init_legacy_project_store(Path::new(&project_dir)).await?;
     let store = SessionStore::new(pool);
 
     let session = store
@@ -927,7 +927,7 @@ async fn cmd_export(id: &str, output: Option<&str>) -> Result<(), AppError> {
         .ok()
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_default();
-    let pool = storage::init(&project_dir).await?;
+    let pool = storage::init_legacy_project_store(Path::new(&project_dir)).await?;
     let session_store = SessionStore::new(pool.clone());
     let message_store = codegg::session::MessageStore::new(pool);
 
@@ -969,7 +969,7 @@ async fn cmd_import(file: &str) -> Result<(), AppError> {
         .ok()
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_default();
-    let pool = storage::init(&project_dir).await?;
+    let pool = storage::init_legacy_project_store(Path::new(&project_dir)).await?;
     let session_store = SessionStore::new(pool.clone());
     let message_store = codegg::session::MessageStore::new(pool);
 
@@ -1522,7 +1522,7 @@ async fn launch_tui(cli: &Cli) -> Result<(), AppError> {
                 agent::resolve_agents(&config)?,
             )
         } else {
-            let pool = storage::init(&project_dir).await?;
+            let pool = storage::init_legacy_project_store(Path::new(&project_dir)).await?;
             let session_store = Arc::new(SessionStore::new(pool.clone()));
             let message_store = Arc::new(MessageStore::new(pool.clone()));
             let user_prefs = storage::UserPreferences::new(pool.clone());
@@ -2065,7 +2065,7 @@ async fn run_daemon(endpoint: Option<String>) {
     }
 
     // Step 3: build the runtime stack.
-    let pool = match storage::init(&project_dir).await {
+    let pool = match storage::init_legacy_project_store(Path::new(&project_dir)).await {
         Ok(p) => p,
         Err(e) => {
             eprintln!("Failed to initialize storage: {}", e);
@@ -2193,7 +2193,7 @@ async fn run_core_stdio() -> Result<(), AppError> {
         .ok()
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_default();
-    let pool = storage::init(&project_dir).await?;
+    let pool = storage::init_legacy_project_store(Path::new(&project_dir)).await?;
     let session_store = Arc::new(SessionStore::new(pool.clone()));
     let memory_store = Arc::new(MemoryStore::new().unwrap_or_else(|_| MemoryStore::default()));
     let config = Config::load().unwrap_or_default();
@@ -2292,7 +2292,7 @@ async fn cmd_server(host: &str, port: u16, standalone_core: bool) -> Result<(), 
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_default();
 
-    let pool = match storage::init(&project_dir).await {
+    let pool = match storage::init_legacy_project_store(Path::new(&project_dir)).await {
         Ok(p) => p,
         Err(e) => {
             tracing::warn!("Failed to initialize storage for daemon: {}", e);

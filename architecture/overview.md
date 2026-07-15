@@ -131,6 +131,7 @@ hidden by default — see [MCP](mcp.md)).
 | [upgrade/](upgrade.md) | Self-upgrade via GitHub releases | `mod.rs` |
 | [util/](util.md) | Clipboard, fuzzy search, pricing, metrics | `mod.rs` |
 | [workspace/](workspace.md) | Workspace registry, canonical root tracking, and execution context — in `crates/codegg-core` | `workspace.rs` |
+| [workspace_services/](workspace_services.md) | Phase 3 per-workspace service bundles, lease lifecycle, lock table, user-scoped catalog, and migration tooling | `workspace_services.rs`, `migration.rs` |
 | [worktree/](worktree.md) | Git worktree management (read-only facts in `crates/egggit`) | `mod.rs` |
 
 ## Key Types
@@ -173,6 +174,17 @@ hidden by default — see [MCP](mcp.md)).
 - `ExecutionContext` — immutable, passed by `Arc` through `TurnRunInput`; carries `workspace_root`, `workspace_id`, `session_id`, and path policy
 - `WorkspaceSnapshot` — DTO for protocol serialization of workspace state
 - Storage migration v22 adds the `workspace` table and `workspace_id` index on `session`
+
+### Workspace services and storage (Phase 3)
+- `WorkspaceServices` — per-workspace bundle owning `Arc<dyn RunStore>`, `Arc<WorkspacePathPolicy>`, `Arc<WorkspaceLockTable>`, and `Arc<WorkspaceConfigSnapshot>`
+- `WorkspaceServicesLease` — RAII handle returned by `WorkspaceServiceRegistry::acquire`; decrements the bundle's lease counter on drop
+- `WorkspaceServiceRegistry` — `DashMap<WorkspaceId, Arc<WorkspaceServices>>` plus per-workspace `AsyncMutex<()>` for single-flight activation
+- `WorkspaceLockTable::acquire_repository(repo_root)` — per-repository lock used by the Git service and the Bash-translation dispatcher to contend on the same canonical-root lock
+- `WorkspaceServicePolicy { max_active_workspaces, idle_evict_after }` — cap on simultaneous bundles; idle eviction threshold
+- Storage split: `init_daemon_catalog(&DaemonPaths)` (user-scoped catalog at `~/Library/Application Support/codegg/codegg.db`) and `init_legacy_project_store(project_root)` (backward-compat `<root>/.codegg/sessions.db`)
+- `STORAGE_LAYOUT_VERSION = 23` — bumped when the catalog moves to a user-scoped location
+- `migrate_legacy_project_database(catalog_pool, registry, project_root)` — idempotent importer that writes a `migration_marker` row keyed by source path
+- Protocol additions: `WorkspaceServicesSnapshot`, `WorkspaceConfigReload`, `RunList`, `RunGet`, `RunArtifactRead`; `WorkspaceSnapshot` gains `services_active`, `active_leases`, `config_revision`
 
 ### Provider
 - `Provider` trait with `chat()` streaming method
@@ -302,3 +314,4 @@ User Input → TUI Event Loop → App::on_key() → State Mutation → Render
 - [Util](util.md) - Utility functions
 - [Worktree](worktree.md) - Git worktree management
 - [Workspace](workspace.md) - Workspace registry, execution context, and daemon workspace binding
+- [Workspace Services and Storage](workspace_services.md) - Phase 3 per-workspace service bundles, lease lifecycle, lock table, user-scoped catalog, and migration tooling

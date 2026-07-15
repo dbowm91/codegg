@@ -1136,6 +1136,7 @@ dependencies = [
  "egggit",
  "egglsp",
  "eggsentry",
+ "futures",
  "libc",
  "once_cell",
  "parking_lot",

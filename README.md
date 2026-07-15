@@ -78,6 +78,31 @@ as an execution identity source. See
 [`plans/single-daemon-phase-02-workspace-registry-and-execution-context.md`](plans/single-daemon-phase-02-workspace-registry-and-execution-context.md)
 for the full contract and `architecture/core.md` for the runtime model.
 
+### Workspace services and storage (Phase 3)
+
+Each registered workspace has a daemon-owned
+[`WorkspaceServices`](architecture/workspace_services.md) bundle that owns the
+per-workspace `RunStore`, path policy, lock table, and resolved configuration
+snapshot. Bundles are activated lazily by `WorkspaceServiceRegistry::acquire`
+with single-flight activation, leased to consumers through RAII
+`WorkspaceServicesLease` handles, and capped by `WorkspaceServicePolicy`
+(`max_active_workspaces`, `idle_evict_after`). Phase F Git mutation flows and
+the Bash-translation dispatcher contend on the same per-repository
+`WorkspaceLockTable::acquire_repository` lock.
+
+The daemon's authoritative SQLite catalog has moved to a user-scoped
+location:
+
+- macOS: `~/Library/Application Support/codegg/codegg.db`
+- Linux: `$XDG_DATA_HOME/codegg/codegg.db`
+
+`init_legacy_project_store(root)` retains backward compat for the legacy
+`<root>/.codegg/sessions.db` path, and `migrate_legacy_project_database`
+imports those legacy databases into the catalog idempotently. Storage
+layout marker is now `STORAGE_LAYOUT_VERSION = 23`. See
+[`plans/single-daemon-phase-03-workspace-services-and-storage.md`](plans/single-daemon-phase-03-workspace-services-and-storage.md)
+and `architecture/workspace_services.md` for the full contract.
+
 ```bash
 git clone https://github.com/anomalyco/codegg
 cd codegg
@@ -268,6 +293,7 @@ layout is summarized in [architecture overview](architecture/overview.md).
 
 - [Architecture index](docs/ARCHITECTURE.md)
 - [Core / daemon / workspaces](architecture/core.md)
+- [Workspace services and storage (Phase 3)](architecture/workspace_services.md)
 - [TUI](architecture/tui.md)
 - [Configuration](architecture/config.md)
 - [Providers](architecture/provider.md)

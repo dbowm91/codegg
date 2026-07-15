@@ -29,6 +29,10 @@ impl RunId {
         RunId(uuid::Uuid::new_v4().to_string())
     }
 
+    pub fn new_unchecked(id: impl Into<String>) -> Self {
+        RunId(id.into())
+    }
+
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -54,6 +58,10 @@ pub struct ArtifactId(pub String);
 impl ArtifactId {
     pub fn new() -> Self {
         ArtifactId(uuid::Uuid::new_v4().to_string())
+    }
+
+    pub fn new_unchecked(id: impl Into<String>) -> Self {
+        ArtifactId(id.into())
     }
 
     pub fn as_str(&self) -> &str {

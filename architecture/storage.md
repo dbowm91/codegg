@@ -35,19 +35,56 @@ impl Database {
 ## Initialization
 
 ```rust
-pub async fn init(project_dir: &str) -> Result<SqlitePool, StorageError> {
-    let db_path = get_db_path(project_dir);
-    // ... directory creation and permission checks ...
-    let pool = connect_and_configure(&db_path_str).await?;
-    Ok(pool)
-}
+pub async fn init_daemon_catalog(paths: &DaemonPaths) -> Result<SqlitePool, StorageError>
+pub async fn init_legacy_project_store(project_root: &Path) -> Result<SqlitePool, StorageError>
+pub async fn init_pool_at(db_path: &Path) -> Result<SqlitePool, StorageError>
+
+#[deprecated]
+pub async fn init(project_dir: &str) -> Result<SqlitePool, StorageError>
 ```
 
-Note: `init()` calls `connect_and_configure()` directly and returns a bare `SqlitePool` (not a `Database` struct). The `Database` struct is a separate wrapper used when you need `health_check()` or `migrate()` methods.
+Note: `init_daemon_catalog`, `init_legacy_project_store`, and
+`init_pool_at` all call `connect_and_configure()` directly and return a
+bare `SqlitePool` (not a `Database` struct). The `Database` struct is a
+separate wrapper used when you need `health_check()` or `migrate()`
+methods. `init` is retained as a deprecated wrapper that routes to one
+of the new entry points based on whether `project_dir` is empty or a
+real directory; new code MUST NOT use it.
 
-**Path Resolution**:
-- If `project_dir` is non-empty: `{project_dir}/.codegg/sessions.db`
-- If empty: `~/.config/codegg/sessions.db` (falls back to `.codegg` if config dir unavailable)
+**Path Resolution (Phase 3 split)**:
+
+| Entry point | Database path |
+|-------------|---------------|
+| `init_daemon_catalog(paths)` | `paths.catalog_db_path()` — `~/Library/Application Support/codegg/codegg.db` on macOS, `$XDG_DATA_HOME/codegg/codegg.db` on Linux. |
+| `init_legacy_project_store(root)` | `<root>/.codegg/sessions.db`. |
+| `init(project_dir)` (deprecated) | Empty → user config directory + `codegg/sessions.db`. Non-empty → legacy project store. |
+
+`STORAGE_LAYOUT_VERSION = 23` is exported from `storage::mod` and is
+referenced from `MigrationMarker.storage_layout_version` so the
+migration tooling can report which layout a legacy database was
+imported under.
+
+`DaemonPaths` (in `crates/codegg-core/src/storage/paths.rs`) is the
+single source of truth for catalog and asset paths:
+
+```rust
+pub struct DaemonPaths {
+    pub data_root: Option<PathBuf>,
+    pub config_root: Option<PathBuf>,
+}
+
+impl DaemonPaths {
+    pub fn default() -> Self;                                 // platform-default
+    pub fn with_overrides(data_root, config_root) -> Self;    // explicit overrides
+    pub fn data_root(&self) -> PathBuf;
+    pub fn config_root(&self) -> PathBuf;
+    pub fn catalog_db_path(&self) -> PathBuf;
+    pub fn catalog_db_wal_path(&self) -> PathBuf;
+    pub fn agents_dir(&self) -> PathBuf;
+    pub fn credentials_path(&self) -> PathBuf;
+    pub fn workspace_local_artifact_root(&self, workspace_root: &Path) -> PathBuf;
+}
+```
 
 ## SQLite Configuration
 
@@ -124,6 +161,14 @@ Migration versions v1-v22 are supported, covering:
 - v20: Creates `core_event_log` table (daemon core event sequence)
 - v21: Creates `notification_history` table (TUI notification backlog)
 - v22: Creates `workspace` table, adds `workspace_id` column to `session`, creates `idx_session_workspace_repair` index (Phase 2 single-daemon plan: workspace registry + execution context binding).
+- v23 (storage layout marker, not a session migration): the catalog
+  schema itself moves from `<workspace>/.codegg/sessions.db` to a
+  user-scoped location. The catalog gains a `migration_marker` table
+  written by `crates/codegg-core/src/migration.rs`. Legacy project
+  databases are imported into the catalog via
+  `migrate_legacy_project_database(catalog_pool, registry, project_root)`.
+  See [`workspace_services.md`](workspace_services.md) for the full
+  contract.
 
 ## See Also
 

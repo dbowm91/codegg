@@ -2,6 +2,8 @@ use std::sync::Arc;
 
 use crate::agent::turn_runtime::TurnRuntime;
 
+use codegg_core::workspace_services::{WorkspaceServiceRegistry, WorkspaceServicePolicy};
+
 /// Transitional container for concrete agent runtime dependencies.
 ///
 /// These fields are still needed for task scheduling and subagent spawning,
@@ -29,6 +31,17 @@ pub struct CoreRuntimeDeps {
     /// Shared LSP service for context assembly in agent prompts.
     /// `None` in socket/remote mode; `Some` in local mode.
     pub lsp_service: Option<Arc<crate::lsp::service::LspService>>,
+    /// Phase 3: workspace services registry. The daemon owns exactly
+    /// one of these; it is created during `CoreDaemon` construction
+    /// using the daemon's workspace registry and a factory appropriate
+    /// for the runtime mode. `None` only in legacy/test daemons that
+    /// have not yet been migrated; production daemons always populate
+    /// this.
+    pub workspace_services: Option<Arc<WorkspaceServiceRegistry>>,
+    /// Phase 3: workspace service lifecycle policy. Tunables for
+    /// `max_active_workspaces` and `idle_evict_after`. The daemon
+    /// constructs a default policy if the caller does not supply one.
+    pub workspace_service_policy: WorkspaceServicePolicy,
 }
 
 impl Clone for CoreRuntimeDeps {
@@ -39,6 +52,8 @@ impl Clone for CoreRuntimeDeps {
             legacy_agent: self.legacy_agent.clone(),
             turn_runtime: Arc::clone(&self.turn_runtime),
             lsp_service: self.lsp_service.clone(),
+            workspace_services: self.workspace_services.clone(),
+            workspace_service_policy: self.workspace_service_policy.clone(),
         }
     }
 }
@@ -59,6 +74,8 @@ impl CoreRuntimeDeps {
             },
             turn_runtime: Arc::new(crate::agent::turn_runtime::DefaultTurnRuntime),
             lsp_service: None,
+            workspace_services: None,
+            workspace_service_policy: WorkspaceServicePolicy::default(),
         }
     }
 
@@ -74,6 +91,8 @@ impl CoreRuntimeDeps {
             legacy_agent,
             turn_runtime,
             lsp_service: None,
+            workspace_services: None,
+            workspace_service_policy: WorkspaceServicePolicy::default(),
         }
     }
 
@@ -86,6 +105,21 @@ impl CoreRuntimeDeps {
     /// Builder-style setter for the shared LSP service.
     pub fn with_lsp_service(mut self, service: Arc<crate::lsp::service::LspService>) -> Self {
         self.lsp_service = Some(service);
+        self
+    }
+
+    /// Builder-style setter for the workspace services registry.
+    pub fn with_workspace_services(
+        mut self,
+        services: Arc<WorkspaceServiceRegistry>,
+    ) -> Self {
+        self.workspace_services = Some(services);
+        self
+    }
+
+    /// Builder-style setter for the workspace service policy.
+    pub fn with_workspace_service_policy(mut self, policy: WorkspaceServicePolicy) -> Self {
+        self.workspace_service_policy = policy;
         self
     }
 }

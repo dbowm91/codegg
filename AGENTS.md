@@ -11,6 +11,7 @@ CARGO_BUILD_JOBS=1 cargo test --workspace --all-features -- --test-threads=14  #
 cargo test --test single_daemon_lifecycle  # singleton daemon lifecycle
 python3 scripts/check_daemon_cwd_usage.py   # static cwd-use guard for Phase 2
 cargo test --test workspace_isolation       # two-workspace isolation and binding tests
+cargo test --test workspace_services_isolation  # Phase 3 workspace services + storage integration
 cargo fmt                            # format
 ```
 
@@ -33,7 +34,7 @@ cargo cksplit      # check protocol + config + providers + root
 
 | Crate | Purpose |
 |-------|---------|
-| `codegg-core` | Domain types: bus, error, goal, memory, session, storage, snapshot, worktree, workspace, task_state, model_profile, resilience, protocol_conversions, run_store |
+| `codegg-core` | Domain types: bus, error, goal, memory, migration, run_store, session, storage, snapshot, worktree, workspace, workspace_services, task_state, model_profile, resilience, protocol_conversions |
 | `codegg-config` | Config schema, paths, loading, validation, file watching |
 | `codegg-protocol` | CoreRequest, CoreResponse, CoreEvent, TuiMessage, UiNode, UiEffect, PluginManifestDto, PluginInvocation, PluginResponse (re-exported as `codegg::protocol`) |
 | `codegg-providers` | LLM provider implementations, auth types, CircuitBreaker (re-exported as `codegg::provider`) |
@@ -456,6 +457,23 @@ CI runs on push/PR to dev/main: `agent-assets` → `fmt` → `check` → `clippy
 - **Protocol**: `WorkspaceSnapshot` DTO, `CoreRequest::WorkspaceRegister|WorkspaceList|WorkspaceArchive|WorkspaceSnapshotRequest`, `SessionSnapshot::workspace_id` + `directory`, `ServerCapabilities::workspace_registration` + `workspace_snapshots`.
 - **Static guard**: `scripts/check_daemon_cwd_usage.py` scans protected modules for `std::env::current_dir()` usage. Existing legacy uses in tool `default()` constructors are allowlisted; new production-path uses fail CI.
 - See `plans/single-daemon-phase-02-workspace-registry-and-execution-context.md` and `crates/codegg-core/src/workspace.rs` for the full contract.
+
+### Workspace Services and Storage (Phase 3)
+
+- **WorkspaceServices**: per-workspace bundle owning `Arc<dyn RunStore>`, `Arc<WorkspacePathPolicy>`, `Arc<WorkspaceLockTable>`, `Arc<WorkspaceConfigSnapshot>`. Constructed by `ProductionWorkspaceServicesFactory` (or a test factory) at `<workspace>/.codegg/runs/` (`crates/codegg-core/src/workspace_services.rs`).
+- **WorkspaceServicesLease**: RAII handle returned by `WorkspaceServiceRegistry::acquire`. Decrements the bundle's lease counter on drop.
+- **WorkspaceServiceRegistry**: `DashMap<WorkspaceId, Arc<WorkspaceServices>>` + per-workspace `AsyncMutex<()>` for single-flight activation. `acquire` / `activate` / `peek` / `list_active` / `reload_config` / `evict_idle` / `shutdown_all`.
+- **WorkspaceServicePolicy**: `{ max_active_workspaces: 16 (default), idle_evict_after: 30min }`. Cap on simultaneous bundles; idle eviction threshold.
+- **WorkspaceLockTable::acquire_repository(repo_root)**: per-repository `tokio::sync::Mutex<()>` keyed by canonical root. Phase F Git service and Bash-translation dispatcher contend on the same lock.
+- **Storage split** (`crates/codegg-core/src/storage/mod.rs`): `init_daemon_catalog(&DaemonPaths)` owns the user-scoped catalog (`~/Library/Application Support/codegg/codegg.db` on macOS, `$XDG_DATA_HOME/codegg/codegg.db` on Linux). `init_legacy_project_store(root)` retains backward compat for `<root>/.codegg/sessions.db`. `init_pool_at(path)` is the test escape hatch. `init` is deprecated.
+- **STORAGE_LAYOUT_VERSION = 23**: bumped when the catalog moves to a user-scoped location.
+- **DaemonPaths** (`crates/codegg-core/src/storage/paths.rs`): the single source of truth for catalog and asset paths. `default()` / `with_overrides()` / `data_root()` / `config_root()` / `catalog_db_path()` / `agents_dir()` / `credentials_path()` / `workspace_local_artifact_root(workspace_root)`.
+- **Migration tooling** (`crates/codegg-core/src/migration.rs`): `migrate_legacy_project_database(catalog_pool, registry, project_root)` is idempotent; writes a `migration_marker` row keyed by source path. Returns `SourceMissing` / `InvalidSchema(path)` / `Imported` / `AlreadyMigrated`. Helpers: `find_legacy_project_db`, `verify_session_schema`, `ensure_migration_marker_table`, `fetch_marker`, `list_migration_markers`, `describe_workspace`, `MigrationMarker`, `WorkspaceDescription`.
+- **Protocol** (`crates/codegg-protocol/src/core.rs`, `dto.rs`): `CoreRequest::WorkspaceServicesSnapshot|WorkspaceConfigReload|RunList{RunQueryDto}|RunGet|RunArtifactRead` and matching `CoreResponse` variants. `WorkspaceSnapshot` extended with `services_active: bool`, `active_leases: usize`, `config_revision: u64`. New DTOs: `WorkspaceServiceHealthDto`, `ConfigDiagnosticDto`, `RunQueryDto`, `RunSummaryDto`, `RunRecordDto`, `RunArtifactSummaryDto`.
+- **Wiring** (`src/core/runtime_deps.rs`, `src/core/daemon.rs`): `CoreRuntimeDeps` gains `workspace_services: Option<Arc<WorkspaceServiceRegistry>>` and `workspace_service_policy: WorkspaceServicePolicy`. `CoreDaemon::with_deps_and_identity` constructs the registry using `ProductionWorkspaceServicesFactory` when not supplied. New handlers for the 5 Phase 3 request variants.
+- **Tests**: `tests/workspace_services_isolation.rs` (11 tests) covers two-workspace isolation, single-flight activation, lease accounting, idle eviction, lock serialization, config reload, shutdown_all, production factory, DaemonPaths, and migration import. Inline tests in `workspace_services.rs` (3) and `migration.rs` (3).
+- **Static guards**: `scripts/check-core-boundary.sh` continues to enforce the codegg-core boundary; `workspace_services` and `migration` are UI-/server-/plugin-/auth-free.
+- See `plans/single-daemon-phase-03-workspace-services-and-storage.md` and `crates/codegg-core/src/workspace_services.rs` for the full contract.
 
 ### Module Splits
 

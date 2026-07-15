@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use crate::dto::{ConfigDiagnosticDto, RunQueryDto, RunRecordDto, RunSummaryDto, WorkspaceServiceHealthDto};
+
 /// Core protocol version.
 ///
 /// Bumped to 2 in Phase 15: `CoreEvent::PluginUiEffect` now carries a
@@ -56,6 +58,36 @@ pub enum CoreResponse {
     /// Phase 2: snapshot of a single registered workspace.
     WorkspaceSnapshot {
         workspace: crate::dto::WorkspaceSnapshot,
+    },
+    /// Phase 3: workspace service health snapshots for every active
+    /// bundle.
+    WorkspaceServicesSnapshot {
+        services: Vec<WorkspaceServiceHealthDto>,
+    },
+    /// Phase 3: reload result for a workspace configuration.
+    WorkspaceConfigReload {
+        workspace_id: String,
+        previous_revision: u64,
+        new_revision: u64,
+        diagnostics: Vec<ConfigDiagnosticDto>,
+    },
+    /// Phase 3: run summaries returned from `RunList`.
+    RunList {
+        workspace_id: String,
+        runs: Vec<RunSummaryDto>,
+    },
+    /// Phase 3: full run record returned from `RunGet`.
+    RunGet {
+        workspace_id: String,
+        run: Option<RunRecordDto>,
+    },
+    /// Phase 3: artifact chunk returned from `RunArtifactRead`.
+    RunArtifactChunk {
+        workspace_id: String,
+        artifact_id: String,
+        data_b64: String,
+        byte_offset: usize,
+        total_bytes: u64,
     },
     Error {
         code: String,
@@ -267,6 +299,37 @@ pub enum CoreRequest {
     /// Phase 2: snapshot a single workspace by id.
     WorkspaceSnapshotRequest {
         workspace_id: String,
+    },
+    /// Phase 3: snapshot of every active workspace service bundle.
+    /// Used by remote/socket TUIs to render health indicators and by
+    /// the `WorkspaceServiceRegistry::evict_idle` task to surface
+    /// decisions over the protocol.
+    WorkspaceServicesSnapshot,
+    /// Phase 3: reload a workspace's configuration snapshot, bumping
+    /// the revision seen by future leases. Existing leases continue
+    /// to see their previously-held snapshot.
+    WorkspaceConfigReload {
+        workspace_id: String,
+    },
+    /// Phase 3: list runs visible from the workspace's RunStore. The
+    /// run query parameters mirror `RunStore::list_runs`.
+    RunList {
+        workspace_id: String,
+        query: RunQueryDto,
+    },
+    /// Phase 3: read a single run record.
+    RunGet {
+        workspace_id: String,
+        run_id: String,
+    },
+    /// Phase 3: read a range of an artifact's bytes from the
+    /// workspace's RunStore. The response is a binary chunk carried
+    /// inside a JSON envelope for transport simplicity.
+    RunArtifactRead {
+        workspace_id: String,
+        artifact_id: String,
+        start: usize,
+        end: usize,
     },
     GoalSet {
         session_id: String,

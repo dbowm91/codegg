@@ -7,8 +7,8 @@ pub use codegg_providers as provider;
 
 // Extracted core modules re-exported for root compatibility.
 pub use codegg_core::{
-    bus, goal, memory, model_profile, resilience, session, snapshot, storage, task_state,
-    workspace, worktree,
+    bus, goal, memory, migration, model_profile, resilience, run_store, session, snapshot,
+    storage, task_state, workspace, workspace_services, worktree,
 };
 
 pub mod agent;

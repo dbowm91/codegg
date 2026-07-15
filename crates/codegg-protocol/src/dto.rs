@@ -222,9 +222,9 @@ pub struct SessionTemplate {
 /// Wire-format snapshot of a registered workspace.
 ///
 /// Phase 2 of the single-daemon plan adds this as a first-class peer of
-/// `SessionSnapshot`. Clients decide whether to surface workspace metadata
-/// in their UI by inspecting `ServerCapabilities.workspace_registration`
-/// during the `ClientHello`/`ServerHello` handshake.
+/// `SessionSnapshot`. Phase 3 adds optional service-health fields so
+/// remote clients can show whether a workspace has an active service
+/// bundle and what its current lease accounting looks like.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkspaceSnapshot {
     pub workspace_id: String,
@@ -235,4 +235,89 @@ pub struct WorkspaceSnapshot {
     #[serde(default)]
     pub archived_at: Option<i64>,
     pub active_sessions: usize,
+    /// Phase 3: true when a workspace service bundle is currently
+    /// active in the daemon. False when only the registry row exists.
+    #[serde(default)]
+    pub services_active: bool,
+    /// Phase 3: active-lease count for the workspace service bundle.
+    #[serde(default)]
+    pub active_leases: usize,
+    /// Phase 3: configuration snapshot revision.
+    #[serde(default)]
+    pub config_revision: u64,
 }
+
+/// Wire-format health snapshot for a workspace service bundle.
+///
+/// Phase 3: a single, redacted view of an active workspace service's
+/// state. Includes the workspace id, the canonical root, the current
+/// config revision, and active-lease accounting. Remote clients can
+/// render this in their status bar without ever asking the daemon for
+/// raw filesystem paths.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkspaceServiceHealthDto {
+    pub workspace_id: String,
+    pub canonical_root: String,
+    pub display_name: String,
+    pub activated_at: i64,
+    pub last_used_at: i64,
+    pub active_leases: usize,
+    pub config_revision: u64,
+}
+
+/// Wire-format config diagnostic.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConfigDiagnosticDto {
+    pub severity: String,
+    pub source: String,
+    pub message: String,
+}
+
+/// Run query parameters for the `RunList` request.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RunQueryDto {
+    pub kinds: Vec<String>,
+    pub statuses: Vec<String>,
+    pub limit: usize,
+    pub since_ms: Option<i64>,
+    pub until_ms: Option<i64>,
+}
+
+/// Compact run summary for `RunList`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RunSummaryDto {
+    pub run_id: String,
+    pub kind: String,
+    pub status: String,
+    pub started_at_ms: i64,
+    #[serde(default)]
+    pub completed_at_ms: Option<i64>,
+    pub command: String,
+    pub workspace_id: Option<String>,
+}
+
+/// Full run record for `RunGet`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RunRecordDto {
+    pub run_id: String,
+    pub kind: String,
+    pub status: String,
+    pub started_at_ms: i64,
+    pub completed_at_ms: Option<i64>,
+    pub command: String,
+    pub argv: Vec<String>,
+    pub backend_family: Option<String>,
+    pub backend_detail: Option<String>,
+    pub workspace_id: Option<String>,
+    pub artifacts: Vec<RunArtifactSummaryDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RunArtifactSummaryDto {
+    pub artifact_id: String,
+    pub kind: String,
+    pub size: u64,
+    pub sha256: Option<String>,
+}
+

@@ -498,6 +498,20 @@ impl WorkspaceRegistry {
         let records = self.store.list(include_archived).await?;
         Ok(records.into_iter().map(Arc::new).collect())
     }
+
+    /// Test-only helper to insert a synthetic record without going through
+    /// the canonical `get_or_register` path. Used by workspace services
+    /// tests that need a workspace record but don't need a real on-disk
+    /// project root (or are working against an in-memory store).
+    #[doc(hidden)]
+    pub async fn upsert_test_record(&self, record: Arc<WorkspaceRecord>) {
+        let id_str = record.id.as_str().to_string();
+        let canon = record.canonical_root.clone();
+        let owned: WorkspaceRecord = (*record).clone();
+        let _ = self.store.upsert(&owned).await;
+        self.by_id.insert(id_str, record);
+        self.by_root.insert(canon, owned.id);
+    }
 }
 
 /// Canonicalize a workspace root path for registration.

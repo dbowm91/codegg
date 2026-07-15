@@ -1341,7 +1341,12 @@ pub(crate) async fn handle_load_session_messages(app: &mut App, session_id: Stri
             | Ok(CoreResponse::Events { .. })
             | Ok(CoreResponse::ResyncRequired { .. })
             | Ok(CoreResponse::WorkspaceList { .. })
-            | Ok(CoreResponse::WorkspaceSnapshot { .. }) => None,
+            | Ok(CoreResponse::WorkspaceSnapshot { .. })
+            | Ok(CoreResponse::WorkspaceServicesSnapshot { .. })
+            | Ok(CoreResponse::WorkspaceConfigReload { .. })
+            | Ok(CoreResponse::RunList { .. })
+            | Ok(CoreResponse::RunGet { .. })
+            | Ok(CoreResponse::RunArtifactChunk { .. }) => None,
             Err(e) => {
                 app.messages_state
                     .toasts

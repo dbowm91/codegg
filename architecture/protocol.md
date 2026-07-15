@@ -76,7 +76,7 @@ Wraps events with sequence number, timestamp, and optional session/turn context 
 
 ## CoreRequest Enum
 
-Located in `crates/codegg-protocol/src/core.rs`. Variant count: **39** (Phase 2 adds 4 workspace variants).
+Located in `crates/codegg-protocol/src/core.rs`. Variant count: **44** (Phase 2 adds 4 workspace variants; Phase 3 adds 5 workspace-services variants: `WorkspaceServicesSnapshot`, `WorkspaceConfigReload`, `RunList`, `RunGet`, `RunArtifactRead`).
 
 ```rust
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -164,8 +164,13 @@ pub enum CoreResponse { ... }
 | `SessionMessages` | `session_id, messages` | Session message history |
 | `SessionMessageCounts` | `counts: HashMap<String, usize>` | Message counts per session |
 | `SessionList` | `sessions: Vec<Session>` | List of sessions |
-| `WorkspaceList` | `workspaces: Vec<WorkspaceSnapshot>` | List of registered workspaces (Phase 2) |
-| `WorkspaceSnapshot` | `workspace: WorkspaceSnapshot` | Single workspace snapshot (Phase 2) |
+| `WorkspaceList` | `workspaces: Vec<WorkspaceSnapshot>` | List of registered workspaces (Phase 2; snapshots include `services_active`, `active_leases`, `config_revision` from Phase 3) |
+| `WorkspaceSnapshot` | `workspace: WorkspaceSnapshot` | Single workspace snapshot (Phase 2; fields extended by Phase 3) |
+| `WorkspaceServicesSnapshot` | `services: Vec<WorkspaceServiceHealthDto>` | List every active workspace bundle (Phase 3) |
+| `WorkspaceConfigReload` | `workspace_id, previous_revision, new_revision, diagnostics: Vec<ConfigDiagnosticDto>` | Result of `WorkspaceConfigReload` request (Phase 3) |
+| `RunList` | `runs: Vec<RunSummaryDto>` | List runs visible to a workspace (Phase 3) |
+| `RunGet` | `run: Option<RunRecordDto>` | Fetch a single run (Phase 3) |
+| `RunArtifactChunk` | `data_b64, byte_offset, total_bytes` | Base64-encoded chunk of a run artifact (Phase 3) |
 | `Error` | `code, message` | Error response |
 
 ## CoreEvent Enum
