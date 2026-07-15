@@ -412,6 +412,16 @@ The roadmap is complete when:
 
 **Phases A–F complete** (as of 2026-07-14). All six phases of the Git agent integration roadmap have been implemented.
 
+## Post-closure pass
+
+After the corrective security closure (`cb192e9`, `c2e806f`, `53b2beb`) closed the two Phase F findings, a polish / maintainability / verification pass was executed per [`plans/git_agent_integration_polish_maintainability_verification.md`](git_agent_integration_polish_maintainability_verification.md). The pass did not add new Git capability; it tightened three invariants:
+
+1. **Canonical subprocess policy** — `ALLOWED_ENV_VARS` and `ALWAYS_STRIPPED_ENV_VARS` now live in `codegg_git::process_policy` and are re-exported by both `src/git_mutations.rs` and `crates/codegg-core/src/worktree.rs`. Drift is caught by `cargo test -p codegg-core` (`worktree_uses_canonical_policy`, `canonical_includes_locally_drifted_entries`) and `src/git_mutations.rs::policy_drift_tests`.
+2. **Audit-safe rerun argv** — `RerunDescriptor.argv` is `Option<AuditSafeArgv>` (newtype in `codegg_git::sensitive`). The only construction path (`AuditSafeArgv::from_argv`) runs the URL sanitizer; durable RunStore records are credential-free. See [`docs/validation/git-rerun-secret-lifecycle.md`](../docs/validation/git-rerun-secret-lifecycle.md).
+3. **Forbidden-pattern static checks** — `scripts/check_git_forbidden_patterns.py` enforces `expose_secret()` only at `render_argv`, no hand-maintained env-policy tables, `RerunDescriptor.argv` is always `AuditSafeArgv`, git argv in `RunInvocation` is sanitized.
+
+Verified state and remaining limitations are recorded in [`architecture/git_polish_verification_handoff.md`](../architecture/git_polish_verification_handoff.md).
+
 ## Handoff notes
 
 Implement phases in order. Phase A and B establish contracts used by all later work. Do not expand mutation coverage before routing and provenance preserve Git identity. Each phase plan in this series contains scoped deliverables, file-level guidance, validation requirements, and exit criteria.

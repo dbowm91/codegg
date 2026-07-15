@@ -1128,6 +1128,7 @@ dependencies = [
  "base64",
  "chrono",
  "codegg-config",
+ "codegg-git",
  "codegg-protocol",
  "codegg-providers",
  "dashmap",

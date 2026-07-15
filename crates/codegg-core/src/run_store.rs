@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
+use codegg_git::AuditSafeArgv;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::fs;
@@ -417,8 +418,17 @@ pub struct ChangedPathRecord {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RerunDescriptor {
+    /// Audit-safe argv for the rerun. The deserializer re-runs the
+    /// URL sanitizer so historical RunStore records written before
+    /// the polish pass are normalized to the audit form on load.
+    ///
+    /// The raw argv flows only ephemerally through
+    /// `MutationResult.operation` during execution and never reaches
+    /// durable storage. A future replay path that needs the raw URL
+    /// must reconstruct it from the user (credential helper, prompt,
+    /// or env) before re-rendering via `render_argv`.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub argv: Option<Vec<String>>,
+    pub argv: Option<AuditSafeArgv>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub script_source_ref: Option<String>,
     pub backend_family: String,
@@ -697,7 +707,7 @@ impl RunCellView {
         let can_rerun = manifest
             .rerun
             .as_ref()
-            .is_some_and(|r| matches!(&r.argv, Some(v) if !v.is_empty()));
+            .is_some_and(|r| matches!(&r.argv, Some(v) if !v.as_slice().is_empty()));
         let has_artifacts = !manifest.artifacts.is_empty();
         // Promote requires at least one safe_for_model artifact and completed redaction.
         let can_promote = has_artifacts
@@ -2061,7 +2071,10 @@ mod tests {
     #[tokio::test]
     async fn rerun_descriptor_no_permission_persistence() {
         let rerun = RerunDescriptor {
-            argv: Some(vec!["cargo".to_string(), "test".to_string()]),
+            argv: Some(AuditSafeArgv::from_argv(vec![
+                "cargo".to_string(),
+                "test".to_string(),
+            ])),
             script_source_ref: None,
             backend_family: "test_runner".to_string(),
             cwd: PathBuf::from("/ws"),

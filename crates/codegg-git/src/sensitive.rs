@@ -120,6 +120,121 @@ impl<'de> Deserialize<'de> for RedactedUrl {
     }
 }
 
+// ── Audit-safe argv ────────────────────────────────────────────────────
+//
+// `AuditSafeArgv` is a marker newtype around `Vec<String>` that carries
+// the audit form of a rendered argv. It guarantees:
+//
+// * Every URL-shaped token has been passed through
+//   [`redact_url_credentials`] before the value is constructed.
+// * `Debug`, `Display`, and `Serialize` views are exactly the
+//   contents of the wrapped vector — no other state to leak.
+// * Construction goes through the typed redaction builder
+//   [`AuditSafeArgv::from_argv`]; callers that pass raw argv directly
+//   will not compile.
+//
+// The type is the rerun-descriptor boundary. The
+// `RerunDescriptor.argv: Option<AuditSafeArgv>` field in
+// `codegg-core::run_store` cannot accidentally hold a raw, credential-
+// bearing argv because the only construction path runs the URL
+// sanitizer.
+//
+// See `docs/validation/git-rerun-secret-lifecycle.md` for the
+// end-to-end policy. See `architecture/git.md` "Phase F corrective
+// security closure" for the original closure context (the previous
+// design stored raw argv in `rerun.argv`; the polish-maintainability
+// pass tightens this to a redacted form so durable RunStore records
+// are credential-free).
+//
+// Note on replay: a future replay path that needs the raw URL must
+// reconstruct it from the user (credential helper, prompt, or env)
+// before re-rendering via `render_argv`. The polished lifecycle
+// documents that authenticated replay now requires an explicit
+// re-authentication step rather than a silent stale-token replay.
+
+/// Argv that is safe to persist in audit/log surfaces. Every
+/// URL-shaped token has been passed through the in-crate
+/// [`redact_url_credentials`] sanitizer.
+#[derive(Clone, PartialEq, Eq)]
+pub struct AuditSafeArgv(Vec<String>);
+
+impl AuditSafeArgv {
+    /// Build an audit-safe argv by running each URL-shaped token
+    /// through [`redact_url_credentials`]. Non-URL tokens are passed
+    /// through unchanged.
+    ///
+    /// This is the only public construction path. Direct construction
+    /// (`AuditSafeArgv(Vec<String>)`) is intentionally not exposed.
+    pub fn from_argv(argv: Vec<String>) -> Self {
+        let argv = argv
+            .into_iter()
+            .map(|tok| {
+                if tok.contains("://") && (tok.contains('@') || tok.contains('/')) {
+                    redact_url_credentials(&tok)
+                } else {
+                    tok
+                }
+            })
+            .collect();
+        Self(argv)
+    }
+
+    /// Borrow the wrapped audit-safe argv slice.
+    pub fn as_slice(&self) -> &[String] {
+        &self.0
+    }
+
+    /// Consume the wrapper and return the inner vector. This is the
+    /// only way to recover the bytes; it is intended for code that
+    /// must re-render or further process the redacted argv (for
+    /// example, displaying the redacted form to the user).
+    pub fn into_inner(self) -> Vec<String> {
+        self.0
+    }
+}
+
+impl fmt::Debug for AuditSafeArgv {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("AuditSafeArgv").field(&self.0).finish()
+    }
+}
+
+impl fmt::Display for AuditSafeArgv {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0.join(" "))
+    }
+}
+
+impl Serialize for AuditSafeArgv {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        self.0.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for AuditSafeArgv {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let v = Vec::<String>::deserialize(deserializer)?;
+        // Re-run the sanitizer on deserialize. Historical RunStore
+        // records written before the polish pass may contain raw
+        // argv; the sanitizer normalizes them to the audit form on
+        // load. This is a one-way at-load conversion that never
+        // exposes the raw value.
+        Ok(AuditSafeArgv::from_argv(v))
+    }
+}
+
+impl AsRef<[String]> for AuditSafeArgv {
+    fn as_ref(&self) -> &[String] {
+        self.as_slice()
+    }
+}
+
 /// Redact credentials embedded in a URL.
 ///
 /// Recognizes `scheme://user:token@host` patterns and rewrites them to
@@ -253,5 +368,78 @@ mod tests {
         assert!(cred.was_redacted());
         let plain = RedactedUrl::new("https://example.com/r");
         assert!(!plain.was_redacted());
+    }
+
+    // ── AuditSafeArgv ────────────────────────────────────────────────
+
+    #[test]
+    fn audit_safe_argv_redacts_url_tokens() {
+        let argv = vec![
+            "git".to_string(),
+            "remote".to_string(),
+            "add".to_string(),
+            "origin".to_string(),
+            "https://u:secret@host.example.com/r.git".to_string(),
+        ];
+        let safe = AuditSafeArgv::from_argv(argv);
+        let inner = safe.as_slice();
+        assert_eq!(inner[0], "git");
+        assert!(!inner[4].contains("secret"));
+        assert!(inner[4].contains("redacted"));
+    }
+
+    #[test]
+    fn audit_safe_argv_passes_through_non_url_tokens() {
+        let argv = vec![
+            "git".to_string(),
+            "commit".to_string(),
+            "-m".to_string(),
+            "add a.txt".to_string(),
+        ];
+        let safe = AuditSafeArgv::from_argv(argv.clone());
+        assert_eq!(safe.as_slice(), argv.as_slice());
+    }
+
+    #[test]
+    fn audit_safe_argv_debug_does_not_leak_secrets() {
+        let argv = vec!["https://u:secret_token@host/r".to_string()];
+        let safe = AuditSafeArgv::from_argv(argv);
+        let dbg = format!("{:?}", safe);
+        assert!(!dbg.contains("secret_token"));
+        assert!(dbg.contains("redacted"));
+    }
+
+    #[test]
+    fn audit_safe_argv_serialize_does_not_leak_secrets() {
+        let argv = vec![
+            "git".to_string(),
+            "remote".to_string(),
+            "add".to_string(),
+            "https://u:secret_token@host/r".to_string(),
+        ];
+        let safe = AuditSafeArgv::from_argv(argv);
+        let json = serde_json::to_string(&safe).expect("serialize");
+        assert!(!json.contains("secret_token"));
+        assert!(json.contains("redacted"));
+    }
+
+    #[test]
+    fn audit_safe_argv_deserialize_runs_sanitizer() {
+        // Even if a historical RunStore record was written with a raw
+        // argv (pre-polish pass), the deserializer applies the URL
+        // sanitizer to normalize it on load.
+        let raw_json =
+            r#"["git","remote","add","https://u:secret_token_xyz@host/r.git"]"#;
+        let safe: AuditSafeArgv = serde_json::from_str(raw_json).expect("deserialize");
+        let inner = safe.as_slice();
+        assert!(!inner[3].contains("secret_token_xyz"));
+        assert!(inner[3].contains("redacted"));
+    }
+
+    #[test]
+    fn audit_safe_argv_display_joins_with_space() {
+        let argv = vec!["git".to_string(), "status".to_string()];
+        let safe = AuditSafeArgv::from_argv(argv);
+        assert_eq!(format!("{safe}"), "git status");
     }
 }

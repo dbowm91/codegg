@@ -3,6 +3,16 @@ use egggit::worktree::WorktreeInfo;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
+// Re-export the canonical env-policy constants from `codegg-git` so
+// downstream callers (tests, validation scripts) can continue to
+// reference the policy through the codegg-core surface if they
+// prefer. The canonical source of truth is
+// `codegg_git::process_policy` (see `crates/codegg-git/src/process_policy.rs`).
+pub use codegg_git::process_policy::{
+    ALWAYS_STRIPPED_ENV_VARS as POLICY_ALWAYS_STRIPPED_ENV_VARS,
+    ALLOWED_ENV_VARS as POLICY_ALLOWED_ENV_VARS,
+};
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Worktree {
     pub path: String,
@@ -79,73 +89,21 @@ pub fn remove_worktree(git_root: &Path, path: &Path, force: bool) -> Result<(), 
 /// `GIT_TERMINAL_PROMPT=0` to block credential-prompt hangs, and
 /// pin `GIT_PAGER=cat`/`PAGER=cat` to avoid paginator stalls.
 ///
-/// This mirrors the root crate's `GitEnvPolicy::apply_sync` shape, but
-/// kept local because `codegg-core` cannot depend on root-crate
-/// helpers. The two lists are kept in sync manually.
+/// The allowlist and stripped set come from
+/// `codegg_git::process_policy` (the single source of truth shared
+/// with the root crate's `GitEnvPolicy::apply` / `apply_sync`). This
+/// helper exists because `codegg-core` builds synchronous
+/// `std::process::Command` values (no tokio) and uses a single
+/// caller pattern for `worktree add` / `worktree remove`.
 fn hardened_git_command(args: &[&str], git_root: &Path) -> std::process::Command {
-    const ALLOWED_ENV_VARS: &[&str] = &[
-        "PATH",
-        "HOME",
-        "XDG_CONFIG_HOME",
-        "XDG_DATA_HOME",
-        "XDG_CACHE_HOME",
-        "LANG",
-        "LC_ALL",
-        "LC_MESSAGES",
-        "TZ",
-        "TMPDIR",
-        "USER",
-        "LOGNAME",
-        "SSH_AUTH_SOCK",
-        "SSH_AGENT_PID",
-        "LANGUAGE",
-        // HTTPS certificate passthrough (kept in sync with the root
-        // crate's GitEnvPolicy::ALLOWED_ENV_VARS).
-        "SSL_CERT_FILE",
-        "SSL_CERT_DIR",
-        "CURL_CA_BUNDLE",
-        "REQUESTS_CA_BUNDLE",
-        "GIT_SSL_CAINFO",
-        "GIT_SSL_CAPATH",
-    ];
-    const STRIPPED_ENV_VARS: &[&str] = &[
-        "GIT_ASKPASS",
-        "GIT_SSH_COMMAND",
-        "GIT_SSH_VARIANT",
-        "GIT_PROXY_COMMAND",
-        "GIT_CONFIG_COUNT",
-        "GIT_CONFIG_KEY_0",
-        "GIT_CONFIG_KEY_1",
-        "GIT_CONFIG_KEY_2",
-        "GIT_CONFIG_KEY_3",
-        "GIT_CONFIG_KEY_4",
-        "GIT_CONFIG_KEY_5",
-        "GIT_CONFIG_VALUE_0",
-        "GIT_CONFIG_VALUE_1",
-        "GIT_CONFIG_VALUE_2",
-        "GIT_CONFIG_VALUE_3",
-        "GIT_CONFIG_VALUE_4",
-        "GIT_CONFIG_VALUE_5",
-        "GIT_CONFIG_GLOBAL",
-        "GIT_CONFIG_SYSTEM",
-        "GIT_CONFIG_NOSYSTEM",
-        "GIT_DIR",
-        "GIT_WORK_TREE",
-        "GIT_COMMON_DIR",
-        "GIT_INDEX_FILE",
-        "GIT_OBJECT_DIRECTORY",
-        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
-        "GIT_PAGER",
-        "PAGER",
-    ];
     let mut cmd = std::process::Command::new("git");
     cmd.args(args).current_dir(git_root).env_clear();
-    for key in ALLOWED_ENV_VARS {
+    for key in POLICY_ALLOWED_ENV_VARS {
         if let Some(v) = std::env::var_os(key) {
             cmd.env(key, v);
         }
     }
-    for key in STRIPPED_ENV_VARS {
+    for key in POLICY_ALWAYS_STRIPPED_ENV_VARS {
         cmd.env_remove(key);
     }
     cmd.env("GIT_TERMINAL_PROMPT", "0");
@@ -169,4 +127,38 @@ pub fn is_git_file(git_path: &Path) -> bool {
 
 pub fn is_git_worktree(dir: &Path) -> bool {
     egggit::worktree::is_git_worktree(dir)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Drift guard: the local `hardened_git_command` must consume the
+    /// canonical lists from `codegg_git::process_policy`. If this
+    /// test ever fails, a future refactor has re-introduced a
+    /// hand-maintained mirror that must be deleted in favor of the
+    /// shared constants.
+    #[test]
+    fn worktree_uses_canonical_policy() {
+        assert!(POLICY_ALLOWED_ENV_VARS.contains(&"PATH"));
+        assert!(POLICY_ALLOWED_ENV_VARS.contains(&"HOME"));
+        assert!(POLICY_ALWAYS_STRIPPED_ENV_VARS.contains(&"GIT_ASKPASS"));
+        assert!(POLICY_ALWAYS_STRIPPED_ENV_VARS.contains(&"GIT_CONFIG_PARAMETERS"));
+        assert!(POLICY_ALWAYS_STRIPPED_ENV_VARS.contains(&"SSH_ASKPASS"));
+        assert!(POLICY_ALWAYS_STRIPPED_ENV_VARS.contains(&"GIT_TOOL"));
+        assert!(POLICY_ALWAYS_STRIPPED_ENV_VARS.contains(&"GIT_DIR"));
+    }
+
+    /// Drift guard: the canonical set must include all command-bearing
+    /// variables that the old local mirror was missing.
+    #[test]
+    fn canonical_includes_locally_drifted_entries() {
+        let drifted = ["GIT_CONFIG_PARAMETERS", "SSH_ASKPASS", "GIT_TOOL"];
+        for k in drifted {
+            assert!(
+                POLICY_ALWAYS_STRIPPED_ENV_VARS.contains(&k),
+                "{k} missing from canonical always-stripped list"
+            );
+        }
+    }
 }

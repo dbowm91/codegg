@@ -490,4 +490,41 @@ Operators that disqualify direct Git routing:
 
 The Rust tool surface (typed mutations, recovery, raw fallback) and the BashTool translation layer both honor this boundary — they never upgrade a shell-owned command to `ActualBackend::Git`. RunStore provenance reflects the actual executor, not the intent family.
 
+### Polish / maintainability / verification closure
+
+The corrective security closure (`cb192e9`, `c2e806f`, `53b2beb`) left three
+post-closure invariants that the polish pass tightened without
+changing runtime behavior:
+
+1. **Canonical subprocess policy.** `ALLOWED_ENV_VARS` and
+   `ALWAYS_STRIPPED_ENV_VARS` now live in
+   [`crates/codegg-git/src/process_policy.rs`](crates/codegg-git/src/process_policy.rs)
+   (the single source of truth). Both the root crate
+   (`src/git_mutations.rs::GitEnvPolicy`) and `codegg-core`
+   (`crates/codegg-core/src/worktree.rs::hardened_git_command`) consume
+   the same lists, so they cannot silently drift. Drift is caught by
+   `cargo test -p codegg-core` (`worktree_uses_canonical_policy`,
+   `canonical_includes_locally_drifted_entries`) and
+   `src/git_mutations.rs::policy_drift_tests`.
+2. **Audit-safe rerun argv.** `RerunDescriptor.argv` is
+   `Option<AuditSafeArgv>` (newtype in
+   [`crates/codegg-git/src/sensitive.rs`](crates/codegg-git/src/sensitive.rs)).
+   The only construction path (`AuditSafeArgv::from_argv`) runs the
+   URL sanitizer on every token, so durable RunStore records are
+   credential-free. The deserializer re-runs the sanitizer to
+   normalize historical records. See
+   [`docs/validation/git-rerun-secret-lifecycle.md`](docs/validation/git-rerun-secret-lifecycle.md)
+   for the lifecycle inventory.
+3. **Forbidden-pattern static checks.**
+   [`scripts/check_git_forbidden_patterns.py`](scripts/check_git_forbidden_patterns.py)
+   enforces (a) `expose_secret()` only at the `render_argv`
+   boundary, (b) no hand-maintained env-policy tables, (c)
+   `RerunDescriptor.argv` is always `AuditSafeArgv`, (d) git argv
+   flowing into `RunInvocation` is sanitized. The script is part of
+   the standard local validation.
+
+Verified state, the execution-origin matrix, and remaining
+limitations are recorded in
+[`architecture/git_polish_verification_handoff.md`](architecture/git_polish_verification_handoff.md).
+
 

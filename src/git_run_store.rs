@@ -166,12 +166,17 @@ pub async fn persist_mutation(
             })
             .collect(),
         rerun: Some(codegg_core::run_store::RerunDescriptor {
-            // Rerun descriptor's argv must match the argv that
-            // reached git (so an authenticated replay doesn't get
-            // a 401). The raw URL survives here for the canonical
-            // re-render path; other surfaces (`command`/`argv`
-            // above) keep the redacted form.
-            argv: Some(codegg_git::render_argv(&result.operation)),
+            // The rerun descriptor persists the audit-safe argv.
+            // The raw URL flows only ephemerally through
+            // `MutationResult.operation` during execution. A future
+            // replay path that needs the raw URL must reconstruct
+            // it from the user (credential helper, prompt, or env)
+            // before re-rendering via `render_argv`. See
+            // `docs/validation/git-rerun-secret-lifecycle.md` for the
+            // end-to-end policy.
+            argv: Some(codegg_git::AuditSafeArgv::from_argv(
+                codegg_git::render_argv(&result.operation),
+            )),
             script_source_ref: None,
             backend_family: backend_family.to_string(),
             cwd: workdir.to_path_buf(),

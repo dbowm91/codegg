@@ -147,7 +147,9 @@ fn persist_mutation_to_store(
             projection: None,
             changes: Vec::new(),
             rerun: Some(codegg_core::run_store::RerunDescriptor {
-                argv: Some(codegg_git::render_argv(&result.operation)),
+                argv: Some(codegg_git::AuditSafeArgv::from_argv(
+                    codegg_git::render_argv(&result.operation),
+                )),
                 script_source_ref: None,
                 backend_family: "git_native".to_string(),
                 cwd: workdir.to_path_buf(),
@@ -213,11 +215,20 @@ async fn mem_runstore_does_not_leak_sentinel() {
         .unwrap_or_default();
     let command_string: String = manifest.invocation.command.clone();
 
-    // Per the corrective closure plan, the rerun descriptor
-    // intentionally retains raw argv so an authenticated replay can
-    // succeed. The audit argv, command, stdout/stderr artifacts,
-    // projection summary, MutationResult, and operation Debug all
-    // MUST be free of the sentinel.
+    // Per the polish-pass rerun lifecycle, the rerun descriptor's
+    // argv is now persisted in audit-safe form (see
+    // `docs/validation/git-rerun-secret-lifecycle.md`). The audit
+    // argv, command, stdout/stderr artifacts, projection summary,
+    // MutationResult, operation Debug, AND rerun argv all MUST be
+    // free of the sentinel. A future replay path that needs the raw
+    // URL must reconstruct it from the user (credential helper,
+    // prompt, or env).
+    let rerun_argv_strings: Vec<String> = manifest
+        .rerun
+        .as_ref()
+        .and_then(|r| r.argv.as_ref())
+        .map(|argv| argv.as_slice().to_vec())
+        .unwrap_or_default();
     common::secret_scan::assert_no_credentials_in(
         &sentinel,
         vec![
@@ -232,6 +243,13 @@ async fn mem_runstore_does_not_leak_sentinel() {
                 argv_strings.iter().map(String::as_str).collect::<Vec<_>>(),
             ),
             ("audit_command", vec![command_string.as_str()]),
+            (
+                "rerun_argv",
+                rerun_argv_strings
+                    .iter()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>(),
+            ),
             (
                 "stdout_artifact_sha256",
                 stdout_artifacts
@@ -268,18 +286,21 @@ async fn fs_runstore_does_not_leak_sentinel_to_disk() {
 
     // Walk every byte on disk under the RunStore root and verify no
     // sentinel has leaked into manifest, index, or artifact files.
-    // Skip the rerun descriptor's argv (see comment in the mem-store
-    // test above) — it intentionally keeps raw argv for replay.
+    //
+    // The polish-pass rerun lifecycle stores only audit-safe argv in
+    // the rerun descriptor, so no rerun-argv allowlist subtraction is
+    // needed here. The sentinel must be absent from every byte on
+    // disk under the store root. See
+    // `docs/validation/git-rerun-secret-lifecycle.md`.
     let bytes = common::secret_scan::collect_bytes_recursive(store_dir.path());
     let as_strings: Vec<String> = bytes
         .iter()
         .map(|b| String::from_utf8_lossy(b).into_owned())
         .collect();
 
-    // The rerun argv is the single Codegg-owned surface that may
-    // carry raw credentials (replay must authenticate). Read the
-    // manifest's rerun.argv to learn those tokens, then strip them
-    // from the file-bytes before scanning.
+    // Positive control: confirm the persisted rerun argv is itself
+    // audit-safe (no sentinel token in any of its tokens). This is
+    // the type-level invariant test for `AuditSafeArgv`.
     let manifest = store
         .get_run(&run_id)
         .await
@@ -288,8 +309,14 @@ async fn fs_runstore_does_not_leak_sentinel_to_disk() {
     let rerun_argv: Vec<String> = manifest
         .rerun
         .as_ref()
-        .and_then(|r| r.argv.clone())
+        .and_then(|r| r.argv.as_ref().map(|a| a.as_slice().to_vec()))
         .unwrap_or_default();
+    for tok in &rerun_argv {
+        assert!(
+            !tok.contains(&sentinel),
+            "rerun argv token leaks sentinel: {tok:?}"
+        );
+    }
 
     // Diagnostic: collect file paths so a failing scan can point at
     // the leaking file.
@@ -308,51 +335,8 @@ async fn fs_runstore_does_not_leak_sentinel_to_disk() {
     }
     collect_paths(store_dir.path(), &mut paths);
 
-    // Strip the rerun argv tokens from each file's bytes before
-    // scanning. This implements the production-correct gate:
-    // rerun.argv is the only allowed raw surface.
-    //
-    // The token we care about is the URL token (the one that
-    // contains the credential). Generic argv tokens like `git`,
-    // `remote`, `add`, `private`, `.git`, `git_native` would be
-    // substituted too aggressively (and `replace` is global per
-    // token). We match on the entire argv as a single multi-token
-    // string by joining the tokens in order — that is exactly what
-    // the manifest stores. The manifest persists the argv as a JSON
-    // array, so we substitute both the joined form and the JSON form.
-    let rerun_argv_joined = rerun_argv.join(" ");
-    let rerun_argv_json = format!(
-        "[{}]",
-        rerun_argv
-            .iter()
-            .map(|t| format!("\"{}\"", t.replace('\\', "\\\\").replace('"', "\\\"")))
-            .collect::<Vec<_>>()
-            .join(", ")
-    );
-    let filtered_strings: Vec<String> = as_strings
-        .into_iter()
-        .map(|s| {
-            let mut out = s;
-            if !rerun_argv_joined.is_empty() && out.contains(&rerun_argv_joined) {
-                out = out.replace(&rerun_argv_joined, "<RERUN_ARGV_JOINED>");
-            }
-            if !rerun_argv_json.is_empty() && out.contains(&rerun_argv_json) {
-                out = out.replace(&rerun_argv_json, "<RERUN_ARGV_JSON>");
-            }
-            // Also strip any URL-bearing token individually — that is
-            // the credential-carrying one. Safe because only that
-            // token contains the sentinel.
-            for tok in &rerun_argv {
-                if tok.contains("://") && out.contains(tok) {
-                    out = out.replace(tok, "<URL_TOKEN>");
-                }
-            }
-            out
-        })
-        .collect();
-
     // Diagnostic on failure: print which file leaks.
-    for (i, s) in filtered_strings.iter().enumerate() {
+    for (i, s) in as_strings.iter().enumerate() {
         if s.contains(&sentinel) {
             if let Some(path) = paths.get(i) {
                 let pos = s.find(&sentinel).unwrap();
@@ -366,7 +350,7 @@ async fn fs_runstore_does_not_leak_sentinel_to_disk() {
         }
     }
 
-    let string_refs: Vec<&str> = filtered_strings.iter().map(String::as_str).collect();
+    let string_refs: Vec<&str> = as_strings.iter().map(String::as_str).collect();
 
     common::secret_scan::assert_no_credentials_in(
         &sentinel,

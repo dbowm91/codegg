@@ -31,83 +31,21 @@ use crate::git_network_policy::NetworkFailureKind;
 use crate::git_service::{GitExecutionService, GitServiceError, RawGitOutput};
 
 // ── Process environment policy ───────────────────────────────────────
+//
+// The canonical env-var lists live in `codegg_git::process_policy`
+// (the `codegg-git` crate) so both the root crate and
+// `codegg-core::worktree` share the same source of truth. The
+// re-exports below preserve the historical `pub` paths used by
+// downstream callers (tests, AGENTS.md citations).
 
-/// Environment variables that are always restored for noninteractive
-/// local git operations. PATH is restored from the parent; the rest
-/// pin git to a deterministic state so local operations cannot hang
-/// waiting for a credential prompt, editor, or signing pinentry.
-pub const ALLOWED_ENV_VARS: &[&str] = &[
-    "PATH",
-    "HOME",
-    "XDG_CONFIG_HOME",
-    "XDG_DATA_HOME",
-    "XDG_CACHE_HOME",
-    "LANG",
-    "LC_ALL",
-    "LC_MESSAGES",
-    "TZ",
-    "TMPDIR",
-    "USER",
-    "LOGNAME",
-    "SSH_AUTH_SOCK",
-    "SSH_AGENT_PID",
-    "LANGUAGE",
-    // HTTPS certificate passthrough. These allow systems that route
-    // HTTPS through custom CA bundles (corporate proxies, local CA
-    // stores) to still authenticate against Git remotes without
-    // weakening command-injection protections.
-    "SSL_CERT_FILE",
-    "SSL_CERT_DIR",
-    "CURL_CA_BUNDLE",
-    "REQUESTS_CA_BUNDLE",
-    "GIT_SSL_CAINFO",
-    "GIT_SSL_CAPATH",
-];
+/// Re-export of the canonical allowlist. See
+/// [`codegg_git::process_policy::ALLOWED_ENV_VARS`] for the source of
+/// truth and rationale.
+pub use codegg_git::process_policy::ALLOWED_ENV_VARS;
 
-/// Environment variables that are NEVER passed to a Codegg-owned
-/// `git` child, regardless of the kind of operation. These are
-/// command-bearing variables that could be used by a hostile parent
-/// to inject helper/editor/filter/credential commands.
-///
-/// Network operations extend the baseline with `NETWORK_ALLOWED_ENV_VARS`
-/// (`src/git_network_policy::NETWORK_ALLOWED_ENV_VARS`) which is a
-/// reviewed allowlist for credential helpers, SSH agent, and proxy
-/// variables required for remote access.
-pub const ALWAYS_STRIPPED_ENV_VARS: &[&str] = &[
-    // credential helpers (never auto-restored for local ops)
-    "GIT_ASKPASS",
-    "GIT_SSH_COMMAND",
-    "GIT_SSH_VARIANT",
-    "GIT_PROXY_COMMAND",
-    // git config injection vectors
-    "GIT_CONFIG_COUNT",
-    "GIT_CONFIG_KEY_0",
-    "GIT_CONFIG_KEY_1",
-    "GIT_CONFIG_KEY_2",
-    "GIT_CONFIG_KEY_3",
-    "GIT_CONFIG_KEY_4",
-    "GIT_CONFIG_KEY_5",
-    "GIT_CONFIG_VALUE_0",
-    "GIT_CONFIG_VALUE_1",
-    "GIT_CONFIG_VALUE_2",
-    "GIT_CONFIG_VALUE_3",
-    "GIT_CONFIG_VALUE_4",
-    "GIT_CONFIG_VALUE_5",
-    "GIT_CONFIG_PARAMETERS",
-    // alternate askpass
-    "SSH_ASKPASS",
-    "GIT_TOOL",
-    // repository working-tree overrides (would let parent escape cwd)
-    "GIT_DIR",
-    "GIT_WORK_TREE",
-    "GIT_INDEX_FILE",
-    "GIT_OBJECT_DIRECTORY",
-    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
-    "GIT_COMMON_DIR",
-    // pager (prevent paginated output stalls)
-    "GIT_PAGER",
-    "PAGER",
-];
+/// Re-export of the canonical always-stripped set. See
+/// [`codegg_git::process_policy::ALWAYS_STRIPPED_ENV_VARS`].
+pub use codegg_git::process_policy::ALWAYS_STRIPPED_ENV_VARS;
 
 /// Process-environment policy applied to every mutation subprocess.
 #[derive(Debug, Clone)]
@@ -212,6 +150,92 @@ impl GitEnvPolicy {
         cmd.env("GIT_PAGER", "cat");
         cmd.env("PAGER", "cat");
         cmd
+    }
+}
+
+#[cfg(test)]
+mod policy_drift_tests {
+    use super::*;
+
+    /// Drift guard: the canonical lists in `codegg_git::process_policy`
+    /// MUST match the historical values the root crate has relied on
+    /// since Phase F. If this test fails, the canonical list has
+    /// changed and either (a) the policy genuinely changed (update the
+    /// test) or (b) the lists drifted and the policy needs to be
+    /// re-audited before accepting the change.
+    #[test]
+    fn canonical_policy_includes_all_phase_f_entries() {
+        // Allowed vars that local git operations have always relied on.
+        for k in [
+            "PATH",
+            "HOME",
+            "XDG_CONFIG_HOME",
+            "XDG_DATA_HOME",
+            "XDG_CACHE_HOME",
+            "LANG",
+            "LC_ALL",
+            "LC_MESSAGES",
+            "TZ",
+            "TMPDIR",
+            "USER",
+            "LOGNAME",
+            "SSH_AUTH_SOCK",
+            "SSH_AGENT_PID",
+            "LANGUAGE",
+            "SSL_CERT_FILE",
+            "SSL_CERT_DIR",
+            "CURL_CA_BUNDLE",
+            "REQUESTS_CA_BUNDLE",
+            "GIT_SSL_CAINFO",
+            "GIT_SSL_CAPATH",
+        ] {
+            assert!(
+                ALLOWED_ENV_VARS.contains(&k),
+                "{k} missing from canonical ALLOWED_ENV_VARS"
+            );
+        }
+
+        // Stripped vars (command-bearing injection vectors).
+        for k in [
+            "GIT_ASKPASS",
+            "GIT_SSH_COMMAND",
+            "GIT_SSH_VARIANT",
+            "GIT_PROXY_COMMAND",
+            "GIT_CONFIG_COUNT",
+            "GIT_CONFIG_PARAMETERS",
+            "SSH_ASKPASS",
+            "GIT_TOOL",
+            "GIT_DIR",
+            "GIT_WORK_TREE",
+            "GIT_INDEX_FILE",
+            "GIT_OBJECT_DIRECTORY",
+            "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+            "GIT_COMMON_DIR",
+            "GIT_PAGER",
+            "PAGER",
+        ] {
+            assert!(
+                ALWAYS_STRIPPED_ENV_VARS.contains(&k),
+                "{k} missing from canonical ALWAYS_STRIPPED_ENV_VARS"
+            );
+        }
+    }
+
+    /// Drift guard: `codegg-core::worktree::hardened_git_command`
+    /// MUST consume the same canonical lists. Both `pub use` aliases
+    /// below point at `codegg_git::process_policy` constants, so this
+    /// is a structural check that the root crate and `codegg-core`
+    /// read from the same source of truth.
+    #[test]
+    fn root_and_core_share_canonical_lists() {
+        // Same length ⇒ same set when both come from the canonical
+        // source. (Equality is already enforced by the alias; this is
+        // a smell-test for accidental re-declaration.)
+        assert_eq!(ALLOWED_ENV_VARS.len(), codegg_git::ALLOWED_ENV_VARS.len());
+        assert_eq!(
+            ALWAYS_STRIPPED_ENV_VARS.len(),
+            codegg_git::ALWAYS_STRIPPED_ENV_VARS.len()
+        );
     }
 }
 

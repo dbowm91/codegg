@@ -21,7 +21,11 @@ in the [architecture docs](architecture/overview.md) and the linked guides.
   (status, diff, log, show, blame) plus the full mutation surface
   (stage/commit/branch/stash/merge/rebase/cherry-pick/revert/fetch/pull/push/
   reset/clean) with operation-aware continue/abort/skip recovery for
-  in-progress operations.
+  in-progress operations. See [`architecture/git.md`](architecture/git.md)
+  and the post-closure
+  [`architecture/git_polish_verification_handoff.md`](architecture/git_polish_verification_handoff.md)
+  for the canonical subprocess policy, the rerun argv secret
+  lifecycle, and the execution-origin matrix.
 - Human shell commands with explicit promotion: `!command` runs locally and
   stays out of model context; `!!command` promotes the result. Output is
   retained, bounded, redacted, and projected through native or RTK-backed

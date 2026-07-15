@@ -7,6 +7,7 @@ license = "MIT"
 
 [dependencies]
 codegg-config = { path = "../codegg-config" }
+codegg-git = { path = "../codegg-git" }
 codegg-protocol = { path = "../codegg-protocol" }
 codegg-providers = { path = "../codegg-providers" }
 egggit = { path = "../egggit" }

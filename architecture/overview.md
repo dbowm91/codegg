@@ -256,6 +256,7 @@ User Input → TUI Event Loop → App::on_key() → State Mutation → Render
 - [Error](error.md) - Centralized error handling
 - [Exec](exec.md) - Non-interactive execution mode
 - [Git](git.md) - Git session management
+- [Git polish / maintainability / verification handoff](git_polish_verification_handoff.md) - post-closure verified state, secret lifecycle, execution-origin matrix
 - [Hooks](hooks.md) - Lifecycle hooks
 - [Human Shell](human_shell.md) - Shell command execution and projection pipeline
 - [IDE](ide.md) - VS Code/JetBrains integration
