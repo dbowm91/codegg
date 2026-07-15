@@ -9,8 +9,8 @@ use std::path::Path;
 // prefer. The canonical source of truth is
 // `codegg_git::process_policy` (see `crates/codegg-git/src/process_policy.rs`).
 pub use codegg_git::process_policy::{
-    ALWAYS_STRIPPED_ENV_VARS as POLICY_ALWAYS_STRIPPED_ENV_VARS,
     ALLOWED_ENV_VARS as POLICY_ALLOWED_ENV_VARS,
+    ALWAYS_STRIPPED_ENV_VARS as POLICY_ALWAYS_STRIPPED_ENV_VARS,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

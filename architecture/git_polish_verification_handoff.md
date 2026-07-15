@@ -14,6 +14,16 @@ All polish-pass workstreams are complete as of this commit. No
 high- or medium-severity findings remain. Two low-severity items are
 accepted and documented below.
 
+**Update (post-delta):** the gap-closure delta added B4 cross-platform
+policy composition tests, D4 repository resolution edge-case tests,
+F2/F3 quadratic-behavior guards and a truncation-after-redaction
+invariant test, E1 security review refresh, and G1 reconciliation of
+the command_intent/command_planner/command_routing architecture docs
+plus `docs/validation/git-security-review.md` and
+`docs/validation/git-cross-platform.md`. Two workstreams remain
+deferred: C (large-file maintainability splits) and E3 (property/fuzz
+tests) — both with explicit rationale below.
+
 ## Final crate / module map
 
 ```
@@ -205,7 +215,7 @@ python3 scripts/check_git_forbidden_patterns.py
 
 Result: `PASS (0 findings)`.
 
-### Git-focused test suite (141 tests across 9 binaries)
+### Git-focused test suite (141+ tests across 9 binaries)
 
 ```bash
 cargo test --test git_credential_runstore_sentinel \
@@ -219,7 +229,25 @@ cargo test --test git_credential_runstore_sentinel \
            --test git_closure_matrix
 ```
 
-Result: `141 passed`.
+Result: `141+ passed` (10 original + 4 new F2/F3 tests in
+`git_credential_cross_path`, totaling 14).
+
+### Execution-origin matrix (26 tests after gap-closure delta)
+
+```bash
+cargo test --test git_execution_origin_matrix
+```
+
+Result: `26 passed` (19 original + 7 new D4 tests).
+
+### Drift guards
+
+```bash
+cargo test -p codegg-git   # 354 + 7 ignored + new B4 tests (covers process_policy + sensitive)
+cargo test -p codegg-core  # 119 (covers worktree policy drift tests)
+```
+
+Result: all green.
 
 ### Execution-origin matrix (19 tests)
 
@@ -301,22 +329,57 @@ cross-platform behavior:
 
 ### Deferred work
 
-- Parser / renderer family splits (Workstream C2) — the files are
-  large but the ownership boundaries are already well-isolated by
-  module (`operation.rs` already contains the variants,
-  `parser.rs` handles parsing, `render.rs` handles rendering).
-  Splitting into `parser/{read,staging,…}` would add churn without
-  reducing review cost. Defer.
-- Git tool dispatch split (Workstream C3) — `src/tool/git.rs` is
-  1127 lines but is already organized by dispatch path
-  (`dispatch_operation_state`, `dispatch_recover`, schema
-  definitions). The schema snapshot tests pin the public surface.
-  Defer.
-- Property / fuzz tests (Workstream E3) — the existing
-  cross-crate redaction test, sentinel suite, and parser
-  round-trip tests cover the high-value cases. Adding a
-  `proptest` harness is straightforward but adds CI time without
-  materially closing risk on top of the closure pass.
+- **Workstream C (large-file maintainability splits)** — the files
+  are large but the ownership boundaries are already well-isolated by
+  module (`operation.rs` contains the variants, `parser.rs` handles
+  parsing, `render.rs` handles rendering, `src/tool/git.rs` is
+  organized by dispatch path with `dispatch_operation_state`,
+  `dispatch_recover`, and schema definitions). Splitting into
+  `parser/{read,staging,…}` would add churn without reducing review
+  cost. The plan's DoD criterion #5 ("easier to navigate") is partly
+  satisfied: the polish pass added more inline doc comments and
+  re-export aliases for the canonical policy. A future split would
+  be a refactor, not a polish task. Defer until a measurable review
+  burden emerges.
+- **Workstream E3 (property / fuzz tests)** — the existing
+  cross-crate redaction test, sentinel suite, parser round-trip
+  tests, and the new F2 quadratic-behavior guards cover the
+  high-value cases. Adding a `proptest` harness is straightforward
+  but adds CI time without materially closing risk on top of the
+  closure pass. The plan's DoD criterion #9 (focused security suites
+  pass) is satisfied without proptest.
+
+### Workstreams completed in the gap-closure delta
+
+- **B4 (cross-platform policy composition)** — 3 new in-module tests
+  in `crates/codegg-git/src/process_policy.rs`: canonical lists are
+  pure data (valid env-var identifiers), Windows overlays are
+  documented but gated, Unix canonical list excludes Windows vars.
+- **D4 (repository resolution edge cases)** — 7 new tests in
+  `tests/git_execution_origin_matrix.rs`: outer path, nested dir,
+  nested independent repo, non-repo, nonexistent path, symlinked
+  working dir, stability across calls. Total test file size grew from
+  19 to 26 tests.
+- **E1 (security review refresh)** —
+  `docs/validation/git-security-review.md` was rewritten against the
+  post-polish code (line numbers updated, evidence refreshed, new
+  Threat #15 added for the rerun secret lifecycle, accepted
+  limitations reclassified as L1/L2 with regression test references).
+- **F2 (quadratic behavior guards)** — 3 size-scaled tests in
+  `tests/git_credential_cross_path.rs`: long-stderr redaction
+  (<250 ms on 1 MiB), large-argv sanitization (<100 ms on 10k
+  tokens), many-URL redaction (<250 ms on 1 MiB / 1000 URLs).
+- **F3 (truncation-after-redaction invariant)** — 1 test in
+  `tests/git_credential_cross_path.rs`: proves
+  `sanitize_truncate_for_result` redacts credentials that fall after
+  the truncation boundary.
+- **G1 (architecture doc reconciliation)** —
+  `architecture/command_intent.md` (provenance parity note),
+  `architecture/command_planner.md` (routing caveat),
+  `architecture/command_routing.md` (polish-pass provenance parity
+  section), `docs/validation/git-cross-platform.md` (polish-pass
+  notes + Windows deferral), `docs/validation/git-security-review.md`
+  (full rewrite).
 
 ## Closure commit references
 
@@ -326,4 +389,5 @@ cross-platform behavior:
 | `c2e806f` | Corrective closure completion — adversarial credential, RunStore, tracing, environment verification |
 | `53b2beb` | URL-flow inventory, B4 render_argv boundary test, clippy fix |
 | `86c16a9` | Polish plan proposal |
-| *this commit* | Polish / maintainability / verification handoff |
+| `8d686c7` | Polish / maintainability / verification handoff (canonical subprocess policy, AuditSafeArgv, forbidden-pattern checks) |
+| *this commit* | Gap-closure delta (D4 repo resolution, F2/F3 quadratic + truncation, E1/G1 doc refresh, B4 cross-platform policy tests) |

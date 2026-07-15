@@ -27,8 +27,8 @@ pub use origin::GitCommandOrigin;
 pub use parser::parse_git_argv;
 pub use path::{RepoPath, RepoRoot};
 pub use process_policy::{
-    is_allowed as is_allowed_env, is_stripped as is_stripped_env, ALWAYS_STRIPPED_ENV_VARS,
-    ALLOWED_ENV_VARS,
+    is_allowed as is_allowed_env, is_stripped as is_stripped_env, ALLOWED_ENV_VARS,
+    ALWAYS_STRIPPED_ENV_VARS,
 };
 pub use ref_name::{BranchName, ObjectId, RefName, RemoteName};
 pub use render::render_argv;

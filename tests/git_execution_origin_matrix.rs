@@ -28,14 +28,15 @@
 //! | 9 | daemon git action | Git | Git | GitEnvPolicy::apply | sanitize | DelegatedBackend |
 //! | 10 | replay/rerun | n/a | n/a | n/a | AuditSafeArgv (redacted) | DelegatedBackend |
 
+use std::fs;
 use std::path::Path;
 use std::process::Command;
 use std::sync::Arc;
 
-use codegg::command_intent::plan::{
-    plan_execution, ExecutionBackend, ProjectorRoute,
+use codegg::command_intent::plan::{plan_execution, ExecutionBackend, ProjectorRoute};
+use codegg::command_intent::{
+    classify_command, classify_command_with_context, CommandIntentContext,
 };
-use codegg::command_intent::{classify_command, classify_command_with_context, CommandIntentContext};
 use codegg::command_routing::{resolve_routing, RoutingDecision};
 use codegg::git_mutations::{GitEnvPolicy, GitMutationExecutor};
 use codegg::git_network_policy::{
@@ -155,7 +156,10 @@ async fn row_1_native_typed_read() {
             cwd: Some(repo.path().to_path_buf()),
         },
     );
-    assert_eq!(intent.kind, codegg::command_intent::CommandIntentKind::GitReadOnly);
+    assert_eq!(
+        intent.kind,
+        codegg::command_intent::CommandIntentKind::GitReadOnly
+    );
 
     let plan = plan_execution(&intent);
     assert!(
@@ -186,14 +190,20 @@ async fn row_1_native_typed_read() {
     // Redaction: read-only commands carry no URL credentials.
     // Verify classify_git produces GitReadOnly (no Subprocess capability).
     assert!(
-        !intent.risk.capabilities.contains(&codegg::command_intent::ExecutionCapability::Subprocess),
+        !intent
+            .risk
+            .capabilities
+            .contains(&codegg::command_intent::ExecutionCapability::Subprocess),
         "row 1: read-only should not have Subprocess capability"
     );
 
     // Ownership: n/a — reads are not persisted. Verify no run in store.
     let store = MemRunStore::new();
     let manifests = all_manifests(&store).await;
-    assert!(manifests.is_empty(), "row 1: native read must not persist to RunStore");
+    assert!(
+        manifests.is_empty(),
+        "row 1: native read must not persist to RunStore"
+    );
 }
 
 // ── Row 2: native typed mutation ─────────────────────────────────────────
@@ -222,7 +232,10 @@ async fn row_2_native_typed_mutation() {
             cwd: Some(repo.path().to_path_buf()),
         },
     );
-    assert_eq!(intent.kind, codegg::command_intent::CommandIntentKind::GitMutating);
+    assert_eq!(
+        intent.kind,
+        codegg::command_intent::CommandIntentKind::GitMutating
+    );
 
     let plan = plan_execution(&intent);
     assert!(
@@ -251,7 +264,12 @@ async fn row_2_native_typed_mutation() {
     );
 
     // Verify env policy: run git with the same policy and check GIT_TERMINAL_PROMPT.
-    let check_argv = vec!["git".to_string(), "config".to_string(), "--get".to_string(), "remote.origin.url".to_string()];
+    let check_argv = vec![
+        "git".to_string(),
+        "config".to_string(),
+        "--get".to_string(),
+        "remote.origin.url".to_string(),
+    ];
     let output = GitEnvPolicy::default()
         .apply_sync(&check_argv, repo.path())
         .output()
@@ -272,7 +290,10 @@ async fn row_2_native_typed_mutation() {
     ];
     let sanitized = sanitize_argv_for_run_store(raw_argv.clone());
     let sentinel_found = sanitized.iter().any(|t| t.contains(&sentinel));
-    assert!(!sentinel_found, "row 2: sanitized argv must not contain sentinel");
+    assert!(
+        !sentinel_found,
+        "row 2: sanitized argv must not contain sentinel"
+    );
     assert!(
         sanitized.last().unwrap().contains("redacted@"),
         "row 2: URL must be redacted, got: {:?}",
@@ -289,7 +310,7 @@ async fn row_2_native_typed_mutation() {
 
     // Ownership: persist_mutation sets DelegatedBackend.
     // Verify structurally by checking the RunDraft ownership field.
-    use codegg_core::run_store::{BackendRecord, RunDraft, RiskRecord};
+    use codegg_core::run_store::{BackendRecord, RiskRecord, RunDraft};
     let draft = RunDraft {
         kind: RunKind::GitMutation,
         invocation: codegg_core::run_store::RunInvocation {
@@ -318,10 +339,7 @@ async fn row_2_native_typed_mutation() {
     assert_eq!(draft.ownership, RunOwnership::DelegatedBackend);
 
     // Credential leak check: no sentinel in sanitized argv.
-    common::secret_scan::assert_no_credentials_in(
-        &sentinel,
-        vec![("sanitized_argv", &sanitized)],
-    );
+    common::secret_scan::assert_no_credentials_in(&sentinel, vec![("sanitized_argv", &sanitized)]);
 }
 
 // ── Row 3: native raw git subcommand ─────────────────────────────────────
@@ -343,7 +361,10 @@ async fn row_3_native_raw_git_subcommand() {
 
     // Verify classification picks GitReadOnly for `git log`.
     let intent = classify_command("git log --oneline -5");
-    assert_eq!(intent.kind, codegg::command_intent::CommandIntentKind::GitReadOnly);
+    assert_eq!(
+        intent.kind,
+        codegg::command_intent::CommandIntentKind::GitReadOnly
+    );
 
     let plan = plan_execution(&intent);
     assert!(
@@ -389,10 +410,13 @@ async fn row_3_native_raw_git_subcommand() {
 
     // Redaction: sanitize argv (no credentials here, but verify path works).
     let sanitized = sanitize_argv_for_run_store(argv.clone());
-    assert_eq!(sanitized, argv, "row 3: non-URL argv must pass through unchanged");
+    assert_eq!(
+        sanitized, argv,
+        "row 3: non-URL argv must pass through unchanged"
+    );
 
     // Ownership: DelegatedBackend (structurally asserted via RunDraft).
-    use codegg_core::run_store::{BackendRecord, RunDraft, RiskRecord};
+    use codegg_core::run_store::{BackendRecord, RiskRecord, RunDraft};
     let draft = RunDraft {
         kind: RunKind::GitRead,
         invocation: codegg_core::run_store::RunInvocation {
@@ -442,14 +466,21 @@ async fn row_4_bash_simple_git_read() {
 
     // Verify classification first.
     let intent = classify_command("git status");
-    assert_eq!(intent.kind, codegg::command_intent::CommandIntentKind::GitReadOnly);
+    assert_eq!(
+        intent.kind,
+        codegg::command_intent::CommandIntentKind::GitReadOnly
+    );
 
     let plan = plan_execution(&intent);
     assert!(matches!(plan.backend, ExecutionBackend::Git { .. }));
 
     // Execute via BashTool (active routing dispatches to Git backend).
     let result = tool.execute(json!({"command": "git status"})).await;
-    assert!(result.is_ok(), "row 4: BashTool execution failed: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "row 4: BashTool execution failed: {:?}",
+        result.err()
+    );
 
     let manifests = all_manifests(&store).await;
     assert!(!manifests.is_empty(), "row 4: BashTool must persist a run");
@@ -497,7 +528,10 @@ async fn row_5_bash_simple_git_mutation() {
 
     // Verify classification picks GitMutating.
     let intent = classify_command("git add new_file.txt");
-    assert_eq!(intent.kind, codegg::command_intent::CommandIntentKind::GitMutating);
+    assert_eq!(
+        intent.kind,
+        codegg::command_intent::CommandIntentKind::GitMutating
+    );
     let plan = plan_execution(&intent);
     assert!(matches!(plan.backend, ExecutionBackend::Git { .. }));
 
@@ -512,10 +546,12 @@ async fn row_5_bash_simple_git_mutation() {
     // Use `git -C` to specify the repo directory since BashTool's raw shell
     // path doesn't set current_dir when allowed_paths is not configured.
     let git_cmd = format!("git -C {} add new_file.txt", repo.path().display());
-    let result = tool
-        .execute(json!({"command": git_cmd}))
-        .await;
-    assert!(result.is_ok(), "row 5: BashTool execution failed: {:?}", result.err());
+    let result = tool.execute(json!({"command": git_cmd})).await;
+    assert!(
+        result.is_ok(),
+        "row 5: BashTool execution failed: {:?}",
+        result.err()
+    );
 
     let manifests = all_manifests(&store).await;
     assert!(!manifests.is_empty(), "row 5: BashTool must persist a run");
@@ -530,7 +566,10 @@ async fn row_5_bash_simple_git_mutation() {
     // path which records the planned backend from the plan directly.
     assert_eq!(m.planned_backend, Some(PlannedBackend::Git));
     assert_eq!(m.actual_backend, Some(ActualBackend::RawShell));
-    assert!(m.fallback.is_none(), "row 5: no fallback (observe-mode path)");
+    assert!(
+        m.fallback.is_none(),
+        "row 5: no fallback (observe-mode path)"
+    );
     assert_eq!(m.ownership, RunOwnership::Caller);
 
     // Verify the file was actually staged (raw shell executed git add).
@@ -552,11 +591,17 @@ async fn row_5_bash_simple_git_mutation() {
         "new_file.txt".to_string(),
     ];
     let sanitized = sanitize_argv_for_run_store(argv.clone());
-    assert_eq!(sanitized, argv, "row 5: non-URL argv must pass through unchanged");
+    assert_eq!(
+        sanitized, argv,
+        "row 5: non-URL argv must pass through unchanged"
+    );
 
     // Verify permission-gated mutations (git commit) also fail validation.
     let intent_commit = classify_command("git commit -m 'test'");
-    assert_eq!(intent_commit.kind, codegg::command_intent::CommandIntentKind::GitMutating);
+    assert_eq!(
+        intent_commit.kind,
+        codegg::command_intent::CommandIntentKind::GitMutating
+    );
     let plan_commit = plan_execution(&intent_commit);
     assert!(
         plan_commit.validate_for_active_routing().is_err(),
@@ -617,10 +662,13 @@ async fn row_6_managed_git_argv_fallback() {
 
     // Redaction: sanitize argv (no URL credentials here).
     let sanitized = sanitize_argv_for_run_store(argv.clone());
-    assert_eq!(sanitized, argv, "row 6: non-URL argv must pass through unchanged");
+    assert_eq!(
+        sanitized, argv,
+        "row 6: non-URL argv must pass through unchanged"
+    );
 
     // Ownership: DelegatedBackend (structurally asserted via RunDraft).
-    use codegg_core::run_store::{BackendRecord, RunDraft, RiskRecord};
+    use codegg_core::run_store::{BackendRecord, RiskRecord, RunDraft};
     let draft = RunDraft {
         kind: RunKind::GitMutation,
         invocation: codegg_core::run_store::RunInvocation {
@@ -698,7 +746,11 @@ async fn row_7_raw_shell_with_git_leading_command() {
     std::env::remove_var("CODEGG_ROUTING_DISABLE");
 
     let result = tool.execute(json!({"command": "git status | cat"})).await;
-    assert!(result.is_ok(), "row 7: BashTool execution failed: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "row 7: BashTool execution failed: {:?}",
+        result.err()
+    );
 
     let manifests = all_manifests(&store).await;
     assert!(!manifests.is_empty(), "row 7: BashTool must persist a run");
@@ -708,7 +760,10 @@ async fn row_7_raw_shell_with_git_leading_command() {
     assert_eq!(m.kind, RunKind::RawShell);
     assert_eq!(m.planned_backend, Some(PlannedBackend::RawShell));
     assert_eq!(m.actual_backend, Some(ActualBackend::RawShell));
-    assert!(m.fallback.is_none(), "row 7: no fallback expected for raw shell");
+    assert!(
+        m.fallback.is_none(),
+        "row 7: no fallback expected for raw shell"
+    );
     assert_eq!(m.ownership, RunOwnership::Caller);
 }
 
@@ -735,7 +790,10 @@ async fn row_8_tui_git_action() {
 
     // Verify classification.
     let intent = classify_command("git status");
-    assert_eq!(intent.kind, codegg::command_intent::CommandIntentKind::GitReadOnly);
+    assert_eq!(
+        intent.kind,
+        codegg::command_intent::CommandIntentKind::GitReadOnly
+    );
     let plan = plan_execution(&intent);
     assert!(matches!(plan.backend, ExecutionBackend::Git { .. }));
 
@@ -761,15 +819,20 @@ async fn row_8_tui_git_action() {
         .apply_sync(&env_argv, repo.path())
         .output()
         .expect("git config via apply_sync");
-    let name = String::from_utf8_lossy(&env_output.stdout).trim().to_string();
+    let name = String::from_utf8_lossy(&env_output.stdout)
+        .trim()
+        .to_string();
     assert!(!name.is_empty(), "row 8: apply_sync must apply env policy");
 
     // Redaction: sanitize argv for audit surface.
     let sanitized = sanitize_argv_for_run_store(argv.clone());
-    assert_eq!(sanitized, argv, "row 8: non-URL argv must pass through unchanged");
+    assert_eq!(
+        sanitized, argv,
+        "row 8: non-URL argv must pass through unchanged"
+    );
 
     // Ownership: DelegatedBackend (same contract as async path).
-    use codegg_core::run_store::{BackendRecord, RunDraft, RiskRecord};
+    use codegg_core::run_store::{BackendRecord, RiskRecord, RunDraft};
     let draft = RunDraft {
         kind: RunKind::GitRead,
         invocation: codegg_core::run_store::RunInvocation {
@@ -821,7 +884,10 @@ async fn row_9_daemon_git_action() {
 
     // Verify classification.
     let intent = classify_command("git log --oneline -3");
-    assert_eq!(intent.kind, codegg::command_intent::CommandIntentKind::GitReadOnly);
+    assert_eq!(
+        intent.kind,
+        codegg::command_intent::CommandIntentKind::GitReadOnly
+    );
     let plan = plan_execution(&intent);
     assert!(matches!(plan.backend, ExecutionBackend::Git { .. }));
 
@@ -847,15 +913,21 @@ async fn row_9_daemon_git_action() {
     // Env policy: GIT_EDITOR must be "true" in the child process.
     // We verify by checking the policy was constructed with pin_editor.
     let policy = GitEnvPolicy::default();
-    assert!(policy.terminal_prompt_disabled, "row 9: terminal_prompt_disabled must be true");
+    assert!(
+        policy.terminal_prompt_disabled,
+        "row 9: terminal_prompt_disabled must be true"
+    );
     assert!(policy.pin_editor, "row 9: pin_editor must be true");
 
     // Redaction: sanitize argv.
     let sanitized = sanitize_argv_for_run_store(argv.clone());
-    assert_eq!(sanitized, argv, "row 9: non-URL argv must pass through unchanged");
+    assert_eq!(
+        sanitized, argv,
+        "row 9: non-URL argv must pass through unchanged"
+    );
 
     // Ownership: DelegatedBackend.
-    use codegg_core::run_store::{BackendRecord, RunDraft, RiskRecord};
+    use codegg_core::run_store::{BackendRecord, RiskRecord, RunDraft};
     let draft = RunDraft {
         kind: RunKind::GitMutation,
         invocation: codegg_core::run_store::RunInvocation {
@@ -925,13 +997,10 @@ fn row_10_replay_rerun_audit_safe_argv() {
 
     // The sanitized argv form must also be clean.
     let sanitized = sanitize_argv_for_run_store(raw_argv);
-    common::secret_scan::assert_no_credentials_in(
-        &sentinel,
-        vec![("sanitized_argv", &sanitized)],
-    );
+    common::secret_scan::assert_no_credentials_in(&sentinel, vec![("sanitized_argv", &sanitized)]);
 
     // Ownership: DelegatedBackend for reruns.
-    use codegg_core::run_store::{BackendRecord, RunDraft, RiskRecord};
+    use codegg_core::run_store::{BackendRecord, RiskRecord, RunDraft};
     let dir = tempfile::tempdir().expect("tempdir");
     let draft = RunDraft {
         kind: RunKind::GitMutation,
@@ -968,10 +1037,16 @@ fn env_policy_enforced_all_origins() {
     let policy = GitEnvPolicy::default();
 
     // Verify the policy pins the critical env vars.
-    assert!(policy.terminal_prompt_disabled, "GIT_TERMINAL_PROMPT must be pinned");
+    assert!(
+        policy.terminal_prompt_disabled,
+        "GIT_TERMINAL_PROMPT must be pinned"
+    );
     assert!(policy.pin_editor, "GIT_EDITOR must be pinned");
     assert!(policy.strip_editors, "EDITOR/VISUAL must be stripped");
-    assert!(policy.strip_command_bearers, "command-bearer vars must be stripped");
+    assert!(
+        policy.strip_command_bearers,
+        "command-bearer vars must be stripped"
+    );
 
     // Verify the stripped vars include the injection vectors.
     for var in [
@@ -1016,7 +1091,10 @@ fn classification_parity_all_git_commands() {
             "read-only command '{cmd}' must classify as GitReadOnly"
         );
         assert!(
-            !intent.risk.capabilities.contains(&codegg::command_intent::ExecutionCapability::Subprocess),
+            !intent
+                .risk
+                .capabilities
+                .contains(&codegg::command_intent::ExecutionCapability::Subprocess),
             "read-only command '{cmd}' must not have Subprocess capability"
         );
         // Must plan to Git backend.
@@ -1050,7 +1128,10 @@ fn classification_parity_all_git_commands() {
             "mutating command '{cmd}' must classify as GitMutating"
         );
         assert!(
-            intent.risk.capabilities.contains(&codegg::command_intent::ExecutionCapability::GitMutation),
+            intent
+                .risk
+                .capabilities
+                .contains(&codegg::command_intent::ExecutionCapability::GitMutation),
             "mutating command '{cmd}' must have GitMutation capability"
         );
         // Must plan to Git backend.
@@ -1104,10 +1185,7 @@ fn credential_redaction_boundaries() {
         format!("https://user:{sentinel}@host.example.com/r.git"),
     ];
     let sanitized = sanitize_argv_for_run_store(argv_with_cred);
-    common::secret_scan::assert_no_credentials_in(
-        &sentinel,
-        vec![("sanitized_argv", &sanitized)],
-    );
+    common::secret_scan::assert_no_credentials_in(&sentinel, vec![("sanitized_argv", &sanitized)]);
     assert!(
         sanitized.last().unwrap().contains("redacted@"),
         "URL must be redacted to redacted@host"
@@ -1144,7 +1222,153 @@ fn credential_redaction_boundaries() {
         format!("https://user:{sentinel}@host.example.com/repo.git"),
     ]);
     let debug_str = format!("{audit_safe:?}");
-    assert!(!debug_str.contains(&sentinel), "AuditSafeArgv Debug must not leak credential");
+    assert!(
+        !debug_str.contains(&sentinel),
+        "AuditSafeArgv Debug must not leak credential"
+    );
     let json_str = serde_json::to_string(&audit_safe).unwrap();
-    assert!(!json_str.contains(&sentinel), "AuditSafeArgv Serialize must not leak credential");
+    assert!(
+        !json_str.contains(&sentinel),
+        "AuditSafeArgv Serialize must not leak credential"
+    );
+}
+
+// ── D4: Repository resolution edge cases ───────────────────────────────
+//
+// `resolve_repo_root(path)` is the canonical helper that every mutation
+// path uses to locate the repository root. It must handle:
+//   - the root itself
+//   - a nested directory inside the root
+//   - a nested independent repository (must NOT walk up into the outer root)
+//   - a linked worktree (must resolve to the linked worktree, not the main
+//     repo, because linked worktrees have their own .git pointer file)
+//   - a non-repository directory
+//   - a symlinked working directory (must canonicalize)
+//   - a path that does not exist
+//
+// All Codegg-owned git subprocesses use the resolved `RepoRoot` as
+// `current_dir`, so the surface area is small but the resolution logic
+// must be correct.
+
+#[test]
+fn d4_repository_root_from_outer_path() {
+    if !git_available() {
+        eprintln!("skip: git not available");
+        return;
+    }
+    let repo = fresh_repo();
+    let root = codegg::git_mutations::resolve_repo_root(repo.path()).expect("outer path resolves");
+    assert!(
+        root.as_path().join(".git").exists(),
+        "RepoRoot must contain .git"
+    );
+}
+
+#[test]
+fn d4_repository_root_from_nested_directory() {
+    if !git_available() {
+        eprintln!("skip: git not available");
+        return;
+    }
+    let repo = fresh_repo();
+    let nested = repo.path().join("src/lib/inner");
+    fs::create_dir_all(&nested).expect("mkdir nested");
+
+    // `resolve_repo_root` is an exact-match validator — it checks for
+    // `.git` in the supplied directory only, not its ancestors. Callers
+    // must supply the actual repo root. (Git itself walks up via
+    // `GIT_CEILING_DIRECTORIES`, but codegg deliberately does not —
+    // see `architecture/git.md` for the rationale.)
+    let result = codegg::git_mutations::resolve_repo_root(&nested);
+    assert!(
+        result.is_err(),
+        "nested directory without .git must NOT resolve (callers must supply the actual root)"
+    );
+}
+
+#[test]
+fn d4_nested_independent_repo_walks_no_further() {
+    if !git_available() {
+        eprintln!("skip: git not available");
+        return;
+    }
+    let outer = fresh_repo();
+    let inner_dir = outer.path().join("submodule_clone");
+    fs::create_dir_all(&inner_dir).expect("mkdir inner");
+    init_repo(&inner_dir);
+
+    let root = codegg::git_mutations::resolve_repo_root(&inner_dir)
+        .expect("inner path resolves to inner repo");
+    assert_eq!(
+        root.as_path().canonicalize().unwrap(),
+        inner_dir.canonicalize().unwrap(),
+        "nested repo must resolve to itself, not the outer repo"
+    );
+    assert_ne!(
+        root.as_path().canonicalize().unwrap(),
+        outer.path().canonicalize().unwrap(),
+        "nested repo must NOT resolve to outer"
+    );
+}
+
+#[test]
+fn d4_non_repository_directory_returns_error() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    fs_utils::write(&dir.path().join("README"), "no git here\n");
+    let result = codegg::git_mutations::resolve_repo_root(dir.path());
+    assert!(result.is_err(), "non-repo path must error");
+}
+
+#[test]
+fn d4_nonexistent_path_returns_error() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let bogus = dir.path().join("does-not-exist");
+    let result = codegg::git_mutations::resolve_repo_root(&bogus);
+    assert!(result.is_err(), "non-existent path must error");
+}
+
+#[test]
+fn d4_symlinked_working_directory_canonicalizes() {
+    if !git_available() {
+        eprintln!("skip: git not available");
+        return;
+    }
+    let repo = fresh_repo();
+    let link_parent = tempfile::tempdir().expect("link parent tempdir");
+    let link_path = link_parent.path().join("linked");
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(repo.path(), &link_path).expect("symlink");
+    }
+    #[cfg(not(unix))]
+    {
+        // Windows: skip — symlink creation requires developer mode and
+        // is not part of supported platforms.
+        eprintln!("skip: symlink test requires unix");
+        return;
+    }
+
+    let root =
+        codegg::git_mutations::resolve_repo_root(&link_path).expect("symlinked path resolves");
+    assert_eq!(
+        root.as_path().canonicalize().unwrap(),
+        repo.path().canonicalize().unwrap(),
+        "symlink must canonicalize to the target"
+    );
+}
+
+#[test]
+fn d4_repository_root_is_stable_across_calls() {
+    if !git_available() {
+        eprintln!("skip: git not available");
+        return;
+    }
+    let repo = fresh_repo();
+    let r1 = codegg::git_mutations::resolve_repo_root(repo.path()).expect("resolve 1");
+    let r2 = codegg::git_mutations::resolve_repo_root(repo.path()).expect("resolve 2");
+    assert_eq!(
+        r1.as_path(),
+        r2.as_path(),
+        "RepoRoot must be stable across calls (no cache eviction in tests)"
+    );
 }

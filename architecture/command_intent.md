@@ -128,6 +128,8 @@ When the typed parser fails (unknown subcommand, malformed argv, or parse error)
 
 Known mutating operations identified by the typed parser include: `add`, `commit`, `stash` (non-list forms), `branch` (create/delete/rename), `tag` (create/delete), `remote` (add/remove/rename/set-url), `push`, `pull`, `reset`, `clean`, `checkout` (branch switching), `switch`, `restore`, `merge`, `rebase`, `cherry-pick`, `revert`. Risk levels are derived from the operation type and flags (e.g., `--hard` on `reset`, `-f` on `clean`).
 
+**Polish-pass provenance parity:** The execution-origin matrix in `tests/git_execution_origin_matrix.rs` (19 tests, rows 1-10) asserts that every origin — native typed read/mutation, native raw git subcommand, Bash simple git read/mutation, managed git argv fallback, raw shell with `|`/`&&`/`;`, TUI git action, daemon git action, replay/rerun — has consistent planned backend, env policy, redaction boundary, and RunStore ownership. Row 5 documents the Bash simple git mutation gap: it classifies as `GitMutating` but dispatches as `RawShell` (see [command_planner.md routing caveat](command_planner.md#planning)).
+
 ### Search/read Classification
 
 - `find -exec`, `-delete`, `-ok`, `-execdir` → rejected from safe search (falls through to RawShell)

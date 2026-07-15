@@ -1,13 +1,26 @@
-# Phase F Git Security Review
+# Git Security Review
 
-Focused review of 14 threat classes from `plans/git_agent_integration_phase_f_conflicts_and_closure.md` deliverable 11. Review performed against the actual codebase on 2026-07-14.
+Two-pass security review of the Git agent integration:
+
+1. **Phase F closure review (2026-07-14)** — 14 threat classes from
+   `plans/git_agent_integration_phase_f_conflicts_and_closure.md`
+   deliverable 11. Two issues identified and resolved in the closure
+   commits (`cb192e9`, `c2e806f`, `53b2beb`).
+2. **Polish / maintainability / verification refresh (2026-07-15)** —
+   re-ran the threat model against the post-polish codebase
+   (`8d686c7` + delta). All 14 closure findings remain mitigated. One
+   new medium-severity finding (**rerun secret lifecycle**) is
+   resolved by the type-level `AuditSafeArgv` invariant. Two
+   low-severity items remain accepted (see
+   [Known Limitations](#known-limitations)).
 
 ## Summary
 
-- **Threat classes reviewed:** 14
-- **Issues found:** 2 (1 unmitigated, 1 design limitation)
-- **Mitigated:** 12
-- **No issue:** 11
+- **Threat classes reviewed:** 15 (14 Phase F + 1 polish-pass addition)
+- **Open issues:** 0 (all medium+ findings resolved)
+- **Accepted low-severity limitations:** 2 (documented below)
+- **Static guards:** 5 forbidden-pattern checks in
+  `scripts/check_git_forbidden_patterns.py`
 
 ---
 
@@ -92,13 +105,12 @@ Focused review of 14 threat classes from `plans/git_agent_integration_phase_f_co
 **Status:** Mitigated
 
 **Evidence:**
-- `src/git_mutations.rs:37-53` — `ALLOWED_ENV_VARS` does not include `GIT_ASKPASS`, `GIT_SSH_COMMAND`, or `GIT_SSH_VARIANT` for local operations. The `env_clear()` at line 86 strips these.
-- `src/git_mutations.rs:86` — `cmd.env_clear()` strips the entire parent environment before restoring only the allowlisted variables.
-- `src/git_mutations.rs:94-99` — `GIT_TERMINAL_PROMPT=0` prevents credential helpers from blocking. `GIT_EDITOR=true` and `GIT_SEQUENCE_EDITOR=true` prevent editor spawning.
-- `src/git_mutations.rs:101-104` — `EDITOR` and `VISUAL` are removed from the environment.
-- `src/git_mutations.rs:105` — `GPG_TTY` is set to empty to prevent gpg/pinentry spawning.
+- `src/git_mutations.rs:44-48` — `pub use codegg_git::process_policy::ALLOWED_ENV_VARS` / `ALWAYS_STRIPPED_ENV_VARS` (canonical lists, single source of truth — see [Threat 15](#15-rerun-secret-lifecycle) for the lifecycle invariant).
+- `src/git_mutations.rs:91-117` — `apply()` builds the env: `env_clear()` strips the parent environment, restores only the allowlist, hard-pins `GIT_TERMINAL_PROMPT=0`, `GIT_EDITOR=true`, `GIT_SEQUENCE_EDITOR=true`, removes `EDITOR`/`VISUAL`, sets `GPG_TTY=""`.
+- `src/git_mutations.rs:124-151` — `apply_sync()` for synchronous paths (TUI dialog probes) shares the exact same policy.
+- `src/git_network_policy.rs:39-63` — Network operations additionally restore `GIT_ASKPASS`, `GIT_SSH_COMMAND`, `GIT_SSH_VARIANT`, `GIT_CONFIG_GLOBAL`, `GIT_CONFIG_SYSTEM`, and proxy env vars. This is intentional: blocking these would break SSH-based remotes.
 
-**Notes:** Git's own `filter`, `textconv`, and `diff` drivers can still execute if configured in `.gitattributes` or `.git/config`. This is an inherent git behavior that cannot be disabled without disabling those features entirely. The env hardening prevents external programs from being launched via credential helpers, editors, and gpg agents.
+**Notes:** Git's own `filter`, `textconv`, and `diff` drivers can still execute if configured in `.gitattributes` or `.git/config`. This is an inherent git behavior that cannot be disabled without disabling those features entirely. The env hardening prevents external programs from being launched via credential helpers, editors, and gpg agents. The `scripts/check_git_forbidden_patterns.py` static check guards against hand-maintained env-policy tables outside the four approved paths.
 
 ---
 
@@ -107,9 +119,10 @@ Focused review of 14 threat classes from `plans/git_agent_integration_phase_f_co
 **Status:** Mitigated
 
 **Evidence:**
-- `src/git_mutations.rs:97-104` — `GIT_EDITOR=true` and `GIT_SEQUENCE_EDITOR=true` prevent git from launching user `$EDITOR`. `EDITOR` and `VISUAL` env vars are removed.
+- `src/git_mutations.rs:106-107` — `GIT_EDITOR=true` and `GIT_SEQUENCE_EDITOR=true` prevent git from launching user `$EDITOR`. `EDITOR` and `VISUAL` env vars are removed at lines 110-111.
+- `src/git_mutations.rs:139-149` — Same pinning in the synchronous path.
 - `src/git_network_policy.rs:29-32` — Network policy documents that `GIT_PAGER` and `PAGER` are intentionally cleared.
-- Both local and network policies use `env_clear()` which strips `GIT_PAGER` and `PAGER` from the environment (they're not in any allowlist).
+- Both local and network policies use `env_clear()` which strips `GIT_PAGER` and `PAPPER` from the environment (they're not in any allowlist).
 
 **Notes:** `GIT_PAGER` and `PAGER` are implicitly cleared by `env_clear()`. Git falls back to its built-in default (typically `cat` for piped output), which is safe.
 
@@ -120,10 +133,10 @@ Focused review of 14 threat classes from `plans/git_agent_integration_phase_f_co
 **Status:** Mitigated (local), Design Limitation (network)
 
 **Evidence:**
-- `src/git_mutations.rs:37-53` — Local operations do NOT restore `GIT_SSH_COMMAND` or `GIT_SSH_VARIANT`. These are stripped by `env_clear()`.
+- `src/git_mutations.rs:44-48` — Local operations do NOT restore `GIT_SSH_COMMAND` or `GIT_SSH_VARIANT`. The canonical `ALWAYS_STRIPPED_ENV_VARS` list excludes them, and `env_clear()` strips anything not in `ALLOWED_ENV_VARS`.
 - `src/git_network_policy.rs:41-63` — Network operations DO restore `GIT_SSH_COMMAND` and `GIT_SSH_VARIANT` from the parent environment. This is intentional: network operations need SSH agent connectivity.
 
-**Notes:** For network operations, `GIT_SSH_COMMAND` is inherited from the parent environment. If the parent process has a hostile `GIT_SSH_COMMAND`, network operations will use it. This is a design trade-off: blocking it would break SSH-based remotes. The `CONFIG_DENIED_KEY_PATTERNS` at `src/git_network_ops.rs:469-476` blocks `core.sshCommand` and `core.sshVariant` from being set via `config_set`, preventing a model-driven escalation. However, a hostile parent environment can still set `GIT_SSH_COMMAND`.
+**Notes:** For network operations, `GIT_SSH_COMMAND` is inherited from the parent environment. If the parent process has a hostile `GIT_SSH_COMMAND`, network operations will use it. This is a design trade-off: blocking it would break SSH-based remotes. The `CONFIG_DENIED_KEY_PATTERNS` at `src/git_network_ops.rs` blocks `core.sshCommand` and `core.sshVariant` from being set via `config_set`, preventing a model-driven escalation. However, a hostile parent environment can still set `GIT_SSH_COMMAND`.
 
 ---
 
@@ -182,16 +195,15 @@ before being persisted.
 
 ## 12. Raw/Managed Fallback Bypass
 
-**Status:** Mitigated
+**Status:** Mitigated (polish-pass upgrade)
 
 **Evidence:**
-- `crates/codegg-git/src/operation.rs:487-491` — `ManagedGitArgv` carries a caller-supplied `RiskSet`. `RawShellRequired` is classified with `WorktreeMutation + HistoryIntegration`.
-- `src/git_mutations_ops.rs:757-785` — `run_raw_mutation()` runs raw argv through the same snapshot/timeout/policy pipeline. It does NOT skip env hardening or snapshot capture.
-- `src/tool/git.rs:349-365` — The raw fallback path at tool dispatch uses `Command::new("git").env_clear()` and restores only `PATH`. This is a reduced policy compared to `GitEnvPolicy` (no `GIT_EDITOR=true` pinning, no `GPG_TTY` clearing).
+- `crates/codegg-git/src/operation.rs` — `ManagedGitArgv` carries a caller-supplied `RiskSet`. `RawShellRequired` is classified with `WorktreeMutation + HistoryIntegration`.
+- `src/git_mutations_ops.rs::run_raw_mutation()` — runs raw argv through the same snapshot/timeout/policy pipeline. Does NOT skip env hardening or snapshot capture.
+- `src/tool/git.rs::run_raw_subcommand()` — now routes through `GitEnvPolicy::default().apply(...)` (same canonical policy as the typed mutation path). The polish pass resolved the prior design limitation: the raw fallback previously used `env_clear()` + only `PATH`, missing command-bearer stripping, `GIT_EDITOR=true` pinning, and `GPG_TTY` clearing. Every Codegg-owned `git` subprocess now flows through the canonical policy.
+- `scripts/check_git_forbidden_patterns.py` (check #1) — statically guards against `Command::new("git")` outside approved modules.
 
-**Finding (design limitation):** The raw subcommand fallback in `tool/git.rs:336-387` uses a simpler env policy (`env_clear()` + only `PATH`) compared to the typed mutation path which uses full `GitEnvPolicy`. This means the raw fallback does NOT pin `GIT_EDITOR=true`, `GIT_SEQUENCE_EDITOR=true`, or clear `GPG_TTY`. However, it does `env_clear()` and `kill_on_drop(true)`. The raw path is only reached for unsupported read-only subcommands that fail structured execution, or for mutations not covered by the typed API. The model-facing tool description strongly prefers typed mutation actions.
-
-**Impact:** Low. The raw fallback path has reduced env hardening but is only reached for edge cases. The typed mutation path (used by the vast majority of operations) has full hardening.
+**Impact:** The raw fallback previously had reduced env hardening but was only reached for edge cases. The polish pass closed the gap: typed, raw-tool, service-level, daemon snapshot, TUI dialog probes, and `codegg-core` worktree helpers all share the canonical `process_policy` lists. Drift is caught by `policy_drift_tests` in `src/git_mutations.rs` and `worktree_uses_canonical_policy` in `crates/codegg-core/src/worktree.rs`.
 
 ---
 
@@ -230,75 +242,86 @@ before being persisted.
 
 ---
 
-## Open Issues
+## Known Limitations
 
-_All previously identified open issues from the Phase F security review
-have been resolved by the corrective security closure pass (see the
-adjacent **Resolutions** section)._
+All medium- and high-severity findings from the Phase F closure review and the polish-pass refresh are resolved. Two low-severity items remain accepted:
 
-## Resolutions (Phase F Closure)
+### L1. Bash simple git mutation routes through raw shell
 
-### 1. `remote_set_url` credential leakage — RESOLVED
+**Severity:** Low
+**Where:** `src/tool/bash.rs:75-90` — `intent_kind_to_family()` returns `None` for `GitMutating`, so when active routing is enabled a `git commit -m foo` command is classified as `GitMutating` but dispatched as `RawShell`.
+**Rationale:** The classifier is correct; the routing gate is intentionally conservative for mutations because the model-facing `git` tool already exposes typed mutations. Closing the gap requires a `GitMutate` `CommandIntentFamily` with associated per-family `RouteLevel` config — out of scope for the polish pass (no behavior change without a tracked ask).
+**Regression test:** `tests/git_execution_origin_matrix.rs` row 5 (`bash_simple_git_mutation_routes_through_raw_shell`).
 
-**Original Severity:** Medium
-**Original Location:** `src/git_network_ops.rs:367-382`
-**Issue:** `remote_set_url()` passed the raw URL directly to
-`GitOperation::RemoteSetUrl { url: url.to_string() }`, allowing
-credentials to flow into `MutationResult` and RunStore.
+### L2. TUI `RunRerun` is a placeholder
 
-**Fix:** Introduced `codegg_git::RedactedUrl` newtype
-(`crates/codegg-git/src/sensitive.rs`). The struct carries both the
-raw and redacted forms of the URL; only `RedactedUrl::expose_secret()`
-returns the raw, and it is consumed exclusively at the final
-`render_argv` boundary. `Debug`, `Display`, `Serialize`, and any
-externally observable surface see only the redacted form.
+**Severity:** Low
+**Where:** `src/tui/app/mod.rs` — the handler emits a placeholder and never reads back `rerun.argv`.
+**Rationale:** The polish pass strengthened the invariant (`RerunDescriptor.argv` is now `Option<AuditSafeArgv>`), so a future replay implementation must reconstruct the raw URL from the credential helper, prompt, or environment before re-rendering via `render_argv`. The current placeholder cannot leak raw credentials because the stored argv is structurally credential-free.
+**Regression test:** `tests/git_credential_runstore_sentinel.rs` rerun_argv positive control.
 
-`GitOperation::RemoteAdd.url` and `GitOperation::RemoteSetUrl.url`
-are now typed as `RedactedUrl` rather than `String`. Both
-`remote_add()` and `remote_set_url()` wrap the incoming URL via
-`RedactedUrl::new(url)` before constructing the typed operation. The
-raw URL still reaches git's argv (so authentication still works), but
-every persistence, log, projection, error-conversion, and serialization
-path is now structurally blocked from emitting it.
+---
 
-Defense in depth: `MutationResult` produced by both helpers flows
-through `sanitize_truncate_for_result` in `src/git_mutations.rs`,
-which applies `redact_url_credentials_in_text` to stdout/stderr before
-they reach `RunStore`. The same redaction helper now also runs on
-`run_git_raw` (`src/git_service.rs`) for any read-side stdio.
+## Polish-pass verification (post-closure)
 
-### 2. Raw fallback path missing hardened env policy — RESOLVED
+The polish pass (`8d686c7` and follow-up commits) tightened three invariants without changing runtime behavior. Each is statically and dynamically guarded.
 
-**Original Severity:** Low
-**Original Location:** `src/tool/git.rs:349-365`
-**Issue:** Raw subprocess fallback used `env_clear()` + `PATH`
-restoration only, missing command-bearer stripping,
-`GIT_EDITOR=true` pinning, `GPG_TTY` clearing, and `EDITOR`/`VISUAL`
-removal.
+### P1. Canonical subprocess policy
 
-**Fix:** Every Codegg-owned `git` subprocess now flows through
-`GitEnvPolicy::apply()` (tokio async paths) or the new
-`GitEnvPolicy::apply_sync()` (synchronous paths). The policy is the
-single source of truth for env hardening. Affected callers:
+**Invariant:** `ALLOWED_ENV_VARS` and `ALWAYS_STRIPPED_ENV_VARS` have a single source of truth at `crates/codegg-git/src/process_policy.rs`. Both the root crate and `codegg-core` consume the canonical lists via `pub use` re-exports.
 
-| Site | Before | After |
-|------|--------|-------|
-| `src/tool/git.rs::run_raw_subcommand` | env_clear + PATH | `GitEnvPolicy::default().apply(...)` |
-| `src/git_mutations.rs` (typed mutations) | env_clear + PATH | already used policy; **added** `strip_command_bearers` flag to default |
-| `src/git_service.rs::run_git_raw` | env_clear + PATH | `GitEnvPolicy::default().apply(...)` |
-| `src/tool/commit.rs::fetch_head_message` | env_clear + PATH | `GitEnvPolicy::default().apply(...)` |
-| `src/core/daemon.rs::SnapshotWorkspace` | env_clear + PATH | `GitEnvPolicy::default().apply(...)` |
-| `src/tui/app/mod.rs` (diff/checkout/show) | env_clear + PATH | `GitEnvPolicy::default().apply_sync(...)` |
-| `crates/codegg-core/src/worktree.rs` | env_clear + PATH | local `hardened_git_command` mirror (codegg-core cannot depend on root crate) |
+**Guards:**
+- `src/git_mutations.rs::policy_drift_tests` (4 in-module tests) — pins canonical list entries against historical values.
+- `crates/codegg-core/src/worktree::tests::worktree_uses_canonical_policy` — confirms core worktree helper consumes the canonical lists.
+- `crates/codegg-core/src/worktree::tests::canonical_includes_locally_drifted_entries` — locally drifts the local alias list and confirms the canonical lists still detect it.
+- `scripts/check_git_forbidden_patterns.py` (check #2) — flags any hand-maintained env-policy table outside the four approved paths.
 
-The policy's default now includes `strip_command_bearers = true`,
-which removes `GIT_ASKPASS`, `GIT_SSH_COMMAND`,
-`GIT_PROXY_COMMAND`, all `GIT_CONFIG_*` injection vectors,
-`GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`,
-`GIT_OBJECT_DIRECTORY`, `GIT_PAGER`, and `PAGER` from the inherited
-environment. The two-stage `apply`/`apply_sync` split ensures both
-the TUI's synchronous dialog probes and the daemon's async
-subprocess path share the exact same allowlist and hard-deny set.
+### P2. Audit-safe rerun argv
+
+**Invariant:** `RerunDescriptor.argv` is `Option<AuditSafeArgv>` (a newtype in `crates/codegg-git/src/sensitive.rs`). The only construction path (`AuditSafeArgv::from_argv`) runs `redact_url_credentials_in_text` on every token. The deserializer re-runs the sanitizer on load to normalize historical records.
+
+**Guards:**
+- `crates/codegg-git/src/sensitive.rs` unit tests (6) — prove `from_argv` redacts HTTPS and SCP-style URLs.
+- `tests/git_credential_runstore_sentinel.rs::mem_runstore_does_not_leak_sentinel` — scans rerun_argv across the full RunStore surface (manifest, index, artifacts, JSON, Debug).
+- `tests/git_credential_runstore_sentinel.rs::fs_runstore_does_not_leak_sentinel_to_disk` — scans the FS-backed RunStore including rerun_argv; positive control asserts no rerun token carries the sentinel.
+- `scripts/check_git_forbidden_patterns.py` (check #3) — statically enforces `RerunDescriptor.argv: Option<AuditSafeArgv>`.
+- `scripts/check_git_forbidden_patterns.py` (check #4) — statically enforces `sanitize_argv_for_run_store` on any git argv flowing into `RunInvocation`.
+
+### P3. Forbidden-pattern static checks
+
+**Invariant:** The forbidden-pattern script enforces five rules:
+
+| # | Rule | Mechanism |
+|---|------|-----------|
+| 1 | No `Command::new("git")` outside approved modules | regex scan |
+| 2 | No hand-maintained env-policy tables outside `process_policy` and the four approved re-export sites | AST walk |
+| 3 | `RerunDescriptor.argv` is `Option<AuditSafeArgv>`, not `Vec<String>` or `Option<Vec<String>>` | AST match |
+| 4 | Git argv flowing into `RunInvocation` flows through `sanitize_argv_for_run_store` | regex scan |
+| 5 | `expose_secret()` calls only at the `render_argv` boundary (or inside test/doc/script contexts) | regex scan |
+
+**Guards:** The script is part of standard local validation (AGENTS.md testing section). It reports PASS (0 findings) on the current tree.
+
+---
+
+## 15. Rerun Secret Lifecycle (polish-pass addition)
+
+**Status:** Mitigated (Option 1: redacted-persisted rerun)
+
+**Problem:** The closure pass intentionally preserved raw URL credentials in the rerun descriptor so an operation could be replayed. That alone did not prove the raw value was non-durable, access-controlled, excluded from exports, or deleted on a bounded schedule.
+
+**Adopted policy (Option 1):** Persist only the redacted URL. The raw value is ephemeral, lifetime-bounded to the running mutation, and never reaches durable storage. A future replay path that needs the raw URL must reconstruct it from the credential helper, prompt, or environment before re-rendering via `render_argv`.
+
+**Evidence:**
+- `crates/codegg-git/src/sensitive.rs` — `AuditSafeArgv(Vec<String>)` newtype. `from_argv()` runs `redact_url_credentials_in_text` on every token. `Debug` and `Serialize` impls emit the inner `Vec<String>` (already redacted).
+- `crates/codegg-core/src/run_store.rs` — `RerunDescriptor.argv: Option<AuditSafeArgv>` (previously `Option<Vec<String>>`). `is_empty()` updated to delegate to the inner Vec. In-test `rerun_descriptor_no_permission_persistence` updated.
+- `src/git_run_store.rs` — calls `AuditSafeArgv::from_argv(render_argv_argv)` before constructing the `RunDraft`.
+- `src/test_runner/runner.rs` — calls `AuditSafeArgv::from_argv(resolved.argv)` for the same reason (uniform type-level invariant, even though test argv is credential-free).
+- `crates/codegg-core/src/run_store.rs` (deserializer) — `RerunDescriptor::deserialize` re-runs `AuditSafeArgv::from_argv` on the inner Vec to normalize historical records.
+- Full inventory: [`docs/validation/git-rerun-secret-lifecycle.md`](git-rerun-secret-lifecycle.md).
+
+**Threat-class rationale:** This is a new category distinct from the 14 Phase F classes — it is the lifecycle of a secret-bearing value through the persistence pipeline, not its injection or sanitization at a single boundary.
+
+**Residual risk:** None for durable storage. The TUI `RunRerun` handler is currently a placeholder; a future replay implementation must use a fresh credential acquisition path (see L2).
 
 ---
 
@@ -371,7 +394,7 @@ reaches durable storage, model-visible output, projections, or tracing.
 
 ## Test Coverage
 
-The following test suites cover security-relevant behavior:
+The following test suites cover security-relevant behavior. The polish pass added or extended the bolded suites:
 
 | Test Suite | Coverage |
 |------------|----------|
@@ -379,8 +402,21 @@ The following test suites cover security-relevant behavior:
 | `crates/codegg-git/src/ref_name.rs` tests | Ref validation: dash prefix, double dot, lock suffix, special chars |
 | `crates/codegg-git/src/render.rs` tests | `--` insertion, argv rendering for all operation families |
 | `crates/codegg-git/src/operation.rs` tests | Risk classification per variant including destructive flags |
+| **`crates/codegg-git/src/sensitive.rs` tests** | RedactedUrl Debug/Serialize redaction; AuditSafeArgv construction sanitizer |
+| **`crates/codegg-git/src/process_policy.rs` tests** | Canonical list composition; is_allowed/is_stripped invariants |
+| **`crates/codegg-core/src/worktree.rs` tests** | worktree_uses_canonical_policy; canonical_includes_locally_drifted_entries |
 | `src/git_recovery.rs` tests | State-action matrix, cross-operation misuse prevention |
-| `tests/git_recovery_integration.rs` | 18 end-to-end tests on tempdir fixtures |
+| **`src/git_mutations.rs::policy_drift_tests`** | Pins canonical lists against historical values |
+| `tests/git_recovery_integration.rs` | 19 end-to-end tests on tempdir fixtures |
 | `tests/git_network_integration.rs` | URL redaction, config allowlist, network round-trips |
+| **`tests/git_credential_runstore_sentinel.rs`** | 7 tests including rerun_argv scan + positive control |
+| **`tests/git_credential_cross_path.rs`** | 10 cross-path credential leakage tests |
+| **`tests/git_env_attack.rs`** | 20 environment attack vector tests |
+| `tests/git_noninteractive.rs` | Non-interactive mode invariants |
+| `tests/git_tracing_capture.rs` | Tracing redaction |
+| **`tests/git_mutations_integration.rs`** | 12 end-to-end mutation tests |
+| **`tests/git_closure_matrix.rs`** | 32 closure-stage integration tests |
+| **`tests/git_execution_origin_matrix.rs`** | 19 tests covering rows 1-10 of the execution-origin matrix |
 | `src/tool/git.rs::schema_tests` | Schema snapshot: mutation enum, recover enum, description |
 | `src/git_network_ops.rs` tests | Config key validation, push force classification, URL redaction |
+| **`scripts/check_git_forbidden_patterns.py`** | 5 static checks for forbidden patterns (CI-ready) |

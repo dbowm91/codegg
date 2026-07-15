@@ -428,8 +428,7 @@ mod tests {
         // Even if a historical RunStore record was written with a raw
         // argv (pre-polish pass), the deserializer applies the URL
         // sanitizer to normalize it on load.
-        let raw_json =
-            r#"["git","remote","add","https://u:secret_token_xyz@host/r.git"]"#;
+        let raw_json = r#"["git","remote","add","https://u:secret_token_xyz@host/r.git"]"#;
         let safe: AuditSafeArgv = serde_json::from_str(raw_json).expect("deserialize");
         let inner = safe.as_slice();
         assert!(!inner[3].contains("secret_token_xyz"));

@@ -92,6 +92,23 @@ Active routing is implemented and controlled by `CommandIntentMode::Active`. Whe
 
 Active routing only fires when `validate_for_active_routing()` passes all 7 checks (SimpleArgv, High confidence, non-RawShell, non-Critical, no destructive/outside-workspace capabilities, no pending permissions). Commands that fail validation execute via raw shell as if in observe mode.
 
+### Polish-pass provenance parity
+
+The execution-origin matrix (`tests/git_execution_origin_matrix.rs`, 19 tests) verifies that the routing layer produces consistent decisions for every origin. The matrix covers:
+
+- Native typed read → `RouteToGit`
+- Native typed mutation → `RouteToGit`
+- Native raw git subcommand → `RouteToGit`
+- Bash simple git read → `RouteToGit`
+- Bash simple git mutation → `RouteToShell` (gap, see below)
+- Managed git argv fallback → `RouteToGit`
+- Raw shell with `|` / `&&` / `;` → `RouteToShell`
+- TUI git action → `RouteToGit`
+- Daemon git action → `RouteToGit`
+- Replay / rerun → placeholder (raw argv is structurally credential-free, see `AuditSafeArgv`)
+
+The Bash simple git mutation gap is documented in [`architecture/git_polish_verification_handoff.md`](git_polish_verification_handoff.md#known-limitations) as a low-severity accepted limitation (L1).
+
 ## Canonical Delegation Wiring
 
 When active routing dispatches to TestRunner or Python, BashTool calls the canonical subsystem entry points — not raw shell. The result carries a `run_id` proving the delegated record was begun.

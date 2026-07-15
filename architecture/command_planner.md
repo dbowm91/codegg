@@ -95,6 +95,8 @@ pub fn plan_execution(intent: &CommandIntent) -> CommandPlan
 
 All git commands — reads, safe mutations, and dangerous mutations — plan through the unified `ExecutionBackend::Git` backend. The `GitExecutionRequest` carries the typed operation, argv, origin, and risk set produced by codegg-git's parser, enabling downstream routing to handle git operations uniformly.
 
+**Routing caveat (polish-pass finding):** The plan-level backend is `Git`, but `intent_kind_to_family()` in `src/tool/bash.rs:75-90` returns `None` for `CommandIntentKind::GitMutating`. This means when active routing is enabled, a Bash-translated simple git mutation (e.g., `git commit -m foo`) plans as `Git` but is dispatched as `RawShell` because there is no per-family `RouteLevel` for `GitMutate`. The classifier is correct (the typed git tool already exposes typed mutations); the routing gate is intentionally conservative. See [`architecture/git_polish_verification_handoff.md`](git_polish_verification_handoff.md#known-limitations) for the limitation entry and the `tests/git_execution_origin_matrix.rs` row 5 regression test.
+
 `ManagedArgv` backends use `intent.parsed_argv` from the shell shape parser, falling back to whitespace splitting if `None`.
 
 ### `validate_for_active_routing()`

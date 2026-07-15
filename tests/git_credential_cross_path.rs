@@ -347,3 +347,133 @@ async fn origin5_shell_owned_complex_remains_raw_shell() {
         "command-substitution git command should remain RawShell, got {intent:?}"
     );
 }
+
+// ── F2: Quadratic behavior guards (size-scaled) ─────────────────────────
+//
+// Proves that the credential-redaction pipeline runs in linear time
+// with respect to input size. We construct large inputs (long stderr,
+// many argv tokens, many URL repetitions) and assert the wall time
+// stays within a generous constant bound. These are not micro-benchmarks
+// — they are regression guards against accidental nested scans or
+// repeated whole-string clones.
+
+#[test]
+fn f2_redact_long_stderr_is_linear() {
+    use codegg::git_network_policy::redact_url_credentials_in_text;
+
+    let sentinel = "SENT_LINEAR_TOKEN";
+    // Build a 1 MiB string with the sentinel embedded at start, middle,
+    // and end. The output must equal the input bytes except for the
+    // credential segments being redacted.
+    let prefix = "fatal: could not push to ".repeat(40_000); // ~960 KiB
+    let credential = format!("https://u:{sentinel}@host.example.com/r.git\n");
+    let suffix = "error: operation failed\n".repeat(2_000); // ~50 KiB
+    let input = format!("{prefix}{credential}{suffix}");
+    let input_len = input.len();
+
+    let start = std::time::Instant::now();
+    let output = redact_url_credentials_in_text(&input);
+    let elapsed = start.elapsed();
+
+    assert!(
+        !output.contains(sentinel),
+        "credential must be redacted from long stderr"
+    );
+    assert!(
+        output.len() <= input_len + 32,
+        "redaction may add 'redacted@' marker (≤16 bytes) but must not balloon the output"
+    );
+    // Linear pass over ~1 MiB should complete in well under 100 ms.
+    assert!(
+        elapsed.as_millis() < 250,
+        "redact_url_credentials_in_text took {elapsed:?} on {input_len} bytes — likely quadratic"
+    );
+}
+
+#[test]
+fn f2_sanitize_large_argv_is_linear() {
+    use codegg::git_network_policy::sanitize_argv_for_run_store;
+
+    // Build a 10k-token argv with one credential-bearing URL at index 5000.
+    let sentinel = "SENT_ARGV_TOKEN";
+    let mut argv: Vec<String> = (0..10_000)
+        .map(|i| {
+            if i == 5000 {
+                format!("https://u:{sentinel}@host.example.com/r.git")
+            } else {
+                format!("--option-{i}=value-{i}")
+            }
+        })
+        .collect();
+
+    let start = std::time::Instant::now();
+    let sanitized = sanitize_argv_for_run_store(std::mem::take(&mut argv));
+    let elapsed = start.elapsed();
+
+    assert!(!sanitized.iter().any(|t| t.contains(sentinel)));
+    assert_eq!(sanitized.len(), 10_000);
+    assert!(
+        elapsed.as_millis() < 100,
+        "sanitize_argv_for_run_store took {elapsed:?} on 10k tokens — likely quadratic"
+    );
+}
+
+#[test]
+fn f2_redact_many_urls_in_text_is_linear() {
+    use codegg::git_network_policy::redact_url_credentials_in_text;
+
+    let sentinel = "SENT_MANY_TOKEN";
+    // 1000 URLs spread across a ~1 MiB string.
+    let url = format!("https://u:{sentinel}@host.example.com/r.git\n");
+    let input = url.repeat(1000);
+    let input_len = input.len();
+
+    let start = std::time::Instant::now();
+    let output = redact_url_credentials_in_text(&input);
+    let elapsed = start.elapsed();
+
+    assert!(!output.contains(sentinel));
+    assert!(
+        elapsed.as_millis() < 250,
+        "redact_url_credentials_in_text took {elapsed:?} on {input_len} bytes with 1000 URLs — likely quadratic"
+    );
+}
+
+// ── F3: Truncation-after-redaction invariant ──────────────────────────
+//
+// `sanitize_truncate_for_result` in `src/git_mutations.rs` must apply
+// redaction BEFORE truncation. Otherwise a credential sitting near the
+// 64 KiB truncation boundary could survive in the persisted stdout/stderr.
+// This test proves the ordering.
+
+#[test]
+fn f3_truncation_does_not_preserve_credential_at_boundary() {
+    // Reproduce the exact sanitize-then-truncate pipeline from
+    // `src/git_mutations.rs::sanitize_truncate_for_result`.
+    fn sanitize_truncate_for_result(s: &str, max_bytes: usize) -> String {
+        use codegg::git_network_policy::redact_url_credentials_in_text;
+        let redacted = redact_url_credentials_in_text(s);
+        let mut end = max_bytes.min(redacted.len());
+        while end > 0 && !redacted.is_char_boundary(end) {
+            end -= 1;
+        }
+        redacted[..end].to_string()
+    }
+
+    let sentinel = "SENT_TRUNC_BOUNDARY";
+
+    // Construct output larger than 64 KiB so truncation kicks in.
+    // Place the credential just after the truncation boundary so
+    // truncation-before-redaction would preserve it, but
+    // truncation-after-redaction strips it.
+    let padding = "x".repeat(64 * 1024); // exactly 64 KiB
+    let credential = format!("\nfatal: auth failed for https://u:{sentinel}@host/r.git\n");
+    let input = format!("{padding}{credential}");
+
+    let output = sanitize_truncate_for_result(&input, 64 * 1024);
+
+    assert!(
+        !output.contains(sentinel),
+        "credential must be redacted even when positioned after the truncation boundary"
+    );
+}

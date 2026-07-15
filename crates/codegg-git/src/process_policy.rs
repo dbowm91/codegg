@@ -177,7 +177,86 @@ mod tests {
     fn no_duplicates_within_stripped() {
         let mut seen = std::collections::HashSet::new();
         for k in ALWAYS_STRIPPED_ENV_VARS {
-            assert!(seen.insert(*k), "duplicate entry in ALWAYS_STRIPPED_ENV_VARS: {k}");
+            assert!(
+                seen.insert(*k),
+                "duplicate entry in ALWAYS_STRIPPED_ENV_VARS: {k}"
+            );
         }
+    }
+
+    #[test]
+    fn canonical_lists_are_pure_pure_data() {
+        // The policy must not depend on OS-specific paths, network
+        // state, or environment reads. If a future change adds env
+        // reads here, this test will catch it.
+        let allowed_strs: Vec<&str> = ALLOWED_ENV_VARS.to_vec();
+        let stripped_strs: Vec<&str> = ALWAYS_STRIPPED_ENV_VARS.to_vec();
+        assert!(
+            !allowed_strs.is_empty(),
+            "ALLOWED_ENV_VARS must not be empty"
+        );
+        assert!(
+            !stripped_strs.is_empty(),
+            "ALWAYS_STRIPPED_ENV_VARS must not be empty"
+        );
+        // Every entry must be a valid env-var identifier (uppercase +
+        // digits + underscore, ASCII).
+        for k in ALLOWED_ENV_VARS
+            .iter()
+            .chain(ALWAYS_STRIPPED_ENV_VARS.iter())
+        {
+            assert!(
+                k.chars()
+                    .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_'),
+                "invalid env-var identifier: {k}"
+            );
+        }
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn windows_overlays_documented_but_not_in_canonical_list() {
+        // Windows-specific env vars (USERPROFILE, HOMEDRIVE, HOMEPATH,
+        // PATHEXT) are NOT yet in the canonical allowlist. This test
+        // documents that decision. When Windows CI is added, expand
+        // ALLOWED_ENV_VARS behind a `#[cfg(windows)] const` overlay
+        // and update this test to assert the overlays are present.
+        assert!(
+            !is_allowed("USERPROFILE"),
+            "USERPROFILE not yet in canonical list"
+        );
+        assert!(
+            !is_allowed("HOMEDRIVE"),
+            "HOMEDRIVE not yet in canonical list"
+        );
+        assert!(
+            !is_allowed("HOMEPATH"),
+            "HOMEPATH not yet in canonical list"
+        );
+        assert!(!is_allowed("PATHEXT"), "PATHEXT not yet in canonical list");
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn unix_canonical_list_is_platform_independent() {
+        // On Unix, the canonical list must not include Windows-specific
+        // vars. If a future change adds them unconditionally, this test
+        // will catch it.
+        assert!(
+            !is_allowed("USERPROFILE"),
+            "USERPROFILE is Windows-specific; gate behind cfg(windows)"
+        );
+        assert!(
+            !is_allowed("HOMEDRIVE"),
+            "HOMEDRIVE is Windows-specific; gate behind cfg(windows)"
+        );
+        assert!(
+            !is_allowed("HOMEPATH"),
+            "HOMEPATH is Windows-specific; gate behind cfg(windows)"
+        );
+        assert!(
+            !is_allowed("PATHEXT"),
+            "PATHEXT is Windows-specific; gate behind cfg(windows)"
+        );
     }
 }

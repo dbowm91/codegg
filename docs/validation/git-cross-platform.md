@@ -1,4 +1,6 @@
-# Git Phase F — Cross-Platform Behavior
+# Git Cross-Platform Behavior
+
+Cross-platform behavior of the Git agent integration after the Phase F closure and the polish / maintainability / verification pass (`8d686c7`).
 
 ## Supported Platforms
 
@@ -7,6 +9,16 @@
 | Linux (x86_64/aarch64) | **Tested** | Primary development and CI target |
 | macOS (x86_64/aarch64) | **Tested** | Primary development target |
 | Windows | **Not supported** | Known limitations documented below |
+
+The polish pass introduced `codegg_git::process_policy` as the canonical
+allowlist/denylist source. Both the root crate (`src/git_mutations.rs`)
+and `codegg-core` (`crates/codegg-core/src/worktree.rs`) consume the
+canonical lists via `pub use` re-exports. Drift guards:
+
+- `src/git_mutations.rs::policy_drift_tests`
+- `crates/codegg-core/src/worktree::tests::worktree_uses_canonical_policy`
+- `crates/codegg-core/src/worktree::tests::canonical_includes_locally_drifted_entries`
+- `scripts/check_git_forbidden_patterns.py` check #2
 
 ---
 
@@ -84,17 +96,19 @@
 
 | Variable | Restored? | Source |
 |----------|-----------|--------|
-| `HOME` | Yes | `ALLOWED_ENV_VARS` in `git_mutations.rs:39` |
-| `XDG_CONFIG_HOME` | Yes | `ALLOWED_ENV_VARS` in `git_mutations.rs:40` |
-| `XDG_DATA_HOME` | Yes | `ALLOWED_ENV_VARS` in `git_mutations.rs:41` |
-| `XDG_CACHE_HOME` | Yes | `ALLOWED_ENV_VARS` in `git_mutations.rs:42` |
+| `HOME` | Yes | `ALLOWED_ENV_VARS` in `codegg_git::process_policy` |
+| `XDG_CONFIG_HOME` | Yes | `ALLOWED_ENV_VARS` in `codegg_git::process_policy` |
+| `XDG_DATA_HOME` | Yes | `ALLOWED_ENV_VARS` in `codegg_git::process_policy` |
+| `XDG_CACHE_HOME` | Yes | `ALLOWED_ENV_VARS` in `codegg_git::process_policy` |
 | `GIT_TERMINAL_PROMPT` | Pinned to `0` | Prevents credential helper from blocking |
 | `GIT_EDITOR` | Pinned to `true` | Prevents editor launch |
+| `GIT_SEQUENCE_EDITOR` | Pinned to `true` | Prevents sequence editor launch |
 | `EDITOR` / `VISUAL` | Removed | Prevents editor launch |
+| `GPG_TTY` | Set to empty | Prevents gpg/pinentry spawning |
 
 ### Network Operations
 
-Additional variables restored via `NETWORK_ALLOWED_ENV_VARS` in `git_network_policy.rs:41-63`:
+Additional variables restored via `NETWORK_ALLOWED_ENV_VARS` in `src/git_network_policy.rs:41-63`:
 
 | Variable | Purpose |
 |----------|---------|
@@ -116,9 +130,12 @@ Additional variables restored via `NETWORK_ALLOWED_ENV_VARS` in `git_network_pol
 **Divergence from git:** Git itself handles Windows `USERPROFILE` / `HOMEDRIVE`+`HOMEPATH` fallback natively. Codegg's environment hardening intentionally limits this to `HOME`, which is sufficient for standard credential helpers.
 
 **Code references:**
-- `src/git_mutations.rs:37-53` — `ALLOWED_ENV_VARS` list
-- `src/git_mutations.rs:83-108` — `GitEnvPolicy::apply()` environment construction
+- `crates/codegg-git/src/process_policy.rs` — canonical `ALLOWED_ENV_VARS` / `ALWAYS_STRIPPED_ENV_VARS` lists
+- `src/git_mutations.rs:44-48` — re-exports the canonical lists
+- `src/git_mutations.rs:88-117` — `GitEnvPolicy::apply()` environment construction
+- `src/git_mutations.rs:124-151` — `GitEnvPolicy::apply_sync()` for synchronous paths
 - `src/git_network_policy.rs:39-63` — `NETWORK_ALLOWED_ENV_VARS`
+- `src/git_mutations.rs:44-48
 
 ---
 
@@ -138,7 +155,7 @@ Additional variables restored via `NETWORK_ALLOWED_ENV_VARS` in `git_network_pol
 **Divergence from git:** Git for Windows bundles its own `ssh.exe` and `ssh-agent.exe` that handle Windows-native agent communication. Codegg relies on the system SSH agent, which is the standard approach on Linux/macOS.
 
 **Code references:**
-- `src/git_mutations.rs:50-51` — `SSH_AUTH_SOCK`, `SSH_AGENT_PID` in allowlist
+- `crates/codegg-git/src/process_policy.rs` — `SSH_AUTH_SOCK`, `SSH_AGENT_PID` in canonical allowlist
 - `src/git_network_policy.rs:20-21` — SSH env vars documented
 
 ---
@@ -283,3 +300,44 @@ If Windows support were ever pursued, the following areas would need attention:
 | PATH fallback | `/usr/local/bin:/usr/bin:/bin` | N/A (uses system PATH) | Only matters if `$PATH` is unset in parent |
 | Credential helper timeout | No special timeout | N/A | `kill_on_drop` + 30s default timeout kills blocking credential helpers |
 | File permission display | Shows git's reported mode bits | Shows git's reported mode bits | Identical — both reflect APFS/HFS+ advisory modes on macOS |
+
+---
+
+## Polish-Pass Cross-Platform Notes
+
+The polish / maintainability / verification pass did not change cross-platform behavior. Its cross-platform contributions were:
+
+### Canonical subprocess policy
+
+Before the polish pass, `src/git_mutations.rs` and `crates/codegg-core/src/worktree.rs` maintained parallel `ALLOWED_ENV_VARS` / `ALWAYS_STRIPPED_ENV_VARS` lists because of the codegg-core → root dependency boundary. The polish pass extracted both lists to `crates/codegg-git/src/process_policy.rs` and converted both consumers to `pub use` re-exports. This eliminated the drift risk on both Unix and Windows platforms.
+
+### Audit-safe rerun argv
+
+`RerunDescriptor.argv` is now `Option<AuditSafeArgv>`. The only construction path runs the URL sanitizer on every token, and the deserializer re-runs the sanitizer on load. This invariant holds on every platform because the sanitizer is pure-string (`redact_url_credentials_in_text`) and does not depend on OS-specific behavior.
+
+### Forbidden-pattern static checks
+
+`scripts/check_git_forbidden_patterns.py` runs on any platform with Python 3 and produces identical output on Linux/macOS/Windows. The script enforces:
+
+1. No `Command::new("git")` outside approved modules
+2. No hand-maintained env-policy tables outside the four approved sites
+3. `RerunDescriptor.argv` is always `Option<AuditSafeArgv>`
+4. Git argv in `RunInvocation` flows through `sanitize_argv_for_run_store`
+5. `expose_secret()` calls only at the `render_argv` boundary (or inside test/doc/script contexts)
+
+### Platform policy composition tests (B4 partial)
+
+The polish pass added cross-platform policy composition tests in `crates/codegg-git/src/process_policy.rs::tests` (6 in-module tests) covering:
+
+- `is_allowed("PATH")` → `true`
+- `is_allowed("GIT_DIR")` → `false`
+- `is_stripped("GIT_DIR")` → `true`
+- `is_stripped("HOME")` → `false`
+- `ALLOWED_ENV_VARS` and `ALWAYS_STRIPPED_ENV_VARS` are non-overlapping
+- The canonical list length matches the historical Phase F baseline
+
+These tests run cross-platform (pure list logic, no subprocess). The Windows-specific overlays (`USERPROFILE`, `HOMEDRIVE`, `HOMEPATH`, `PATHEXT`) remain deferred until Windows CI is added — see [Summary: Windows Limitations](#summary-windows-limitations).
+
+### Cross-platform perf stability
+
+`scripts/perf_git_phase_f.sh` was re-run after the polish pass on macOS. Sidebar worst-case remained at 108 ms (well under the 3000 ms timeout). No regression vs. Phase F baseline. Linux x86_64 CI runs the same script; numbers vary within expected hardware variance.

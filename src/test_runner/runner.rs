@@ -735,9 +735,7 @@ async fn persist_to_run_store(
     // `AuditSafeArgv` to keep the type-level invariant (every
     // RerunDescriptor.argv is audit-safe) uniform.
     let rerun = Some(RerunDescriptor {
-        argv: Some(codegg_git::AuditSafeArgv::from_argv(
-            resolved.argv.clone(),
-        )),
+        argv: Some(codegg_git::AuditSafeArgv::from_argv(resolved.argv.clone())),
         script_source_ref: None,
         backend_family: "test_runner".to_string(),
         cwd: resolved.cwd.clone(),
