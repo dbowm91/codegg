@@ -214,6 +214,67 @@ impl GitExecutionRequest {
     }
 }
 
+/// Map a typed `GitOperation` and its risk set to the appropriate
+/// `CommandIntentFamily` for routing configuration lookup.
+///
+/// Risk precedence (highest wins):
+///   `Destructive` > `Network` > `LocalMutation` > `Read`
+///
+/// This is the authoritative mapper — adding a new `GitOperation` variant
+/// that should not be classified as `None` requires updating this match.
+pub fn git_operation_family(
+    operation: &GitOperation,
+    risks: &RiskSet,
+) -> Option<crate::config::schema::CommandIntentFamily> {
+    use crate::config::schema::CommandIntentFamily;
+    use codegg_git::GitRiskClass;
+
+    if risks.is_destructive() {
+        return Some(CommandIntentFamily::GitDestructive);
+    }
+    if risks.requires_network() {
+        return Some(CommandIntentFamily::GitNetwork);
+    }
+
+    // A read-only request is the GitRead family.
+    if risks.contains(&GitRiskClass::ReadOnly)
+        && !risks.classes().iter().any(|c| *c != GitRiskClass::ReadOnly)
+    {
+        return Some(CommandIntentFamily::GitRead);
+    }
+
+    // Otherwise it's a local mutation (IndexMutation, WorktreeMutation,
+    // RefMutation, HistoryIntegration, RepositoryConfigMutation).
+    // The exact class doesn't matter for family assignment — anything
+    // that mutates only the local repository is GitLocalMutation.
+    match operation {
+        // Pure reads already returned above.
+        GitOperation::Status { .. }
+        | GitOperation::Diff { .. }
+        | GitOperation::DiffStaged { .. }
+        | GitOperation::Show { .. }
+        | GitOperation::Log { .. }
+        | GitOperation::Blame { .. }
+        | GitOperation::ChangedFiles { .. }
+        | GitOperation::BranchList { .. }
+        | GitOperation::RemoteList
+        | GitOperation::RemoteGetUrl { .. }
+        | GitOperation::TagList
+        | GitOperation::WorktreeList
+        | GitOperation::StashList
+        | GitOperation::StashShow { .. }
+        | GitOperation::ConfigGet { .. } => None,
+        // Managed/unknown plumbing falls through — caller decides fallback.
+        GitOperation::ManagedGitArgv { .. } | GitOperation::RawShellRequired { .. } => None,
+        // Every other typed variant is a local mutation by definition:
+        // Add, Reset (non-hard/merge/keep), Commit, StashPush/Apply/Pop/Drop,
+        // Checkout (non-force paths), Switch, Restore, BranchCreate/Delete/Rename,
+        // TagCreate/Delete/ForceDelete, Merge, Rebase, CherryPick, Revert,
+        // ConfigSet/Unset, RemoteAdd/Remove/SetUrl, Abort/Continue/Skip.
+        _ => Some(CommandIntentFamily::GitLocalMutation),
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ExecutionBackend {
     RawShell {
@@ -512,13 +573,42 @@ fn validate_test_command(command: &str) -> Option<String> {
 }
 
 fn is_safe_git_subcommand(intent: &CommandIntent) -> bool {
-    let subcmd = match intent.parsed_argv.as_ref().and_then(|v| v.get(1)) {
-        Some(s) => s.as_str(),
+    // Walk past simple global options (`-C <path>`, `--git-dir=<p>`,
+    // etc.) to find the subcommand position. Track U: a `git -C <repo>
+    // add ...` invocation should still classify as a safe mutation
+    // because `add` itself is non-destructive. Only the subcommand
+    // value determines safety, not the preceding flags.
+    let argv = match intent.parsed_argv.as_ref() {
+        Some(v) => v,
         None => return false,
     };
-    // Only git add is safe to auto-allow. Commit may run hooks,
-    // checkout/switch/restore may overwrite worktree, stash push mutates state.
-    subcmd == "add"
+    let mut i = 1;
+    while i < argv.len() {
+        let arg = argv[i].as_str();
+        if arg == "add" {
+            return true;
+        }
+        // Skip `-C <path>` form
+        if arg == "-C" {
+            i += 2;
+            continue;
+        }
+        // Skip `-C<path>` joined form
+        if let Some(_rest) = arg.strip_prefix("-C") {
+            i += 1;
+            continue;
+        }
+        // Skip `--git-dir=<p>` or `-c <key>=<value>` (boolean flags we
+        // don't expect to gate safety).
+        if arg.starts_with('-') {
+            i += 1;
+            continue;
+        }
+        // First non-flag token is the subcommand; anything other than
+        // `add` is not on the safe list.
+        return false;
+    }
+    false
 }
 
 fn is_formatter_command(intent: &CommandIntent) -> bool {
@@ -1265,5 +1355,192 @@ mod tests {
         let intent = classify_command("black src/");
         let plan = plan_execution(&intent);
         assert!(!plan.requires_any_permission());
+    }
+
+    // ── Track U: git_operation_family unit tests ────────────────────────
+
+    use super::git_operation_family;
+    use crate::config::schema::CommandIntentFamily;
+
+    fn family_for_argv(argv: &[&str]) -> Option<CommandIntentFamily> {
+        let argv: Vec<String> = argv.iter().map(|s| s.to_string()).collect();
+        let op = codegg_git::parse_git_argv(&argv).expect("argv must parse");
+        let risks = op.risk_classes();
+        git_operation_family(&op, &risks)
+    }
+
+    #[test]
+    fn family_read_for_status_diff_log() {
+        assert_eq!(
+            family_for_argv(&["git", "status"]),
+            Some(CommandIntentFamily::GitRead)
+        );
+        assert_eq!(
+            family_for_argv(&["git", "diff"]),
+            Some(CommandIntentFamily::GitRead)
+        );
+        assert_eq!(
+            family_for_argv(&["git", "log", "--oneline", "-10"]),
+            Some(CommandIntentFamily::GitRead)
+        );
+        assert_eq!(
+            family_for_argv(&["git", "show", "HEAD"]),
+            Some(CommandIntentFamily::GitRead)
+        );
+        assert_eq!(
+            family_for_argv(&["git", "blame", "src/main.rs"]),
+            Some(CommandIntentFamily::GitRead)
+        );
+        assert_eq!(
+            family_for_argv(&["git", "branch", "--list"]),
+            Some(CommandIntentFamily::GitRead)
+        );
+        // `git remote` with no args lists remotes.
+        assert_eq!(
+            family_for_argv(&["git", "remote"]),
+            Some(CommandIntentFamily::GitRead)
+        );
+        assert_eq!(
+            family_for_argv(&["git", "tag", "--list"]),
+            Some(CommandIntentFamily::GitRead)
+        );
+        assert_eq!(
+            family_for_argv(&["git", "stash", "list"]),
+            Some(CommandIntentFamily::GitRead)
+        );
+        assert_eq!(
+            family_for_argv(&["git", "config", "--get", "user.name"]),
+            Some(CommandIntentFamily::GitRead)
+        );
+    }
+
+    #[test]
+    fn family_local_mutation_for_add_commit_branch_stash_restore() {
+        assert_eq!(
+            family_for_argv(&["git", "add", "src/main.rs"]),
+            Some(CommandIntentFamily::GitLocalMutation)
+        );
+        assert_eq!(
+            family_for_argv(&["git", "commit", "-m", "fix"]),
+            Some(CommandIntentFamily::GitLocalMutation)
+        );
+        assert_eq!(
+            family_for_argv(&["git", "switch", "-c", "feature/x"]),
+            Some(CommandIntentFamily::GitLocalMutation)
+        );
+        assert_eq!(
+            family_for_argv(&["git", "checkout", "main"]),
+            Some(CommandIntentFamily::GitLocalMutation)
+        );
+        assert_eq!(
+            family_for_argv(&["git", "restore", "src/main.rs"]),
+            Some(CommandIntentFamily::GitLocalMutation)
+        );
+        assert_eq!(
+            family_for_argv(&["git", "stash", "push", "-m", "wip"]),
+            Some(CommandIntentFamily::GitLocalMutation)
+        );
+        assert_eq!(
+            family_for_argv(&["git", "branch", "feature/x"]),
+            Some(CommandIntentFamily::GitLocalMutation)
+        );
+        assert_eq!(
+            family_for_argv(&["git", "merge", "feature/y"]),
+            Some(CommandIntentFamily::GitLocalMutation)
+        );
+        assert_eq!(
+            family_for_argv(&["git", "rebase", "main"]),
+            Some(CommandIntentFamily::GitLocalMutation)
+        );
+        assert_eq!(
+            family_for_argv(&["git", "cherry-pick", "abc123"]),
+            Some(CommandIntentFamily::GitLocalMutation)
+        );
+        assert_eq!(
+            family_for_argv(&["git", "revert", "abc123"]),
+            Some(CommandIntentFamily::GitLocalMutation)
+        );
+        assert_eq!(
+            family_for_argv(&["git", "config", "user.name", "Alice"]),
+            Some(CommandIntentFamily::GitLocalMutation)
+        );
+    }
+
+    #[test]
+    fn family_network_for_fetch_pull_push_remote() {
+        assert_eq!(
+            family_for_argv(&["git", "fetch", "origin"]),
+            Some(CommandIntentFamily::GitNetwork)
+        );
+        assert_eq!(
+            family_for_argv(&["git", "pull", "origin", "main"]),
+            Some(CommandIntentFamily::GitNetwork)
+        );
+        assert_eq!(
+            family_for_argv(&["git", "push", "origin", "main"]),
+            Some(CommandIntentFamily::GitNetwork)
+        );
+        assert_eq!(
+            family_for_argv(&[
+                "git",
+                "remote",
+                "add",
+                "upstream",
+                "https://example.com/r.git"
+            ]),
+            Some(CommandIntentFamily::GitLocalMutation)
+        );
+    }
+
+    #[test]
+    fn family_destructive_for_reset_hard_clean_force_push() {
+        assert_eq!(
+            family_for_argv(&["git", "reset", "--hard", "HEAD~1"]),
+            Some(CommandIntentFamily::GitDestructive)
+        );
+        assert_eq!(
+            family_for_argv(&["git", "clean", "-f"]),
+            Some(CommandIntentFamily::GitDestructive)
+        );
+        assert_eq!(
+            family_for_argv(&["git", "push", "--force", "origin", "main"]),
+            Some(CommandIntentFamily::GitDestructive)
+        );
+        assert_eq!(
+            family_for_argv(&["git", "push", "--force-with-lease", "origin", "main"]),
+            Some(CommandIntentFamily::GitDestructive)
+        );
+    }
+
+    #[test]
+    fn family_destructive_beats_network_when_both_present() {
+        // force push is BOTH network write AND destructive — destructive wins.
+        let op = codegg_git::parse_git_argv(&[
+            "git".to_string(),
+            "push".to_string(),
+            "--force".to_string(),
+            "origin".to_string(),
+            "main".to_string(),
+        ])
+        .unwrap();
+        let risks = op.risk_classes();
+        assert_eq!(
+            git_operation_family(&op, &risks),
+            Some(CommandIntentFamily::GitDestructive)
+        );
+    }
+
+    #[test]
+    fn family_none_for_unknown_plumbing() {
+        let op = codegg_git::parse_git_argv(&[
+            "git".to_string(),
+            "rev-list".to_string(),
+            "--left-right".to_string(),
+            "main...HEAD".to_string(),
+        ])
+        .unwrap();
+        let risks = op.risk_classes();
+        // ManagedGitArgv has non-empty WorktreeMutation risk but is fallback.
+        assert_eq!(git_operation_family(&op, &risks), None);
     }
 }

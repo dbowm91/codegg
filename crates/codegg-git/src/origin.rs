@@ -13,3 +13,15 @@ pub enum GitCommandOrigin {
     /// Triggered from the TUI.
     Tui,
 }
+
+impl GitCommandOrigin {
+    /// Stable string label used for persistence (e.g. `backend_detail`).
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::NativeTool => "native_tool",
+            Self::BashTranslation => "bash_translation",
+            Self::Workflow => "workflow",
+            Self::Tui => "tui",
+        }
+    }
+}

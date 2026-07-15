@@ -151,12 +151,15 @@ backward-compatible alias for `Active`; new configuration should use `Active`.
 
 ### CommandIntentFamily
 
-`CommandIntentFamily` enum with 7 variants, used for per-family active routing config:
+`CommandIntentFamily` enum with 10 variants, used for per-family active routing config:
 
 ```rust
 pub enum CommandIntentFamily {
     Tests,
     GitRead,
+    GitLocalMutation,   // add, commit, branch, checkout, restore, stash, merge/rebase/cherry-pick/revert (no --force/network)
+    GitNetwork,         // fetch, pull, push, remote add/remove/set-url, config
+    GitDestructive,     // reset --hard, clean -fdx, push --force
     Search,
     Python,
     Build,
@@ -179,6 +182,9 @@ Per-family fields in `CommandIntentConfig`:
 - `route_build: Option<RouteLevel>` — Build family (cargo build/check)
 - `route_lint: Option<RouteLevel>` — Lint family (cargo clippy, mypy, pyright, tsc)
 - `route_format: Option<RouteLevel>` — Format family (cargo fmt, prettier, black)
+- `route_git_local_mutation: Option<RouteLevel>` — Git local mutation family (add, commit, branch, checkout, restore, stash, merge/rebase/cherry-pick without --force/network). Default `None`.
+- `route_git_network: Option<RouteLevel>` — Git network family (fetch, pull, push, remote add/remove/set-url, config). Default `None`.
+- `route_git_destructive: Option<RouteLevel>` — Git destructive family (reset --hard, clean -fdx, push --force). Default `None`.
 
 `is_active_for_family(family)` returns true when the family's `RouteLevel` is `Active`. `family_level(family)` returns the effective `RouteLevel` for a family (family-specific overrides fall back to global mode).
 
@@ -200,3 +206,13 @@ cargo test -p codegg --lib command_intent
 ```
 
 Tests cover: general classification, shell shape parsing (quoted args, operators, complex shell detection), git read-only/mutating classification (branch/tag/remote forms), search/read rejection (find -exec, outside-workspace, which/whereis), build/lint/format/typecheck family classification, package manager safety boundary, parsed argv round-trips, and cross-module classify→plan→route integration.
+
+### Track U family split
+
+The original monolithic `CommandIntentFamily::GitMutating` family was split into three independent families so each can be gated independently via its own `RouteLevel`:
+
+- **`GitLocalMutation`** — `add`, `commit`, `branch`, `checkout`, `restore`, `stash push/pop`, `merge`/`rebase`/`cherry-pick`/`revert` (no `--force`, no network). Gated by `route_git_local_mutation`.
+- **`GitNetwork`** — `fetch`, `pull`, `push`, `remote add/remove/set-url`, `config`. Gated by `route_git_network`.
+- **`GitDestructive`** — `reset --hard`, `clean -fdx`, `push --force`. Gated by `route_git_destructive`.
+
+The `git_operation_family()` resolver in `src/command_intent/plan.rs` maps `GitOperation` variants to the appropriate family via risk precedence: `Destructive > Network > Read > LocalMutation`. This replaces the former `intent_kind_to_family()` mapping that returned `None` for `GitMutating`, which caused bash-translated simple git mutations to fall back to raw shell even when active routing was enabled.

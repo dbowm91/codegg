@@ -20,8 +20,10 @@
 //! | 1 | native typed read | Git | Git | GitEnvPolicy::apply | (read-only) | n/a |
 //! | 2 | native typed mutation | Git | Git | GitEnvPolicy::apply | sanitize + redact | DelegatedBackend |
 //! | 3 | native raw git subcommand | Git | Git | GitEnvPolicy::apply | sanitize | DelegatedBackend |
-//! | 4 | Bash simple git read | Git (RouteToGit) | Git | GitEnvPolicy::apply | n/a | DelegatedBackend |
-//! | 5 | Bash simple git mutation | Git (RouteToGit) | Git | GitEnvPolicy::apply | sanitize | DelegatedBackend |
+//! | 4 | Bash simple git read | Git (RouteToGit) | Git | GitEnvPolicy::apply | n/a | Caller |
+//! | 5 | Bash simple git mutation (default = Off) | Git | RawShell | (shell) | (shell) | Caller |
+//! | 5b | Bash -C managed argv (active) | Git (RouteToGit) | ManagedArgv | GitEnvPolicy::apply | (n/a) | Caller |
+//! | 5c | Bash typed git mutation (active) | Git (RouteToGit) | Git | GitEnvPolicy::apply | sanitize | DelegatedBackend |
 //! | 6 | managed git argv fallback | Git | Git | GitEnvPolicy::apply | sanitize | DelegatedBackend |
 //! | 7 | raw shell with pipe | RawShell | RawShell | (shell) | (shell) | Caller |
 //! | 8 | TUI git action | Git | Git | GitEnvPolicy::apply_sync | sanitize | DelegatedBackend |
@@ -489,28 +491,29 @@ async fn row_4_bash_simple_git_read() {
     assert_eq!(m.kind, RunKind::GitRead);
     // Planned backend is Git.
     assert_eq!(m.planned_backend, Some(PlannedBackend::Git));
-    // Actual backend is ManagedArgv (BashTool dispatches git reads via managed argv).
-    assert_eq!(m.actual_backend, Some(ActualBackend::ManagedArgv));
+    // Actual backend is Git — Track U unified dispatch routes bash-translated
+    // git reads through `GitMutationExecutor` (or the managed-argv fallback
+    // inside `dispatch_to_git`), matching the native-tool path. Reads carry
+    // `RunOwnership::Caller` because they do not persist a run id (no
+    // mutation).
+    assert_eq!(m.actual_backend, Some(ActualBackend::Git));
     assert!(m.fallback.is_none(), "row 4: no fallback expected");
     assert_eq!(m.ownership, RunOwnership::Caller);
 }
 
-// ── Row 5: Bash simple git mutation ──────────────────────────────────────
+// ── Row 5: Bash simple git mutation (default config) ──────────────────
 //
-// Origin: `git add <file>` via BashTool with active routing
-// Planned: Git (RouteToGit), Actual: RawShell (intent_kind_to_family returns None)
+// Origin: `git add <file>` via BashTool with default routing config
+// Planned: Git (RouteToGit)
+// Actual: RawShell — Track U added `GitLocalMutation` family + dispatch,
+// but `route_git_local_mutation` defaults to `Off` (conservative). The
+// tool runs via raw shell until the user opts in to local mutation
+// routing. This row pins the conservative default; the actively-routed
+// variant is `row_5b_bash_simple_git_mutation_active` below.
+//
 // Env policy: (shell policy — BashTool runs via sh -c for git mutations)
 // Redaction: (shell redaction)
 // Ownership: Caller (BashTool)
-//
-// GAP: The matrix intended git mutations to route through the Git backend
-// (RouteToGit → managed process). However, `intent_kind_to_family(GitMutating)`
-// returns `None` in the BashTool, so `is_active_for_family` is always false for
-// git mutations. This means BashTool runs all git mutations via raw shell.
-// The classification and planning layers correctly identify GitMutating and plan
-// to the Git backend, but the BashTool's family routing gate does not map
-// GitMutating to any family. This gap is documented here; fixing it would
-// require adding a GitMutate family to CommandIntentFamily.
 
 #[tokio::test]
 async fn row_5_bash_simple_git_mutation() {
@@ -523,8 +526,18 @@ async fn row_5_bash_simple_git_mutation() {
     // Create a change to stage.
     fs_utils::write(&repo.path().join("new_file.txt"), "content\n");
 
+    // Row 5 explicitly uses the CONSERVATIVE default config so the
+    // `route_git_local_mutation` gate stays at `Observe`/`Off` — this
+    // pins that bash-translated git mutations default to raw shell
+    // when the user has not opted in. Row 5c (below) covers the
+    // actively-routed typed path; row 5b covers the `-C` fallback.
+    let conservative = codegg::config::schema::CommandIntentConfig {
+        route_safe_commands: Some(true),
+        mode: Some(codegg::config::schema::CommandIntentMode::Observe),
+        ..Default::default()
+    };
     let store = Arc::new(MemRunStore::new());
-    let tool = make_bash_tool(store.clone());
+    let tool = make_bash_tool(store.clone()).with_command_intent_config(conservative);
 
     // Verify classification picks GitMutating.
     let intent = classify_command("git add new_file.txt");
@@ -535,7 +548,9 @@ async fn row_5_bash_simple_git_mutation() {
     let plan = plan_execution(&intent);
     assert!(matches!(plan.backend, ExecutionBackend::Git { .. }));
 
-    // Verify the plan validation: git add passes (is_safe_git_subcommand → Allow).
+    // The plan validates (git add is safe), but the conservative
+    // config gates active routing off for `route_git_local_mutation`,
+    // so the tool runs via raw shell.
     assert!(
         plan.validate_for_active_routing().is_ok(),
         "row 5: git add must pass active routing validation"
@@ -606,6 +621,241 @@ async fn row_5_bash_simple_git_mutation() {
     assert!(
         plan_commit.validate_for_active_routing().is_err(),
         "row 5: git commit must fail active routing validation (requires permission)"
+    );
+}
+
+// ── Row 5b: Bash simple git mutation (active routing, Track U) ─────────
+//
+// Origin: `git -C <repo> add <file>` via BashTool with
+//         `route_git_local_mutation = Active`.
+// Planned: Git (RouteToGit) — typed ManagedGitArgv because of `-C`.
+// Actual: ManagedArgv (dispatch_to_git → dispatch_git_managed_argv
+//         fallback). The `-C` form is typed as ManagedGitArgv in the
+//         parser, so the bash-translated dispatcher uses the
+//         managed-argv fallback inside `dispatch_to_git` (env
+//         hardening only, no snapshot/delta).
+// Env policy: GitEnvPolicy::apply (shared with native tool)
+// Redaction: (not applicable — no URL credentials)
+// Ownership: Caller (managed-argv fallback does not persist a
+//         delegated RunStore record).
+//
+// Row 5c (below) covers the typed-GitMutationExecutor path with a
+// pure `git add` invocation inside the workspace.
+//
+// This row pins that Track U's bash→git dispatch actually routes
+// through `dispatch_to_git` rather than raw shell when active routing
+// is enabled for `route_git_local_mutation`. Row 5 (above) pins the
+// conservative default (raw shell).
+
+#[tokio::test]
+async fn row_5b_bash_simple_git_mutation_active() {
+    if !git_available() {
+        eprintln!("git unavailable; skipping");
+        return;
+    }
+
+    let repo = fresh_repo();
+
+    let store = Arc::new(MemRunStore::new());
+    let mut cic = active_config();
+    // Track U: enable the new local-mutation routing gate.
+    cic.route_git_local_mutation = Some(codegg::config::schema::RouteLevel::Active);
+    let tool = make_bash_tool(store.clone()).with_command_intent_config(cic);
+
+    // Stage the file. The test repo is outside the workspace, so use
+    // `git -C <repo> add ...`. The bash-translated dispatcher handles
+    // `-C` by extracting the path as the working directory for repo
+    // resolution.
+    let test_file = "row_5b_unified_git_mutation.txt";
+    fs_utils::write(&repo.path().join(test_file), "row 5b content\n");
+    let git_cmd = format!("git -C {} add {}", repo.path().display(), test_file);
+    let result = tool.execute(json!({"command": git_cmd})).await;
+    assert!(
+        result.is_ok(),
+        "row 5b: BashTool execution failed: {:?}",
+        result.err()
+    );
+
+    let manifests = all_manifests(&store).await;
+    // Exactly one record: `git_run_store::persist_mutation` wrote the
+    // DelegatedBackend record; BashTool must not have duplicated.
+    assert_eq!(
+        manifests.len(),
+        1,
+        "row 5b: must persist exactly one record (no-double-execution), got {}",
+        manifests.len()
+    );
+
+    let m = &manifests[0];
+    assert_eq!(m.kind, RunKind::GitMutation);
+    assert_eq!(m.planned_backend, Some(PlannedBackend::Git));
+    // The `-C <path>` form is a ManagedGitArgv in the parser, so the
+    // bash-translated dispatcher uses the managed-argv fallback inside
+    // `dispatch_to_git` (env hardening only, no snapshot/delta). The
+    // typed-Git path is exercised by row 5c (Track U follow-up: pure
+    // `git add <file>` without -C).
+    assert_eq!(m.actual_backend, Some(ActualBackend::ManagedArgv));
+    assert_eq!(m.ownership, RunOwnership::Caller);
+    assert!(
+        m.fallback.is_none(),
+        "row 5b: no fallback expected (dispatch succeeded)"
+    );
+    assert_eq!(m.backend.family, "bash");
+    assert_eq!(m.backend.detail.as_deref(), Some("managed_argv"));
+
+    // Verify the file was actually staged via the bash-translated git
+    // dispatcher (the managed-argv fallback uses GitEnvPolicy so the
+    // subprocess is hardened even though it does not persist a
+    // delegated RunStore record).
+    let staged = Command::new("git")
+        .args(["diff", "--cached", "--name-only"])
+        .current_dir(repo.path())
+        .output()
+        .expect("git diff cached");
+    let names = String::from_utf8_lossy(&staged.stdout);
+    assert!(
+        names.contains(test_file),
+        "row 5b: {} must be staged",
+        test_file
+    );
+
+    // argv reflects the actual git invocation dispatched by
+    // `dispatch_git_managed_argv` (no sh -c wrapping).
+    let argv = m.invocation.argv.as_ref().expect("argv present");
+    assert_eq!(argv[0], "git");
+    assert!(
+        argv.iter().any(|s| s == "add"),
+        "row 5b: argv must include 'add', got {:?}",
+        argv
+    );
+}
+
+// ── Row 5c: Bash typed git mutation (active, Track U typed path) ───────
+//
+// Origin: pure `git add <file>` (no -C) via BashTool with
+//         `route_git_local_mutation = Active` and workdir set to a temp
+//         repo INSIDE the workspace (so the plan validates without
+//         `OutsideWorkspace`).
+// Planned: Git (RouteToGit) — typed `Stage` operation, not
+//         ManagedGitArgv.
+// Actual: Git (dispatch_to_git → GitMutationExecutor →
+//         git_run_store::persist_mutation).
+// Env policy: GitEnvPolicy::apply (shared with native tool).
+// Redaction: sanitize_argv_for_run_store (via
+//         git_run_store::persist_mutation).
+// Ownership: DelegatedBackend (delegated_run_id is Some;
+//         no-double-execution).
+//
+// This row pins Track U's *typed* bash→git mutation path. The
+// authoritative record is written by `git_run_store::persist_mutation`
+// with `backend_family = "git_bash_translation"` and
+// `RunOwnership::DelegatedBackend`. BashTool MUST NOT write a duplicate.
+
+#[tokio::test]
+async fn row_5c_bash_typed_git_mutation_active() {
+    if !git_available() {
+        eprintln!("git unavailable; skipping");
+        return;
+    }
+
+    // Create a temp git repo inside `.codegg/test_tmp/` so it lives
+    // inside the workspace and the active-routing validator does not
+    // reject for `OutsideWorkspace`.
+    let repo_root = std::env::current_dir()
+        .expect("cwd")
+        .join(".codegg/test_tmp/row_5c_unified_git_mutation");
+    let _ = fs::remove_dir_all(&repo_root);
+    fs::create_dir_all(&repo_root).expect("create temp repo dir");
+    let init = Command::new("git")
+        .args(["init", "--initial-branch=main"])
+        .current_dir(&repo_root)
+        .output()
+        .expect("git init");
+    assert!(
+        init.status.success(),
+        "row 5c: git init failed: {}",
+        String::from_utf8_lossy(&init.stderr)
+    );
+
+    // Configure committer identity for the temp repo (matches fresh_repo).
+    for (k, v) in [("user.email", "test@codegg"), ("user.name", "Test")] {
+        let _ = Command::new("git")
+            .args(["config", k, v])
+            .current_dir(&repo_root)
+            .output();
+    }
+
+    let test_file = "row_5c_unified_git_mutation.txt";
+    fs_utils::write(&repo_root.join(test_file), "row 5c content\n");
+
+    let store = Arc::new(MemRunStore::new());
+    let mut cic = active_config();
+    cic.route_git_local_mutation = Some(codegg::config::schema::RouteLevel::Active);
+    let tool = make_bash_tool(store.clone()).with_command_intent_config(cic);
+
+    // Pure `git add <file>` invocation. The parser types this as
+    // `Stage` (not ManagedGitArgv), so `dispatch_to_git` runs the
+    // typed GitMutationExecutor path.
+    let result = tool
+        .execute(json!({
+            "command": format!("git add {}", test_file),
+            "workdir": repo_root.to_string_lossy(),
+        }))
+        .await;
+    assert!(
+        result.is_ok(),
+        "row 5c: BashTool execution failed: {:?}",
+        result.err()
+    );
+
+    let manifests = all_manifests(&store).await;
+    // Exactly one record: `git_run_store::persist_mutation` wrote the
+    // DelegatedBackend record; BashTool must not have duplicated.
+    assert_eq!(
+        manifests.len(),
+        1,
+        "row 5c: must persist exactly one record (no-double-execution), got {}",
+        manifests.len()
+    );
+
+    let m = &manifests[0];
+    assert_eq!(m.kind, RunKind::GitMutation);
+    assert_eq!(m.planned_backend, Some(PlannedBackend::Git));
+    assert_eq!(m.actual_backend, Some(ActualBackend::Git));
+    assert_eq!(m.ownership, RunOwnership::DelegatedBackend);
+    assert!(
+        m.fallback.is_none(),
+        "row 5c: no fallback expected (typed dispatch succeeded)"
+    );
+    // backend_detail distinguishes bash-translated from native-tool runs.
+    assert_eq!(
+        m.backend.detail.as_deref(),
+        Some("bash_translation"),
+        "row 5c: backend.detail must mark origin as bash_translation"
+    );
+    assert_eq!(m.backend.family, "git_bash_translation");
+
+    // Verify the file was actually staged via GitMutationExecutor.
+    let staged = Command::new("git")
+        .args(["diff", "--cached", "--name-only"])
+        .current_dir(&repo_root)
+        .output()
+        .expect("git diff cached");
+    let names = String::from_utf8_lossy(&staged.stdout);
+    assert!(
+        names.contains(test_file),
+        "row 5c: {} must be staged",
+        test_file
+    );
+
+    // argv reflects the actual git invocation dispatched by
+    // GitMutationExecutor::execute (no sh -c wrapping).
+    let argv = m.invocation.argv.as_ref().expect("argv present");
+    assert_eq!(argv[0], "git");
+    assert!(
+        argv.iter().any(|s| s == "add"),
+        "row 5c: argv must include 'add', got {:?}",
+        argv
     );
 }
 

@@ -72,10 +72,15 @@ struct RoutingMetric {
 
 /// Map a `CommandIntentKind` to the corresponding `CommandIntentFamily` for
 /// config lookup. Returns `None` for kinds that don't map to a routable family.
+///
+/// For `GitMutating` the family is the conservative `GitLocalMutation`
+/// default — the precise family (`GitNetwork` / `GitDestructive`) is
+/// resolved from the plan via `plan_family()`.
 fn intent_kind_to_family(kind: CommandIntentKind) -> Option<CommandIntentFamily> {
     match kind {
         CommandIntentKind::Test => Some(CommandIntentFamily::Tests),
         CommandIntentKind::GitReadOnly => Some(CommandIntentFamily::GitRead),
+        CommandIntentKind::GitMutating => Some(CommandIntentFamily::GitLocalMutation),
         CommandIntentKind::SearchReadOnly | CommandIntentKind::FileRead => {
             Some(CommandIntentFamily::Search)
         }
@@ -87,6 +92,26 @@ fn intent_kind_to_family(kind: CommandIntentKind) -> Option<CommandIntentFamily>
         CommandIntentKind::Format => Some(CommandIntentFamily::Format),
         _ => None,
     }
+}
+
+/// Resolve the precise `CommandIntentFamily` from a `CommandPlan`.
+///
+/// For `GitMutating` intents this re-derives the family from the typed
+/// `GitOperation` and risk set, so that destructive operations are routed
+/// through `GitDestructive`, network operations through `GitNetwork`, and
+/// plain local mutations through `GitLocalMutation`. For all other intents
+/// this delegates to `intent_kind_to_family()`.
+fn plan_family(plan: &CommandPlan) -> Option<CommandIntentFamily> {
+    use crate::command_intent::plan::git_operation_family;
+    use crate::command_planner::ExecutionBackend;
+    let kind = plan.intent.kind;
+    if matches!(kind, CommandIntentKind::GitMutating) {
+        if let ExecutionBackend::Git { request } = &plan.backend {
+            return git_operation_family(&request.operation, &request.risk_set)
+                .or(Some(CommandIntentFamily::GitLocalMutation));
+        }
+    }
+    intent_kind_to_family(kind)
 }
 
 /// Map an `ExecutionBackend` to a `PlannedBackend` for persistence provenance.
@@ -763,6 +788,197 @@ impl BashTool {
         })
     }
 
+    /// Dispatch a typed `GitExecutionRequest` through `GitMutationExecutor` —
+    /// the canonical Bash-tool path for active routing of Git operations.
+    ///
+    /// This is the Bash-translation counterpart to `src/tool/git.rs`'s typed
+    /// dispatch: it captures snapshots, applies `GitEnvPolicy`, computes state
+    /// deltas, sanitizes output, persists to `RunStore`, and projects the
+    /// result via `project_mutation`. Native and Bash-originated operations
+    /// share the same executor and projection; only the run-store
+    /// `backend_detail` differs ("git_native" vs. "git_bash_translation").
+    ///
+    /// Errors are returned to the caller — `BashTool::execute` MUST NOT retry
+    /// through raw shell after this method runs.
+    async fn dispatch_to_git(
+        &self,
+        request: &crate::command_intent::plan::GitExecutionRequest,
+        canonical_workdir: Option<&Path>,
+        input_workdir: Option<&Path>,
+        timeout: Duration,
+    ) -> Result<DispatchOutcome, ToolError> {
+        use crate::git_mutation_projector::project_mutation;
+        use crate::git_mutations::{
+            resolve_repo_root, GitEnvPolicy, GitMutationError, GitMutationExecutor,
+        };
+
+        // Resolve the working directory. Precedence:
+        //   1. `canonical_workdir` (BashTool-resolved via allowed_paths).
+        //   2. `input_workdir` (the `workdir` JSON field — explicit caller
+        //      override, e.g. test harnesses running against a temp repo).
+        //   3. `-C <path>` extracted from argv (bash-translated `git -C`).
+        //   4. Process cwd.
+        // This ensures bash-translated commands like `git -C /repo add ...`
+        // find the right repository even when `allowed_paths` is unset.
+        let workdir = if let Some(dir) = canonical_workdir {
+            dir.to_path_buf()
+        } else if let Some(dir) = input_workdir {
+            dir.to_path_buf()
+        } else if let Some(c_path) = extract_cwd_from_argv(&request.argv) {
+            c_path
+        } else {
+            std::env::current_dir().map_err(|e| {
+                ToolError::Execution(format!("could not resolve working directory: {e}"))
+            })?
+        };
+
+        // Managed/unknown plumbing operations are not promoted through the
+        // typed executor — use managed argv with GitEnvPolicy for env hardening
+        // without snapshot/delta persistence (the parser already marked them
+        // as fallback candidates).
+        if let Some(managed_argv) = request.managed_argv.as_ref() {
+            return self
+                .dispatch_git_managed_argv(
+                    managed_argv,
+                    Some(&workdir),
+                    timeout,
+                    request.origin.label(),
+                )
+                .await;
+        }
+
+        let repo_root = match resolve_repo_root(&workdir) {
+            Ok(r) => r,
+            Err(e) => {
+                return Err(ToolError::Execution(format!(
+                    "git dispatch: repository resolution failed: {e}"
+                )));
+            }
+        };
+
+        let exec = GitMutationExecutor::new()
+            .with_env_policy(GitEnvPolicy::default())
+            .with_timeout(timeout);
+
+        // Execute via the shared GitMutationExecutor. Errors include typed
+        // context but never leak credentials (redaction happens inside
+        // `MutationResult` projection).
+        let result = exec
+            .execute(&request.operation, repo_root.as_path())
+            .await
+            .map_err(|e: GitMutationError| {
+                ToolError::Execution(format!("git dispatch failed: {}", e))
+            })?;
+
+        // Persist to RunStore using the canonical `git_run_store` helper.
+        // Matches what the native GitTool writes for mutations, with
+        // `backend_detail` set to the origin label so audits can
+        // distinguish native vs. bash-translated runs. Read-only
+        // operations are NOT persisted (matches native tool behavior;
+        // they carry no state-delta or audit-worthy artifact).
+        let delegated_run_id = if request.is_read_only {
+            None
+        } else {
+            crate::git_run_store::persist_mutation(
+                &self.run_store,
+                &result,
+                &workdir,
+                repo_root.as_path(),
+                "git_bash_translation",
+                Some(request.origin.label().to_string()),
+            )
+            .await
+        };
+
+        let projection = project_mutation(&result);
+
+        // Compose output for the persistence layer. Stdout is the projection
+        // (model-safe summary); stderr carries the raw stderr from git (with
+        // URL credentials redacted inside `MutationResult.stderr`).
+        let output = synth_output(
+            result.exit_code,
+            projection.clone().into_bytes(),
+            result.stderr.clone().into_bytes(),
+        );
+
+        // Append `[exit code: N]` annotation to the model-visible summary
+        // so callers that key off this marker (e.g. tests) keep working.
+        let mut model_summary = projection;
+        model_summary.push_str(&format!(
+            "\n\n[exit code: {}] [origin: {}]",
+            result.exit_code,
+            request.origin.label(),
+        ));
+
+        Ok(DispatchOutcome {
+            result: model_summary,
+            output,
+            executor: ActualExecutor::Git {
+                argv: request.argv.clone(),
+                operation_label: result.subcommand.clone(),
+            },
+            delegated_run_id,
+        })
+    }
+
+    // eprintln!(
+    //     "[dispatch_to_git] argv={:?} intent_kind={:?}",
+    //     request.argv, intent_kind
+    // );
+
+    /// Managed argv fallback for git operations that don't have a typed
+    /// representation (e.g., `git remote show origin`). Uses `GitEnvPolicy`
+    /// for env hardening without snapshot/delta persistence.
+    async fn dispatch_git_managed_argv(
+        &self,
+        argv: &[String],
+        cwd: Option<&Path>,
+        timeout: Duration,
+        origin_label: &str,
+    ) -> Result<DispatchOutcome, ToolError> {
+        use crate::git_mutations::GitEnvPolicy;
+        let argv_owned = argv.to_vec();
+        let cwd_owned: Option<std::path::PathBuf> = cwd.map(|p| p.to_path_buf());
+
+        let output = tokio::time::timeout(timeout, async {
+            let mut cmd = GitEnvPolicy::default().apply(
+                &argv_owned,
+                cwd_owned
+                    .as_deref()
+                    .unwrap_or_else(|| std::path::Path::new(".")),
+            );
+            cmd.output().await
+        })
+        .await
+        .map_err(|_| ToolError::Timeout(argv.join(" ")))?
+        .map_err(|e| ToolError::Execution(format!("git managed argv: {e}")))?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        let mut result = stdout;
+        if !stderr.is_empty() {
+            if !result.is_empty() {
+                result.push_str("\n--- stderr ---\n");
+            }
+            result.push_str(&stderr);
+        }
+        result.push_str(&format!(
+            "\n\n[exit code: {}] [origin: {}]",
+            output.status.code().unwrap_or(-1),
+            origin_label
+        ));
+
+        Ok(DispatchOutcome {
+            result,
+            output,
+            executor: ActualExecutor::ManagedArgv {
+                argv: argv_owned,
+                cwd: cwd_owned,
+            },
+            delegated_run_id: None,
+        })
+    }
+
     /// Dispatch to managed process via direct `Command::new`. Falls back to
     /// raw shell on dispatch failure.
     async fn dispatch_to_managed_process(
@@ -856,6 +1072,7 @@ impl BashTool {
         decision: &RoutingDecision,
         _plan: &CommandPlan,
         canonical_workdir: Option<&Path>,
+        input_workdir: Option<&Path>,
         timeout: Duration,
     ) -> Result<DispatchOutcome, ToolError> {
         match decision {
@@ -891,12 +1108,13 @@ impl BashTool {
                     .await
             }
             RoutingDecision::RouteToGit { request, .. } => {
-                // Unified Git dispatch: execute via managed argv (direct
-                // Command::new, no shell). For managed/unsupported operations
-                // (managed_argv fallback), use the fallback argv. For typed
-                // operations, use the original argv.
-                let argv = request.managed_argv.as_ref().unwrap_or(&request.argv);
-                self.dispatch_to_managed_process(argv, canonical_workdir, timeout)
+                // Track U unified dispatch: route typed Git operations
+                // through `GitMutationExecutor` so they share the same
+                // env policy, snapshot/delta, projection, and RunStore
+                // semantics as native-tool invocations. Managed/unknown
+                // plumbing falls through to the managed-argv path inside
+                // `dispatch_to_git` without snapshot/delta persistence.
+                self.dispatch_to_git(request, canonical_workdir, input_workdir, timeout)
                     .await
             }
             RoutingDecision::RouteToShell { command, .. } => {
@@ -991,6 +1209,26 @@ impl Default for BashTool {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Extract a `-C <path>` argument from a git argv. Returns the path if
+/// present and parseable. Used by bash-translated git dispatch to recover
+/// the repository root when `canonical_workdir` is unset (typical in tests
+/// where the workspace has no `allowed_paths` configured).
+fn extract_cwd_from_argv(argv: &[String]) -> Option<std::path::PathBuf> {
+    let mut iter = argv.iter();
+    while let Some(arg) = iter.next() {
+        if arg == "-C" {
+            if let Some(p) = iter.next() {
+                return Some(std::path::PathBuf::from(p));
+            }
+        } else if let Some(rest) = arg.strip_prefix("-C") {
+            if !rest.is_empty() {
+                return Some(std::path::PathBuf::from(rest));
+            }
+        }
+    }
+    None
 }
 
 /// Synthesize a `std::process::Output` with the given exit code, stdout,
@@ -1107,7 +1345,7 @@ impl Tool for BashTool {
                 let plan = plan_execution(&intent);
                 let decision = resolve_routing(&plan);
 
-                let family_enabled = intent_kind_to_family(intent.kind)
+                let family_enabled = plan_family(&plan)
                     .map(|f| cic.is_enabled(f))
                     .unwrap_or(false);
 
@@ -1189,10 +1427,13 @@ impl Tool for BashTool {
         let start = std::time::Instant::now();
 
         // Decide: active routing or raw shell
-        let should_active_route = if let (Some(ref cic), Some(ref intent), Some(ref plan)) =
+        let should_active_route = if let (Some(ref cic), Some(ref _intent), Some(ref plan)) =
             (&self.command_intent_config, &intent, &plan)
         {
-            let family = intent_kind_to_family(intent.kind);
+            // Use plan_family so destructive / network / local mutations get
+            // their own RouteLevel gate. Fall back to intent_kind_to_family
+            // when the plan family is unresolved (e.g., RawShell intent).
+            let family = plan_family(plan).or(intent_kind_to_family(plan.intent.kind));
             let active_for_family = family.map(|f| cic.is_active_for_family(f)).unwrap_or(false);
             let plan_valid = plan.validate_for_active_routing().is_ok();
             let kill_switch_active = family.map(|f| self.check_kill_switches(f)).unwrap_or(true);
@@ -1213,6 +1454,7 @@ impl Tool for BashTool {
                     decision_ref,
                     plan_ref,
                     canonical_workdir.as_deref(),
+                    workdir.as_deref().map(std::path::Path::new),
                     execution_timeout,
                 )
                 .await
@@ -1232,9 +1474,10 @@ impl Tool for BashTool {
                              retaining the delegated result and using caller persistence when available",
                             outcome.executor
                         );
-                        if let Some(ref intent) = intent {
+                        if let Some(ref plan) = plan {
                             self.record_routing_metric(RoutingMetric {
-                                family: intent_kind_to_family(intent.kind)
+                                family: plan_family(plan)
+                                    .or(intent_kind_to_family(plan.intent.kind))
                                     .unwrap_or(CommandIntentFamily::Tests),
                                 decision: "active_routing_delegation_without_runid".to_string(),
                                 fallback: self.run_store.is_some(),
@@ -1254,9 +1497,10 @@ impl Tool for BashTool {
                     // Fallback to raw shell on dispatch failure.
                     // Workstream A: record a FallbackRecord so persistence
                     // can show actual_backend=RawShell + planned_backend=X.
-                    if let Some(ref intent) = intent {
+                    if let Some(ref plan) = plan {
                         self.record_routing_metric(RoutingMetric {
-                            family: intent_kind_to_family(intent.kind)
+                            family: plan_family(plan)
+                                .or(intent_kind_to_family(plan.intent.kind))
                                 .unwrap_or(CommandIntentFamily::Tests),
                             decision: "active_routing_fallback".to_string(),
                             fallback: true,
@@ -1311,20 +1555,34 @@ impl Tool for BashTool {
         // Determine RunKind and ownership from the ACTUAL execution outcome (not
         // the planned decision). Workstream B: persistence provenance must
         // reflect what ran, not what was planned.
-        let delegated_executor = matches!(
-            &execution_outcome.actual,
-            ActualExecutor::TestRunner { .. } | ActualExecutor::PythonScript { .. }
-        );
-        let ownership = ownership_for_outcome(&execution_outcome);
+        //
+        // Track U: Git mutations delegated through `dispatch_to_git` write
+        // their own `DelegatedBackend` record via `git_run_store::persist_mutation`
+        // and return a `delegated_run_id`. They MUST be treated as delegated
+        // executors here so BashTool does not write a duplicate caller-owned
+        // record (no-double-execution invariant). Git reads do NOT write a
+        // delegated record (no run id) and remain caller-owned.
+        let delegated_executor =
+            matches!(
+                &execution_outcome.actual,
+                ActualExecutor::TestRunner { .. } | ActualExecutor::PythonScript { .. }
+            ) || matches!(&execution_outcome.actual, ActualExecutor::Git { .. })
+                && delegated_run_id.is_some();
 
         // Workstream E: persistence suppression requires PROOF of delegated
         // ownership — a delegated run_id. Without a run_id, the delegated
         // record may not exist (or begin_run failed) and we MUST persist
         // the caller-owned fallback record. This is the central invariant:
         // one logical execution always produces exactly one canonical record.
-        let persist_run = match (ownership, delegated_run_id.as_ref()) {
-            (codegg_core::run_store::RunOwnership::DelegatedBackend, Some(_)) => false,
-            (codegg_core::run_store::RunOwnership::DelegatedBackend, None) => {
+        //
+        // Track U: git mutations dispatched through `dispatch_to_git` write
+        // their own `DelegatedBackend` record via
+        // `git_run_store::persist_mutation`. A non-None `delegated_run_id`
+        // proves the delegated record exists, so BashTool must NOT persist
+        // a duplicate.
+        let persist_run = match (delegated_executor, delegated_run_id.as_ref()) {
+            (true, Some(_)) => false,
+            (true, None) => {
                 // The backend already executed. If a shared store exists,
                 // persist the result once from the caller; without a store
                 // there is nowhere for BashTool to persist it.
@@ -1333,14 +1591,21 @@ impl Tool for BashTool {
                 );
                 self.run_store.is_some()
             }
-            _ => true,
+            (false, _) => true,
         };
         // Ownership is Copy (no, it's an enum without Copy). Recompute
         // when used below in the persistence draft — the value was
         // consumed by the match above. We rely on the fact that
         // ownership_for_outcome is a pure function.
-        let ownership = if delegated_executor && delegated_run_id.is_none() {
-            codegg_core::run_store::RunOwnership::Caller
+        let ownership = if delegated_executor {
+            // Git mutations with a delegated run id own their record via
+            // `git_run_store::persist_mutation`. Caller fallback (no run id)
+            // is recorded under `Caller`.
+            if delegated_run_id.is_some() {
+                codegg_core::run_store::RunOwnership::DelegatedBackend
+            } else {
+                codegg_core::run_store::RunOwnership::Caller
+            }
         } else {
             ownership_for_outcome(&execution_outcome)
         };
@@ -2416,6 +2681,14 @@ mod tests {
             intent_kind_to_family(CommandIntentKind::GitReadOnly),
             Some(CommandIntentFamily::GitRead)
         );
+        // Track U: GitMutating now resolves to GitLocalMutation by default.
+        // The typed operation's risk set may still escalate to GitNetwork or
+        // GitDestructive in `git_operation_family()` for use by route-level
+        // gating — `intent_kind_to_family` is only the first-look mapper.
+        assert_eq!(
+            intent_kind_to_family(CommandIntentKind::GitMutating),
+            Some(CommandIntentFamily::GitLocalMutation)
+        );
         assert_eq!(
             intent_kind_to_family(CommandIntentKind::SearchReadOnly),
             Some(CommandIntentFamily::Search)
@@ -2487,5 +2760,59 @@ mod tests {
             result.contains("active-fallback"),
             "command must execute via raw shell fallback"
         );
+    }
+
+    // ── Track U: plan_family resolution ─────────────────────────────────
+
+    use super::plan_family;
+
+    #[test]
+    fn plan_family_resolves_typed_git_operation_families() {
+        let cases = [
+            ("git add src/main.rs", CommandIntentFamily::GitLocalMutation),
+            ("git commit -m fix", CommandIntentFamily::GitLocalMutation),
+            (
+                "git stash push -m wip",
+                CommandIntentFamily::GitLocalMutation,
+            ),
+            ("git fetch origin", CommandIntentFamily::GitNetwork),
+            ("git push origin main", CommandIntentFamily::GitNetwork),
+            (
+                "git reset --hard HEAD~1",
+                CommandIntentFamily::GitDestructive,
+            ),
+            ("git clean -f", CommandIntentFamily::GitDestructive),
+            (
+                "git push --force origin main",
+                CommandIntentFamily::GitDestructive,
+            ),
+        ];
+        for (cmd, expected) in cases {
+            let intent = classify_command(cmd);
+            let plan = plan_execution(&intent);
+            assert_eq!(
+                plan_family(&plan),
+                Some(expected),
+                "plan_family({:?}) = {:?}, expected {:?}",
+                cmd,
+                plan_family(&plan),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn plan_family_non_git_intents_delegate_to_intent_kind_to_family() {
+        let intent = classify_command("cargo test");
+        let plan = plan_execution(&intent);
+        assert_eq!(plan_family(&plan), Some(CommandIntentFamily::Tests));
+
+        let intent = classify_command("rg pattern src/");
+        let plan = plan_execution(&intent);
+        assert_eq!(plan_family(&plan), Some(CommandIntentFamily::Search));
+
+        let intent = classify_command("echo hi");
+        let plan = plan_execution(&intent);
+        assert_eq!(plan_family(&plan), None);
     }
 }

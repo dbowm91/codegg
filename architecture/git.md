@@ -527,4 +527,43 @@ Verified state, the execution-origin matrix, and remaining
 limitations are recorded in
 [`architecture/git_polish_verification_handoff.md`](architecture/git_polish_verification_handoff.md).
 
+## Track U — Unified Bash→Git Routing
+
+Track U closes the long-standing gap where bash-translated simple git mutations (e.g., `git commit -m foo`) planned as `ExecutionBackend::Git` but dispatched as `RawShell`. The unified path routes bash git mutations through the same typed executor as the native git tool.
+
+### Family split and resolver
+
+The monolithic `CommandIntentFamily::GitMutating` was split into three independently gated families:
+
+| Family | Operations | Config gate |
+|--------|-----------|-------------|
+| `GitLocalMutation` | `add`, `commit`, `branch`, `checkout`, `restore`, `stash push/pop`, `merge`/`rebase`/`cherry-pick`/`revert` (no `--force`, no network) | `route_git_local_mutation` |
+| `GitNetwork` | `fetch`, `pull`, `push`, `remote add/remove/set-url`, `config` | `route_git_network` |
+| `GitDestructive` | `reset --hard`, `clean -fdx`, `push --force` | `route_git_destructive` |
+
+`git_operation_family()` in `src/command_intent/plan.rs` maps `GitOperation` variants to the appropriate family via risk precedence: `Destructive > Network > Read > LocalMutation`. This replaces the former `intent_kind_to_family()` mapping that returned `None` for `GitMutating`.
+
+### `dispatch_to_git` and shared executor path
+
+When `route_git_local_mutation = Active` and validation passes, BashTool's `RouteToGit` arm calls `dispatch_to_git`, which routes through `GitMutationExecutor` — the same executor used by the native typed git tool. This shares:
+
+- **Env policy**: `GitEnvPolicy::apply()` with `strip_command_bearers` and pinned env vars.
+- **Snapshot/delta**: `RepoSnapshot` before and after, `StateDelta` computed.
+- **RunStore persistence**: `RunKind::GitMutation`, `PlannedBackend::Git`, `RunOwnership::DelegatedBackend`.
+
+### Backend metadata
+
+Bash-translated git mutations are tagged with:
+- `backend_family = "git_bash_translation"` — identifies the bash origin.
+- `backend_detail = Some("bash_translation")` — low-cardinality label.
+- `RunOwnership::DelegatedBackend` — the GitMutationExecutor owns the RunStore record.
+
+### No-double-execution invariant
+
+The delegated GitMutationExecutor produces a `RunId` on successful persistence. BashTool checks this and suppresses its own RunStore write when the delegated subsystem already owns the record. When `route_git_local_mutation` is `Off` (the default), the command falls back to raw shell with caller-owned persistence — preserving existing behavior.
+
+### Conservative default
+
+`route_git_local_mutation` defaults to `Off`. No user-visible behavior changes unless the user explicitly sets `route_git_local_mutation = Active` in their config. The native git tool's typed mutation API is unaffected by this flag.
+
 

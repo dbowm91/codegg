@@ -2113,6 +2113,12 @@ pub struct CommandIntentConfig {
     pub route_lint: Option<RouteLevel>,
     /// Route level for format commands (cargo fmt, etc.).
     pub route_format: Option<RouteLevel>,
+    /// Track U: local-mutating git operations (add, commit, branch create/switch,
+    /// stash push/apply/pop, restore, merge, rebase, cherry-pick, revert).
+    /// Default: `off` (conservative). These operations are available via the
+    /// typed `git` tool action API; command-intent routing only promotes
+    /// bash-originated simple mutations when explicitly enabled.
+    pub route_git_local_mutation: Option<RouteLevel>,
     /// Phase E: network git operations (fetch, pull, push, remote).
     /// Default: `off` (these operations are always available via the
     /// typed `git` tool action API; command-intent routing only routes
@@ -2135,6 +2141,7 @@ impl Default for CommandIntentConfig {
             route_build: None,
             route_lint: None,
             route_format: None,
+            route_git_local_mutation: None,
             route_git_network: None,
             route_git_destructive: None,
         }
@@ -2184,6 +2191,9 @@ impl CommandIntentConfig {
         let family_override = match family {
             CommandIntentFamily::Tests => self.route_tests,
             CommandIntentFamily::GitRead => self.route_git_read,
+            CommandIntentFamily::GitLocalMutation => self.route_git_local_mutation,
+            CommandIntentFamily::GitNetwork => self.route_git_network,
+            CommandIntentFamily::GitDestructive => self.route_git_destructive,
             CommandIntentFamily::Search => self.route_search,
             CommandIntentFamily::Python => self.route_python,
             CommandIntentFamily::Build => self.route_build,
@@ -2220,10 +2230,26 @@ impl CommandIntentConfig {
 }
 
 /// Command intent routing families for config-gated routing.
+///
+/// Track U split the Git families so local mutations, network operations,
+/// and destructive operations can be gated independently. `GitRead` remains
+/// the read-only family; the three new families cover the mutating surfaces.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CommandIntentFamily {
     Tests,
     GitRead,
+    /// Local-mutating git operations (add, commit, branch create/switch,
+    /// restore, stash push/apply/pop, merge, rebase, cherry-pick, revert).
+    /// Operations that touch only the local repository — no network and no
+    /// destructive scope.
+    GitLocalMutation,
+    /// Network git operations (fetch, pull, push, remote *).
+    /// Operations that talk to a remote.
+    GitNetwork,
+    /// Destructive git operations (reset --hard/merge/keep, clean -f,
+    /// force push, destructive branch/tag deletion).
+    /// Operations that may discard history or worktree state.
+    GitDestructive,
     Search,
     Python,
     Build,

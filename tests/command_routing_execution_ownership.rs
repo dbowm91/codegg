@@ -47,13 +47,14 @@ fn active_config() -> CommandIntentConfig {
         route_safe_commands: Some(true),
         route_tests: Some(RouteLevel::Active),
         route_git_read: Some(RouteLevel::Active),
+        route_git_local_mutation: Some(RouteLevel::Active),
+        route_git_network: Some(RouteLevel::Active),
+        route_git_destructive: Some(RouteLevel::Active),
         route_search: Some(RouteLevel::Active),
         route_python: Some(RouteLevel::Active),
         route_build: Some(RouteLevel::Active),
         route_lint: Some(RouteLevel::Active),
         route_format: Some(RouteLevel::Active),
-        route_git_network: Some(RouteLevel::Active),
-        route_git_destructive: Some(RouteLevel::Active),
         mode: Some(CommandIntentMode::Active),
     }
 }
@@ -156,8 +157,10 @@ async fn active_git_readonly_routes_to_git_caller_owned() {
     assert_eq!(m.kind, RunKind::GitRead);
     assert_eq!(m.ownership, RunOwnership::Caller);
     assert_eq!(m.planned_backend, Some(PlannedBackend::Git));
-    // Actual backend is ManagedArgv because RouteToGit dispatches via managed process
-    assert_eq!(m.actual_backend, Some(ActualBackend::ManagedArgv));
+    // Actual backend is Git — Track U unified dispatch routes bash-translated
+    // git reads through `GitMutationExecutor` (or the managed-argv fallback
+    // inside `dispatch_to_git`), matching the native-tool path.
+    assert_eq!(m.actual_backend, Some(ActualBackend::Git));
     assert!(m.fallback.is_none());
     // argv should be the actual git invocation (no sh -c wrapping)
     let argv = m.invocation.argv.as_ref().expect("argv present");

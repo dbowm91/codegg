@@ -100,14 +100,14 @@ The execution-origin matrix (`tests/git_execution_origin_matrix.rs`, 19 tests) v
 - Native typed mutation → `RouteToGit`
 - Native raw git subcommand → `RouteToGit`
 - Bash simple git read → `RouteToGit`
-- Bash simple git mutation → `RouteToShell` (gap, see below)
+- Bash simple git mutation → `RouteToGit` (when `route_git_local_mutation = Active`, Track U)
 - Managed git argv fallback → `RouteToGit`
 - Raw shell with `|` / `&&` / `;` → `RouteToShell`
 - TUI git action → `RouteToGit`
 - Daemon git action → `RouteToGit`
 - Replay / rerun → placeholder (raw argv is structurally credential-free, see `AuditSafeArgv`)
 
-The Bash simple git mutation gap is documented in [`architecture/git_polish_verification_handoff.md`](git_polish_verification_handoff.md#known-limitations) as a low-severity accepted limitation (L1).
+The Bash simple git mutation gap (matrix row 5) was closed by Track U. See [`architecture/git.md` Track U section](git.md#track-u--unified-bashgit-routing) for the unified dispatch details.
 
 ## Canonical Delegation Wiring
 
@@ -201,3 +201,7 @@ cargo test --test command_routing_adversarial
 ```
 
 139 adversarial tests covering: command smuggling, workspace escape, kill switches, Observe/Active modes, per-family RouteLevel overrides, validation failures, safe/dangerous git mutation routing, and full pipeline integration. These tests exercise the classify → plan → route pipeline end-to-end with adversarial inputs.
+
+### Track U unified dispatch
+
+Track U unifies the bash→git routing path. When `route_git_local_mutation = Active`, BashTool classifies simple git mutations through `git_operation_family()` (replacing the former `intent_kind_to_family()` that returned `None` for `GitMutating`). The routed command flows through `dispatch_to_git` → `GitMutationExecutor`, sharing the same env policy, snapshot/delta capture, and RunStore persistence as the native typed git tool. Backend metadata is tagged `backend_family = "git_bash_translation"`, `backend_detail = Some("bash_translation")`, `RunOwnership::DelegatedBackend`. The no-double-execution invariant is preserved: the delegated GitMutationExecutor owns persistence, and BashTool suppresses duplicate RunStore writes. The conservative default (`route_git_local_mutation = Off`) ensures existing user-visible behavior is unchanged unless the user opts in.

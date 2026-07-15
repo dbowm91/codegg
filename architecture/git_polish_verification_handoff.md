@@ -105,7 +105,7 @@ The full matrix is asserted by `tests/git_execution_origin_matrix.rs`
 | 2 | Native typed mutation | `Git` | `Git` | `GitEnvPolicy::apply` | `sanitize_argv_for_run_store` + `redact_url_credentials_in_text` | `DelegatedBackend` |
 | 3 | Native raw git subcommand | `Git` | `Git` | `GitEnvPolicy::apply` | `sanitize_argv_for_run_store` | `DelegatedBackend` |
 | 4 | Bash simple git read | `Git` (RouteToGit) | `ManagedArgv` | `GitEnvPolicy::apply` | n/a | `Caller` |
-| 5 | Bash simple git mutation | `Git` | `RawShell` (gap, see below) | shell policy | shell redaction | `Caller` |
+| 5 | Bash simple git mutation | `Git` | `Git` (when `route_git_local_mutation = Active`, Track U) / `RawShell` (default) | `GitEnvPolicy::apply` / shell policy | `sanitize_argv_for_run_store` / shell redaction | `DelegatedBackend` / `Caller` |
 | 6 | Managed git argv fallback | `Git` | `Git` | `GitEnvPolicy::apply` | `sanitize_argv_for_run_store` | `DelegatedBackend` |
 | 7 | Raw shell with `\|` / `&&` / `;` | `RawShell` | `RawShell` | (shell policy) | (shell redaction) | `Caller` |
 | 8 | TUI git action | `Git` | `Git` | `GitEnvPolicy::apply_sync` | `sanitize_argv_for_run_store` | `DelegatedBackend` |
@@ -307,16 +307,17 @@ cross-platform behavior:
 
 ### Low-severity
 
-1. **Bash simple git mutation (matrix row 5) routes through
-   raw shell.** `intent_kind_to_family(GitMutating)` returns `None`
-   in `src/tool/bash.rs`, so when active routing is enabled a
-   `git commit -m foo` command is classified as `GitMutating`
-   but dispatched as `RawShell`. The classifier is correct; the
-   routing gate is intentionally conservative for mutations because
-   the model-facing `git` tool already exposes typed mutations. A
-   future `GitMutate` family could close the gap, but doing so is
-   out of scope for the polish pass (no behavior change without a
-   tracked ask).
+1. **Bash simple git mutation (matrix row 5) — closed by Track U.**
+   `intent_kind_to_family(GitMutating)` historically returned `None` in
+   `src/tool/bash.rs`, so bash-translated simple git mutations dispatched
+   as `RawShell`. Track U replaces this with `git_operation_family()`
+   and `dispatch_to_git` → `GitMutationExecutor`, sharing env policy,
+   snapshot/delta, and RunStore parity with the native tool. The gate
+   `route_git_local_mutation` defaults to `Off`; when set to `Active`,
+   bash git mutations route through the typed Git backend. The
+   classifier is correct; the routing gate is intentionally conservative
+   for mutations because the model-facing `git` tool already exposes
+   typed mutations.
 2. **TUI `RunRerun` is a placeholder** (`src/tui/app/mod.rs:3615`).
    The handler emits `TuiCommand::ShellRerun { id: 0 }` and never
    reads back `rerun.argv`. The polish pass strengthened the
