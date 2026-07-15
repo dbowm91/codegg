@@ -245,6 +245,22 @@ migrate() -> reads version -> for each version N not applied:
 | **v13** | Creates `snapshot` table |
 | **v14** | Adds `allowed_paths` column to `task` |
 | **v15** | Creates `usage` table for token/cost tracking |
+| **v16** | Creates `goal` table (goal lifecycle tracking) |
+| **v17** | Creates `session_events` table (event journal) |
+| **v18** | Creates `research_run` table (research artifact metadata) |
+| **v19** | Creates `user_preferences` table (theme/model persistence) |
+| **v20** | Creates `core_event_log` table (daemon core event sequence) |
+| **v21** | Creates `notification_history` table (TUI notification backlog) |
+| **v22** | Creates `workspace` table, adds `workspace_id` column to `session`, creates `idx_session_workspace_repair` index. Phase 2 single-daemon plan: workspace registry + execution context binding. Existing sessions are lazily resolved by canonicalizing their `directory` into a `workspace` record.
+
+> **Phase 2 — Workspace Binding.** `project_id` and `directory` remain as
+> compatibility fields. New daemon code MUST read `workspace_id` for
+> workspace-scoped queries; unbound sessions (`workspace_id IS NULL`) are
+> rejected at `TurnSubmit`/`AgentSelect`/`ModelSelect` until rebound via
+> `CoreRequest::WorkspaceRegister`. See
+> [`architecture/core.md`](core.md) for `ExecutionContext` semantics and
+> [`plans/single-daemon-phase-02-workspace-registry-and-execution-context.md`](../plans/single-daemon-phase-02-workspace-registry-and-execution-context.md)
+> for the full contract.
 
 ---
 

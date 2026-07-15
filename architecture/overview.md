@@ -206,14 +206,19 @@ hidden by default — see [MCP](mcp.md)).
 
 ```
 ┌───────────────────────────────────────────────────────────────────┐
-│ Tables (13 total, 15 migrations)                                  │
+│ Tables (15 total, 22 migrations)                                  │
 ├───────────────────────────────────────────────────────────────────┤
 │ migration_version  │ project        │ session        │ message    │
 │ part               │ todo           │ permission     │ session_share │
 │ cached_models      │ task           │ checkpoints    │ snapshot   │
-│ usage              │                                                     │
+│ usage              │ goal           │ session_events │ research_run │
+│ user_preferences   │ core_event_log │ notification_history │ workspace │
 └───────────────────────────────────────────────────────────────────┘
 ```
+
+`workspace` (Phase 2) is the canonical workspace registry. `session.workspace_id`
+references `workspace.id`; sessions whose `directory` cannot be canonicalized at
+migration time remain unbound and are rejected by `TurnSubmit` until rebound.
 
 ## Event Flow
 

@@ -64,6 +64,20 @@ core without the daemon (visible non-production mode), or `--stdio` for the
 hidden `core-stdio` compatibility path. The legacy `--core-transport inproc|stdio`
 flags are deprecated and emit a warning.
 
+### Workspaces and execution context
+
+The daemon tracks every session as bound to exactly one registered
+[`Workspace`](architecture/core.md#workspace-registry-and-execution-context-phase-2)
+(a canonical project root). Workspace identity flows into every daemon-owned
+execution path through an immutable
+[`ExecutionContext`](architecture/core.md#workspace-registry-and-execution-context-phase-2)
+— `TurnSubmit`, `AgentSelect`, and `ModelSelect` reject sessions that have not
+been bound to a workspace. Tools, subagents, Bash, Python, Git, LSP, TestRunner,
+and RunStore all anchor at `execution.workspace_root`, eliminating process-cwd
+as an execution identity source. See
+[`plans/single-daemon-phase-02-workspace-registry-and-execution-context.md`](plans/single-daemon-phase-02-workspace-registry-and-execution-context.md)
+for the full contract and `architecture/core.md` for the runtime model.
+
 ```bash
 git clone https://github.com/anomalyco/codegg
 cd codegg
@@ -253,6 +267,7 @@ layout is summarized in [architecture overview](architecture/overview.md).
 ## Documentation map
 
 - [Architecture index](docs/ARCHITECTURE.md)
+- [Core / daemon / workspaces](architecture/core.md)
 - [TUI](architecture/tui.md)
 - [Configuration](architecture/config.md)
 - [Providers](architecture/provider.md)

@@ -103,7 +103,7 @@ Gracefully closes the connection pool using async pool shutdown. The `self` para
 
 Migrations are implemented in `src/session/schema.rs`, not in the storage module itself. The storage module calls `session::schema::migrate()` during initialization.
 
-Migration versions v1-v15 are supported, covering:
+Migration versions v1-v22 are supported, covering:
 - v1: Initial schema (project, session, message, part, todo, permission, session_share tables)
 - v2: Additional indexes
 - v3: cached_models table
@@ -117,6 +117,13 @@ Migration versions v1-v15 are supported, covering:
 - v13: snapshot table
 - v14: task.allowed_paths column
 - v15: Creates `usage` table for token/cost tracking
+- v16: Creates `goal` table (goal lifecycle tracking)
+- v17: Creates `session_events` table (event journal)
+- v18: Creates `research_run` table (research artifact metadata)
+- v19: Creates `user_preferences` table (theme/model persistence)
+- v20: Creates `core_event_log` table (daemon core event sequence)
+- v21: Creates `notification_history` table (TUI notification backlog)
+- v22: Creates `workspace` table, adds `workspace_id` column to `session`, creates `idx_session_workspace_repair` index (Phase 2 single-daemon plan: workspace registry + execution context binding).
 
 ## See Also
 

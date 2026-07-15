@@ -76,7 +76,7 @@ Wraps events with sequence number, timestamp, and optional session/turn context 
 
 ## CoreRequest Enum
 
-Located in `crates/codegg-protocol/src/core.rs`. Variant count: **35**.
+Located in `crates/codegg-protocol/src/core.rs`. Variant count: **39** (Phase 2 adds 4 workspace variants).
 
 ```rust
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -133,6 +133,19 @@ pub enum CoreRequest { ... }
 ### Worktree Operations (1 variant)
 - `WorktreeList { project_dir }` - List worktrees
 
+### Workspace Operations (4 variants — Phase 2)
+- `WorkspaceRegister { root }` - Register/lookup a workspace by canonical root
+- `WorkspaceList { include_archived }` - List registered workspaces
+- `WorkspaceArchive { workspace_id }` - Archive a workspace (turns to its sessions are rejected until rebound)
+- `WorkspaceSnapshotRequest { workspace_id }` - Request a `WorkspaceSnapshot` for the given workspace
+
+> **Phase 2.** `WorkspaceRegister` returns the canonical `WorkspaceRecord`
+> for the requested root (creating one if none exists). `SessionCreate`
+> continues to accept a `directory` for backward compatibility; the daemon
+> resolves it to a `WorkspaceId` and rejects unbound sessions at
+> `TurnSubmit`. See [`architecture/core.md`](core.md) and
+> [`architecture/session.md`](session.md) for the binding model.
+
 ## CoreResponse Enum
 
 Located in `crates/codegg-protocol/src/core.rs` (CoreResponse section).
@@ -147,10 +160,12 @@ pub enum CoreResponse { ... }
 |---------|--------|---------|
 | `Ack` | - | Empty acknowledgement |
 | `Json` | `data: Value` | Generic JSON payload |
-| `Session` | `session: Session` | Full session object |
+| `Session` | `session: Session` | Full session object (carries `workspace_id` — Phase 2) |
 | `SessionMessages` | `session_id, messages` | Session message history |
 | `SessionMessageCounts` | `counts: HashMap<String, usize>` | Message counts per session |
 | `SessionList` | `sessions: Vec<Session>` | List of sessions |
+| `WorkspaceList` | `workspaces: Vec<WorkspaceSnapshot>` | List of registered workspaces (Phase 2) |
+| `WorkspaceSnapshot` | `workspace: WorkspaceSnapshot` | Single workspace snapshot (Phase 2) |
 | `Error` | `code, message` | Error response |
 
 ## CoreEvent Enum
@@ -164,8 +179,8 @@ pub enum CoreEvent { ... }
 ```
 
 ### Snapshot Events (3)
-- `SnapshotSession { session_id }` - Session state snapshot
-- `SnapshotWorkspace { project_dir }` - Workspace snapshot
+- `SnapshotSession { session_id }` - Session state snapshot (carries `workspace_id` and `directory` — Phase 2)
+- `SnapshotWorkspace { project_dir }` - Workspace snapshot (carries `workspace_id`, `canonical_root`, `display_name`, `active_sessions` — Phase 2)
 - `SnapshotModels { current_model, models }` - Model list snapshot
 
 ### Turn Events (7)
@@ -358,6 +373,27 @@ pub struct ClientHello {
 ```
 
 `ClientCapabilities` includes fields for visual/desktop notifications, audio, TTS, multi-session view, and plugin UI capability flags (dialog, toast, panel, status_item, table, markdown, code, progress). All default to `false` via `#[serde(default)]`.
+
+### ServerCapabilities
+
+`ServerCapabilities` is the daemon's view of what the local core can serve. Clients inspect these flags to decide whether to enable workspace UI affordances.
+
+```rust
+pub struct ServerCapabilities {
+    pub event_replay: bool,
+    pub session_management: bool,
+    pub permission_routing: bool,
+    /// Phase 2: daemon supports `WorkspaceRegister`/`WorkspaceList`/
+    /// `WorkspaceArchive` requests. Legacy clients without this flag
+    /// fall back to `SnapshotWorkspace { project_dir }`.
+    #[serde(default)]
+    pub workspace_registration: bool,
+    /// Phase 2: daemon emits `WorkspaceSnapshot` records in turn
+    /// snapshots when available.
+    #[serde(default)]
+    pub workspace_snapshots: bool,
+}
+```
 
 ### ServerHello
 
