@@ -685,14 +685,18 @@ impl JobStore for InMemoryJobStore {
         let mut requeued: u32 = 0;
         let mut terminals: u32 = 0;
         let now = Utc::now();
+        // The `stale` parameter is the *new* daemon generation; we
+        // interrupt any non-terminal attempt that originated from a
+        // prior generation. This matches the SqliteJobStore
+        // implementation: `WHERE daemon_generation != ?`.
         let attempt_ids: Vec<AttemptId> = guard
             .attempts
             .iter()
             .filter_map(|(aid, a)| {
-                if a.daemon_generation != *stale || a.state.is_terminal() {
-                    None
-                } else {
+                if a.daemon_generation != *stale && !a.state.is_terminal() {
                     Some(aid.clone())
+                } else {
+                    None
                 }
             })
             .collect();

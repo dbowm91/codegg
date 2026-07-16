@@ -16,6 +16,7 @@ cargo test --test durable_jobs_phase4  # Phase 4 durable jobs + schedules
 cargo test -p codegg --lib scheduler # Phase 5 scheduler unit tests
 cargo test --test scheduler_phase5   # Phase 5 scheduler integration tests
 python3 scripts/check_scheduler_bypass.py  # static scheduler-bypass guard (Phase 5)
+python3 scripts/check_execution_ownership.py  # execution ownership manifest guard (Phase 5 closure)
 cargo fmt                            # format
 ```
 
@@ -262,6 +263,19 @@ cargo test --test command_routing_execution_ownership
 # Phase 04 durable jobs + schedules (42 integration tests)
 cargo test --test durable_jobs_phase4
 
+# Phase 05 closure pass (submission idempotency, permit lifecycle, cancellation,
+# restart recovery, contention, authority matrix, managed-process descendants,
+# resource profiles, protocol consistency)
+cargo test --test scheduler_submission_idempotency
+cargo test --test scheduler_permit_lifecycle
+cargo test --test scheduler_cancellation
+cargo test --test scheduler_restart_recovery
+cargo test --test scheduler_contention
+cargo test --test scheduler_authority_matrix
+cargo test --test managed_process_descendants
+cargo test --test scheduler_resource_profiles
+cargo test --test scheduler_protocol_consistency
+
 # Phase 09 projection contract tests
 cargo test -p codegg --lib shell::projector -- projection_id
 cargo test -p codegg --lib shell::projector -- span_role
@@ -434,7 +448,7 @@ Project files override global files. Config overrides file-based agents.
 
 ## CI Pipeline
 
-CI runs on push/PR to dev/main: `agent-assets` → `fmt` → `check` → `clippy` → `test` → `plugin-focused` → `examples`. The `agent-assets` job validates built-in agent TOML schemas and checks for stale generated output. The `test` job runs the full workspace test suite plus explicit shell projection validation steps (harness, context budget, redactor, RTK unit tests). The `plugin-focused` job runs plugin install/management/registry/TUI tests and the core boundary check. `examples` tests SDKs and WASM builds. Local equivalent: `scripts/validate_plugin_ui.sh`.
+CI runs on push/PR to dev/main: `agent-assets` → `fmt` → `check` → `clippy` → `test` → `plugin-focused` → `examples`. The `agent-assets` job validates built-in agent TOML schemas and checks for stale generated output. The `test` job runs the full workspace test suite plus explicit shell projection validation steps (harness, context budget, redactor, RTK unit tests) and the `check_execution_ownership.py` static guard. The `plugin-focused` job runs plugin install/management/registry/TUI tests, the core boundary check, and the `check_scheduler_bypass.py` static guard. `examples` tests SDKs and WASM builds. Local equivalent: `scripts/validate_plugin_ui.sh`.
 
 ## Critical Gotchas
 
@@ -504,7 +518,7 @@ CI runs on push/PR to dev/main: `agent-assets` → `fmt` → `check` → `clippy
 
 - **Submission boundary**: `JobSubmissionService` (`src/scheduler/submission.rs`) is the daemon-owned facade for validating workspace-bound `NewJob` values, applying idempotency keys, creating durable jobs, and enqueueing them. Callers must not create a job and separately dispatch it. Scheduler-disabled daemon mode returns `SchedulerDisabled`; it never restores direct execution.
 - **Single authority**: `JobScheduler` (`src/scheduler/scheduler.rs`) is the only daemon admission authority for submitted work. TestTool, Bash's structured test/build/lint/format routes, `/test`, scheduler-backed task/subagent flows, and agent security-review work submit through the facade. Explicit standalone compatibility paths are annotated and are outside the singleton-daemon guarantee.
-- **Module surface**: `src/scheduler/{mod,types,fair_queue,config,permit,admission,executor,executors,events,snapshot,submission,scheduler}.rs` plus `src/managed_process.rs`. Public re-exports live under `crate::scheduler::*`. Tests cover unit behaviour (`cargo test -p codegg --lib scheduler`) and integration (`cargo test --test scheduler_phase5`, 12 tests).
+- **Module surface**: `src/scheduler/{mod,types,fair_queue,config,permit,admission,executor,executors,events,snapshot,submission,scheduler}.rs` plus `src/managed_process.rs`. Public re-exports live under `crate::scheduler::*`. Tests cover unit behaviour (`cargo test -p codegg --lib scheduler`) and integration (`cargo test --test scheduler_phase5`, 12 tests). Closure pass adds 10 new integration test files covering submission idempotency, permit lifecycle, cancellation, restart recovery, multi-workspace contention, authority matrix, managed-process descendants, resource profiles, and protocol consistency.
 - **Fair queue**: 3-level hierarchy (priority class → workspace lane → FIFO). Round-robin per class; `max_high_priority_burst` enforces an interactive floor and `aging_secs` elevates `JobPriority` without mutating persisted state. `WorkspaceId` is not `Ord`/`Default`, so the inner map uses `HashMap`/`VecDeque` with deterministic string-key ordering for stable tests.
 - **Admission control**: Atomic per-dimension reservation under `parking_lot::Mutex`. Exclusivity keys prefixed `exclusive:` block conflicting requests and are released only on guard drop. `try_admit(&self)` is the non-Arc variant (returns a controller-less guard); `try_admit_arc(self: &Arc<Self>)` wraps the controller so dropping the guard releases permits. `detach()` does NOT release (caller takes ownership).
 - **Executor trait + registry**: `JobExecutor` (async trait) + `ExecutorRegistry`. Map a `JobRecord` to its canonical `ExecutorKind` via `executor_kind_for_job` (`src/scheduler/executor.rs:239`). Duplicate registration returns `ExecutorRegistryError::Duplicate`.
@@ -514,10 +528,18 @@ CI runs on push/PR to dev/main: `agent-assets` → `fmt` → `check` → `clippy
 - **Main loop**: `tokio::select!` over `notify.notified()`, `sleep(reconcile_interval)`, and `shutdown.cancelled()`. `wake(reason)` (e.g. `JobEnqueued`, `ExecutorCompleted`, `CancellationRequested`) bumps the notification once. The reconciliation tick is `reconcile()`; admission runs `admit_and_dispatch_batch` which calls `try_dispatch_next`.
 - **Events**: `SchedulerEvent` (`src/scheduler/events.rs`) carries `AdmissionBlocked`, `JobAdmitted`, `JobResourceReleased`, `SchedulerOverloaded`, `SchedulerQueueChanged`, `ExecutorUnavailable`, `SchedulerQueueReconciled`, `SchedulerWoke`, `Progress`. Event sink is `tokio::sync::mpsc::Sender<SchedulerEvent>`; the daemon bridges to the core event log.
 - **Snapshots/protocol**: `CoreRequest::SchedulerSnapshot` and `CoreResponse::SnapshotDaemon.scheduler_snapshot` expose bounded per-workspace, queue, resource, executor, overload, and oldest-queued summaries. `JobSubmit` accepts a bounded client retry key; `JobWait` returns a bounded completion projection.
-- **Static guards**: `scripts/check_scheduler_bypass.py` rejects direct TestRunner calls, legacy subagent sends, and background scheduler loop starts outside explicit scheduler, definition, test, or standalone compatibility sites. Run it after changing any execution surface. `scripts/check_daemon_cwd_usage.py` remains required for workspace-bound daemon paths.
+- **Static guards**: `scripts/check_scheduler_bypass.py` rejects direct TestRunner calls, legacy subagent sends, and background scheduler loop starts outside explicit scheduler, definition, test, or standalone compatibility sites. Inline `// scheduler-audit: <reason>` annotations are accepted for explicit standalone-compat or definition-site use. Whole-file exemptions are restricted to subsystem definition files. `scripts/check_execution_ownership.py` enforces the machine-readable `docs/execution-ownership.toml` manifest of all production process-spawn sites. `scripts/check_daemon_cwd_usage.py` remains required for workspace-bound daemon paths. Run both guards after changing any execution surface.
 - **RunStore linkage**: `JobExecutor::execute` returns an `ExecutorCompletion` carrying `run_id: Option<RunId>`; the scheduler writes it onto the attempt record so RunStore ownership stays with the delegated subsystem (test runner / managed argv). Default rollout mode is `mandatory`; disabling the scheduler rejects daemon-owned durable submissions.
 - **Compatibility boundary**: typed Git/native tool operations, interactive terminal/editor sessions, and any domain-specific process path not yet adapted to `JobSubmissionService` remain explicitly documented compatibility surfaces; they must not be described as scheduler-owned until migrated.
 - See `plans/single-daemon-scheduler-cutover-correctness-and-operational-proof.md`, `architecture/scheduler.md`, `src/scheduler/`, `tests/scheduler_phase5.rs`, and `scripts/check_scheduler_bypass.py` for the current contract.
+
+### Execution ownership inventory
+
+- **Manifest**: `docs/execution-ownership.toml` is the machine-readable inventory of all production process-spawn sites. Every source location in `src/` and `crates/` that can spawn a process, send work to a worker pool, start a test runner, start a background loop, invoke a domain-specific process service, create or enqueue a durable job, or acquire scheduler permits must be declared with an explicit owner classification.
+- **Static guard**: `scripts/check_execution_ownership.py` greps for canonical spawn patterns (`tokio::process::Command::new`, `std::process::Command::new`, `JobStore::create_job`, `.spawner().send`, etc.) and fails CI on unclassified sites. Run it after adding new process-spawn or dispatch sites.
+- **Owner classes**: `scheduler` (heavy work via `JobSubmissionService`), `interactive` (long-lived PTY/REPL), `standalone_compat` (explicit `--standalone`/`--stdio`/test harness), `definition_or_adapter` (subsystem definition, not a caller), `deferred_domain_executor` (future scheduler migration), `test_only`, `forbidden_bypass` (must be fixed; guard fails).
+- **Human-readable docs**: `docs/execution-ownership.md` explains the manifest format, owner classes, and migration trajectory for deferred sites.
+- See `scripts/check_execution_ownership.py` and `docs/execution-ownership.toml` for the full contract.
 
 ### Module Splits
 

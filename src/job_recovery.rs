@@ -12,6 +12,17 @@ pub async fn recover_jobs_at_startup(
     store.recover_generation(stale_generation, policy).await
 }
 
+/// Compact recovery summary used by `CoreDaemon::recover_jobs` to
+/// keep daemon-side recovery observable without exposing the full
+/// `RecoveryReport` from the jobs crate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RecoveryReportSummary {
+    pub interrupted_attempts: u32,
+    pub requeued_jobs: u32,
+    pub terminal_jobs: u32,
+    pub schedules_reconciled: u32,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

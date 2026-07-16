@@ -2120,6 +2120,7 @@ async fn run_daemon(endpoint: Option<String>) {
 
     daemon.start_event_bridge();
     daemon.recover_state().await;
+    let _ = daemon.recover_jobs().await;
 
     // Step 4: bind the socket (now that we own the lock).
     let listener = match codegg::core::transport::daemon_socket::bind_listener(&paths.socket_path) {
@@ -2344,6 +2345,7 @@ async fn cmd_server(host: &str, port: u16, standalone_core: bool) -> Result<(), 
 
     daemon.start_event_bridge();
     daemon.recover_state().await;
+    let _ = daemon.recover_jobs().await;
 
     codegg::server::run_server(host, port, Some(daemon))
         .await

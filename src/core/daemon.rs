@@ -416,6 +416,41 @@ impl CoreDaemon {
         tracing::info!("Daemon state recovery complete");
     }
 
+    /// Recover durable jobs whose attempts originated from a prior
+    /// daemon generation. Must run at startup before the scheduler
+    /// admits queued work so interrupted attempts do not silently
+    /// consume capacity. Returns the recovery report; the report is
+    /// also available via `CoreRequest::JobRecoveryReport`.
+    pub async fn recover_jobs(&self) -> Option<crate::job_recovery::RecoveryReportSummary> {
+        if let Some(scheduler) = self.deps.scheduler.as_ref() {
+            match scheduler
+                .recover_at_startup(&self.deps.recovery_policy)
+                .await
+            {
+                Ok(report) => {
+                    tracing::info!(
+                        interrupted = report.interrupted_attempts,
+                        requeued = report.requeued_jobs,
+                        terminal = report.terminal_jobs,
+                        "Job recovery complete"
+                    );
+                    Some(crate::job_recovery::RecoveryReportSummary {
+                        interrupted_attempts: report.interrupted_attempts,
+                        requeued_jobs: report.requeued_jobs,
+                        terminal_jobs: report.terminal_jobs,
+                        schedules_reconciled: report.schedules_reconciled,
+                    })
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "job recovery failed");
+                    None
+                }
+            }
+        } else {
+            None
+        }
+    }
+
     pub async fn replay_from(
         &self,
         from_event_seq: u64,
@@ -1803,12 +1838,17 @@ impl CoreDaemon {
                 }
             }
             CoreRequest::JobRecoveryReport => {
-                let stale = self.deps.daemon_generation.clone();
+                // The `recover_generation` API parameter is the
+                // *new* daemon generation; the store finds any
+                // non-terminal attempt whose generation does not
+                // match. Pass our current generation so the report
+                // reflects what would happen at startup.
+                let current_gen = self.deps.daemon_generation.clone();
                 let policy = self.deps.recovery_policy.clone();
                 match self
                     .deps
                     .job_store
-                    .recover_generation(&stale, &policy)
+                    .recover_generation(&current_gen, &policy)
                     .await
                 {
                     Ok(report) => Ok(CoreResponse::JobRecoveryReport {

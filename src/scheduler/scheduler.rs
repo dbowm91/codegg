@@ -1002,6 +1002,25 @@ impl JobScheduler {
         }
         Ok(result)
     }
+
+    /// Recover durable jobs whose attempts originated from a prior
+    /// daemon generation. Called once at startup before the main
+    /// loop begins admitting work. The recovery report is also
+    /// exposed via `CoreRequest::JobRecoveryReport`.
+    pub async fn recover_at_startup(
+        &self,
+        policy: &codegg_core::jobs::RecoveryPolicy,
+    ) -> Result<codegg_core::jobs::RecoveryReport, JobSchedulerError> {
+        // The `recover_generation` API expects the *new* generation
+        // and interrupts any non-terminal attempt whose generation
+        // does not match.
+        let new_gen = self.daemon_generation.clone();
+        let report = self.store.recover_generation(&new_gen, policy).await?;
+        // Wake the scheduler so the requeued work is considered
+        // during the next reconcile pass.
+        self.wake(crate::scheduler::events::WokeReason::Reconciled);
+        Ok(report)
+    }
 }
 
 /// Result of a reconcile pass. Useful for tests and diagnostics.

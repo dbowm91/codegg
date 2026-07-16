@@ -133,6 +133,7 @@ hidden by default — see [MCP](mcp.md)).
 | [workspace/](workspace.md) | Workspace registry, canonical root tracking, and execution context — in `crates/codegg-core` | `workspace.rs` |
 | [workspace_services/](workspace_services.md) | Phase 3 per-workspace service bundles, lease lifecycle, lock table, user-scoped catalog, and migration tooling | `workspace_services.rs`, `migration.rs` |
 | [jobs/](jobs.md) | Phase 4 durable jobs, attempts, schedules, recovery, idempotency — in `crates/codegg-core` | `jobs/mod.rs`, `jobs/store.rs`, `jobs/schedule.rs`, `jobs/schedule_store.rs` |
+| [scheduler/](scheduler.md) | Phase 5 global admission control scheduler, fair queue, executor dispatch, and static guard enforcement — closure pass complete | `scheduler/mod.rs`, `scheduler/scheduler.rs`, `scheduler/admission.rs`, `scheduler/fair_queue.rs` |
 | [worktree/](worktree.md) | Git worktree management (read-only facts in `crates/egggit`) | `mod.rs` |
 
 ## Key Types
@@ -288,6 +289,7 @@ User Input → TUI Event Loop → App::on_key() → State Mutation → Render
 - [Human Shell](human_shell.md) - Shell command execution and projection pipeline
 - [IDE](ide.md) - VS Code/JetBrains integration
 - [Jobs](jobs.md) - Phase 4 durable jobs, attempts, schedules, recovery, idempotency
+- [Scheduler](scheduler.md) - Phase 5 global admission control scheduler — closure pass: submission idempotency, permit lifecycle, cancellation, restart recovery, contention, authority matrix, protocol consistency; see `architecture/scheduler.md` for static guards and runtime evidence
 - [LSP](lsp.md) - Language Server Protocol
 - [MCP](mcp.md) - Model Context Protocol
 - [Memory](memory.md) - Persistent memory system

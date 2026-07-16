@@ -247,6 +247,10 @@ impl BackgroundScheduler {
                                 max_tool_calls: None,
                                 parent_model: None,
                             };
+                            // scheduler-audit: definition-site
+                            // BackgroundScheduler::spawn_loop is the
+                            // legacy background-compatibility loop;
+                            // daemon work must use durable schedules.
                             if let Err(e) = pool.spawner().send(request).await {
                                 tracing::warn!("Failed to dispatch background task: {}", e);
                             }

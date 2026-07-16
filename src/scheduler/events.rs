@@ -73,6 +73,7 @@ pub enum WokeReason {
     ScheduleClaimed,
     Manual,
     RetryRequested,
+    Reconciled,
 }
 
 impl WokeReason {
@@ -85,6 +86,7 @@ impl WokeReason {
             WokeReason::ScheduleClaimed => "schedule_claimed",
             WokeReason::Manual => "manual",
             WokeReason::RetryRequested => "retry_requested",
+            WokeReason::Reconciled => "reconciled",
         }
     }
 }

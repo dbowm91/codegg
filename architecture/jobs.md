@@ -219,6 +219,36 @@ At daemon startup (`recover_generation`):
 
 The idempotency class is persisted at creation time — it is never re-inferred from code at restart.
 
+### `recover_generation` semantics
+
+Both `InMemoryJobStore` and `SqliteJobStore` implement `recover_generation`
+with identical semantics. The `stale` parameter is the *new* daemon
+generation. The method:
+
+1. Scans all attempts in non-terminal states.
+2. Any attempt whose stored `daemon_generation` differs from `stale` is
+   marked `Interrupted`.
+3. Parent jobs whose `RecoveryPolicy` permits requeue for the job's
+   `IdempotencyClass` are transitioned to `Queued`.
+4. Returns a `RecoveryReport` with counts of interrupted attempts,
+   requeued jobs, terminal jobs, and schedules reconciled.
+
+The in-memory and SQLite implementations were historically divergent.
+The SQLite version was canonical; the in-memory version had inverted
+comparison logic (interrupting attempts whose generation *matched* the
+new generation rather than those that differed). This was fixed during
+the closure pass so both implementations agree.
+
+### `recover_at_startup` integration
+
+`src/scheduler/scheduler.rs::recover_at_startup` calls
+`JobStore::recover_generation` once at daemon startup and wakes the
+scheduler with `WokeReason::Reconciled` so the fair queue is rebuilt
+from durable state. `src/core/daemon.rs::recover_jobs` invokes this
+from the daemon's main loop. The return type is
+`RecoveryReportSummary` (`src/job_recovery.rs`), a compact summary
+suitable for operator-facing logging.
+
 ## Cancellation Race Semantics
 
 Deterministic precedence rules (`request_cancel`):

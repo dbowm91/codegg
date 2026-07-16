@@ -4163,6 +4163,8 @@ impl AgentLoop {
         if let (Some(submission), Some(workspace_root)) =
             (self.submission.clone(), self.workspace_root.clone())
         {
+            // scheduler-owned: daemon-mode security-review path
+            // dispatches through JobSubmissionService.
             tokio::spawn(async move {
                 let workspace_id = match submission.workspace_id_for_root(&workspace_root).await {
                     Ok(id) => id,
@@ -4206,6 +4208,9 @@ impl AgentLoop {
         let Some(pool) = self.subagent_pool.clone() else {
             return;
         };
+        // scheduler-audit: standalone-compat
+        // security-review fallback when the daemon is not wired with
+        // a JobSubmissionService (explicit --standalone / test harness).
         let request = crate::agent::worker::SubAgentRequest {
             task_id,
             prompt,

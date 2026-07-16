@@ -1,0 +1,279 @@
+# Execution ownership inventory
+#
+# Every production source location in `src/` and `crates/` that can
+# spawn a process, send work to a worker pool, start a test runner,
+# start a background loop, invoke a domain-specific process service,
+# create or enqueue a durable job, or acquire scheduler permits or
+# workspace locks MUST be declared in this manifest.
+#
+# This manifest is consumed by `scripts/check_execution_ownership.py`
+# (a static guard) and `tests/scheduler_authority_matrix.rs`
+# (a runtime assertion that one job produces one attempt and one
+# executor entry).
+#
+# Owner classifications:
+#
+#   scheduler               — production daemon path that routes through
+#                             `JobSubmissionService`. Heavy work.
+#   interactive              — long-lived user-controlled PTY / REPL /
+#                             editor session.
+#   standalone_compat        — explicit `--standalone`, `--stdio`, or
+#                             test harness surface, documented outside
+#                             the daemon singleton guarantee.
+#   definition_or_adapter    — defines the canonical subsystem but does
+#                             not invoke it on its own; the canonical
+#                             invoker is a scheduler executor.
+#   deferred_domain_executor — typed subsystem scheduled for future
+#                             migration to scheduler. Currently
+#                             documented compatibility path.
+#   test_only                — test fixture (`#[cfg(test)]` or `tests/`).
+#   forbidden_bypass         — must be fixed; static guard fails.
+#
+# Add new entries to the bottom. Run the guard after every change:
+#
+#   python3 scripts/check_execution_ownership.py
+
+# ---------------------------------------------------------------------
+# Scheduler-owned production callers (heavy work)
+# ---------------------------------------------------------------------
+
+[[site]]
+path = "src/tool/bash.rs"
+owner = "scheduler"
+reason = "test/build/lint/format/managed/shell routes submit jobs through JobSubmissionService"
+entrypoint = "JobSubmissionService::submit"
+
+[[site]]
+path = "src/tool/test.rs"
+owner = "scheduler"
+reason = "TestTool submits JobKind::Test via JobSubmissionService"
+entrypoint = "JobSubmissionService::submit"
+
+[[site]]
+path = "src/tool/task.rs"
+owner = "scheduler"
+reason = "TaskTool submits JobKind::Subagent via JobSubmissionService"
+entrypoint = "JobSubmissionService::submit"
+
+[[site]]
+path = "src/tui/commands/test.rs"
+owner = "scheduler"
+reason = "TUI /test slash command dispatches CoreRequest::JobSubmit"
+entrypoint = "CoreRequest::JobSubmit"
+
+[[site]]
+path = "src/tui/commands/tasks.rs"
+owner = "scheduler"
+reason = "TUI /tasks slash command submits durable jobs through protocol"
+entrypoint = "CoreRequest::JobSubmit"
+
+[[site]]
+path = "src/agent/worker.rs"
+owner = "scheduler"
+reason = "Subagent dispatch goes through JobSubmissionService"
+entrypoint = "JobSubmissionService::submit"
+
+[[site]]
+path = "src/agent/loop.rs"
+owner = "scheduler"
+reason = "AgentLoop dispatches subagent and security-review work; security-review path uses scheduler submission"
+entrypoint = "JobSubmissionService::submit"
+
+# ---------------------------------------------------------------------
+# Scheduler subsystem (definition)
+# ---------------------------------------------------------------------
+
+[[site]]
+path = "src/scheduler/"
+owner = "definition_or_adapter"
+reason = "scheduler subsystem definition; executor entries are scheduler-owned"
+
+[[site]]
+path = "src/managed_process.rs"
+owner = "definition_or_adapter"
+reason = "ManagedProcessService is invoked only by ManagedArgvExecutor"
+
+[[site]]
+path = "src/test_runner/runner.rs"
+owner = "definition_or_adapter"
+reason = "resolve_and_run_test is invoked only by TestJobExecutor"
+
+[[site]]
+path = "src/job_dispatcher.rs"
+owner = "definition_or_adapter"
+reason = "SubAgentJobDispatcher is legacy trait; superseded by SubagentJobExecutor"
+
+[[site]]
+path = "src/agent/task.rs"
+owner = "definition_or_adapter"
+reason = "BackgroundScheduler is legacy definition; superseded by durable schedules"
+
+[[site]]
+path = "src/background_task_migration.rs"
+owner = "definition_or_adapter"
+reason = "Migrates legacy background tasks to ScheduleStore at startup"
+
+# ---------------------------------------------------------------------
+# Standalone compatibility (outside the daemon singleton guarantee)
+# ---------------------------------------------------------------------
+
+[[site]]
+path = "src/main.rs"
+owner = "standalone_compat"
+reason = "SubAgentPool and BackgroundScheduler wiring for --standalone, --stdio, daemon bootstrap, deprecated --core-transport inproc"
+
+[[site]]
+path = "src/core/daemon.rs"
+owner = "standalone_compat"
+reason = "Production daemon bootstraps scheduler, submission service, and recovery here"
+
+[[site]]
+path = "src/core/instance.rs"
+owner = "standalone_compat"
+reason = "connect_or_start_daemon may spawn a daemon child process via the codegg binary"
+
+# ---------------------------------------------------------------------
+# Interactive (long-lived user-controlled PTY/REPL/editor)
+# ---------------------------------------------------------------------
+
+[[site]]
+path = "src/shell/runtime.rs"
+owner = "interactive"
+reason = "long-lived user shell command execution via PTY"
+
+[[site]]
+path = "src/tui/app/mod.rs"
+owner = "interactive"
+reason = "open_external_editor spawns $EDITOR for user editing"
+
+[[site]]
+path = "src/tts/"
+owner = "interactive"
+reason = "TTS notification via system speaker/voice (say, spd-say, espeak)"
+
+[[site]]
+path = "src/core/notification.rs"
+owner = "interactive"
+reason = "speak_text / stop_speech notify user audibly; lightweight by intent"
+
+# ---------------------------------------------------------------------
+# Deferred domain executor (typed subsystem scheduled for future migration)
+# ---------------------------------------------------------------------
+
+[[site]]
+path = "src/git_mutations.rs"
+owner = "deferred_domain_executor"
+reason = "GitMutationExecutor::run_subprocess executes git mutations; typed subsystem pending future scheduler integration"
+followup = "plans/single-daemon-domain-integration-phase-01.md"
+
+[[site]]
+path = "src/git_network_ops.rs"
+owner = "deferred_domain_executor"
+reason = "NetworkEnvPolicy::apply_to_command builds network git commands; pending scheduler integration"
+followup = "plans/single-daemon-domain-integration-phase-01.md"
+
+[[site]]
+path = "src/git_recovery.rs"
+owner = "deferred_domain_executor"
+reason = "Recovery operations delegate to GitMutationExecutor; pending scheduler integration"
+followup = "plans/single-daemon-domain-integration-phase-01.md"
+
+[[site]]
+path = "src/git_service.rs"
+owner = "deferred_domain_executor"
+reason = "GitExecutionService and read fallback for git; reads are documented as compatibility"
+followup = "plans/single-daemon-domain-integration-phase-01.md"
+
+[[site]]
+path = "src/python_script/executor.rs"
+owner = "deferred_domain_executor"
+reason = "PythonScript executor runs Python scripts; first-class but pending scheduler integration"
+followup = "plans/single-daemon-domain-integration-phase-02.md"
+
+[[site]]
+path = "src/python_script/"
+owner = "deferred_domain_executor"
+reason = "Python scripting subsystem; pending scheduler integration"
+followup = "plans/single-daemon-domain-integration-phase-02.md"
+
+[[site]]
+path = "src/formatter.rs"
+owner = "deferred_domain_executor"
+reason = "External formatters (cargo fmt, prettier, black) may route through scheduler in future"
+followup = "plans/single-daemon-domain-integration-phase-03.md"
+
+[[site]]
+path = "src/plugin/runtime/process.rs"
+owner = "deferred_domain_executor"
+reason = "Plugin process runtime spawns plugin processes; long-lived by design, pending scheduler integration"
+followup = "plans/single-daemon-domain-integration-phase-04.md"
+
+[[site]]
+path = "crates/egglsp/src/launch.rs"
+owner = "interactive"
+reason = "LSP server launch is a long-lived user-controlled service"
+
+[[site]]
+path = "crates/egggit/src/"
+owner = "deferred_domain_executor"
+reason = "egggit is read-only; its subprocess calls power GitExecutionService reads; pending scheduler integration"
+followup = "plans/single-daemon-domain-integration-phase-01.md"
+
+[[site]]
+path = "crates/codegg-core/src/worktree.rs"
+owner = "deferred_domain_executor"
+reason = "Worktree creation/removal uses hardened git subprocess; pending scheduler integration"
+followup = "plans/single-daemon-domain-integration-phase-01.md"
+
+# ---------------------------------------------------------------------
+# Hooks / helper processes
+# ---------------------------------------------------------------------
+
+[[site]]
+path = "src/hooks/"
+owner = "standalone_compat"
+reason = "ShellCommandHook executes user-defined hook commands with timeout; configured per-user not per-job"
+
+[[site]]
+path = "src/shell/rtk.rs"
+owner = "definition_or_adapter"
+reason = "RTK discovery and invocation; cleanup helper for child processes"
+
+[[site]]
+path = "src/upgrade/"
+owner = "standalone_compat"
+reason = "Self-upgrade uses curl to fetch release metadata; one-shot administrative action"
+
+# ---------------------------------------------------------------------
+# Server / HTTP (transport-only; work dispatch is via CoreRequest::JobSubmit)
+# ---------------------------------------------------------------------
+
+[[site]]
+path = "src/server/"
+owner = "scheduler"
+reason = "Server forwards CoreRequest::JobSubmit and JobWait through the same JobSubmissionService boundary"
+entrypoint = "CoreRequest::JobSubmit"
+
+# ---------------------------------------------------------------------
+# Test-only sites (#[cfg(test)] fixtures)
+# ---------------------------------------------------------------------
+
+[[site]]
+path = "src/security/workflow/report.rs"
+owner = "test_only"
+reason = "mod tests block uses git subprocess to set up test fixtures; not a production spawn site"
+
+[[site]]
+path = "src/git_service.rs"
+owner = "definition_or_adapter"
+reason = "GitExecutionService is the canonical read executor; test fixtures in this file are gated by #[cfg(test)]"
+
+# ---------------------------------------------------------------------
+# Deferred domain executor: external formatters
+# ---------------------------------------------------------------------
+
+[[site]]
+path = "src/tool/formatter.rs"
+owner = "deferred_domain_executor"
+reason = "External formatters (cargo fmt, prettier, black) currently spawn directly via std::process::Command; future migration routes through scheduler as JobKind::Format"
+followup = "plans/single-daemon-domain-integration-phase-03.md"

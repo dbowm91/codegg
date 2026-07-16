@@ -150,27 +150,109 @@ age. SchedulerEvent carries bounded deltas and IDs; clients fetch full job and
 attempt records through protocol requests. JobWait returns a bounded
 completion summary and optional RunStore ID.
 
-## Static and runtime proof
+## Static guards
 
-scripts/check_scheduler_bypass.py rejects direct TestRunner calls outside
-scheduler executors and test fixtures, and rejects production use of the old
-dispatch_to_test_runner name. The legacy subagent dispatcher is retained only
-as a definition for compatibility and has no construction site in daemon
-wiring.
+Two static guards enforce the scheduler invariant at source level:
+
+- `scripts/check_scheduler_bypass.py` rejects direct TestRunner calls
+  outside scheduler executors and test fixtures, rejects production use
+  of the old `dispatch_to_test_runner` name, and rejects direct
+  subagent pool sends and background scheduler loop starts. Each
+  bypass site must carry a `// scheduler-audit: <reason>` inline
+  annotation (recognized reasons: `scheduler-owned`, `standalone-compat`,
+  `definition-site`, `test-only`). Whole-file exemptions are restricted
+  to subsystem definition files whose process-spawn entries are owned by
+  the scheduler; `src/agent/loop.rs` no longer carries a blanket
+  exemption — its standalone-compat fallback uses a per-line annotation.
+
+- `scripts/check_execution_ownership.py` enforces the machine-readable
+  manifest at `docs/execution-ownership.toml`. Every production source
+  location in `src/` and `crates/` that can spawn a process, send work
+  to a worker pool, start a test runner, start a background loop, invoke
+  a domain-specific process service, create or enqueue a durable job, or
+  acquire scheduler permits must be declared with an explicit owner
+  classification. Owner classes: `scheduler`, `interactive`,
+  `standalone_compat`, `definition_or_adapter`,
+  `deferred_domain_executor`, `test_only`, `forbidden_bypass`.
+
+Both guards run in CI and locally via:
+
+~~~bash
+python3 scripts/check_scheduler_bypass.py
+python3 scripts/check_execution_ownership.py
+~~~
+
+## Closure evidence
+
+The scheduler authority is validated by both static checks and a
+comprehensive runtime test suite:
+
+### Runtime proof
+
+- **Resource admission**: permits are conserved across admit/drop
+  (`tests/scheduler_permit_lifecycle.rs`, 18 tests)
+- **Submission atomicity + idempotency**: one submission key produces
+  one job; duplicate keys coalesce (`tests/scheduler_submission_idempotency.rs`, 11 tests)
+- **Authority matrix**: one job produces one attempt and one executor
+  entry (`tests/scheduler_authority_matrix.rs`, 13 tests)
+- **Cancellation chain**: cancel signals propagate through process
+  trees, terminal states are never overwritten (`tests/scheduler_cancellation.rs`, 10 tests)
+- **Restart recovery**: fault injection at each durability boundary,
+  stale attempts are interrupted, eligible jobs are requeued
+  (`tests/scheduler_restart_recovery.rs`, 15 tests)
+- **Multi-workspace contention**: fairness, exclusivity keys,
+  starvation prevention (`tests/scheduler_contention.rs`, 14 tests)
+- **Process-tree isolation**: SIGTERM → SIGKILL escalation,
+  descendant cleanup (`tests/managed_process_descendants.rs`, 5 tests)
+- **Resource profiles**: budget audit for all job kinds
+  (`tests/scheduler_resource_profiles.rs`, 8 tests)
+- **Protocol consistency**: snapshot, JobWait, JobList, error taxonomy
+  (`tests/scheduler_protocol_consistency.rs`, 13 tests)
+- **Existing coverage**: unit behaviour, two-workspace fairness,
+  disabled-scheduler behaviour, managed-process timeout, bounded output,
+  durable recovery (`tests/scheduler_phase5.rs`, `tests/durable_jobs_phase4.rs`)
+
+### Startup recovery
+
+`JobScheduler::recover_at_startup` is called once at daemon startup.
+It delegates to `JobStore::recover_generation`, which marks stale
+attempts as `Interrupted` and requeues eligible jobs based on the
+persisted `RecoveryPolicy` and `IdempotencyClass`. The scheduler is
+woken with `WokeReason::Reconciled` so the fair queue is rebuilt from
+durable state before admitting new work.
+
+### Invariant-by-invariant status
+
+| Invariant | Enforcement |
+|-----------|-------------|
+| Heavy work routes through `JobSubmissionService` | `check_execution_ownership.py` + `check_scheduler_bypass.py` |
+| One job → one attempt → one executor entry | `tests/scheduler_authority_matrix.rs` |
+| Permit conservation across admit/drop | `tests/scheduler_permit_lifecycle.rs` |
+| Terminal states never regress | `tests/scheduler_cancellation.rs` + `tests/scheduler_restart_recovery.rs` |
+| Cancellation kills process trees | `tests/managed_process_descendants.rs` |
+| Submission idempotency within daemon generation | `tests/scheduler_submission_idempotency.rs` |
+| Multi-workspace fairness and starvation prevention | `tests/scheduler_contention.rs` |
+| Resource budgets match declared profiles | `tests/scheduler_resource_profiles.rs` |
+| Protocol snapshots consistent with queue state | `tests/scheduler_protocol_consistency.rs` |
+| Stale attempts interrupted on restart | `tests/scheduler_restart_recovery.rs` |
+| All process-spawn sites classified | `docs/execution-ownership.toml` |
 
 Focused validation:
 
 ~~~bash
-rtk cargo test -p codegg --lib scheduler
-rtk cargo test -p codegg --lib managed_process
-rtk cargo test --test scheduler_phase5
-rtk cargo test --test durable_jobs_phase4
-rtk python3 scripts/check_scheduler_bypass.py
-rtk python3 scripts/check_daemon_cwd_usage.py
+python3 scripts/check_scheduler_bypass.py
+python3 scripts/check_execution_ownership.py
+cargo test -p codegg --lib scheduler
+cargo test -p codegg --lib managed_process
+cargo test --test scheduler_phase5
+cargo test --test durable_jobs_phase4
+cargo test --test scheduler_submission_idempotency
+cargo test --test scheduler_permit_lifecycle
+cargo test --test scheduler_cancellation
+cargo test --test scheduler_restart_recovery
+cargo test --test scheduler_contention
+cargo test --test scheduler_authority_matrix
+cargo test --test managed_process_descendants
+cargo test --test scheduler_resource_profiles
+cargo test --test scheduler_protocol_consistency
 ~~~
-
-The current proof covers resource admission, one-process-cap contention across
-two temporary workspaces, fairness/exclusivity primitives, submission
-idempotency, disabled-scheduler behavior, managed-process timeout, bounded
-output, cancellation cleanup, and durable recovery. A future operational
-extension should add shared Cargo-target aliasing and process-tree fixtures.
