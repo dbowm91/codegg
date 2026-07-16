@@ -113,6 +113,47 @@ impl CoreDaemon {
         let mut deps = deps;
         deps.workspace_services = Some(workspace_services.clone());
 
+        // Phase 5: global admission control scheduler. Construct one
+        // when `[scheduler].enabled = true` is set in the config (or
+        // when one is pre-injected through `with_scheduler`). The
+        // default rollout mode is `observe` so the daemon stays
+        // backward-compatible — the scheduler still exists and
+        // produces snapshots, but tool dispatch paths retain their
+        // legacy behaviour unless the operator flips the rollout to
+        // `active`.
+        let scheduler_config = crate::scheduler::config::ResolvedSchedulerConfig::from_input(
+            config.scheduler.as_ref(),
+        )
+        .unwrap_or_default();
+        let scheduler = if let Some(existing) = deps.scheduler.clone() {
+            existing
+        } else if scheduler_config.enabled {
+            let scheduler_arc = crate::scheduler::JobScheduler::new(
+                deps.job_store.clone(),
+                workspace_services.clone(),
+                scheduler_config.clone(),
+                deps.daemon_generation.clone(),
+            );
+            // Register the default executor set synchronously.
+            let _ = scheduler_arc
+                .register_default_executors_sync(deps.legacy_agent.subagent_pool.clone());
+            let (tx, _rx) = tokio::sync::mpsc::channel(64);
+            let _ = scheduler_arc.set_event_sink_blocking(tx);
+            let _handle = scheduler_arc.spawn_run();
+            scheduler_arc
+        } else {
+            // Even when disabled, build a placeholder scheduler so
+            // snapshots and introspection still work.
+            crate::scheduler::JobScheduler::new(
+                deps.job_store.clone(),
+                workspace_services.clone(),
+                scheduler_config.clone(),
+                deps.daemon_generation.clone(),
+            )
+        };
+        deps.scheduler = Some(scheduler.clone());
+        deps.scheduler_config = scheduler_config;
+
         Self {
             daemon_id,
             generation,

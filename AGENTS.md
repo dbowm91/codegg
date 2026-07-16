@@ -13,6 +13,9 @@ python3 scripts/check_daemon_cwd_usage.py   # static cwd-use guard for Phase 2
 cargo test --test workspace_isolation       # two-workspace isolation and binding tests
 cargo test --test workspace_services_isolation  # Phase 3 workspace services + storage integration
 cargo test --test durable_jobs_phase4  # Phase 4 durable jobs + schedules
+cargo test -p codegg --lib scheduler # Phase 5 scheduler unit tests
+cargo test --test scheduler_phase5   # Phase 5 scheduler integration tests
+python3 scripts/check_scheduler_bypass.py  # static scheduler-bypass guard (Phase 5)
 cargo fmt                            # format
 ```
 
@@ -497,6 +500,23 @@ CI runs on push/PR to dev/main: `agent-assets` → `fmt` → `check` → `clippy
 - **Backward compatibility**: `TaskList`/`TaskDelete`/`TaskSchedule` continue to work; legacy dispatch path remains active when `bg_scheduler_compat_enabled` is true.
 - See `plans/single-daemon-phase-04-durable-jobs-and-schedules.md` and `crates/codegg-core/src/jobs/mod.rs` for the full contract.
 
+### Global Admission Control Scheduler (Phase 5)
+
+- **Single authority**: `JobScheduler` (`src/scheduler/scheduler.rs`) is the only authority that admits jobs from the fair queue and dispatches them through typed executors. Tool-level callers (`tool::test`, `tool::bash::dispatch_to_test_runner`, `tui::commands::test`) and the subagent pool go through `scheduler.submit(...)` instead of invoking subsystems directly.
+- **Module surface**: `src/scheduler/{mod,types,fair_queue,config,permit,admission,executor,executors,events,snapshot,scheduler}.rs`. Public re-exports live under `crate::scheduler::*`. Tests cover unit behaviour (`cargo test -p codegg --lib scheduler`) and integration (`cargo test --test scheduler_phase5`, 11 tests).
+- **Fair queue**: 3-level hierarchy (priority class → workspace lane → FIFO). Round-robin per class; `max_high_priority_burst` enforces an interactive floor and `aging_secs` elevates `JobPriority` without mutating persisted state. `WorkspaceId` is not `Ord`/`Default`, so the inner map uses `HashMap`/`VecDeque` with deterministic string-key ordering for stable tests.
+- **Admission control**: Atomic per-dimension reservation under `parking_lot::Mutex`. Exclusivity keys prefixed `exclusive:` block conflicting requests and are released only on guard drop. `try_admit(&self)` is the non-Arc variant (returns a controller-less guard); `try_admit_arc(self: &Arc<Self>)` wraps the controller so dropping the guard releases permits. `detach()` does NOT release (caller takes ownership).
+- **Executor trait + registry**: `JobExecutor` (async trait) + `ExecutorRegistry`. Map a `JobRecord` to its canonical `ExecutorKind` via `executor_kind_for_job` (`src/scheduler/executor.rs:239`). Duplicate registration returns `ExecutorRegistryError::Duplicate`.
+- **Built-in executors**: `TestJobExecutor` → `test_runner::resolve_and_run_test` (preserves RunStore persistence, `TestScope::BashDispatch`, projection, supervisor). `ManagedArgvExecutor` for `Build|Lint|Format` uses `tokio::process::Command::new` directly — never reconstructs shell. `SubagentJobExecutor` hands off to `SubAgentPool`.
+- **Configuration**: `[scheduler]` section in `crates/codegg-config/src/schema.rs` with `SchedulerConfig { enabled, rollout, reconcile_interval_ms, resources, queue, fairness }`. `ResolvedSchedulerConfig::from_input` validates and freezes the budgets; `validate()` short-circuits when `enabled = false`. The on-disk schema lives once in `codegg-config`; `src/scheduler/config.rs` re-exports the canonical types.
+- **Wiring**: `CoreRuntimeDeps.scheduler: Option<Arc<JobScheduler>>` (+ `scheduler_config`). `CoreDaemon::with_deps_and_identity` constructs the scheduler from the loaded config; when `enabled=true` it spawns the main loop via `spawn_run()` (returns a `tokio::task::JoinHandle`); when `disabled` it still builds a placeholder so snapshots/config introspection works.
+- **Main loop**: `tokio::select!` over `notify.notified()`, `sleep(reconcile_interval)`, and `shutdown.cancelled()`. `wake(reason)` (e.g. `JobEnqueued`, `ExecutorCompleted`, `CancellationRequested`) bumps the notification once. The reconciliation tick is `reconcile()`; admission runs `admit_and_dispatch_batch` which calls `try_dispatch_next`.
+- **Events**: `SchedulerEvent` (`src/scheduler/events.rs`) carries `AdmissionBlocked`, `JobAdmitted`, `JobResourceReleased`, `SchedulerOverloaded`, `SchedulerQueueChanged`, `ExecutorUnavailable`, `SchedulerQueueReconciled`, `SchedulerWoke`, `Progress`. Event sink is `tokio::sync::mpsc::Sender<SchedulerEvent>`; the daemon bridges to the core event log.
+- **Snapshots**: `SchedulerSnapshot` includes per-workspace summaries, executor health, resource usage, admission-block counters, queue overflow counts, and oldest-queued age.
+- **Static guards**: `scripts/check_scheduler_bypass.py` scans `src/` and `tests/` for direct calls to `test_runner::resolve_and_run_test`, `dispatch_to_test_runner`, and `SubAgentJobDispatcher`. Allowed only in `src/scheduler/**`, the bash tool (`src/tool/bash.rs`, the migration bridge), tests, and the legacy dispatcher site (`src/job_dispatcher.rs`).
+- **RunStore linkage**: `JobExecutor::execute` returns an `ExecutorCompletion` carrying `run_id: Option<RunId>`; the scheduler writes it onto the attempt record so RunStore ownership stays with the delegated subsystem (test runner / managed argv). Default rollout mode is `observe`, so existing direct paths continue to work until the operator flips the rollout to `active`.
+- See `plans/single-daemon-phase-05-admission-control-and-initial-executors.md`, `src/scheduler/`, `tests/scheduler_phase5.rs`, and `scripts/check_scheduler_bypass.py` for the full contract.
+
 ### Module Splits
 
 - **Error enums** live in `crates/codegg-core/src/error.rs`. Root `src/error.rs` re-exports + adds `AxumAppError`/`AxumServerRuntimeError` behind `#[cfg(feature = "server")]`.
@@ -655,6 +675,7 @@ CI runs on push/PR to dev/main: `agent-assets` → `fmt` → `check` → `clippy
 | `architecture/python_scripting.md` | First-class Python scripting with Analyze/Transform/Verify modes, AST-aware risk analysis, capability enforcement, env hardening — sole canonical module at `src/python_script/` |
 | `architecture/python_script.md` | Module-based Python scripting: types, sandbox, executor, projection, tool registration |
 | `architecture/jobs.md` | Phase 4 durable jobs, attempts, schedules, recovery, idempotency |
+| `architecture/scheduler.md` | Phase 5 admission control, fair queue, executor dispatch |
 | `architecture/command.md` | 105 built-in slash commands |
 | `architecture/config.md` | Config schema in `crates/codegg-config/src/schema.rs` |
 | `architecture/provider.md` | 16 auto-registered providers via env vars; CircuitBreaker pattern |

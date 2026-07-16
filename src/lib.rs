@@ -44,6 +44,7 @@ pub mod preflight;
 pub mod protocol_conversions;
 pub mod python_script;
 pub mod research;
+pub mod scheduler;
 pub mod search;
 pub mod search_backend;
 pub mod security;

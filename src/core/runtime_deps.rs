@@ -59,6 +59,17 @@ pub struct CoreRuntimeDeps {
     pub recovery_policy: RecoveryPolicy,
     /// Phase 4: daemon generation for attempt lease tracking.
     pub daemon_generation: DaemonGeneration,
+    /// Phase 5: global admission control scheduler. The daemon owns
+    /// exactly one of these when enabled; it is created during
+    /// `CoreDaemon` construction using the configured budgets and a
+    /// default executor set. `None` in legacy daemons that have not
+    /// yet been migrated; production daemons populate this when
+    /// `[scheduler].enabled = true`.
+    pub scheduler: Option<Arc<crate::scheduler::JobScheduler>>,
+    /// Phase 5: scheduler configuration applied at construction time.
+    /// Even when `scheduler` is `None`, the resolved config is held
+    /// here so it can be queried for snapshots and settings pages.
+    pub scheduler_config: crate::scheduler::config::ResolvedSchedulerConfig,
 }
 
 impl Clone for CoreRuntimeDeps {
@@ -75,6 +86,8 @@ impl Clone for CoreRuntimeDeps {
             schedule_store: Arc::clone(&self.schedule_store),
             recovery_policy: self.recovery_policy.clone(),
             daemon_generation: self.daemon_generation.clone(),
+            scheduler: self.scheduler.clone(),
+            scheduler_config: self.scheduler_config.clone(),
         }
     }
 }
@@ -106,6 +119,8 @@ impl CoreRuntimeDeps {
             schedule_store,
             recovery_policy: RecoveryPolicy::default(),
             daemon_generation: DaemonGeneration::new(),
+            scheduler: None,
+            scheduler_config: crate::scheduler::config::ResolvedSchedulerConfig::default(),
         }
     }
 
@@ -130,6 +145,8 @@ impl CoreRuntimeDeps {
             schedule_store,
             recovery_policy: RecoveryPolicy::default(),
             daemon_generation: DaemonGeneration::new(),
+            scheduler: None,
+            scheduler_config: crate::scheduler::config::ResolvedSchedulerConfig::default(),
         }
     }
 
@@ -163,6 +180,8 @@ impl CoreRuntimeDeps {
             schedule_store,
             recovery_policy: RecoveryPolicy::default(),
             daemon_generation: DaemonGeneration::new(),
+            scheduler: None,
+            scheduler_config: crate::scheduler::config::ResolvedSchedulerConfig::default(),
         }
     }
 
@@ -187,6 +206,17 @@ impl CoreRuntimeDeps {
     /// Builder-style setter for the workspace service policy.
     pub fn with_workspace_service_policy(mut self, policy: WorkspaceServicePolicy) -> Self {
         self.workspace_service_policy = policy;
+        self
+    }
+
+    /// Builder-style setter for the global admission scheduler.
+    pub fn with_scheduler(
+        mut self,
+        scheduler: Arc<crate::scheduler::JobScheduler>,
+        config: crate::scheduler::config::ResolvedSchedulerConfig,
+    ) -> Self {
+        self.scheduler = Some(scheduler);
+        self.scheduler_config = config;
         self
     }
 }

@@ -239,6 +239,7 @@ pub struct Config {
     pub hooks: Option<Vec<HookConfigEntry>>,
     pub notifications: Option<NotificationConfig>,
     pub daemon: Option<DaemonConfig>,
+    pub scheduler: Option<SchedulerConfig>,
     pub catalog: Option<CatalogConfig>,
     pub tool_deferral: Option<ToolDeferralConfig>,
     pub model_profile: Option<HashMap<String, ModelProfileConfig>>,
@@ -1246,6 +1247,61 @@ pub enum DaemonModeConfig {
     DaemonClient,
     StandaloneInproc,
     StandaloneStdio,
+}
+
+/// Phase 5: global admission control scheduler. Optional; when
+/// `None`, the default rollout is `observe` with the
+/// `ResolvedSchedulerConfig::default()` budgets.
+#[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq, Eq)]
+#[serde(default, rename_all = "snake_case")]
+pub struct SchedulerConfig {
+    pub enabled: Option<bool>,
+    /// Rollout mode: `observe` (default) keeps the existing direct
+    /// paths; `active` enables scheduler admission for migrated
+    /// families.
+    pub rollout: Option<SchedulerRolloutConfig>,
+    pub reconcile_interval_ms: Option<u64>,
+    pub resources: Option<SchedulerResourceConfig>,
+    pub queue: Option<SchedulerQueueConfig>,
+    pub fairness: Option<SchedulerFairnessConfig>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SchedulerRolloutConfig {
+    #[default]
+    Observe,
+    Active,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq, Eq)]
+#[serde(default, rename_all = "snake_case")]
+pub struct SchedulerResourceConfig {
+    pub max_process_slots: Option<u32>,
+    pub max_cpu_weight: Option<u32>,
+    pub max_memory_mb_hint: Option<u64>,
+    pub max_io_weight: Option<u32>,
+    pub max_network_slots: Option<u32>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq, Eq)]
+#[serde(default, rename_all = "snake_case")]
+pub struct SchedulerQueueConfig {
+    pub max_total: Option<usize>,
+    pub max_per_workspace: Option<usize>,
+    pub max_interactive_per_session: Option<usize>,
+    pub claim_batch: Option<usize>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq, Eq)]
+#[serde(default, rename_all = "snake_case")]
+pub struct SchedulerFairnessConfig {
+    pub interactive_weight: Option<u32>,
+    pub normal_weight: Option<u32>,
+    pub background_weight: Option<u32>,
+    pub maintenance_weight: Option<u32>,
+    pub max_high_priority_burst: Option<u32>,
+    pub aging_secs: Option<u64>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq)]
