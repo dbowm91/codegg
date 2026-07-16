@@ -8,15 +8,6 @@ Rust 1.81+ required. Edition 2021. Tokio async runtime.
 cargo build --all-features           # build
 cargo clippy --all-features -- -D warnings  # lint (errors in CI)
 CARGO_BUILD_JOBS=1 cargo test --workspace --all-features -- --test-threads=14  # full suite, capped
-cargo test --test single_daemon_lifecycle  # singleton daemon lifecycle
-python3 scripts/check_daemon_cwd_usage.py   # static cwd-use guard for Phase 2
-cargo test --test workspace_isolation       # two-workspace isolation and binding tests
-cargo test --test workspace_services_isolation  # Phase 3 workspace services + storage integration
-cargo test --test durable_jobs_phase4  # Phase 4 durable jobs + schedules
-cargo test -p codegg --lib scheduler # Phase 5 scheduler unit tests
-cargo test --test scheduler_phase5   # Phase 5 scheduler integration tests
-python3 scripts/check_scheduler_bypass.py  # static scheduler-bypass guard (Phase 5)
-python3 scripts/check_execution_ownership.py  # execution ownership manifest guard (Phase 5 closure)
 cargo fmt                            # format
 ```
 
@@ -94,17 +85,22 @@ CARGO_BUILD_JOBS=1 cargo test --workspace --all-features -- --test-threads=14
 
 Run `--all-features` and `lsp-test-support` paths as separate capped invocations when possible; those are the heaviest test paths in this repo.
 
-**RunStore-specific guidance** (`crates/codegg-core/src/run_store.rs`): the
-authoritative artifact checksum lives on the *artifact store* record
-(`MemArtifactEntry.sha256` for `MemRunStore`, `ArtifactRecord.sha256`
-from the persisted manifest for `FsRunStore`), not on the manifest
-copy that `RunManifest.artifacts` carries. Tests verifying integrity
-MUST mutate either the bytes on disk or the in-store record.
-`FsRunStore.lock: tokio::sync::Mutex<()>` is **not reentrant**; callers
-acquire it once and call `rewrite_index_locked` directly. See
-`architecture/run_store.md` Invariants.
-
 See `architecture/testing.md` for the full test resource taxonomy, Tokio runtime flavor rules, pool strategy guidance, test selection pattern, and capped full-suite command.
+
+## Static Guards
+
+Run these after changing execution surfaces, agent definitions, or codegg-core:
+
+```bash
+python3 scripts/check-core-boundary.sh              # codegg-core boundary enforcement
+python3 scripts/check_daemon_cwd_usage.py           # workspace-bound daemon path guard
+python3 scripts/check_scheduler_bypass.py           # scheduler-bypass guard
+python3 scripts/check_execution_ownership.py        # process-spawn site ownership manifest
+python3 scripts/check_git_forbidden_patterns.py     # git secret boundary + policy drift
+python3 scripts/check_builtin_agents.py             # verify TOML matches generated.rs
+python3 scripts/check-tokio-test-flavors.py         # regression guard for bare #[tokio::test]
+python3 scripts/generate_builtin_agents.py --check  # agent asset staleness + schema validation
+```
 
 ## Testing
 
@@ -129,8 +125,8 @@ cargo test -p egggit conflict
 cargo test -p codegg git_service
 cargo test -p codegg-git
 cargo test --test git_recovery_integration
-cargo test --test git_execution_origin_matrix    # Workstream D — 19 tests across 10 execution origins
-python3 scripts/check_git_forbidden_patterns.py  # Workstream E — static checks (drift + secret boundaries)
+cargo test --test git_execution_origin_matrix
+python3 scripts/check_git_forbidden_patterns.py
 cargo test -p egglsp
 
 # TUI render regression tests (headless, no terminal needed)
@@ -139,47 +135,20 @@ cargo test --test tui_render
 # TUI unit/integration tests
 cargo test --test tui
 
-# Shell output projection evaluation harness (fixture corpus, 11 invariant tests)
+# Shell projection tests
 cargo test --test shell_projection_harness
-
-# Shell projection context budget and compaction tests (33 tests)
 cargo test --test shell_projection_phase10
-
-# Shell projection redactor unit tests
 cargo test -p codegg --lib shell::redactor
-
-# Shell projection RTK unit tests (no RTK binary required)
 cargo test -p codegg --lib shell::rtk
 
-# Test runner module (resolver, parser with failure extraction, report formatter, previous-failures index)
+# Test runner module (resolver, parser, report formatter, previous-failures index)
 cargo test -p codegg --lib test_runner
-
-# Test report to projection adapter (Phase 03)
 cargo test -p codegg --lib test_runner::projection
-
-# Strict custom-command validator (argv-prefix allowlist + shell-metachar rejection)
 cargo test -p codegg --lib test_runner::custom
-
-# Previous-failures index (read/write, truncation, resolution, safety validation)
 cargo test -p codegg --lib test_runner::index
-
-# Test tool (model-facing wrapper for supervised test runner)
 cargo test -p codegg --lib tool::test
-
-# Run supervised tests via TUI slash command
-# /test, /test workspace, /test changed, /test package <name>, /test file <path>, /test previous|prev|last, /test custom <argv>
-# Custom commands must be plain whitespace-separated argv matching an allowlist prefix (cargo test, pytest, etc.).
-# Shell metacharacters (`;`, `|`, `>`, `$`, backticks, newlines, etc.) are rejected at validation time.
-# Previous failures scope reruns the most recent failing test from a bounded local index.
-# See architecture/test_runner.md "Custom Command Allowlist" and "Previous-Failures Index" for the full contract.
-
-# Test runner event sink tests
 cargo test -p codegg --lib test_runner::runner::tests
-
-# Test command parser tests
 cargo test -p codegg --lib tui::commands::test
-
-# Stale /test completion protection (shared with all async dialog paths)
 cargo test -p codegg --lib async_request
 
 # LSP integration (fake server, no network, needs lsp-test-support)
@@ -190,82 +159,39 @@ cargo test --features lsp-test-support --test lsp_composite_stdio
 cargo test -p egglsp --features lsp-real-server-tests --test real_server_smoke -- rust_analyzer --nocapture
 
 # Plugin example SDKs
-cargo test --manifest-path examples/plugins/sdk-rust/Cargo.toml          # 11 tests
-PYTHONPATH=examples/plugins/sdk-python \
-  python3 -m unittest discover examples/plugins/sdk-python/tests -v       # 24 tests
-cargo build --target wasm32-unknown-unknown \
-  --manifest-path examples/plugins/wasm-command-table/Cargo.toml --release  # WASM build
+cargo test --manifest-path examples/plugins/sdk-rust/Cargo.toml
+PYTHONPATH=examples/plugins/sdk-python python3 -m unittest discover examples/plugins/sdk-python/tests -v
+cargo build --target wasm32-unknown-unknown --manifest-path examples/plugins/wasm-command-table/Cargo.toml --release
 
 # Eggsact adapter integration tests
 cargo test --test eggsact_adapter
 cargo test --test eggsact_deterministic_tools
 
-# Eggsearch adapter unit tests (inline in source)
+# Eggsearch adapter/unit tests
 cargo test -p codegg --lib search_backend::eggsearch
-
-# Eggsearch bootstrap tests (inline in source)
 cargo test -p codegg --lib search_backend::bootstrap
-
-# Eggsearch mock integration tests (dispatch, arg mapping, raw MCP)
 cargo test --test fake_eggsearch_mcp
 cargo test --test search_backend_eggsearch
 cargo test --test search_backend_arg_mapping
-
-# Preflight integration tests (policy, check methods, golden output)
 cargo test --test preflight_integration
-
-# Framing golden tests (inline in source)
 cargo test -p codegg --lib search_backend::framing
 
-# Live eggsearch smoke tests (opt-in, requires eggsearch binary)
-cargo test --features live-eggsearch-tests --test live_eggsearch_smoke -- --ignored
-
-# Test timing with nextest (install: cargo install cargo-nextest)
-cargo nextest run --workspace --profile ci-heavy --all-features
-cargo nextest run -p codegg-core --profile ci-heavy
-
-# Audit tokio test flavors (finds current_thread tests with concurrency patterns)
-python3 scripts/audit_tokio_tests.py
-
-# Check for bare #[tokio::test] annotations (regression guard)
-python3 scripts/check-tokio-test-flavors.py
-
-# Command intent classifier (intent classification, risk assessment, ShellShape parsing, fixtures)
+# Command intent/planner/routing
 cargo test -p codegg --lib command_intent
-
-# Shell shape parser (quotes, escapes, operators, complex shell detection)
 cargo test -p codegg --lib command_intent::shell_shape
-
-# Command planner (backend routing, permission generation, fixtures)
 cargo test -p codegg --lib command_planner
-
-# Command routing (backend routing MVP, test/git/search/python routing)
 cargo test -p codegg --lib command_routing
-
-# Python scripting (risk analysis, script execution, timeout, fixtures)
 cargo test -p codegg --lib python_script
-
-# Bash tool routing metadata (classify + plan + route integration, config tests)
 cargo test -p codegg --lib tool::bash
 
-# Adversarial command routing tests (139 tests — command smuggling, workspace escape, kill switches, Observe/Active modes, per-family RouteLevel, validation failures, safe/dangerous git mutations, full pipeline integration)
+# Adversarial tests
 cargo test --test command_routing_adversarial
-
-# Adversarial Python sandbox tests (57 tests — workspace escape, AST-evasive patterns)
 cargo test --test python_sandbox_adversarial
-
-# Adversarial context projection tests (90 tests — projection poisoning, binary/special chars, Unicode edge cases, content injection)
 cargo test --test context_projection_adversarial
-
-# Command routing execution ownership tests (13 tests — planned vs actual backend, RunOwnership, DelegatedBackend ownership, raw artifact safety, fallback records, provenance serde, backward compat)
 cargo test --test command_routing_execution_ownership
 
-# Phase 04 durable jobs + schedules (42 integration tests)
+# Phase 4–5 durable jobs + scheduler tests
 cargo test --test durable_jobs_phase4
-
-# Phase 05 closure pass (submission idempotency, permit lifecycle, cancellation,
-# restart recovery, contention, authority matrix, managed-process descendants,
-# resource profiles, protocol consistency)
 cargo test --test scheduler_submission_idempotency
 cargo test --test scheduler_permit_lifecycle
 cargo test --test scheduler_cancellation
@@ -283,6 +209,9 @@ cargo test -p codegg --lib shell::projector -- promotion
 cargo test -p codegg --lib shell::projector -- preferred_projector
 cargo test -p codegg --lib python_script::projection
 cargo test -p codegg --lib test_runner::projection
+
+# Tokio flavor audit
+python3 scripts/audit_tokio_tests.py
 ```
 
 ## Built-in Agent Assets
@@ -299,18 +228,6 @@ Generated Rust is checked in at `src/agent/builtins/`. **Do not edit generated f
 The `builtin_agents()` function in `src/agent/mod.rs` delegates to the generated code.
 
 Schema validation (`--check`) enforces: valid `mode` (Primary/Subagent/All), required `name`/`description`, prompt file exists when `prompt_file` set, valid permission actions (allow/ask/deny), no unknown keys, no duplicate names, and deterministic output.
-
-### Local Validation
-
-After making changes to agents, run the full validation suite:
-
-```bash
-python3 scripts/generate_builtin_agents.py --check      # staleness + schema validation
-python3 scripts/check_builtin_agents.py                 # verify TOML matches generated.rs
-cargo fmt --check                                        # formatting check
-cargo check --workspace                                  # compilation check
-CARGO_BUILD_JOBS=1 cargo test --workspace -- --test-threads=14  # all tests, capped
-```
 
 ## User/Project Agent Customization
 
@@ -461,217 +378,159 @@ CI runs on push/PR to dev/main: `agent-assets` → `fmt` → `check` → `clippy
 
 - **Singleton invariant**: Exactly one user-scoped Codegg daemon is active per OS user. The lock is at `daemon.lock` in the user-scoped runtime directory (macOS: `$HOME/Library/Application Support/codegg`, Linux: `${XDG_RUNTIME_DIR:-/tmp}/codegg`). Override with `CODEGG_DAEMON_HOME`.
 - **Connect-or-start default**: Plain `codegg` uses `connect_or_start_daemon` (`src/core/instance.rs`) to connect to the running daemon or auto-start one. `--standalone` runs an in-process core; `--stdio` uses the hidden `core-stdio` path. `--core-transport inproc|stdio` is deprecated and emits a warning.
-- **Server requires `--standalone-core`**: The HTTP server does not silently construct its own daemon. Without `--standalone-core`, it exits with an actionable error. Daemon-proxying server mode lands in a later phase.
-- **Lock is authoritative**: `DaemonInstanceGuard` holds `flock(LOCK_EX | LOCK_NB)` for the daemon's lifetime. `daemon.json` metadata (daemon_id, generation, pid, socket_path, protocol_version, started_at, binary_version) is diagnostic only.
-- **PID file is legacy**: The old `<socket>.pid` file is still written for backward compat with external scripts, but the authoritative identity is the metadata record + lock.
+- **Server requires `--standalone-core`**: The HTTP server does not silently construct its own daemon. Without `--standalone-core`, it exits with an actionable error.
+- **Lock is authoritative**: `DaemonInstanceGuard` holds `flock(LOCK_EX | LOCK_NB)` for the daemon's lifetime. `daemon.json` metadata is diagnostic only.
+- **PID file is legacy**: The old `<socket>.pid` file is still written for backward compat, but the authoritative identity is the metadata record + lock.
 - **Stop verifies liveness**: `daemon stop` probes the socket before sending SIGTERM. It refuses to unlink paths it does not own.
-- **Production invariant**: No two `codegg` daemons can be active for one user scope. This is enforced by the advisory lock, not by PID files.
 - See `plans/single-daemon-phase-01-singleton-lifecycle-and-default-transport.md` and `src/core/instance.rs` for the full contract.
 
 ### Workspace Registry (Phase 2)
 
-- **WorkspaceId**: typed `String` newtype identifying a registered workspace (`crates/codegg-core/src/workspace.rs`).
-- **WorkspaceRegistry**: daemon-owned, deduplicates canonical roots via `get_or_register`. Rejects nonexistent paths and symlink aliases.
-- **ExecutionContext**: immutable, passed by `Arc` through `TurnRunInput` to every daemon execution path. Replaces `std::env::current_dir()` reasoning. Carries `workspace_root`, `workspace_id`, `session_id`, and path policy.
-- **Session binding**: `CoreDaemon::bind_runtime_for_session` resolves a session_id to a `SessionRuntime` via `SessionStore` + `WorkspaceRegistry`. `TurnSubmit`, `AgentSelect`, and `ModelSelect` reject unbound sessions.
-- **Storage migration v22**: adds `workspace` table and `workspace_id` index on `session`. Existing sessions are lazily resolved on next access; their `directory` is canonicalized into a workspace record.
-- **Protocol**: `WorkspaceSnapshot` DTO, `CoreRequest::WorkspaceRegister|WorkspaceList|WorkspaceArchive|WorkspaceSnapshotRequest`, `SessionSnapshot::workspace_id` + `directory`, `ServerCapabilities::workspace_registration` + `workspace_snapshots`.
-- **Static guard**: `scripts/check_daemon_cwd_usage.py` scans protected modules for `std::env::current_dir()` usage. Existing legacy uses in tool `default()` constructors are allowlisted; new production-path uses fail CI.
-- See `plans/single-daemon-phase-02-workspace-registry-and-execution-context.md` and `crates/codegg-core/src/workspace.rs` for the full contract.
+- **WorkspaceId**: typed `String` newtype in `crates/codegg-core/src/workspace.rs`.
+- **WorkspaceRegistry**: daemon-owned, deduplicates canonical roots. Rejects nonexistent paths and symlink aliases.
+- **ExecutionContext**: immutable, passed by `Arc` through `TurnRunInput`. Replaces `std::env::current_dir()` reasoning. Carries `workspace_root`, `workspace_id`, `session_id`, and path policy.
+- **Static guard**: `scripts/check_daemon_cwd_usage.py` scans protected modules for `std::env::current_dir()` usage. New production-path uses fail CI.
+- See `plans/single-daemon-phase-02-workspace-registry-and-execution-context.md` and `crates/codegg-core/src/workspace.rs`.
 
 ### Workspace Services and Storage (Phase 3)
 
-- **WorkspaceServices**: per-workspace bundle owning `Arc<dyn RunStore>`, `Arc<WorkspacePathPolicy>`, `Arc<WorkspaceLockTable>`, `Arc<WorkspaceConfigSnapshot>`. Constructed by `ProductionWorkspaceServicesFactory` (or a test factory) at `<workspace>/.codegg/runs/` (`crates/codegg-core/src/workspace_services.rs`).
-- **WorkspaceServicesLease**: RAII handle returned by `WorkspaceServiceRegistry::acquire`. Decrements the bundle's lease counter on drop.
-- **WorkspaceServiceRegistry**: `DashMap<WorkspaceId, Arc<WorkspaceServices>>` + per-workspace `AsyncMutex<()>` for single-flight activation. `acquire` / `activate` / `peek` / `list_active` / `reload_config` / `evict_idle` / `shutdown_all`.
-- **WorkspaceServicePolicy**: `{ max_active_workspaces: 16 (default), idle_evict_after: 30min }`. Cap on simultaneous bundles; idle eviction threshold.
-- **WorkspaceLockTable::acquire_repository(repo_root)**: per-repository `tokio::sync::Mutex<()>` keyed by canonical root. Phase F Git service and Bash-translation dispatcher contend on the same lock.
-- **Storage split** (`crates/codegg-core/src/storage/mod.rs`): `init_daemon_catalog(&DaemonPaths)` owns the user-scoped catalog (`~/Library/Application Support/codegg/codegg.db` on macOS, `$XDG_DATA_HOME/codegg/codegg.db` on Linux). `init_legacy_project_store(root)` retains backward compat for `<root>/.codegg/sessions.db`. `init_pool_at(path)` is the test escape hatch. `init` is deprecated.
-- **STORAGE_LAYOUT_VERSION = 23**: bumped when the catalog moves to a user-scoped location.
-- **DaemonPaths** (`crates/codegg-core/src/storage/paths.rs`): the single source of truth for catalog and asset paths. `default()` / `with_overrides()` / `data_root()` / `config_root()` / `catalog_db_path()` / `agents_dir()` / `credentials_path()` / `workspace_local_artifact_root(workspace_root)`.
-- **Migration tooling** (`crates/codegg-core/src/migration.rs`): `migrate_legacy_project_database(catalog_pool, registry, project_root)` is idempotent; writes a `migration_marker` row keyed by source path. Returns `SourceMissing` / `InvalidSchema(path)` / `Imported` / `AlreadyMigrated`. Helpers: `find_legacy_project_db`, `verify_session_schema`, `ensure_migration_marker_table`, `fetch_marker`, `list_migration_markers`, `describe_workspace`, `MigrationMarker`, `WorkspaceDescription`.
-- **Protocol** (`crates/codegg-protocol/src/core.rs`, `dto.rs`): `CoreRequest::WorkspaceServicesSnapshot|WorkspaceConfigReload|RunList{RunQueryDto}|RunGet|RunArtifactRead` and matching `CoreResponse` variants. `WorkspaceSnapshot` extended with `services_active: bool`, `active_leases: usize`, `config_revision: u64`. New DTOs: `WorkspaceServiceHealthDto`, `ConfigDiagnosticDto`, `RunQueryDto`, `RunSummaryDto`, `RunRecordDto`, `RunArtifactSummaryDto`.
-- **Wiring** (`src/core/runtime_deps.rs`, `src/core/daemon.rs`): `CoreRuntimeDeps` gains `workspace_services: Option<Arc<WorkspaceServiceRegistry>>` and `workspace_service_policy: WorkspaceServicePolicy`. `CoreDaemon::with_deps_and_identity` constructs the registry using `ProductionWorkspaceServicesFactory` when not supplied. New handlers for the 5 Phase 3 request variants.
-- **Tests**: `tests/workspace_services_isolation.rs` (11 tests) covers two-workspace isolation, single-flight activation, lease accounting, idle eviction, lock serialization, config reload, shutdown_all, production factory, DaemonPaths, and migration import. Inline tests in `workspace_services.rs` (3) and `migration.rs` (3).
-- **Static guards**: `scripts/check-core-boundary.sh` continues to enforce the codegg-core boundary; `workspace_services` and `migration` are UI-/server-/plugin-/auth-free.
-- See `plans/single-daemon-phase-03-workspace-services-and-storage.md` and `crates/codegg-core/src/workspace_services.rs` for the full contract.
+- **WorkspaceServices**: per-workspace bundle owning `Arc<dyn RunStore>`, `Arc<WorkspacePathPolicy>`, `Arc<WorkspaceLockTable>`, `Arc<WorkspaceConfigSnapshot>`. Constructed by `ProductionWorkspaceServicesFactory` at `<workspace>/.codegg/runs/`.
+- **Storage split** (`crates/codegg-core/src/storage/mod.rs`): `init_daemon_catalog(&DaemonPaths)` owns the user-scoped catalog. `init_legacy_project_store(root)` retains backward compat. `init` is deprecated.
+- **STORAGE_LAYOUT_VERSION = 23**. **DaemonPaths** (`crates/codegg-core/src/storage/paths.rs`) is the single source of truth for catalog and asset paths.
+- **Migration tooling** (`crates/codegg-core/src/migration.rs`): `migrate_legacy_project_database` is idempotent.
+- See `plans/single-daemon-phase-03-workspace-services-and-storage.md` and `crates/codegg-core/src/workspace_services.rs`.
 
 ### Durable Jobs and Schedules (Phase 4)
 
-- **Typed IDs**: `JobId`, `AttemptId`, `ScheduleId`, `DependencyId`, `DaemonGeneration` — opaque UUID strings, never parsed as integers. Newtypes with `new_unchecked` for legacy compat; prefer `JobStore::create_job` for new jobs.
-- **Storage layer**: Tables `job`, `job_attempt`, `job_dependency`, `schedule`, `schedule_occurrence` added in migration v23. `STORAGE_LAYOUT_VERSION = 24`. SQLite-backed in production; in-memory conformance surface for tests.
-- **JobState machine**: `Scheduled→Queued|Cancelled|Expired; Queued→Running|Cancelled|Expired|Blocked; Running→Completed|Failed|Cancelled|TimedOut|Interrupted; Failed/TimedOut/Interrupted→Queued (retry); Blocked→Queued|Cancelled|Expired`. Terminal states never regress. Transitions enforced via `validate_state_transition` (`crates/codegg-core/src/jobs/store.rs:65`).
-- **AttemptState machine**: `Created|Admitted→Running|Failed|Cancelled|Interrupted; Running→Completed|Failed|Cancelled|TimedOut|Interrupted`. Terminal states never regress. Transitions enforced via `validate_attempt_transition` (`crates/codegg-core/src/jobs/store.rs:114`).
-- **Daemon generation recovery**: At startup, `recover_generation` marks all attempts whose `daemon_generation` ≠ current as `Interrupted`. Parent job requeued iff `RecoveryPolicy` permits based on `IdempotencyClass`. Default policy: requeue `ReadOnly` and `SafeRepeat`; never auto-retry `Conditional`, `NonIdempotent`, or `Destructive`.
-- **Idempotency**: `IdempotencyClass::is_retry_eligible()` returns `true` for `ReadOnly` and `SafeRepeat`. Persisted at creation time — not re-inferred from code at restart.
-- **Schedule occurrence uniqueness**: `PRIMARY KEY(schedule_id, scheduled_for)` on `schedule_occurrence` prevents double-firing after restart. `claim_due` atomically inserts occurrence rows and creates jobs via `OccurrenceMaterializer`.
-- **OverlapPolicy**: `SkipIfRunning` (default), `QueueOne`, `Allow`. Applied at occurrence claim time.
-- **MissedRunPolicy**: `Skip`, `RunOnceNow` (default), `CatchUpBounded{max_occurrences}`. `missed_run_targets` computes which timestamps should run after a gap.
-- **JobStore/ScheduleStore traits**: Live in `crates/codegg-core/src/jobs/`. UI/server/plugin/auth-free (boundary enforced by `scripts/check-core-boundary.sh`). JobStore: 13 methods (`create_job`, `get_job`, `list_jobs`, `list_attempts`, `enqueue`, `begin_attempt`, `mark_attempt_running`, `record_heartbeat`, `finish_attempt`, `request_cancel`, `retry_job`, `recover_generation`, `set_attempt_executor`). ScheduleStore: 6 methods (`create`, `set_state`, `delete`, `get`, `list`, `claim_due`).
-- **JobDispatcher**: Root crate trait (`src/job_dispatcher.rs`) bridging durable jobs to existing executors. `SubAgentJobDispatcher` wraps `SubAgentPool`; `NullJobDispatcher` for tests.
-- **RunStore linkage**: `JobAttempt.run_id: Option<RunId>` links attempt to RunStore. RunStore is NOT the queue authority — attempts may complete before or after RunStore records are written.
-- **Background task migration**: `migrate_legacy_background_tasks` (`src/background_task_migration.rs`) reads from `task` table, parses interval via `parse_duration`, creates `ScheduleRecord`, records `migration_marker`. Malformed intervals surface as warnings and mark the task `interrupted`, never silently default.
-- **Backward compatibility**: `TaskList`/`TaskDelete`/`TaskSchedule` remain available only for the legacy convenience/standalone constructor when `bg_scheduler_compat_enabled` is true. Production SQLite daemons return an explicit compatibility-disabled error and use durable schedule/job requests.
-- See `plans/single-daemon-phase-04-durable-jobs-and-schedules.md` and `crates/codegg-core/src/jobs/mod.rs` for the full contract.
+- **Typed IDs**: `JobId`, `AttemptId`, `ScheduleId`, `DependencyId`, `DaemonGeneration` — opaque UUID strings, never parsed as integers.
+- **JobState machine**: Terminal states never regress. Transitions enforced via `validate_state_transition` (`crates/codegg-core/src/jobs/store.rs:65`).
+- **AttemptState machine**: Terminal states never regress. Transitions enforced via `validate_attempt_transition` (`crates/codegg-core/src/jobs/store.rs:114`).
+- **Daemon generation recovery**: `recover_generation` marks all attempts whose `daemon_generation` ≠ current as `Interrupted`. Requeues iff `RecoveryPolicy` permits based on `IdempotencyClass`.
+- **Idempotency**: `IdempotencyClass::is_retry_eligible()` returns `true` for `ReadOnly` and `SafeRepeat`. Persisted at creation time.
+- **JobStore/ScheduleStore traits**: Live in `crates/codegg-core/src/jobs/`. UI/server/plugin/auth-free (boundary enforced by `scripts/check-core-boundary.sh`).
+- **RunStore linkage**: `JobAttempt.run_id: Option<RunId>` links attempt to RunStore. RunStore is NOT the queue authority.
+- See `plans/single-daemon-phase-04-durable-jobs-and-schedules.md` and `crates/codegg-core/src/jobs/mod.rs`.
 
 ### Global Admission Control Scheduler (Phase 5)
 
-- **Submission boundary**: `JobSubmissionService` (`src/scheduler/submission.rs`) is the daemon-owned facade for validating workspace-bound `NewJob` values, applying idempotency keys, creating durable jobs, and enqueueing them. Callers must not create a job and separately dispatch it. Scheduler-disabled daemon mode returns `SchedulerDisabled`; it never restores direct execution.
-- **Single authority**: `JobScheduler` (`src/scheduler/scheduler.rs`) is the only daemon admission authority for submitted work. TestTool, Bash's structured test/build/lint/format routes, `/test`, scheduler-backed task/subagent flows, and agent security-review work submit through the facade. Explicit standalone compatibility paths are annotated and are outside the singleton-daemon guarantee.
-- **Module surface**: `src/scheduler/{mod,types,fair_queue,config,permit,admission,executor,executors,events,snapshot,submission,scheduler}.rs` plus `src/managed_process.rs`. Public re-exports live under `crate::scheduler::*`. Tests cover unit behaviour (`cargo test -p codegg --lib scheduler`) and integration (`cargo test --test scheduler_phase5`, 12 tests). Closure pass adds 10 new integration test files covering submission idempotency, permit lifecycle, cancellation, restart recovery, multi-workspace contention, authority matrix, managed-process descendants, resource profiles, and protocol consistency.
-- **Fair queue**: 3-level hierarchy (priority class → workspace lane → FIFO). Round-robin per class; `max_high_priority_burst` enforces an interactive floor and `aging_secs` elevates `JobPriority` without mutating persisted state. `WorkspaceId` is not `Ord`/`Default`, so the inner map uses `HashMap`/`VecDeque` with deterministic string-key ordering for stable tests.
-- **Admission control**: Atomic per-dimension reservation under `parking_lot::Mutex`. Exclusivity keys prefixed `exclusive:` block conflicting requests and are released only on guard drop. `try_admit(&self)` is the non-Arc variant (returns a controller-less guard); `try_admit_arc(self: &Arc<Self>)` wraps the controller so dropping the guard releases permits. `detach()` does NOT release (caller takes ownership).
-- **Executor trait + registry**: `JobExecutor` (async trait) + `ExecutorRegistry`. Map a `JobRecord` to its canonical `ExecutorKind` via `executor_kind_for_job` (`src/scheduler/executor.rs:239`). Duplicate registration returns `ExecutorRegistryError::Duplicate`.
-- **Built-in executors**: `TestJobExecutor` delegates to TestRunner; `ManagedArgvExecutor` delegates to the canonical `ManagedProcessService` (argv only, bounded output, sanitized environment, process-group cleanup, timeout/cancellation, and job/attempt provenance); `SubagentJobExecutor` waits for the delegated `SubAgentPool` result rather than marking enqueue as completion.
-- **Configuration**: `[scheduler]` section in `crates/codegg-config/src/schema.rs` with `SchedulerConfig { enabled, rollout, reconcile_interval_ms, resources, queue, fairness }`. `ResolvedSchedulerConfig::from_input` validates and freezes the budgets; `validate()` short-circuits when `enabled = false`. The on-disk schema lives once in `codegg-config`; `src/scheduler/config.rs` re-exports the canonical types.
-- **Wiring**: `CoreRuntimeDeps.scheduler: Option<Arc<JobScheduler>>` (+ `scheduler_config`). `CoreDaemon::with_deps_and_identity` constructs the scheduler from the loaded config; when `enabled=true` it spawns the main loop via `spawn_run()` (returns a `tokio::task::JoinHandle`); when `disabled` it still builds a placeholder so snapshots/config introspection works.
-- **Main loop**: `tokio::select!` over `notify.notified()`, `sleep(reconcile_interval)`, and `shutdown.cancelled()`. `wake(reason)` (e.g. `JobEnqueued`, `ExecutorCompleted`, `CancellationRequested`) bumps the notification once. The reconciliation tick is `reconcile()`; admission runs `admit_and_dispatch_batch` which calls `try_dispatch_next`.
-- **Events**: `SchedulerEvent` (`src/scheduler/events.rs`) carries `AdmissionBlocked`, `JobAdmitted`, `JobResourceReleased`, `SchedulerOverloaded`, `SchedulerQueueChanged`, `ExecutorUnavailable`, `SchedulerQueueReconciled`, `SchedulerWoke`, `Progress`. Event sink is `tokio::sync::mpsc::Sender<SchedulerEvent>`; the daemon bridges to the core event log.
-- **Snapshots/protocol**: `CoreRequest::SchedulerSnapshot` and `CoreResponse::SnapshotDaemon.scheduler_snapshot` expose bounded per-workspace, queue, resource, executor, overload, and oldest-queued summaries. `JobSubmit` accepts a bounded client retry key; `JobWait` returns a bounded completion projection.
-- **Static guards**: `scripts/check_scheduler_bypass.py` rejects direct TestRunner calls, legacy subagent sends, and background scheduler loop starts outside explicit scheduler, definition, test, or standalone compatibility sites. Inline `// scheduler-audit: <reason>` annotations are accepted for explicit standalone-compat or definition-site use. Whole-file exemptions are restricted to subsystem definition files. `scripts/check_execution_ownership.py` enforces the machine-readable `docs/execution-ownership.toml` manifest of all production process-spawn sites. `scripts/check_daemon_cwd_usage.py` remains required for workspace-bound daemon paths. Run both guards after changing any execution surface.
-- **RunStore linkage**: `JobExecutor::execute` returns an `ExecutorCompletion` carrying `run_id: Option<RunId>`; the scheduler writes it onto the attempt record so RunStore ownership stays with the delegated subsystem (test runner / managed argv). Default rollout mode is `mandatory`; disabling the scheduler rejects daemon-owned durable submissions.
-- **Compatibility boundary**: typed Git/native tool operations, interactive terminal/editor sessions, and any domain-specific process path not yet adapted to `JobSubmissionService` remain explicitly documented compatibility surfaces; they must not be described as scheduler-owned until migrated.
-- See `plans/single-daemon-scheduler-cutover-correctness-and-operational-proof.md`, `architecture/scheduler.md`, `src/scheduler/`, `tests/scheduler_phase5.rs`, and `scripts/check_scheduler_bypass.py` for the current contract.
+- **Submission boundary**: `JobSubmissionService` (`src/scheduler/submission.rs`) is the daemon-owned facade. Callers must not create a job and separately dispatch it.
+- **Single authority**: `JobScheduler` (`src/scheduler/scheduler.rs`) is the only daemon admission authority for submitted work.
+- **Static guards**: `scripts/check_scheduler_bypass.py` rejects direct TestRunner calls, legacy subagent sends, and background scheduler loop starts outside explicit sites. `scripts/check_execution_ownership.py` enforces the machine-readable `docs/execution-ownership.toml` manifest. `scripts/check_daemon_cwd_usage.py` remains required for workspace-bound daemon paths. Run all after changing any execution surface.
+- See `plans/single-daemon-scheduler-cutover-correctness-and-operational-proof.md`, `architecture/scheduler.md`, `src/scheduler/`, and `tests/scheduler_phase5.rs`.
 
-### Execution ownership inventory
+### Execution Ownership Inventory
 
-- **Manifest**: `docs/execution-ownership.toml` is the machine-readable inventory of all production process-spawn sites. Every source location in `src/` and `crates/` that can spawn a process, send work to a worker pool, start a test runner, start a background loop, invoke a domain-specific process service, create or enqueue a durable job, or acquire scheduler permits must be declared with an explicit owner classification.
-- **Static guard**: `scripts/check_execution_ownership.py` greps for canonical spawn patterns (`tokio::process::Command::new`, `std::process::Command::new`, `JobStore::create_job`, `.spawner().send`, etc.) and fails CI on unclassified sites. Run it after adding new process-spawn or dispatch sites.
-- **Owner classes**: `scheduler` (heavy work via `JobSubmissionService`), `interactive` (long-lived PTY/REPL), `standalone_compat` (explicit `--standalone`/`--stdio`/test harness), `definition_or_adapter` (subsystem definition, not a caller), `deferred_domain_executor` (future scheduler migration), `test_only`, `forbidden_bypass` (must be fixed; guard fails).
-- **Human-readable docs**: `docs/execution-ownership.md` explains the manifest format, owner classes, and migration trajectory for deferred sites.
-- See `scripts/check_execution_ownership.py` and `docs/execution-ownership.toml` for the full contract.
+- **Manifest**: `docs/execution-ownership.toml` is the machine-readable inventory of all production process-spawn sites.
+- **Static guard**: `scripts/check_execution_ownership.py` greps for canonical spawn patterns and fails CI on unclassified sites.
+- **Owner classes**: `scheduler`, `interactive`, `standalone_compat`, `definition_or_adapter`, `deferred_domain_executor`, `test_only`, `forbidden_bypass` (must be fixed; guard fails).
+- See `scripts/check_execution_ownership.py` and `docs/execution-ownership.toml`.
 
 ### Module Splits
 
 - **Error enums** live in `crates/codegg-core/src/error.rs`. Root `src/error.rs` re-exports + adds `AxumAppError`/`AxumServerRuntimeError` behind `#[cfg(feature = "server")]`.
-- **protocol_conversions**: Core conversions in `crates/codegg-core/src/protocol_conversions.rs`. Agent-specific conversions in root `src/protocol_conversions.rs`. Root re-exports core via `pub use codegg_core::protocol_conversions::*;`.
+- **protocol_conversions**: Core conversions in `crates/codegg-core/src/protocol_conversions.rs`. Root re-exports core via `pub use codegg_core::protocol_conversions::*;`.
 - **Protocol is a re-export**: `src/protocol/` deleted. `src/lib.rs` has `pub use codegg_protocol as protocol;`. Use `codegg_protocol::dto` types.
 - **Provider is a re-export**: `src/provider/` re-exports from `crates/codegg-providers` as `codegg::provider`.
 
 ### TUI
 
-- **TUI render.rs doesn't exist**: `src/tui/app/` contains `mod.rs` (~13K lines) and `types.rs`. Command handlers are in `src/tui/commands/` (13 submodules). Runtime is in `src/tui/runtime/` (event_loop, command_dispatch, app_events, render_recovery).
-- **Custom test command validation is strict argv-prefix**: `src/test_runner/custom.rs::validate_custom_command` is the single source of truth — used by both the model-facing `test` tool (`src/tool/test.rs`) and the `/test` slash command (`src/tui/commands/test.rs`). Rejects shell metacharacters (`;`, `|`, `>`, `<`, `&`, `$(`, `` ` ``, `$`, `\`, quotes, parentheses, braces, brackets, `*`, `?`, `~`, `#`, `!`), newlines, NUL/control characters, and bidi Unicode controls. Argv-token-bounded match, so `pytestevil` and `cargo testify` do NOT match. Resolver re-runs the validator as defense-in-depth before producing `ResolvedTestCommand.argv`. Both generated and custom commands execute via direct `Command::new(argv[0]).args(&argv[1..])` — never via a shell.
-- **Previous-failures index**: `.codegg/test-runs/index.json` stores up to 100 recent test run entries (newest-first). `TestScope::PreviousFailures` loads the index, scans for the newest actionable failure (`Failed` or `TimedOut`), validates cwd and argv safety, and returns a `ResolvedTestCommand` for rerun. The index is written atomically after every test run via `append_to_index()` in `runner.rs`. See `architecture/test_runner.md` "Previous-Failures Index (Phase 06)".
-- **TestRunner RunStore integration**: `TestTool` has `with_run_store()` constructor matching the bash/python pattern. TestRunner persists to `RunStore` (`RunKind::Test`) in addition to its existing `.codegg/test-runs/` storage. The `rerun` field is set so `can_rerun` works from TUI. Both the model-facing `test` tool and TUI `/test` slash command persist to RunStore.
-- **Dialog::Info doesn't exist**: Despite `src/tui/components/dialogs/info.rs` existing, `Dialog::Info` is NOT in the Dialog enum (`src/tui/app/types.rs`).
+- **TUI render.rs doesn't exist**: `src/tui/app/` contains `mod.rs` (~13K lines) and `types.rs`. Command handlers are in `src/tui/commands/` (13 submodules). Runtime is in `src/tui/runtime/`.
+- **Custom test command validation is strict argv-prefix**: `src/test_runner/custom.rs::validate_custom_command` is the single source of truth. Rejects shell metacharacters. Argv-token-bounded match, so `pytestevil` and `cargo testify` do NOT match. Both generated and custom commands execute via `Command::new(argv[0]).args(&argv[1..])` — never via a shell.
+- **Previous-failures index**: `.codegg/test-runs/index.json` stores up to 100 recent test run entries. Written atomically after every test run.
+- **Dialog::Info doesn't exist**: Despite `src/tui/components/dialogs/info.rs` existing, `Dialog::Info` is NOT in the Dialog enum.
 - **DialogType is in component.rs**, not `types.rs`. FocusManager is in `component/focus.rs`.
-- **Dialog::Plugin is generic**: A single `Dialog::Plugin` variant handles all plugin dialogs. Plugin dialog content is stored in `PluginUiState.dialogs` and rendered via `PluginDialog` component.
-- **Async command pattern**: High-latency TuiCommand handlers use spawn-and-complete via `spawn_tui_task`. The `start_*` function spawns work; a typed completion variant arrives back. Stale protection uses request IDs. See `src/tui/async_cmd.rs`. New apply handlers MUST use the `state.finish(request_id)` / `state.fail(request_id, err)` guard pattern and add a stale-completion test.
-- **Sync dispatch is the rule**: `src/tui/runtime/command_dispatch.rs` arms are all `fn` (non-async). Handlers that need async work use `tokio::spawn` + `TuiCommand` completion, or `spawn_registered_tui_task` for lifecycle-tracked work. New dispatch arms should NOT add `.await`.
-- **Long output goes to info dialog**: `App::show_short_or_info(info_type, lines)` toasts when ≤3 lines, otherwise opens scrollable `InfoDialog`. Reserve raw `toasts.info(joined)` for single-line responses.
-- **Background task lifecycle**: `TuiTaskRegistry` on `App` tracks spawned tasks. Use `spawn_registered_tui_task(tx, registry, kind, name, fut)` for lifecycle-tracked tasks. `App::prepare_shutdown()` cancels all registered tasks.
-- **Git sidebar is cached, not rendered live**: `GitSidebarState` caches git info. Refresh triggers on `TuiMsg::SelectSession` and session reload. Results arrive as `TuiCommand::GitSidebarRefreshFinished`; stale generations dropped silently.
-- **Remote TUI protocol is event/state-driven**: The `/tui` WebSocket uses `TuiCommand` enum. `RenderFrame` is unsupported. Remote clients use `StateSnapshot` and `RequestSnapshot`.
+- **Dialog::Plugin is generic**: A single `Dialog::Plugin` variant handles all plugin dialogs.
+- **Async command pattern**: High-latency handlers use spawn-and-complete via `spawn_tui_task`. New apply handlers MUST use `state.finish(request_id)` / `state.fail(request_id, err)` guard pattern and add a stale-completion test. See `src/tui/async_cmd.rs`.
+- **Sync dispatch is the rule**: `src/tui/runtime/command_dispatch.rs` arms are all `fn` (non-async). New dispatch arms should NOT add `.await`.
+- **Long output goes to info dialog**: `App::show_short_or_info(info_type, lines)` toasts when ≤3 lines, otherwise opens scrollable `InfoDialog`.
+- **Background task lifecycle**: `TuiTaskRegistry` on `App` tracks spawned tasks. Use `spawn_registered_tui_task(tx, registry, kind, name, fut)`.
+- **Git sidebar is cached, not rendered live**: `GitSidebarState` caches git info. Stale generations dropped silently.
+- **Remote TUI protocol is event/state-driven**: The `/tui` WebSocket uses `TuiCommand` enum. `RenderFrame` is unsupported.
 
 ### Tool Registry
 
 - **ToolCatalog::register() takes `&dyn Tool`**, not `Box<dyn Tool>`.
 - **multiedit tool exists but NOT in default registry**: `src/tool/multiedit.rs` exists, `pub mod multiedit` is registered, but it's NOT in `ToolRegistry::with_defaults()`.
-- **~37 tools** in `ToolRegistry::with_options()` (`src/tool/mod.rs`). Count varies by config (conditional LSP, security, todo, context_read tools). Includes 8 always-visible eggsact deterministic tools.
+- **~37 tools** in `ToolRegistry::with_options()` (`src/tool/mod.rs`). Count varies by config. Includes 8 always-visible eggsact deterministic tools.
 - **Tool session constructor**: `with_session_config_defaults(&Config, ...)` is the production constructor. `with_session_defaults(...)` is the legacy all-native fallback.
-- **Integrated tool config (Phase 6)**: `src/tool/integrated_config.rs` resolves evidence/deterministic/preflight runtime configs once from `Config` via `resolve_integrated_config()`. Passed through `ToolRegistryOptions` to `with_options()`. Subagents now use `with_config(&config)` (`src/agent/worker.rs:698`) to inherit backend config — previously used `with_defaults()` which dropped it.
+- **Integrated tool config (Phase 6)**: `src/tool/integrated_config.rs` resolves evidence/deterministic/preflight runtime configs once from `Config`. Subagents use `with_config(&config)` (`src/agent/worker.rs:698`) to inherit backend config.
 - **patch_util.rs shared utilities**: `src/tool/patch_util.rs` is used by both `apply_patch` tool and LSP preview operations.
-- **eggsact is in-process, not MCP**: The `eggsact` dependency is consumed as a direct Rust dependency (`src/eggsact/adapter.rs`), not via MCP server. `EggsactRuntime` wraps `eggsact::agent::ToolRegistry` in-process. Provenance must tag `backend = "native"`, `implementation = "eggsact/<tool_name>"`, `trust = LocalTrusted`. `EggsactCallResult` carries structured fields (`result`, `findings`, `warnings`, `error_type`, `error`) in addition to the legacy string output.
-- **Deterministic tools (Phase 4)**: `EggsactTool` generic wrapper in `src/tool/deterministic.rs` exposes a conservative subset of eggsact tools to the model. 8 always-visible tools (`text_equal`, `text_diff_explain`, `text_replace_check`, `validate_json`, `validate_toml`, `command_preflight`, `path_normalize`, `text_security_inspect`) plus 5 deferred tools discoverable via `tool_search`. All use `ToolCategory::ReadOnly` and are registered best-effort; if `EggsactRuntime::new()` fails, the tools are silently skipped. `truncate_utf8_safe()` in `src/eggsact/adapter.rs` is the shared helper for UTF-8 safe truncation of tool output. `DeterministicToolsConfig::validate()` provides runtime config validation for the deterministic tool layer. `BootstrapReport` has `tool_coverage_status()`, `missing_required_tools()`, and `missing_recommended_tools()` for classifying which eggsact tools are available vs missing.
-- **Preflight (Phase 5)**: `src/preflight/` provides harness-side automatic validation before mutating operations (edits, config writes, shell commands) using eggsact. Config: `[preflight]` section in opencode.json. Default mode: `warn`. Key types: `PreflightService`, `PreflightPolicy`, `PreflightDecision`, `PreflightFinding`. Integration points: edit, replace, apply_patch, multiedit, bash tools. **Harness-internal only** — preflight calls do not appear as model-facing tool calls. Findings are severity-classified (`Block`/`Warn`/`Annotate`) and can block, warn, or annotate depending on policy mode (`off`, `observe`, `warn`, `block_on_definite`). **Structured parsing**: Decisions use structured eggsact fields first (`result`, `findings`, `warnings`), falling back to string parsing for legacy output. `PreflightConfig::validate()` provides runtime config validation.
-- **CommandIntentMode**: `CommandIntentMode` enum (`Observe | Active | deprecated Route`) with default `Observe`. `CommandIntentConfig` has `mode` field. `Active` enables validated dispatch to structured backends; `Route` remains a backward-compatible alias. `route_safe_commands = true` alone does NOT enable active routing. Failed validation still falls back to the raw-shell path.
+- **eggsact is in-process, not MCP**: The `eggsact` dependency is consumed as a direct Rust dependency (`src/eggsact/adapter.rs`). `EggsactRuntime` wraps `eggsact::agent::ToolRegistry` in-process. Provenance must tag `backend = "native"`, `implementation = "eggsact/<tool_name>"`, `trust = LocalTrusted`.
+- **Deterministic tools**: `EggsactTool` generic wrapper in `src/tool/deterministic.rs` exposes 8 always-visible tools (`text_equal`, `text_diff_explain`, `text_replace_check`, `validate_json`, `validate_toml`, `command_preflight`, `path_normalize`, `text_security_inspect`) plus 5 deferred tools. Registered best-effort; if `EggsactRuntime::new()` fails, tools are silently skipped.
+- **Preflight**: `src/preflight/` provides harness-side automatic validation before mutating operations using eggsact. **Harness-internal only** — not model-facing. Findings are severity-classified (`Block`/`Warn`/`Annotate`).
+- **CommandIntentMode**: `Observe | Active | deprecated Route` with default `Observe`. `Active` enables dispatch to structured backends. `route_safe_commands = true` alone does NOT enable active routing.
 
 ### Agent Runtime
 
-- **TurnRuntime**: Daemon calls `DefaultTurnRuntime.run_turn(TurnRunInput)` via `deps.turn_runtime`. No direct `DefaultTurnRuntime` construction in daemon code.
+- **TurnRuntime**: Daemon calls `DefaultTurnRuntime.run_turn(TurnRunInput)` via `deps.turn_runtime`.
 - **AgentLoop has ~49 fields** at `src/agent/loop.rs:1380`. Many docs claim 15.
 - **AgentLoopFactory** (`src/agent/agent_loop_factory.rs`) is a build-only seam.
-- **CoreRuntimeDeps** (`src/core/runtime_deps.rs`): Bundles pool, memory_store, legacy_agent, turn_runtime. Use `with_deps()` for new code.
-- **AgentRegistry** (`src/agent/registry.rs`): Central registry separating declarative sources from resolved runtime agents. Tracks source provenance (Builtin, GlobalFile, ProjectFile, ConfigAgent, ConfigMode, Session) and emits diagnostics. `AgentRegistry::load(config)` replicates the 5-layer resolution order from `resolve_agents()`. `into_agents()` provides backward compatibility. New code should prefer `AgentRegistry` over `resolve_agents()`.
-- **Emergency fallback model**: `EMERGENCY_DEFAULT_MODEL` constant is centralized in `src/agent/mod.rs`. When no model is configured or resolved, this constant is used and a warning is emitted. Users should always configure models explicitly to avoid silent fallback behavior.
+- **CoreRuntimeDeps** (`src/core/runtime_deps.rs`): Bundles pool, memory_store, legacy_agent, turn_runtime.
+- **AgentRegistry** (`src/agent/registry.rs`): Central registry separating declarative sources from resolved runtime agents. Prefer over `resolve_agents()`.
+- **Emergency fallback model**: `EMERGENCY_DEFAULT_MODEL` in `src/agent/mod.rs`. Users should always configure models explicitly.
 
 ### LSP
 
 - **egglsp is authoritative**: `src/lsp/` is a thin shim. All real LSP logic lives in `crates/egglsp/`.
 - **39 LSP servers** configured in `crates/egglsp/src/server.rs`.
-- **Preview-only boundary**: `renamePreview`, `formatPreview`, `sourceActionPreview` never write to disk. `workspace/executeCommand` is never invoked.
-- **LSP tests need `lsp-test-support` feature**: The fake server binary is `codegg-lsp-test-server`. Tests use polling loops (bounded waits), not fixed sleeps.
-- **Preview apply (Phase 9)**: `/lsp-preview-apply` applies patches directly to disk with SHA-256 hash revalidation. Stale previews are blocked. `LspTool` remains read-only; file writes use `std::fs`.
-- **LSP semantic cache** is opt-in and disabled by default. Config via `[lsp_semantic_cache]`. Cache is memory-only (disk cache deferred for privacy reasons).
-- **Workflow recipes**: `crates/egglsp/src/workflow_recipes.rs` provides named workflows (repair_local, review_file, impact_analysis, etc.) composing LSP primitives. All commands are read-only and never auto-apply previews.
+- **Preview-only boundary**: `renamePreview`, `formatPreview`, `sourceActionPreview` never write to disk.
+- **LSP tests need `lsp-test-support` feature**: The fake server binary is `codegg-lsp-test-server`. Tests use polling loops, not fixed sleeps.
+- **Preview apply (Phase 9)**: `/lsp-preview-apply` applies patches with SHA-256 hash revalidation. `LspTool` remains read-only.
+- **LSP semantic cache** is opt-in and disabled by default. Config via `[lsp_semantic_cache]`.
 
 ### Plugin System
 
-- **Plugin UI types** live in `codegg_protocol::ui` (`UiNode`, `UiEffect`). TUI consumption via `PluginUiState` and `PluginUiRenderer` / `UiNodeRenderer`.
-- **PluginRuntime trait** (`src/plugin/runtime/`): `ProcessRuntime`, `WasmRuntime`, and `BuiltinRuntime` implementations. WASM requires `plugins` feature flag.
-- **PluginRegistry** indexes by capability: `command()`, `commands()`, `panels()`, `status_widgets()`, `event_subscribers()`. Duplicate command names rejected.
-- **PluginManager** (`src/plugin/management.rs`) is the canonical API for TUI commands: `list()`, `info()`, `enable()`, `disable()`, `doctor()`, `remove()`, `install_from_path()`, `uninstall()`.
-- **Plugin install validation**: `src/plugin/install.rs` does lexical path traversal checks BEFORE canonicalizing. Rejects symlinks, hardlinks, and absolute paths in archive members.
-- **Plugin security policy**: `PluginPolicy` in `src/plugin/policy.rs` combines lifecycle, UI, permission, install, and runtime sub-policies. All default to conservative. Policy is opt-in.
-- **Plugin SDKs**: `examples/plugins/sdk-rust/` (11 tests) and `examples/plugins/sdk-python/` (24 tests). Wire format in `crates/codegg-protocol/src/plugin.rs` (`PLUGIN_PROTOCOL_VERSION = 1`).
+- **Plugin UI types** live in `codegg_protocol::ui` (`UiNode`, `UiEffect`).
+- **PluginRuntime trait** (`src/plugin/runtime/`): `ProcessRuntime`, `WasmRuntime`, `BuiltinRuntime`. WASM requires `plugins` feature flag.
+- **PluginRegistry** indexes by capability. Duplicate command names rejected.
+- **PluginManager** (`src/plugin/management.rs`) is the canonical API: `list()`, `info()`, `enable()`, `disable()`, `doctor()`, `remove()`, `install_from_path()`, `uninstall()`.
+- **Plugin install validation**: `src/plugin/install.rs` does lexical path traversal checks BEFORE canonicalizing. Rejects symlinks, hardlinks, and absolute paths.
+- **Plugin security policy**: `PluginPolicy` in `src/plugin/policy.rs`. All default to conservative. Policy is opt-in.
+- **Plugin SDKs**: `examples/plugins/sdk-rust/` (11 tests) and `examples/plugins/sdk-python/` (24 tests).
 
 ### Auth
 
-- **ExternalCommand is disabled**: Both `AuthResolver::resolve` and `ExternalCommandProvider::fetch` return `AuthError::Unsupported` for any non-empty command.
-- **Credential store**: `~/.config/codegg/credentials.json`. Requires `CODEGG_MASTER_KEY` to store new credentials (not to read env/config-backed keys).
-- **Provider registration**: Adding ANY provider via config disables all env-var auto-registration (intentional).
-- **Auth logging**: Never log secret prefix/suffix/length. Follow `ResolvedAuthSource::as_str()` pattern.
+- **ExternalCommand is disabled**: Both `AuthResolver::resolve` and `ExternalCommandProvider::fetch` return `AuthError::Unsupported`.
+- **Credential store**: `~/.config/codegg/credentials.json`. Requires `CODEGG_MASTER_KEY` to store new credentials.
+- **Provider registration**: Adding ANY provider via config disables all env-var auto-registration.
+- **Auth logging**: Never log secret prefix/suffix/length.
 
 ### Security
 
-- **Security review workflow** (`src/security/workflow/`): Read-only, never mutates files. Risk markers become review prompts, never findings.
-- **Security finding synthesis**: Evidence-based, requires 2+ evidence dimensions. Same-file scoping only. Different-file evidence never supports a finding.
+- **Security review workflow** (`src/security/workflow/`): Read-only, never mutates files.
+- **Security finding synthesis**: Evidence-based, requires 2+ evidence dimensions. Same-file scoping only.
 
 ### Git
 
-- **GitExecutionService is the canonical read executor**: `src/git_service.rs` provides `GitExecutionService` which delegates to `egggit` for structured parsing and falls back to subprocess execution for mutations. All structured git reads (status, diff, log, blame, refs, branches, tags, remotes) flow through this service. Downstream consumers should consume `GitPayload` variants, not raw stdout.
-- **egggit is read-only, mutations stay in Codegg**: `egggit` modules (`status_v2`, `log`, `blame`, `refs`, `diff`, `worktree`) never mutate repository state. Commit, checkout, branch create/delete, stash push/pop, and all other mutations are handled by the `git_mutations` executor (`src/git_mutations.rs`) under the permission flow.
-- **status_v2 replaces raw status parsing**: `status_v2::rich_status()` returns `RichRepoStatus` with branch state, ahead/behind, staged/unstaged/untracked/conflict entries. TUI sidebar and prompt context consume this directly. The legacy `status::RepoStatus` remains available for backward compatibility.
-- **GitTool structured-first execution**: `src/tool/git.rs` attempts structured execution via `try_structured_read()` for all read-only subcommands before falling back to raw subprocess output.
-- **Phase D: typed mutations with state deltas**: `src/tool/git.rs` accepts a `mutation` action (`stage_paths`, `stage_all`, `commit`, `branch_create`, `merge`, `rebase`, `cherry_pick`, `revert`, `abort`, etc.). All mutations route through `GitMutationExecutor` in `src/git_mutations.rs`, which captures `RepoSnapshot` before/after, computes `StateDelta`, pins env (`GIT_TERMINAL_PROMPT=0`, `GIT_EDITOR=true`, `GIT_SEQUENCE_EDITOR=true`), and persists to `RunStore` with `RunKind::GitMutation`, `PlannedBackend::Git`, `RunOwnership::DelegatedBackend`. See `architecture/git.md` Phase D section. The raw `subcommand` path is still available for passthrough.
-- **Phase E: network, configuration, destructive operations**: `src/git_network_policy.rs` provides `NetworkEnvPolicy` for env hardening, `classify_network_failure()` for stderr classification, and `redact_url_credentials()` for sanitizing remote URLs before they reach the persistence layer. `src/git_network_ops.rs` adds typed helpers for `fetch`/`pull`/`push`/`remote_*`/`config_*`/`reset_*`/`clean_preview`/`clean`. All Phase E mutations are exposed as new `mutation` action entries in `src/tool/git.rs` and persist to RunStore with `RunKind::GitMutation`. `PushForce::Force` and `CleanRequest::is_broad()` are tagged destructive and rejected by tool-side policy (`ToolError::Execution`). Config keys are gated by `CONFIG_KEY_ALLOWLIST` and `CONFIG_DENIED_KEY_PATTERNS` (denies `credential.*`, `http.*`, `url.*`, `core.gitProxy`); global-only keys (`user.*`, `gpg.format`) are rejected when `scope=local`. See `architecture/git.md` Phase E section.
-- **Phase F: conflicts, recovery, ergonomics, closure**: `crates/egggit/src/operation_state.rs` exposes `RepositoryOperationState` (eight families: merge, rebase, cherry-pick, revert, bisect, apply-mailbox, sequencer, unknown) plus `RecoveryAction::{Continue, Abort, Skip}` with operation-aware availability checks. `crates/egggit/src/conflict.rs` defines typed `ConflictEntry`, `ConflictKind`, `ConflictShape`, `ConflictReport` (no auto-resolve — agents edit markers, stage with `mutation: "stage_paths"`, then recover). `src/git_recovery.rs` exposes `continue_in_progress`, `abort_in_progress_typed`, `skip_in_progress` that detect state, dispatch the correct typed `GitOperation`, refuse cross-operation misuse, and persist via `git_run_store::persist_recovery` (RunKind::GitMutation, backend.detail = `"recover:<action>"`). The `git` tool gains `operation_state` (typed state probe) and `recover` (continue|abort|skip) parameters, both persisted to RunStore. TUI sidebar (`src/tui/commands/git_sidebar.rs` + `src/tui/app/state/session.rs`) caches `operation_state_label`, `available_actions`, and `conflicted_paths` from the typed probe. `project_recovery()` in `src/git_mutation_projector.rs` formats the result. Agent prompts (`assets/prompts/agents/general.md`) now carry Phase F git workflow guidance. Schema snapshot tests in `tool::git::schema_tests` pin mutation enum, recover enum, and description. See `architecture/git.md` Phase F section.
-- **Phase F corrective security closure (post-merge)**: Two Phase F findings were closed by the corrective closure pass. (1) `remote_set_url` credential leakage: `GitOperation::RemoteAdd.url` and `GitOperation::RemoteSetUrl.url` are now typed as `codegg_git::RedactedUrl`, a newtype whose `Debug`/`Display`/`Serialize` paths see only the redacted form; raw is reachable exclusively via `RedactedUrl::expose_secret()`, consumed at the final `render_argv` boundary. `git_run_store.rs` flows the audit argv through `sanitize_argv_for_run_store` before persistence. `src/git_mutations.rs::sanitize_truncate_for_result` and `src/git_network_policy.rs::redact_url_credentials_in_text` are the two-line defense-in-depth sanitizers that keep credential leaks out of `MutationResult.stdout/stderr` and RunStore artifacts. (2) Raw fallback missing hardened env policy: every Codegg-owned `git` subprocess now flows through `GitEnvPolicy::apply()` (tokio async) or `GitEnvPolicy::apply_sync()` (synchronous TUI probes). The default policy includes `strip_command_bearers = true`, which removes 27 vars including `GIT_ASKPASS`, `GIT_SSH_COMMAND`, `GIT_PROXY_COMMAND`, all `GIT_CONFIG_*`, `GIT_DIR`, `GIT_WORK_TREE`, `GIT_PAGER`, etc. Affected callers: `src/tool/git.rs::run_raw_subcommand`, `src/git_service.rs::run_git_raw`, `src/tool/commit.rs::fetch_head_message`, `src/core/daemon.rs::SnapshotWorkspace`, the TUI diff/checkout/show dialogs, and `crates/codegg-core/src/worktree.rs::create_worktree`/`remove_worktree`. See `docs/validation/git-security-review.md` "Resolutions" section and `architecture/git.md` "Phase F corrective security closure" section.
-- **Polish / maintainability / verification pass**: Three further invariants tighten the closure. (1) **Canonical subprocess policy**: `ALLOWED_ENV_VARS` and `ALWAYS_STRIPPED_ENV_VARS` now live in `codegg_git::process_policy` and are re-exported by both `src/git_mutations.rs` and `crates/codegg-core/src/worktree.rs`. The root crate and the core worktree helper can no longer silently drift — drift is caught by `cargo test -p codegg-git` (in-module tests), `cargo test -p codegg-core` (`worktree_uses_canonical_policy` + `canonical_includes_locally_drifted_entries`), and `src/git_mutations.rs::policy_drift_tests`. (2) **Audit-safe rerun argv**: `RerunDescriptor.argv` is now `Option<AuditSafeArgv>` (a newtype in `codegg_git::sensitive`). The only construction path (`AuditSafeArgv::from_argv`) runs the URL sanitizer on every token, so durable RunStore records are credential-free; the deserializer re-runs the sanitizer to normalize historical records. See `docs/validation/git-rerun-secret-lifecycle.md` for the full lifecycle. (3) **Forbidden-pattern static checks**: `scripts/check_git_forbidden_patterns.py` enforces (a) `expose_secret()` only at the `render_argv` boundary, (b) no hand-maintained env-policy tables, (c) `RerunDescriptor.argv` is always `AuditSafeArgv`, (d) git argv flowing into `RunInvocation` is sanitized. The script is part of the standard local validation. See `architecture/git_polish_verification_handoff.md` for the post-closure verified state.
-- **Track U: unified Bash→Git routing (functional closure of the bash/git gap)**: The BashTool previously fell back to raw shell for `git add` and other GitMutating commands because `intent_kind_to_family(GitMutating) → None` and the planner's `ExecutionBackend::Git` carried no family. Track U splits the Git families into four: `GitRead` (read-only), `GitLocalMutation` (`add`, `commit`, `branch`, `checkout`, `restore`, `stash`, `merge`/`rebase`/`cherry-pick` without `--force`/network), `GitNetwork` (`fetch`/`pull`/`push`/`clone`/`remote add`/`ls-remote`), and `GitDestructive` (`reset --hard`, `clean -fdx`, `push --force`). Each family has its own `RouteLevel` config gate (`route_git_local_mutation`, `route_git_network`, `route_git_destructive` — all default `None`/conservative). The new `plan_family(plan)` resolver in `src/tool/bash.rs` calls `git_operation_family(&request.operation, &request.risk_set)` (in `src/command_intent/plan.rs`) which selects the family via risk precedence `Destructive > Network > Read > LocalMutation`. The BashTool's `RouteToGit` arm now dispatches through `dispatch_to_git`, which routes typed operations through `GitMutationExecutor` (with snapshot/delta/RunStore parity to the native tool, `backend.family = "git_bash_translation"`, `backend.detail = "bash_translation"`, `RunOwnership::DelegatedBackend`, no-double-execution) and falls back to managed-argv (with `GitEnvPolicy`) for `ManagedGitArgv` plumbing. Reads are NOT persisted (matching native tool behavior). The conservative default (`route_git_local_mutation = Off`) keeps existing user-visible behavior: bash git mutations still run via raw shell until the user opts in. New matrix rows pin the contract: `row_5` (default = raw shell), `row_5b` (`-C` fallback path), `row_5c` (typed active path → DelegatedBackend). See `tests/git_execution_origin_matrix.rs` and `architecture/git.md` Track U section.
+- **GitExecutionService is the canonical read executor**: `src/git_service.rs`. Delegates to `egggit` for structured parsing; falls back to subprocess for mutations. Downstream consumers should consume `GitPayload` variants.
+- **egggit is read-only, mutations stay in Codegg**: `egggit` modules never mutate. All mutations handled by `git_mutations` executor (`src/git_mutations.rs`).
+- **status_v2 replaces raw status parsing**: `status_v2::rich_status()` returns `RichRepoStatus`. Legacy `status::RepoStatus` remains for backward compat.
+- **GitTool structured-first execution**: `src/tool/git.rs` attempts structured execution before raw subprocess.
+- **Phase D: typed mutations**: `src/tool/git.rs` accepts `mutation` action. All mutations route through `GitMutationExecutor` with snapshot/delta/RunStore persistence.
+- **Phase E: network/config/destructive**: `src/git_network_policy.rs` and `src/git_network_ops.rs`. `PushForce::Force` and broad clean are rejected by tool-side policy. Config keys gated by allowlist.
+- **Phase F: conflicts/recovery**: `crates/egggit/src/operation_state.rs` exposes `RepositoryOperationState` + `RecoveryAction`. `src/git_recovery.rs` exposes `continue_in_progress`, `abort_in_progress_typed`, `skip_in_progress`.
+- **Track U: unified Bash→Git routing**: Git families split into `GitRead`, `GitLocalMutation`, `GitNetwork`, `GitDestructive`. Conservative default (`route_git_local_mutation = Off`). See `tests/git_execution_origin_matrix.rs`.
+- See `architecture/git.md` for the full contract.
 
 ### Human Shell
 
 - **Central invariant**: A human `!` command is not model context unless the user explicitly promotes it.
-- **Syntax**: `!command` runs a shell command with output hidden from the model (ephemeral). `!!command` runs and auto-promotes output into the conversation.
+- **Syntax**: `!command` runs ephemeral (hidden from model). `!!command` runs and auto-promotes output.
 - **Module location**: `src/shell/` — `types.rs`, `runtime.rs`, `store.rs`, `policy.rs`, `digest.rs`, `projection.rs`, `projector.rs`, `projection_bridge.rs`, `rtk.rs`, `redactor.rs`.
-- **Policy evaluation**: `evaluate_command()` blocks destructive commands (rm -rf /, mkfs, dd to device, fork bombs, shutdown/reboot/halt) and warns on risky ones (rm -rf ., git clean -f, sudo, curl|sh, chmod 777, recursive chown).
-- **Command-event projection (Phase 1)**: `CommandOutputStore` retains raw stdout/stderr out-of-band for the projection pipeline. `ShellCommandRunBridge` mirrors `ShellEvent`s into the store. Stable handles `cmd://<id>/<stream>` resolve raw output without rerunning commands. Caps: 32 MiB per stream, 64 MiB total, 100 history entries. Streams exceeding the cap are marked `OutputCompleteness::Partial` rather than silently truncated. The two stores (`ShellOutputStore` for TUI transcripts, `CommandOutputStore` for projection) run side by side — Phase 1 is additive, not a replacement.
-- **Projection trait and built-in projectors (Phase 2)**: `src/shell/projector.rs` defines the `CommandOutputProjector` trait, `ProjectionRequest`/`ProjectionResult`, `ProjectionTarget`/`ProjectionBudget`/`ProjectionPolicy`, `ProjectionKind`/`ProjectionExactness`, `OmittedRange`, `ExpansionHandle`, and the `RawProjector` / `TruncatedProjector` / `ErrorRetentionProjector` implementations. `ProjectionSelector::with_defaults()` is the centralised selector; `default_command_projection` is now a thin wrapper around it. `apply_redaction_hook` is the Phase 8 redaction entry point; its call site lives in `ProjectionSelector::project` so the redaction contract cannot be bypassed by RTK or native projectors.
-- **Projection config and TUI metadata (Phase 4, partial)**: `ShellOutputConfig` in `crates/codegg-config/src/schema.rs` defines `[shell.output]` with `projection` (off|safe|rtk|aggressive), `retain_raw`, `redact_model_visible_output`, `max_model_output_tokens`, `show_projection_metadata`, `prefer_native_projectors`, and `[shell.output.rtk]` sub-table. `ProjectionSelector::with_config()` builds a selector from config. Per-command rules are parsed but not yet consumed by the projection pipeline. Escape hatches and full rule-based projector selection are deferred.
-- **RTK discovery and projection skeleton (Phase 5)**: `src/shell/rtk.rs` adds `RtkDiscovery` (lazy detection, version probe, availability state), `RtkAvailability` with `RtkState` enum (Disabled, Available, NotFound, Broken, TimedOut, UnsupportedVersion), `RtkCapabilities` with `CapabilityState` enum (Yes, No, Unknown), `CompressionEligibility` enum and `classify_command()`, and `RtkProjector` implementing `CommandOutputProjector` (skeleton). `RtkProjector::project()` returns `ProjectionError::BackendUnavailable` — the skeleton does NOT produce fake placeholder output. `ProjectionSelector::project()` falls back to safe projection on error and records a warning. `ProjectionSelector::with_rtk()` conditionally includes the RTK projector; `with_config()` reads `ShellOutputConfig` to build the selector. `ProjectionError::BackendUnavailable` handles unprobed discovery. Phase 5 adds RTK discovery, capability probing, eligibility classification, and an RtkProjector skeleton behind the projection abstraction.
-- **RTK invocation (Phase 6)**: `src/shell/rtk.rs` replaces the skeleton with real invocation. `RtkInvocationMode` enum (PostProcess, Wrapper, Disabled) controls how RTK processes output. `RtkCapabilities::invocation_mode()` prefers PostProcess, falls back to Wrapper, defaults to Disabled. `probe_capabilities()` now probes stdin-piped post-process and wrapped-command modes, with structured `RtkCapabilityDiagnostics` (per-probe `ProbeOutcome`: Confirmed/Denied/Failed/Skipped) and help-text detection heuristic for PostProcess mode. `RtkProjector::project_post_process()` pipes captured stdout/stderr to RTK via stdin with 1 MiB input cap and configurable timeout. `RtkProjector::project_wrapper()` runs `rtk <command>` for eligible read-only commands; uses `argv` when available instead of whitespace splitting, and propagates `cwd` from the original command. Both return `ProjectionKind::ExternalCompressed` / `ProjectionExactness::Lossy` on success, or `ProjectionError::BackendUnavailable` on failure (selector falls back to safe projection). RTK remains disabled by default; native projectors still win by default. **Strict wrapper grammar (WS3)**: When `argv` is unavailable, `parse_simple_wrapper_command()` rejects shell metacharacters, quotes, pipes, redirects, env assignments, and command substitution. Complex commands without `argv` return `BackendUnavailable`. **Structured raw semantics (WS4)**: `ProjectionRawSemantics` on `ProjectionResult` distinguishes `OriginalCommandRaw`, `WrappedCommandRaw`, `OriginalRawUnavailable`, and `Unknown`. RTK wrapper mode sets `WrappedCommandRaw` (non-partial) or `OriginalRawUnavailable` (partial). **User-facing RTK status**: `RtkStatusSummary` provides multi-line status display via `RtkDiscovery::status_summary()`. **Stderr warning cap**: `MAX_STDERR_WARNING_BYTES = 512` prevents excessive context bloat. **RTK integration tests**: Env-gated via `CODEGG_RTK_INTEGRATION=1`; not part of standard CI.
-- **Expansion handles and TUI UX (Phase 7)**: `CommandOutputStore::expand()` / `expand_stream()` expand retained raw output by handle. `CommandOutputExpansion` carries text, `ExpansionExactness` (Exact/LossyUtf8/Unavailable), byte counts, and warnings. `/shell-expand <id|last> stdout|stderr [start..end]` is the TUI command. Shell detail dialog shows projection metadata (projector, exactness, omitted ranges, expansion handles as `cmd://` URLs). `e` keybinding in detail dialog triggers expand. Expansion is local-only unless explicitly promoted. Expansion handle round-trip tests verify handles resolve to correct raw bytes.
-- **Redaction pipeline (Phase 8)**: `src/shell/redactor.rs` implements the `Redactor` with six `RedactRule` implementations: `AuthorizationRule`, `EnvSecretRule`, `PemBlockRule`, `CloudCredentialRule`, `EmbeddedCredentialUrlRule`, `SessionMaterialRule`. `apply_redaction_hook` in `src/shell/projector.rs` calls `Redactor::new().redact()` and sets `RedactionState::Applied { replacements }` or `AppliedNoMatches`. The call site lives in `ProjectionSelector::project` so redaction cannot be bypassed by RTK or native projectors. `RedactionState` has six variants: `NotApplied`, `HookAppliedNoRules` (legacy), `Applied { replacements }`, `AppliedNoMatches`, `SkippedByPolicy`, `Unavailable`. Redaction is now applied only inside `ProjectionSelector::project()` — one authoritative coordinator. `config_command_projection()` does NOT apply redaction separately (the previous duplicate call was removed to prevent overwriting `RedactionState::Applied { replacements: N }` with `AppliedNoMatches`). The redaction test suite now includes false-positive, long-line, multiple-credentials-per-line, and edge-case tests.
-- **Phase 09 projection contract**: `ProjectionResult` now includes `projection_id: ProjectionId`, `source_spans: Vec<ArtifactSpanRef>`, `redaction_records: Vec<RedactionRecord>`, and `rtk_metadata: RtkResultMetadata`. `ProjectionRecord` in run_store carries full projection metadata including source spans, redaction records, RTK metadata, and promotion decisions. `evaluate_promotion()` determines `PromotionDecision` based on budget, redaction state, and critical spans. `preferred_projector_for_run_kind()` maps `RunKind` to the preferred projector. Python projection now has `PythonProjector` implementing `CommandOutputProjector` and `project_python_result()` for converting `PythonRunResult` to `ProjectionResult`.
-- **Context budget and compaction integration (Phase 10)**: `ProjectionContextMetadata` and `ProjectionFact` types carry critical facts (failed tests, error codes, diagnostic spans, changed files, redaction state) for compaction preservation. `ModelTier` (Mini/Workhorse/Frontier) and `ContextAwareBudget` provide model-tier-aware token budgets. `ProjectionResult::to_context_metadata()` extracts metadata for the compaction system. `is_already_projected` flag prevents double compression. `extract_critical_facts()` scans projected text for patterns. Tests in `tests/shell_projection_phase10.rs`.
+- **Policy**: `evaluate_command()` blocks destructive commands, warns on risky ones.
+- **Projection pipeline (Phases 1–10)**: `CommandOutputStore` retains raw output. `ProjectionSelector` handles projection (safe/truncated/error-retention). RTK integration is env-gated (`CODEGG_RTK_INTEGRATION=1`). Redaction applied inside `ProjectionSelector::project()`. Context budget compaction via `ProjectionContextMetadata`. See `architecture/human_shell.md`.
 
 ### Command Intent and Planning
 
-- **Command intent classification and routing metadata**: `classify_command_with_context(command, ctx)` in `src/command_intent/mod.rs` is the primary classifier — classifies commands into intent families (Test, GitReadOnly, GitMutating, SearchReadOnly, PythonAnalyze/Transform/Verify, Build, Lint, Format, RawShell, Rejected) using workspace-aware path checks. `classify_command()` is a backward-compatible wrapper that delegates to `classify_command_with_context` with a default context (process cwd fallback). In Phase 10, `BashTool::execute()` classifies commands, plans execution, validates for active routing, and dispatches to structured backends when enabled. Active test routing invokes the canonical TestRunner (no raw shell); active Python routing invokes the canonical PythonScript executor (no direct `python3 -c`). `RunOwnership::DelegatedBackend` is set only when the delegated subsystem actually executed and persisted a run (carrying a `RunId` proof); without a run ID, BashTool falls back to caller-owned persistence. `TestScope::BashDispatch(Vec<String>)` (`src/test_runner/types.rs:13`) is used by BashTool's dispatch to bypass allowlist re-validation — the argv has already passed planner classification. `run_kind_for_outcome()` (`src/command_outcome.rs:226-260`) maps `ActualExecutor::RawShell` unconditionally to `RunKind::RawShell` for all intents; semantic intent is preserved via `planned_backend`, routing metadata, and intent kind.
-- **Active routing mode**: `CommandIntentMode::Active` enables dispatch to structured backends (TestRunner, NativeTool, PythonScript, ManagedProcess) instead of raw shell. Default mode is `Observe` (classify + annotate only). Per-family overrides via `route_build`, `route_lint`, `route_format` fields.
-- **Kill switches**: `CODEGG_ROUTING_DISABLE=1` env var globally disables active routing. Per-family `RouteLevel::Off` disables routing for specific families.
-- **Validation gate**: `validate_for_active_routing()` checks 7 conditions (SimpleArgv, High confidence, non-RawShell/Reject, non-Critical risk, no DestructiveFileMutation, no OutsideWorkspace, no pending permissions) before dispatching. A failed gate remains an observe/compatibility result; once active scheduler routing is selected, submission or execution errors are returned and never fall back to raw shell.
-- **Git unified routing (Phase B)**: All git commands (reads and mutations) route through `ExecutionBackend::Git { request: GitExecutionRequest }` → `RoutingDecision::RouteToGit { request, timeout_secs }`. `GitExecutionRequest` carries typed `GitOperation` from codegg-git, argv, origin, risk set, and repository root. `classify_git()` delegates to `codegg_git::parse_git_argv()` for accurate risk assessment via `GitRiskClass`, with fallback to lightweight heuristics on parser failure. Dangerous operations (push, reset --hard, clean -f) route through the Git backend with high-risk policy rather than falling back to RawShell.
-- **CommandIntentContext**: `CommandIntentContext { workspace_root: Option<PathBuf>, cwd: Option<PathBuf> }` carries workspace boundary information for path containment checks. `classify_search_with_context()` and `classify_file_read_with_context()` reject absolute outside-workspace paths from safe classification. Helper functions: `canonical_workspace_root()`, `path_is_inside_workspace()`, `absolute_path_outside_workspace()`. Active routing must use contextual classification, not bare process-cwd classification.
-- **ShellShape parsing**: `ShellShape` enum (`Empty | SimpleArgv(Vec<String>) | ComplexShell`) in `src/command_intent/shell_shape.rs`. `parse_shell_words()` handles quotes, escapes, operators, redirection, command substitution, variable expansion. `CommandIntent` has `parsed_argv: Option<Vec<String>>` field. Classifier uses parsed argv for all `looks_like_*` functions. Planner uses parsed argv for ManagedArgv and TestRunner backends.
-- **Git classification tightened**: `classify_git()` uses parsed argv, not string prefixes. Delegates to `codegg_git::parse_git_argv()` for accurate risk assessment via `GitRiskClass`, with fallback to lightweight heuristics on parser failure. `git branch`, `git tag`, `git remote` are only read-only for specific forms (--list, -l, -v, --show-current). Mutating forms (branch <name>, tag <name>, remote add/remove) correctly classified as GitMutating. `git push`, `git reset --hard`, `git clean -f` classified as High risk.
-- **Search/read classification tightened**: `find -exec`, `-delete`, `-ok`, `-execdir` rejected from safe search. Absolute outside-workspace paths rejected from safe search/file-read. `which`/`whereis` no longer classified as file reads. `classify_search()` and `classify_file_read()` return Option for fallthrough.
-- **Shell operator detection**: `has_shell_operators()` in `src/command_intent/mod.rs` uses quote-aware scanning to detect `|`, `;`, `$`, `` ` ``, `&`, `&&`, `||` outside quotes. Commands with operators are classified as `RawShell` (prevents `cargo test && rm -rf .` routing to TestRunner).
-- **RiskAssessment constructors**: `RiskAssessment` has specific constructors: `read_only()` (no Subprocess), `raw_shell()` (with Subprocess), `managed_process()` (no Subprocess), `git_mutation()` (with GitMutation), `destructive()` (with DestructiveFileMutation). Generic `low()`/`medium()`/`high()` are retained for backward compat. `Subprocess` means the command may spawn child processes beyond the primary planned execution, not simply that codegg will execute a process.
-- **Command planner maps intent to backend**: `plan_execution()` in `src/command_intent/plan.rs` maps classified intents to `ExecutionBackend` (RawShell, ManagedArgv, NativeTool, TestRunner, PythonScript, Git, Reject) with rich struct variants carrying metadata. Re-exports from `src/command_planner.rs`.
-- **Plan includes projector and RTK metadata**: `CommandPlan` now carries `ProjectorRoute` (Raw, Truncated, ErrorRetention, GitStatus/Diff/Log, TestReport, FileSearch, PythonRun, RtkEligible) and `PlanRtkPolicy` (Disabled, Eligible, RequiredForPromotion).
-- **Permission planning**: `CommandPermissionRequest` carries `PermissionDefault` (Allow, Ask, Deny) per capability. `generate_permission_requests()` maps `ExecutionCapability` → permission request with context-aware defaults. `DestructiveFileMutation` → `Deny`; `OutsideWorkspace` → `Deny`; `DependencyInstall` → `Deny`. `GitMutation` → `Allow` for `git add` only; `Ask` for all others (commit, checkout, switch, restore, stash push, merge, rebase, etc.). `WriteWorkspace` → `Ask` for writing formatters (`cargo fmt`, `prettier`, `black`, `isort`), `Allow` for read-only formatters (`--check`, `--diff`), `Ask` for other writes. `ReadWorkspace`, `Subprocess`, `EnvAccess`, `ContextPromotion` → `Allow`. `Network` → `Ask`.
-- **Command routing resolves to subsystem**: `resolve_routing()` in `src/command_routing.rs` maps planned execution to concrete `RoutingDecision` variants (RouteToTestRunner, RouteToShell, RouteToPythonScripting, RouteToNativeTool, RouteToManagedProcess, RouteToGit, Rejected). Git backend routes to RouteToGit.
-- **Python scripting is first-class**: `src/python_script/` is the sole canonical Python scripting module. `PythonScript` supports Analyze/Transform/Verify modes with `PythonCapabilityEnvelope` (9-field sandbox), `PythonCapabilityProfile` (per-mode filesystem roots, subprocess rules, sandbox requirements), `WorkspaceSnapshot` for transform diffing, `PythonScriptTool` (model-facing), and `project_python_run()` projection. Python is NOT hidden inside bash.
-- **Capability enforcement**: `execute_python_script()` calls `resolve_policy()` for full policy resolution (AST risk → profile → enforcement backend) and `check_compatibility()` for legacy evidence — denied capabilities block execution. Landlock filesystem sandboxing on Linux (`build_landlock_allowed_paths()` + `build_landlock_deny_paths()` + `cmd.pre_exec()`). Portable fallback uses env_clear + cwd containment + snapshot detection. Snapshots are taken for ALL modes (Analyze, Transform, Verify), not just Transform. Analyze and Verify modes fail if ANY workspace files change. Capability checks distinguish file reads from file writes: `has_file_read` with `read_workspace`, `has_file_write` with `write_workspace`, destructive ops with `destructive_fs`. `PythonRunResult` carries enforcement evidence fields (`policy_decision`, `denied_capabilities`, `os_filesystem_isolation`, `effective_read_roots`, `effective_write_roots`, `allowed_subprocesses`, `enforcement_warnings`).
-- **Environment hardening**: CWD validated (must exist, must be directory, defaults to current dir). `workspace_root: Option<PathBuf>` on `PythonScriptRequest` provides the authoritative workspace boundary — when set, CWD must be inside this root. Environment cleared via `.env_clear()` with only PATH, HOME, LANG, LC_ALL, VIRTUAL_ENV, PYTHONPATH, DYLD_LIBRARY_PATH restored.
-- **AST-aware risk scanning**: `analyze_python_risk()` tries AST scanning first via `python3 -I` with stdin, falls back to string scanning if Python unavailable or parse fails. `PythonRiskAssessment` has `scanner: PythonRiskScanner` field (Ast | Fallback). Builds alias maps to resolve `import subprocess as sp; sp.run(...)` and `from subprocess import run; run(...)` forms through their aliases. Detects pathlib write_text/read_text/unlink, false positive reduction.
-- **Python run labels (not artifact handles)**: `PythonRunResult` has `stdout_label`/`stderr_label`/`diff_label` — these are pseudo-local run identifiers, NOT registered in any artifact store and NOT expandable via `context_read` or other tools.
-- **Conservative classifier**: The classifier recognizes simple argv-shaped commands and falls back to `RawShell` for complex cases (pipes, redirection, command substitution). It does NOT attempt full POSIX shell parsing.
-- **Package manager safety boundary**: Package managers (`npm install`, `pip install`, `cargo install`) are classified as `RawShell`, NOT Build. They mutate global state and must not be auto-routed.
-- **RtkProjectionPolicy**: Added to `src/shell/projector.rs` for controlling RTK projection behavior (Disabled/PostProcessOnly/WrapperOnly/Both).
+- **Command intent classifier**: `classify_command_with_context(command, ctx)` in `src/command_intent/mod.rs` classifies into intent families (Test, GitReadOnly, GitMutating, SearchReadOnly, PythonAnalyze/Transform/Verify, Build, Lint, Format, RawShell, Rejected).
+- **Active routing mode**: `CommandIntentMode::Active` dispatches to structured backends. Default is `Observe`. Kill switch: `CODEGG_ROUTING_DISABLE=1`.
+- **Validation gate**: `validate_for_active_routing()` checks 7 conditions. Failed gate remains observe; once active scheduler routing is selected, errors are returned without fallback.
+- **Git classification**: Delegates to `codegg_git::parse_git_argv()` for risk assessment. `git push`, `git reset --hard`, `git clean -f` classified as High risk.
+- **ShellShape parsing**: `ShellShape` enum in `src/command_intent/shell_shape.rs`. Handles quotes, escapes, operators.
+- **Command planner**: `plan_execution()` in `src/command_intent/plan.rs` maps intents to `ExecutionBackend`.
+- **Python scripting**: `src/python_script/` is the sole canonical module. Analyze/Transform/Verify modes. Python is NOT hidden inside bash.
+- **Package manager safety**: Package managers (`npm install`, `pip install`, `cargo install`) are classified as `RawShell`, NOT Build.
+- See `architecture/command_intent.md`, `architecture/command_planner.md`, `architecture/command_routing.md`.
 
 ### Context Policy
 
@@ -715,7 +574,7 @@ CI runs on push/PR to dev/main: `agent-assets` → `fmt` → `check` → `clippy
 ## Where New Components Belong
 
 ### New Web Search Providers
-Add to the **eggsearch** project, not to Codegg's built-in search provider registry (`src/search/`). The built-in registry is legacy fallback only. Codegg owns the wrapper UX, permissioning, output caps, trust framing, and backend selection; the actual search/fetch logic lives in eggsearch.
+Add to the **eggsearch** project, not to Codegg's built-in search provider registry (`src/search/`). The built-in registry is legacy fallback only.
 
 ### New Deterministic Validators
 Add to the **eggsact** crate. The eggsact project owns the validation logic. Codegg's `EggsactTool` wrapper in `src/tool/deterministic.rs` exposes eggsact tools to the model. New tools need:
@@ -724,14 +583,10 @@ Add to the **eggsact** crate. The eggsact project owns the validation logic. Cod
 3. Category assignment (always-visible vs deferred)
 
 ### New LSP Servers
-Add to `crates/egglsp/src/server.rs`. Each server needs a `LspRule` entry with command, extensions, and initialization options. See `architecture/lsp.md` for the full contract.
+Add to `crates/egglsp/src/server.rs`. Each server needs a `LspRule` entry with command, extensions, and initialization options. See `architecture/lsp.md`.
 
 ### New Native Tool Crates
-Follow the library-first, MCP-second pattern in `architecture/native_crates.md`. Durable tool domains live in workspace crates under `crates/` and are consumed directly in-process by Codegg's tool wrappers.
+Follow the library-first, MCP-second pattern in `architecture/native_crates.md`. Durable tool domains live in workspace crates under `crates/` and are consumed directly in-process.
+
 ### New Git Operations
-
-`codegg-git` (`crates/codegg-git`) is the typed Git operation model, argv parser, and risk classification crate. Phase B (command intent/routing) consumes these types directly — `classify_git()` delegates to `codegg_git::parse_git_argv()` and `ExecutionBackend::Git` carries the typed `GitOperation`. See `architecture/command_intent.md` for the classification contract.
-
-3. **Line numbers are fragile** — References like `watcher.rs:157` can be off by several lines. Use code search.
-4. **Count from source, not docs** — Tool/server/command counts drift. Count actual entries in `with_options()`, `server_definitions()`, `CommandRegistry`.
-5. **Don't assume tool registration** — Not every tool in `/tool` is in the default registry.
+`codegg-git` (`crates/codegg-git`) is the typed Git operation model, argv parser, and risk classification crate. `classify_git()` delegates to `codegg_git::parse_git_argv()`. See `architecture/command_intent.md`.
