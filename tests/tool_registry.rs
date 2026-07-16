@@ -236,16 +236,13 @@ async fn with_session_config_defaults_wires_command_intent_to_bash() {
         None,
     );
 
-    let output = registry
+    let error = registry
         .get("bash")
         .expect("bash must be registered")
         .execute(json!({"command": "cargo test --help"}))
         .await
-        .expect("active routing should execute the supervised test path");
-    assert!(
-        output.starts_with("Test run passed."),
-        "configured active routing must reach TestRunner, got: {output}"
-    );
+        .expect_err("active routing must not bypass a missing daemon scheduler");
+    assert!(error.to_string().contains("requires the daemon scheduler"));
 }
 
 #[test]

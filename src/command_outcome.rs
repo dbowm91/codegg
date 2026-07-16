@@ -78,9 +78,7 @@ pub enum ActualExecutor {
     },
     /// TestRunner with the actual argv that was executed.
     /// Note: TestRunner has its own canonical RunStore record; this variant
-    /// is set on the BashTool side ONLY if BashTool does NOT delegate
-    /// (i.e., when BashTool decides to route through TestRunner but
-    /// TestRunner is unavailable, so BashTool falls back to raw shell).
+    /// is retained for legacy observe/compatibility execution paths.
     TestRunner {
         argv: Vec<String>,
         cwd: PathBuf,

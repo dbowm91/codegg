@@ -116,6 +116,14 @@ pub enum CoreResponse {
         uptime_secs: u64,
         active_sessions: Vec<SessionSnapshot>,
         connected_clients: Vec<ClientSnapshot>,
+        /// Bounded scheduler state. Historical jobs remain available through
+        /// the job query APIs rather than being embedded in this snapshot.
+        #[serde(default)]
+        scheduler_snapshot: Option<serde_json::Value>,
+    },
+    /// Bounded scheduler state for operator-facing clients.
+    SchedulerSnapshot {
+        snapshot: serde_json::Value,
     },
     ModelsSnapshot {
         current_model: Option<String>,
@@ -151,6 +159,15 @@ pub enum CoreResponse {
     /// Acknowledgement of a successful job submission.
     JobSubmitted {
         job_id: String,
+    },
+    /// Bounded completion projection for a daemon-owned job. Large output
+    /// remains in the RunStore or executor-specific artifacts.
+    JobWaited {
+        job_id: String,
+        status: String,
+        summary: String,
+        #[serde(default)]
+        run_id: Option<String>,
     },
     /// Acknowledgement that a retry attempt was started.
     JobRetryStarted {
@@ -469,6 +486,15 @@ pub enum CoreRequest {
     /// Submit a new durable job.
     JobSubmit {
         spec: JobSubmitDto,
+    },
+    /// Request the current bounded scheduler snapshot.
+    SchedulerSnapshot,
+    /// Wait for one durable job completion without giving the client direct
+    /// access to scheduler internals.
+    JobWait {
+        job_id: String,
+        #[serde(default)]
+        timeout_ms: Option<u64>,
     },
     /// Fetch a single job record by id.
     JobGet {

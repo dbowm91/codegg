@@ -549,6 +549,22 @@ impl SubAgentSpawner {
     pub async fn send_async(&self, request: SubAgentRequest) -> Result<(), String> {
         self.send(request).await
     }
+
+    /// Enqueue a request and wait for the worker result. Scheduler-owned
+    /// callers use this form so their durable attempt and admission permit
+    /// remain active until the subagent actually finishes.
+    pub async fn send_and_wait(&self, request: SubAgentRequest) -> Result<SubAgentResult, String> {
+        let task_id = request.task_id;
+        let response = self.enqueue_request(request).await?.await;
+        let result = response.map_err(|e| format!("worker response error: {e}"))?;
+        Self::handle_response(
+            task_id,
+            Ok(result.clone()),
+            Arc::clone(&self.pool.task_store),
+        )
+        .await;
+        Ok(result)
+    }
 }
 
 async fn run_subagent_task_with_cancel(

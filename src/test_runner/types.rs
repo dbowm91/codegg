@@ -14,7 +14,7 @@ pub enum TestScope {
     /// The argv has already passed the planner's classification and
     /// validation; the test-runner safety validator does NOT re-run
     /// (which would reject non-allowlisted test commands). Used only
-    /// by BashTool's `dispatch_to_test_runner`.
+    /// by BashTool's scheduler submission path.
     BashDispatch(Vec<String>),
 }
 

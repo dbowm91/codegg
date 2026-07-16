@@ -20,7 +20,9 @@
 //!     and the canonical subsystems are reachable through the
 //!     registry.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use codegg::scheduler::{
     AdmissionController, ExecutorCompletion, ExecutorKind, ExecutorMetrics, ExecutorRegistry,
@@ -29,8 +31,9 @@ use codegg::scheduler::{
 };
 
 use codegg_core::jobs::{
-    DaemonGeneration, InMemoryJobStore, InMemoryScheduleStore, JobKind, JobPayload, JobRecord,
-    JobState, ResourceRequest, RetryPolicy,
+    DaemonGeneration, IdempotencyClass, InMemoryJobStore, InMemoryScheduleStore, JobKind,
+    JobPayload, JobPriority, JobRecord, JobSource, JobState, JobStore, NewJob, ResourceRequest,
+    RetryPolicy,
 };
 use codegg_core::workspace::WorkspaceId;
 
@@ -241,6 +244,143 @@ struct PassthroughExecutor {
     kind: ExecutorKind,
 }
 
+struct CountingExecutor {
+    active: Arc<AtomicUsize>,
+    max_seen: Arc<AtomicUsize>,
+}
+
+#[async_trait::async_trait]
+impl JobExecutor for CountingExecutor {
+    fn kind(&self) -> ExecutorKind {
+        ExecutorKind::ManagedArgv
+    }
+
+    fn supports(&self, kind: JobKind) -> bool {
+        kind == JobKind::Build
+    }
+
+    async fn execute(&self, _ctx: JobExecutionContext) -> ExecutorCompletion {
+        let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
+        self.max_seen.fetch_max(active, Ordering::SeqCst);
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        self.active.fetch_sub(1, Ordering::SeqCst);
+        ExecutorCompletion {
+            status: ExecutorStatus::Completed,
+            summary: "counted".into(),
+            run_id: None,
+            metrics: ExecutorMetrics::default(),
+        }
+    }
+}
+
+fn build_spec(workspace_id: WorkspaceId) -> NewJob {
+    NewJob {
+        workspace_id,
+        session_id: None,
+        turn_id: None,
+        kind: JobKind::Build,
+        source: JobSource::Interactive,
+        priority: JobPriority::Interactive,
+        payload: JobPayload::ManagedArgv {
+            argv: vec!["echo".into(), "build".into()],
+            cwd: None,
+        },
+        resource_request: ResourceRequest::default(),
+        timeout: None,
+        retry_policy: RetryPolicy::no_retry(),
+        idempotency: IdempotencyClass::SafeRepeat,
+        not_before: None,
+        deadline: None,
+        schedule_id: None,
+        depends_on: vec![],
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn two_workspaces_share_one_process_cap() {
+    let root_a = tempfile::tempdir().expect("workspace a");
+    let root_b = tempfile::tempdir().expect("workspace b");
+    let workspace_registry = codegg_core::workspace::WorkspaceRegistry::load(Arc::new(
+        codegg_core::workspace::InMemoryWorkspaceStore::new(),
+    ))
+    .await
+    .expect("workspace registry");
+    let workspace_a = workspace_registry
+        .get_or_register(root_a.path())
+        .await
+        .expect("register workspace a");
+    let workspace_b = workspace_registry
+        .get_or_register(root_b.path())
+        .await
+        .expect("register workspace b");
+    let services = codegg_core::workspace_services::WorkspaceServiceRegistry::new(
+        workspace_registry,
+        Arc::new(codegg_core::workspace_services::ProductionWorkspaceServicesFactory),
+        codegg_core::workspace_services::WorkspaceServicePolicy::default(),
+    );
+    let store: Arc<dyn JobStore> = Arc::new(InMemoryJobStore::new());
+    let state_store = store.clone();
+    let mut config = ResolvedSchedulerConfig::default();
+    config.resources.max_process_slots = 1;
+    let scheduler = codegg::scheduler::JobScheduler::new(
+        store.clone(),
+        services.clone(),
+        config,
+        DaemonGeneration::new_unchecked("contention-generation"),
+    );
+    let active = Arc::new(AtomicUsize::new(0));
+    let max_seen = Arc::new(AtomicUsize::new(0));
+    scheduler
+        .register_executor(Arc::new(CountingExecutor {
+            active: active.clone(),
+            max_seen: max_seen.clone(),
+        }))
+        .await
+        .expect("register counting executor");
+    let submission = codegg::scheduler::JobSubmissionService::new(
+        store,
+        scheduler.clone(),
+        services,
+        DaemonGeneration::new_unchecked("contention-generation"),
+    );
+    let first = submission
+        .submit(None, build_spec(workspace_a.id.clone()))
+        .await
+        .expect("submit workspace a");
+    let second = submission
+        .submit(None, build_spec(workspace_b.id.clone()))
+        .await
+        .expect("submit workspace b");
+
+    scheduler.reconcile().await.expect("reconcile");
+    assert_eq!(scheduler.clone().admit_and_dispatch_batch().await, 1);
+    tokio::time::sleep(Duration::from_millis(5)).await;
+    assert_eq!(active.load(Ordering::SeqCst), 1);
+    assert_eq!(max_seen.load(Ordering::SeqCst), 1);
+    let first_state = state_store
+        .get_job(&first.job_id)
+        .await
+        .expect("first state lookup")
+        .expect("first job");
+    let (running_job, queued_job) = if first_state.state == JobState::Running {
+        (&first, &second)
+    } else {
+        (&second, &first)
+    };
+    scheduler
+        .wait_for_completion(&running_job.job_id, Duration::from_secs(2))
+        .await
+        .expect("first admitted completion");
+
+    scheduler.reconcile().await.expect("second reconcile");
+    assert_eq!(scheduler.clone().admit_and_dispatch_batch().await, 1);
+    scheduler
+        .wait_for_completion(&queued_job.job_id, Duration::from_secs(2))
+        .await
+        .expect("second admitted completion");
+    assert_eq!(max_seen.load(Ordering::SeqCst), 1);
+}
+
 #[async_trait::async_trait]
 impl JobExecutor for PassthroughExecutor {
     fn kind(&self) -> ExecutorKind {
@@ -347,7 +487,7 @@ fn admission_blocks_when_only_exclusivity_is_held() {
 }
 
 #[test]
-fn rollout_mode_default_is_observe() {
+fn rollout_mode_default_is_mandatory() {
     let cfg = ResolvedSchedulerConfig::default();
-    assert_eq!(cfg.rollout, SchedulerRolloutMode::Observe);
+    assert_eq!(cfg.rollout, SchedulerRolloutMode::Mandatory);
 }

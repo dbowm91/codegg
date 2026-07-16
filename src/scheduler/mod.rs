@@ -38,6 +38,7 @@ pub mod permit;
 #[allow(clippy::module_inception)]
 pub mod scheduler;
 pub mod snapshot;
+pub mod submission;
 pub mod types;
 
 pub use admission::{
@@ -58,4 +59,5 @@ pub use snapshot::{
     AdmissionBlockSummary, ExecutorHealthSnapshot, OverloadSummary, PerWorkspaceSummary,
     ResourceSummary, SchedulerSnapshot, SnapshotCounts,
 };
+pub use submission::{JobSubmissionError, JobSubmissionService, SubmissionKey, SubmittedJob};
 pub use types::{LaneInsert, QueueEntry, QueueInsertError, QueueRemovalReason};

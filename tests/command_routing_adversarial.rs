@@ -2,6 +2,8 @@
 //! and routing. Validates that the system cannot be tricked into treating
 //! dangerous commands as safe through smuggling, obfuscation, or edge cases.
 
+#![allow(clippy::field_reassign_with_default)]
+
 use codegg::command_intent::shell_shape::{parse_shell_words, ShellComplexityReason, ShellShape};
 use codegg::command_intent::{
     classify_command, classify_command_with_context, CommandIntentContext, CommandIntentKind,

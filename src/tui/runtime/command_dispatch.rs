@@ -475,9 +475,10 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
         TuiCommand::TestRunFinished {
             request_id,
             report,
+            summary,
             error,
         } => {
-            apply_test_run_finished(app, request_id, report, error);
+            apply_test_run_finished(app, request_id, report, summary, error);
         }
         TuiCommand::ShellEvent(event) => {
             handle_shell_event(app, event);

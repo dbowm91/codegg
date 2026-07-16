@@ -7,7 +7,6 @@ use crate::tui::app::SessionStatus;
 use crate::tui::app::TuiCommand;
 use crate::tui::async_cmd::spawn_registered_tui_task;
 use crate::tui::task_lifecycle::TuiTaskKind;
-use std::sync::Arc;
 
 fn worktree_label(tree: &serde_json::Value) -> Option<String> {
     let path = tree.get("path").and_then(|v| v.as_str())?.trim();
@@ -623,7 +622,6 @@ pub(crate) fn handle_open_diff_dialog(
 }
 
 pub(crate) fn handle_spawn_subagent(app: &mut App, agent_name: String, prompt: String) {
-    use crate::agent::worker::SubAgentRequest;
     use crate::tui::async_cmd::spawn_registered_tui_task;
     use crate::tui::task_lifecycle::TuiTaskKind;
 
@@ -634,38 +632,21 @@ pub(crate) fn handle_spawn_subagent(app: &mut App, agent_name: String, prompt: S
         return;
     }
 
-    let Some(pool) = app.subagent_pool.as_ref().map(Arc::clone) else {
+    let Some(core_client) = app.core_client.clone() else {
         app.messages_state
             .toasts
-            .error("Subagent pool not initialized");
+            .error("Core client unavailable; subagents require the daemon scheduler");
         return;
     };
 
-    let session_id = app
-        .session_state
-        .session
-        .as_ref()
-        .map(|s| s.id.clone())
-        .unwrap_or_default();
-
-    let task_id = rand::random::<u64>();
-
-    let request = SubAgentRequest {
-        task_id,
-        prompt: prompt.clone(),
-        agent: agent_name.clone(),
-        parent_id: Some(session_id.clone()),
-        denied_tools: Vec::new(),
-        allowed_paths: Vec::new(),
-        description: format!(
-            "Task for agent '{}': {}",
-            agent_name,
-            prompt.chars().take(100).collect::<String>()
-        ),
-        depth: 1,
-        max_tool_calls: None,
-        parent_model: None,
+    let Some(session) = app.session_state.session.clone() else {
+        app.messages_state
+            .toasts
+            .error("No active session for subagent");
+        return;
     };
+    let session_id = session.id.clone();
+    let workspace_root = session.directory.clone();
 
     app.messages_state
         .messages
@@ -678,21 +659,110 @@ pub(crate) fn handle_spawn_subagent(app: &mut App, agent_name: String, prompt: S
         TuiTaskKind::Command,
         "spawn_subagent",
         async move {
-            let spawner = pool.spawner();
-            if let Err(e) = spawner.send(request).await {
-                return Some(crate::tui::app::TuiCommand::SubagentSpawnFinished {
+            let workspace = match core_client
+                .request(crate::core::new_request(
+                    format!("subagent-workspace-{}", uuid::Uuid::new_v4()),
+                    crate::protocol::core::CoreRequest::WorkspaceRegister {
+                        root: workspace_root.clone(),
+                    },
+                ))
+                .await
+            {
+                Ok(crate::protocol::core::CoreResponse::WorkspaceSnapshot { workspace }) => {
+                    workspace.workspace_id
+                }
+                Ok(crate::protocol::core::CoreResponse::Error { message, .. }) => {
+                    return Some(crate::tui::app::TuiCommand::SubagentSpawnFinished {
+                        agent_name,
+                        task_id: 0,
+                        prompt,
+                        error: Some(message),
+                    });
+                }
+                Ok(other) => {
+                    return Some(crate::tui::app::TuiCommand::SubagentSpawnFinished {
+                        agent_name,
+                        task_id: 0,
+                        prompt,
+                        error: Some(format!("unexpected workspace response: {other:?}")),
+                    });
+                }
+                Err(e) => {
+                    return Some(crate::tui::app::TuiCommand::SubagentSpawnFinished {
+                        agent_name,
+                        task_id: 0,
+                        prompt,
+                        error: Some(format!("workspace registration failed: {e}")),
+                    });
+                }
+            };
+            let spec = crate::protocol::dto::JobSubmitDto {
+                submission_key: Some(format!("tui-subagent-{}", uuid::Uuid::new_v4())),
+                workspace_id: workspace,
+                session_id: Some(session_id.clone()),
+                turn_id: None,
+                kind: "subagent".into(),
+                priority: "interactive".into(),
+                source: serde_json::json!({"kind": "agent_delegated"}),
+                payload: serde_json::json!({
+                    "kind": "subagent",
+                    "prompt": prompt,
+                    "agent": agent_name,
+                    "parent_id": session_id,
+                    "denied_tools": [],
+                    "allowed_paths": [workspace_root],
+                    "max_tool_calls": null
+                }),
+                timeout_ms: None,
+                retry_max_attempts: 1,
+                retryable_failures: Vec::new(),
+                idempotency: "non_idempotent".into(),
+                not_before_ms: None,
+                deadline_ms: None,
+                schedule_id: None,
+                depends_on: Vec::new(),
+                labels: std::collections::HashMap::new(),
+            };
+            let response = core_client
+                .request(crate::core::new_request(
+                    format!("subagent-submit-{}", uuid::Uuid::new_v4()),
+                    crate::protocol::core::CoreRequest::JobSubmit { spec },
+                ))
+                .await;
+            match response {
+                Ok(crate::protocol::core::CoreResponse::JobSubmitted { job_id }) => {
+                    let task_id = job_id
+                        .bytes()
+                        .take(8)
+                        .fold(0u64, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u64));
+                    Some(crate::tui::app::TuiCommand::SubagentSpawnFinished {
+                        agent_name,
+                        task_id,
+                        prompt,
+                        error: None,
+                    })
+                }
+                Ok(crate::protocol::core::CoreResponse::Error { message, .. }) => {
+                    Some(crate::tui::app::TuiCommand::SubagentSpawnFinished {
+                        agent_name,
+                        task_id: 0,
+                        prompt,
+                        error: Some(message),
+                    })
+                }
+                Ok(other) => Some(crate::tui::app::TuiCommand::SubagentSpawnFinished {
                     agent_name,
-                    task_id,
+                    task_id: 0,
                     prompt,
-                    error: Some(format!("Failed to spawn subagent: {}", e)),
-                });
+                    error: Some(format!("unexpected job response: {other:?}")),
+                }),
+                Err(e) => Some(crate::tui::app::TuiCommand::SubagentSpawnFinished {
+                    agent_name,
+                    task_id: 0,
+                    prompt,
+                    error: Some(format!("subagent submission failed: {e}")),
+                }),
             }
-            Some(crate::tui::app::TuiCommand::SubagentSpawnFinished {
-                agent_name,
-                task_id,
-                prompt,
-                error: None,
-            })
         },
     );
 }

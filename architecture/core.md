@@ -261,6 +261,31 @@ Phase 2 introduces workspace identity as a first-class daemon concept. A daemon 
 
 See `plans/single-daemon-phase-02-workspace-registry-and-execution-context.md` and `crates/codegg-core/src/workspace.rs` for the full contract.
 
+### Scheduler-owned execution (Phase 5 cutover)
+
+Daemon-owned heavy work crosses `JobSubmissionService` before admission. The
+facade validates the workspace-bound payload, applies the central resource
+profile and exclusivity policy, creates the durable job, and enqueues it as
+one logical operation. `JobScheduler` then owns queueing, permits, attempt
+lifecycle, cancellation, and completion persistence.
+
+`CoreRequest::JobSubmit`, `CoreRequest::JobWait`, and
+`CoreRequest::SchedulerSnapshot` are the client-facing boundary. The daemon
+snapshot carries only a bounded scheduler projection; clients fetch full job
+and attempt records through dedicated operations. A disabled scheduler is an
+explicit error state in daemon mode, never a route back to direct execution.
+
+The canonical non-shell process policy is implemented by
+`src/managed_process.rs`. It receives a durable job/attempt provenance pair,
+uses sanitized noninteractive environment defaults, manages process groups,
+enforces timeout and cancellation cleanup, and bounds captured output.
+
+Explicit `--standalone` and `--stdio` compatibility modes may retain narrow
+legacy adapters for tests and embedding, but they do not participate in the
+singleton daemon's machine-wide admission guarantee. See
+[`scheduler.md`](scheduler.md) for the execution-surface inventory and
+compatibility boundary.
+
 ### Implementation Notes
 
 - The core protocol version is currently `2` (`PROTOCOL_VERSION` in `crates/codegg-protocol/src/core.rs`).

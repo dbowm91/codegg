@@ -20,6 +20,8 @@ pub struct AgentLoopBuildInput {
     /// Shared artifact store for context projection. The agent loop
     /// stores tool output artifacts here and `context_read` expands them.
     pub artifact_store: Arc<dyn ContextArtifactStore>,
+    pub submission: Option<Arc<crate::scheduler::JobSubmissionService>>,
+    pub workspace_root: std::path::PathBuf,
 }
 
 /// Transitional build-only factory used internally by `DefaultTurnRuntime`.
@@ -47,6 +49,8 @@ impl AgentLoopFactory for DefaultAgentLoopFactory {
             input.task_state_policy,
             input.mcp_service,
             input.artifact_store,
+            input.submission,
+            input.workspace_root,
         )
     }
 }

@@ -20,7 +20,6 @@ use crate::agent::compaction::{
 };
 use crate::agent::processor::EventProcessor;
 use crate::agent::router::ModelRouter;
-use crate::agent::worker::SubAgentRequest;
 use crate::agent::Agent;
 use crate::bus::events::AppEvent;
 use crate::bus::{PermissionDecision, PermissionRegistry, QuestionRegistry};
@@ -1421,6 +1420,8 @@ pub struct AgentLoop {
     execution_policy: Option<crate::agent::policy::ExecutionPolicy>,
     original_user_prompt: Option<String>,
     subagent_pool: Option<Arc<crate::agent::worker::SubAgentPool>>,
+    submission: Option<Arc<crate::scheduler::JobSubmissionService>>,
+    workspace_root: Option<std::path::PathBuf>,
     max_tool_calls: Option<usize>,
     goal_store: Option<Arc<crate::goal::GoalStore>>,
     goal_wall_clock: std::sync::Mutex<crate::goal::runtime::GoalWallClock>,
@@ -1664,6 +1665,8 @@ impl AgentLoop {
             execution_policy: None,
             original_user_prompt: None,
             subagent_pool: None,
+            submission: None,
+            workspace_root: None,
             max_tool_calls: None,
             goal_store: pool
                 .as_ref()
@@ -1826,6 +1829,14 @@ impl AgentLoop {
 
     pub fn set_subagent_pool(&mut self, pool: Arc<crate::agent::worker::SubAgentPool>) {
         self.subagent_pool = Some(pool);
+    }
+
+    pub fn set_submission(&mut self, submission: Arc<crate::scheduler::JobSubmissionService>) {
+        self.submission = Some(submission);
+    }
+
+    pub fn set_workspace_root(&mut self, root: std::path::PathBuf) {
+        self.workspace_root = Some(root);
     }
 
     pub fn session_id(&self) -> &str {
@@ -4095,10 +4106,6 @@ impl AgentLoop {
         edited_paths: &[String],
         at_session_end: bool,
     ) {
-        let Some(ref pool) = self.subagent_pool else {
-            return;
-        };
-
         let _sec_config = match self.config.security.as_ref() {
             Some(c) if c.auto_invoke_review_agent && c.enabled => c,
             _ => return,
@@ -4146,28 +4153,73 @@ impl AgentLoop {
             context_parts.join("\n\n")
         );
 
-        let spawner = pool.spawner();
         let task_id = rand::random::<u64>();
         let session_id = self.session_id.clone();
-
-        let request = SubAgentRequest {
+        let agent = "security-review".to_string();
+        let parent_model = self
+            .agents
+            .get(&self.state.current_agent)
+            .and_then(|a| a.model.clone());
+        if let (Some(submission), Some(workspace_root)) =
+            (self.submission.clone(), self.workspace_root.clone())
+        {
+            tokio::spawn(async move {
+                let workspace_id = match submission.workspace_id_for_root(&workspace_root).await {
+                    Ok(id) => id,
+                    Err(e) => {
+                        tracing::warn!(error = %e, "failed to resolve security-review workspace");
+                        return;
+                    }
+                };
+                let spec = codegg_core::jobs::NewJob {
+                    workspace_id,
+                    session_id: Some(session_id.clone()),
+                    turn_id: None,
+                    kind: codegg_core::jobs::JobKind::Subagent,
+                    source: codegg_core::jobs::JobSource::AgentDelegated,
+                    priority: codegg_core::jobs::JobPriority::Background,
+                    payload: codegg_core::jobs::JobPayload::Subagent {
+                        prompt,
+                        agent,
+                        parent_id: Some(session_id),
+                        denied_tools: Vec::new(),
+                        allowed_paths: vec![workspace_root.to_string_lossy().into_owned()],
+                        max_tool_calls: None,
+                    },
+                    resource_request: codegg_core::jobs::ResourceRequest::for_kind(
+                        codegg_core::jobs::JobKind::Subagent,
+                    ),
+                    timeout: None,
+                    retry_policy: codegg_core::jobs::RetryPolicy::no_retry(),
+                    idempotency: codegg_core::jobs::IdempotencyClass::NonIdempotent,
+                    not_before: None,
+                    deadline: None,
+                    schedule_id: None,
+                    depends_on: Vec::new(),
+                };
+                if let Err(e) = submission.submit(None, spec).await {
+                    tracing::warn!(error = %e, "failed to submit security-review subagent");
+                }
+            });
+            return;
+        }
+        let Some(pool) = self.subagent_pool.clone() else {
+            return;
+        };
+        let request = crate::agent::worker::SubAgentRequest {
             task_id,
             prompt,
-            agent: "security-review".to_string(),
+            agent,
             parent_id: Some(session_id),
             denied_tools: Vec::new(),
             allowed_paths: Vec::new(),
             description: "Auto-triggered security review".to_string(),
             depth: 1,
             max_tool_calls: None,
-            parent_model: self
-                .agents
-                .get(&self.state.current_agent)
-                .and_then(|a| a.model.clone()),
+            parent_model,
         };
-
         tokio::spawn(async move {
-            if let Err(e) = spawner.send(request).await {
+            if let Err(e) = pool.spawner().send(request).await {
                 tracing::warn!("Failed to spawn security-review subagent: {}", e);
             }
         });

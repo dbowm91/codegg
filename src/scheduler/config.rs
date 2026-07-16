@@ -5,9 +5,9 @@
 //! `Config` root, validated, and frozen into `ResolvedSchedulerConfig`
 //! that the scheduler, queue, and admission controller consume.
 //!
-//! Defaults are conservative: the scheduler is enabled in observe
-//! mode for migrated families (Test, Build, Lint, Format, Subagent)
-//! but the rollout mode controls actual dispatch authority.
+//! Defaults are conservative: the scheduler is enabled and mandatory for
+//! daemon-owned work. Standalone harnesses may inject their own scheduler
+//! configuration explicitly.
 //!
 //! The on-disk [`SchedulerConfig`] type is owned by `codegg-config` so
 //! there is a single source of truth for the user's settings file;
@@ -91,7 +91,7 @@ impl Default for ResolvedSchedulerConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            rollout: SchedulerRolloutMode::default(),
+            rollout: SchedulerRolloutMode::Mandatory,
             reconcile_interval_ms: 1000,
             resources: ResourceBudget {
                 max_process_slots: 4,
@@ -278,8 +278,10 @@ mod tests {
 
     #[test]
     fn disabled_skips_validation() {
-        let mut cfg = ResolvedSchedulerConfig::default();
-        cfg.enabled = false;
+        let mut cfg = ResolvedSchedulerConfig {
+            enabled: false,
+            ..ResolvedSchedulerConfig::default()
+        };
         cfg.resources.max_process_slots = 0;
         cfg.validate().unwrap();
     }

@@ -240,6 +240,8 @@ pub struct ToolRegistryOptions {
     /// When `Some`, Python and Bash tools persist structured run manifests
     /// with artifact handles to the filesystem index.
     pub run_store: Option<Arc<dyn codegg_core::run_store::RunStore>>,
+    /// Daemon-owned scheduler submission facade for heavy work.
+    pub submission: Option<Arc<crate::scheduler::JobSubmissionService>>,
     /// Optional command-intent classification and routing configuration.
     /// When `Some`, the Bash tool annotates commands and can actively route
     /// enabled families to their canonical backends.
@@ -277,6 +279,11 @@ impl ToolRegistry {
         };
         let bash_tool = if let Some(command_intent) = options.command_intent.clone() {
             bash_tool.with_command_intent_config(command_intent)
+        } else {
+            bash_tool
+        };
+        let bash_tool = if let Some(submission) = options.submission.clone() {
+            bash_tool.with_submission(submission)
         } else {
             bash_tool
         };
@@ -356,6 +363,11 @@ impl ToolRegistry {
             crate::tool::test::TestTool::with_run_store(store.clone())
         } else {
             crate::tool::test::TestTool::default()
+        };
+        let test_tool = if let Some(submission) = options.submission.clone() {
+            test_tool.with_submission(submission)
+        } else {
+            test_tool
         };
         registry.register(test_tool);
         let python_tool = if let Some(ref store) = options.run_store {
@@ -661,6 +673,7 @@ impl ToolRegistry {
             deterministic_config: integrated.deterministic,
             preflight_config: integrated.preflight,
             run_store: None,
+            submission: None,
             command_intent: config.command_intent.clone(),
             workspace_root: None,
         })
@@ -696,6 +709,7 @@ impl ToolRegistry {
             deterministic_config: None,
             preflight_config: None,
             run_store: None,
+            submission: None,
             command_intent: None,
             workspace_root: None,
         })

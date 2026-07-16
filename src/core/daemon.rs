@@ -111,16 +111,16 @@ impl CoreDaemon {
         // Keep `deps.workspace_services` in sync so callers reading the
         // field observe the active registry.
         let mut deps = deps;
+        // The durable attempt generation must be the same identity that
+        // owns this daemon. Otherwise restart recovery cannot distinguish
+        // work from the current process from work left by a prior one.
+        deps.daemon_generation =
+            codegg_core::jobs::DaemonGeneration::new_unchecked(generation.clone());
         deps.workspace_services = Some(workspace_services.clone());
 
-        // Phase 5: global admission control scheduler. Construct one
-        // when `[scheduler].enabled = true` is set in the config (or
-        // when one is pre-injected through `with_scheduler`). The
-        // default rollout mode is `observe` so the daemon stays
-        // backward-compatible — the scheduler still exists and
-        // produces snapshots, but tool dispatch paths retain their
-        // legacy behaviour unless the operator flips the rollout to
-        // `active`.
+        // Phase 5: global admission control scheduler. Daemon-owned work
+        // is scheduler-authoritative by default; an explicitly disabled
+        // scheduler produces a placeholder that rejects heavy submission.
         let scheduler_config = crate::scheduler::config::ResolvedSchedulerConfig::from_input(
             config.scheduler.as_ref(),
         )
@@ -153,6 +153,12 @@ impl CoreDaemon {
         };
         deps.scheduler = Some(scheduler.clone());
         deps.scheduler_config = scheduler_config;
+        deps.submission = Some(crate::scheduler::JobSubmissionService::new(
+            deps.job_store.clone(),
+            scheduler,
+            workspace_services.clone(),
+            deps.daemon_generation.clone(),
+        ));
 
         Self {
             daemon_id,
@@ -784,6 +790,7 @@ impl CoreDaemon {
                     lsp_context_input: None,
                     plugin_service,
                     execution,
+                    submission: self.deps.submission.clone(),
                 };
                 let turn_output = self.deps.turn_runtime.run_turn(turn_input).await?;
 
@@ -1291,6 +1298,12 @@ impl CoreDaemon {
                 })
             }
             CoreRequest::TaskList => {
+                if !self.deps.legacy_agent.bg_scheduler_compat_enabled {
+                    return Ok(CoreResponse::Error {
+                        code: "legacy_task_compatibility_disabled".to_string(),
+                        message: "use durable schedule/job protocol in daemon mode".to_string(),
+                    });
+                }
                 let Some(scheduler) = self.deps.legacy_agent.bg_scheduler.clone() else {
                     return Ok(CoreResponse::Error {
                         code: "missing_scheduler".to_string(),
@@ -1312,6 +1325,12 @@ impl CoreDaemon {
                 })
             }
             CoreRequest::TaskDelete { id } => {
+                if !self.deps.legacy_agent.bg_scheduler_compat_enabled {
+                    return Ok(CoreResponse::Error {
+                        code: "legacy_task_compatibility_disabled".to_string(),
+                        message: "use durable schedule/job protocol in daemon mode".to_string(),
+                    });
+                }
                 let Some(scheduler) = self.deps.legacy_agent.bg_scheduler.clone() else {
                     return Ok(CoreResponse::Error {
                         code: "missing_scheduler".to_string(),
@@ -1333,6 +1352,12 @@ impl CoreDaemon {
                 interval_secs,
                 message,
             } => {
+                if !self.deps.legacy_agent.bg_scheduler_compat_enabled {
+                    return Ok(CoreResponse::Error {
+                        code: "legacy_task_compatibility_disabled".to_string(),
+                        message: "use durable schedule/job protocol in daemon mode".to_string(),
+                    });
+                }
                 let Some(scheduler) = self.deps.legacy_agent.bg_scheduler.clone() else {
                     return Ok(CoreResponse::Error {
                         code: "missing_scheduler".to_string(),
@@ -1347,21 +1372,11 @@ impl CoreDaemon {
                 let task_id = task.id.clone();
                 match scheduler.add(task).await {
                     Ok(_) => {
-                        if let Some(pool) = self.deps.legacy_agent.subagent_pool.clone() {
-                            let request = crate::agent::worker::SubAgentRequest {
-                                task_id: 0,
-                                prompt: format!("[Background] {}", message),
-                                agent: "build".to_string(),
-                                parent_id: Some(session_id),
-                                denied_tools: Vec::new(),
-                                allowed_paths: Vec::new(),
-                                description: "Background loop task".to_string(),
-                                depth: 1,
-                                max_tool_calls: None,
-                                parent_model: None,
-                            };
-                            let _ = pool.spawner().send(request).await;
-                        }
+                        // Legacy TaskSchedule is retained for standalone
+                        // compatibility. It records the task only; daemon
+                        // production work must arrive through ScheduleStore
+                        // and JobSubmissionService rather than dispatching
+                        // an immediate subagent here.
                         Ok(CoreResponse::Json {
                             data: serde_json::json!({ "task_id": task_id, "interval_secs": interval_secs }),
                         })
@@ -1374,6 +1389,21 @@ impl CoreDaemon {
             }
             // ── Phase 4: Durable Jobs and Schedules ──────────────────────
             CoreRequest::JobSubmit { spec } => {
+                let submission_key = spec
+                    .submission_key
+                    .clone()
+                    .map(crate::scheduler::SubmissionKey::new)
+                    .transpose()
+                    .map_err(|e| e.to_string());
+                let submission_key = match submission_key {
+                    Ok(key) => key,
+                    Err(message) => {
+                        return Ok(CoreResponse::Error {
+                            code: "invalid_job_submit".to_string(),
+                            message,
+                        });
+                    }
+                };
                 let new_job = match crate::protocol_conversions::job_submit_from_dto(spec) {
                     Ok(j) => j,
                     Err(e) => {
@@ -1383,27 +1413,44 @@ impl CoreDaemon {
                         });
                     }
                 };
-                match self.deps.job_store.create_job(new_job).await {
-                    Ok(record) => {
-                        let job_id = record.job_id.as_str().to_string();
+                let Some(submission) = self.deps.submission.clone() else {
+                    return Ok(CoreResponse::Error {
+                        code: "scheduler_unavailable".to_string(),
+                        message: "daemon has no job submission service".to_string(),
+                    });
+                };
+                match submission.submit(submission_key, new_job).await {
+                    Ok(submitted) => {
+                        let job_id = submitted.job_id.as_str().to_string();
+                        let record = self
+                            .deps
+                            .job_store
+                            .get_job(&submitted.job_id)
+                            .await
+                            .ok()
+                            .flatten();
                         let _ = self
                             .event_log
                             .publish(
-                                record.session_id.clone(),
+                                record.as_ref().and_then(|r| r.session_id.clone()),
                                 None,
                                 crate::protocol::core::CoreEvent::JobCreated {
                                     job_id: job_id.clone(),
-                                    workspace_id: record.workspace_id.to_string(),
-                                    kind: record.kind.as_str().to_string(),
-                                    session_id: record.session_id.clone(),
-                                    turn_id: record.turn_id.clone(),
+                                    workspace_id: submitted.workspace_id.to_string(),
+                                    kind: record
+                                        .as_ref()
+                                        .map(|r| r.kind.as_str())
+                                        .unwrap_or("unknown")
+                                        .to_string(),
+                                    session_id: record.as_ref().and_then(|r| r.session_id.clone()),
+                                    turn_id: record.as_ref().and_then(|r| r.turn_id.clone()),
                                 },
                             )
                             .await;
                         Ok(CoreResponse::JobSubmitted { job_id })
                     }
                     Err(e) => Ok(CoreResponse::Error {
-                        code: "job_create_failed".to_string(),
+                        code: "job_submit_failed".to_string(),
                         message: e.to_string(),
                     }),
                 }
@@ -1418,6 +1465,29 @@ impl CoreDaemon {
                     }),
                     Err(e) => Ok(CoreResponse::Error {
                         code: "job_get_failed".to_string(),
+                        message: e.to_string(),
+                    }),
+                }
+            }
+            CoreRequest::JobWait { job_id, timeout_ms } => {
+                let Some(scheduler) = self.deps.scheduler.as_ref() else {
+                    return Ok(CoreResponse::Error {
+                        code: "job_wait_failed".to_string(),
+                        message: "scheduler unavailable".to_string(),
+                    });
+                };
+                let id = codegg_core::jobs::JobId::new_unchecked(job_id.clone());
+                let timeout =
+                    std::time::Duration::from_millis(timeout_ms.unwrap_or(900_000).min(3_600_000));
+                match scheduler.wait_for_completion(&id, timeout).await {
+                    Ok(completion) => Ok(CoreResponse::JobWaited {
+                        job_id,
+                        status: format!("{:?}", completion.status).to_lowercase(),
+                        summary: completion.summary,
+                        run_id: completion.run_id.map(|id| id.as_str().to_string()),
+                    }),
+                    Err(e) => Ok(CoreResponse::Error {
+                        code: "job_wait_failed".to_string(),
                         message: e.to_string(),
                     }),
                 }
@@ -1480,11 +1550,16 @@ impl CoreDaemon {
             }
             CoreRequest::JobCancel { job_id, reason } => {
                 let id = codegg_core::jobs::JobId::new_unchecked(job_id);
-                let cancel_reason = codegg_core::jobs::CancelReason::new(
-                    "daemon",
-                    reason.unwrap_or_else(|| "user requested".to_string()),
-                );
-                match self.deps.job_store.request_cancel(&id, cancel_reason).await {
+                let Some(scheduler) = self.deps.scheduler.as_ref() else {
+                    return Ok(CoreResponse::Error {
+                        code: "job_cancel_failed".to_string(),
+                        message: "scheduler unavailable".to_string(),
+                    });
+                };
+                match scheduler
+                    .request_cancel(&id, &reason.unwrap_or_else(|| "user requested".to_string()))
+                    .await
+                {
                     Ok(result) => {
                         let outcome_str =
                             crate::protocol_conversions::cancel_outcome_to_str(result.state)
@@ -2651,6 +2726,21 @@ impl CoreDaemon {
                     models: model_ids,
                 })
             }
+            CoreRequest::SchedulerSnapshot => {
+                let Some(scheduler) = self.deps.scheduler.as_ref() else {
+                    return Ok(CoreResponse::Error {
+                        code: "scheduler_unavailable".to_string(),
+                        message: "scheduler unavailable".to_string(),
+                    });
+                };
+                match serde_json::to_value(scheduler.snapshot().await) {
+                    Ok(snapshot) => Ok(CoreResponse::SchedulerSnapshot { snapshot }),
+                    Err(e) => Ok(CoreResponse::Error {
+                        code: "scheduler_snapshot_failed".to_string(),
+                        message: e.to_string(),
+                    }),
+                }
+            }
             CoreRequest::SnapshotDaemon => {
                 let event_seq = self.event_log.current_seq();
                 let session_ids = self.sessions.list_sessions();
@@ -2693,6 +2783,10 @@ impl CoreDaemon {
                         });
                     }
                 }
+                let scheduler_snapshot = match self.deps.scheduler.as_ref() {
+                    Some(scheduler) => serde_json::to_value(scheduler.snapshot().await).ok(),
+                    None => None,
+                };
                 Ok(CoreResponse::SnapshotDaemon {
                     event_seq,
                     daemon_id: self.daemon_id.clone(),
@@ -2709,6 +2803,7 @@ impl CoreDaemon {
                             attached_sessions: c.attached_sessions.clone(),
                         })
                         .collect(),
+                    scheduler_snapshot,
                 })
             }
             CoreRequest::SnapshotWorkspace { project_dir } => {

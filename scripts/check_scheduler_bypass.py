@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Static lint: scheduler direct-bypass guard (Phase 5).
+"""Static lint: scheduler direct-bypass guard.
 
 The Phase 5 plan establishes a global admission-control scheduler as
 the only authority that invokes the test runner. This script enforces
@@ -8,7 +8,6 @@ that rule at the source level: any caller that invokes
 must be either:
 
   * the scheduler (whitelist: `src/scheduler/**`),
-  * a Phase 4 migration file (`src/background_task_migration.rs`),
   * a testing fixture that lives under `tests/`.
 
 The same rule applies to the canonical `TestJobExecutor` and
@@ -36,7 +35,6 @@ RULES: list[tuple[str, list[tuple[str, str]], str]] = [
         r"\btest_runner::runner::resolve_and_run_test\b",
         [
             ("src/scheduler/**", "scheduler subsystem"),
-            ("src/background_task_migration.rs", "phase 4 migration"),
             ("tests/**", "test fixture"),
             ("src/test_runner/runner.rs", "definition site"),
         ],
@@ -45,7 +43,6 @@ RULES: list[tuple[str, list[tuple[str, str]], str]] = [
     (
         r"\bdispatch_to_test_runner\b",
         [
-            ("src/tool/bash.rs", "bash tool dispatch"),
             ("tests/**", "test fixture"),
             ("docs/**", "documentation reference"),
             ("architecture/**", "architecture doc"),
@@ -61,6 +58,27 @@ RULES: list[tuple[str, list[tuple[str, str]], str]] = [
             ("tests/**", "test fixture"),
         ],
         "SubAgentJobDispatcher is the legacy bridge; production paths must go through the scheduler.",
+    ),
+    (
+        r"\.spawner\(\)\.send(?:_async)?\(",
+        [
+            ("src/scheduler/**", "scheduler executor"),
+            ("src/tool/task.rs", "explicit standalone task compatibility"),
+            ("src/agent/loop.rs", "explicit standalone security-review compatibility"),
+            ("src/agent/task.rs", "explicit standalone background compatibility"),
+            ("src/job_dispatcher.rs", "legacy dispatcher definition"),
+            ("tests/**", "test fixture"),
+        ],
+        "Direct subagent pool sends must be scheduler submissions in daemon mode.",
+    ),
+    (
+        r"\.spawn_loop\(",
+        [
+            ("src/agent/task.rs", "compatibility definition"),
+            ("src/main.rs", "explicit standalone mode wiring"),
+            ("tests/**", "test fixture"),
+        ],
+        "BackgroundScheduler loops are standalone compatibility only; daemon work must use durable schedules.",
     ),
 ]
 

@@ -333,11 +333,15 @@ pub struct ResourceRequest {
 impl Default for ResourceRequest {
     fn default() -> Self {
         Self {
-            cpu_weight: 100,
+            // Scheduler weights use the same units as the default
+            // admission budget (single-digit values).  Older defaults
+            // used percentages here, which made every default job
+            // impossible to admit.
+            cpu_weight: 1,
             memory_mb_hint: 256,
             process_slots: 1,
-            io_weight: 100,
-            network_slots: 1,
+            io_weight: 1,
+            network_slots: 0,
             exclusivity_keys: Vec::new(),
         }
     }
@@ -347,66 +351,82 @@ impl ResourceRequest {
     pub fn for_kind(kind: JobKind) -> Self {
         match kind {
             JobKind::AgentTurn | JobKind::Subagent | JobKind::Research => Self {
-                cpu_weight: 200,
-                memory_mb_hint: 1024,
+                cpu_weight: 1,
+                memory_mb_hint: 512,
                 process_slots: 1,
-                io_weight: 50,
-                network_slots: 2,
+                io_weight: 1,
+                network_slots: 1,
                 exclusivity_keys: Vec::new(),
             },
-            JobKind::Build | JobKind::Lint | JobKind::Format => Self {
-                cpu_weight: 400,
+            JobKind::Build => Self {
+                cpu_weight: 3,
                 memory_mb_hint: 2048,
                 process_slots: 1,
-                io_weight: 300,
+                io_weight: 3,
                 network_slots: 0,
-                exclusivity_keys: vec!["workspace-mutation".to_string()],
+                exclusivity_keys: vec!["exclusive:workspace-mutation".to_string()],
+            },
+            JobKind::Lint => Self {
+                cpu_weight: 1,
+                memory_mb_hint: 768,
+                process_slots: 1,
+                io_weight: 1,
+                network_slots: 0,
+                exclusivity_keys: Vec::new(),
+            },
+            JobKind::Format => Self {
+                cpu_weight: 1,
+                memory_mb_hint: 256,
+                process_slots: 1,
+                io_weight: 1,
+                network_slots: 0,
+                exclusivity_keys: vec!["exclusive:workspace-mutation".to_string()],
             },
             JobKind::Test => Self {
-                cpu_weight: 400,
-                memory_mb_hint: 4096,
+                cpu_weight: 2,
+                memory_mb_hint: 1024,
                 process_slots: 1,
-                io_weight: 300,
+                io_weight: 2,
                 network_slots: 0,
                 exclusivity_keys: Vec::new(),
             },
             JobKind::Shell | JobKind::ManagedProcess => Self {
-                cpu_weight: 100,
+                cpu_weight: 1,
                 memory_mb_hint: 256,
                 process_slots: 1,
-                io_weight: 100,
-                network_slots: 1,
+                io_weight: 1,
+                network_slots: 0,
                 exclusivity_keys: Vec::new(),
             },
             JobKind::Python => Self {
-                cpu_weight: 150,
+                cpu_weight: 1,
                 memory_mb_hint: 512,
                 process_slots: 1,
-                io_weight: 100,
-                network_slots: 1,
+                io_weight: 1,
+                network_slots: 0,
                 exclusivity_keys: Vec::new(),
             },
             JobKind::GitRead => Self {
-                cpu_weight: 50,
+                cpu_weight: 1,
                 memory_mb_hint: 128,
                 process_slots: 1,
-                io_weight: 100,
+                io_weight: 1,
                 network_slots: 0,
                 exclusivity_keys: Vec::new(),
             },
             JobKind::GitMutation => Self {
-                cpu_weight: 100,
+                cpu_weight: 1,
                 memory_mb_hint: 256,
                 process_slots: 1,
-                io_weight: 100,
+                io_weight: 1,
                 network_slots: 0,
-                exclusivity_keys: vec!["git-mutation".to_string()],
+                exclusivity_keys: vec!["exclusive:worktree-mutation".to_string()],
             },
             JobKind::Maintenance => Self {
-                cpu_weight: 25,
+                cpu_weight: 1,
                 memory_mb_hint: 128,
                 process_slots: 1,
-                io_weight: 25,
+                io_weight: 1,
                 network_slots: 0,
                 exclusivity_keys: Vec::new(),
             },
@@ -866,6 +886,17 @@ pub trait JobStore: Send + Sync {
     /// Transition an attempt from `Created`/`Admitted` to `Running`.
     async fn mark_attempt_running(&self, attempt_id: &AttemptId) -> Result<(), JobStoreError>;
 
+    /// Persist the selected executor before process/agent dispatch. The
+    /// default implementation keeps custom test stores source-compatible;
+    /// the built-in stores persist it for recovery and auditability.
+    async fn set_attempt_executor(
+        &self,
+        _attempt_id: &AttemptId,
+        _executor: &str,
+    ) -> Result<(), JobStoreError> {
+        Ok(())
+    }
+
     /// Persist attempt heart-beat at `at`.
     async fn record_heartbeat(
         &self,
@@ -1095,10 +1126,10 @@ mod tests {
     #[test]
     fn resource_request_defaults_are_safe() {
         let req = ResourceRequest::default();
-        assert_eq!(req.cpu_weight, 100);
+        assert_eq!(req.cpu_weight, 1);
         assert_eq!(req.memory_mb_hint, 256);
         assert_eq!(req.process_slots, 1);
-        assert_eq!(req.network_slots, 1);
+        assert_eq!(req.network_slots, 0);
     }
 
     #[test]
@@ -1109,9 +1140,12 @@ mod tests {
         assert!(format
             .exclusivity_keys
             .iter()
-            .any(|k| k == "workspace-mutation"));
+            .any(|k| k == "exclusive:workspace-mutation"));
         let git = ResourceRequest::for_kind(JobKind::GitMutation);
-        assert!(git.exclusivity_keys.iter().any(|k| k == "git-mutation"));
+        assert!(git
+            .exclusivity_keys
+            .iter()
+            .any(|k| k == "exclusive:worktree-mutation"));
     }
 
     #[test]
@@ -1192,7 +1226,7 @@ mod tests {
     #[test]
     fn new_job_default_resource_for_kind() {
         let req = NewJob::default_resource_for_kind(JobKind::Build);
-        assert_eq!(req.cpu_weight, 400);
+        assert_eq!(req.cpu_weight, 3);
     }
 
     #[test]

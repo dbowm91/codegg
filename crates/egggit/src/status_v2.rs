@@ -566,7 +566,7 @@ mod tests {
     fn parse_status_with_staged_unstaged_untracked() {
         // In porcelain v2: X=index(staged), Y=worktree(unstaged)
         // "M." = index modified (staged), ".M" = worktree modified (unstaged)
-        let output = "# branch.oid abc123\0# branch.head main\01 M. N... 100644 100644 100644 abc123 abc123 staged.txt\01 .M N... 100644 100644 000000 abc123 abc123 unstaged.txt\0? untracked.txt\0";
+        let output = "# branch.oid abc123\0# branch.head main\x001 M. N... 100644 100644 100644 abc123 abc123 staged.txt\x001 .M N... 100644 100644 000000 abc123 abc123 unstaged.txt\0? untracked.txt\0";
         let status = parse_status_v2(output, "/tmp/repo");
         assert_eq!(status.staged.len(), 1);
         assert_eq!(status.staged[0].path, "staged.txt");
@@ -627,7 +627,7 @@ mod tests {
     #[test]
     fn parse_status_with_renamed_files() {
         // In porcelain v2 type 2: 2 XY SCORE SUB mH mI mW hH hI XCOPY orig path
-        let output = "# branch.oid abc123\0# branch.head main\02 R.100 N... 100644 100644 100644 abc123 abc123 old_name.txt new_name.txt\0";
+        let output = "# branch.oid abc123\0# branch.head main\x002 R.100 N... 100644 100644 100644 abc123 abc123 old_name.txt new_name.txt\0";
         let status = parse_status_v2(output, "/tmp/repo");
         assert_eq!(status.staged.len(), 1);
         assert_eq!(status.staged[0].path, "new_name.txt");
@@ -655,7 +655,7 @@ mod tests {
     #[test]
     fn parse_status_copied_files() {
         // In porcelain v2 type 3: 3 XY SCORE SUB mH mI mW hH hI XCOPY orig path
-        let output = "# branch.oid abc123\0# branch.head main\03 C.100 N... 100644 100644 100644 abc123 abc123 source.txt copy.txt\0";
+        let output = "# branch.oid abc123\0# branch.head main\x003 C.100 N... 100644 100644 100644 abc123 abc123 source.txt copy.txt\0";
         let status = parse_status_v2(output, "/tmp/repo");
         assert_eq!(status.staged.len(), 1);
         assert_eq!(status.staged[0].path, "copy.txt");

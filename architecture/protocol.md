@@ -76,7 +76,10 @@ Wraps events with sequence number, timestamp, and optional session/turn context 
 
 ## CoreRequest Enum
 
-Located in `crates/codegg-protocol/src/core.rs`. Variant count: **44** (Phase 2 adds 4 workspace variants; Phase 3 adds 5 workspace-services variants: `WorkspaceServicesSnapshot`, `WorkspaceConfigReload`, `RunList`, `RunGet`, `RunArtifactRead`).
+Located in `crates/codegg-protocol/src/core.rs`. The durable-job surface is
+daemon-authoritative: clients submit bounded typed job requests, then use
+job queries, wait/cancel operations, and bounded scheduler snapshots. Clients
+do not provide attempt IDs, daemon generations, resolved paths, or permits.
 
 ```rust
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -146,6 +149,16 @@ pub enum CoreRequest { ... }
 > `TurnSubmit`. See [`architecture/core.md`](core.md) and
 > [`architecture/session.md`](session.md) for the binding model.
 
+### Durable execution operations (Phase 5 cutover)
+
+- `JobSubmit { spec }` — validate and idempotently submit a durable job
+- `JobWait { job_id, timeout_ms }` — await a bounded terminal completion projection
+- `SchedulerSnapshot` — request bounded queue, resource, workspace, and executor state
+
+The existing `JobGet`, `JobList`, `JobAttempts`, `JobCancel`, and schedule
+operations remain available. `JobSubmitDto.submission_key` is an opaque,
+length-bounded retry key scoped to the current daemon generation.
+
 ## CoreResponse Enum
 
 Located in `crates/codegg-protocol/src/core.rs` (CoreResponse section).
@@ -172,6 +185,14 @@ pub enum CoreResponse { ... }
 | `RunGet` | `run: Option<RunRecordDto>` | Fetch a single run (Phase 3) |
 | `RunArtifactChunk` | `data_b64, byte_offset, total_bytes` | Base64-encoded chunk of a run artifact (Phase 3) |
 | `Error` | `code, message` | Error response |
+| `JobSubmitted` | `job_id` | Durable submission acknowledgement |
+| `JobWaited` | `job_id, status, summary, run_id` | Bounded terminal completion projection |
+| `SchedulerSnapshot` | `snapshot: Value` | Bounded scheduler state for operator clients |
+| `SnapshotDaemon` | `..., scheduler_snapshot` | Daemon snapshot with optional bounded scheduler state |
+
+`SchedulerSnapshot` is intentionally a JSON projection rather than a
+client-owned control object. Full job and attempt records are fetched through
+their dedicated bounded query operations.
 
 ## CoreEvent Enum
 

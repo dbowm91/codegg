@@ -48,6 +48,7 @@ pub async fn shared_pool() -> &'static SqlitePool {
 /// Returns a fresh in-memory `SqlitePool` with its own schema. Each
 /// call re-runs the migration set, so this is more expensive than
 /// [`shared_pool`] — use it only when you need true isolation.
+#[allow(dead_code)]
 pub async fn isolated_pool() -> SqlitePool {
     let name = format!("codegg_test_iso_{}", Uuid::new_v4().simple());
     build_pool(&name).await

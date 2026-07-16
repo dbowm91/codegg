@@ -468,6 +468,10 @@ pub struct JobQueryDto {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct JobSubmitDto {
+    /// Client retry identity. The daemon treats it as opaque and only
+    /// applies it within the current daemon generation.
+    #[serde(default)]
+    pub submission_key: Option<String>,
     pub workspace_id: String,
     #[serde(default)]
     pub session_id: Option<String>,

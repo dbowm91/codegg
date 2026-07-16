@@ -508,15 +508,6 @@ async fn classify_outcome_distinguishes_conflict_from_complete() {
 
 // ── helpers ────────────────────────────────────────────────────────────
 
-fn head(repo: &Path) -> String {
-    let out = Command::new("git")
-        .args(["rev-parse", "HEAD"])
-        .current_dir(repo)
-        .output()
-        .expect("git rev-parse");
-    String::from_utf8_lossy(&out.stdout).trim().to_string()
-}
-
 fn current_branch(repo: &Path) -> String {
     let out = Command::new("git")
         .args(["rev-parse", "--abbrev-ref", "HEAD"])

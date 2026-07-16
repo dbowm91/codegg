@@ -29,10 +29,7 @@ fn temp_root(label: &str) -> PathBuf {
     // name that's well under the limit, while still being unique.
     p.push(format!("cgg-{}", label));
     std::fs::create_dir_all(&p).ok();
-    p.push(format!(
-        "{}",
-        &uuid::Uuid::new_v4().simple().to_string()[..12]
-    ));
+    p.push(&uuid::Uuid::new_v4().simple().to_string()[..12]);
     p
 }
 

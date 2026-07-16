@@ -1,202 +1,176 @@
-# Scheduler (Phase 5)
+# Scheduler-owned execution
 
-Codegg's Phase 5 introduces a global admission-control scheduler that
-sits between the durable job store (Phase 4) and the typed executors
-that actually run work. The scheduler is the single authority for
-admitting jobs, enforcing fairness, and dispatching them through the
-canonical subsystems (TestRunner, ManagedArgv, SubAgentPool).
+Codegg's daemon is a scheduler-owned execution service. A daemon operation
+that starts a process, runs a test/build/lint/format command, dispatches a
+subagent, or consumes a constrained machine resource must enter the durable
+job store before it runs.
 
-## Goals
+The production path is:
 
-1. **Single dispatch authority.** `tool::test`,
-   `tool::bash::dispatch_to_test_runner`, `tui::commands::test`, and
-   the subagent pool submit jobs through `JobScheduler::submit` instead
-   of calling subsystems directly.
-2. **Bounded concurrency.** Per-workspace, per-class, and global
-   process-slot caps. Requests that exceed budget are returned
-   immediately with `UnschedulableReason`; requests that are
-   temporarily blocked return `BlockReason`.
-3. **Fairness without starvation.** Interactive work gets an
-   interactive floor (`max_high_priority_burst`); background work
-   cannot starve interactive work. Aging promotes stale entries
-   without mutating the persisted `JobPriority`.
-4. **Bounded retries.** Each attempt owns a `ResourcePermitGuard`; the
-   scheduler releases resources only when the executor signals
-   completion (success, failure, cancellation, or timeout).
+~~~text
+frontend/tool/TUI request
+  -> CoreDaemon / JobSubmissionService
+  -> durable JobRecord
+  -> JobScheduler fair queue
+  -> JobAttempt + ResourcePermitGuard
+  -> typed JobExecutor
+  -> canonical domain service
+  -> durable terminal attempt/job state + bounded completion
+~~~
 
-## Module layout
+--standalone and the hidden stdio compatibility mode are explicit non-daemon
+harnesses. They may retain local compatibility services, but they do not
+provide the machine-wide singleton or global admission guarantees.
 
-```
-src/scheduler/
-├── mod.rs             # public surface, re-exports
-├── types.rs           # QueueEntry, PriorityClass, WorkspaceLane, LaneQueue, ...
-├── fair_queue.rs      # FairJobQueue: 3-level hierarchy, round-robin, aging
-├── config.rs          # ResolvedSchedulerConfig, validation, default budgets
-├── permit.rs          # PermitDimensions, ResourcePermitGuard (Arc-attached)
-├── admission.rs       # AdmissionController, BlockReason, UnschedulableReason
-├── executor.rs        # JobExecutor trait, ExecutorRegistry, ExecutorKind
-├── executors.rs       # TestJobExecutor, ManagedArgvExecutor, SubagentJobExecutor
-├── events.rs          # SchedulerEvent enum, event sink wiring
-├── snapshot.rs        # SchedulerSnapshot, per-workspace summaries
-└── scheduler.rs       # JobScheduler main loop, wake, reconcile, dispatch
-```
+## Submission boundary
 
-## Public API
+src/scheduler/submission.rs contains JobSubmissionService, the daemon-owned
+facade for creating work. It validates the workspace service lease and
+job-kind payload, rejects oversized payloads, applies
+ResourceRequest::for_kind, normalizes namespaced exclusivity keys, creates one
+durable JobRecord, wakes the scheduler, and optionally coalesces retries using
+an opaque SubmissionKey.
 
-```rust
-use codegg::scheduler::*;
+Submission-key idempotency is currently in-memory for one daemon generation.
+The durable job ID remains authoritative after a response is lost; a future
+storage migration can persist the key/fingerprint when cross-restart retry
+identity is required.
 
-// Build a scheduler from the resolved config + durable stores.
-let scheduler: Arc<JobScheduler> = JobScheduler::new(
-    job_store,                  // Arc<dyn JobStore>
-    workspace_services,         // Arc<WorkspaceServiceRegistry>
-    resolved_config,            // ResolvedSchedulerConfig
-    daemon_generation,          // DaemonGeneration
-);
+The protocol supports JobSubmit, JobWait, JobGet, JobList, JobAttempts, and
+JobCancel. Clients never provide attempt IDs, daemon generation, permits, or
+executor implementation details.
 
-// Register typed executors.
-let mut registry = ExecutorRegistry::new();
-registry.register(Arc::new(TestJobExecutor::new(run_store, sink)))?;
-scheduler.register_executors_blocking(executor_set).await?;
+## Scheduler and admission
 
-// Wire an event sink (mpsc::Sender<SchedulerEvent>).
-scheduler.set_event_sink(tx).await;
+JobScheduler owns reconciliation, fair queue selection, admission, executor
+lookup, attempt lifecycle, cancellation signalling, and completion
+persistence. ExecutorRegistry is keyed by ExecutorKind.
 
-// Submit a job.
-scheduler.submit(job_record).await?;
+| Job kind | Executor | Canonical service |
+|---|---|---|
+| Test | TestJobExecutor | test_runner::resolve_and_run_test |
+| Build, Lint, Format, ManagedProcess, Shell | ManagedArgvExecutor | ManagedProcessService |
+| Subagent | SubagentJobExecutor | SubAgentPool::send_and_wait |
 
-// Cancel a running attempt.
-scheduler.request_cancel(&attempt_id).await?;
+Every executor context contains a typed AttemptId, the active daemon
+generation, a workspace lease, a cancellation token, and a live
+ResourcePermitGuard. Runtime validation rejects an empty identity or a
+controller-less permit before executor code runs. The scheduler records the
+executor name on the attempt before marking it running.
 
-// Snapshot for TUI / server introspection.
-let snap = scheduler.snapshot().await;
-```
+The scheduler default is enabled and mandatory. Explicit enabled = false
+creates an introspection placeholder whose submission API returns
+SchedulerDisabled; daemon tools do not fall back to direct process creation.
+observe and active remain accepted configuration labels for staged deployments
+and diagnostics, but they do not restore bypass execution.
 
-## Lifecycle
+Admission reserves soft CPU/memory/IO hints, process slots, network slots, and
+typed exclusivity keys. Hints are accounting inputs, not OS-enforced resource
+limits. Conservative defaults are centralized in
+codegg_core::jobs::ResourceRequest::for_kind:
 
-1. **Construction.** Daemon builds the scheduler at startup using
-   `CoreRuntimeDeps.scheduler: Option<Arc<JobScheduler>>`. When
-   `[scheduler].enabled = true`, the daemon also spawns the main loop
-   via `scheduler.spawn_run()` (returns `JoinHandle`). When disabled,
-   the scheduler is built as a placeholder so snapshots and config
-   introspection still work.
-2. **Main loop.** `tokio::select!` over `notify.notified()`,
-   `sleep(reconcile_interval)`, and `shutdown.cancelled()`. Each tick
-   calls `reconcile()` and then `admit_and_dispatch_batch()`.
-3. **Admission.** `AdmissionController::try_admit_arc` is the only path
-   that reserves permits. `try_admit` (non-Arc) returns an orphan
-   guard for callers that don't need controller-attached release.
-4. **Dispatch.** The scheduler looks up `ExecutorKind` via
-   `executor_kind_for_job` and calls the registered executor's
-   `execute(JobExecutionContext)`. The executor owns the guard for
-   its lifetime; resources are released on completion.
-5. **Shutdown.** `scheduler.shutdown()` cancels the cancellation
-   token; the main loop exits on the next select arm.
+| Kind | CPU | Memory hint | Processes | IO | Network | Default conflict |
+|---|---:|---:|---:|---:|---:|---|
+| Test | 2 | 1024 MB | 1 | 2 | 0 | — |
+| Build | 3 | 2048 MB | 1 | 3 | 0 | exclusive:workspace-mutation |
+| Lint | 1 | 768 MB | 1 | 1 | 0 | — |
+| Format | 1 | 256 MB | 1 | 1 | 0 | exclusive:workspace-mutation |
+| Subagent | 1 | 512 MB | 1 | 1 | 1 | — |
+| Git mutation | 1 | 256 MB | 1 | 1 | 0 | exclusive:worktree-mutation |
 
-## Fairness
+Impossible requests fail before executor invocation. Temporarily blocked
+requests are requeued, and the bounded candidate window prevents one blocked
+workspace from stopping unrelated work.
 
-* **Priority classes**: `Urgent > Interactive > Normal > Background >
-  Maintenance`. The class is derived from `JobPriority` and may be
-  promoted by aging (without mutating persisted state).
-* **Per-class round-robin**: when a class has multiple lanes (one per
-  workspace), the cursor advances so each workspace gets a turn before
-  any workspace gets two consecutive admissions.
-* **Anti-starvation**: after `max_high_priority_burst` consecutive
-  high-priority admissions, the queue forces a non-high-priority
-  admission if any eligible entry exists.
-* **Aging**: entries older than `aging_secs` are promoted through
-  priority classes until they reach `Interactive` (where the
-  anti-starvation cap applies).
+## Canonical process policy
 
-## Admission control
+src/managed_process.rs is the shared noninteractive argv service. It owns
+sanitized inherited environment and noninteractive defaults, job/attempt
+provenance variables, process session creation, descendant cleanup,
+cancellation and timeout termination, drained head/tail-bounded stdout/stderr,
+and typed exit/termination classification.
 
-`AdmissionController` reserves six dimensions per request:
+ManagedArgvExecutor is only an adapter. It does not call
+tokio::process::Command and never falls back to a shell after admission or
+spawn failure. The explicit shell route is represented as a JobKind::Shell
+payload and still uses the scheduler plus the managed process service.
 
-| Dimension | Field | Notes |
-|-----------|-------|-------|
-| CPU weight | `cpu_weight: u32` | Soft reservation |
-| Memory hint | `memory_mb_hint: u64` | Hint, not enforced by cgroups |
-| Process slots | `process_slots: u16` | Hard cap on concurrent processes |
-| IO weight | `io_weight: u32` | Soft reservation |
-| Network slots | `network_slots: u16` | Hard cap on concurrent network ops |
-| Exclusivity keys | `exclusivity_keys: Vec<String>` | Keys prefixed `exclusive:` block conflicting requests |
+TestRunner remains the domain authority for framework discovery, stall
+timeouts, reports, artifacts, and RunStore persistence. It is invoked only by
+TestJobExecutor. TestTool, Bash test translation, and the TUI /test command
+submit durable test jobs. TUI/server clients use WorkspaceRegister, JobSubmit,
+and JobWait rather than constructing TestRunner locally.
 
-Impossible requests (e.g. `process_slots > max_process_slots`) return
-`AdmissionDecision::Impossible(UnschedulableReason)`. Temporarily
-saturated requests return
-`AdmissionDecision::TemporarilyBlocked(BlockReason)`. Only successful
-admissions return a `ResourcePermitGuard`.
+## Execution-surface inventory
 
-## Executors
+| Production caller | Target kind | Executor/service | Status |
+|---|---|---|---|
+| src/tool/test.rs | Test | TestRunner | Scheduler submission |
+| src/tool/bash.rs test translation | Test | TestRunner | Scheduler submission |
+| src/tool/bash.rs build/lint/format/managed routes | matching kind | ManagedProcessService | Scheduler submission |
+| src/tool/bash.rs explicit shell route | Shell | ManagedProcessService with sh -c payload | Scheduler submission |
+| src/tui/commands/test.rs | Test | daemon protocol + TestRunner | Scheduler submission |
+| server CoreRequest::JobSubmit | typed caller kind | daemon submission facade | Scheduler submission |
+| scheduler subagent adapter | Subagent | SubAgentPool | Scheduler admission; waits for worker result |
+| src/job_dispatcher.rs | Subagent | SubAgentPool | Definition retained; no daemon production wiring |
+| legacy BackgroundScheduler | Subagent | local pool | Standalone compatibility only |
+| typed Git services / native Git read fallback | GitRead/mutation | egggit/Git service | Domain-specific compatibility path; migration remains |
+| interactive terminal/editor/formatter helpers | explicit user/local action | local process API | Not daemon heavy-job submission yet |
 
-Each `JobExecutor` is responsible for:
+The last three rows are deliberately documented rather than hidden behind
+the static guard: they are compatibility or domain-specific surfaces whose
+full scheduler submission requires additional RunStore/PTY integration.
+They must not be described as covered by the daemon invariant until migrated.
 
-1. **Validation.** Synchronous check that the `JobRecord` is well-formed
-   and supported by the executor.
-2. **Execution.** Async `execute(JobExecutionContext) -> ExecutorCompletion`.
-   The executor owns the permit guard; resources are released when
-   the executor returns (or drops the guard).
-3. **RunStore linkage.** When the executor persists a run (e.g.
-   `TestJobExecutor` calls `resolve_and_run_test` with a RunStore
-   reference), it returns the `RunId` on the `ExecutorCompletion`.
-   The scheduler writes it onto the `JobAttempt.run_id` field.
+## Lifecycle and recovery
 
-| Executor | JobKind | Backend |
-|----------|---------|---------|
-| `TestJobExecutor` | `JobKind::Test` | `test_runner::runner::resolve_and_run_test` |
-| `ManagedArgvExecutor` | `JobKind::Build \| JobKind::Lint \| JobKind::Format` | `tokio::process::Command::new(argv[0]).args(&argv[1..])` (no shell) |
-| `SubagentJobExecutor` | `JobKind::Subagent` | `crate::agent::worker::SubAgentPool::spawner().send(...)` |
+Scheduler dispatch creates an attempt, persists executor provenance, marks it
+running, registers cancellation before spawn, and persists exactly one
+terminal completion. Completion records are bounded in memory for waiters;
+full artifacts remain in RunStore.
 
-## Events
+Cancellation removes queued entries and signals matching running attempts.
+Managed-process cancellation kills the process session and descendants before
+the permit is released. A completion that races cancellation follows the
+durable store's terminal-state precedence.
 
-`SchedulerEvent` is the bounded-delta surface the scheduler emits to
-the daemon's event log:
+At startup, recover_generation marks stale attempts interrupted and applies
+the persisted idempotency/retry policy. Queue reconciliation rebuilds the
+in-memory fair queue from durable queued jobs. Schedule occurrence uniqueness
+is enforced by (schedule_id, scheduled_for); legacy background tasks are
+migrated to ScheduleStore, while standalone compatibility task loops remain
+explicitly outside daemon guarantees.
 
-| Variant | Emitted when |
-|---------|--------------|
-| `AdmissionBlocked { job_id, reason }` | Admission refused a permit |
-| `JobAdmitted { job_id, attempt_id, run_id }` | An attempt was admitted and dispatched |
-| `JobResourceReleased { job_id, attempt_id }` | Permit guard dropped (executor finished) |
-| `SchedulerOverloaded { queued, cap }` | Queue rejected an insert |
-| `SchedulerQueueChanged { ready_window, durable_queued }` | Queue size changed by a meaningful delta |
-| `ExecutorUnavailable { executor, reason }` | An executor reported degraded/unavailable |
-| `SchedulerQueueReconciled { ... }` | Reconciliation tick completed |
-| `SchedulerWoke { reason }` | Wake arrived (debug-build only) |
-| `Progress { job_id, message }` | Executor progress message |
+## Operator visibility
 
-Full state is exposed via `SchedulerSnapshot`, not events.
+SchedulerSnapshot is bounded and includes queued/running counts,
+per-workspace counts, configured resource budgets, current usage, executor
+health, admission-block counters, queue overflow counters, and oldest queued
+age. SchedulerEvent carries bounded deltas and IDs; clients fetch full job and
+attempt records through protocol requests. JobWait returns a bounded
+completion summary and optional RunStore ID.
 
-## Static guard
+## Static and runtime proof
 
-`scripts/check_scheduler_bypass.py` scans `src/` and `tests/` for
-direct calls to `test_runner::resolve_and_run_test`,
-`dispatch_to_test_runner`, and `SubAgentJobDispatcher` outside of:
+scripts/check_scheduler_bypass.py rejects direct TestRunner calls outside
+scheduler executors and test fixtures, and rejects production use of the old
+dispatch_to_test_runner name. The legacy subagent dispatcher is retained only
+as a definition for compatibility and has no construction site in daemon
+wiring.
 
-* `src/scheduler/**` (the scheduler subsystem)
-* `src/tool/bash.rs` (the migration bridge)
-* `src/job_dispatcher.rs` (the legacy dispatcher site)
-* `src/background_task_migration.rs` (Phase 4 migration)
-* `tests/**` (test fixtures)
-* `docs/**` and `architecture/**` (documentation)
+Focused validation:
 
-Production paths that submit work MUST go through the scheduler.
+~~~bash
+rtk cargo test -p codegg --lib scheduler
+rtk cargo test -p codegg --lib managed_process
+rtk cargo test --test scheduler_phase5
+rtk cargo test --test durable_jobs_phase4
+rtk python3 scripts/check_scheduler_bypass.py
+rtk python3 scripts/check_daemon_cwd_usage.py
+~~~
 
-## Testing
-
-* **Unit tests:** `cargo test -p codegg --lib scheduler` (33 tests
-  covering admission, fair queue, executor registry, scheduler
-  lifecycle, and resource accounting).
-* **Integration tests:** `cargo test --test scheduler_phase5` (11 tests
-  covering two-workspace isolation, fairness, admission budget,
-  exclusivity keys, executor wiring, and durable-jobstore
-  compatibility).
-
-## Migration plan (Stage A → E)
-
-| Stage | Rollout mode | Tool-level change |
-|-------|-------------|-------------------|
-| A (current) | `observe` | Scheduler exists, snapshots emitted, tool paths unchanged |
-| B | `observe` | Optional event-sink wiring, surface `[scheduler].enabled` toggle |
-| C | `active` | `tool::test`, `tool::bash::dispatch_to_test_runner`, and TUI submit through scheduler |
-| D | `active` | Subagent jobs route through scheduler (drop `SubAgentJobDispatcher`) |
-| E | `mandatory` | Scheduler is the only path; legacy dispatcher is feature-gated |
+The current proof covers resource admission, one-process-cap contention across
+two temporary workspaces, fairness/exclusivity primitives, submission
+idempotency, disabled-scheduler behavior, managed-process timeout, bounded
+output, cancellation cleanup, and durable recovery. A future operational
+extension should add shared Cargo-target aliasing and process-tree fixtures.

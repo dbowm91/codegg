@@ -200,17 +200,20 @@ impl DelegatedTestRun {
 
 ### Callers
 
-All callers of `resolve_and_run_test` / `run_resolved_test` now call `.into_report()` to extract the `TestReport`:
+Daemon callers submit a typed durable `JobKind::Test` through
+`JobSubmissionService`. `TestJobExecutor` is the only production adapter that
+invokes `resolve_and_run_test` / `run_resolved_test`; it calls `.into_report()`
+to project the canonical `TestReport` and preserves the returned `run_id`.
 
-- `src/tool/test.rs` (model-facing test tool)
-- `src/tui/commands/test.rs:110` (TUI `/test` slash command)
-- Internal tests in `src/test_runner/runner.rs`
+- `src/tool/test.rs` submits and waits through the scheduler
+- `src/tool/bash.rs` submits planner-validated `TestScope::BashDispatch` jobs
+- `src/tui/commands/test.rs` submits through `CoreRequest::JobSubmit` and waits
+- Internal tests in `src/test_runner/runner.rs` may call the subsystem directly
 
-Callers that suppress persistence (e.g., `BashTool::dispatch_to_test_runner`) inspect the `run_id` field on `DelegatedTestRun` before deciding whether to persist their own outer record.
-
-### Called by BashTool
-
-`BashTool::dispatch_to_test_runner` at `src/tool/bash.rs:542-572` constructs a `TestScope::BashDispatch(argv)` from the planner's validated argv, calls `resolve_and_run_test` with the shared `RunStore`, and uses the returned `DelegatedTestRun` to determine persistence ownership.
+The scheduler owns admission and attempt lifecycle; TestRunner remains the
+domain authority for framework discovery, stall handling, reports, artifacts,
+and RunStore persistence. Active daemon dispatch failure is returned to the
+caller and never retried through raw shell.
 
 ```bash
 cargo test -p codegg --lib tool::bash

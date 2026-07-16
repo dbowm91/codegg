@@ -1249,16 +1249,15 @@ pub enum DaemonModeConfig {
     StandaloneStdio,
 }
 
-/// Phase 5: global admission control scheduler. Optional; when
-/// `None`, the default rollout is `observe` with the
-/// `ResolvedSchedulerConfig::default()` budgets.
+/// Phase 5: global admission control scheduler. Daemon mode defaults to
+/// enabled and mandatory; observe/active remain explicit compatibility
+/// labels for diagnostics and staged deployments.
 #[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq, Eq)]
 #[serde(default, rename_all = "snake_case")]
 pub struct SchedulerConfig {
     pub enabled: Option<bool>,
-    /// Rollout mode: `observe` (default) keeps the existing direct
-    /// paths; `active` enables scheduler admission for migrated
-    /// families.
+    /// Rollout mode: observe and active are explicit staged labels;
+    /// mandatory is the production authority mode.
     pub rollout: Option<SchedulerRolloutConfig>,
     pub reconcile_interval_ms: Option<u64>,
     pub resources: Option<SchedulerResourceConfig>,
@@ -1272,6 +1271,7 @@ pub enum SchedulerRolloutConfig {
     #[default]
     Observe,
     Active,
+    Mandatory,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq, Eq)]

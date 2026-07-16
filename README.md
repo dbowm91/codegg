@@ -99,9 +99,26 @@ location:
 `init_legacy_project_store(root)` retains backward compat for the legacy
 `<root>/.codegg/sessions.db` path, and `migrate_legacy_project_database`
 imports those legacy databases into the catalog idempotently. Storage
-layout marker is now `STORAGE_LAYOUT_VERSION = 23`. See
+layout marker is now `STORAGE_LAYOUT_VERSION = 24`. See
 [`plans/single-daemon-phase-03-workspace-services-and-storage.md`](plans/single-daemon-phase-03-workspace-services-and-storage.md)
 and `architecture/workspace_services.md` for the full contract.
+
+### Scheduler-owned execution
+
+In daemon mode, process-consuming work is submitted as a durable job and is
+admitted by the single global scheduler before execution. Tests, structured
+Bash test/build/lint/format routes, subagents, and scheduled work use this
+path; workspace lanes, resource profiles, exclusivity keys, cancellation,
+and daemon-generation recovery are visible through the scheduler snapshot
+and job protocol.
+
+The scheduler is enabled and mandatory by default. If it is explicitly
+disabled, daemon submission returns `SchedulerDisabled` rather than falling
+back to an unscheduled process. `--standalone` and `--stdio` remain explicit
+compatibility modes and do not participate in the user-scoped machine-wide
+admission guarantee. See
+[`architecture/scheduler.md`](architecture/scheduler.md) and the
+[`scheduler cutover plan`](plans/single-daemon-scheduler-cutover-correctness-and-operational-proof.md).
 
 ```bash
 git clone https://github.com/anomalyco/codegg

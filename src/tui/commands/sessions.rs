@@ -1352,6 +1352,8 @@ pub(crate) async fn handle_load_session_messages(app: &mut App, session_id: Stri
             | Ok(CoreResponse::JobAttempts { .. })
             | Ok(CoreResponse::JobCancelResult { .. })
             | Ok(CoreResponse::JobSubmitted { .. })
+            | Ok(CoreResponse::JobWaited { .. })
+            | Ok(CoreResponse::SchedulerSnapshot { .. })
             | Ok(CoreResponse::JobRetryStarted { .. })
             | Ok(CoreResponse::ScheduleCreated { .. })
             | Ok(CoreResponse::ScheduleList { .. })

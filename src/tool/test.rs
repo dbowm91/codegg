@@ -5,10 +5,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use crate::error::ToolError;
-use crate::test_runner::{
-    custom::validate_custom_command, format_test_report_with_cap, resolve_and_run_test,
-    TestRunRequest, TestScope, TestStatus,
-};
+use crate::test_runner::{custom::validate_custom_command, TestRunRequest, TestScope};
 use crate::tool::backend::{
     StructuredToolResult, ToolBackendKind, ToolExecutionContext, ToolProvenance, ToolTrust,
 };
@@ -20,18 +17,32 @@ use crate::tool::{Tool, ToolCategory};
 /// to logs, classifies timeouts/failures, and returns a compact report
 /// instead of dumping full output into context.
 pub struct TestTool {
+    #[allow(dead_code)]
     run_store: Option<Arc<dyn codegg_core::run_store::RunStore>>,
+    submission: Option<Arc<crate::scheduler::JobSubmissionService>>,
 }
 
 impl TestTool {
     pub fn new() -> Self {
-        Self { run_store: None }
+        Self {
+            run_store: None,
+            submission: None,
+        }
     }
 
     pub fn with_run_store(store: Arc<dyn codegg_core::run_store::RunStore>) -> Self {
         Self {
             run_store: Some(store),
+            submission: None,
         }
+    }
+
+    pub fn with_submission(
+        mut self,
+        submission: Arc<crate::scheduler::JobSubmissionService>,
+    ) -> Self {
+        self.submission = Some(submission);
+        self
     }
 }
 
@@ -101,15 +112,11 @@ impl Tool for TestTool {
     async fn execute(&self, input: serde_json::Value) -> Result<String, ToolError> {
         let request = parse_test_request(&input)?;
         let max_report_bytes = request.max_report_bytes;
-        let report = resolve_and_run_test(
-            request,
-            Some(&crate::test_runner::BusEventSink),
-            self.run_store.as_ref(),
-        )
-        .await
-        .map_err(|e| ToolError::Execution(format!("test runner error: {e}")))?
-        .into_report();
-        Ok(format_test_report_capped(&report, max_report_bytes))
+        let summary = self.run_scheduled_test(request).await?;
+        Ok(match max_report_bytes {
+            Some(max_report_bytes) => truncate_report_text(&summary, max_report_bytes),
+            None => summary,
+        })
     }
 
     async fn execute_structured(
@@ -120,18 +127,13 @@ impl Tool for TestTool {
         let start = Instant::now();
         let request = parse_test_request(&input)?;
         let max_report_bytes = request.max_report_bytes;
-        let report = resolve_and_run_test(
-            request,
-            Some(&crate::test_runner::BusEventSink),
-            self.run_store.as_ref(),
-        )
-        .await
-        .map_err(|e| ToolError::Execution(format!("test runner error: {e}")))?
-        .into_report();
-        let output = format_test_report_capped(&report, max_report_bytes);
+        let output = self.run_scheduled_test(request).await?;
+        let output = max_report_bytes
+            .map(|cap| truncate_report_text(&output, cap))
+            .unwrap_or(output);
         let elapsed_ms = start.elapsed().as_millis() as u64;
 
-        let success = matches!(report.status, TestStatus::Passed);
+        let success = !output.contains("FAILED") && !output.contains("error");
         let provenance = ToolProvenance {
             backend: ToolBackendKind::Native.label().to_lowercase(),
             implementation: "test_runner".to_string(),
@@ -145,6 +147,73 @@ impl Tool for TestTool {
             output, success, provenance,
         ))
     }
+}
+
+impl TestTool {
+    async fn run_scheduled_test(&self, request: TestRunRequest) -> Result<String, ToolError> {
+        let Some(submission) = self.submission.clone() else {
+            return Err(ToolError::Execution(
+                "test execution requires the daemon scheduler; standalone callers must provide a harness scheduler".into(),
+            ));
+        };
+        let resolved = crate::test_runner::resolve_test_command(&request)
+            .map_err(|e| ToolError::Execution(format!("test command resolution failed: {e}")))?;
+        let workspace_id = submission
+            .workspace_id_for_root(&request.workdir)
+            .await
+            .map_err(|e| ToolError::Execution(e.to_string()))?;
+        let job = submission
+            .submit(
+                None,
+                codegg_core::jobs::NewJob {
+                    workspace_id,
+                    session_id: request.session_id.clone(),
+                    turn_id: None,
+                    kind: codegg_core::jobs::JobKind::Test,
+                    source: codegg_core::jobs::JobSource::Interactive,
+                    priority: codegg_core::jobs::JobPriority::Interactive,
+                    payload: codegg_core::jobs::JobPayload::Test {
+                        command: resolved.argv.join(" "),
+                        argv: resolved.argv,
+                        cwd: Some(resolved.cwd.to_string_lossy().into_owned()),
+                        scope: Some(resolved.scope_label),
+                    },
+                    resource_request: codegg_core::jobs::ResourceRequest::for_kind(
+                        codegg_core::jobs::JobKind::Test,
+                    ),
+                    timeout: request.timeout_secs.map(std::time::Duration::from_secs),
+                    retry_policy: codegg_core::jobs::RetryPolicy::no_retry(),
+                    idempotency: codegg_core::jobs::IdempotencyClass::SafeRepeat,
+                    not_before: None,
+                    deadline: None,
+                    schedule_id: None,
+                    depends_on: Vec::new(),
+                },
+            )
+            .await
+            .map_err(|e| ToolError::Execution(e.to_string()))?;
+        let wait_for = request
+            .timeout_secs
+            .map(|seconds| std::time::Duration::from_secs(seconds.saturating_add(5)))
+            .unwrap_or_else(|| std::time::Duration::from_secs(900));
+        let completion = submission
+            .scheduler()
+            .wait_for_completion(&job.job_id, wait_for)
+            .await
+            .map_err(|e| ToolError::Execution(e.to_string()))?;
+        Ok(completion.summary)
+    }
+}
+
+fn truncate_report_text(text: &str, cap: usize) -> String {
+    if text.len() <= cap {
+        return text.to_string();
+    }
+    let mut end = cap;
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}\n[report truncated]", &text[..end])
 }
 
 /// Parse JSON input into a `TestRunRequest`.
@@ -261,20 +330,6 @@ fn parse_positive_seconds(
         )));
     }
     Ok(Some(n as u64))
-}
-
-/// Format the report, applying a caller-requested cap if set.
-fn format_test_report_capped(
-    report: &crate::test_runner::TestReport,
-    max_report_bytes: Option<usize>,
-) -> String {
-    match max_report_bytes {
-        Some(cap) => format_test_report_with_cap(report, cap),
-        None => format_test_report_with_cap(
-            report,
-            crate::test_runner::report::DEFAULT_MAX_REPORT_BYTES,
-        ),
-    }
 }
 
 #[cfg(test)]

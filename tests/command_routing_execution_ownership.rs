@@ -30,12 +30,53 @@ use serde_json::json;
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
-fn make_bash_tool(config: Option<CommandIntentConfig>, store: Arc<MemRunStore>) -> BashTool {
+async fn make_bash_tool(config: Option<CommandIntentConfig>, store: Arc<MemRunStore>) -> BashTool {
     // Ensure the env kill switch is NOT set. Tests must not inherit
     // `CODEGG_ROUTING_DISABLE=1` from sibling tests; each test that depends
     // on active routing must clear it before constructing the tool.
     std::env::remove_var("CODEGG_ROUTING_DISABLE");
-    let mut tool = BashTool::new().with_run_store(store);
+    let workspace_registry = codegg_core::workspace::WorkspaceRegistry::load(Arc::new(
+        codegg_core::workspace::InMemoryWorkspaceStore::new(),
+    ))
+    .await
+    .expect("workspace registry");
+    let services = codegg_core::workspace_services::WorkspaceServiceRegistry::new(
+        workspace_registry,
+        Arc::new(codegg_core::workspace_services::ProductionWorkspaceServicesFactory),
+        codegg_core::workspace_services::WorkspaceServicePolicy::default(),
+    );
+    let job_store: Arc<dyn codegg_core::jobs::JobStore> =
+        Arc::new(codegg_core::jobs::InMemoryJobStore::new());
+    let generation = codegg_core::jobs::DaemonGeneration::new();
+    let scheduler = codegg::scheduler::JobScheduler::new(
+        job_store.clone(),
+        services.clone(),
+        codegg::scheduler::ResolvedSchedulerConfig::default(),
+        generation.clone(),
+    );
+    let executors: Vec<Arc<dyn codegg::scheduler::JobExecutor>> = vec![
+        Arc::new(codegg::scheduler::executors::TestJobExecutor::new(
+            Some(store.clone()),
+            None,
+        )),
+        Arc::new(codegg::scheduler::executors::ManagedArgvExecutor::new(
+            "managed_argv",
+        )),
+    ];
+    scheduler
+        .register_executors_blocking(executors)
+        .await
+        .expect("register test executors");
+    let submission = codegg::scheduler::JobSubmissionService::new(
+        job_store,
+        scheduler.clone(),
+        services,
+        generation,
+    );
+    let mut tool = BashTool::new()
+        .with_run_store(store)
+        .with_submission(submission);
+    let _scheduler_task = scheduler.spawn_run();
     if let Some(cic) = config {
         tool = tool.with_command_intent_config(cic);
     }
@@ -87,7 +128,7 @@ async fn all_runs(store: &MemRunStore) -> Vec<codegg_core::run_store::RunManifes
 #[tokio::test]
 async fn observe_mode_persists_raw_shell_with_unrouted_planned() {
     let store = Arc::new(MemRunStore::new());
-    let tool = make_bash_tool(Some(observe_config()), store.clone());
+    let tool = make_bash_tool(Some(observe_config()), store.clone()).await;
 
     let _ = tool
         .execute(json!({"command": "echo ownership-observe-ok"}))
@@ -119,7 +160,7 @@ async fn observe_mode_persists_raw_shell_with_unrouted_planned() {
 #[tokio::test]
 async fn active_test_command_routes_to_test_runner_as_delegated() {
     let store = Arc::new(MemRunStore::new());
-    let tool = make_bash_tool(Some(active_config()), store.clone());
+    let tool = make_bash_tool(Some(active_config()), store.clone()).await;
 
     // Active routing dispatches directly to the canonical TestRunner.
     let _ = tool
@@ -144,7 +185,7 @@ async fn active_test_command_routes_to_test_runner_as_delegated() {
 #[tokio::test]
 async fn active_git_readonly_routes_to_git_caller_owned() {
     let store = Arc::new(MemRunStore::new());
-    let tool = make_bash_tool(Some(active_config()), store.clone());
+    let tool = make_bash_tool(Some(active_config()), store.clone()).await;
 
     let _ = tool
         .execute(json!({"command": "git status"}))
@@ -173,7 +214,7 @@ async fn active_git_readonly_routes_to_git_caller_owned() {
 #[tokio::test]
 async fn active_search_routes_to_managed_argv_caller_owned() {
     let store = Arc::new(MemRunStore::new());
-    let tool = make_bash_tool(Some(active_config()), store.clone());
+    let tool = make_bash_tool(Some(active_config()), store.clone()).await;
 
     // Use a search-like command that classifies as SearchReadOnly
     let _ = tool
@@ -284,7 +325,7 @@ async fn active_routing_fallback_preserves_planned_and_records_actual() {
 #[tokio::test]
 async fn bash_tool_artifacts_are_never_safe_for_model() {
     let store = Arc::new(MemRunStore::new());
-    let tool = make_bash_tool(None, store.clone());
+    let tool = make_bash_tool(None, store.clone()).await;
 
     // Generate a command that produces both stdout and stderr
     let _ = tool
@@ -417,7 +458,7 @@ async fn test_runner_canonical_api_owns_record_as_delegated_backend() {
 async fn env_kill_switch_forces_raw_shell_persistence() {
     std::env::set_var("CODEGG_ROUTING_DISABLE", "1");
     let store = Arc::new(MemRunStore::new());
-    let tool = make_bash_tool(Some(active_config()), store.clone());
+    let tool = make_bash_tool(Some(active_config()), store.clone()).await;
 
     let _ = tool
         .execute(json!({"command": "echo kill-switch-ok"}))
@@ -445,7 +486,7 @@ async fn per_family_off_forces_raw_shell_persistence() {
     cic.route_git_read = Some(RouteLevel::Off);
 
     let store = Arc::new(MemRunStore::new());
-    let tool = make_bash_tool(Some(cic), store.clone());
+    let tool = make_bash_tool(Some(cic), store.clone()).await;
 
     let _ = tool
         .execute(json!({"command": "git status"}))
@@ -609,7 +650,7 @@ async fn manifest_serde_roundtrip_with_provenance() {
 #[tokio::test]
 async fn bash_tool_routes_active_test_through_canonical_test_runner() {
     let store = Arc::new(MemRunStore::new());
-    let tool = make_bash_tool(Some(active_config()), store.clone());
+    let tool = make_bash_tool(Some(active_config()), store.clone()).await;
 
     // "cargo test --help" classifies as Test, plans TestRunner, and
     // dispatches through `dispatch_to_test_runner` → `resolve_and_run_test`.
@@ -659,7 +700,7 @@ async fn bash_tool_routes_active_test_through_canonical_test_runner() {
 #[tokio::test]
 async fn bash_tool_routes_active_python_through_canonical_executor() {
     let store = Arc::new(MemRunStore::new());
-    let tool = make_bash_tool(Some(active_config()), store.clone());
+    let tool = make_bash_tool(Some(active_config()), store.clone()).await;
 
     // Python classify → plan PythonScript → dispatch to canonical executor.
     let _ = tool
@@ -703,7 +744,7 @@ async fn bash_tool_routes_active_python_through_canonical_executor() {
 #[tokio::test]
 async fn observe_mode_test_persists_as_raw_shell() {
     let store = Arc::new(MemRunStore::new());
-    let tool = make_bash_tool(Some(observe_config()), store.clone());
+    let tool = make_bash_tool(Some(observe_config()), store.clone()).await;
 
     let _ = tool
         .execute(json!({"command": "cargo test --help"}))
@@ -729,7 +770,7 @@ async fn observe_mode_test_persists_as_raw_shell() {
 #[tokio::test]
 async fn one_logical_execution_produces_exactly_one_record() {
     let store = Arc::new(MemRunStore::new());
-    let tool = make_bash_tool(Some(active_config()), store.clone());
+    let tool = make_bash_tool(Some(active_config()), store.clone()).await;
 
     // Run multiple commands back-to-back; each must produce exactly one record.
     for cmd in [

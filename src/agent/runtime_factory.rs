@@ -27,6 +27,8 @@ pub fn build_agent_loop(
     task_state_policy: TaskStatePolicy,
     mcp_service: Option<Arc<tokio::sync::RwLock<crate::mcp::McpService>>>,
     artifact_store: Arc<dyn ContextArtifactStore>,
+    submission: Option<Arc<crate::scheduler::JobSubmissionService>>,
+    workspace_root: std::path::PathBuf,
 ) -> crate::agent::r#loop::AgentLoop {
     let permission_checker =
         crate::permission::PermissionChecker::new(Some(&config), None).with_active_mode(&config);
@@ -45,6 +47,10 @@ pub fn build_agent_loop(
     if let Some(spool) = subagent_pool {
         agent_loop.set_subagent_pool(Arc::clone(spool));
     }
+    if let Some(submission) = submission {
+        agent_loop.set_submission(submission);
+    }
+    agent_loop.set_workspace_root(workspace_root);
     agent_loop.set_task_state_policy(task_state_policy);
     agent_loop
 }

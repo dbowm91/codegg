@@ -1,9 +1,10 @@
 //! Concrete `JobExecutor` implementations backed by the existing
 //! canonical subsystems. The scheduler is the single authority that
 //! invokes them; tool-level callers (e.g. `tool::test`,
-//! `tool::bash::dispatch_to_test_runner`) route jobs through the
+//! `tool::bash` test submission path) route jobs through the
 //! scheduler instead of calling these subsystems directly.
 
+use std::ffi::OsString;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -158,7 +159,10 @@ impl JobExecutor for TestJobExecutor {
                 };
                 ExecutorCompletion {
                     status,
-                    summary: delegated.report().summary.clone(),
+                    summary: crate::test_runner::format_test_report_with_cap(
+                        delegated.report(),
+                        crate::test_runner::report::DEFAULT_MAX_REPORT_BYTES,
+                    ),
                     run_id: delegated.run_id.clone(),
                     metrics: ExecutorMetrics {
                         cpu_time_ms: None,
@@ -204,10 +208,10 @@ fn failure_completion(
     }
 }
 
-/// Canonical executor for `JobKind::Build|Lint|Format`. Delegates to a
-/// typed `ManagedArgv` runner that uses `Command::new(argv[0])`
-/// directly (the executor's argv is plan-validated, so it does NOT
-/// reconstruct shell). The runtime payload is the authoritative argv.
+/// Scheduler adapter for managed argv, shell, build, lint, and format jobs.
+/// Process policy lives
+/// in [`crate::managed_process::ManagedProcessService`]; this adapter only
+/// translates the durable payload and maps the result to executor status.
 pub struct ManagedArgvExecutor {
     label: &'static str,
 }
@@ -225,7 +229,14 @@ impl JobExecutor for ManagedArgvExecutor {
     }
 
     fn supports(&self, kind: JobKind) -> bool {
-        matches!(kind, JobKind::Build | JobKind::Lint | JobKind::Format)
+        matches!(
+            kind,
+            JobKind::Build
+                | JobKind::Lint
+                | JobKind::Format
+                | JobKind::ManagedProcess
+                | JobKind::Shell
+        )
     }
 
     fn validate(&self, job: &JobRecord) -> Result<(), ExecutorValidationError> {
@@ -233,6 +244,12 @@ impl JobExecutor for ManagedArgvExecutor {
             JobPayload::ManagedArgv { argv, .. } => {
                 if argv.is_empty() {
                     return Err(ExecutorValidationError::MissingField("argv".into()));
+                }
+                Ok(())
+            }
+            JobPayload::Shell { command, argv, .. } => {
+                if command.is_empty() && argv.as_ref().map_or(true, Vec::is_empty) {
+                    return Err(ExecutorValidationError::MissingField("command".into()));
                 }
                 Ok(())
             }
@@ -251,6 +268,9 @@ impl JobExecutor for ManagedArgvExecutor {
         let started = std::time::Instant::now();
         let argv = match &ctx.job.payload {
             JobPayload::ManagedArgv { argv, .. } => argv.clone(),
+            JobPayload::Shell { command, argv, .. } => argv
+                .clone()
+                .unwrap_or_else(|| vec!["sh".into(), "-c".into(), command.clone()]),
             _ => {
                 return failure_completion(
                     started,
@@ -260,15 +280,13 @@ impl JobExecutor for ManagedArgvExecutor {
             }
         };
         let cwd = match &ctx.job.payload {
-            JobPayload::ManagedArgv { cwd, .. } => cwd.clone().map(PathBuf::from),
+            JobPayload::ManagedArgv { cwd, .. } | JobPayload::Shell { cwd, .. } => {
+                cwd.clone().map(PathBuf::from)
+            }
             _ => None,
         };
 
-        let mut cmd = tokio::process::Command::new(&argv[0]);
-        cmd.args(&argv[1..]);
-        if let Some(dir) = cwd {
-            cmd.current_dir(dir);
-        } else {
+        let Some(cwd) = cwd else {
             // production path: fall back to workspace root via
             // ExecutionContext was used by callers submitting; here we
             // best-effort to the job's session's recorded workspace
@@ -280,10 +298,19 @@ impl JobExecutor for ManagedArgvExecutor {
                 ExecutorStatus::Failed,
                 "managed argv missing cwd".into(),
             );
-        }
-        cmd.env("CODEGG_SCHEDULER_EXECUTOR", self.label);
+        };
+        let mut request = crate::managed_process::ManagedProcessRequest::new(
+            argv.into_iter().map(OsString::from).collect(),
+            cwd,
+            crate::managed_process::ProcessProvenance::new(
+                ctx.job.job_id.as_str(),
+                ctx.attempt_id.as_str(),
+            ),
+        );
+        request.timeout = ctx.job.timeout;
+        request.cancellation = ctx.cancellation.clone();
 
-        let output = match cmd.output().await {
+        let output = match crate::managed_process::ManagedProcessService::run(request).await {
             Ok(o) => o,
             Err(e) => {
                 return failure_completion(
@@ -293,29 +320,36 @@ impl JobExecutor for ManagedArgvExecutor {
                 );
             }
         };
-        // Surface cancellation if requested mid-run
-        if ctx.cancellation.is_cancelled() {
-            return failure_completion(
-                started,
-                ExecutorStatus::Cancelled,
-                "cancelled before output captured".into(),
-            );
-        }
-        let exit_code = output.status.code();
-        let status = if output.status.success() {
-            ExecutorStatus::Completed
-        } else {
-            ExecutorStatus::Failed
+        let status = match output.termination {
+            crate::managed_process::TerminationReason::Cancelled => ExecutorStatus::Cancelled,
+            crate::managed_process::TerminationReason::TimedOut => ExecutorStatus::TimedOut,
+            crate::managed_process::TerminationReason::Exited if output.exit_status.success() => {
+                ExecutorStatus::Completed
+            }
+            crate::managed_process::TerminationReason::Exited => ExecutorStatus::Failed,
         };
-        let summary = format!(
-            "{} exit={} stdout_bytes={} stderr_bytes={}",
+        let mut summary = format!(
+            "{} exit={} stdout_bytes={} stderr_bytes={} truncated={}",
             self.label,
-            exit_code
+            output
+                .exit_status
+                .code()
                 .map(|c| c.to_string())
                 .unwrap_or_else(|| "signal".into()),
-            output.stdout.len(),
-            output.stderr.len()
+            output.stdout.total_bytes,
+            output.stderr.total_bytes,
+            output.stdout.is_truncated() || output.stderr.is_truncated()
         );
+        let stdout = output.stdout.to_string_lossy();
+        let stderr = output.stderr.to_string_lossy();
+        if !stdout.is_empty() {
+            summary.push('\n');
+            summary.push_str(&stdout);
+        }
+        if !stderr.is_empty() {
+            summary.push_str("\n--- stderr ---\n");
+            summary.push_str(&stderr);
+        }
         let _ = ctx.progress.progress(ctx.job_id(), &summary).await;
         ExecutorCompletion {
             status,
@@ -324,7 +358,7 @@ impl JobExecutor for ManagedArgvExecutor {
             metrics: ExecutorMetrics {
                 cpu_time_ms: None,
                 peak_memory_mb: None,
-                elapsed_ms: started.elapsed().as_millis() as u64,
+                elapsed_ms: output.duration.as_millis() as u64,
             },
         }
     }
@@ -416,11 +450,15 @@ impl JobExecutor for SubagentJobExecutor {
             parent_model: None,
         };
 
-        let result = self.pool.spawner().send(request).await;
+        let result = self.pool.spawner().send_and_wait(request).await;
         match result {
-            Ok(()) => ExecutorCompletion {
-                status: ExecutorStatus::Completed,
-                summary: "subagent dispatched".into(),
+            Ok(result) => ExecutorCompletion {
+                status: if result.success {
+                    ExecutorStatus::Completed
+                } else {
+                    ExecutorStatus::Failed
+                },
+                summary: result.result,
                 run_id: None,
                 metrics: ExecutorMetrics {
                     cpu_time_ms: None,
@@ -446,9 +484,7 @@ pub fn register_default_executors(
     subagent_pool: Option<Arc<crate::agent::worker::SubAgentPool>>,
 ) -> Result<(), crate::scheduler::executor::ExecutorRegistryError> {
     registry.register(Arc::new(TestJobExecutor::new(run_store, sink)))?;
-    registry.register(Arc::new(ManagedArgvExecutor::new("build")))?;
-    registry.register(Arc::new(ManagedArgvExecutor::new("lint")))?;
-    registry.register(Arc::new(ManagedArgvExecutor::new("format")))?;
+    registry.register(Arc::new(ManagedArgvExecutor::new("managed_argv")))?;
     if let Some(pool) = subagent_pool {
         registry.register(Arc::new(SubagentJobExecutor::new(pool)))?;
     }

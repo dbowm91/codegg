@@ -5,14 +5,11 @@
 //! isolation: session identity, workspace root, path resolution, and
 //! that a malicious `workdir` cannot cross into another workspace.
 
-use std::path::PathBuf;
 use std::sync::Arc;
 
-use codegg::core::session_runtime::RuntimeSessionStatus;
 use codegg::session::schema::migrate;
 use codegg::workspace::{
-    ExecutionContext, InMemoryWorkspaceStore, PathPolicyError, WorkspaceId, WorkspaceRecord,
-    WorkspaceRegistry,
+    ExecutionContext, InMemoryWorkspaceStore, PathPolicyError, WorkspaceRegistry,
 };
 
 async fn in_memory_pool() -> sqlx::SqlitePool {

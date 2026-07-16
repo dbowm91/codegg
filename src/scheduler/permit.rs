@@ -96,6 +96,17 @@ impl ResourcePermitGuard {
     pub fn dimensions(&self) -> &PermitDimensions {
         &self.inner.as_ref().expect("guard not detached").dimensions
     }
+
+    pub fn is_live(&self) -> bool {
+        self.inner.is_some()
+    }
+
+    pub fn is_controller_bound(&self) -> bool {
+        self.inner
+            .as_ref()
+            .and_then(|inner| inner.controller.as_ref())
+            .is_some()
+    }
 }
 
 impl Drop for ResourcePermitGuard {

@@ -425,6 +425,28 @@ impl JobStore for InMemoryJobStore {
         Ok(())
     }
 
+    async fn set_attempt_executor(
+        &self,
+        attempt_id: &AttemptId,
+        executor: &str,
+    ) -> Result<(), JobStoreError> {
+        let mut guard = self.inner.lock().await;
+        let attempt = guard
+            .attempts
+            .get(attempt_id)
+            .cloned()
+            .ok_or_else(|| JobStoreError::AttemptNotFound(attempt_id.to_string()))?;
+        guard.attempts.insert(
+            attempt_id.clone(),
+            JobAttempt {
+                executor: Some(executor.to_string()),
+                updated_at: Utc::now(),
+                ..attempt
+            },
+        );
+        Ok(())
+    }
+
     async fn record_heartbeat(
         &self,
         attempt_id: &AttemptId,
@@ -1151,6 +1173,25 @@ impl JobStore for SqliteJobStore {
         tx.commit()
             .await
             .map_err(|e| JobStoreError::Storage(StorageError::Database(e.to_string())))?;
+        Ok(())
+    }
+
+    async fn set_attempt_executor(
+        &self,
+        attempt_id: &AttemptId,
+        executor: &str,
+    ) -> Result<(), JobStoreError> {
+        let result =
+            sqlx::query("UPDATE job_attempt SET executor = ?, time_updated = ? WHERE id = ?")
+                .bind(executor)
+                .bind(Utc::now().timestamp_millis())
+                .bind(attempt_id.as_str())
+                .execute(&self.pool)
+                .await
+                .map_err(|e| JobStoreError::Storage(StorageError::Database(e.to_string())))?;
+        if result.rows_affected() == 0 {
+            return Err(JobStoreError::AttemptNotFound(attempt_id.to_string()));
+        }
         Ok(())
     }
 

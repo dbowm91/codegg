@@ -27,7 +27,6 @@ use crate::python_script::{
     execute_and_persist_python_script, PythonExecutionMode, PythonScriptRequest,
 };
 use crate::security::sandbox::{get_default_allowed_paths, get_sensitive_paths, SandboxConfig};
-use crate::test_runner::{resolve_and_run_test, TestRunRequest, TestScope};
 use crate::tool::{Tool, ToolCategory};
 
 /// What a single dispatch returned: the result text, raw process output,
@@ -329,6 +328,7 @@ pub struct BashTool {
     preflight: Option<Arc<PreflightService>>,
     command_intent_config: Option<CommandIntentConfig>,
     run_store: Option<Arc<dyn codegg_core::run_store::RunStore>>,
+    submission: Option<Arc<crate::scheduler::JobSubmissionService>>,
 }
 
 impl BashTool {
@@ -379,6 +379,7 @@ impl BashTool {
             preflight: None,
             command_intent_config: None,
             run_store: None,
+            submission: None,
         }
     }
 
@@ -409,6 +410,14 @@ impl BashTool {
 
     pub fn with_run_store(mut self, store: Arc<dyn codegg_core::run_store::RunStore>) -> Self {
         self.run_store = Some(store);
+        self
+    }
+
+    pub fn with_submission(
+        mut self,
+        submission: Arc<crate::scheduler::JobSubmissionService>,
+    ) -> Self {
+        self.submission = Some(submission);
         self
     }
 
@@ -566,13 +575,10 @@ impl BashTool {
         Ok((result, output))
     }
 
-    /// Dispatch to the canonical TestRunner backend.
-    ///
-    /// Routes to `resolve_and_run_test` directly (no shell reconstruction),
-    /// preserving cwd, timeout, scope, and RunStore ownership. Returns the
-    /// canonical `DelegatedTestRun` with an optional `RunId` proving the
-    /// delegated record was begun.
-    async fn dispatch_to_test_runner(
+    /// Submit a planner-validated test argv to the daemon scheduler. The
+    /// Bash translation layer never retries through the raw shell when this
+    /// boundary rejects or fails.
+    async fn submit_test_job(
         &self,
         argv: &[String],
         cwd: Option<&Path>,
@@ -585,49 +591,61 @@ impl BashTool {
             fallback: false,
         });
 
+        let Some(submission) = self.submission.clone() else {
+            return Err(ToolError::Execution(
+                "test execution requires the daemon scheduler".into(),
+            ));
+        };
         let run_cwd = cwd
             .map(Path::to_path_buf)
-            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
-
-        let timeout_secs = timeout.as_secs();
-        let stall_timeout_secs = (timeout_secs / 2).max(15);
-
-        // Build a TestRunRequest from the planner-validated argv. We use
-        // `TestScope::BashDispatch` so the argv is consumed directly without
-        // the strict allowlist re-validation in `TestScope::CustomCommand`
-        // (which rejects any non-allowlisted test command prefix).
-        let scope = TestScope::BashDispatch(argv.to_vec());
-
-        let request = TestRunRequest {
-            scope,
-            workdir: run_cwd.clone(),
-            timeout_secs: Some(timeout_secs.max(1)),
-            stall_timeout_secs: Some(stall_timeout_secs),
-            max_report_bytes: None,
-            session_id: None,
-        };
-
-        let run_store = self.run_store.as_ref();
-        let delegated =
-            resolve_and_run_test(request, Some(&crate::test_runner::BusEventSink), run_store)
-                .await
-                .map_err(|e| ToolError::Execution(format!("test runner error: {e}")))?;
-
-        let report = delegated.report().clone();
-        let run_id = delegated.run_id.clone();
-
-        // Project the structured report for model-facing display.
-        let result = crate::test_runner::format_test_report_with_cap(
-            &report,
-            crate::test_runner::report::DEFAULT_MAX_REPORT_BYTES,
-        );
+            .unwrap_or_else(|| PathBuf::from("."));
+        let workspace_id = submission
+            .workspace_id_for_root(&run_cwd)
+            .await
+            .map_err(|e| ToolError::Execution(e.to_string()))?;
+        let submitted = submission
+            .submit(
+                None,
+                codegg_core::jobs::NewJob {
+                    workspace_id,
+                    session_id: None,
+                    turn_id: None,
+                    kind: codegg_core::jobs::JobKind::Test,
+                    source: codegg_core::jobs::JobSource::Interactive,
+                    priority: codegg_core::jobs::JobPriority::Interactive,
+                    payload: codegg_core::jobs::JobPayload::Test {
+                        command: argv.join(" "),
+                        argv: argv.to_vec(),
+                        cwd: Some(run_cwd.to_string_lossy().into_owned()),
+                        scope: Some("bash-dispatch".into()),
+                    },
+                    resource_request: codegg_core::jobs::ResourceRequest::for_kind(
+                        codegg_core::jobs::JobKind::Test,
+                    ),
+                    timeout: Some(timeout),
+                    retry_policy: codegg_core::jobs::RetryPolicy::no_retry(),
+                    idempotency: codegg_core::jobs::IdempotencyClass::SafeRepeat,
+                    not_before: None,
+                    deadline: None,
+                    schedule_id: None,
+                    depends_on: Vec::new(),
+                },
+            )
+            .await
+            .map_err(|e| ToolError::Execution(e.to_string()))?;
+        let completion = submission
+            .scheduler()
+            .wait_for_completion(&submitted.job_id, timeout + Duration::from_secs(5))
+            .await
+            .map_err(|e| ToolError::Execution(e.to_string()))?;
+        let result = completion.summary;
 
         // Synthesize a `std::process::Output`-shaped value for code paths
         // that still inspect it (truncation, exit status, persistence).
-        let exit_code = report.exit_code.unwrap_or(match report.status {
-            crate::test_runner::types::TestStatus::Passed => 0,
+        let exit_code = match completion.status {
+            crate::scheduler::ExecutorStatus::Completed => 0,
             _ => 1,
-        });
+        };
         let stdout_bytes = result.as_bytes().to_vec();
         let stderr_bytes: Vec<u8> = Vec::new();
         let output = synth_output(exit_code, stdout_bytes, stderr_bytes);
@@ -641,7 +659,7 @@ impl BashTool {
             result,
             output,
             executor: actual,
-            delegated_run_id: run_id,
+            delegated_run_id: completion.run_id,
         })
     }
 
@@ -979,47 +997,73 @@ impl BashTool {
         })
     }
 
-    /// Dispatch to managed process via direct `Command::new`. Falls back to
-    /// raw shell on dispatch failure.
+    /// Submit a managed argv process to the scheduler. Admission or executor
+    /// failure is returned to the caller; this path never falls back to shell.
     async fn dispatch_to_managed_process(
         &self,
         argv: &[String],
         cwd: Option<&Path>,
         timeout: Duration,
+        kind: codegg_core::jobs::JobKind,
     ) -> Result<DispatchOutcome, ToolError> {
         if argv.is_empty() {
             return Err(ToolError::Execution("empty argv".to_string()));
         }
 
         let argv_owned = argv.to_vec();
-        let cwd_owned = cwd.map(|p| p.to_path_buf());
-
-        let output = tokio::time::timeout(timeout, async {
-            let mut cmd = Command::new(&argv_owned[0]);
-            cmd.args(&argv_owned[1..]);
-            if let Some(dir) = &cwd_owned {
-                cmd.current_dir(dir);
-            }
-            cmd.kill_on_drop(true);
-            cmd.output().await
-        })
-        .await
-        .map_err(|_| ToolError::Timeout(argv.join(" ")))?
-        .map_err(|e| ToolError::Execution(e.to_string()))?;
-
-        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-        let mut result = stdout;
-        if !stderr.is_empty() {
-            if !result.is_empty() {
-                result.push_str("\n--- stderr ---\n");
-            }
-            result.push_str(&stderr);
-        }
-        result.push_str(&format!(
-            "\n\n[exit code: {}]",
-            output.status.code().unwrap_or(-1)
-        ));
+        let Some(submission) = self.submission.clone() else {
+            return Err(ToolError::Execution(
+                "managed process execution requires the daemon scheduler".into(),
+            ));
+        };
+        let cwd_owned = cwd
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("."));
+        let workspace_id = submission
+            .workspace_id_for_root(&cwd_owned)
+            .await
+            .map_err(|e| ToolError::Execution(e.to_string()))?;
+        let submitted = submission
+            .submit(
+                None,
+                codegg_core::jobs::NewJob {
+                    workspace_id,
+                    session_id: None,
+                    turn_id: None,
+                    kind,
+                    source: codegg_core::jobs::JobSource::Interactive,
+                    priority: codegg_core::jobs::JobPriority::Interactive,
+                    payload: codegg_core::jobs::JobPayload::ManagedArgv {
+                        argv: argv.to_vec(),
+                        cwd: Some(cwd_owned.to_string_lossy().into_owned()),
+                    },
+                    resource_request: codegg_core::jobs::ResourceRequest::for_kind(kind),
+                    timeout: Some(timeout),
+                    retry_policy: codegg_core::jobs::RetryPolicy::no_retry(),
+                    idempotency: codegg_core::jobs::IdempotencyClass::SafeRepeat,
+                    not_before: None,
+                    deadline: None,
+                    schedule_id: None,
+                    depends_on: Vec::new(),
+                },
+            )
+            .await
+            .map_err(|e| ToolError::Execution(e.to_string()))?;
+        let completion = submission
+            .scheduler()
+            .wait_for_completion(&submitted.job_id, timeout + Duration::from_secs(5))
+            .await
+            .map_err(|e| ToolError::Execution(e.to_string()))?;
+        let result = completion.summary;
+        let exit_code = if matches!(
+            completion.status,
+            crate::scheduler::ExecutorStatus::Completed
+        ) {
+            0
+        } else {
+            1
+        };
+        let output = synth_output(exit_code, result.as_bytes().to_vec(), Vec::new());
 
         self.record_routing_metric(RoutingMetric {
             family: CommandIntentFamily::Search,
@@ -1032,14 +1076,15 @@ impl BashTool {
             output,
             executor: ActualExecutor::ManagedArgv {
                 argv: argv_owned,
-                cwd: cwd_owned,
+                cwd: Some(cwd_owned),
             },
             delegated_run_id: None,
         })
     }
 
-    /// Dispatch to shell backend (used for RouteToShell decisions).
-    /// Executes via raw shell since this IS the shell path.
+    /// Submit the explicit shell backend through the scheduler. The shell
+    /// remains the domain service here, but process creation and admission
+    /// are still daemon-owned and durable.
     async fn dispatch_to_shell(
         &self,
         command: &str,
@@ -1051,10 +1096,63 @@ impl BashTool {
             decision: "shell_dispatch".to_string(),
             fallback: false,
         });
+        let Some(submission) = self.submission.clone() else {
+            return Err(ToolError::Execution(
+                "shell execution requires the daemon scheduler".into(),
+            ));
+        };
+        let cwd = canonical_workdir
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("."));
+        let workspace_id = submission
+            .workspace_id_for_root(&cwd)
+            .await
+            .map_err(|e| ToolError::Execution(e.to_string()))?;
         let argv = vec!["sh".to_string(), "-c".to_string(), command.to_string()];
-        let (result, output) = self
-            .execute_via_raw_shell(command, canonical_workdir, timeout)
-            .await?;
+        let submitted = submission
+            .submit(
+                None,
+                codegg_core::jobs::NewJob {
+                    workspace_id,
+                    session_id: None,
+                    turn_id: None,
+                    kind: codegg_core::jobs::JobKind::Shell,
+                    source: codegg_core::jobs::JobSource::Interactive,
+                    priority: codegg_core::jobs::JobPriority::Interactive,
+                    payload: codegg_core::jobs::JobPayload::Shell {
+                        command: command.to_string(),
+                        argv: Some(argv.clone()),
+                        cwd: Some(cwd.to_string_lossy().into_owned()),
+                    },
+                    resource_request: codegg_core::jobs::ResourceRequest::for_kind(
+                        codegg_core::jobs::JobKind::Shell,
+                    ),
+                    timeout: Some(timeout),
+                    retry_policy: codegg_core::jobs::RetryPolicy::no_retry(),
+                    idempotency: codegg_core::jobs::IdempotencyClass::NonIdempotent,
+                    not_before: None,
+                    deadline: None,
+                    schedule_id: None,
+                    depends_on: Vec::new(),
+                },
+            )
+            .await
+            .map_err(|e| ToolError::Execution(e.to_string()))?;
+        let completion = submission
+            .scheduler()
+            .wait_for_completion(&submitted.job_id, timeout + Duration::from_secs(5))
+            .await
+            .map_err(|e| ToolError::Execution(e.to_string()))?;
+        let result = completion.summary;
+        let exit_code = if matches!(
+            completion.status,
+            crate::scheduler::ExecutorStatus::Completed
+        ) {
+            0
+        } else {
+            1
+        };
+        let output = synth_output(exit_code, result.as_bytes().to_vec(), Vec::new());
         Ok(DispatchOutcome {
             result,
             output,
@@ -1081,7 +1179,7 @@ impl BashTool {
                 validated_command,
                 ..
             } => {
-                self.dispatch_to_test_runner(
+                self.submit_test_job(
                     argv,
                     canonical_workdir,
                     validated_command.as_deref(),
@@ -1104,7 +1202,13 @@ impl BashTool {
                     .await
             }
             RoutingDecision::RouteToManagedProcess { argv, cwd, .. } => {
-                self.dispatch_to_managed_process(argv, Some(cwd), timeout)
+                let kind = match _plan.intent.kind {
+                    CommandIntentKind::Build => codegg_core::jobs::JobKind::Build,
+                    CommandIntentKind::Lint => codegg_core::jobs::JobKind::Lint,
+                    CommandIntentKind::Format => codegg_core::jobs::JobKind::Format,
+                    _ => codegg_core::jobs::JobKind::ManagedProcess,
+                };
+                self.dispatch_to_managed_process(argv, Some(cwd), timeout, kind)
                     .await
             }
             RoutingDecision::RouteToGit { request, .. } => {
@@ -1494,40 +1598,20 @@ impl Tool for BashTool {
                     )
                 }
                 Err(e) => {
-                    // Fallback to raw shell on dispatch failure.
-                    // Workstream A: record a FallbackRecord so persistence
-                    // can show actual_backend=RawShell + planned_backend=X.
+                    // Admission or executor failure is terminal for the
+                    // active route. Falling back to raw shell here would
+                    // execute the command a second time or bypass the
+                    // scheduler entirely.
                     if let Some(ref plan) = plan {
                         self.record_routing_metric(RoutingMetric {
                             family: plan_family(plan)
                                 .or(intent_kind_to_family(plan.intent.kind))
                                 .unwrap_or(CommandIntentFamily::Tests),
-                            decision: "active_routing_fallback".to_string(),
-                            fallback: true,
+                            decision: "active_routing_rejected".to_string(),
+                            fallback: false,
                         });
                     }
-                    tracing::warn!(
-                        "Active routing dispatch failed, falling back to raw shell: {}",
-                        e
-                    );
-                    let (result, output) = self
-                        .execute_via_raw_shell(
-                            command,
-                            canonical_workdir.as_deref(),
-                            execution_timeout,
-                        )
-                        .await?;
-                    let argv = vec!["sh".to_string(), "-c".to_string(), command.to_string()];
-                    let actual = ActualExecutor::RawShell {
-                        command: command.to_string(),
-                        argv: argv.clone(),
-                    };
-                    let outcome = ExecutionOutcome::with_fallback(
-                        planned_backend,
-                        actual,
-                        format!("dispatch failed: {e}"),
-                    );
-                    (result, output, outcome, None)
+                    return Err(e);
                 }
             }
         } else {
@@ -1847,6 +1931,7 @@ fn truncate_output(output: &str, max_lines: usize, max_bytes: usize) -> String {
 }
 
 #[cfg(test)]
+#[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
 
@@ -2494,7 +2579,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn active_mode_test_command_routes_to_test_runner() {
+    async fn active_mode_test_command_requires_scheduler() {
         std::env::remove_var("CODEGG_ROUTING_DISABLE");
         let mut cic = CommandIntentConfig::default();
         cic.route_safe_commands = Some(true);
@@ -2503,20 +2588,11 @@ mod tests {
 
         let tool = BashTool::new().with_command_intent_config(cic);
         let input = serde_json::json!({"command": "cargo test --help"});
-        let result = tool.execute(input).await.unwrap();
-        // Test command should execute through the canonical TestRunner.
-        assert!(
-            result.starts_with("Test run "),
-            "command must produce a structured test report"
-        );
-        assert!(
-            result.contains("mode: active"),
-            "metadata must show active mode"
-        );
-        assert!(
-            result.contains("intent: test"),
-            "metadata must classify as test"
-        );
+        let error = tool
+            .execute(input)
+            .await
+            .expect_err("active test routing must not bypass the scheduler");
+        assert!(error.to_string().contains("requires the daemon scheduler"));
     }
 
     #[tokio::test]
@@ -2569,7 +2645,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn active_mode_build_command_routes_via_managed_process() {
+    async fn active_mode_build_command_requires_scheduler() {
         std::env::remove_var("CODEGG_ROUTING_DISABLE");
         let mut cic = CommandIntentConfig::default();
         cic.route_safe_commands = Some(true);
@@ -2578,16 +2654,11 @@ mod tests {
 
         let tool = BashTool::new().with_command_intent_config(cic);
         let input = serde_json::json!({"command": "cargo check"});
-        let result = tool.execute(input).await.unwrap();
-        // Build command should execute and produce output
-        assert!(
-            result.contains("[exit code:"),
-            "command must produce exit code in output"
-        );
-        assert!(
-            result.contains("mode: active"),
-            "metadata must show active mode"
-        );
+        let error = tool
+            .execute(input)
+            .await
+            .expect_err("build routing must not bypass the scheduler");
+        assert!(error.to_string().contains("requires the daemon scheduler"));
     }
 
     #[tokio::test]
@@ -2614,7 +2685,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn active_mode_search_command_routes() {
+    async fn active_mode_search_command_requires_scheduler() {
         std::env::remove_var("CODEGG_ROUTING_DISABLE");
         let mut cic = CommandIntentConfig::default();
         cic.route_safe_commands = Some(true);
@@ -2623,16 +2694,11 @@ mod tests {
 
         let tool = BashTool::new().with_command_intent_config(cic);
         let input = serde_json::json!({"command": "rg --version"});
-        let result = tool.execute(input).await.unwrap();
-        // Search command should execute via direct Command::new
-        assert!(
-            result.contains("[exit code:"),
-            "command must produce exit code in output"
-        );
-        assert!(
-            result.contains("mode: active"),
-            "metadata must show active mode"
-        );
+        let error = tool
+            .execute(input)
+            .await
+            .expect_err("search routing must not bypass the scheduler");
+        assert!(error.to_string().contains("requires the daemon scheduler"));
     }
 
     #[test]

@@ -37,6 +37,7 @@ pub mod ide;
 pub mod job_dispatcher;
 pub mod job_recovery;
 pub mod lsp;
+pub mod managed_process;
 pub mod mcp;
 pub mod permission;
 pub mod plugin;

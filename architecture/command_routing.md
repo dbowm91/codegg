@@ -75,8 +75,12 @@ Maps `ExecutionBackend` → `RoutingDecision`:
 Active routing is implemented and controlled by `CommandIntentMode::Active`. When active:
 
 1. `BashTool::execute()` classifies the command, plans execution, validates via `validate_for_active_routing()`, and dispatches to the resolved subsystem
-2. Dispatch methods: `dispatch_to_test_runner()`, `dispatch_to_native_tool()`, `dispatch_to_python_script()`, `dispatch_to_managed_process()`
-3. On any dispatch failure, falls back to raw shell execution
+2. Dispatch methods submit scheduler-backed test/managed/shell work through
+   `submit_test_job()`, `dispatch_to_managed_process()`, and `dispatch_to_shell()`;
+   domain-specific Git/Python adapters retain their canonical services.
+3. A scheduler-backed dispatch failure is returned as an execution error. It
+   never falls back to raw shell, which would bypass admission or duplicate
+   execution.
 
 ### Kill Switches
 
@@ -86,7 +90,8 @@ Active routing is implemented and controlled by `CommandIntentMode::Active`. Whe
 
 ### Metrics
 
-`RoutingMetric` is logged via `tracing::debug!` for every routing decision, including dispatch target and fallback reason.
+`RoutingMetric` is logged via `tracing::debug!` for every routing decision,
+including dispatch target and any explicit observe/kill-switch fallback.
 
 ### Safety
 
@@ -111,7 +116,10 @@ The Bash simple git mutation gap (matrix row 5) was closed by Track U. See [`arc
 
 ## Canonical Delegation Wiring
 
-When active routing dispatches to TestRunner or Python, BashTool calls the canonical subsystem entry points — not raw shell. The result carries a `run_id` proving the delegated record was begun.
+When active routing dispatches to TestRunner, BashTool submits a durable job;
+the scheduler invokes the canonical subsystem and returns a `run_id` proving
+the delegated record was begun. Python and Git retain their domain-specific
+canonical adapters until their own scheduler submission migration lands.
 
 ### DispatchOutcome (`src/tool/bash.rs:41-46`)
 
@@ -131,7 +139,9 @@ pub struct DispatchOutcome {
 ### TestRunner delegation flow
 
 ```
-classify → plan → dispatch_to_test_runner (bash.rs:542)
+classify → plan → submit_test_job (bash.rs)
+  → JobSubmissionService → JobKind::Test
+  → JobScheduler admission + TestJobExecutor
   → TestScope::BashDispatch(argv) (types.rs:18)
   → resolve_and_run_test (resolve.rs:60-71)
       [bypasses allowlist re-validation — argv already validated by planner]

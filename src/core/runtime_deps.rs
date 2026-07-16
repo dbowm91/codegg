@@ -17,10 +17,9 @@ use codegg_core::workspace_services::{WorkspaceServicePolicy, WorkspaceServiceRe
 pub struct LegacyAgentRuntimeDeps {
     pub subagent_pool: Option<Arc<crate::agent::worker::SubAgentPool>>,
     pub bg_scheduler: Option<Arc<crate::agent::task::BackgroundScheduler>>,
-    /// When `true` (default), legacy `TaskSchedule` / `TaskDelete` /
-    /// `TaskList` requests dispatch through the old `BackgroundScheduler`.
-    /// When `false`, they return an error directing clients to the new
-    /// job/schedule protocol.
+    /// Compatibility switch for legacy `TaskSchedule` / `TaskDelete` /
+    /// `TaskList` requests. It is enabled only by the legacy convenience
+    /// constructor; production SQLite daemons use the durable schedule API.
     pub bg_scheduler_compat_enabled: bool,
 }
 
@@ -66,6 +65,9 @@ pub struct CoreRuntimeDeps {
     /// yet been migrated; production daemons populate this when
     /// `[scheduler].enabled = true`.
     pub scheduler: Option<Arc<crate::scheduler::JobScheduler>>,
+    /// Daemon-owned create/enqueue facade. Production tools use this
+    /// instead of writing to `JobStore` and dispatching separately.
+    pub submission: Option<Arc<crate::scheduler::JobSubmissionService>>,
     /// Phase 5: scheduler configuration applied at construction time.
     /// Even when `scheduler` is `None`, the resolved config is held
     /// here so it can be queried for snapshots and settings pages.
@@ -87,6 +89,7 @@ impl Clone for CoreRuntimeDeps {
             recovery_policy: self.recovery_policy.clone(),
             daemon_generation: self.daemon_generation.clone(),
             scheduler: self.scheduler.clone(),
+            submission: self.submission.clone(),
             scheduler_config: self.scheduler_config.clone(),
         }
     }
@@ -120,6 +123,7 @@ impl CoreRuntimeDeps {
             recovery_policy: RecoveryPolicy::default(),
             daemon_generation: DaemonGeneration::new(),
             scheduler: None,
+            submission: None,
             scheduler_config: crate::scheduler::config::ResolvedSchedulerConfig::default(),
         }
     }
@@ -146,6 +150,7 @@ impl CoreRuntimeDeps {
             recovery_policy: RecoveryPolicy::default(),
             daemon_generation: DaemonGeneration::new(),
             scheduler: None,
+            submission: None,
             scheduler_config: crate::scheduler::config::ResolvedSchedulerConfig::default(),
         }
     }
@@ -170,7 +175,7 @@ impl CoreRuntimeDeps {
             legacy_agent: LegacyAgentRuntimeDeps {
                 subagent_pool,
                 bg_scheduler,
-                bg_scheduler_compat_enabled: true,
+                bg_scheduler_compat_enabled: false,
             },
             turn_runtime: Arc::new(crate::agent::turn_runtime::DefaultTurnRuntime),
             lsp_service: None,
@@ -181,6 +186,7 @@ impl CoreRuntimeDeps {
             recovery_policy: RecoveryPolicy::default(),
             daemon_generation: DaemonGeneration::new(),
             scheduler: None,
+            submission: None,
             scheduler_config: crate::scheduler::config::ResolvedSchedulerConfig::default(),
         }
     }
@@ -217,6 +223,14 @@ impl CoreRuntimeDeps {
     ) -> Self {
         self.scheduler = Some(scheduler);
         self.scheduler_config = config;
+        self
+    }
+
+    pub fn with_submission(
+        mut self,
+        submission: Arc<crate::scheduler::JobSubmissionService>,
+    ) -> Self {
+        self.submission = Some(submission);
         self
     }
 }

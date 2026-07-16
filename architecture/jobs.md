@@ -1,6 +1,11 @@
 # Durable Jobs and Schedules (Phase 4)
 
-Phase 4 introduces a durable execution-control domain: jobs, attempts, schedules, dependencies, cancellation, retry policy, and restart recovery. The scheduler may initially execute through a compatibility path; the primary objective is to establish authoritative identity and lifecycle before adding global admission policy in Phase 5.
+Phase 4 introduced a durable execution-control domain: jobs, attempts,
+schedules, dependencies, cancellation, retry policy, and restart recovery.
+Phase 5 adds a daemon-owned submission boundary and makes the global
+scheduler the admission authority for scheduler-backed work. Durable jobs
+remain the queue/lifecycle authority; RunStore remains the artifact and
+execution-provenance authority.
 
 ## Module Map
 
@@ -10,6 +15,8 @@ Phase 4 introduces a durable execution-control domain: jobs, attempts, schedules
 | `crates/codegg-core/src/jobs/schedule.rs` | `ScheduleState`, `ScheduleKind`, `OverlapPolicy`, `MissedRunPolicy`, `ScheduleRecord`, `ScheduleSummary`, `ScheduleTemplate`, `ScheduleQuery`, `OccurrenceStatus`, `ScheduleError`, `ScheduleStore` trait, `OccurrenceMaterializer` trait, `ClaimedOccurrence`, `MaterializerError`, `JobTemplate`, `compute_next_run`, `missed_run_targets` |
 | `crates/codegg-core/src/jobs/schedule_store.rs` | `InMemoryScheduleStore`, `SqliteScheduleStore` |
 | `crates/codegg-core/src/jobs/store.rs` | `InMemoryJobStore`, `SqliteJobStore`, `JobStoreQuery`, `JobSummary`, `validate_state_transition`, `job_state_transitions`, `attempt_state_transitions`, `validate_attempt_transition` |
+| `src/scheduler/submission.rs` | `JobSubmissionService`, `SubmissionKey`, idempotent durable create/enqueue boundary |
+| `src/managed_process.rs` | Canonical managed argv execution: environment policy, process groups, cancellation, bounded output, and provenance |
 | `src/job_dispatcher.rs` | `JobDispatcher` trait, `SubAgentJobDispatcher`, `NullJobDispatcher` |
 | `src/job_recovery.rs` | `recover_jobs_at_startup` helper |
 | `src/background_task_migration.rs` | `migrate_legacy_background_tasks` |
@@ -159,7 +166,7 @@ Indexes for queue scans by state/priority/not-before/workspace, attempts by job,
 
 ## JobStore Trait
 
-12 methods on `JobStore` (`crates/codegg-core/src/jobs/mod.rs`):
+13 methods on `JobStore` (`crates/codegg-core/src/jobs/mod.rs`):
 
 | Method | Purpose |
 |--------|---------|
@@ -175,6 +182,7 @@ Indexes for queue scans by state/priority/not-before/workspace, attempts by job,
 | `request_cancel(JobId, CancelReason)` | Apply or record cancellation request |
 | `retry_job(JobId, DaemonGeneration, AttemptId)` | Create new attempt for retry |
 | `recover_generation(DaemonGeneration, RecoveryPolicy)` | Mark stale attempts `Interrupted`, requeue eligible jobs |
+| `set_attempt_executor(AttemptId, executor)` | Persist executor provenance before an attempt enters `Running` |
 
 ## ScheduleStore Trait
 
@@ -222,12 +230,17 @@ If completion is persisted before cancel request, the job remains completed. If 
 
 ## JobDispatcher Integration
 
-`JobDispatcher` (`src/job_dispatcher.rs`) bridges durable jobs to existing executors:
+`JobDispatcher` (`src/job_dispatcher.rs`) is a compatibility adapter for
+standalone/tests and legacy integrations. Daemon production callers submit
+through `JobSubmissionService`; the scheduler then selects the typed executor:
 
-- `SubAgentJobDispatcher`: wraps `SubAgentPool`; dispatches `JobPayload::Subagent` to the subagent spawner
+- `SubAgentJobDispatcher`: wraps `SubAgentPool` for explicit compatibility
+  paths. Scheduler production dispatch uses `SubagentJobExecutor`.
 - `NullJobDispatcher`: no-op for tests
 
-The dispatcher is invoked after `create_job` + `enqueue` + `begin_attempt`. The durable record must precede dispatch — no job is created after execution starts.
+The durable record must precede dispatch — no job is created after execution
+starts. `JobSubmissionService` makes durable creation and enqueue one logical
+operation and applies the bounded per-daemon `SubmissionKey` idempotency map.
 
 ## RunStore Linkage
 
@@ -253,6 +266,25 @@ Phase 4 adds:
 - **18 `CoreEvent` variants**: `JobCreated`, `JobQueued`, `JobBlocked`, `JobAttemptCreated`, `JobStarted`, `JobProgress`, `JobCancelRequested`, `JobCompleted`, `JobFailed`, `JobCancelled`, `JobTimedOut`, `JobInterrupted`, `JobRetried`, `ScheduleCreated`, `ScheduleOccurrenceQueued`, `ScheduleSkipped`, `SchedulePaused`, `ScheduleResumed`, `ScheduleDeleted`
 - **11 DTOs**: `JobSubmitDto`, `JobQueryDto`, `JobSummaryDto`, `JobRecordDto`, `JobAttemptDto`, `ScheduleCreateDto`, `ScheduleSummaryDto`, `ScheduleRecordDto`, `RecoveryReportDto`, `CancelResultDto`, `AttemptCompletionDto`
 - **2 `ServerCapabilities` fields**: `durable_jobs`, `schedule_support`
+
+Phase 5 adds `JobWait`, `SchedulerSnapshot`, the optional bounded scheduler
+projection on `SnapshotDaemon`, and `submission_key` on `JobSubmitDto`.
+
+### Scheduler submission and execution
+
+`JobSubmissionService` validates payload size and kind, resolves the canonical
+workspace, applies the central resource profile and exclusivity rules, then
+creates and enqueues the durable job as one logical operation. A repeated
+`SubmissionKey` with the same request fingerprint returns the original job;
+the in-memory idempotency index is intentionally scoped to one daemon
+generation.
+
+`ManagedArgvExecutor` is only an adapter. Non-shell argv work delegates to
+`ManagedProcessService`, which supplies sanitized noninteractive environment
+defaults, process-group/session cleanup, timeout/cancellation handling,
+bounded output, and `CODEGG_JOB_ID`/`CODEGG_ATTEMPT_ID` provenance. Shell,
+TestRunner, and SubAgentPool retain their domain semantics behind typed
+executors.
 
 ## Testing Strategy
 

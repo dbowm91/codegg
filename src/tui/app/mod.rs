@@ -409,6 +409,7 @@ pub enum TuiCommand {
     TestRunFinished {
         request_id: u64,
         report: Option<Box<crate::test_runner::TestReport>>,
+        summary: Option<String>,
         error: Option<String>,
     },
     ShellEvent(crate::shell::ShellEvent),

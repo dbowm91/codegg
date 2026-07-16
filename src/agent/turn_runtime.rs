@@ -122,6 +122,8 @@ pub struct TurnRunInput {
     /// outside `CoreDaemon::TurnSubmit` should construct a context
     /// via `codegg_core::workspace::ExecutionContext::new`.
     pub execution: Arc<codegg_core::workspace::ExecutionContext>,
+    /// Daemon-owned heavy-job submission boundary.
+    pub submission: Option<Arc<crate::scheduler::JobSubmissionService>>,
 }
 
 /// Minimal output from a turn execution.
@@ -179,6 +181,7 @@ impl TurnRuntime for DefaultTurnRuntime {
             lsp_context_input,
             plugin_service,
             execution,
+            submission,
         } = input;
 
         // ── Provider resolution ──────────────────────────────────────
@@ -213,6 +216,7 @@ impl TurnRuntime for DefaultTurnRuntime {
             task_state_policy.clone(),
             Some(model.clone()),
             Arc::clone(&execution),
+            submission.clone(),
         );
 
         // ── Memory context ───────────────────────────────────────────
@@ -308,6 +312,8 @@ impl TurnRuntime for DefaultTurnRuntime {
             task_state_policy,
             mcp_service,
             artifact_store,
+            submission,
+            workspace_root: execution.workspace_root.clone(),
         };
         let runtime_provider = crate::agent::agent_loop_factory::DefaultAgentLoopFactory;
         let mut agent_loop = runtime_provider.build_agent_loop(agent_loop_input);

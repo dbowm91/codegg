@@ -39,8 +39,8 @@ use crate::scheduler::admission::{AdmissionController, AdmissionDecision};
 use crate::scheduler::config::ResolvedSchedulerConfig;
 use crate::scheduler::events::{SchedulerEvent, WokeReason};
 use crate::scheduler::executor::{
-    ExecutorCompletion, ExecutorKind, ExecutorStatus, JobExecutionContext, JobExecutor,
-    JobProgressSink,
+    ExecutorCompletion, ExecutorKind, ExecutorMetrics, ExecutorStatus, JobExecutionContext,
+    JobExecutor, JobProgressSink,
 };
 use crate::scheduler::fair_queue::FairJobQueue;
 use crate::scheduler::permit::PermitDimensions;
@@ -99,6 +99,10 @@ pub struct JobScheduler {
     admission: Arc<AdmissionController>,
     queue: Arc<AsyncMutex<FairJobQueue>>,
     running: Arc<AsyncMutex<HashMap<AttemptId, RunningAttempt>>>,
+    /// Recent in-process completions let daemon clients receive the same
+    /// bounded executor projection that completed the work. Durable job and
+    /// attempt state remains authoritative across restart.
+    completions: Arc<AsyncMutex<HashMap<JobId, ExecutorCompletion>>>,
     /// Per-workspace running attempts (denormalized for snapshot).
     running_per_workspace: Arc<AsyncMutex<HashMap<WorkspaceId, usize>>>,
     /// Per-priority ready-window counts (denormalized).
@@ -148,6 +152,7 @@ impl JobScheduler {
             admission,
             queue,
             running,
+            completions: Arc::new(AsyncMutex::new(HashMap::new())),
             running_per_workspace,
             ready_counts,
             running_total: Arc::new(AtomicU64::new(0)),
@@ -181,6 +186,20 @@ impl JobScheduler {
 
     pub fn daemon_generation(&self) -> &DaemonGeneration {
         &self.daemon_generation
+    }
+
+    /// Whether this scheduler can accept daemon-owned work. A disabled
+    /// scheduler is an introspection placeholder only; it is never a
+    /// license for callers to execute through a legacy bypass.
+    pub fn is_enabled(&self) -> bool {
+        self.config.enabled
+    }
+
+    pub fn is_mandatory(&self) -> bool {
+        matches!(
+            self.config.rollout,
+            crate::scheduler::config::SchedulerRolloutMode::Mandatory
+        )
     }
 
     /// Install an event sink. The scheduler forwards
@@ -241,9 +260,10 @@ impl JobScheduler {
         };
         let mut registry = crate::scheduler::executor::ExecutorRegistry::new();
         registry.register(Arc::new(TestJobExecutor::new(None, None)))?;
-        registry.register(Arc::new(ManagedArgvExecutor::new("build")))?;
-        registry.register(Arc::new(ManagedArgvExecutor::new("lint")))?;
-        registry.register(Arc::new(ManagedArgvExecutor::new("format")))?;
+        // One typed executor owns the Build/Lint/Format family. Registering
+        // three instances under the same ExecutorKind silently discarded
+        // the latter two in the old construction path.
+        registry.register(Arc::new(ManagedArgvExecutor::new("managed_argv")))?;
         if let Some(pool) = subagent_pool {
             registry.register(Arc::new(SubagentJobExecutor::new(pool)))?;
         }
@@ -302,12 +322,78 @@ impl JobScheduler {
         &self,
         spec: codegg_core::jobs::NewJob,
     ) -> Result<JobRecord, JobSchedulerError> {
-        // Bounded-queue preflight: in observe / active mode the
-        // queue mirrors durable state, so we only check the
-        // in-memory cap and rely on durable storage for overflow.
+        if !self.is_enabled() {
+            return Err(JobSchedulerError::SchedulerDisabled);
+        }
         let job = self.store.create_job(spec).await?;
-        self.wake(WokeReason::JobEnqueued);
+        self.enqueue_existing(job.clone()).await?;
         Ok(job)
+    }
+
+    /// Make an already-persisted job visible to the scheduler. This is the
+    /// second half of [`JobSubmissionService`](super::submission::JobSubmissionService)'s
+    /// create/enqueue operation and intentionally does not create another
+    /// durable record.
+    pub async fn enqueue_existing(&self, job: JobRecord) -> Result<(), JobSchedulerError> {
+        if !self.is_enabled() {
+            return Err(JobSchedulerError::SchedulerDisabled);
+        }
+        if !matches!(job.state, JobState::Queued) {
+            return Err(JobSchedulerError::Internal(format!(
+                "cannot enqueue job {} in state {:?}",
+                job.job_id, job.state
+            )));
+        }
+        self.wake(WokeReason::JobEnqueued);
+        Ok(())
+    }
+
+    /// Wait for a scheduler-owned completion without executing the job in a
+    /// caller task. The timeout is a client wait bound, not the job's own
+    /// process timeout.
+    pub async fn wait_for_completion(
+        &self,
+        job_id: &JobId,
+        wait_timeout: Duration,
+    ) -> Result<ExecutorCompletion, JobSchedulerError> {
+        let deadline = Instant::now() + wait_timeout;
+        loop {
+            if let Some(completion) = self.completions.lock().await.get(job_id).cloned() {
+                return Ok(completion);
+            }
+            if let Some(job) = self.store.get_job(job_id).await? {
+                if job.state.is_terminal() {
+                    let status = match job.state {
+                        JobState::Completed => ExecutorStatus::Completed,
+                        JobState::Cancelled => ExecutorStatus::Cancelled,
+                        JobState::TimedOut => ExecutorStatus::TimedOut,
+                        JobState::Interrupted => ExecutorStatus::Interrupted,
+                        _ => ExecutorStatus::Failed,
+                    };
+                    return Ok(ExecutorCompletion {
+                        status,
+                        summary: job
+                            .cancel_reason
+                            .clone()
+                            .unwrap_or_else(|| format!("job finished in {:?}", job.state)),
+                        run_id: None,
+                        metrics: ExecutorMetrics::default(),
+                    });
+                }
+            } else {
+                return Err(JobSchedulerError::Internal(format!(
+                    "job {} disappeared while waiting",
+                    job_id
+                )));
+            }
+            if Instant::now() >= deadline {
+                return Err(JobSchedulerError::Internal(format!(
+                    "timed out waiting for job {}",
+                    job_id
+                )));
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
     }
 
     /// Reconcile the in-memory queue against the durable store. Pull
@@ -453,10 +539,17 @@ impl JobScheduler {
     pub async fn admit_and_dispatch_batch(self: Arc<Self>) -> usize {
         let mut dispatched = 0;
         let max_batch = 4usize; // bounded; the loop above will run again
-        for _ in 0..max_batch {
+                                // Inspect a small candidate window instead of treating a
+                                // temporarily blocked head job as global back-pressure. This lets
+                                // an unrelated workspace make progress while the contended job is
+                                // requeued for the next reconciliation tick.
+        for _ in 0..(max_batch * 2) {
+            if dispatched >= max_batch {
+                break;
+            }
             match self.clone().try_dispatch_next().await {
                 Ok(true) => dispatched += 1,
-                Ok(false) => break,
+                Ok(false) => continue,
                 Err(e) => {
                     tracing::debug!("scheduler dispatch error: {e}");
                     break;
@@ -531,6 +624,34 @@ impl JobScheduler {
             }
         };
 
+        // Resolve and validate the executor before creating an attempt. A
+        // missing or mismatched executor must not create a Running attempt
+        // that can never be completed.
+        let exec = {
+            let g = self.executors.lock().await;
+            g.for_job(&job)
+        };
+        let Some(exec) = exec else {
+            drop(permit);
+            drop(lease);
+            self.mark_unschedulable(&job, "no executor registered for job kind")
+                .await?;
+            return Ok(true);
+        };
+        if !exec.supports(job.kind) {
+            drop(permit);
+            drop(lease);
+            self.mark_unschedulable(&job, "registered executor does not support job kind")
+                .await?;
+            return Ok(true);
+        }
+        if let Err(error) = exec.validate(&job) {
+            drop(permit);
+            drop(lease);
+            self.mark_unschedulable(&job, &error.to_string()).await?;
+            return Ok(true);
+        }
+
         // Begin the attempt: this creates a fresh attempt in
         // Created state.
         let attempt = self
@@ -539,14 +660,20 @@ impl JobScheduler {
             .await?;
 
         // Spawn the executor task. Permit is moved into the task.
+        let cancellation = CancellationToken::new();
         let ctx = JobExecutionContext {
             job: job.clone(),
-            attempt_id: attempt.attempt_id.to_string(),
+            attempt_id: attempt.attempt_id.clone(),
+            daemon_generation: self.daemon_generation.clone(),
             workspace_id: job.workspace_id.clone(),
-            cancellation: CancellationToken::new(),
+            cancellation: cancellation.clone(),
             progress: Arc::new(NoopSink),
             resources: permit,
         };
+
+        self.store
+            .set_attempt_executor(&attempt.attempt_id, exec.kind().as_str())
+            .await?;
 
         // Persist `Admitted` on the attempt and update job state to
         // Running before the executor starts. This is the
@@ -558,8 +685,9 @@ impl JobScheduler {
         // held by the scheduler's running map below.
         self.store.mark_attempt_running(&attempt.attempt_id).await?;
 
-        // Register the running attempt for cancellation/lookup.
-        let cancel_token = ctx.cancellation.clone();
+        // Register the attempt before exposing the executor task. This
+        // closes the admitted-before-spawn cancellation window.
+        let cancel_token = cancellation;
         {
             let mut running = self.running.lock().await;
             running.insert(
@@ -573,6 +701,15 @@ impl JobScheduler {
                 },
             );
         }
+        // A cancellation request can arrive after `begin_attempt` but
+        // before the running-map insertion. Re-read durable state now that
+        // request_cancel can see the running attempt, and propagate any
+        // already-recorded request before the executor task is spawned.
+        if let Some(current) = self.store.get_job(&job.job_id).await? {
+            if current.cancel_requested_at.is_some() {
+                cancel_token.cancel();
+            }
+        }
         // Update per-workspace running counter.
         {
             let mut rpw = self.running_per_workspace.lock().await;
@@ -580,76 +717,95 @@ impl JobScheduler {
         }
         self.running_total.fetch_add(1, Ordering::SeqCst);
 
-        // Dispatch via registry; record completion.
+        // Dispatch via the already-validated executor; record completion.
         let me = self.clone();
         let attempt_id = attempt.attempt_id.clone();
         let job_id_for_task = job.job_id.clone();
         let lease_for_task = lease;
-        let exec = {
-            let g = self.executors.lock().await;
-            g.for_job(&job)
-        };
-        match exec {
-            Some(executor) => {
-                let executor = Arc::clone(&executor);
-                let store = self.store.clone();
-                let running = self.running.clone();
-                let running_total = self.running_total.clone();
-                let rpw = self.running_per_workspace.clone();
-                let event_tx = self.event_tx.clone();
-                let notify = self.notify.clone();
-                tokio::spawn(async move {
-                    let completion = executor.execute(ctx).await;
-                    // The permit is dropped when ctx is consumed
-                    // above; we no longer hold it here.
-                    // Persist terminal state.
-                    let _ = persist_completion(&store, &attempt_id, &completion).await;
-                    // Unregister running.
-                    {
-                        let mut rg = running.lock().await;
-                        if let Some(ra) = rg.remove(&attempt_id) {
-                            let mut rpw_g = rpw.lock().await;
-                            if let Some(c) = rpw_g.get_mut(&ra.workspace_id) {
-                                *c = c.saturating_sub(1);
-                            }
+        {
+            let executor = Arc::clone(&exec);
+            let store = self.store.clone();
+            let running = self.running.clone();
+            let running_total = self.running_total.clone();
+            let rpw = self.running_per_workspace.clone();
+            let completions = self.completions.clone();
+            let event_tx = self.event_tx.clone();
+            let notify = self.notify.clone();
+            tokio::spawn(async move {
+                let completion = if ctx.cancellation.is_cancelled() {
+                    ExecutorCompletion {
+                        status: ExecutorStatus::Cancelled,
+                        summary: "cancelled before executor start".into(),
+                        run_id: None,
+                        metrics: Default::default(),
+                    }
+                } else if let Err(error) = ctx.validate_runtime() {
+                    ExecutorCompletion {
+                        status: ExecutorStatus::Failed,
+                        summary: error.to_string(),
+                        run_id: None,
+                        metrics: Default::default(),
+                    }
+                } else {
+                    executor.execute(ctx).await
+                };
+                {
+                    let mut completions_guard = completions.lock().await;
+                    completions_guard.insert(job_id_for_task.clone(), completion.clone());
+                    if completions_guard.len() > 1024 {
+                        if let Some(oldest) = completions_guard.keys().next().cloned() {
+                            completions_guard.remove(&oldest);
                         }
                     }
-                    running_total.fetch_sub(1, Ordering::SeqCst);
-                    drop(lease_for_task);
-                    // Forward event.
-                    if completion.run_id.is_some() {
-                        let g = event_tx.lock().await;
-                        if let Some(tx) = g.as_ref() {
-                            let _ = tx
-                                .send(SchedulerEvent::JobAdmitted {
-                                    job_id: job_id_for_task.to_string(),
-                                    attempt_id: attempt_id.clone(),
-                                    run_id: completion.run_id.clone(),
-                                })
-                                .await;
+                }
+                // The permit is dropped when ctx is consumed
+                // above; we no longer hold it here.
+                // Persist terminal state.
+                if let Err(error) = persist_completion(&store, &attempt_id, &completion).await {
+                    tracing::error!(
+                        job_id = %job_id_for_task,
+                        attempt_id = %attempt_id,
+                        %error,
+                        "executor completed but durable completion persistence failed"
+                    );
+                }
+                // Unregister running.
+                {
+                    let mut rg = running.lock().await;
+                    if let Some(ra) = rg.remove(&attempt_id) {
+                        let mut rpw_g = rpw.lock().await;
+                        if let Some(c) = rpw_g.get_mut(&ra.workspace_id) {
+                            *c = c.saturating_sub(1);
                         }
                     }
+                }
+                running_total.fetch_sub(1, Ordering::SeqCst);
+                drop(lease_for_task);
+                // Forward event.
+                if completion.run_id.is_some() {
                     let g = event_tx.lock().await;
                     if let Some(tx) = g.as_ref() {
                         let _ = tx
-                            .send(SchedulerEvent::JobResourceReleased {
+                            .send(SchedulerEvent::JobAdmitted {
                                 job_id: job_id_for_task.to_string(),
                                 attempt_id: attempt_id.clone(),
+                                run_id: completion.run_id.clone(),
                             })
                             .await;
                     }
-                    me.wake(WokeReason::ExecutorCompleted);
-                    notify.notify_one();
-                });
-            }
-            None => {
-                // No executor for this job kind. Mark failed.
-                let _ = self
-                    .mark_unschedulable(&job, "no executor registered for job kind")
-                    .await;
-                // Release permit (drops `ctx` after the spawned task
-                // is skipped).
-            }
+                }
+                let g = event_tx.lock().await;
+                if let Some(tx) = g.as_ref() {
+                    let _ = tx
+                        .send(SchedulerEvent::JobResourceReleased {
+                            job_id: job_id_for_task.to_string(),
+                            attempt_id: attempt_id.clone(),
+                        })
+                        .await;
+                }
+                me.wake(WokeReason::ExecutorCompleted);
+                notify.notify_one();
+            });
         }
         Ok(true)
     }
@@ -830,7 +986,7 @@ impl JobScheduler {
         &self,
         job_id: &JobId,
         reason: &str,
-    ) -> Result<codegg_core::jobs::CancelOutcome, JobSchedulerError> {
+    ) -> Result<codegg_core::jobs::CancelResult, JobSchedulerError> {
         let cancel = CancelReason::new("scheduler", reason);
         let result = self.store.request_cancel(job_id, cancel).await?;
         // Remove from in-memory queue if present.
@@ -844,7 +1000,7 @@ impl JobScheduler {
                 ra.cancellation.cancel();
             }
         }
-        Ok(result.state)
+        Ok(result)
     }
 }
 
@@ -865,6 +1021,8 @@ pub enum JobSchedulerError {
     Registry(#[from] crate::scheduler::executor::ExecutorRegistryError),
     #[error("workspace services error: {0}")]
     Workspace(String),
+    #[error("scheduler is disabled; daemon-owned work cannot bypass admission")]
+    SchedulerDisabled,
     #[error("internal: {0}")]
     Internal(String),
 }

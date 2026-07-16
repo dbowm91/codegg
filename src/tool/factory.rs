@@ -36,6 +36,7 @@ pub fn build_session_tool_registry(
     task_state_policy: TaskStatePolicy,
     parent_model: Option<String>,
     execution: Arc<ExecutionContext>,
+    submission: Option<Arc<crate::scheduler::JobSubmissionService>>,
 ) -> (ToolRegistry, Arc<dyn ContextArtifactStore>) {
     let todo_state = Arc::new(tokio::sync::Mutex::new(crate::task_state::TodoState::new()));
 
@@ -84,6 +85,7 @@ pub fn build_session_tool_registry(
         deterministic_config: integrated.deterministic,
         preflight_config: integrated.preflight,
         run_store,
+        submission: submission.clone(),
         command_intent: config.command_intent.clone(),
         workspace_root: Some(execution.workspace_root.clone()),
     });
@@ -97,6 +99,11 @@ pub fn build_session_tool_registry(
             Vec::new(),
         )
         .with_parent_model(parent_model);
+        let task_tool = if let Some(submission) = submission {
+            task_tool.with_submission(submission, execution.workspace_root.clone())
+        } else {
+            task_tool
+        };
         tool_registry.register(task_tool);
     }
 
@@ -162,5 +169,6 @@ pub fn build_session_tool_registry_legacy(
         task_state_policy,
         parent_model,
         execution,
+        None,
     )
 }

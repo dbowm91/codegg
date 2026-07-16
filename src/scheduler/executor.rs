@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use codegg_core::jobs::{JobId, JobKind, JobRecord};
+use codegg_core::jobs::{AttemptId, DaemonGeneration, JobId, JobKind, JobRecord};
 use codegg_core::workspace::WorkspaceId;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -118,7 +118,8 @@ pub enum ExecutorStatus {
 /// stopped, e.g. process-group cleanup finished).
 pub struct JobExecutionContext {
     pub job: JobRecord,
-    pub attempt_id: String,
+    pub attempt_id: AttemptId,
+    pub daemon_generation: DaemonGeneration,
     pub workspace_id: WorkspaceId,
     pub cancellation: CancellationToken,
     pub progress: Arc<dyn JobProgressSink>,
@@ -128,6 +129,29 @@ pub struct JobExecutionContext {
 impl JobExecutionContext {
     pub fn job_id(&self) -> &JobId {
         &self.job.job_id
+    }
+
+    /// Validate the provenance that must be present before a canonical
+    /// executor may launch a process or agent. This is intentionally a
+    /// release-mode check; debug assertions alone would make production
+    /// bypasses invisible.
+    pub fn validate_runtime(&self) -> Result<(), ExecutorValidationError> {
+        if self.attempt_id.as_str().is_empty() {
+            return Err(ExecutorValidationError::InvalidPayload(
+                "missing attempt id".into(),
+            ));
+        }
+        if self.daemon_generation.as_str().is_empty() {
+            return Err(ExecutorValidationError::InvalidPayload(
+                "missing daemon generation".into(),
+            ));
+        }
+        if !self.resources.is_controller_bound() {
+            return Err(ExecutorValidationError::InvalidPayload(
+                "execution does not own a live admission permit".into(),
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -233,15 +257,15 @@ pub enum ExecutorRegistryError {
 /// Map a `JobRecord` to its canonical `ExecutorKind`.
 ///
 /// This is the central place where `JobKind` -> executor dispatch is
-/// decided. The migration plan in §8-§10 of the Phase 5 roadmap
-/// brings Test, ManagedArgv (Build/Lint/Format), and Subagent online
-/// first.
+/// decided. ManagedArgv is also the bounded process adapter for shell and
+/// generic managed-process jobs; it does not make those jobs unscheduled.
 pub fn executor_kind_for_job(job: &JobRecord) -> Option<ExecutorKind> {
     match (job.kind, executor_variant(&job.payload)) {
         (JobKind::Test, _) => Some(ExecutorKind::Test),
         (JobKind::Build, _) | (JobKind::Lint, _) | (JobKind::Format, _) => {
             Some(ExecutorKind::ManagedArgv)
         }
+        (JobKind::ManagedProcess, _) | (JobKind::Shell, _) => Some(ExecutorKind::ManagedArgv),
         (JobKind::Subagent, _) => Some(ExecutorKind::Subagent),
         // The bash-dispatch path uses TestRunner but with a
         // BashDispatch payload, so the executor is distinct.

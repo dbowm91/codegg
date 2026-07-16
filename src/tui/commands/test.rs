@@ -88,7 +88,12 @@ fn build_test_request(
 pub(crate) fn start_test_run(app: &mut App, scope: String, args: String) {
     let tx = app.tui_cmd_tx.clone();
     let request_id = app.dialog_state.test_run_request.begin();
-    let run_store = app.run_store.clone();
+    let Some(core_client) = app.core_client.clone() else {
+        app.messages_state
+            .toasts
+            .error("Core client unavailable; tests require the daemon scheduler");
+        return;
+    };
 
     spawn_registered_tui_task(
         tx,
@@ -102,30 +107,172 @@ pub(crate) fn start_test_run(app: &mut App, scope: String, args: String) {
                     return Some(TuiCommand::TestRunFinished {
                         request_id,
                         report: None,
+                        summary: None,
                         error: Some(e),
                     });
                 }
             };
-
-            let report = crate::test_runner::resolve_and_run_test(
-                request,
-                Some(&crate::test_runner::BusEventSink),
-                run_store.as_ref(),
-            )
-            .await
-            .map(|d| d.into_report())
-            .map_err(|e| format!("test runner error: {e}"));
-
-            match report {
-                Ok(report) => Some(TuiCommand::TestRunFinished {
+            let workspace = match core_client
+                .request(crate::core::new_request(
+                    format!("test-workspace-{}", uuid::Uuid::new_v4()),
+                    crate::protocol::core::CoreRequest::WorkspaceRegister {
+                        root: request.workdir.to_string_lossy().into_owned(),
+                    },
+                ))
+                .await
+            {
+                Ok(response) => response,
+                Err(e) => {
+                    return Some(TuiCommand::TestRunFinished {
+                        request_id,
+                        report: None,
+                        summary: None,
+                        error: Some(format!("workspace registration failed: {e}")),
+                    });
+                }
+            };
+            let workspace_id = match workspace {
+                crate::protocol::core::CoreResponse::WorkspaceSnapshot { workspace } => {
+                    workspace.workspace_id
+                }
+                crate::protocol::core::CoreResponse::Error { message, .. } => {
+                    return Some(TuiCommand::TestRunFinished {
+                        request_id,
+                        report: None,
+                        summary: None,
+                        error: Some(message),
+                    });
+                }
+                other => {
+                    return Some(TuiCommand::TestRunFinished {
+                        request_id,
+                        report: None,
+                        summary: None,
+                        error: Some(format!("unexpected workspace response: {other:?}")),
+                    });
+                }
+            };
+            let resolved = match crate::test_runner::resolve_test_command(&request) {
+                Ok(resolved) => resolved,
+                Err(e) => {
+                    return Some(TuiCommand::TestRunFinished {
+                        request_id,
+                        report: None,
+                        summary: None,
+                        error: Some(format!("test command resolution failed: {e}")),
+                    });
+                }
+            };
+            let payload = match serde_json::to_value(codegg_core::jobs::JobPayload::Test {
+                command: resolved.argv.join(" "),
+                argv: resolved.argv,
+                cwd: Some(resolved.cwd.to_string_lossy().into_owned()),
+                scope: Some(resolved.scope_label),
+            }) {
+                Ok(payload) => payload,
+                Err(e) => {
+                    return Some(TuiCommand::TestRunFinished {
+                        request_id,
+                        report: None,
+                        summary: None,
+                        error: Some(format!("test payload encoding failed: {e}")),
+                    });
+                }
+            };
+            let spec = crate::protocol::dto::JobSubmitDto {
+                submission_key: Some(format!("tui-test-{request_id}")),
+                workspace_id,
+                session_id: request.session_id.clone(),
+                turn_id: None,
+                kind: "test".into(),
+                priority: "interactive".into(),
+                source: serde_json::json!({"kind": "interactive"}),
+                payload,
+                timeout_ms: request.timeout_secs.map(|s| (s as i64) * 1000),
+                retry_max_attempts: 1,
+                retryable_failures: Vec::new(),
+                idempotency: "safe_repeat".into(),
+                not_before_ms: None,
+                deadline_ms: None,
+                schedule_id: None,
+                depends_on: Vec::new(),
+                labels: std::collections::HashMap::new(),
+            };
+            let submitted = match core_client
+                .request(crate::core::new_request(
+                    format!("test-submit-{}", uuid::Uuid::new_v4()),
+                    crate::protocol::core::CoreRequest::JobSubmit { spec },
+                ))
+                .await
+            {
+                Ok(response) => response,
+                Err(e) => {
+                    return Some(TuiCommand::TestRunFinished {
+                        request_id,
+                        report: None,
+                        summary: None,
+                        error: Some(format!("test submission failed: {e}")),
+                    });
+                }
+            };
+            let job_id = match submitted {
+                crate::protocol::core::CoreResponse::JobSubmitted { job_id } => job_id,
+                crate::protocol::core::CoreResponse::Error { message, .. } => {
+                    return Some(TuiCommand::TestRunFinished {
+                        request_id,
+                        report: None,
+                        summary: None,
+                        error: Some(message),
+                    });
+                }
+                other => {
+                    return Some(TuiCommand::TestRunFinished {
+                        request_id,
+                        report: None,
+                        summary: None,
+                        error: Some(format!("unexpected test submission response: {other:?}")),
+                    });
+                }
+            };
+            match core_client
+                .request(crate::core::new_request(
+                    format!("test-wait-{}", uuid::Uuid::new_v4()),
+                    crate::protocol::core::CoreRequest::JobWait {
+                        job_id,
+                        timeout_ms: request
+                            .timeout_secs
+                            .map(|s| s.saturating_add(5).saturating_mul(1000)),
+                    },
+                ))
+                .await
+            {
+                Ok(crate::protocol::core::CoreResponse::JobWaited { summary, .. }) => {
+                    Some(TuiCommand::TestRunFinished {
+                        request_id,
+                        report: None,
+                        summary: Some(summary),
+                        error: None,
+                    })
+                }
+                Ok(crate::protocol::core::CoreResponse::Error { message, .. }) => {
+                    Some(TuiCommand::TestRunFinished {
+                        request_id,
+                        report: None,
+                        summary: None,
+                        error: Some(message),
+                    })
+                }
+                Ok(other) => Some(TuiCommand::TestRunFinished {
                     request_id,
-                    report: Some(Box::new(report)),
-                    error: None,
+                    report: None,
+                    summary: None,
+                    error: Some(format!("unexpected test wait response: {other:?}")),
                 }),
                 Err(e) => Some(TuiCommand::TestRunFinished {
                     request_id,
                     report: None,
-                    error: Some(e),
+                    summary: None,
+                    error: Some(format!("test wait failed: {e}")),
                 }),
             }
         },
@@ -137,6 +284,7 @@ pub(crate) fn apply_test_run_finished(
     app: &mut App,
     request_id: u64,
     report: Option<Box<crate::test_runner::TestReport>>,
+    summary: Option<String>,
     error: Option<String>,
 ) {
     if !app.dialog_state.test_run_request.finish(request_id) {
@@ -146,7 +294,17 @@ pub(crate) fn apply_test_run_finished(
         app.messages_state.toasts.error(&err);
         return;
     }
-    if let Some(report) = report {
+    if let Some(output) = summary {
+        let lines: Vec<String> = output.lines().map(|s| s.to_string()).collect();
+        if lines.len() <= 3 {
+            app.messages_state.toasts.info(&output);
+        } else {
+            app.open_info_dialog(
+                crate::tui::components::dialogs::info::InfoType::DoctorReport,
+                lines,
+            );
+        }
+    } else if let Some(report) = report {
         let output = crate::test_runner::format_test_report(&report);
         let lines: Vec<String> = output.lines().map(|s| s.to_string()).collect();
         if lines.len() <= 3 {

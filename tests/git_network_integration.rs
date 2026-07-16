@@ -611,7 +611,6 @@ fn redact_url_credentials_in_text_passthrough_when_clean() {
 
 #[test]
 fn git_env_policy_strips_command_bearers_when_default() {
-    use codegg::git_mutations::ALLOWED_ENV_VARS;
     let policy = GitEnvPolicy::default();
     // Sanity: the default flag-set must include strip_command_bearers
     // so that operators who reach for `apply()` get the hardening for

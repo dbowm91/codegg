@@ -207,6 +207,29 @@ impl TaskStore {
         allowed_paths: Vec<String>,
     ) -> u64 {
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        self.create_task_with_id(
+            id,
+            description,
+            prompt,
+            agent,
+            parent_id,
+            denied_tools,
+            allowed_paths,
+        )
+        .await;
+        id
+    }
+
+    pub async fn create_task_with_id(
+        &self,
+        id: u64,
+        description: String,
+        prompt: String,
+        agent: String,
+        parent_id: Option<String>,
+        denied_tools: Vec<String>,
+        allowed_paths: Vec<String>,
+    ) {
         let task = SubAgentTask {
             id,
             description,
@@ -219,7 +242,6 @@ impl TaskStore {
             allowed_paths,
         };
         self.tasks.lock().await.insert(id, task);
-        id
     }
 
     pub async fn update_status(&self, id: u64, status: TaskStatus) {
@@ -344,6 +366,8 @@ pub struct TaskTool {
     denied_tools: Vec<String>,
     depth: usize,
     parent_model: Option<String>,
+    submission: Option<Arc<crate::scheduler::JobSubmissionService>>,
+    workspace_root: Option<std::path::PathBuf>,
 }
 
 impl TaskTool {
@@ -360,6 +384,8 @@ impl TaskTool {
             denied_tools,
             depth: 0,
             parent_model: None,
+            submission: None,
+            workspace_root: None,
         }
     }
 
@@ -375,6 +401,8 @@ impl TaskTool {
             denied_tools,
             depth: 0,
             parent_model: None,
+            submission: None,
+            workspace_root: None,
         }
     }
 
@@ -385,6 +413,16 @@ impl TaskTool {
 
     pub fn with_depth(mut self, depth: usize) -> Self {
         self.depth = depth;
+        self
+    }
+
+    pub fn with_submission(
+        mut self,
+        submission: Arc<crate::scheduler::JobSubmissionService>,
+        workspace_root: std::path::PathBuf,
+    ) -> Self {
+        self.submission = Some(submission);
+        self.workspace_root = Some(workspace_root);
         self
     }
 
@@ -496,6 +534,81 @@ impl Tool for TaskTool {
                         .collect()
                 })
                 .unwrap_or_default();
+
+            if let (Some(submission), Some(workspace_root)) =
+                (self.submission.clone(), self.workspace_root.clone())
+            {
+                let workspace_id = submission
+                    .workspace_id_for_root(&workspace_root)
+                    .await
+                    .map_err(|e| ToolError::Execution(e.to_string()))?;
+                let submitted = submission
+                    .submit(
+                        None,
+                        codegg_core::jobs::NewJob {
+                            workspace_id,
+                            session_id: self.parent_session_id.clone(),
+                            turn_id: None,
+                            kind: codegg_core::jobs::JobKind::Subagent,
+                            source: codegg_core::jobs::JobSource::AgentDelegated,
+                            priority: codegg_core::jobs::JobPriority::Interactive,
+                            payload: codegg_core::jobs::JobPayload::Subagent {
+                                prompt,
+                                agent,
+                                parent_id: self.parent_session_id.clone(),
+                                denied_tools: denied_tools.clone(),
+                                allowed_paths: if allowed_paths.is_empty() {
+                                    vec![workspace_root.to_string_lossy().into_owned()]
+                                } else {
+                                    allowed_paths.clone()
+                                },
+                                max_tool_calls: None,
+                            },
+                            resource_request: codegg_core::jobs::ResourceRequest::for_kind(
+                                codegg_core::jobs::JobKind::Subagent,
+                            ),
+                            timeout: None,
+                            retry_policy: codegg_core::jobs::RetryPolicy::no_retry(),
+                            idempotency: codegg_core::jobs::IdempotencyClass::NonIdempotent,
+                            not_before: None,
+                            deadline: None,
+                            schedule_id: None,
+                            depends_on: Vec::new(),
+                        },
+                    )
+                    .await
+                    .map_err(|e| ToolError::Execution(e.to_string()))?;
+                let task_id = submitted
+                    .job_id
+                    .as_str()
+                    .bytes()
+                    .take(8)
+                    .fold(0u64, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u64));
+                self.store
+                    .lock()
+                    .await
+                    .create_task_with_id(
+                        task_id,
+                        description,
+                        input["prompt"].as_str().unwrap_or_default().to_string(),
+                        input["agent"].as_str().unwrap_or("general").to_string(),
+                        self.parent_session_id.clone(),
+                        input["allowed_paths"]
+                            .as_array()
+                            .map(|a| {
+                                a.iter()
+                                    .filter_map(|v| v.as_str().map(String::from))
+                                    .collect()
+                            })
+                            .unwrap_or_default(),
+                        Vec::new(),
+                    )
+                    .await;
+                return Ok(format!(
+                    "Task #{} queued as scheduler job {}",
+                    task_id, submitted.job_id
+                ));
+            }
 
             let task_id = self
                 .store
