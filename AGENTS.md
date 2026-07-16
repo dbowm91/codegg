@@ -382,7 +382,7 @@ CI runs on push/PR to dev/main: `agent-assets` → `fmt` → `check` → `clippy
 - **Lock is authoritative**: `DaemonInstanceGuard` holds `flock(LOCK_EX | LOCK_NB)` for the daemon's lifetime. `daemon.json` metadata is diagnostic only.
 - **PID file is legacy**: The old `<socket>.pid` file is still written for backward compat, but the authoritative identity is the metadata record + lock.
 - **Stop verifies liveness**: `daemon stop` probes the socket before sending SIGTERM. It refuses to unlink paths it does not own.
-- See `plans/single-daemon-phase-01-singleton-lifecycle-and-default-transport.md` and `src/core/instance.rs` for the full contract.
+- See `src/core/instance.rs` for the full contract.
 
 ### Workspace Registry (Phase 2)
 
@@ -390,15 +390,15 @@ CI runs on push/PR to dev/main: `agent-assets` → `fmt` → `check` → `clippy
 - **WorkspaceRegistry**: daemon-owned, deduplicates canonical roots. Rejects nonexistent paths and symlink aliases.
 - **ExecutionContext**: immutable, passed by `Arc` through `TurnRunInput`. Replaces `std::env::current_dir()` reasoning. Carries `workspace_root`, `workspace_id`, `session_id`, and path policy.
 - **Static guard**: `scripts/check_daemon_cwd_usage.py` scans protected modules for `std::env::current_dir()` usage. New production-path uses fail CI.
-- See `plans/single-daemon-phase-02-workspace-registry-and-execution-context.md` and `crates/codegg-core/src/workspace.rs`.
+- See `crates/codegg-core/src/workspace.rs` for the full contract.
 
 ### Workspace Services and Storage (Phase 3)
 
 - **WorkspaceServices**: per-workspace bundle owning `Arc<dyn RunStore>`, `Arc<WorkspacePathPolicy>`, `Arc<WorkspaceLockTable>`, `Arc<WorkspaceConfigSnapshot>`. Constructed by `ProductionWorkspaceServicesFactory` at `<workspace>/.codegg/runs/`.
 - **Storage split** (`crates/codegg-core/src/storage/mod.rs`): `init_daemon_catalog(&DaemonPaths)` owns the user-scoped catalog. `init_legacy_project_store(root)` retains backward compat. `init` is deprecated.
-- **STORAGE_LAYOUT_VERSION = 23**. **DaemonPaths** (`crates/codegg-core/src/storage/paths.rs`) is the single source of truth for catalog and asset paths.
+- **STORAGE_LAYOUT_VERSION = 24**. **DaemonPaths** (`crates/codegg-core/src/storage/paths.rs`) is the single source of truth for catalog and asset paths.
 - **Migration tooling** (`crates/codegg-core/src/migration.rs`): `migrate_legacy_project_database` is idempotent.
-- See `plans/single-daemon-phase-03-workspace-services-and-storage.md` and `crates/codegg-core/src/workspace_services.rs`.
+- See `crates/codegg-core/src/workspace_services.rs` for the full contract.
 
 ### Durable Jobs and Schedules (Phase 4)
 
@@ -409,14 +409,14 @@ CI runs on push/PR to dev/main: `agent-assets` → `fmt` → `check` → `clippy
 - **Idempotency**: `IdempotencyClass::is_retry_eligible()` returns `true` for `ReadOnly` and `SafeRepeat`. Persisted at creation time.
 - **JobStore/ScheduleStore traits**: Live in `crates/codegg-core/src/jobs/`. UI/server/plugin/auth-free (boundary enforced by `scripts/check-core-boundary.sh`).
 - **RunStore linkage**: `JobAttempt.run_id: Option<RunId>` links attempt to RunStore. RunStore is NOT the queue authority.
-- See `plans/single-daemon-phase-04-durable-jobs-and-schedules.md` and `crates/codegg-core/src/jobs/mod.rs`.
+- See `crates/codegg-core/src/jobs/mod.rs` for the full contract.
 
 ### Global Admission Control Scheduler (Phase 5)
 
 - **Submission boundary**: `JobSubmissionService` (`src/scheduler/submission.rs`) is the daemon-owned facade. Callers must not create a job and separately dispatch it.
 - **Single authority**: `JobScheduler` (`src/scheduler/scheduler.rs`) is the only daemon admission authority for submitted work.
 - **Static guards**: `scripts/check_scheduler_bypass.py` rejects direct TestRunner calls, legacy subagent sends, and background scheduler loop starts outside explicit sites. `scripts/check_execution_ownership.py` enforces the machine-readable `docs/execution-ownership.toml` manifest. `scripts/check_daemon_cwd_usage.py` remains required for workspace-bound daemon paths. Run all after changing any execution surface.
-- See `plans/single-daemon-scheduler-cutover-correctness-and-operational-proof.md`, `architecture/scheduler.md`, `src/scheduler/`, and `tests/scheduler_phase5.rs`.
+- See `architecture/scheduler.md`, `src/scheduler/`, and `tests/scheduler_phase5.rs`.
 
 ### Execution Ownership Inventory
 
@@ -543,9 +543,9 @@ CI runs on push/PR to dev/main: `agent-assets` → `fmt` → `check` → `clippy
 
 | Document | Key Gotchas |
 |----------|-------------|
-| `architecture/overview.md` | Module map, verified counts (105 commands, 42 events, 39 LSP servers, ~37 tools, 9 agents) |
+| `architecture/overview.md` | Module map, verified counts (105 commands, 44 events, 39 LSP servers, ~37 tools, 9 agents) |
 | `architecture/agent.md` | AgentLoop has ~49 fields at `src/agent/loop.rs:1380` |
-| `architecture/bus.md` | 42 AppEvent variants; PermissionRegistry/QuestionRegistry are synchronous |
+| `architecture/bus.md` | 44 AppEvent variants; PermissionRegistry/QuestionRegistry are synchronous |
 | `architecture/lsp.md` | egglsp is authoritative; 39 servers; `src/lsp/` is thin re-export shim |
 | `architecture/plugin.md` | No `wasm.rs`; `marketplace.rs` exists; PluginRuntime trait with Process/Wasm/Builtin |
 | `architecture/tool.md` | ~38 tools in default registry; `ToolCatalog::register()` takes `&dyn Tool` |

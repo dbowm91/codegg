@@ -1,7 +1,7 @@
 # Git Polish / Maintainability / Verification Handoff
 
 > Companion to
-> [`plans/git_agent_integration_polish_maintainability_verification.md`](../../plans/git_agent_integration_polish_maintainability_verification.md).
+> Git Polish Maintainability Verification (plan pruned post-completion).
 >
 > This artifact records the post-closure verified state of the Git
 > agent integration. It is the canonical reference for future

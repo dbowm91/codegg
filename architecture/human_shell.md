@@ -300,9 +300,9 @@ Shell status labels use theme-aware colors for visual distinction:
 
 - [tool.md](tool.md) — Agent bash tool (uses `ShellOrigin::AgentTool`)
 - [human-shell/SKILL.md](../.opencode/skills/human-shell/SKILL.md) — Human shell skill guide
-- [shell_output_projection_phase_01_command_event_model.md](../plans/shell_output_projection_phase_01_command_event_model.md) — Phase 1 plan this section implements
-- [shell_output_projection_phase_02_projection_trait.md](../plans/shell_output_projection_phase_02_projection_trait.md) — Phase 2 plan (projector trait + built-ins)
-- [shell_output_projection_rtk_roadmap.md](../plans/shell_output_projection_rtk_roadmap.md) — Full roadmap
+- [shell_output_projection_phase_01_command_event_model.md](../plans/shell_output_projection_phase_01_command_event_model.md) — Phase 1 plan this section implements (plan pruned post-completion)
+- [shell_output_projection_phase_02_projection_trait.md](../plans/shell_output_projection_phase_02_projection_trait.md) — Phase 2 plan (projector trait + built-ins) (plan pruned post-completion)
+- [shell_output_projection_rtk_roadmap.md](../plans/shell_output_projection_rtk_roadmap.md) — Full roadmap (plan pruned post-completion)
 
 ## Current Shell Projection Behavior
 

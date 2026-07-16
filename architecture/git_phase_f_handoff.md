@@ -145,4 +145,4 @@ CARGO_BUILD_JOBS=1 cargo test --workspace --all-features -- --test-threads=8
 - `docs/validation/git-security-review.md`
 - `docs/validation/git-performance-review.md`
 - `docs/validation/git-cross-platform.md`
-- `plans/git_agent_integration_phase_f_conflicts_and_closure.md`
+- Git agent integration Phase F conflicts and closure (plan pruned post-completion)

@@ -74,9 +74,7 @@ execution path through an immutable
 — `TurnSubmit`, `AgentSelect`, and `ModelSelect` reject sessions that have not
 been bound to a workspace. Tools, subagents, Bash, Python, Git, LSP, TestRunner,
 and RunStore all anchor at `execution.workspace_root`, eliminating process-cwd
-as an execution identity source. See
-[`plans/single-daemon-phase-02-workspace-registry-and-execution-context.md`](plans/single-daemon-phase-02-workspace-registry-and-execution-context.md)
-for the full contract and `architecture/core.md` for the runtime model.
+as an execution identity source. See `architecture/core.md` for the full contract.
 
 ### Workspace services and storage (Phase 3)
 
@@ -100,8 +98,7 @@ location:
 `<root>/.codegg/sessions.db` path, and `migrate_legacy_project_database`
 imports those legacy databases into the catalog idempotently. Storage
 layout marker is now `STORAGE_LAYOUT_VERSION = 24`. See
-[`plans/single-daemon-phase-03-workspace-services-and-storage.md`](plans/single-daemon-phase-03-workspace-services-and-storage.md)
-and `architecture/workspace_services.md` for the full contract.
+`architecture/workspace_services.md` for the full contract.
 
 ### Scheduler-owned execution
 
@@ -117,8 +114,7 @@ disabled, daemon submission returns `SchedulerDisabled` rather than falling
 back to an unscheduled process. `--standalone` and `--stdio` remain explicit
 compatibility modes and do not participate in the user-scoped machine-wide
 admission guarantee. See
-[`architecture/scheduler.md`](architecture/scheduler.md) and the
-[`scheduler cutover plan`](plans/single-daemon-scheduler-cutover-correctness-and-operational-proof.md).
+`architecture/scheduler.md`.
 
 ```bash
 git clone https://github.com/anomalyco/codegg

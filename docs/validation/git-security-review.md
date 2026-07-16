@@ -3,8 +3,8 @@
 Two-pass security review of the Git agent integration:
 
 1. **Phase F closure review (2026-07-14)** — 14 threat classes from
-   `plans/git_agent_integration_phase_f_conflicts_and_closure.md`
-   deliverable 11. Two issues identified and resolved in the closure
+   the Git agent integration Phase F closure deliverable 11 (plan pruned
+   post-completion). Two issues identified and resolved in the closure
    commits (`cb192e9`, `c2e806f`, `53b2beb`).
 2. **Polish / maintainability / verification refresh (2026-07-15)** —
    re-ran the threat model against the post-polish codebase

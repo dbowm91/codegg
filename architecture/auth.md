@@ -91,7 +91,7 @@ otherwise hang provider registration indefinitely. The same
 `Unsupported` result is returned by
 `ExternalCommandProvider::fetch` for any non-empty command so that no
 safe code path can accidentally shell out. Async timeout plumbing is
-a follow-up — see `plans/oauth_provider_auth_followup.md`.
+a follow-up — async timeout plumbing deferred.
 `AuthConfig::OAuthDevice` is recognized but returns
 `AuthError::Unsupported("OAuthDevice")`. `AuthConfig::None` returns
 `Ok(None)` regardless of legacy fields.

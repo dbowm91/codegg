@@ -166,5 +166,5 @@ python3 scripts/check_daemon_cwd_usage.py
 - [`architecture/storage.md`](storage.md) — Migration index v1-v22.
 - [`architecture/protocol.md`](protocol.md) — `WorkspaceRegister` and
   `WorkspaceSnapshot` protocol surface.
-- [`plans/single-daemon-phase-02-workspace-registry-and-execution-context.md`](../plans/single-daemon-phase-02-workspace-registry-and-execution-context.md)
+- `architecture/workspace_services.md`
   — Full Phase 2 contract.

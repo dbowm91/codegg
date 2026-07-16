@@ -164,49 +164,41 @@ reason = "speak_text / stop_speech notify user audibly; lightweight by intent"
 path = "src/git_mutations.rs"
 owner = "deferred_domain_executor"
 reason = "GitMutationExecutor::run_subprocess executes git mutations; typed subsystem pending future scheduler integration"
-followup = "plans/single-daemon-domain-integration-phase-01.md"
 
 [[site]]
 path = "src/git_network_ops.rs"
 owner = "deferred_domain_executor"
 reason = "NetworkEnvPolicy::apply_to_command builds network git commands; pending scheduler integration"
-followup = "plans/single-daemon-domain-integration-phase-01.md"
 
 [[site]]
 path = "src/git_recovery.rs"
 owner = "deferred_domain_executor"
 reason = "Recovery operations delegate to GitMutationExecutor; pending scheduler integration"
-followup = "plans/single-daemon-domain-integration-phase-01.md"
 
 [[site]]
 path = "src/git_service.rs"
 owner = "deferred_domain_executor"
 reason = "GitExecutionService and read fallback for git; reads are documented as compatibility"
-followup = "plans/single-daemon-domain-integration-phase-01.md"
 
 [[site]]
 path = "src/python_script/executor.rs"
 owner = "deferred_domain_executor"
 reason = "PythonScript executor runs Python scripts; first-class but pending scheduler integration"
-followup = "plans/single-daemon-domain-integration-phase-02.md"
 
 [[site]]
 path = "src/python_script/"
 owner = "deferred_domain_executor"
 reason = "Python scripting subsystem; pending scheduler integration"
-followup = "plans/single-daemon-domain-integration-phase-02.md"
 
 [[site]]
 path = "src/formatter.rs"
 owner = "deferred_domain_executor"
 reason = "External formatters (cargo fmt, prettier, black) may route through scheduler in future"
-followup = "plans/single-daemon-domain-integration-phase-03.md"
 
 [[site]]
 path = "src/plugin/runtime/process.rs"
 owner = "deferred_domain_executor"
 reason = "Plugin process runtime spawns plugin processes; long-lived by design, pending scheduler integration"
-followup = "plans/single-daemon-domain-integration-phase-04.md"
 
 [[site]]
 path = "crates/egglsp/src/launch.rs"
@@ -217,13 +209,11 @@ reason = "LSP server launch is a long-lived user-controlled service"
 path = "crates/egggit/src/"
 owner = "deferred_domain_executor"
 reason = "egggit is read-only; its subprocess calls power GitExecutionService reads; pending scheduler integration"
-followup = "plans/single-daemon-domain-integration-phase-01.md"
 
 [[site]]
 path = "crates/codegg-core/src/worktree.rs"
 owner = "deferred_domain_executor"
 reason = "Worktree creation/removal uses hardened git subprocess; pending scheduler integration"
-followup = "plans/single-daemon-domain-integration-phase-01.md"
 
 # ---------------------------------------------------------------------
 # Hooks / helper processes
@@ -276,4 +266,3 @@ reason = "GitExecutionService is the canonical read executor; test fixtures in t
 path = "src/tool/formatter.rs"
 owner = "deferred_domain_executor"
 reason = "External formatters (cargo fmt, prettier, black) currently spawn directly via std::process::Command; future migration routes through scheduler as JobKind::Format"
-followup = "plans/single-daemon-domain-integration-phase-03.md"

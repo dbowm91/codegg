@@ -948,7 +948,7 @@ The remote TUI uses an **event/state-driven** protocol. The daemon sends typed s
 
 ### Protocol Version
 
-The remote TUI protocol version is defined as `REMOTE_TUI_PROTOCOL_VERSION = 1` in `crates/codegg-protocol/src/tui.rs`. Handshakes should reject incompatible major versions.
+The remote TUI protocol version is defined as `REMOTE_TUI_PROTOCOL_VERSION = 3` in `crates/codegg-protocol/src/tui.rs`. Handshakes should reject incompatible major versions.
 
 ### State Snapshots
 

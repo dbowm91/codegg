@@ -7,8 +7,7 @@ adapter binaries without changing the model-facing tool names.
 
 This document describes the runtime contract (Phase 1 of the plan), the
 backend-selection policy (Phase 3 / Phase 9), and the per-crate
-boundaries. See `plans/native_tool_crates.md` for the full plan and
-`architecture/tool.md` for the tool registry side of the contract.
+boundaries. See `architecture/tool.md` for the tool registry side of the contract.
 
 ## Workspace layout
 

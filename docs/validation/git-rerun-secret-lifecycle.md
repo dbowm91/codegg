@@ -1,7 +1,6 @@
 # Git Rerun Descriptor Secret Lifecycle
 
-> Workstream A of the
-> [Git Polish Maintainability Verification Plan](../../plans/git_agent_integration_polish_maintainability_verification.md).
+> Workstream A of the Git Polish Maintainability Verification (plan pruned post-completion).
 >
 > Status: **implemented (option: redacted-persisted + ephemeral raw for replay handoff)**.
 

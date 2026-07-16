@@ -4,8 +4,7 @@ This document validates the corrective passes for command-routing persistence
 and provenance defects.
 
 See also:
-- `plans/command-routing-actual-execution-ownership-corrective-pass.md` — original ownership-corrective plan
-- `plans/command-routing-real-delegation-final-corrective-pass.md` — final real-delegation plan
+- Command routing corrective passes (plans pruned post-completion)
 
 ## Commits
 

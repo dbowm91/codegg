@@ -1357,8 +1357,7 @@ pub struct PluginSourceMetadata {
 
 ### Uninstall Removal Ordering
 
-`PluginManager::uninstall()` follows the preferred flow from
-`plans/plugin_ui_final_polish_pass.md` Workstream A:
+`PluginManager::uninstall()` follows the preferred flow from the plugin UI polish pass (plan pruned post-completion):
 
 1. Resolve the plugin and capture its source metadata.
 2. If a recorded install path exists and the plugin is not a builtin, validate

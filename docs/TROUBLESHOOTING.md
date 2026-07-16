@@ -70,7 +70,7 @@ Common issues and solutions for codegg.
 **Symptoms:** Previous messages disappear after restart.
 
 **Solutions:**
-- Sessions are stored in SQLite at `~/.local/share/codegg/sessions.db`
+- Sessions are stored in SQLite at `~/Library/Application Support/codegg/codegg.db` (macOS) or `~/.local/share/codegg/codegg.db` (Linux)
 - Check file permissions
 - Verify disk space available
 

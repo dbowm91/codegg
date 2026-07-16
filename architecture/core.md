@@ -259,7 +259,7 @@ Phase 2 introduces workspace identity as a first-class daemon concept. A daemon 
 
 **Static guard**: `scripts/check_daemon_cwd_usage.py` scans protected modules for `std::env::current_dir()` usage. Existing legacy uses in tool `default()` constructors are allowlisted; new production-path uses fail CI.
 
-See `plans/single-daemon-phase-02-workspace-registry-and-execution-context.md` and `crates/codegg-core/src/workspace.rs` for the full contract.
+See `crates/codegg-core/src/workspace.rs` for the full contract.
 
 ### Scheduler-owned execution (Phase 5 cutover)
 

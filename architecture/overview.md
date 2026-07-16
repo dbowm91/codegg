@@ -98,7 +98,7 @@ The core layer owns the singleton daemon lifecycle, transport adapters, request 
 | Managed Process | Managed process lifecycle with process-group cleanup, timeout, cancellation, descendant tracking | `managed_process.rs` | [scheduler.md](scheduler.md) |
 | Session | SQLite session storage, message history, 22 migrations, analytics, checkpointing | `session/` (codegg-core) | [session.md](session.md) |
 | Storage | SQLite initialization and connection pooling — user-scoped catalog + legacy project store | `storage/` (codegg-core) | [storage.md](storage.md) |
-| Bus | Event bus publish/subscribe (42 AppEvent variants), PermissionRegistry, QuestionRegistry | `bus/` (codegg-core) | [bus.md](bus.md) |
+| Bus | Event bus publish/subscribe (44 AppEvent variants), PermissionRegistry, QuestionRegistry | `bus/` (codegg-core) | [bus.md](bus.md) |
 | Error | Centralized AppError enum with error classification | `error.rs` | [error.md](error.md) |
 | Exec | Non-interactive exec mode for CI/CD with JSON I/O | `exec.rs` | [exec.md](exec.md) |
 
@@ -175,7 +175,7 @@ Codegg-side thin wrappers (`src/tool/lsp.rs`, `src/tool/git.rs`, `src/tool/secur
 | Tools (default registry) | ~40 | `src/tool/mod.rs:with_options()` |
 | LSP servers | 39 | `crates/egglsp/src/server.rs` |
 | Native tool crates | 9 | `crates/` workspace |
-| AppEvent variants | 42 | `crates/codegg-core/src/bus/events.rs` |
+| AppEvent variants | 44 | `crates/codegg-core/src/bus/events.rs` |
 | Built-in commands | 118 | `src/tui/command.rs` |
 | Built-in agents | 9 | `assets/agents/*.toml` |
 | Database tables | 19+ | `crates/codegg-core/src/storage/` |

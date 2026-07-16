@@ -66,13 +66,12 @@ surfaces today. Their follow-up plans convert each into a scheduler
 executor with a typed `JobKind` (Git, Python, Plugin, etc.) without
 disrupting the canonical subsystem ownership:
 
-| Domain | Follow-up plan |
+| Domain | Status |
 |---|---|
-| Git (mutations, network, recovery, reads) | `plans/single-daemon-domain-integration-phase-01.md` |
-| Python script execution | `plans/single-daemon-domain-integration-phase-02.md` |
-| External formatters | `plans/single-daemon-domain-integration-phase-03.md` |
-| Plugin process lifecycle | `plans/single-daemon-domain-integration-phase-04.md` |
+| Git (mutations, network, recovery, reads) | Typed mutations (Phase D), network/destructive (Phase E), conflicts/recovery (Phase F) — see `architecture/git.md` |
+| Python script execution | Module-based scripting at `src/python_script/` — see `architecture/python_scripting.md` |
+| External formatters | Deferred domain executor — tracked in `docs/execution-ownership.toml` |
+| Plugin process lifecycle | Deferred domain executor — tracked in `docs/execution-ownership.toml` |
 
-The follow-up plans are tracked in `plans/` and are not part of this
-closure pass. They are referenced so the residual gap is recorded
-explicitly rather than hidden behind a broad static-guard exemption.
+These domains are tracked in the execution-ownership TOML manifest and
+documented in `architecture/`.

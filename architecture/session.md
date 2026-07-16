@@ -259,7 +259,7 @@ migrate() -> reads version -> for each version N not applied:
 > rejected at `TurnSubmit`/`AgentSelect`/`ModelSelect` until rebound via
 > `CoreRequest::WorkspaceRegister`. See
 > [`architecture/core.md`](core.md) for `ExecutionContext` semantics and
-> [`plans/single-daemon-phase-02-workspace-registry-and-execution-context.md`](../plans/single-daemon-phase-02-workspace-registry-and-execution-context.md)
+> `crates/codegg-core/src/workspace.rs`
 > for the full contract.
 
 ---
