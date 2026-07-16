@@ -7,12 +7,13 @@ pub use codegg_providers as provider;
 
 // Extracted core modules re-exported for root compatibility.
 pub use codegg_core::{
-    bus, goal, memory, migration, model_profile, resilience, run_store, session, snapshot,
-    storage, task_state, workspace, workspace_services, worktree,
+    bus, goal, memory, migration, model_profile, resilience, run_store, session, snapshot, storage,
+    task_state, workspace, workspace_services, worktree,
 };
 
 pub mod agent;
 pub mod auth;
+pub mod background_task_migration;
 pub mod command;
 pub mod command_intent;
 pub mod command_outcome;
@@ -33,6 +34,8 @@ pub mod git_run_store;
 pub mod git_service;
 pub mod hooks;
 pub mod ide;
+pub mod job_dispatcher;
+pub mod job_recovery;
 pub mod lsp;
 pub mod mcp;
 pub mod permission;

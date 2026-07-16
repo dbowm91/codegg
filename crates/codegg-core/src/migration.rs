@@ -31,10 +31,7 @@ use crate::workspace::{WorkspaceRecord, WorkspaceRegistry};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MigrationOutcome {
     /// Sessions and messages were imported into the catalog.
-    Imported {
-        sessions: usize,
-        messages: usize,
-    },
+    Imported { sessions: usize, messages: usize },
     /// The source path was already imported previously.
     AlreadyMigrated,
     /// The source database does not exist; nothing to do.
@@ -59,12 +56,11 @@ pub fn find_legacy_project_db(project_root: &Path) -> Option<PathBuf> {
 /// Verify that a SQLite database has the minimum Codegg session schema
 /// (presence of the `session` table).
 async fn verify_session_schema(pool: &SqlitePool) -> Result<bool, StorageError> {
-    let row: Option<(String,)> = sqlx::query_as(
-        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'session'",
-    )
-    .fetch_optional(pool)
-    .await
-    .map_err(|e| StorageError::Database(e.to_string()))?;
+    let row: Option<(String,)> =
+        sqlx::query_as("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'session'")
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| StorageError::Database(e.to_string()))?;
     Ok(row.is_some())
 }
 
@@ -294,8 +290,8 @@ pub struct WorkspaceDescription {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::workspace::InMemoryWorkspaceStore;
     use crate::session::schema::migrate;
+    use crate::workspace::InMemoryWorkspaceStore;
     use std::time::Duration;
 
     async fn empty_pool() -> SqlitePool {
@@ -325,8 +321,9 @@ mod tests {
             .await
             .unwrap();
         let tmp = tempfile::tempdir().unwrap();
-        let outcome =
-            migrate_legacy_project_database(catalog, registry, tmp.path()).await.unwrap();
+        let outcome = migrate_legacy_project_database(catalog, registry, tmp.path())
+            .await
+            .unwrap();
         assert_eq!(outcome, MigrationOutcome::SourceMissing);
     }
 
@@ -348,8 +345,9 @@ mod tests {
             .await
             .unwrap();
         drop(pool);
-        let outcome =
-            migrate_legacy_project_database(catalog, registry, tmp.path()).await.unwrap();
+        let outcome = migrate_legacy_project_database(catalog, registry, tmp.path())
+            .await
+            .unwrap();
         match outcome {
             MigrationOutcome::InvalidSchema(_) => {}
             other => panic!("expected InvalidSchema, got {:?}", other),
@@ -372,12 +370,10 @@ mod tests {
         {
             use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
             use std::str::FromStr;
-            let opts = SqliteConnectOptions::from_str(&format!(
-                "sqlite://{}",
-                source_path.display()
-            ))
-            .expect("sqlite options")
-            .create_if_missing(true);
+            let opts =
+                SqliteConnectOptions::from_str(&format!("sqlite://{}", source_path.display()))
+                    .expect("sqlite options")
+                    .create_if_missing(true);
             let pool = SqlitePoolOptions::new()
                 .max_connections(1)
                 .acquire_timeout(Duration::from_secs(5))
@@ -395,10 +391,9 @@ mod tests {
                 .ok();
             pool.close().await;
         }
-        let outcome =
-            migrate_legacy_project_database(catalog.clone(), registry, tmp.path())
-                .await
-                .unwrap();
+        let outcome = migrate_legacy_project_database(catalog.clone(), registry, tmp.path())
+            .await
+            .unwrap();
         match outcome {
             MigrationOutcome::Imported { sessions, .. } => assert_eq!(sessions, 0),
             other => panic!("expected Imported (0 sessions), got {:?}", other),
@@ -409,10 +404,9 @@ mod tests {
         let registry2 = WorkspaceRegistry::load(Arc::new(InMemoryWorkspaceStore::new()))
             .await
             .unwrap();
-        let outcome2 =
-            migrate_legacy_project_database(catalog, registry2, tmp.path())
-                .await
-                .unwrap();
+        let outcome2 = migrate_legacy_project_database(catalog, registry2, tmp.path())
+            .await
+            .unwrap();
         assert_eq!(outcome2, MigrationOutcome::AlreadyMigrated);
     }
 }

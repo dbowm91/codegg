@@ -183,11 +183,12 @@ pub fn config_diagnostic_to_dto(
 /// Phase 3: convert a `RunQueryDto` into the workspace-local
 /// `RunStore::list_runs` query. Filters are intentionally loose; the
 /// store applies them in-memory and returns matches in start order.
-pub fn run_query_from_dto(
-    query: codegg_protocol::dto::RunQueryDto,
-) -> crate::run_store::RunQuery {
+pub fn run_query_from_dto(query: codegg_protocol::dto::RunQueryDto) -> crate::run_store::RunQuery {
     let kind = query.kinds.into_iter().find_map(|s| run_kind_from_str(&s));
-    let status = query.statuses.into_iter().find_map(|s| run_status_from_str(&s));
+    let status = query
+        .statuses
+        .into_iter()
+        .find_map(|s| run_status_from_str(&s));
     let since = query
         .since_ms
         .and_then(chrono::DateTime::<chrono::Utc>::from_timestamp_millis);
@@ -324,4 +325,387 @@ fn artifact_kind_to_str(k: &crate::run_store::ArtifactKind) -> &'static str {
         ArtifactKind::StructuredJson => "structured_json",
         ArtifactKind::PolicyEvidence => "policy_evidence",
     }
+}
+
+// ── Phase 4: Durable Jobs and Schedules conversion helpers ───────────
+
+pub fn job_kind_to_str(k: crate::jobs::JobKind) -> &'static str {
+    k.as_str()
+}
+
+pub fn job_kind_from_str(s: &str) -> crate::jobs::JobKind {
+    crate::jobs::JobKind::from_str_lossy(s)
+}
+
+pub fn job_priority_to_str(p: crate::jobs::JobPriority) -> &'static str {
+    p.as_str()
+}
+
+pub fn job_priority_from_str(s: &str) -> crate::jobs::JobPriority {
+    crate::jobs::JobPriority::from_str_lossy(s)
+}
+
+pub fn job_state_to_str(s: crate::jobs::JobState) -> &'static str {
+    s.as_str()
+}
+
+pub fn job_state_from_str(s: &str) -> crate::jobs::JobState {
+    crate::jobs::JobState::from_str_lossy(s)
+}
+
+pub fn attempt_state_to_str(s: crate::jobs::AttemptState) -> &'static str {
+    s.as_str()
+}
+
+pub fn attempt_state_from_str(s: &str) -> crate::jobs::AttemptState {
+    crate::jobs::AttemptState::from_str_lossy(s)
+}
+
+pub fn idempotency_to_str(i: crate::jobs::IdempotencyClass) -> &'static str {
+    match i {
+        crate::jobs::IdempotencyClass::ReadOnly => "read_only",
+        crate::jobs::IdempotencyClass::SafeRepeat => "safe_repeat",
+        crate::jobs::IdempotencyClass::Conditional => "conditional",
+        crate::jobs::IdempotencyClass::NonIdempotent => "non_idempotent",
+        crate::jobs::IdempotencyClass::Destructive => "destructive",
+    }
+}
+
+pub fn idempotency_from_str(s: &str) -> Result<crate::jobs::IdempotencyClass, String> {
+    match s {
+        "read_only" => Ok(crate::jobs::IdempotencyClass::ReadOnly),
+        "safe_repeat" => Ok(crate::jobs::IdempotencyClass::SafeRepeat),
+        "conditional" => Ok(crate::jobs::IdempotencyClass::Conditional),
+        "non_idempotent" => Ok(crate::jobs::IdempotencyClass::NonIdempotent),
+        "destructive" => Ok(crate::jobs::IdempotencyClass::Destructive),
+        _ => Err(format!("unknown idempotency class: {s}")),
+    }
+}
+
+pub fn schedule_state_to_str(s: crate::jobs::ScheduleState) -> &'static str {
+    s.as_str()
+}
+
+pub fn schedule_state_from_str(s: &str) -> crate::jobs::ScheduleState {
+    crate::jobs::ScheduleState::from_str_lossy(s)
+}
+
+pub fn overlap_policy_to_str(p: crate::jobs::OverlapPolicy) -> &'static str {
+    match p {
+        crate::jobs::OverlapPolicy::SkipIfRunning => "skip_if_running",
+        crate::jobs::OverlapPolicy::QueueOne => "queue_one",
+        crate::jobs::OverlapPolicy::Allow => "allow",
+    }
+}
+
+pub fn overlap_policy_from_str(s: &str) -> Result<crate::jobs::OverlapPolicy, String> {
+    match s {
+        "skip_if_running" => Ok(crate::jobs::OverlapPolicy::SkipIfRunning),
+        "queue_one" => Ok(crate::jobs::OverlapPolicy::QueueOne),
+        "allow" => Ok(crate::jobs::OverlapPolicy::Allow),
+        _ => Err(format!("unknown overlap policy: {s}")),
+    }
+}
+
+pub fn cancel_outcome_to_str(o: crate::jobs::CancelOutcome) -> &'static str {
+    match o {
+        crate::jobs::CancelOutcome::Cancelled => "cancelled",
+        crate::jobs::CancelOutcome::Requested => "requested",
+        crate::jobs::CancelOutcome::AlreadyTerminal => "already_terminal",
+    }
+}
+
+pub fn missed_run_policy_to_str(p: &crate::jobs::MissedRunPolicy) -> serde_json::Value {
+    serde_json::to_value(p).expect("MissedRunPolicy is always serializable")
+}
+
+pub fn schedule_kind_to_value(k: &crate::jobs::ScheduleKind) -> serde_json::Value {
+    serde_json::to_value(k).expect("ScheduleKind is always serializable")
+}
+
+pub fn job_source_to_value(s: &crate::jobs::JobSource) -> serde_json::Value {
+    serde_json::to_value(s).expect("JobSource is always serializable")
+}
+
+pub fn job_payload_to_value(p: &crate::jobs::JobPayload) -> serde_json::Value {
+    serde_json::to_value(p).expect("JobPayload is always serializable")
+}
+
+pub fn retry_policy_to_value(p: &crate::jobs::RetryPolicy) -> serde_json::Value {
+    serde_json::to_value(p).expect("RetryPolicy is always serializable")
+}
+
+pub fn job_template_to_value(t: &crate::jobs::schedule::JobTemplate) -> serde_json::Value {
+    serde_json::to_value(t).expect("JobTemplate is always serializable")
+}
+
+pub fn missed_run_policy_from_value(
+    v: &serde_json::Value,
+) -> Result<crate::jobs::MissedRunPolicy, String> {
+    serde_json::from_value(v.clone()).map_err(|e| format!("invalid missed_run_policy: {e}"))
+}
+
+pub fn schedule_kind_from_value(
+    v: &serde_json::Value,
+) -> Result<crate::jobs::ScheduleKind, String> {
+    serde_json::from_value(v.clone()).map_err(|e| format!("invalid schedule kind: {e}"))
+}
+
+pub fn job_source_from_value(v: &serde_json::Value) -> Result<crate::jobs::JobSource, String> {
+    serde_json::from_value(v.clone()).map_err(|e| format!("invalid job source: {e}"))
+}
+
+pub fn job_payload_from_value(v: &serde_json::Value) -> Result<crate::jobs::JobPayload, String> {
+    serde_json::from_value(v.clone()).map_err(|e| format!("invalid job payload: {e}"))
+}
+
+pub fn retry_policy_from_value(v: &serde_json::Value) -> Result<crate::jobs::RetryPolicy, String> {
+    serde_json::from_value(v.clone()).map_err(|e| format!("invalid retry policy: {e}"))
+}
+
+pub fn job_template_from_value(
+    v: &serde_json::Value,
+) -> Result<crate::jobs::schedule::JobTemplate, String> {
+    serde_json::from_value(v.clone()).map_err(|e| format!("invalid job template: {e}"))
+}
+
+/// Domain → DTO: convert a `JobSummary` into the wire DTO.
+pub fn job_summary_to_dto(
+    s: &crate::jobs::store::JobSummary,
+) -> codegg_protocol::dto::JobSummaryDto {
+    codegg_protocol::dto::JobSummaryDto {
+        job_id: s.job_id.as_str().to_string(),
+        workspace_id: s.workspace_id.as_str().to_string(),
+        session_id: None, // populated by daemon handler from labels/context
+        kind: job_kind_to_str(s.kind).to_string(),
+        priority: job_priority_to_str(s.priority).to_string(),
+        state: job_state_to_str(s.state).to_string(),
+        attempt_count: s.attempt_count,
+        current_attempt_id: s
+            .current_attempt_id
+            .as_ref()
+            .map(|a| a.as_str().to_string()),
+        schedule_id: s.schedule_id.as_ref().map(|sid| sid.as_str().to_string()),
+        cancel_requested_at: s.cancel_requested_at.map(|d| d.timestamp_millis()),
+        created_at_ms: s.created_at.timestamp_millis(),
+        updated_at_ms: s.updated_at.timestamp_millis(),
+        labels: std::collections::HashMap::new(), // populated by daemon handler
+    }
+}
+
+/// Domain → DTO: convert a `JobRecord` into the wire DTO.
+pub fn job_record_to_dto(r: &crate::jobs::JobRecord) -> codegg_protocol::dto::JobRecordDto {
+    codegg_protocol::dto::JobRecordDto {
+        job_id: r.job_id.as_str().to_string(),
+        workspace_id: r.workspace_id.as_str().to_string(),
+        session_id: r.session_id.clone(),
+        turn_id: r.turn_id.clone(),
+        kind: job_kind_to_str(r.kind).to_string(),
+        source: job_source_to_value(&r.source),
+        priority: job_priority_to_str(r.priority).to_string(),
+        payload: job_payload_to_value(&r.payload),
+        state: job_state_to_str(r.state).to_string(),
+        current_attempt_id: r
+            .current_attempt_id
+            .as_ref()
+            .map(|a| a.as_str().to_string()),
+        attempt_count: r.attempt_count,
+        retry_policy: retry_policy_to_value(&r.retry_policy),
+        idempotency: idempotency_to_str(r.idempotency).to_string(),
+        not_before: r.not_before.map(|d| d.timestamp_millis()),
+        deadline: r.deadline.map(|d| d.timestamp_millis()),
+        schedule_id: r.schedule_id.as_ref().map(|sid| sid.as_str().to_string()),
+        created_at_ms: r.created_at.timestamp_millis(),
+        updated_at_ms: r.updated_at.timestamp_millis(),
+        terminal_at_ms: r.terminal_at.map(|d| d.timestamp_millis()),
+        cancel_requested_at: r.cancel_requested_at.map(|d| d.timestamp_millis()),
+        cancel_reason: r.cancel_reason.clone(),
+        labels: r.labels.clone(),
+    }
+}
+
+/// Domain → DTO: convert a `JobAttempt` into the wire DTO.
+pub fn job_attempt_to_dto(a: &crate::jobs::JobAttempt) -> codegg_protocol::dto::JobAttemptDto {
+    codegg_protocol::dto::JobAttemptDto {
+        attempt_id: a.attempt_id.as_str().to_string(),
+        job_id: a.job_id.as_str().to_string(),
+        sequence: a.sequence,
+        state: attempt_state_to_str(a.state).to_string(),
+        daemon_generation: a.daemon_generation.as_str().to_string(),
+        executor: a.executor.clone(),
+        run_id: a.run_id.as_ref().map(|rid| rid.as_str().to_string()),
+        heartbeat_at_ms: a.heartbeat_at.map(|d| d.timestamp_millis()),
+        started_at_ms: a.started_at.map(|d| d.timestamp_millis()),
+        completed_at_ms: a.completed_at.map(|d| d.timestamp_millis()),
+        error_message: a.error.as_ref().map(|e| e.message.clone()),
+        error_class: a.error.as_ref().map(|e| failure_class_to_str(e.class)),
+        created_at_ms: a.created_at.timestamp_millis(),
+        updated_at_ms: a.updated_at.timestamp_millis(),
+    }
+}
+
+/// Domain → DTO: convert a `ScheduleSummary` into the wire DTO.
+pub fn schedule_summary_to_dto(
+    s: &crate::jobs::ScheduleSummary,
+) -> codegg_protocol::dto::ScheduleSummaryDto {
+    codegg_protocol::dto::ScheduleSummaryDto {
+        schedule_id: s.schedule_id.clone(),
+        workspace_id: s.workspace_id.clone(),
+        session_id: None, // populated by daemon handler
+        kind: schedule_kind_to_value(&s.kind),
+        state: schedule_state_to_str(s.state).to_string(),
+        overlap_policy: String::new(), // populated by daemon handler from full record
+        missed_run_policy: serde_json::Value::Null, // populated by daemon handler
+        next_run_at_ms: s.next_run_at.map(|d| d.timestamp_millis()),
+        last_occurrence_at_ms: s.last_occurrence_at.map(|d| d.timestamp_millis()),
+        created_at_ms: 0, // populated by daemon handler from full record
+        updated_at_ms: 0, // populated by daemon handler from full record
+    }
+}
+
+/// Domain → DTO: convert a `ScheduleRecord` into the wire DTO.
+pub fn schedule_record_to_dto(
+    r: &crate::jobs::ScheduleRecord,
+) -> codegg_protocol::dto::ScheduleRecordDto {
+    codegg_protocol::dto::ScheduleRecordDto {
+        schedule_id: r.schedule_id.as_str().to_string(),
+        workspace_id: r.workspace_id.as_str().to_string(),
+        session_id: r.session_id.clone(),
+        kind: schedule_kind_to_value(&r.kind),
+        job_template: job_template_to_value(&r.job_template),
+        state: schedule_state_to_str(r.state).to_string(),
+        overlap_policy: overlap_policy_to_str(r.overlap_policy).to_string(),
+        missed_run_policy: missed_run_policy_to_str(&r.missed_run_policy),
+        next_run_at_ms: r.next_run_at.map(|d| d.timestamp_millis()),
+        last_occurrence_at_ms: r.last_occurrence_at.map(|d| d.timestamp_millis()),
+        created_at_ms: r.created_at.timestamp_millis(),
+        updated_at_ms: r.updated_at.timestamp_millis(),
+    }
+}
+
+/// Domain → DTO: convert a `RecoveryReport` into the wire DTO.
+pub fn recovery_report_to_dto(
+    r: &crate::jobs::RecoveryReport,
+) -> codegg_protocol::dto::RecoveryReportDto {
+    codegg_protocol::dto::RecoveryReportDto {
+        interrupted_attempts: r.interrupted_attempts,
+        requeued_jobs: r.requeued_jobs,
+        terminal_jobs: r.terminal_jobs,
+        schedules_reconciled: r.schedules_reconciled,
+    }
+}
+
+/// Domain → DTO: convert a `CancelResult` into the wire DTO.
+pub fn cancel_result_to_dto(
+    r: &crate::jobs::CancelResult,
+) -> codegg_protocol::dto::CancelResultDto {
+    codegg_protocol::dto::CancelResultDto {
+        job_id: r.job_id.as_str().to_string(),
+        outcome: cancel_outcome_to_str(r.state).to_string(),
+        terminal: r.terminal,
+    }
+}
+
+/// DTO → Domain: convert a `JobSubmitDto` into a `NewJob`.
+pub fn job_submit_from_dto(
+    d: codegg_protocol::dto::JobSubmitDto,
+) -> Result<crate::jobs::NewJob, String> {
+    let kind = job_kind_from_str(&d.kind);
+    if kind == crate::jobs::JobKind::Unsupported {
+        return Err(format!("unsupported job kind: {}", d.kind));
+    }
+    let priority = job_priority_from_str(&d.priority);
+    let source = job_source_from_value(&d.source)?;
+    let payload = job_payload_from_value(&d.payload)?;
+    let idempotency = idempotency_from_str(&d.idempotency)?;
+    let retry_policy = crate::jobs::RetryPolicy {
+        max_attempts: d.retry_max_attempts.max(1),
+        backoff: crate::jobs::BackoffPolicy::None,
+        retryable_failures: d
+            .retryable_failures
+            .iter()
+            .filter_map(|s| failure_class_from_str(s))
+            .collect(),
+    };
+    let timeout = d
+        .timeout_ms
+        .map(|ms| std::time::Duration::from_millis(ms as u64));
+    let not_before = d
+        .not_before_ms
+        .and_then(chrono::DateTime::<chrono::Utc>::from_timestamp_millis);
+    let deadline = d
+        .deadline_ms
+        .and_then(chrono::DateTime::<chrono::Utc>::from_timestamp_millis);
+    let schedule_id = d.schedule_id.map(crate::jobs::ScheduleId::new_unchecked);
+    let depends_on: Vec<crate::jobs::JobId> = d
+        .depends_on
+        .into_iter()
+        .map(crate::jobs::JobId::new_unchecked)
+        .collect();
+    let resource_request = crate::jobs::ResourceRequest::for_kind(kind);
+
+    Ok(crate::jobs::NewJob {
+        workspace_id: crate::workspace::WorkspaceId::new_unchecked(d.workspace_id),
+        session_id: d.session_id,
+        turn_id: d.turn_id,
+        kind,
+        source,
+        priority,
+        payload,
+        resource_request,
+        timeout,
+        retry_policy,
+        idempotency,
+        not_before,
+        deadline,
+        schedule_id,
+        depends_on,
+    })
+}
+
+/// DTO → Domain: convert a `ScheduleCreateDto` into a `ScheduleTemplate`.
+pub fn schedule_create_from_dto(
+    d: codegg_protocol::dto::ScheduleCreateDto,
+) -> Result<crate::jobs::ScheduleTemplate, String> {
+    let kind = schedule_kind_from_value(&d.kind)?;
+    let job_template = job_template_from_value(&d.job_template)?;
+    let overlap_policy = overlap_policy_from_str(&d.overlap_policy)?;
+    let missed_run_policy = missed_run_policy_from_value(&d.missed_run_policy)?;
+
+    Ok(crate::jobs::ScheduleTemplate {
+        workspace_id: crate::workspace::WorkspaceId::new_unchecked(d.workspace_id),
+        session_id: d.session_id,
+        kind,
+        job_template,
+        overlap_policy,
+        missed_run_policy,
+        next_run_at: None,
+        labels: d.labels,
+    })
+}
+
+fn failure_class_from_str(s: &str) -> Option<crate::jobs::FailureClass> {
+    match s {
+        "transient" => Some(crate::jobs::FailureClass::Transient),
+        "timeout" => Some(crate::jobs::FailureClass::Timeout),
+        "cancelled" => Some(crate::jobs::FailureClass::Cancelled),
+        "permission" => Some(crate::jobs::FailureClass::Permission),
+        "validation" => Some(crate::jobs::FailureClass::Validation),
+        "execution" => Some(crate::jobs::FailureClass::Execution),
+        "unknown" => Some(crate::jobs::FailureClass::Unknown),
+        _ => None,
+    }
+}
+
+fn failure_class_to_str(c: crate::jobs::FailureClass) -> String {
+    match c {
+        crate::jobs::FailureClass::Transient => "transient",
+        crate::jobs::FailureClass::Timeout => "timeout",
+        crate::jobs::FailureClass::Cancelled => "cancelled",
+        crate::jobs::FailureClass::Permission => "permission",
+        crate::jobs::FailureClass::Validation => "validation",
+        crate::jobs::FailureClass::Execution => "execution",
+        crate::jobs::FailureClass::Unknown => "unknown",
+    }
+    .to_string()
 }

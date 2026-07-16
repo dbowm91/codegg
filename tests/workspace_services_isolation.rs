@@ -18,14 +18,11 @@ use chrono::Utc;
 
 use codegg::run_store::{FsRunStore, RunStore};
 use codegg::session::schema::migrate;
-use codegg::workspace::{
-    InMemoryWorkspaceStore, WorkspaceId, WorkspaceRecord, WorkspaceRegistry,
-};
+use codegg::workspace::{InMemoryWorkspaceStore, WorkspaceId, WorkspaceRecord, WorkspaceRegistry};
 use codegg::workspace_services::{
-    ProductionWorkspaceServicesFactory, ReloadResult, WorkspaceConfigSnapshot,
-    WorkspaceLockTable, WorkspacePathPolicy, WorkspaceRepositoryGuard,
-    WorkspaceServicePolicy, WorkspaceServiceRegistry, WorkspaceServices,
-    WorkspaceServicesFactory,
+    ProductionWorkspaceServicesFactory, ReloadResult, WorkspaceConfigSnapshot, WorkspaceLockTable,
+    WorkspacePathPolicy, WorkspaceRepositoryGuard, WorkspaceServicePolicy,
+    WorkspaceServiceRegistry, WorkspaceServices, WorkspaceServicesFactory,
 };
 
 fn temp_workspace(label: &str) -> tempfile::TempDir {
@@ -57,10 +54,7 @@ impl CountingFactory {
 }
 
 impl WorkspaceServicesFactory for CountingFactory {
-    fn build(
-        &self,
-        workspace: Arc<WorkspaceRecord>,
-    ) -> Result<Arc<WorkspaceServices>, String> {
+    fn build(&self, workspace: Arc<WorkspaceRecord>) -> Result<Arc<WorkspaceServices>, String> {
         self.activations.fetch_add(1, Ordering::SeqCst);
         self.snapshots.lock().push(workspace.id.clone());
         let path_policy = WorkspacePathPolicy::for_workspace(&workspace);
@@ -89,9 +83,7 @@ async fn build_registry(
     factory: Arc<CountingFactory>,
 ) -> (Arc<WorkspaceRegistry>, Arc<WorkspaceServiceRegistry>) {
     let workspace_store = Arc::new(InMemoryWorkspaceStore::new());
-    let workspace_registry = WorkspaceRegistry::load(workspace_store)
-        .await
-        .unwrap();
+    let workspace_registry = WorkspaceRegistry::load(workspace_store).await.unwrap();
     let policy = WorkspaceServicePolicy {
         max_active_workspaces: 4,
         idle_evict_after: Duration::from_secs(60),
@@ -111,8 +103,14 @@ async fn two_workspaces_get_isolated_bundles() {
 
     let dir_a = temp_workspace("a");
     let dir_b = temp_workspace("b");
-    let rec_a = workspace_registry.get_or_register(dir_a.path()).await.unwrap();
-    let rec_b = workspace_registry.get_or_register(dir_b.path()).await.unwrap();
+    let rec_a = workspace_registry
+        .get_or_register(dir_a.path())
+        .await
+        .unwrap();
+    let rec_b = workspace_registry
+        .get_or_register(dir_b.path())
+        .await
+        .unwrap();
 
     let lease_a = services.acquire(&rec_a.id).await.unwrap();
     let lease_b = services.acquire(&rec_b.id).await.unwrap();
@@ -121,10 +119,7 @@ async fn two_workspaces_get_isolated_bundles() {
     assert_ne!(lease_a.workspace_id(), lease_b.workspace_id());
     // Different RunStore instances (so cross-workspace writes cannot leak).
     assert!(
-        !Arc::ptr_eq(
-            &lease_a.services().run_store,
-            &lease_b.services().run_store,
-        ),
+        !Arc::ptr_eq(&lease_a.services().run_store, &lease_b.services().run_store,),
         "different workspaces must get independent RunStore instances"
     );
     // Different LockTable instances.
@@ -142,7 +137,10 @@ async fn concurrent_acquire_produces_single_activation() {
     let (workspace_registry, services) = build_registry(factory.clone()).await;
 
     let dir = temp_workspace("single_flight");
-    let rec = workspace_registry.get_or_register(dir.path()).await.unwrap();
+    let rec = workspace_registry
+        .get_or_register(dir.path())
+        .await
+        .unwrap();
 
     // Spawn N concurrent acquisitions of the same workspace.
     let mut handles = Vec::new();
@@ -178,7 +176,10 @@ async fn lease_drop_releases_accounting() {
     let (workspace_registry, services) = build_registry(factory.clone()).await;
 
     let dir = temp_workspace("lease_lifecycle");
-    let rec = workspace_registry.get_or_register(dir.path()).await.unwrap();
+    let rec = workspace_registry
+        .get_or_register(dir.path())
+        .await
+        .unwrap();
 
     let lease_a = services.acquire(&rec.id).await.unwrap();
     let lease_b = services.acquire(&rec.id).await.unwrap();
@@ -200,8 +201,14 @@ async fn evict_idle_skips_bundles_with_active_leases() {
 
     let dir_a = temp_workspace("idle_evict_a");
     let dir_b = temp_workspace("idle_evict_b");
-    let rec_a = workspace_registry.get_or_register(dir_a.path()).await.unwrap();
-    let rec_b = workspace_registry.get_or_register(dir_b.path()).await.unwrap();
+    let rec_a = workspace_registry
+        .get_or_register(dir_a.path())
+        .await
+        .unwrap();
+    let rec_b = workspace_registry
+        .get_or_register(dir_b.path())
+        .await
+        .unwrap();
 
     // Acquire both, then drop one to leave it idle.
     let lease_a = services.acquire(&rec_a.id).await.unwrap();
@@ -267,7 +274,10 @@ async fn config_reload_bumps_revision_and_keeps_leases() {
     let (workspace_registry, services) = build_registry(factory.clone()).await;
 
     let dir = temp_workspace("config_reload");
-    let rec = workspace_registry.get_or_register(dir.path()).await.unwrap();
+    let rec = workspace_registry
+        .get_or_register(dir.path())
+        .await
+        .unwrap();
 
     let lease = services.acquire(&rec.id).await.unwrap();
     let initial_revision = lease.config_snapshot().revision;
@@ -295,8 +305,14 @@ async fn shutdown_all_force_terminates_and_drains() {
 
     let dir_a = temp_workspace("shutdown_a");
     let dir_b = temp_workspace("shutdown_b");
-    let rec_a = workspace_registry.get_or_register(dir_a.path()).await.unwrap();
-    let rec_b = workspace_registry.get_or_register(dir_b.path()).await.unwrap();
+    let rec_a = workspace_registry
+        .get_or_register(dir_a.path())
+        .await
+        .unwrap();
+    let rec_b = workspace_registry
+        .get_or_register(dir_b.path())
+        .await
+        .unwrap();
 
     // Hold a lease on one of them so we can prove shutdown_all
     // force-terminates regardless.
@@ -334,7 +350,10 @@ async fn production_factory_builds_filesystem_run_store() {
     // during construction.
     assert!(bundle.artifact_root.ends_with("runs"));
     let parent = bundle.artifact_root.parent().unwrap();
-    assert!(parent.exists(), "production factory must create .codegg/ under workspace root");
+    assert!(
+        parent.exists(),
+        "production factory must create .codegg/ under workspace root"
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -351,9 +370,7 @@ async fn daemon_paths_user_scoped_default_resolves() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn migration_imports_legacy_session_db_into_catalog() {
-    use codegg::migration::{
-        fetch_marker, migrate_legacy_project_database, MigrationOutcome,
-    };
+    use codegg::migration::{fetch_marker, migrate_legacy_project_database, MigrationOutcome};
 
     // Catalog is a fresh in-memory SQLite pool with the schema migrated.
     let catalog = {
@@ -373,10 +390,9 @@ async fn migration_imports_legacy_session_db_into_catalog() {
     };
 
     // Workspace registry in memory.
-    let workspace_registry =
-        WorkspaceRegistry::load(Arc::new(InMemoryWorkspaceStore::new()))
-            .await
-            .unwrap();
+    let workspace_registry = WorkspaceRegistry::load(Arc::new(InMemoryWorkspaceStore::new()))
+        .await
+        .unwrap();
 
     // Legacy project root with a seeded session DB.
     let project = temp_workspace("legacy_project");
@@ -386,12 +402,9 @@ async fn migration_imports_legacy_session_db_into_catalog() {
     {
         use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
         use std::str::FromStr;
-        let opts = SqliteConnectOptions::from_str(&format!(
-            "sqlite://{}",
-            source_db.display()
-        ))
-        .unwrap()
-        .create_if_missing(true);
+        let opts = SqliteConnectOptions::from_str(&format!("sqlite://{}", source_db.display()))
+            .unwrap()
+            .create_if_missing(true);
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
             .connect_with(opts)
@@ -420,5 +433,8 @@ async fn migration_imports_legacy_session_db_into_catalog() {
         .unwrap();
     assert!(marker.is_some(), "marker should be recorded after import");
     let marker = marker.unwrap();
-    assert_eq!(marker.storage_layout_version, codegg::storage::STORAGE_LAYOUT_VERSION);
+    assert_eq!(
+        marker.storage_layout_version,
+        codegg::storage::STORAGE_LAYOUT_VERSION
+    );
 }

@@ -132,6 +132,7 @@ hidden by default — see [MCP](mcp.md)).
 | [util/](util.md) | Clipboard, fuzzy search, pricing, metrics | `mod.rs` |
 | [workspace/](workspace.md) | Workspace registry, canonical root tracking, and execution context — in `crates/codegg-core` | `workspace.rs` |
 | [workspace_services/](workspace_services.md) | Phase 3 per-workspace service bundles, lease lifecycle, lock table, user-scoped catalog, and migration tooling | `workspace_services.rs`, `migration.rs` |
+| [jobs/](jobs.md) | Phase 4 durable jobs, attempts, schedules, recovery, idempotency — in `crates/codegg-core` | `jobs/mod.rs`, `jobs/store.rs`, `jobs/schedule.rs`, `jobs/schedule_store.rs` |
 | [worktree/](worktree.md) | Git worktree management (read-only facts in `crates/egggit`) | `mod.rs` |
 
 ## Key Types
@@ -200,8 +201,8 @@ hidden by default — see [MCP](mcp.md)).
 | LSP servers | 39 | `crates/egglsp/src/server.rs` |
 | Native tool crates | 10 | `crates/` (codegg-core, codegg-config, codegg-protocol, codegg-providers, egglsp, egggit, eggsentry, eggcontext, codegg-git, egglsp-test-server) |
 | UiState fields | 30 | `tui/app/state/ui.rs:40-98` |
-| AppEvent variants | 42 | `crates/codegg-core/src/bus/events.rs:61-265` |
-| Built-in commands | 105 | `tui/command.rs` (assertion at line 517) |
+| AppEvent variants | 60 | `crates/codegg-core/src/bus/events.rs:61-265` |
+| Built-in commands | 118 | `tui/command.rs` (assertion at line 517) |
 | Built-in agents | 9 | `agent/mod.rs:154-423` |
 
 ## Feature Gates
@@ -286,6 +287,7 @@ User Input → TUI Event Loop → App::on_key() → State Mutation → Render
 - [Hooks](hooks.md) - Lifecycle hooks
 - [Human Shell](human_shell.md) - Shell command execution and projection pipeline
 - [IDE](ide.md) - VS Code/JetBrains integration
+- [Jobs](jobs.md) - Phase 4 durable jobs, attempts, schedules, recovery, idempotency
 - [LSP](lsp.md) - Language Server Protocol
 - [MCP](mcp.md) - Model Context Protocol
 - [Memory](memory.md) - Persistent memory system

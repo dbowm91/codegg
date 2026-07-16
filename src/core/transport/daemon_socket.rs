@@ -229,6 +229,8 @@ async fn handle_client(
                                     permission_routing: true,
                                     workspace_registration: true,
                                     workspace_snapshots: true,
+                                    durable_jobs: true,
+                                    durable_schedules: true,
                                 },
                                 client_id: client_id.clone(),
                             });

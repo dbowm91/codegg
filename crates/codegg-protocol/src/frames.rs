@@ -91,6 +91,13 @@ pub struct ServerCapabilities {
     /// when available.
     #[serde(default)]
     pub workspace_snapshots: bool,
+    /// Phase 4: daemon supports durable job submission, listing, and
+    /// cancellation through the new protocol variants.
+    #[serde(default)]
+    pub durable_jobs: bool,
+    /// Phase 4: daemon supports durable schedules.
+    #[serde(default)]
+    pub durable_schedules: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

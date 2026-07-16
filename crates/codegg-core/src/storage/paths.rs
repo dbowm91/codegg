@@ -54,7 +54,9 @@ impl DaemonPaths {
 
     /// The user-scoped data root (with all platform fallbacks).
     pub fn data_root(&self) -> PathBuf {
-        self.data_root.clone().unwrap_or_else(Self::default_data_root)
+        self.data_root
+            .clone()
+            .unwrap_or_else(Self::default_data_root)
     }
 
     /// The user-scoped config root.

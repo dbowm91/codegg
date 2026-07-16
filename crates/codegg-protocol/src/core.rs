@@ -1,6 +1,10 @@
 use serde::{Deserialize, Serialize};
 
-use crate::dto::{ConfigDiagnosticDto, RunQueryDto, RunRecordDto, RunSummaryDto, WorkspaceServiceHealthDto};
+use crate::dto::{
+    CancelResultDto, ConfigDiagnosticDto, JobAttemptDto, JobQueryDto, JobRecordDto, JobSubmitDto,
+    JobSummaryDto, RecoveryReportDto, RunQueryDto, RunRecordDto, RunSummaryDto, ScheduleCreateDto,
+    ScheduleRecordDto, ScheduleSummaryDto, WorkspaceServiceHealthDto,
+};
 
 /// Core protocol version.
 ///
@@ -125,6 +129,61 @@ pub enum CoreResponse {
         from_event_seq: u64,
         current_seq: u64,
         session_id: Option<String>,
+    },
+    // ── Phase 4: Durable Jobs and Schedules ──────────────────────────
+    /// Full job record returned from `JobGet`.
+    JobGet {
+        job: Option<JobRecordDto>,
+    },
+    /// Job summaries returned from `JobList`.
+    JobList {
+        jobs: Vec<JobSummaryDto>,
+    },
+    /// Attempt records returned from `JobAttempts`.
+    JobAttempts {
+        job_id: String,
+        attempts: Vec<JobAttemptDto>,
+    },
+    /// Outcome of a cancellation request.
+    JobCancelResult {
+        result: CancelResultDto,
+    },
+    /// Acknowledgement of a successful job submission.
+    JobSubmitted {
+        job_id: String,
+    },
+    /// Acknowledgement that a retry attempt was started.
+    JobRetryStarted {
+        job_id: String,
+        attempt_id: String,
+    },
+    /// Acknowledgement of a successful schedule creation.
+    ScheduleCreated {
+        schedule_id: String,
+    },
+    /// Schedule summaries returned from `ScheduleList`.
+    ScheduleList {
+        schedules: Vec<ScheduleSummaryDto>,
+    },
+    /// Full schedule record returned from `ScheduleGet`.
+    ScheduleGet {
+        schedule: ScheduleRecordDto,
+    },
+    /// Acknowledgement that a schedule was paused.
+    SchedulePaused {
+        schedule_id: String,
+    },
+    /// Acknowledgement that a schedule was resumed.
+    ScheduleResumed {
+        schedule_id: String,
+    },
+    /// Acknowledgement that a schedule was deleted.
+    ScheduleDeleted {
+        schedule_id: String,
+    },
+    /// Report from a recovery pass triggered by `JobRecoveryReport`.
+    JobRecoveryReport {
+        report: RecoveryReportDto,
     },
 }
 
@@ -406,6 +465,62 @@ pub enum CoreRequest {
     /// Ask the daemon to stop any currently-active TTS playback
     /// (delegates to the `AudioArbiter` interrupt channel).
     NotificationStop,
+    // ── Phase 4: Durable Jobs and Schedules ──────────────────────────
+    /// Submit a new durable job.
+    JobSubmit {
+        spec: JobSubmitDto,
+    },
+    /// Fetch a single job record by id.
+    JobGet {
+        job_id: String,
+    },
+    /// List jobs matching a query.
+    JobList {
+        query: JobQueryDto,
+    },
+    /// Request cancellation of a running or queued job.
+    JobCancel {
+        job_id: String,
+        #[serde(default)]
+        reason: Option<String>,
+    },
+    /// Retry a failed or timed-out job by creating a new attempt.
+    JobRetry {
+        job_id: String,
+    },
+    /// List all attempts for a job.
+    JobAttempts {
+        job_id: String,
+    },
+    /// Create a new durable schedule.
+    ScheduleCreate {
+        spec: ScheduleCreateDto,
+    },
+    /// List schedules, optionally filtered by workspace.
+    ScheduleList {
+        #[serde(default)]
+        workspace_id: Option<String>,
+        #[serde(default)]
+        include_archived: bool,
+    },
+    /// Fetch a single schedule record by id.
+    ScheduleGet {
+        schedule_id: String,
+    },
+    /// Pause a schedule.
+    SchedulePause {
+        schedule_id: String,
+    },
+    /// Resume a paused schedule.
+    ScheduleResume {
+        schedule_id: String,
+    },
+    /// Delete a schedule.
+    ScheduleDelete {
+        schedule_id: String,
+    },
+    /// Trigger a recovery pass and return the report.
+    JobRecoveryReport,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -600,6 +715,114 @@ pub enum CoreEvent {
     /// bus, event log, and remote replay path.
     PluginUiEffect {
         envelope: crate::ui::UiEffectEnvelope,
+    },
+    // ── Phase 4: Durable Jobs and Schedules ──────────────────────────
+    /// A new durable job was created.
+    JobCreated {
+        job_id: String,
+        workspace_id: String,
+        kind: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        session_id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        turn_id: Option<String>,
+    },
+    /// A job moved to the queued state.
+    JobQueued {
+        job_id: String,
+        workspace_id: String,
+    },
+    /// A job was blocked waiting on dependencies.
+    JobBlocked {
+        job_id: String,
+        workspace_id: String,
+    },
+    /// A new execution attempt was created for a job.
+    JobAttemptCreated {
+        job_id: String,
+        attempt_id: String,
+        sequence: u32,
+        daemon_generation: String,
+    },
+    /// An attempt started executing.
+    JobStarted {
+        job_id: String,
+        attempt_id: String,
+    },
+    /// Progress update for a running attempt.
+    JobProgress {
+        job_id: String,
+        attempt_id: String,
+        message: String,
+    },
+    /// A cancellation was requested for a job.
+    JobCancelRequested {
+        job_id: String,
+        reason: String,
+    },
+    /// A job attempt completed successfully.
+    JobCompleted {
+        job_id: String,
+        attempt_id: String,
+    },
+    /// A job attempt failed.
+    JobFailed {
+        job_id: String,
+        attempt_id: String,
+        error_class: String,
+        message: String,
+    },
+    /// A job attempt was cancelled.
+    JobCancelled {
+        job_id: String,
+        attempt_id: String,
+    },
+    /// A job attempt timed out.
+    JobTimedOut {
+        job_id: String,
+        attempt_id: String,
+    },
+    /// A job attempt was interrupted by daemon restart.
+    JobInterrupted {
+        job_id: String,
+        attempt_id: String,
+        recovery_generation: String,
+    },
+    /// A retry was initiated for a job.
+    JobRetried {
+        job_id: String,
+        new_attempt_id: String,
+        prior_attempt_id: String,
+    },
+    /// A new schedule was created.
+    ScheduleCreated {
+        schedule_id: String,
+        workspace_id: String,
+        kind_summary: String,
+    },
+    /// A schedule occurrence was queued as a job.
+    ScheduleOccurrenceQueued {
+        schedule_id: String,
+        scheduled_for_ms: i64,
+        job_id: String,
+    },
+    /// A schedule occurrence was skipped.
+    ScheduleSkipped {
+        schedule_id: String,
+        scheduled_for_ms: i64,
+        reason: String,
+    },
+    /// A schedule was paused.
+    SchedulePaused {
+        schedule_id: String,
+    },
+    /// A schedule was resumed.
+    ScheduleResumed {
+        schedule_id: String,
+    },
+    /// A schedule was deleted.
+    ScheduleDeleted {
+        schedule_id: String,
     },
     Error {
         code: String,

@@ -31,7 +31,6 @@ use thiserror::Error;
 use tokio::sync::Mutex as AsyncMutex;
 use tokio_util::sync::CancellationToken;
 
-
 use crate::error::StorageError;
 use crate::run_store::{FsRunStore, RunStore};
 use crate::workspace::{WorkspaceError, WorkspaceId, WorkspaceRecord, WorkspaceRegistry};
@@ -212,7 +211,8 @@ impl WorkspaceLockTable {
     /// Drop the entry for a repository root. Called after the workspace
     /// service is evicted so locks do not accumulate indefinitely.
     pub fn forget_repository(&self, repo_root: &Path) -> bool {
-        let canonical = std::fs::canonicalize(repo_root).unwrap_or_else(|_| repo_root.to_path_buf());
+        let canonical =
+            std::fs::canonicalize(repo_root).unwrap_or_else(|_| repo_root.to_path_buf());
         self.inner.remove(&canonical).is_some()
     }
 }
@@ -543,7 +543,10 @@ impl WorkspaceServiceRegistry {
     /// return a structured report.
     pub fn evict_idle(&self, now: DateTime<Utc>) -> EvictionReport {
         let mut report = EvictionReport::default();
-        let threshold_secs = (now - chrono::Duration::from_std(self.policy.idle_evict_after).unwrap_or(chrono::Duration::seconds(0))).timestamp();
+        let threshold_secs = (now
+            - chrono::Duration::from_std(self.policy.idle_evict_after)
+                .unwrap_or(chrono::Duration::seconds(0)))
+        .timestamp();
         let mut to_evict: Vec<WorkspaceId> = Vec::new();
         for entry in self.active.iter() {
             let services = entry.value();
@@ -585,10 +588,7 @@ impl WorkspaceServiceRegistry {
     }
 
     /// Drain and shutdown every active workspace service bundle.
-    pub async fn shutdown_all(
-        &self,
-        deadline: Duration,
-    ) -> ShutdownReport {
+    pub async fn shutdown_all(&self, deadline: Duration) -> ShutdownReport {
         let mut report = ShutdownReport::default();
         let started = std::time::Instant::now();
 
@@ -615,11 +615,7 @@ impl WorkspaceServiceRegistry {
 
         // Collect IDs and force-terminate anything with outstanding
         // leases.
-        let ids: Vec<WorkspaceId> = self
-            .active
-            .iter()
-            .map(|e| e.key().clone())
-            .collect();
+        let ids: Vec<WorkspaceId> = self.active.iter().map(|e| e.key().clone()).collect();
 
         for id in ids {
             let leases_now = self
@@ -687,8 +683,7 @@ impl WorkspaceServiceRegistry {
             active_leases: AtomicUsize::new(services.active_leases.load(Ordering::Relaxed)),
             shutdown: services.shutdown.clone(),
         });
-        self.active
-            .insert(workspace_id.clone(), replacement);
+        self.active.insert(workspace_id.clone(), replacement);
         Ok(ReloadResult {
             workspace_id: workspace_id.clone(),
             previous_revision: previous,

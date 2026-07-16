@@ -2108,8 +2108,8 @@ async fn run_daemon(endpoint: Option<String>) {
 
     let daemon_id = format!("codegg-{}", &uuid::Uuid::new_v4().to_string()[..8]);
     let daemon = Arc::new(codegg::core::daemon::CoreDaemon::with_deps_and_identity(
-        codegg::core::runtime_deps::CoreRuntimeDeps::new(
-            Some(pool),
+        codegg::core::runtime_deps::CoreRuntimeDeps::with_jobs(
+            pool,
             Some(subagent_pool),
             Some(memory_store),
             Some(scheduler),

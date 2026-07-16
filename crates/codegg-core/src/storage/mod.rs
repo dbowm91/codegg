@@ -18,8 +18,8 @@
 //! The legacy [`init`] entry point remains as a deprecated wrapper so
 //! callers that have not yet been migrated continue to work.
 
-pub mod preferences;
 pub mod paths;
+pub mod preferences;
 pub use paths::DaemonPaths;
 pub use preferences::{UserPreferences, KEY_MODEL_LAST_USED, KEY_THEME_ACTIVE};
 
@@ -36,7 +36,7 @@ use crate::error::StorageError;
 /// directory layout changes in a way that requires a deliberate
 /// migration path. Existing project-local session databases can be
 /// discovered and imported into the daemon catalog using this marker.
-pub const STORAGE_LAYOUT_VERSION: u32 = 23;
+pub const STORAGE_LAYOUT_VERSION: u32 = 24;
 
 pub struct Database {
     pool: SqlitePool,
@@ -261,7 +261,11 @@ mod tests {
         let pool = init_daemon_catalog(&paths).await.unwrap();
         // The catalog path is constructed from the override data root.
         let expected = tmp.path().join("codegg.db");
-        assert!(expected.exists(), "catalog db should exist at {:?}", expected);
+        assert!(
+            expected.exists(),
+            "catalog db should exist at {:?}",
+            expected
+        );
         let _: (i64,) = sqlx::query_as("SELECT 1").fetch_one(&pool).await.unwrap();
     }
 
@@ -278,4 +282,3 @@ mod tests {
         let _: (i64,) = sqlx::query_as("SELECT 1").fetch_one(&pool).await.unwrap();
     }
 }
-

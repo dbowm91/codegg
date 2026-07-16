@@ -12,6 +12,7 @@ cargo test --test single_daemon_lifecycle  # singleton daemon lifecycle
 python3 scripts/check_daemon_cwd_usage.py   # static cwd-use guard for Phase 2
 cargo test --test workspace_isolation       # two-workspace isolation and binding tests
 cargo test --test workspace_services_isolation  # Phase 3 workspace services + storage integration
+cargo test --test durable_jobs_phase4  # Phase 4 durable jobs + schedules
 cargo fmt                            # format
 ```
 
@@ -255,6 +256,9 @@ cargo test --test context_projection_adversarial
 # Command routing execution ownership tests (13 tests — planned vs actual backend, RunOwnership, DelegatedBackend ownership, raw artifact safety, fallback records, provenance serde, backward compat)
 cargo test --test command_routing_execution_ownership
 
+# Phase 04 durable jobs + schedules (42 integration tests)
+cargo test --test durable_jobs_phase4
+
 # Phase 09 projection contract tests
 cargo test -p codegg --lib shell::projector -- projection_id
 cargo test -p codegg --lib shell::projector -- span_role
@@ -475,6 +479,24 @@ CI runs on push/PR to dev/main: `agent-assets` → `fmt` → `check` → `clippy
 - **Static guards**: `scripts/check-core-boundary.sh` continues to enforce the codegg-core boundary; `workspace_services` and `migration` are UI-/server-/plugin-/auth-free.
 - See `plans/single-daemon-phase-03-workspace-services-and-storage.md` and `crates/codegg-core/src/workspace_services.rs` for the full contract.
 
+### Durable Jobs and Schedules (Phase 4)
+
+- **Typed IDs**: `JobId`, `AttemptId`, `ScheduleId`, `DependencyId`, `DaemonGeneration` — opaque UUID strings, never parsed as integers. Newtypes with `new_unchecked` for legacy compat; prefer `JobStore::create_job` for new jobs.
+- **Storage layer**: Tables `job`, `job_attempt`, `job_dependency`, `schedule`, `schedule_occurrence` added in migration v23. `STORAGE_LAYOUT_VERSION = 24`. SQLite-backed in production; in-memory conformance surface for tests.
+- **JobState machine**: `Scheduled→Queued|Cancelled|Expired; Queued→Running|Cancelled|Expired|Blocked; Running→Completed|Failed|Cancelled|TimedOut|Interrupted; Failed/TimedOut/Interrupted→Queued (retry); Blocked→Queued|Cancelled|Expired`. Terminal states never regress. Transitions enforced via `validate_state_transition` (`crates/codegg-core/src/jobs/store.rs:65`).
+- **AttemptState machine**: `Created|Admitted→Running|Failed|Cancelled|Interrupted; Running→Completed|Failed|Cancelled|TimedOut|Interrupted`. Terminal states never regress. Transitions enforced via `validate_attempt_transition` (`crates/codegg-core/src/jobs/store.rs:114`).
+- **Daemon generation recovery**: At startup, `recover_generation` marks all attempts whose `daemon_generation` ≠ current as `Interrupted`. Parent job requeued iff `RecoveryPolicy` permits based on `IdempotencyClass`. Default policy: requeue `ReadOnly` and `SafeRepeat`; never auto-retry `Conditional`, `NonIdempotent`, or `Destructive`.
+- **Idempotency**: `IdempotencyClass::is_retry_eligible()` returns `true` for `ReadOnly` and `SafeRepeat`. Persisted at creation time — not re-inferred from code at restart.
+- **Schedule occurrence uniqueness**: `PRIMARY KEY(schedule_id, scheduled_for)` on `schedule_occurrence` prevents double-firing after restart. `claim_due` atomically inserts occurrence rows and creates jobs via `OccurrenceMaterializer`.
+- **OverlapPolicy**: `SkipIfRunning` (default), `QueueOne`, `Allow`. Applied at occurrence claim time.
+- **MissedRunPolicy**: `Skip`, `RunOnceNow` (default), `CatchUpBounded{max_occurrences}`. `missed_run_targets` computes which timestamps should run after a gap.
+- **JobStore/ScheduleStore traits**: Live in `crates/codegg-core/src/jobs/`. UI/server/plugin/auth-free (boundary enforced by `scripts/check-core-boundary.sh`). JobStore: 12 methods (`create_job`, `get_job`, `list_jobs`, `list_attempts`, `enqueue`, `begin_attempt`, `mark_attempt_running`, `record_heartbeat`, `finish_attempt`, `request_cancel`, `retry_job`, `recover_generation`). ScheduleStore: 6 methods (`create`, `set_state`, `delete`, `get`, `list`, `claim_due`).
+- **JobDispatcher**: Root crate trait (`src/job_dispatcher.rs`) bridging durable jobs to existing executors. `SubAgentJobDispatcher` wraps `SubAgentPool`; `NullJobDispatcher` for tests.
+- **RunStore linkage**: `JobAttempt.run_id: Option<RunId>` links attempt to RunStore. RunStore is NOT the queue authority — attempts may complete before or after RunStore records are written.
+- **Background task migration**: `migrate_legacy_background_tasks` (`src/background_task_migration.rs`) reads from `task` table, parses interval via `parse_duration`, creates `ScheduleRecord`, records `migration_marker`. Malformed intervals surface as warnings and mark the task `interrupted`, never silently default.
+- **Backward compatibility**: `TaskList`/`TaskDelete`/`TaskSchedule` continue to work; legacy dispatch path remains active when `bg_scheduler_compat_enabled` is true.
+- See `plans/single-daemon-phase-04-durable-jobs-and-schedules.md` and `crates/codegg-core/src/jobs/mod.rs` for the full contract.
+
 ### Module Splits
 
 - **Error enums** live in `crates/codegg-core/src/error.rs`. Root `src/error.rs` re-exports + adds `AxumAppError`/`AxumServerRuntimeError` behind `#[cfg(feature = "server")]`.
@@ -632,6 +654,7 @@ CI runs on push/PR to dev/main: `agent-assets` → `fmt` → `check` → `clippy
 | `architecture/command_routing.md` | Routing resolution mapping planned execution to concrete subsystems |
 | `architecture/python_scripting.md` | First-class Python scripting with Analyze/Transform/Verify modes, AST-aware risk analysis, capability enforcement, env hardening — sole canonical module at `src/python_script/` |
 | `architecture/python_script.md` | Module-based Python scripting: types, sandbox, executor, projection, tool registration |
+| `architecture/jobs.md` | Phase 4 durable jobs, attempts, schedules, recovery, idempotency |
 | `architecture/command.md` | 105 built-in slash commands |
 | `architecture/config.md` | Config schema in `crates/codegg-config/src/schema.rs` |
 | `architecture/provider.md` | 16 auto-registered providers via env vars; CircuitBreaker pattern |

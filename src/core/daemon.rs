@@ -1331,6 +1331,379 @@ impl CoreDaemon {
                     }),
                 }
             }
+            // ── Phase 4: Durable Jobs and Schedules ──────────────────────
+            CoreRequest::JobSubmit { spec } => {
+                let new_job = match crate::protocol_conversions::job_submit_from_dto(spec) {
+                    Ok(j) => j,
+                    Err(e) => {
+                        return Ok(CoreResponse::Error {
+                            code: "invalid_job_submit".to_string(),
+                            message: e,
+                        });
+                    }
+                };
+                match self.deps.job_store.create_job(new_job).await {
+                    Ok(record) => {
+                        let job_id = record.job_id.as_str().to_string();
+                        let _ = self
+                            .event_log
+                            .publish(
+                                record.session_id.clone(),
+                                None,
+                                crate::protocol::core::CoreEvent::JobCreated {
+                                    job_id: job_id.clone(),
+                                    workspace_id: record.workspace_id.to_string(),
+                                    kind: record.kind.as_str().to_string(),
+                                    session_id: record.session_id.clone(),
+                                    turn_id: record.turn_id.clone(),
+                                },
+                            )
+                            .await;
+                        Ok(CoreResponse::JobSubmitted { job_id })
+                    }
+                    Err(e) => Ok(CoreResponse::Error {
+                        code: "job_create_failed".to_string(),
+                        message: e.to_string(),
+                    }),
+                }
+            }
+            CoreRequest::JobGet { job_id } => {
+                let id = codegg_core::jobs::JobId::new_unchecked(job_id);
+                match self.deps.job_store.get_job(&id).await {
+                    Ok(record) => Ok(CoreResponse::JobGet {
+                        job: record
+                            .as_ref()
+                            .map(crate::protocol_conversions::job_record_to_dto),
+                    }),
+                    Err(e) => Ok(CoreResponse::Error {
+                        code: "job_get_failed".to_string(),
+                        message: e.to_string(),
+                    }),
+                }
+            }
+            CoreRequest::JobList { query } => {
+                let mut q = codegg_core::jobs::store::JobStoreQuery::default();
+                if let Some(w) = query.workspace_id {
+                    q.workspace_id = Some(codegg_core::workspace::WorkspaceId::new_unchecked(w));
+                }
+                if !query.states.is_empty() {
+                    q.states = query
+                        .states
+                        .iter()
+                        .map(|s| crate::protocol_conversions::job_state_from_str(s))
+                        .collect();
+                }
+                if !query.kinds.is_empty() {
+                    q.kinds = query
+                        .kinds
+                        .iter()
+                        .map(|k| crate::protocol_conversions::job_kind_from_str(k))
+                        .collect();
+                }
+                q.session_id = query.session_id;
+                if query.limit > 0 {
+                    q.limit = Some(query.limit);
+                }
+                match self.deps.job_store.list_jobs(q).await {
+                    Ok(summaries) => {
+                        let dtos = summaries
+                            .iter()
+                            .map(crate::protocol_conversions::job_summary_to_dto)
+                            .collect();
+                        Ok(CoreResponse::JobList { jobs: dtos })
+                    }
+                    Err(e) => Ok(CoreResponse::Error {
+                        code: "job_list_failed".to_string(),
+                        message: e.to_string(),
+                    }),
+                }
+            }
+            CoreRequest::JobAttempts { job_id } => {
+                let id = codegg_core::jobs::JobId::new_unchecked(job_id.clone());
+                match self.deps.job_store.list_attempts(&id).await {
+                    Ok(attempts) => {
+                        let dtos = attempts
+                            .iter()
+                            .map(crate::protocol_conversions::job_attempt_to_dto)
+                            .collect();
+                        Ok(CoreResponse::JobAttempts {
+                            job_id,
+                            attempts: dtos,
+                        })
+                    }
+                    Err(e) => Ok(CoreResponse::Error {
+                        code: "job_attempts_failed".to_string(),
+                        message: e.to_string(),
+                    }),
+                }
+            }
+            CoreRequest::JobCancel { job_id, reason } => {
+                let id = codegg_core::jobs::JobId::new_unchecked(job_id);
+                let cancel_reason = codegg_core::jobs::CancelReason::new(
+                    "daemon",
+                    reason.unwrap_or_else(|| "user requested".to_string()),
+                );
+                match self.deps.job_store.request_cancel(&id, cancel_reason).await {
+                    Ok(result) => {
+                        let outcome_str =
+                            crate::protocol_conversions::cancel_outcome_to_str(result.state)
+                                .to_string();
+                        let _ = self
+                            .event_log
+                            .publish(
+                                None,
+                                None,
+                                crate::protocol::core::CoreEvent::JobCancelRequested {
+                                    job_id: result.job_id.as_str().to_string(),
+                                    reason: outcome_str,
+                                },
+                            )
+                            .await;
+                        Ok(CoreResponse::JobCancelResult {
+                            result: crate::protocol_conversions::cancel_result_to_dto(&result),
+                        })
+                    }
+                    Err(e) => Ok(CoreResponse::Error {
+                        code: "job_cancel_failed".to_string(),
+                        message: e.to_string(),
+                    }),
+                }
+            }
+            CoreRequest::JobRetry { job_id } => {
+                let id = codegg_core::jobs::JobId::new_unchecked(&job_id);
+                let gen = self.deps.daemon_generation.clone();
+                match self.deps.job_store.get_job(&id).await {
+                    Ok(Some(record)) => {
+                        let prior_attempt_id = match &record.current_attempt_id {
+                            Some(aid) => aid.clone(),
+                            None => {
+                                // Find the last attempt from history
+                                match self.deps.job_store.list_attempts(&id).await {
+                                    Ok(attempts) => match attempts.last() {
+                                        Some(a) => a.attempt_id.clone(),
+                                        None => {
+                                            return Ok(CoreResponse::Error {
+                                                code: "no_prior_attempt".to_string(),
+                                                message: "job has no attempts to retry".to_string(),
+                                            });
+                                        }
+                                    },
+                                    Err(e) => {
+                                        return Ok(CoreResponse::Error {
+                                            code: "retry_failed".to_string(),
+                                            message: e.to_string(),
+                                        });
+                                    }
+                                }
+                            }
+                        };
+                        match self
+                            .deps
+                            .job_store
+                            .retry_job(&id, &gen, &prior_attempt_id)
+                            .await
+                        {
+                            Ok(new_attempt) => {
+                                let _ = self
+                                    .event_log
+                                    .publish(
+                                        record.session_id.clone(),
+                                        None,
+                                        crate::protocol::core::CoreEvent::JobRetried {
+                                            job_id: job_id.clone(),
+                                            new_attempt_id: new_attempt.attempt_id.to_string(),
+                                            prior_attempt_id: prior_attempt_id.to_string(),
+                                        },
+                                    )
+                                    .await;
+                                Ok(CoreResponse::JobRetryStarted {
+                                    job_id,
+                                    attempt_id: new_attempt.attempt_id.to_string(),
+                                })
+                            }
+                            Err(e) => Ok(CoreResponse::Error {
+                                code: "job_retry_failed".to_string(),
+                                message: e.to_string(),
+                            }),
+                        }
+                    }
+                    Ok(None) => Ok(CoreResponse::Error {
+                        code: "job_not_found".to_string(),
+                        message: format!("job '{job_id}' not found"),
+                    }),
+                    Err(e) => Ok(CoreResponse::Error {
+                        code: "job_retry_failed".to_string(),
+                        message: e.to_string(),
+                    }),
+                }
+            }
+            CoreRequest::ScheduleCreate { spec } => {
+                let template = match crate::protocol_conversions::schedule_create_from_dto(spec) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        return Ok(CoreResponse::Error {
+                            code: "invalid_schedule_create".to_string(),
+                            message: e,
+                        });
+                    }
+                };
+                match self.deps.schedule_store.create(template).await {
+                    Ok(record) => {
+                        let schedule_id = record.schedule_id.as_str().to_string();
+                        let _ = self
+                            .event_log
+                            .publish(
+                                None,
+                                None,
+                                crate::protocol::core::CoreEvent::ScheduleCreated {
+                                    schedule_id: schedule_id.clone(),
+                                    workspace_id: record.workspace_id.to_string(),
+                                    kind_summary: record.kind.tag().to_string(),
+                                },
+                            )
+                            .await;
+                        Ok(CoreResponse::ScheduleCreated { schedule_id })
+                    }
+                    Err(e) => Ok(CoreResponse::Error {
+                        code: "schedule_create_failed".to_string(),
+                        message: e.to_string(),
+                    }),
+                }
+            }
+            CoreRequest::ScheduleList {
+                workspace_id,
+                include_archived,
+            } => {
+                let mut query = codegg_core::jobs::ScheduleQuery::default();
+                if let Some(w) = workspace_id {
+                    query.workspace_id =
+                        Some(codegg_core::workspace::WorkspaceId::new_unchecked(w));
+                }
+                query.include_archived = include_archived;
+                match self.deps.schedule_store.list(query).await {
+                    Ok(summaries) => {
+                        let dtos = summaries
+                            .iter()
+                            .map(crate::protocol_conversions::schedule_summary_to_dto)
+                            .collect();
+                        Ok(CoreResponse::ScheduleList { schedules: dtos })
+                    }
+                    Err(e) => Ok(CoreResponse::Error {
+                        code: "schedule_list_failed".to_string(),
+                        message: e.to_string(),
+                    }),
+                }
+            }
+            CoreRequest::ScheduleGet { schedule_id } => {
+                let id = codegg_core::jobs::ScheduleId::new_unchecked(&schedule_id);
+                match self.deps.schedule_store.get(&id).await {
+                    Ok(Some(record)) => Ok(CoreResponse::ScheduleGet {
+                        schedule: crate::protocol_conversions::schedule_record_to_dto(&record),
+                    }),
+                    Ok(None) => Ok(CoreResponse::Error {
+                        code: "schedule_not_found".to_string(),
+                        message: format!("schedule '{schedule_id}' not found"),
+                    }),
+                    Err(e) => Ok(CoreResponse::Error {
+                        code: "schedule_get_failed".to_string(),
+                        message: e.to_string(),
+                    }),
+                }
+            }
+            CoreRequest::SchedulePause { schedule_id } => {
+                let id = codegg_core::jobs::ScheduleId::new_unchecked(schedule_id.clone());
+                match self
+                    .deps
+                    .schedule_store
+                    .set_state(&id, codegg_core::jobs::ScheduleState::Paused)
+                    .await
+                {
+                    Ok(_record) => {
+                        let _ = self
+                            .event_log
+                            .publish(
+                                None,
+                                None,
+                                crate::protocol::core::CoreEvent::SchedulePaused {
+                                    schedule_id: schedule_id.clone(),
+                                },
+                            )
+                            .await;
+                        Ok(CoreResponse::SchedulePaused { schedule_id })
+                    }
+                    Err(e) => Ok(CoreResponse::Error {
+                        code: "schedule_pause_failed".to_string(),
+                        message: e.to_string(),
+                    }),
+                }
+            }
+            CoreRequest::ScheduleResume { schedule_id } => {
+                let id = codegg_core::jobs::ScheduleId::new_unchecked(schedule_id.clone());
+                match self
+                    .deps
+                    .schedule_store
+                    .set_state(&id, codegg_core::jobs::ScheduleState::Active)
+                    .await
+                {
+                    Ok(_record) => {
+                        let _ = self
+                            .event_log
+                            .publish(
+                                None,
+                                None,
+                                crate::protocol::core::CoreEvent::ScheduleResumed {
+                                    schedule_id: schedule_id.clone(),
+                                },
+                            )
+                            .await;
+                        Ok(CoreResponse::ScheduleResumed { schedule_id })
+                    }
+                    Err(e) => Ok(CoreResponse::Error {
+                        code: "schedule_resume_failed".to_string(),
+                        message: e.to_string(),
+                    }),
+                }
+            }
+            CoreRequest::ScheduleDelete { schedule_id } => {
+                let id = codegg_core::jobs::ScheduleId::new_unchecked(schedule_id.clone());
+                match self.deps.schedule_store.delete(&id).await {
+                    Ok(()) => {
+                        let _ = self
+                            .event_log
+                            .publish(
+                                None,
+                                None,
+                                crate::protocol::core::CoreEvent::ScheduleDeleted {
+                                    schedule_id: schedule_id.clone(),
+                                },
+                            )
+                            .await;
+                        Ok(CoreResponse::ScheduleDeleted { schedule_id })
+                    }
+                    Err(e) => Ok(CoreResponse::Error {
+                        code: "schedule_delete_failed".to_string(),
+                        message: e.to_string(),
+                    }),
+                }
+            }
+            CoreRequest::JobRecoveryReport => {
+                let stale = self.deps.daemon_generation.clone();
+                let policy = self.deps.recovery_policy.clone();
+                match self
+                    .deps
+                    .job_store
+                    .recover_generation(&stale, &policy)
+                    .await
+                {
+                    Ok(report) => Ok(CoreResponse::JobRecoveryReport {
+                        report: crate::protocol_conversions::recovery_report_to_dto(&report),
+                    }),
+                    Err(e) => Ok(CoreResponse::Error {
+                        code: "recovery_failed".to_string(),
+                        message: e.to_string(),
+                    }),
+                }
+            }
             CoreRequest::WorktreeList { project_dir } => {
                 let git_root = std::path::PathBuf::from(&project_dir);
                 let Some(root) = crate::worktree::find_git_root(&git_root) else {
@@ -2347,10 +2720,8 @@ impl CoreDaemon {
                 let path = std::path::PathBuf::from(&root);
                 match self.workspaces.get_or_register(&path).await {
                     Ok(record) => {
-                        let dto = codegg_core::protocol_conversions::workspace_record_to_dto(
-                            &record,
-                            0,
-                        );
+                        let dto =
+                            codegg_core::protocol_conversions::workspace_record_to_dto(&record, 0);
                         Ok(CoreResponse::WorkspaceSnapshot { workspace: dto })
                     }
                     Err(e) => Ok(CoreResponse::Error {
@@ -2439,11 +2810,15 @@ impl CoreDaemon {
                     }),
                 }
             }
-            CoreRequest::RunList { workspace_id, query } => {
+            CoreRequest::RunList {
+                workspace_id,
+                query,
+            } => {
                 let id = codegg_core::workspace::WorkspaceId::new_unchecked(workspace_id);
                 match self.workspace_services.acquire(&id).await {
                     Ok(lease) => {
-                        let run_query = codegg_core::protocol_conversions::run_query_from_dto(query);
+                        let run_query =
+                            codegg_core::protocol_conversions::run_query_from_dto(query);
                         let workspace_id_str = lease.workspace_id().to_string();
                         match lease.run_store().list_runs(run_query).await {
                             Ok(summaries) => {
@@ -2474,7 +2849,10 @@ impl CoreDaemon {
                     }),
                 }
             }
-            CoreRequest::RunGet { workspace_id, run_id } => {
+            CoreRequest::RunGet {
+                workspace_id,
+                run_id,
+            } => {
                 let id = codegg_core::workspace::WorkspaceId::new_unchecked(workspace_id);
                 match self.workspace_services.acquire(&id).await {
                     Ok(lease) => {
@@ -2482,11 +2860,10 @@ impl CoreDaemon {
                         let run_id_typed = codegg_core::run_store::RunId::new_unchecked(run_id);
                         match lease.run_store().get_run(&run_id_typed).await {
                             Ok(Some(manifest)) => {
-                                let dto =
-                                    codegg_core::protocol_conversions::run_manifest_to_dto(
-                                        &manifest,
-                                        Some(&workspace_id_str),
-                                    );
+                                let dto = codegg_core::protocol_conversions::run_manifest_to_dto(
+                                    &manifest,
+                                    Some(&workspace_id_str),
+                                );
                                 drop(lease);
                                 Ok(CoreResponse::RunGet {
                                     workspace_id: workspace_id_str,
@@ -2533,8 +2910,10 @@ impl CoreDaemon {
                         {
                             Ok(chunk) => {
                                 drop(lease);
-                                let data_b64 =
-                                    base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &chunk.data);
+                                let data_b64 = base64::Engine::encode(
+                                    &base64::engine::general_purpose::STANDARD,
+                                    &chunk.data,
+                                );
                                 Ok(CoreResponse::RunArtifactChunk {
                                     workspace_id: workspace_id_str,
                                     artifact_id: artifact_id_typed.to_string(),

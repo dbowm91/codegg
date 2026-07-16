@@ -88,6 +88,9 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), StorageError> {
     if current_version < 22 {
         migrate_and_record(pool, 22).await?;
     }
+    if current_version < 23 {
+        migrate_and_record(pool, 23).await?;
+    }
 
     Ok(())
 }
@@ -122,6 +125,7 @@ async fn migrate_and_record(pool: &SqlitePool, version: i64) -> Result<(), Stora
             20 => migrate_v20(pool).await?,
             21 => migrate_v21(pool).await?,
             22 => migrate_v22(pool).await?,
+            23 => migrate_v23(pool).await?,
             _ => {
                 return Err(StorageError::Migration(format!(
                     "unknown migration version {}",
@@ -829,6 +833,192 @@ async fn migrate_v22(pool: &SqlitePool) -> Result<(), StorageError> {
         .map_err(|e| StorageError::Migration(e.to_string()))?;
 
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_session_workspace_repair ON session(workspace_id)")
+        .execute(pool)
+        .await
+        .map_err(|e| StorageError::Migration(e.to_string()))?;
+
+    Ok(())
+}
+
+/// Phase 4 of the single-daemon plan: introduce durable jobs, attempts,
+/// dependencies, schedules, and schedule occurrences. This migration
+/// creates the full set of tables required by [`crate::jobs`].
+async fn migrate_v23(pool: &SqlitePool) -> Result<(), StorageError> {
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS job (
+            id TEXT PRIMARY KEY,
+            workspace_id TEXT NOT NULL,
+            session_id TEXT,
+            turn_id TEXT,
+            kind TEXT NOT NULL,
+            source_json TEXT NOT NULL,
+            priority TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            resource_json TEXT NOT NULL,
+            retry_json TEXT NOT NULL,
+            idempotency TEXT NOT NULL,
+            state TEXT NOT NULL,
+            current_attempt_id TEXT,
+            attempt_count INTEGER NOT NULL DEFAULT 0,
+            not_before INTEGER,
+            deadline INTEGER,
+            schedule_id TEXT,
+            time_created INTEGER NOT NULL,
+            time_updated INTEGER NOT NULL,
+            time_terminal INTEGER,
+            cancel_requested_at INTEGER,
+            cancel_reason TEXT,
+            labels_json TEXT NOT NULL DEFAULT '{}'
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| StorageError::Migration(e.to_string()))?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS job_attempt (
+            id TEXT PRIMARY KEY,
+            job_id TEXT NOT NULL,
+            sequence INTEGER NOT NULL,
+            state TEXT NOT NULL,
+            daemon_generation TEXT NOT NULL,
+            executor TEXT,
+            run_id TEXT,
+            heartbeat_at INTEGER,
+            time_started INTEGER,
+            time_completed INTEGER,
+            error_json TEXT,
+            time_created INTEGER NOT NULL,
+            time_updated INTEGER NOT NULL,
+            UNIQUE(job_id, sequence)
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| StorageError::Migration(e.to_string()))?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS job_dependency (
+            id TEXT PRIMARY KEY,
+            job_id TEXT NOT NULL,
+            depends_on_job_id TEXT NOT NULL,
+            condition TEXT NOT NULL DEFAULT 'completed',
+            UNIQUE(job_id, depends_on_job_id)
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| StorageError::Migration(e.to_string()))?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS schedule (
+            id TEXT PRIMARY KEY,
+            workspace_id TEXT NOT NULL,
+            session_id TEXT,
+            kind_json TEXT NOT NULL,
+            job_template_json TEXT NOT NULL,
+            state TEXT NOT NULL,
+            overlap_policy TEXT NOT NULL,
+            missed_run_policy_json TEXT NOT NULL,
+            next_run_at INTEGER,
+            last_occurrence_at INTEGER,
+            time_created INTEGER NOT NULL,
+            time_updated INTEGER NOT NULL,
+            labels_json TEXT NOT NULL DEFAULT '{}'
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| StorageError::Migration(e.to_string()))?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS schedule_occurrence (
+            schedule_id TEXT NOT NULL,
+            scheduled_for INTEGER NOT NULL,
+            job_id TEXT,
+            status TEXT NOT NULL,
+            time_created INTEGER NOT NULL,
+            PRIMARY KEY(schedule_id, scheduled_for)
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| StorageError::Migration(e.to_string()))?;
+
+    // Queue-scan indexes
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_job_state ON job(state)")
+        .execute(pool)
+        .await
+        .map_err(|e| StorageError::Migration(e.to_string()))?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_job_priority ON job(priority)")
+        .execute(pool)
+        .await
+        .map_err(|e| StorageError::Migration(e.to_string()))?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_job_workspace ON job(workspace_id)")
+        .execute(pool)
+        .await
+        .map_err(|e| StorageError::Migration(e.to_string()))?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_job_session ON job(session_id)")
+        .execute(pool)
+        .await
+        .map_err(|e| StorageError::Migration(e.to_string()))?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_job_schedule ON job(schedule_id)")
+        .execute(pool)
+        .await
+        .map_err(|e| StorageError::Migration(e.to_string()))?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_job_not_before ON job(not_before)")
+        .execute(pool)
+        .await
+        .map_err(|e| StorageError::Migration(e.to_string()))?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_job_time_updated ON job(time_updated DESC)")
+        .execute(pool)
+        .await
+        .map_err(|e| StorageError::Migration(e.to_string()))?;
+
+    // Attempt indexes
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_job_attempt_job ON job_attempt(job_id)")
+        .execute(pool)
+        .await
+        .map_err(|e| StorageError::Migration(e.to_string()))?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_job_attempt_state ON job_attempt(state)")
+        .execute(pool)
+        .await
+        .map_err(|e| StorageError::Migration(e.to_string()))?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_job_attempt_generation ON job_attempt(daemon_generation)",
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| StorageError::Migration(e.to_string()))?;
+
+    // Dependency indexes
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_job_dependency_depends ON job_dependency(depends_on_job_id)",
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| StorageError::Migration(e.to_string()))?;
+
+    // Schedule indexes
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_schedule_workspace ON schedule(workspace_id)")
+        .execute(pool)
+        .await
+        .map_err(|e| StorageError::Migration(e.to_string()))?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_schedule_state ON schedule(state)")
+        .execute(pool)
+        .await
+        .map_err(|e| StorageError::Migration(e.to_string()))?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_schedule_next_run ON schedule(next_run_at)")
         .execute(pool)
         .await
         .map_err(|e| StorageError::Migration(e.to_string()))?;

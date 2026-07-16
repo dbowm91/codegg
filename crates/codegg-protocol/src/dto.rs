@@ -321,3 +321,210 @@ pub struct RunArtifactSummaryDto {
     pub sha256: Option<String>,
 }
 
+// ── Phase 4: Durable Jobs and Schedules DTOs ────────────────────────
+
+/// Compact job summary for `JobList`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JobSummaryDto {
+    pub job_id: String,
+    pub workspace_id: String,
+    #[serde(default)]
+    pub session_id: Option<String>,
+    pub kind: String,
+    pub priority: String,
+    pub state: String,
+    pub attempt_count: u32,
+    #[serde(default)]
+    pub current_attempt_id: Option<String>,
+    #[serde(default)]
+    pub schedule_id: Option<String>,
+    #[serde(default)]
+    pub cancel_requested_at: Option<i64>,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
+    #[serde(default)]
+    pub labels: std::collections::HashMap<String, String>,
+}
+
+/// Full job record for `JobGet`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JobRecordDto {
+    pub job_id: String,
+    pub workspace_id: String,
+    #[serde(default)]
+    pub session_id: Option<String>,
+    #[serde(default)]
+    pub turn_id: Option<String>,
+    pub kind: String,
+    pub source: serde_json::Value,
+    pub priority: String,
+    pub payload: serde_json::Value,
+    pub state: String,
+    #[serde(default)]
+    pub current_attempt_id: Option<String>,
+    pub attempt_count: u32,
+    pub retry_policy: serde_json::Value,
+    pub idempotency: String,
+    #[serde(default)]
+    pub not_before: Option<i64>,
+    #[serde(default)]
+    pub deadline: Option<i64>,
+    #[serde(default)]
+    pub schedule_id: Option<String>,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
+    #[serde(default)]
+    pub terminal_at_ms: Option<i64>,
+    #[serde(default)]
+    pub cancel_requested_at: Option<i64>,
+    #[serde(default)]
+    pub cancel_reason: Option<String>,
+    #[serde(default)]
+    pub labels: std::collections::HashMap<String, String>,
+}
+
+/// Execution attempt record for `JobAttempts`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JobAttemptDto {
+    pub attempt_id: String,
+    pub job_id: String,
+    pub sequence: u32,
+    pub state: String,
+    pub daemon_generation: String,
+    #[serde(default)]
+    pub executor: Option<String>,
+    #[serde(default)]
+    pub run_id: Option<String>,
+    #[serde(default)]
+    pub heartbeat_at_ms: Option<i64>,
+    #[serde(default)]
+    pub started_at_ms: Option<i64>,
+    #[serde(default)]
+    pub completed_at_ms: Option<i64>,
+    #[serde(default)]
+    pub error_message: Option<String>,
+    #[serde(default)]
+    pub error_class: Option<String>,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
+}
+
+/// Compact schedule summary for `ScheduleList`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScheduleSummaryDto {
+    pub schedule_id: String,
+    pub workspace_id: String,
+    #[serde(default)]
+    pub session_id: Option<String>,
+    pub kind: serde_json::Value,
+    pub state: String,
+    pub overlap_policy: String,
+    pub missed_run_policy: serde_json::Value,
+    #[serde(default)]
+    pub next_run_at_ms: Option<i64>,
+    #[serde(default)]
+    pub last_occurrence_at_ms: Option<i64>,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
+}
+
+/// Full schedule record for `ScheduleGet`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScheduleRecordDto {
+    pub schedule_id: String,
+    pub workspace_id: String,
+    #[serde(default)]
+    pub session_id: Option<String>,
+    pub kind: serde_json::Value,
+    pub job_template: serde_json::Value,
+    pub state: String,
+    pub overlap_policy: String,
+    pub missed_run_policy: serde_json::Value,
+    #[serde(default)]
+    pub next_run_at_ms: Option<i64>,
+    #[serde(default)]
+    pub last_occurrence_at_ms: Option<i64>,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
+}
+
+/// Query parameters for `JobList`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct JobQueryDto {
+    #[serde(default)]
+    pub workspace_id: Option<String>,
+    #[serde(default)]
+    pub states: Vec<String>,
+    #[serde(default)]
+    pub kinds: Vec<String>,
+    #[serde(default)]
+    pub session_id: Option<String>,
+    #[serde(default)]
+    pub limit: u32,
+}
+
+/// Parameters for `JobSubmit`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct JobSubmitDto {
+    pub workspace_id: String,
+    #[serde(default)]
+    pub session_id: Option<String>,
+    #[serde(default)]
+    pub turn_id: Option<String>,
+    pub kind: String,
+    pub priority: String,
+    pub source: serde_json::Value,
+    pub payload: serde_json::Value,
+    #[serde(default)]
+    pub timeout_ms: Option<i64>,
+    #[serde(default)]
+    pub retry_max_attempts: u32,
+    #[serde(default)]
+    pub retryable_failures: Vec<String>,
+    pub idempotency: String,
+    #[serde(default)]
+    pub not_before_ms: Option<i64>,
+    #[serde(default)]
+    pub deadline_ms: Option<i64>,
+    #[serde(default)]
+    pub schedule_id: Option<String>,
+    #[serde(default)]
+    pub depends_on: Vec<String>,
+    #[serde(default)]
+    pub labels: std::collections::HashMap<String, String>,
+}
+
+/// Parameters for `ScheduleCreate`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ScheduleCreateDto {
+    pub workspace_id: String,
+    #[serde(default)]
+    pub session_id: Option<String>,
+    pub kind: serde_json::Value,
+    pub job_template: serde_json::Value,
+    pub overlap_policy: String,
+    pub missed_run_policy: serde_json::Value,
+    #[serde(default)]
+    pub labels: std::collections::HashMap<String, String>,
+}
+
+/// Summary of a daemon generation recovery pass.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecoveryReportDto {
+    pub interrupted_attempts: u32,
+    pub requeued_jobs: u32,
+    pub terminal_jobs: u32,
+    pub schedules_reconciled: u32,
+}
+
+/// Outcome of a cancellation request.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CancelResultDto {
+    pub job_id: String,
+    /// One of: "cancelled", "requested", "already_terminal".
+    pub outcome: String,
+    pub terminal: bool,
+}

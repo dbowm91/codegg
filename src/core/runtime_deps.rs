@@ -2,7 +2,11 @@ use std::sync::Arc;
 
 use crate::agent::turn_runtime::TurnRuntime;
 
-use codegg_core::workspace_services::{WorkspaceServiceRegistry, WorkspaceServicePolicy};
+use codegg_core::jobs::{
+    DaemonGeneration, InMemoryJobStore, InMemoryScheduleStore, JobStore, RecoveryPolicy,
+    ScheduleStore, SqliteJobStore, SqliteScheduleStore,
+};
+use codegg_core::workspace_services::{WorkspaceServicePolicy, WorkspaceServiceRegistry};
 
 /// Transitional container for concrete agent runtime dependencies.
 ///
@@ -13,6 +17,11 @@ use codegg_core::workspace_services::{WorkspaceServiceRegistry, WorkspaceService
 pub struct LegacyAgentRuntimeDeps {
     pub subagent_pool: Option<Arc<crate::agent::worker::SubAgentPool>>,
     pub bg_scheduler: Option<Arc<crate::agent::task::BackgroundScheduler>>,
+    /// When `true` (default), legacy `TaskSchedule` / `TaskDelete` /
+    /// `TaskList` requests dispatch through the old `BackgroundScheduler`.
+    /// When `false`, they return an error directing clients to the new
+    /// job/schedule protocol.
+    pub bg_scheduler_compat_enabled: bool,
 }
 
 /// Bundles optional runtime dependencies for [`CoreDaemon`].
@@ -42,6 +51,14 @@ pub struct CoreRuntimeDeps {
     /// `max_active_workspaces` and `idle_evict_after`. The daemon
     /// constructs a default policy if the caller does not supply one.
     pub workspace_service_policy: WorkspaceServicePolicy,
+    /// Phase 4: durable job control plane store.
+    pub job_store: Arc<dyn JobStore>,
+    /// Phase 4: durable schedule store.
+    pub schedule_store: Arc<dyn ScheduleStore>,
+    /// Phase 4: recovery policy applied at daemon startup.
+    pub recovery_policy: RecoveryPolicy,
+    /// Phase 4: daemon generation for attempt lease tracking.
+    pub daemon_generation: DaemonGeneration,
 }
 
 impl Clone for CoreRuntimeDeps {
@@ -54,6 +71,10 @@ impl Clone for CoreRuntimeDeps {
             lsp_service: self.lsp_service.clone(),
             workspace_services: self.workspace_services.clone(),
             workspace_service_policy: self.workspace_service_policy.clone(),
+            job_store: Arc::clone(&self.job_store),
+            schedule_store: Arc::clone(&self.schedule_store),
+            recovery_policy: self.recovery_policy.clone(),
+            daemon_generation: self.daemon_generation.clone(),
         }
     }
 }
@@ -65,17 +86,26 @@ impl CoreRuntimeDeps {
         memory_store: Option<Arc<crate::memory::MemoryStore>>,
         bg_scheduler: Option<Arc<crate::agent::task::BackgroundScheduler>>,
     ) -> Self {
+        // Use in-memory stores for the legacy convenience constructor.
+        let job_store: Arc<dyn JobStore> = Arc::new(InMemoryJobStore::new());
+        let schedule_store: Arc<dyn ScheduleStore> =
+            Arc::new(InMemoryScheduleStore::new(Arc::clone(&job_store)));
         Self {
             pool,
             memory_store,
             legacy_agent: LegacyAgentRuntimeDeps {
                 subagent_pool,
                 bg_scheduler,
+                bg_scheduler_compat_enabled: true,
             },
             turn_runtime: Arc::new(crate::agent::turn_runtime::DefaultTurnRuntime),
             lsp_service: None,
             workspace_services: None,
             workspace_service_policy: WorkspaceServicePolicy::default(),
+            job_store,
+            schedule_store,
+            recovery_policy: RecoveryPolicy::default(),
+            daemon_generation: DaemonGeneration::new(),
         }
     }
 
@@ -85,6 +115,9 @@ impl CoreRuntimeDeps {
         legacy_agent: LegacyAgentRuntimeDeps,
         turn_runtime: Arc<dyn TurnRuntime>,
     ) -> Self {
+        let job_store: Arc<dyn JobStore> = Arc::new(InMemoryJobStore::new());
+        let schedule_store: Arc<dyn ScheduleStore> =
+            Arc::new(InMemoryScheduleStore::new(Arc::clone(&job_store)));
         Self {
             pool,
             memory_store,
@@ -93,6 +126,43 @@ impl CoreRuntimeDeps {
             lsp_service: None,
             workspace_services: None,
             workspace_service_policy: WorkspaceServicePolicy::default(),
+            job_store,
+            schedule_store,
+            recovery_policy: RecoveryPolicy::default(),
+            daemon_generation: DaemonGeneration::new(),
+        }
+    }
+
+    /// Construct `CoreRuntimeDeps` with production SQLite-backed stores.
+    ///
+    /// This is the preferred constructor for daemons that have a pool.
+    pub fn with_jobs(
+        pool: sqlx::SqlitePool,
+        subagent_pool: Option<Arc<crate::agent::worker::SubAgentPool>>,
+        memory_store: Option<Arc<crate::memory::MemoryStore>>,
+        bg_scheduler: Option<Arc<crate::agent::task::BackgroundScheduler>>,
+    ) -> Self {
+        let job_store: Arc<dyn JobStore> = Arc::new(SqliteJobStore::new(pool.clone()));
+        let schedule_store: Arc<dyn ScheduleStore> = Arc::new(SqliteScheduleStore::new(
+            pool.clone(),
+            Arc::clone(&job_store),
+        ));
+        Self {
+            pool: Some(pool),
+            memory_store,
+            legacy_agent: LegacyAgentRuntimeDeps {
+                subagent_pool,
+                bg_scheduler,
+                bg_scheduler_compat_enabled: true,
+            },
+            turn_runtime: Arc::new(crate::agent::turn_runtime::DefaultTurnRuntime),
+            lsp_service: None,
+            workspace_services: None,
+            workspace_service_policy: WorkspaceServicePolicy::default(),
+            job_store,
+            schedule_store,
+            recovery_policy: RecoveryPolicy::default(),
+            daemon_generation: DaemonGeneration::new(),
         }
     }
 
@@ -109,10 +179,7 @@ impl CoreRuntimeDeps {
     }
 
     /// Builder-style setter for the workspace services registry.
-    pub fn with_workspace_services(
-        mut self,
-        services: Arc<WorkspaceServiceRegistry>,
-    ) -> Self {
+    pub fn with_workspace_services(mut self, services: Arc<WorkspaceServiceRegistry>) -> Self {
         self.workspace_services = Some(services);
         self
     }

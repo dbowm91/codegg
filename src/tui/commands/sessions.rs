@@ -1346,7 +1346,20 @@ pub(crate) async fn handle_load_session_messages(app: &mut App, session_id: Stri
             | Ok(CoreResponse::WorkspaceConfigReload { .. })
             | Ok(CoreResponse::RunList { .. })
             | Ok(CoreResponse::RunGet { .. })
-            | Ok(CoreResponse::RunArtifactChunk { .. }) => None,
+            | Ok(CoreResponse::RunArtifactChunk { .. })
+            | Ok(CoreResponse::JobGet { .. })
+            | Ok(CoreResponse::JobList { .. })
+            | Ok(CoreResponse::JobAttempts { .. })
+            | Ok(CoreResponse::JobCancelResult { .. })
+            | Ok(CoreResponse::JobSubmitted { .. })
+            | Ok(CoreResponse::JobRetryStarted { .. })
+            | Ok(CoreResponse::ScheduleCreated { .. })
+            | Ok(CoreResponse::ScheduleList { .. })
+            | Ok(CoreResponse::ScheduleGet { .. })
+            | Ok(CoreResponse::SchedulePaused { .. })
+            | Ok(CoreResponse::ScheduleResumed { .. })
+            | Ok(CoreResponse::ScheduleDeleted { .. })
+            | Ok(CoreResponse::JobRecoveryReport { .. }) => None,
             Err(e) => {
                 app.messages_state
                     .toasts
