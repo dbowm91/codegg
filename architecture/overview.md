@@ -35,176 +35,157 @@ CodeGG is a high-performance AI coding agent built in Rust, designed for termina
 │  │                                         │    codegg-git    │  │
 │  │                                         │    eggsentry        │  │
 │  │                                         │    eggcontext    │  │
-│  │                                         └──────────────────┘  │
+│  │                                         └──────────────────┘  │  │
 │  └──────────────────────┴───────────────────────────────────────┘  │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
-## Native Tool Crates (Workspace)
+## Module Map
 
-Codegg follows a **library-first, MCP-second** tool architecture (see
-`plans/native_tool_crates.md`). Durable tool domains live in workspace
-crates under `crates/` and are consumed directly in-process by Codegg's
-tool wrappers. The same crates can later expose optional MCP adapter
-binaries without changing the model-facing tool names.
+Modules are grouped by architectural layer. Each module links to a detailed architecture document in this directory.
+
+### Agent Layer — Orchestration and Execution
+
+The agent layer owns the core execution cycle: receiving user input, routing through the LLM, executing tools, and managing multi-agent coordination.
+
+| Module | Purpose | Key Files | Docs |
+|--------|---------|-----------|------|
+| Agent | Main agent loop, compaction, routing, team coordination, multi-agent orchestration | `loop.rs`, `worker.rs`, `compaction.rs`, `router.rs`, `team.rs` | [agent.md](agent.md) |
+| Command Intent | Command intent classification, risk assessment, execution capability model — pipeline stage 1 | `mod.rs`, `shell_shape.rs`, `plan.rs` | [command_intent.md](command_intent.md) |
+| Command Planner | Maps classified intents to execution backends, generates permissions, selects projection policy — pipeline stage 2 | `plan.rs` (re-exported via `src/command_planner.rs`) | [command_planner.md](command_planner.md) |
+| Command Routing | Resolves planned execution to concrete subsystems (TestRunner, Shell, Python, Git, ManagedProcess) — pipeline stage 3 | `src/command_routing.rs` | [command_routing.md](command_routing.md) |
+| Test Runner | Test command resolution, stdout/stderr parsing, failure-class taxonomy, streaming execution, previous-failures index, projection adapter | `types.rs`, `resolve.rs`, `parse.rs`, `report.rs`, `runner.rs`, `index.rs`, `projection.rs` | [test_runner.md](test_runner.md) |
+| Python Script | First-class Python scripting with Analyze/Transform/Verify modes, AST risk scanning, Landlock sandboxing, workspace snapshots | `types.rs`, `analyze.rs`, `sandbox.rs`, `snapshot.rs`, `executor.rs`, `projection.rs`, `tool.rs` | [python_scripting.md](python_scripting.md) |
+| Research | Structured research pipeline: source collection → evidence → claims → verification | `coordinator.rs`, `types.rs`, `store.rs`, `claims.rs`, `verify.rs` | [research.md](research.md) |
+
+### Tool Layer — Capabilities and Execution
+
+The tool layer defines the ~40 built-in tools the agent can invoke, the backend abstractions for dispatching, and the deterministic validation pipeline.
+
+| Module | Purpose | Key Files | Docs |
+|--------|---------|-----------|------|
+| Tool | Built-in tools (~40 in default registry), `Tool` trait, `ToolCatalog`, backend abstraction (Native/MCP/Shell/Builtin) | `mod.rs`, `backend.rs`, `bash.rs`, `read.rs`, `edit.rs`, `write.rs`, `glob.rs`, `grep.rs` | [tool.md](tool.md) |
+| Deterministic Tools | Eggsact in-process deterministic tools (8 always-visible + 5 deferred) — text comparison, config validation, security inspection | `deterministic.rs`, `eggsact/adapter.rs` | [deterministic_tools.md](deterministic_tools.md) |
+| Preflight | Harness-side eggsact validation before mutating operations — severity-classified findings (Block/Warn/Annotate), never model-facing | `preflight/` | [preflight.md](preflight.md) |
+| Git Service | Canonical read executor — delegates to egggit for structured parsing, subprocess fallback for mutations | `git_service.rs` | [git.md](git.md) |
+| Git Mutations | Typed Git mutations with state deltas, snapshot/delta capture, RunStore persistence | `git_mutations.rs`, `git_mutations_ops.rs` | [git.md](git.md) |
+| Git Network | Network operations (fetch/pull/push/remote), env hardening, URL credential redaction | `git_network_ops.rs`, `git_network_policy.rs` | [git.md](git.md) |
+| Git Recovery | In-progress operation detection, continue/abort/skip with cross-operation misuse protection | `git_recovery.rs`, `git_run_store.rs` | [git.md](git.md) |
+| Git Mutation Projector | Formats git mutation results for TUI and model consumption | `git_mutation_projector.rs` | [git.md](git.md) |
+
+### TUI Layer — User Interface
+
+| Module | Purpose | Key Files | Docs |
+|--------|---------|-----------|------|
+| TUI | Ratatui terminal UI, async command pattern (spawn-and-complete), state management across 6 domains | `app/mod.rs`, `components/`, `commands/`, `runtime/` | [tui.md](tui.md) |
+| Command | Slash command registry (118 built-in commands) from markdown files | `tui/command.rs` | [command.md](command.md) |
+| Theme | Frontend-neutral theme system (SemanticTheme → ratatui, Halloy) | `theme/` | [theme.md](theme.md) |
+| Shell | Human shell `!`/`!!` commands, projection pipeline (10 phases), safety policy, RTK integration, redaction | `shell/` | [human_shell.md](human_shell.md) |
+| Shell Session | Shell session metadata (no PTY) | `shell_session/` | [shell_session.md](shell_session.md) |
+
+### Core Layer — Daemon and Transport
+
+The core layer owns the singleton daemon lifecycle, transport adapters, request routing, and workspace registry.
+
+| Module | Purpose | Key Files | Docs |
+|--------|---------|-----------|------|
+| Core | CoreClient facade, transport adapters (Socket/Inproc/Stdio), daemon lifecycle, request handling | `core/daemon.rs`, `core/instance.rs`, `core/transport/` | [core.md](core.md) |
+| Workspace | Workspace registry, canonical root tracking, execution context (immutable `Arc`-wrapped) | `workspace.rs` (codegg-core) | [workspace.md](workspace.md) |
+| Workspace Services | Per-workspace service bundles (RunStore, path policy, lock table, config), single-flight activation, user-scoped catalog, migration tooling | `workspace_services.rs` (codegg-core), `migration.rs` | [workspace_services.md](workspace_services.md) |
+| Jobs | Durable jobs, attempts, schedules, recovery, idempotency (Phase 4) | `jobs/mod.rs`, `jobs/store.rs`, `jobs/schedule.rs` (codegg-core) | [jobs.md](jobs.md) |
+| Scheduler | Global admission control scheduler, fair queue, executor dispatch, permit lifecycle (Phase 5) | `scheduler/mod.rs`, `scheduler/scheduler.rs`, `scheduler/admission.rs`, `scheduler/fair_queue.rs` | [scheduler.md](scheduler.md) |
+| Job Dispatcher | Bridges durable jobs to existing executors (SubAgent, ManagedArgv, Test) | `job_dispatcher.rs`, `job_recovery.rs` | [jobs.md](jobs.md) |
+| Managed Process | Managed process lifecycle with process-group cleanup, timeout, cancellation, descendant tracking | `managed_process.rs` | [scheduler.md](scheduler.md) |
+| Session | SQLite session storage, message history, 22 migrations, analytics, checkpointing | `session/` (codegg-core) | [session.md](session.md) |
+| Storage | SQLite initialization and connection pooling — user-scoped catalog + legacy project store | `storage/` (codegg-core) | [storage.md](storage.md) |
+| Bus | Event bus publish/subscribe (42 AppEvent variants), PermissionRegistry, QuestionRegistry | `bus/` (codegg-core) | [bus.md](bus.md) |
+| Error | Centralized AppError enum with error classification | `error.rs` | [error.md](error.md) |
+| Exec | Non-interactive exec mode for CI/CD with JSON I/O | `exec.rs` | [exec.md](exec.md) |
+
+### Provider Layer — LLM Backends
+
+| Module | Purpose | Key Files | Docs |
+|--------|---------|-----------|------|
+| Provider | LLM provider implementations, streaming, CircuitBreaker, 16 auto-registered + 4 config-only providers | `provider/` (codegg-providers) | [provider.md](provider.md) |
+| Protocol | CoreRequest, CoreResponse, CoreEvent, TuiMessage, UiNode, UiEffect, PluginManifestDto | `protocol/` (codegg-protocol) | [protocol.md](protocol.md) |
+| Config | Configuration schema, paths, loading, validation, file watching | `config/` (codegg-config) | [config.md](config.md) |
+| Model Profile | Model behavioral profiles and task state policy | `model_profile/` (codegg-core) | [model_profile_task_state.md](model_profile_task_state.md) |
+| Task State | Todo/task state machine, injection, and projection | `task_state/` (codegg-core) | [model_profile_task_state.md](model_profile_task_state.md) |
+
+### Integration Layer — External Systems
+
+| Module | Purpose | Key Files | Docs |
+|--------|---------|-----------|------|
+| LSP | Language Server Protocol client — 39 servers, diagnostics, code navigation, preview-only edits, semantic tokens | `lsp/` (thin shim), `egglsp/` (authoritative) | [lsp.md](lsp.md) |
+| MCP | Model Context Protocol client — local/remote server connections, OAuth auth, auto-reconnection | `mcp/` | [mcp.md](mcp.md) |
+| Search Backend | Wrapper between `websearch`/`webfetch` tools and eggsearch MCP server, with legacy in-tree fallback | `search_backend/` | [search_backend.md](search_backend.md) |
+| Plugin | WASM plugin system (Wasmtime), manifest parsing, hook system, built-in plugins, install/registry, lifecycle/policy | `plugin/` | [plugin.md](plugin.md) |
+| Server | Axum HTTP server (feature-gated) — WebSocket for remote TUI, REST API, SSE events, token auth, rate limiting | `server/` | [server.md](server.md) |
+| Client | Remote TUI WebSocket client with resume/replay | `client/` | [client.md](client.md) |
+| IDE | VS Code / JetBrains detection and diff viewing | `ide/` | [ide.md](ide.md) |
+
+### Security Layer
+
+| Module | Purpose | Key Files | Docs |
+|--------|---------|-----------|------|
+| Permission | Tool/path access control, DoomLoop detection, mode-based permissions (Review/Debug/Docs) | `permission/` | [permission.md](permission.md) |
+| Security | SSRF protection, internal IP validation, Landlock filesystem sandboxing | `security/` | [security.md](security.md) |
+| Eggsentry | Deterministic security scanning — secrets, commands, dependencies, unsafe code | `eggsentry/` (crate) | [security.md](security.md) |
+| Crypto | AES-256-GCM encryption, Argon2id key derivation for API key encryption | `auth/` | [crypto.md](crypto.md) |
+| Auth | Authentication and credential management | `auth/` | [auth.md](auth.md) |
+
+### Native Tool Crates (Workspace)
+
+Codegg follows a **library-first, MCP-second** tool architecture. Durable tool domains live in workspace crates under `crates/` and are consumed directly in-process by Codegg's tool wrappers. The same crates can later expose optional MCP adapter binaries without changing the model-facing tool names.
 
 | Crate | Purpose | Key Files |
 |-------|---------|-----------|
-| `crates/codegg-config` | Configuration schema, paths, loading, validation, watching | `schema.rs`, `paths.rs`, `watcher.rs` |
-| `crates/codegg-protocol` | Core protocol types (CoreRequest, CoreResponse, CoreEvent, TuiMessage) | `core.rs`, `tui.rs` |
-| `crates/codegg-providers` | LLM provider implementations, auth types, CircuitBreaker | `provider/mod.rs`, `auth/`, `circuit.rs` |
-| `crates/egglsp` | Language Server Protocol client/server management | `service.rs`, `client.rs`, `operations.rs`, `server.rs` |
-| `crates/egggit` | Read-only git facts (status, diff, changed files, worktrees) | `status.rs`, `diff.rs`, `worktree.rs` |
-| `crates/eggsentry` | Deterministic security scanning (secrets, commands, deps, unsafe code) | `scanner.rs`, `command.rs`, `finding.rs`, `profile.rs` |
-| `crates/eggcontext` | Token counting and context utilities (tiktoken-based) | `lib.rs` |
-| `crates/codegg-git` | Typed Git operation model, argv parser, and risk classification | `lib.rs` |
+| `codegg-core` | Domain types: bus, error, goal, memory, migration, run_store, session, storage, snapshot, worktree, workspace, workspace_services, task_state, model_profile, resilience, protocol_conversions | `lib.rs`, `bus/`, `jobs/`, `session/`, `storage/` |
+| `codegg-config` | Configuration schema, paths, loading, validation, file watching | `schema.rs`, `paths.rs`, `watcher.rs` |
+| `codegg-protocol` | CoreRequest, CoreResponse, CoreEvent, TuiMessage, UiNode, UiEffect, PluginManifestDto | `core.rs`, `tui.rs` |
+| `codegg-providers` | LLM provider implementations, auth types, CircuitBreaker | `provider/mod.rs`, `auth/`, `circuit.rs` |
+| `codegg-git` | Typed Git operation model, argv parser, and risk classification (47 operation variants, 11 risk classes) | `lib.rs` |
+| `egglsp` | LSP client/service/operations (authoritative implementation) | `service.rs`, `client.rs`, `operations.rs`, `server.rs` |
+| `egggit` | Read-only git facts: status (v2 rich structured), diff, changed files, log, blame, refs, worktree | `status_v2/`, `diff/`, `log/`, `blame/`, `refs/`, `worktree/` |
+| `eggsentry` | Security scanning — secrets, commands, dependencies, unsafe code | `scanner.rs`, `command.rs`, `finding.rs`, `profile.rs` |
+| `eggcontext` | Token counting and context utilities (tiktoken-based) | `lib.rs` |
 
-Codegg-side thin wrappers (`src/tool/lsp.rs`, `src/tool/git.rs`,
-`src/tool/security.rs`, etc.) consume these crates. The model-facing
-tool names (`lsp`, `git`, `security`, ...) and JSON schemas are
-preserved exactly. Conversion between Codegg's `crate::config::schema`
-types and the crates' local config types is one-way: crates never
-import Codegg config types.
+Codegg-side thin wrappers (`src/tool/lsp.rs`, `src/tool/git.rs`, `src/tool/security.rs`, etc.) consume these crates. The model-facing tool names (`lsp`, `git`, `security`, ...) and JSON schemas are preserved exactly.
 
-The native `websearch` and `webfetch` wrappers follow the same
-pattern via `src/search_backend/`, with the external `eggsearch` MCP
-server as the default backend (raw `mcp__eggsearch__*` tools are
-hidden by default — see [MCP](mcp.md)).
+### Utility and Support
 
-## Core Protocol
-
-- **Protocol Version**: 2 (defined in `crates/codegg-protocol/src/core.rs`)
-- **Request/Response Separation**: `CoreRequest` / `CoreResponse` via `RequestEnvelope<T>` and `EventEnvelope<T>`
-- **Transport Adapters** (in `core/transport/`):
-  - `SocketCoreClient` - Unix socket to the singleton daemon (default via `connect_or_start_daemon`)
-  - `InprocCoreClient` - In-process communication (`--standalone` / tests only)
-  - `StdioCoreClient` - Subprocess communication (`--stdio`)
-- **Singleton daemon**: Exactly one user-scoped daemon per OS user. `connect_or_start_daemon` (`src/core/instance.rs`) is the canonical entry point. `DaemonInstanceGuard` holds `flock(LOCK_EX | LOCK_NB)` for the daemon's lifetime.
-
-## Module Map
-
-| Module | Purpose | Key Files |
-|--------|---------|-----------|
-| [agent/](agent.md) | Main agent loop, compaction, routing, team coordination | `loop.rs`, `worker.rs`, `compaction.rs`, `router.rs` |
-| [bus/](bus.md) | Event bus publish/subscribe, permission/question registries | `global.rs`, `events.rs`, `mod.rs` |
-| [client/](client.md) | Remote TUI WebSocket client with resume/replay | `attach.rs` |
-| [command/](command.md) | Slash command registry from markdown files | `mod.rs` |
-| [config/](config.md) | Configuration loading, validation, file watching — in `crates/codegg-config` | `schema.rs`, `paths.rs`, `watcher.rs` |
-| [context/](context-ledger.md) | Token counting and context utilities (tiktoken) — in `crates/eggcontext` | `lib.rs` |
-| [core/](core.md) | Core facade, transport adapters, request handling | `mod.rs`, `transport/` |
-| [crypto/](crypto.md) | AES-256-GCM encryption, Argon2id key derivation | `mod.rs` |
-| [error/](error.md) | Centralized AppError enum with error classification | `mod.rs` |
-| [exec/](exec.md) | Non-interactive exec mode for CI/CD with JSON I/O | `exec.rs` |
-| [hooks/](hooks.md) | Lifecycle hooks for agent events | `mod.rs` |
-| [ide/](ide.md) | VS Code / JetBrains detection and diff viewing | `mod.rs` |
-| [lsp/](lsp.md) | LSP wrapper (implementation in `crates/egglsp`) | `mod.rs` (re-exports) |
-| [mcp/](mcp.md) | Model Context Protocol client (local/remote) | `local.rs`, `remote.rs`, `auth.rs` |
-| [memory/](memory.md) | Persistent memory across sessions | `mod.rs` |
-| [model_profile/](model_profile_task_state.md) | Model behavioral profiles and task state policy — in `crates/codegg-core` | `types.rs`, `resolve.rs`, `policy.rs` |
-| [permission/](permission.md) | Access control, DoomLoop detection, mode system | `mod.rs`, `modes.rs` |
-| [plugin/](plugin.md) | WASM plugin system with hooks and fuel tracking | `loader.rs`, `service.rs`, `manifest.rs` |
-| [provider/](provider.md) | LLM providers — in `crates/codegg-providers` | `mod.rs`, `anthropic.rs`, `fallback.rs` |
-| [protocol/](protocol.md) | Shared request/response envelopes — in `crates/codegg-protocol` | `core.rs`, `tui.rs` |
-| [research/](research.md) | Structured research pipeline: source collection → evidence → claims → verification | `coordinator.rs`, `types.rs`, `store.rs`, `claims.rs`, `verify.rs` |
-| [resilience/](resilience.md) | Circuit breaker, retry mechanisms | `circuit.rs` |
-| [run_store/](run_store.md) | Persistent run index and artifact storage for commands, scripts, tests — in `crates/codegg-core` | `run_store.rs` |
-| [search/](search_backend.md) | Web search and fetch tools + 7 eggsearch wrappers (builtin + MCP backend) | `mod.rs`, `websearch.rs`, `webfetch.rs` |
-| [security/](security.md) | SSRF protection, Landlock sandboxing; scanning core in `crates/eggsentry` | `ssrf.rs`, `sandbox.rs` |
-| [server/](server.md) | HTTP/WebSocket server for remote TUI | `http.rs`, `ws.rs`, `routes/` |
-| [session/](session.md) | SQLite session storage, message history | `store.rs`, `schema.rs`, `message.rs` |
-| [shell/](human_shell.md) | Human shell commands, projection pipeline (Phases 1–10), policy evaluation | `mod.rs`, `runtime.rs`, `projector.rs`, `redactor.rs`, `rtk.rs` |
-| [command_intent/](command_intent.md) | Command intent classification, risk assessment, and execution capability model | `mod.rs`, `shell_shape.rs`, `plan.rs` |
-| [command_planner/](command_planner.md) | Command planner mapping intents to execution backends with permission generation | `plan.rs` (re-exported via `src/command_planner.rs`) |
-| [command_routing/](command_routing.md) | Backend routing MVP resolving planned execution to concrete subsystems | `src/command_routing.rs` |
-| [python_script/](python_scripting.md) | First-class Python scripting with Analyze/Transform/Verify modes, AST risk analysis, capability enforcement, OS-level sandbox (Landlock on Linux), evidence reporting | `mod.rs`, `types.rs`, `analyze.rs`, `sandbox.rs`, `snapshot.rs`, `executor.rs`, `projection.rs`, `tool.rs` |
-| [shell_session/](shell_session.md) | Shell session metadata (no PTY) | `mod.rs` |
-| [skills/](skills.md) | Runtime skill loader and activation | `mod.rs` |
-| [snapshot/](snapshot.md) | File state capture and restore | `mod.rs` |
-| [storage/](storage.md) | SQLite initialization and connection pooling | `mod.rs` |
-| [task_state/](model_profile_task_state.md) | Todo/task state machine, injection, and projection | `mod.rs` |
-| [test_runner/](test_runner.md) | Test command resolution, failure extraction, output parsing, report formatting, previous-failures index, projection adapter, and protocol event integration | `types.rs`, `resolve.rs`, `parse.rs`, `report.rs`, `runner.rs`, `index.rs`, `bus_sink.rs`, `projection.rs`, `mod.rs` |
-| [theme/](theme.md) | Frontend-neutral theme system (SemanticTheme → ratatui) | `schema.rs`, `registry.rs`, `native.rs`, `halloy.rs`, `target/` |
-| [tool/](tool.md) | Built-in tools (~40 tools in default registry) and backend abstractions | `mod.rs`, `backend.rs`, `bash.rs`, `read.rs`, etc. |
-| [deterministic_tools/](deterministic_tools.md) | Eggsact in-process deterministic tools (8 always-visible + 5 deferred) | `deterministic.rs`, `eggsact/adapter.rs` |
-| [tts/](tts.md) | Text-to-speech (macOS `say` command) | `mod.rs` |
-| [tui/](tui.md) | Terminal user interface (Ratatui) | `app/mod.rs`, `components/` |
-| [upgrade/](upgrade.md) | Self-upgrade via GitHub releases | `mod.rs` |
-| [util/](util.md) | Clipboard, fuzzy search, pricing, metrics | `mod.rs` |
-| [workspace/](workspace.md) | Workspace registry, canonical root tracking, and execution context — in `crates/codegg-core` | `workspace.rs` |
-| [workspace_services/](workspace_services.md) | Phase 3 per-workspace service bundles, lease lifecycle, lock table, user-scoped catalog, and migration tooling | `workspace_services.rs`, `migration.rs` |
-| [jobs/](jobs.md) | Phase 4 durable jobs, attempts, schedules, recovery, idempotency — in `crates/codegg-core` | `jobs/mod.rs`, `jobs/store.rs`, `jobs/schedule.rs`, `jobs/schedule_store.rs` |
-| [scheduler/](scheduler.md) | Phase 5 global admission control scheduler, fair queue, executor dispatch, and static guard enforcement — closure pass complete | `scheduler/mod.rs`, `scheduler/scheduler.rs`, `scheduler/admission.rs`, `scheduler/fair_queue.rs` |
-| [worktree/](worktree.md) | Git worktree management (read-only facts in `crates/egggit`) | `mod.rs` |
-
-## Key Types
-
-### Agent Loop
-- `AgentLoop` - Main execution cycle in `agent/loop.rs`
-- `Agent` - Agent definition with mode (Primary/Subagent/All)
-- 9 built-in agents: build, plan, general, explore, title, summary, compaction, security-review, research
-
-### Tools
-- `Tool` trait - All tools implement `name()`, `description()`, `parameters()`, `execute()`
-- Optional `execute_structured()` (default impl wraps `execute()`) — see `src/tool/backend.rs`
-- ~40 built-in tools in default registry (bash, read, edit, write, glob, grep, task, webfetch, test, etc.)
-- `ToolCatalog::register()` takes `&dyn Tool` (not `Box<dyn Tool>`)
-- `ToolRegistry::with_options(ToolRegistryOptions)` is the authoritative registration sequence; `with_defaults()` and the two session constructors `with_session_config_defaults(&Config, ...)` / `with_session_defaults(...)` are thin wrappers (production session code uses the config-aware one to preserve `[tool_backends]`)
-- `Tool::expose_in_definitions()` (default `true`, overridden to `false` by `DisabledTool`) is the model-facing predicate; `ToolRegistry::definitions()` and `AgentLoop::build_tool_definitions()` both filter through it
-- `ToolRegistry::execute_capture(name, input, ctx)` is the central execution path for native tool calls in the agent loop; `AgentLoop::build_tool_execution_context(tc, timeout_ms)` builds the `ToolExecutionContext` and `AgentLoop::resolve_native_backend(name)` resolves the `ToolBackendKind` (`Native` for most tools, `Mcp` for `websearch`/`webfetch` when `[search].backend = eggsearch`, `BuiltinLegacy` otherwise)
-
-### Tool Backends
-- `ToolBackendKind` — `Native | Mcp | Shell | BuiltinLegacy`
-- `ToolExecutionContext` — request-scoped execution context (cwd, session_id, permission_mode, timeout)
-- `ToolProvenance` — `backend`, `implementation`, `version`, `elapsed_ms`, `truncated`, `trust`
-- `ToolTrust` — `LocalTrusted | LocalUntrusted | ExternalUntrusted | MutatingSideEffect`
-- `StructuredToolResult` — wraps output with provenance; `legacy()` helper preserves the string contract for older tools
-- Diagnostics: `/tool-backends` (aliases `/tools`, `/backends`) renders a table of tool → backend → implementation → status → raw MCP exposure
-- Config: `[tool_backends.<domain>]` sections with `backend`, `expose_raw_mcp_tools`, `fallback_to_native`, `server_name`, `command`, `args`, `timeout_ms`, `env` (see `config::schema::ExternalToolBackendConfigSchema`)
-
-### Events
-- `AppEvent` enum - 42 variants for session, tool, MCP, permission, subagent, goal events
-- `GlobalEventBus` - tokio broadcast channel (2048 buffer)
-- PermissionRegistry and QuestionRegistry are **synchronous** (`fn`, not `async fn`)
-
-### Session
-- SQLite storage with WAL mode, 22 migrations
-- Tables (14): `migration_version`, `project`, `session`, `message`, `part`, `todo`, `permission`, `session_share`, `cached_models`, `task`, `checkpoints`, `snapshot`, `usage`, `workspace`
-
-### Workspace (Phase 2)
-- `WorkspaceId` — typed `String` newtype identifying a registered workspace
-- `WorkspaceRegistry` — daemon-owned, deduplicates canonical roots via `get_or_register`; rejects nonexistent paths and symlink aliases
-- `ExecutionContext` — immutable, passed by `Arc` through `TurnRunInput`; carries `workspace_root`, `workspace_id`, `session_id`, and path policy
-- `WorkspaceSnapshot` — DTO for protocol serialization of workspace state
-- Storage migration v22 adds the `workspace` table and `workspace_id` index on `session`
-
-### Workspace services and storage (Phase 3)
-- `WorkspaceServices` — per-workspace bundle owning `Arc<dyn RunStore>`, `Arc<WorkspacePathPolicy>`, `Arc<WorkspaceLockTable>`, and `Arc<WorkspaceConfigSnapshot>`
-- `WorkspaceServicesLease` — RAII handle returned by `WorkspaceServiceRegistry::acquire`; decrements the bundle's lease counter on drop
-- `WorkspaceServiceRegistry` — `DashMap<WorkspaceId, Arc<WorkspaceServices>>` plus per-workspace `AsyncMutex<()>` for single-flight activation
-- `WorkspaceLockTable::acquire_repository(repo_root)` — per-repository lock used by the Git service and the Bash-translation dispatcher to contend on the same canonical-root lock
-- `WorkspaceServicePolicy { max_active_workspaces, idle_evict_after }` — cap on simultaneous bundles; idle eviction threshold
-- Storage split: `init_daemon_catalog(&DaemonPaths)` (user-scoped catalog at `~/Library/Application Support/codegg/codegg.db`) and `init_legacy_project_store(project_root)` (backward-compat `<root>/.codegg/sessions.db`)
-- `STORAGE_LAYOUT_VERSION = 23` — bumped when the catalog moves to a user-scoped location
-- `migrate_legacy_project_database(catalog_pool, registry, project_root)` — idempotent importer that writes a `migration_marker` row keyed by source path
-- Protocol additions: `WorkspaceServicesSnapshot`, `WorkspaceConfigReload`, `RunList`, `RunGet`, `RunArtifactRead`; `WorkspaceSnapshot` gains `services_active`, `active_leases`, `config_revision`
-
-### Provider
-- `Provider` trait with `chat()` streaming method
-- `FallbackProvider` with circuit breaker (backoff: `2^i`)
-- Auto-registered via env vars (16 providers): anthropic, openai, google, openrouter, opencode_zen, mistral, groq, deepinfra, cerebras, cohere, together, perplexity, xai, venice, minimax, opencode_go
-- Config-only (not auto-registered): SAP AI Core, Zenmux, Kilo, Vercel AI Gateway
+| Module | Purpose | Key Files | Docs |
+|--------|---------|-----------|------|
+| Hooks | Lifecycle hooks for agent events | `hooks/` | [hooks.md](hooks.md) |
+| Memory | Persistent memory across sessions | `memory/` (codegg-core) | [memory.md](memory.md) |
+| Goal | Goal tracking and management | `goal/` (codegg-core) | [goal.md](goal.md) |
+| Snapshot | File state capture and restore | `snapshot/` (codegg-core) | [snapshot.md](snapshot.md) |
+| Worktree | Git worktree management | `worktree.rs` (codegg-core), `worktree/` (egggit) | [worktree.md](worktree.md) |
+| Run Store | Persistent run index and artifact storage for commands, scripts, tests | `run_store.rs` (codegg-core) | [run_store.md](run_store.md) |
+| Resilience | Circuit breaker, retry mechanisms | `resilience.rs` (codegg-core) | [resilience.md](resilience.md) |
+| Skills | Runtime skill loader and activation | `skills/` | [skills.md](skills.md) |
+| TTS | Text-to-speech (macOS `say` command) | `tts/` | [tts.md](tts.md) |
+| Upgrade | Self-upgrade via GitHub releases | `upgrade/` | [upgrade.md](upgrade.md) |
+| Util | Clipboard, fuzzy search, pricing, metrics | `util/` | [util.md](util.md) |
 
 ## Verified Counts
 
-| Item | Count | Location |
-|------|-------|----------|
-| Tools (default registry) | ~40 | `tool/mod.rs:with_options()` |
+| Item | Count | Source |
+|------|-------|--------|
+| Tools (default registry) | ~40 | `src/tool/mod.rs:with_options()` |
 | LSP servers | 39 | `crates/egglsp/src/server.rs` |
-| Native tool crates | 10 | `crates/` (codegg-core, codegg-config, codegg-protocol, codegg-providers, egglsp, egggit, eggsentry, eggcontext, codegg-git, egglsp-test-server) |
-| UiState fields | 30 | `tui/app/state/ui.rs:40-98` |
-| AppEvent variants | 60 | `crates/codegg-core/src/bus/events.rs:61-265` |
-| Built-in commands | 118 | `tui/command.rs` (assertion at line 517) |
-| Built-in agents | 9 | `agent/mod.rs:154-423` |
+| Native tool crates | 9 | `crates/` workspace |
+| AppEvent variants | 42 | `crates/codegg-core/src/bus/events.rs` |
+| Built-in commands | 118 | `src/tui/command.rs` |
+| Built-in agents | 9 | `assets/agents/*.toml` |
+| Database tables | 19+ | `crates/codegg-core/src/storage/` |
+| DB migrations | 23 | `crates/codegg-core/src/storage/` |
+| Integration tests | 75 | `tests/` |
+| Shell projection phases | 10 | `src/shell/` |
+| Python script modes | 3 | `src/python_script/types.rs` (Analyze/Transform/Verify) |
+| Git operation variants | 47 | `crates/codegg-git/src/lib.rs` |
+| Git risk classes | 11 | `crates/codegg-git/src/lib.rs` |
+| Providers (auto-registered) | 16 | `crates/codegg-providers/` |
 
 ## Feature Gates
 
@@ -215,26 +196,26 @@ hidden by default — see [MCP](mcp.md)).
 | `image` | Image support via ratatui-image |
 | `arboard` | Clipboard support (default feature) |
 | `debug-logging` | Debug logging output |
+| `lsp-test-support` | Fake LSP server + integration test harness |
+| `lsp-real-server-tests` | Real LSP server smoke tests (requires installed servers) |
 
 ## Database Schema
 
 ```
 ┌───────────────────────────────────────────────────────────────────┐
-│ Tables (15 total, 22 migrations)                                  │
+│ Tables (19+, 23 migrations)                                       │
 ├───────────────────────────────────────────────────────────────────┤
 │ migration_version  │ project        │ session        │ message    │
 │ part               │ todo           │ permission     │ session_share │
 │ cached_models      │ task           │ checkpoints    │ snapshot   │
 │ usage              │ goal           │ session_events │ research_run │
 │ user_preferences   │ core_event_log │ notification_history │ workspace │
+│ job                │ job_attempt    │ job_dependency │ schedule   │
+│ schedule_occurrence                                                          │
 └───────────────────────────────────────────────────────────────────┘
 ```
 
-`workspace` (Phase 2) is the canonical workspace registry. `session.workspace_id`
-references `workspace.id`; sessions whose `directory` cannot be canonicalized at
-migration time remain unbound and are rejected by `TurnSubmit` until rebound.
-
-## Event Flow
+## Data Flow
 
 ```
 User Input → TUI Event Loop → App::on_key() → State Mutation → Render
@@ -255,67 +236,201 @@ User Input → TUI Event Loop → App::on_key() → State Mutation → Render
             CoreClient.subscribe() → TUI updates
 ```
 
-## Error Handling
+### Command Execution Pipeline
 
-- `AppError` enum - centralized error type
-- `ProviderError::is_retryable()` - RateLimit, Timeout, Stream, CircuitOpen, Auth
-- `ToolError::is_retryable()` - Io, Network, Timeout
-- `McpError::is_retryable()` - Connection, Server, ToolCall, OAuth, Timeout
-- `LspError::is_retryable()` - DownloadFailed, LaunchFailed, RequestFailed, RequestTimeout, Io
+```
+Raw Shell Command
+    │
+    ▼
+classify_command_with_context()          ← command_intent (stage 1)
+    │  Risk assessment, execution capabilities
+    ▼
+plan_execution()                         ← command_planner (stage 2)
+    │  Backend selection, permission generation, projector policy
+    ▼
+resolve_routing()                        ← command_routing (stage 3)
+    │  Concrete subsystem dispatch
+    ▼
+┌─────────────────────────────────────────────────────┐
+│ RouteToTestRunner │ RouteToShell │ RouteToPython     │
+│ RouteToGit        │ RouteToNativeTool │ RouteToManagedProcess │
+└─────────────────────────────────────────────────────┘
+```
 
-## Security
+## Key Architectural Patterns
 
-- AES-256-GCM with Argon2id key derivation for API key encryption
-- SSRF protection with internal IP validation
-- HMAC-based permission decision persistence
-- Landlock filesystem sandboxing for bash tool
+### Singleton Daemon
+Exactly one user-scoped daemon per OS user. `connect_or_start_daemon` (`src/core/instance.rs`) is the canonical entry point. `DaemonInstanceGuard` holds `flock(LOCK_EX | LOCK_NB)` for the daemon's lifetime. Metadata in `daemon.json` is diagnostic only; the lock is authoritative.
+
+### Library-First, MCP-Second
+Durable tool domains live in workspace crates under `crates/` and are consumed directly in-process. The same crates can later expose optional MCP adapter binaries without changing model-facing tool names.
+
+### 3-Stage Command Pipeline
+Commands flow through classification → planning → routing. Each stage is a separate module with clear responsibilities. Active routing mode (`CommandIntentMode::Active`) enables dispatch to structured backends; default mode is `Observe` (classify + annotate only).
+
+### Projection Pipeline (10 Phases)
+Shell output flows through a 10-phase projection pipeline: raw capture → projector selection → RTK compression → redaction → expansion handles → context budget → promotion decisions. Each phase is independently testable.
+
+### Workspace-Scoped Services
+Each registered workspace gets its own `WorkspaceServices` bundle (RunStore, path policy, lock table, config). Bundles are lazily activated, lease-tracked, and idle-evicted.
+
+### Scheduler-Owned Execution
+The `JobScheduler` is the single daemon admission authority for submitted work. All heavy operations (tests, managed processes, subagent dispatch) flow through `JobSubmissionService` → `JobScheduler` → executor dispatch.
 
 ## Navigation
 
-- [Agent Loop](agent.md) - Main execution cycle, compaction, routing
-- [Bus/Events](bus.md) - Event bus and registries
-- [Client](client.md) - Remote TUI WebSocket client
-- [Command](command.md) - Slash command registry
-- [Compaction](compaction.md) - Context window overflow management
-- [Config](config.md) - Configuration loading and validation
-- [Context](context-ledger.md) - Token counting and context utilities
-- [Core](core.md) - CoreClient facade and transports
-- [Crypto](crypto.md) - API key encryption
-- [Error](error.md) - Centralized error handling
-- [Exec](exec.md) - Non-interactive execution mode
-- [Git](git.md) - Git session management
-- [Git polish / maintainability / verification handoff](git_polish_verification_handoff.md) - post-closure verified state, secret lifecycle, execution-origin matrix
-- [Hooks](hooks.md) - Lifecycle hooks
-- [Human Shell](human_shell.md) - Shell command execution and projection pipeline
-- [IDE](ide.md) - VS Code/JetBrains integration
-- [Jobs](jobs.md) - Phase 4 durable jobs, attempts, schedules, recovery, idempotency
-- [Scheduler](scheduler.md) - Phase 5 global admission control scheduler — closure pass: submission idempotency, permit lifecycle, cancellation, restart recovery, contention, authority matrix, protocol consistency; see `architecture/scheduler.md` for static guards and runtime evidence
-- [LSP](lsp.md) - Language Server Protocol
-- [MCP](mcp.md) - Model Context Protocol
-- [Memory](memory.md) - Persistent memory system
-- [Model Profile & Task State](model_profile_task_state.md) - Model behavioral profiles, todo/task state machine
-- [Native Crates](native_crates.md) — Workspace crates (egglsp, egggit, eggsentry, eggcontext, codegg-config, codegg-protocol, codegg-providers, codegg-git), backend contract, raw MCP exposure policy, diagnostics
-- [Permission](permission.md) - Access control and modes
-- [Plugin](plugin.md) - WASM plugin system
-- [Protocol](protocol.md) - Shared request/response envelopes
-- [Provider](provider.md) - LLM provider implementations
-- [Research](research.md) - Structured research pipeline
-- [Resilience](resilience.md) - Circuit breaker patterns
-- [Security](security.md) - SSRF, sandboxing
-- [Server](server.md) - HTTP/WebSocket for remote TUI
-- [Session](session.md) - SQLite storage and message history
-- [Shell Session](shell_session.md) - Shell session metadata
-- [Skills](skills.md) - Runtime skill loader
-- [Snapshot](snapshot.md) - File state capture and restore
-- [Storage](storage.md) - SQLite initialization
-- [Testing](testing.md) - Test resource taxonomy, Tokio runtime rules, pool strategy
-- [Theme](theme.md) - Frontend-neutral theme system
-- [Deterministic Tools](deterministic_tools.md) — Eggsact in-process deterministic utilities (text comparison, config validation, security inspection)
-- [Tool](tool.md) - Tool system and registry
-- [TTS](tts.md) - Text-to-speech
-- [TUI](tui.md) - Terminal user interface
-- [Upgrade](upgrade.md) - Self-upgrade functionality
-- [Util](util.md) - Utility functions
-- [Worktree](worktree.md) - Git worktree management
-- [Workspace](workspace.md) - Workspace registry, execution context, and daemon workspace binding
-- [Workspace Services and Storage](workspace_services.md) - Phase 3 per-workspace service bundles, lease lifecycle, lock table, user-scoped catalog, and migration tooling
+### Agent and Execution
+- [Agent Loop](agent.md) — Main execution cycle, compaction, routing, multi-agent teams
+- [Command Intent](command_intent.md) — Command classification, risk assessment, execution capabilities
+- [Command Planner](command_planner.md) — Backend mapping, permission generation, projection policy
+- [Command Routing](command_routing.md) — Concrete subsystem dispatch
+- [Test Runner](test_runner.md) — Test resolution, parsing, failure extraction, previous-failures index
+- [Python Scripting](python_scripting.md) — Analyze/Transform/Verify modes, AST risk, Landlock sandbox
+- [Research](research.md) — Structured research pipeline
+- [Exec](exec.md) — Non-interactive execution mode
+
+### Tools and Capabilities
+- [Tool](tool.md) — Tool trait, registry, ~40 built-in tools, backend abstraction
+- [Deterministic Tools](deterministic_tools.md) — Eggsact in-process validators
+- [Preflight](preflight.md) — Harness-side validation before mutations
+- [Git](git.md) — Git service, mutations, network, recovery, credential lifecycle
+- [LSP](lsp.md) — Language Server Protocol (39 servers, egglsp authoritative)
+- [MCP](mcp.md) — Model Context Protocol client
+- [Search Backend](search_backend.md) — Web search/fetch with eggsearch backend
+- [Plugin](plugin.md) — WASM plugin system (Wasmtime)
+
+### User Interface
+- [TUI](tui.md) — Ratatui terminal UI, async commands, state management
+- [Command](command.md) — 118 built-in slash commands
+- [Theme](theme.md) — Frontend-neutral theme system
+- [Human Shell](human_shell.md) — `!`/`!!` commands, 10-phase projection pipeline
+- [Shell Session](shell_session.md) — Shell session metadata
+
+### Core and Infrastructure
+- [Core](core.md) — Daemon lifecycle, transport adapters, request routing
+- [Workspace](workspace.md) — Workspace registry, execution context
+- [Workspace Services](workspace_services.md) — Per-workspace service bundles, migration
+- [Jobs](jobs.md) — Durable jobs, attempts, schedules, recovery
+- [Scheduler](scheduler.md) — Admission control, fair queue, executor dispatch
+- [Session](session.md) — SQLite storage, message history
+- [Storage](storage.md) — SQLite initialization, connection pooling
+- [Bus](bus.md) — Event bus, permission/question registries
+- [Error](error.md) — Centralized error handling
+
+### Providers and Config
+- [Provider](provider.md) — LLM provider implementations (16 auto-registered)
+- [Protocol](protocol.md) — Shared request/response envelopes
+- [Config](config.md) — Configuration loading and validation
+- [Model Profile & Task State](model_profile_task_state.md) — Model behavioral profiles, todo/task state
+- [Native Crates](native_crates.md) — Workspace crate architecture
+
+### Security
+- [Permission](permission.md) — Access control, DoomLoop detection, modes
+- [Security](security.md) — SSRF protection, Landlock sandboxing
+- [Crypto](crypto.md) — AES-256-GCM encryption
+- [Auth](auth.md) — Authentication and credentials
+
+### Support
+- [Hooks](hooks.md) — Lifecycle hooks
+- [Memory](memory.md) — Persistent memory
+- [Goal](goal.md) — Goal tracking
+- [Snapshot](snapshot.md) — File state capture/restore
+- [Worktree](worktree.md) — Git worktree management
+- [Run Store](run_store.md) — Run index and artifact storage
+- [Resilience](resilience.md) — Circuit breaker, retry
+- [Skills](skills.md) — Runtime skill loader
+- [TTS](tts.md) — Text-to-speech
+- [Upgrade](upgrade.md) — Self-upgrade
+- [Util](util.md) — Clipboard, fuzzy search, pricing, metrics
+
+### Git Handoffs
+- [Git Phase F Handoff](git_phase_f_handoff.md) — Phase F closure handoff
+- [Git Polish/Verification Handoff](git_polish_verification_handoff.md) — Post-closure verified state
+- [LSP Disk Cache Threat Model](lsp_disk_cache_threat_model.md) — LSP cache security
+
+### Additional References
+- [Cache-Aware Context](cache-aware-context.md) — Cache-aware context packing
+- [Compaction](compaction.md) — Context window overflow management
+- [Context Ledger](context-ledger.md) — Token counting and context utilities
+- [CodeGG Core](codegg_core.md) — codegg-core crate internals
+- [Testing](testing.md) — Test resource taxonomy, Tokio runtime rules
+
+## Directory Layout
+
+```
+codegg/
+├── src/                        # Root crate (application)
+│   ├── agent/                  # Agent loop, compaction, routing, teams
+│   ├── auth/                   # Authentication, crypto
+│   ├── client/                 # Remote TUI WebSocket client
+│   ├── command_intent/         # Command classification (stage 1)
+│   ├── command/                # Slash command registry
+│   ├── context/                # Token counting utilities
+│   ├── core/                   # Daemon, transport, request handling
+│   ├── eggsact/                # Eggsact adapter (in-process)
+│   ├── hooks/                  # Lifecycle hooks
+│   ├── ide/                    # VS Code/JetBrains detection
+│   ├── lsp/                    # LSP thin re-export shim
+│   ├── mcp/                    # MCP client
+│   ├── permission/             # Access control
+│   ├── plugin/                 # WASM plugin system
+│   ├── preflight/              # Eggsact preflight validation
+│   ├── python_script/          # Python scripting (Analyze/Transform/Verify)
+│   ├── research/               # Research pipeline
+│   ├── scheduler/              # Admission control, fair queue
+│   ├── search/                 # Web search tools (legacy)
+│   ├── search_backend/         # Search backend dispatch
+│   ├── security/               # SSRF, sandboxing
+│   ├── server/                 # HTTP/WebSocket server
+│   ├── shell/                  # Human shell, projection pipeline
+│   ├── shell_session/          # Shell session metadata
+│   ├── skills/                 # Skill loader
+│   ├── test_runner/            # Test execution, parsing, reporting
+│   ├── theme/                  # Theme system
+│   ├── tool/                   # ~40 built-in tools
+│   ├── tts/                    # Text-to-speech
+│   ├── tui/                    # Terminal UI (Ratatui)
+│   ├── upgrade/                # Self-upgrade
+│   ├── util/                   # Utilities
+│   ├── git_*.rs                # Git mutations, network, recovery, store
+│   ├── command_*.rs            # Command pipeline (planner, routing, outcome)
+│   ├── job_*.rs                # Job dispatch, recovery
+│   ├── managed_process.rs      # Managed process lifecycle
+│   ├── lib.rs                  # Library root (re-exports)
+│   └── main.rs                 # Binary entry point
+├── crates/                     # Workspace crates (library-first)
+│   ├── codegg-core/            # Domain types, bus, jobs, session, storage
+│   ├── codegg-config/          # Config schema, paths, loading
+│   ├── codegg-protocol/        # Protocol types (CoreRequest/Response/Event)
+│   ├── codegg-providers/       # LLM provider implementations
+│   ├── codegg-git/             # Git operation model, argv parser, risk
+│   ├── egglsp/                 # LSP client (authoritative)
+│   ├── egggit/                 # Read-only git facts (status, diff, log, etc.)
+│   ├── eggsentry/              # Security scanning
+│   ├── eggcontext/             # Token counting
+│   └── egglsp-test-server/     # Fake LSP server for tests
+├── tests/                      # Integration tests (75 files)
+├── assets/                     # Agent definitions, prompts, themes
+│   ├── agents/                 # 9 built-in agent TOML definitions
+│   └── prompts/               # Agent prompt templates
+├── scripts/                    # CI guards, generators, validators
+├── architecture/               # Architecture documentation (63 docs)
+├── plans/                      # Design proposals and phase plans
+├── docs/                       # Validation docs, manifests
+└── examples/                   # Plugin SDKs and examples
+```
+
+## Static Guards
+
+Run these after changing execution surfaces or adding workspace crate dependencies:
+
+```bash
+python3 scripts/check-core-boundary.sh           # codegg-core boundary enforcement
+python3 scripts/check_daemon_cwd_usage.py        # workspace-bound daemon path guard
+python3 scripts/check_scheduler_bypass.py        # scheduler-bypass guard
+python3 scripts/check_execution_ownership.py     # process-spawn site ownership manifest
+python3 scripts/check_git_forbidden_patterns.py  # git secret boundary + policy drift
+python3 scripts/check_builtin_agents.py          # verify TOML matches generated.rs
+python3 scripts/check-tokio-test-flavors.py      # regression guard for bare #[tokio::test]
+python3 scripts/generate_builtin_agents.py --check  # agent asset staleness + schema validation
+```
