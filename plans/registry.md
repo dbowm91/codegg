@@ -24,7 +24,7 @@ Canonical direction remains in:
 
 | Subsystem | Status | Roadmap | Current milestone | Dependencies or blockers |
 |---|---|---|---|---|
-| Domain identity and compatibility | active | `plans/subsystems/domain-identity-roadmap.md` | Milestone 3 — daemon and protocol adoption | Plan registered; ready for handoff |
+| Domain identity and compatibility | active | `plans/subsystems/domain-identity-roadmap.md` | Milestone 3 — daemon and protocol adoption | Corrective pass required; no production implementation has landed against the plan |
 | Runtime assets and harness interoperability | active | `plans/subsystems/runtime-assets-roadmap.md` | Milestone 2 — explicit-context agent and instruction resolution | Plan registered; ready for handoff |
 | Provider connections and Eggpool | active | `plans/subsystems/provider-connections-roadmap.md` | Milestone 4 — lifecycle, rotation, health, and closure | Plan registered; ready for handoff |
 | Project catalog and lazy discovery | active | `plans/subsystems/project-catalog-roadmap.md` | Milestone 2 — bounded discovery and reconciliation | Plan registered; ready for handoff |
@@ -35,7 +35,7 @@ Canonical direction remains in:
 
 | Subsystem | Milestone | Class | Plan | Baseline | Status |
 |---|---|---|---|---|---|
-| Domain identity and compatibility | 003 — daemon and protocol adoption | infrastructure | `plans/implementation/domain-identity/003-daemon-protocol-adoption.md` | `3ce0a7e` | ready |
+| Domain identity and compatibility | 003 — daemon and protocol adoption | infrastructure | `plans/implementation/domain-identity/003-daemon-protocol-adoption.md` | `3ce0a7e` | corrective pass required |
 | Runtime assets and harness interoperability | 002 — explicit-context agent and instruction resolution | invariant | `plans/implementation/runtime-assets/002-explicit-context-agent-instruction-resolution.md` | `3ce0a7e` | ready |
 | Project catalog and lazy discovery | 002 — bounded discovery and reconciliation | capability | `plans/implementation/project-catalog/002-bounded-discovery-reconciliation.md` | `3ce0a7e` | ready |
 | Provider connections and Eggpool | 004 — lifecycle, rotation, health, and closure | capability | `plans/implementation/provider-connections/004-lifecycle-rotation-health-closure.md` | `3ce0a7e` | ready |
@@ -44,7 +44,7 @@ Canonical direction remains in:
 
 | Subsystem | Milestone | Closure record | Status | Open findings |
 |---|---|---|---|---|
-| — | — | — | — | None. |
+| Domain identity and compatibility | 003 — daemon and protocol adoption | `plans/closure/domain-identity/003-status.md` | corrective pass required | Resolver, additive protocol DTOs, daemon handler migration, server route cleanup, and expanded static guard are not implemented; the plan must be re-handed. |
 
 ## Blocked work
 
