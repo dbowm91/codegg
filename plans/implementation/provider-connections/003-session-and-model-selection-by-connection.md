@@ -2,7 +2,7 @@
 
 Status: ready for handoff
 
-Repository baseline: Provider Connections Milestone 002 closure commit (see `plans/closure/provider-connections/002-status.md`)
+Repository baseline: `8c1675c` (Provider Connections Milestone 002 closure; see `plans/closure/provider-connections/002-status.md`)
 
 Source roadmap:
 

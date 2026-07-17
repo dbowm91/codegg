@@ -37,7 +37,7 @@ Canonical direction remains in:
 |---|---|---|---|---|---|
 | Runtime assets and harness interoperability | 001 — project asset registry | infrastructure | `plans/implementation/runtime-assets/001-project-asset-registry.md` | `fbae374` | ready |
 | Project catalog and lazy discovery | 001 — durable catalog foundation | infrastructure | `plans/implementation/project-catalog/001-durable-catalog-foundation.md` | `fbae374` | ready |
-| Provider connections and Eggpool | 003 — session/model selection by connection | infrastructure | `plans/implementation/provider-connections/003-session-and-model-selection-by-connection.md` | M2 closure commit | ready |
+| Provider connections and Eggpool | 003 — session/model selection by connection | infrastructure | `plans/implementation/provider-connections/003-session-and-model-selection-by-connection.md` | `8c1675c` | ready |
 
 ## Active closure work
 
@@ -58,7 +58,7 @@ Canonical direction remains in:
 |---|---|---|---|---|
 | Domain identity and compatibility | 002 — project/repository storage migration | `plans/closure/domain-identity/002-status.md` | `84d92f0` | Runtime Assets 001 and Project Catalog 001 are ready |
 | Domain identity and compatibility | 001 — typed identity foundation | `plans/closure/domain-identity/001-status.md` | `f203ed9` | Milestone 2 — project/repository storage migration |
-| Provider connections and Eggpool | 002 — Eggpool `/connect` workflow | `plans/closure/provider-connections/002-status.md` | M2 closure commit | Milestone 3 — session/model selection by connection |
+| Provider connections and Eggpool | 002 — Eggpool `/connect` workflow | `plans/closure/provider-connections/002-status.md` | `8c1675c` | Milestone 3 — session/model selection by connection |
 | Provider connections and Eggpool | 001 — durable connection foundation | `plans/closure/provider-connections/001-status.md` | `bccca00` | Milestone 2 — Eggpool connect workflow |
 
 ## Registry maintenance rules

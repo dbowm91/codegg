@@ -2,6 +2,8 @@
 
 Status: implemented
 
+Implementation commit: `8c1675c`
+
 Closure record:
 
 - `plans/closure/provider-connections/002-status.md`

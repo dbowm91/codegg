@@ -10,15 +10,13 @@ Source subsystem roadmap:
 
 - `plans/subsystems/provider-connections-roadmap.md#milestone-2--eggpool-connect-workflow`
 
-Repository baseline reviewed: implementation and closure commits recorded
-below
+Repository baseline reviewed: `8c1675c` (`main` implementation and closure
+artifacts)
 
 Implementation commits or pull requests:
 
-- M2 implementation commit — daemon-owned Eggpool probe/provisioning,
+- `8c1675c` — daemon-owned Eggpool probe/provisioning,
   secret-safe protocol, TUI workflow, migration v26, tests, and docs.
-- M2 closure commit — this evidence record, roadmap/registry updates, and the
-  dependency-ready Milestone 003 handoff plan.
 
 ## 1. Executive finding
 
