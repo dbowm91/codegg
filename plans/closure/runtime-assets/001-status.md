@@ -14,7 +14,7 @@ Repository baseline reviewed: `b8df427` (Domain Identity 002 closed, Project Cat
 
 Implementation commit:
 
-- `feat: add source-aware project asset registry and portable skill discovery`. Adds
+- `f9db5c3` — `feat: add source-aware project asset registry and portable skill discovery`. Adds
   `src/skills/{source,parser,candidate,diagnostic,registry,compat}.rs`, the
   `AssetRegistry` and `SkillIndexCompat` public types, the `AssetDiscoveryConfig`
   bounds, the new `tests/skills_registry.rs` integration test target, and the
