@@ -24,18 +24,21 @@ Canonical direction remains in:
 
 | Subsystem | Status | Roadmap | Current milestone | Dependencies or blockers |
 |---|---|---|---|---|
-| Domain identity and compatibility | active | `plans/subsystems/domain-identity-roadmap.md` | Milestone 3 — daemon and protocol adoption | Milestone 2 closed; next implementation plan not yet authored |
-| Runtime assets and harness interoperability | active | `plans/subsystems/runtime-assets-roadmap.md` | Milestone 1 closed; Milestone 2 — explicit-context agent and instruction resolution | Milestone 1 closed; Milestone 2 implementation plan not yet authored |
-| Provider connections and Eggpool | active | `plans/subsystems/provider-connections-roadmap.md` | Milestone 4 — lifecycle, rotation, refresh, and disable/delete UX | Milestone 3 closed; Milestone 4 ready for handoff |
-| Project catalog and lazy discovery | active | `plans/subsystems/project-catalog-roadmap.md` | Milestone 1 closed; Milestone 2 — bounded discovery and reconciliation | Plan is dependency-ready after Domain Identity Milestone 2 |
-| Multi-project TUI and sessions | active | `plans/subsystems/tui-project-sessions-roadmap.md` | Milestone 1 — project-aware state and catalog client | Project catalog protocol (catalog service now available; protocol surface arrives with Project Catalog 4) |
-| Frontend-neutral session projections | active | `plans/subsystems/session-projections-roadmap.md` | Milestone 1 — projection contracts and canonical reducer | Domain identity (closed), project catalog (Milestone 1 closed), and multi-project TUI state |
+| Domain identity and compatibility | active | `plans/subsystems/domain-identity-roadmap.md` | Milestone 3 — daemon and protocol adoption | Plan registered; ready for handoff |
+| Runtime assets and harness interoperability | active | `plans/subsystems/runtime-assets-roadmap.md` | Milestone 2 — explicit-context agent and instruction resolution | Plan registered; ready for handoff |
+| Provider connections and Eggpool | active | `plans/subsystems/provider-connections-roadmap.md` | Milestone 4 — lifecycle, rotation, health, and closure | Plan registered; ready for handoff |
+| Project catalog and lazy discovery | active | `plans/subsystems/project-catalog-roadmap.md` | Milestone 2 — bounded discovery and reconciliation | Plan registered; ready for handoff |
+| Multi-project TUI and sessions | active | `plans/subsystems/tui-project-sessions-roadmap.md` | Milestone 1 — project-aware state and catalog client | Project Catalog 4 protocol/server migration and Runtime Assets refresh/activation interfaces |
+| Frontend-neutral session projections | active | `plans/subsystems/session-projections-roadmap.md` | Milestone 1 — projection contracts and canonical reducer | Domain Identity 3, Project Catalog 4, and Multi-Project TUI 1 |
 
 ## Dependency-ready implementation plans
 
 | Subsystem | Milestone | Class | Plan | Baseline | Status |
 |---|---|---|---|---|---|
-| — | — | — | — | — | None. |
+| Domain identity and compatibility | 003 — daemon and protocol adoption | infrastructure | `plans/implementation/domain-identity/003-daemon-protocol-adoption.md` | `3ce0a7e` | ready |
+| Runtime assets and harness interoperability | 002 — explicit-context agent and instruction resolution | invariant | `plans/implementation/runtime-assets/002-explicit-context-agent-instruction-resolution.md` | `3ce0a7e` | ready |
+| Project catalog and lazy discovery | 002 — bounded discovery and reconciliation | capability | `plans/implementation/project-catalog/002-bounded-discovery-reconciliation.md` | `3ce0a7e` | ready |
+| Provider connections and Eggpool | 004 — lifecycle, rotation, health, and closure | capability | `plans/implementation/provider-connections/004-lifecycle-rotation-health-closure.md` | `3ce0a7e` | ready |
 
 ## Active closure work
 
@@ -47,8 +50,8 @@ Canonical direction remains in:
 
 | Work item | Blocker | Required resolution | Owner document |
 |---|---|---|---|
-| Multi-Project TUI 001 — project-aware state | Project catalog protocol surface and runtime asset refresh/generation interfaces are unavailable | Close Project Catalog 4 (protocol/server migration) and the Runtime Assets activation/refresh milestone | `plans/implementation/tui-project-sessions/001-project-aware-state.md` |
-| Session Projections 001 — projection contracts | Stable project/session routing and project-aware TUI state are unavailable | Close Domain Identity daemon/protocol adoption, Project Catalog 4 (protocol/server migration), and Multi-Project TUI 1 (state foundation) | `plans/implementation/session-projections/001-projection-contracts.md` |
+| Multi-Project TUI 001 — project-aware state | Project catalog protocol/server surface and runtime asset refresh/generation interfaces are unavailable | Close Project Catalog 004 and the Runtime Assets refresh/activation milestones; do not create frontend-local project authority | `plans/implementation/tui-project-sessions/001-project-aware-state.md` |
+| Session Projections 001 — projection contracts | Stable project/session routing and project-aware TUI state are unavailable | Close Domain Identity 003, Project Catalog 004, and Multi-Project TUI 001 | `plans/implementation/session-projections/001-projection-contracts.md` |
 
 ## Recently closed work
 
