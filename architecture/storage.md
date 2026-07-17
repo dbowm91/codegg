@@ -140,7 +140,7 @@ Gracefully closes the connection pool using async pool shutdown. The `self` para
 
 Migrations are implemented in `src/session/schema.rs`, not in the storage module itself. The storage module calls `session::schema::migrate()` during initialization.
 
-Migration versions v1-v22 are supported, covering:
+Migration versions v1-v24 are supported, covering:
 - v1: Initial schema (project, session, message, part, todo, permission, session_share tables)
 - v2: Additional indexes
 - v3: cached_models table
@@ -169,6 +169,12 @@ Migration versions v1-v22 are supported, covering:
   `migrate_legacy_project_database(catalog_pool, registry, project_root)`.
   See [`workspace_services.md`](workspace_services.md) for the full
   contract.
+- v24 creates the additive `provider_connections` table, its
+  scope/lifecycle/revision indexes, and the uniqueness constraint used by the
+  daemon-owned durable connection store. The row stores only an opaque
+  reference and a non-secret credential-store locator; it never stores
+  resolved credentials. The migration is idempotent and does not probe
+  providers or import ambiguous legacy configuration.
 
 ## See Also
 

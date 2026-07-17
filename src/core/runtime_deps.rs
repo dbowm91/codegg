@@ -8,6 +8,20 @@ use codegg_core::jobs::{
 };
 use codegg_core::workspace_services::{WorkspaceServicePolicy, WorkspaceServiceRegistry};
 
+fn default_connection_manager(
+    pool: &sqlx::SqlitePool,
+) -> Option<Arc<crate::core::provider_connections::ConnectionManager>> {
+    let credential_store = codegg_providers::CredentialStore::at_default_location().ok()?;
+    let metadata_store =
+        Arc::new(codegg_core::provider_connections::ProviderConnectionStore::new(pool.clone()));
+    let factory = Arc::new(codegg_providers::ProviderConnectionFactory::from_store(
+        Arc::new(credential_store),
+    ));
+    Some(Arc::new(
+        crate::core::provider_connections::ConnectionManager::new(metadata_store, factory),
+    ))
+}
+
 /// Transitional container for concrete agent runtime dependencies.
 ///
 /// These fields are still needed for task scheduling and subagent spawning,
@@ -72,6 +86,10 @@ pub struct CoreRuntimeDeps {
     /// Even when `scheduler` is `None`, the resolved config is held
     /// here so it can be queried for snapshots and settings pages.
     pub scheduler_config: crate::scheduler::config::ResolvedSchedulerConfig,
+    /// Daemon-owned lazy provider-connection runtime manager. `None` keeps
+    /// legacy/test constructors source-compatible; production wiring can
+    /// install it with [`Self::with_connection_manager`].
+    pub connection_manager: Option<Arc<crate::core::provider_connections::ConnectionManager>>,
 }
 
 impl Clone for CoreRuntimeDeps {
@@ -91,6 +109,7 @@ impl Clone for CoreRuntimeDeps {
             scheduler: self.scheduler.clone(),
             submission: self.submission.clone(),
             scheduler_config: self.scheduler_config.clone(),
+            connection_manager: self.connection_manager.clone(),
         }
     }
 }
@@ -125,6 +144,7 @@ impl CoreRuntimeDeps {
             scheduler: None,
             submission: None,
             scheduler_config: crate::scheduler::config::ResolvedSchedulerConfig::default(),
+            connection_manager: None,
         }
     }
 
@@ -152,6 +172,7 @@ impl CoreRuntimeDeps {
             scheduler: None,
             submission: None,
             scheduler_config: crate::scheduler::config::ResolvedSchedulerConfig::default(),
+            connection_manager: None,
         }
     }
 
@@ -169,6 +190,7 @@ impl CoreRuntimeDeps {
             pool.clone(),
             Arc::clone(&job_store),
         ));
+        let connection_manager = default_connection_manager(&pool);
         Self {
             pool: Some(pool),
             memory_store,
@@ -188,6 +210,7 @@ impl CoreRuntimeDeps {
             scheduler: None,
             submission: None,
             scheduler_config: crate::scheduler::config::ResolvedSchedulerConfig::default(),
+            connection_manager,
         }
     }
 
@@ -231,6 +254,15 @@ impl CoreRuntimeDeps {
         submission: Arc<crate::scheduler::JobSubmissionService>,
     ) -> Self {
         self.submission = Some(submission);
+        self
+    }
+
+    /// Install the daemon-owned lazy provider-connection manager.
+    pub fn with_connection_manager(
+        mut self,
+        manager: Arc<crate::core::provider_connections::ConnectionManager>,
+    ) -> Self {
+        self.connection_manager = Some(manager);
         self
     }
 }

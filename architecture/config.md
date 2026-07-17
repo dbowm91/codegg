@@ -407,6 +407,16 @@ registry (`src/search/`). The built-in registry is legacy fallback
 only and should not grow. Eggsearch owns the provider list, the
 fetching path, and any provider-specific extraction logic.
 
+### Durable provider-connection compatibility
+
+The existing `provider.<id>` configuration and environment-variable
+registration path remains authoritative for legacy callers. Durable provider
+connections are additive daemon-owned metadata: they reference an existing
+encrypted credential-store account by an opaque secret reference and do not
+copy inline or resolved credentials into SQLite. Configuration loading does
+not automatically import legacy providers when endpoint or account mapping
+is ambiguous; future connection workflows must make that selection explicit.
+
 See
 [`search_backend.md`](search_backend.md) and
 [`architecture/search_backend.md`](search_backend.md)

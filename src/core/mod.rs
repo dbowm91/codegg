@@ -12,6 +12,7 @@ pub mod daemon;
 pub mod event_log;
 pub mod instance;
 pub mod notification;
+pub mod provider_connections;
 pub mod runtime_deps;
 pub mod session_runtime;
 pub mod transport;

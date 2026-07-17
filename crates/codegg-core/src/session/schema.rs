@@ -91,6 +91,9 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), StorageError> {
     if current_version < 23 {
         migrate_and_record(pool, 23).await?;
     }
+    if current_version < 24 {
+        migrate_and_record(pool, 24).await?;
+    }
 
     Ok(())
 }
@@ -126,6 +129,7 @@ async fn migrate_and_record(pool: &SqlitePool, version: i64) -> Result<(), Stora
             21 => migrate_v21(pool).await?,
             22 => migrate_v22(pool).await?,
             23 => migrate_v23(pool).await?,
+            24 => migrate_v24(pool).await?,
             _ => {
                 return Err(StorageError::Migration(format!(
                     "unknown migration version {}",
@@ -1022,6 +1026,73 @@ async fn migrate_v23(pool: &SqlitePool) -> Result<(), StorageError> {
         .execute(pool)
         .await
         .map_err(|e| StorageError::Migration(e.to_string()))?;
+
+    Ok(())
+}
+
+/// Durable daemon-owned provider connection metadata. Secret material is
+/// deliberately absent; the three binding columns contain only opaque
+/// references and account/provider locators.
+async fn migrate_v24(pool: &SqlitePool) -> Result<(), StorageError> {
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS provider_connections (
+            id TEXT PRIMARY KEY,
+            provider_kind TEXT NOT NULL,
+            display_name TEXT NOT NULL,
+            endpoint TEXT NOT NULL,
+            tls_policy TEXT NOT NULL,
+            scope_kind TEXT NOT NULL CHECK (scope_kind IN ('personal', 'project', 'deployment')),
+            scope_ref TEXT NOT NULL,
+            secret_ref TEXT NOT NULL DEFAULT '',
+            secret_provider_ref TEXT NOT NULL DEFAULT '',
+            secret_account_ref TEXT NOT NULL DEFAULT '',
+            state TEXT NOT NULL CHECK (state IN ('active', 'disabled', 'credential_missing')),
+            revision INTEGER NOT NULL CHECK (revision > 0),
+            time_created INTEGER NOT NULL,
+            time_updated INTEGER NOT NULL,
+            UNIQUE (
+                scope_kind,
+                scope_ref,
+                provider_kind,
+                endpoint,
+                tls_policy,
+                secret_provider_ref,
+                secret_account_ref
+            ),
+            CHECK (
+                (secret_ref = '' AND secret_provider_ref = '' AND secret_account_ref = '')
+                OR
+                (secret_ref <> '' AND secret_provider_ref <> '' AND secret_account_ref <> '')
+            )
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| StorageError::Migration(e.to_string()))?;
+
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_provider_connections_scope \
+         ON provider_connections(scope_kind, scope_ref)",
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| StorageError::Migration(e.to_string()))?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_provider_connections_state \
+         ON provider_connections(state)",
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| StorageError::Migration(e.to_string()))?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_provider_connections_updated \
+         ON provider_connections(time_updated DESC)",
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| StorageError::Migration(e.to_string()))?;
 
     Ok(())
 }

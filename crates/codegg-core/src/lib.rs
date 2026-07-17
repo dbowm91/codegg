@@ -9,6 +9,7 @@ pub mod memory;
 pub mod migration;
 pub mod model_profile;
 pub mod protocol_conversions;
+pub mod provider_connections;
 pub mod resilience;
 pub mod run_store;
 pub mod session;

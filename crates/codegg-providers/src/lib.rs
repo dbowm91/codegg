@@ -13,6 +13,7 @@ pub mod cache;
 pub mod catalog;
 pub mod circuit;
 pub mod cloudflare;
+pub mod connection;
 pub mod copilot;
 pub mod crypto;
 pub mod discovery;
@@ -35,6 +36,12 @@ pub use auth_types::{
     StoredCredentialRecord,
 };
 pub use circuit::{CircuitBreaker, CircuitError, CircuitState};
+pub use connection::{
+    ConnectionDescriptor, ConnectionError, ConnectionKind, CredentialResolver,
+    CredentialStoreAdapter, CredentialStoreSecretResolver, ProviderConnection,
+    ProviderConnectionDescriptor, ProviderConnectionFactory, ProviderFactory, ProviderKind,
+    SecretRef, SecretReference, SecretResolutionError, SecretResolver,
+};
 pub use error::{ProviderError, StorageError};
 pub use provider_core::{
     assistant_text_content_value, create_http_client, openai_tool_arguments_value,

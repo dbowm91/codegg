@@ -720,6 +720,30 @@ Key methods:
 4. Exponential backoff: `2^i` seconds (1s, 2s, 4s, 8s... max 30s)
 5. Return last error if all providers exhausted
 
+## Durable provider connections
+
+The durable connection foundation is owned by the daemon and is additive to
+the provider registry. `codegg_core::provider_connections` stores
+`ProviderConnection` metadata under a typed `ProviderConnectionId`, with
+explicit personal, project, or deployment scope. A connection records the
+provider kind, normalized endpoint/TLS metadata, display name, lifecycle
+state, an opaque `SecretRef`, and a monotonically increasing revision. It
+never stores resolved credential material.
+
+SQLite persistence is provided by `ProviderConnectionStore`. The connection
+row contains only metadata plus an opaque secret reference and the
+provider/account locator needed to ask the existing encrypted
+`CredentialStore` for a credential. Listing, hydration, and metadata updates
+do not resolve credentials or perform network probes.
+
+The daemon's `ConnectionManager` is the lazy runtime seam. It resolves one
+connection at a time, rejects disabled or missing-credential records with
+typed errors, caches instances by connection ID and record revision, and
+invalidates cached instances when the metadata revision changes. Legacy
+`ProviderRegistry` construction remains available for environment/config
+registration; the connection path does not replace or implicitly migrate
+that behavior.
+
 ## Related Architecture Documents
 
 - `architecture/core.md` - Core facade and transport adapters

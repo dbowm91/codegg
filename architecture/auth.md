@@ -219,6 +219,22 @@ is still used as a last-resort fallback by
 zero providers, so the TUI continues to work on hosts that rely
 purely on env vars.
 
+## Durable connection secret references
+
+Durable provider connections do not embed `Credential` values or plaintext
+secrets. Their persisted `SecretRef` is an opaque identifier. The connection
+store separately retains the non-secret provider/account locator used by the
+existing encrypted `CredentialStore`; the resolver decrypts only at lazy
+runtime construction. A missing master key, missing account, expired record,
+or invalid binding is an explicit resolution failure and never falls back to
+another account.
+
+This adapter preserves the existing environment/config registration path.
+Connections are a daemon-owned runtime seam, not a replacement credential
+store or an authorization decision. Secret values remain absent from
+connection rows, summaries, debug output, and protocol-facing redacted
+metadata.
+
 ## Intentionally not implemented
 
 The following are parsed by the typed config but never resolved
