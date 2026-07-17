@@ -233,7 +233,7 @@ This roadmap closes when project assets are explicit-context, interoperable, sou
 
 | Milestone | Status | Implementation plan | Closure record | Blockers |
 |---|---|---|---|---|
-| 1 | ready | `plans/implementation/runtime-assets/001-project-asset-registry.md` | — | — |
-| 2 | not started | — | — | Milestone 1 closure |
-| 3 | not started | — | — | Milestone 1 and session lifecycle interface |
+| 1 | closed | `plans/implementation/runtime-assets/001-project-asset-registry.md` | `plans/closure/runtime-assets/001-status.md` | — |
+| 2 | not started | — | — | Milestone 1 closure (now met) |
+| 3 | not started | — | — | Milestone 1 (now met) and session lifecycle interface |
 | 4 | not started | — | — | Milestones 2–3 closure |

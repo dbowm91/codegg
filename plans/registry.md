@@ -25,7 +25,7 @@ Canonical direction remains in:
 | Subsystem | Status | Roadmap | Current milestone | Dependencies or blockers |
 |---|---|---|---|---|
 | Domain identity and compatibility | active | `plans/subsystems/domain-identity-roadmap.md` | Milestone 3 — daemon and protocol adoption | Milestone 2 closed; next implementation plan not yet authored |
-| Runtime assets and harness interoperability | active | `plans/subsystems/runtime-assets-roadmap.md` | Milestone 1 — source-aware registry and portable skill discovery | Plan is dependency-ready after Domain Identity Milestone 2 |
+| Runtime assets and harness interoperability | active | `plans/subsystems/runtime-assets-roadmap.md` | Milestone 1 closed; Milestone 2 — explicit-context agent and instruction resolution | Milestone 1 closed; Milestone 2 implementation plan not yet authored |
 | Provider connections and Eggpool | active | `plans/subsystems/provider-connections-roadmap.md` | Milestone 4 — lifecycle, rotation, refresh, and disable/delete UX | Milestone 3 closed; Milestone 4 ready for handoff |
 | Project catalog and lazy discovery | active | `plans/subsystems/project-catalog-roadmap.md` | Milestone 1 closed; Milestone 2 — bounded discovery and reconciliation | Plan is dependency-ready after Domain Identity Milestone 2 |
 | Multi-project TUI and sessions | active | `plans/subsystems/tui-project-sessions-roadmap.md` | Milestone 1 — project-aware state and catalog client | Project catalog protocol (catalog service now available; protocol surface arrives with Project Catalog 4) |
@@ -35,7 +35,7 @@ Canonical direction remains in:
 
 | Subsystem | Milestone | Class | Plan | Baseline | Status |
 |---|---|---|---|---|---|
-| Runtime assets and harness interoperability | 001 — project asset registry | infrastructure | `plans/implementation/runtime-assets/001-project-asset-registry.md` | `fbae374` | ready |
+| — | — | — | — | — | None. |
 
 ## Active closure work
 
@@ -54,6 +54,7 @@ Canonical direction remains in:
 
 | Subsystem | Milestone | Closure record | Closed at commit | Follow-up |
 |---|---|---|---|---|
+| Runtime assets and harness interoperability | 001 — project asset registry | `plans/closure/runtime-assets/001-status.md` | implementation PR (see closure) | Milestone 2 — explicit-context agent and instruction resolution |
 | Project catalog and lazy discovery | 001 — durable catalog foundation | `plans/closure/project-catalog/001-status.md` | `a2db5e4` | Milestone 2 — bounded discovery and reconciliation |
 | Provider connections and Eggpool | 003 — session/model selection by connection | `plans/closure/provider-connections/003-status.md` | `213783e` | Milestone 4 — lifecycle, rotation, refresh, and disable/delete UX |
 | Domain identity and compatibility | 002 — project/repository storage migration | `plans/closure/domain-identity/002-status.md` | `84d92f0` | Runtime Assets 001 and Project Catalog 001 are ready |

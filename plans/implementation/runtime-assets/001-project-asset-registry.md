@@ -1,8 +1,10 @@
 # Runtime Assets Milestone 001 — Project Asset Registry and Portable Skill Discovery
 
-Status: ready for handoff
+Status: implemented (closure evidence: `plans/closure/runtime-assets/001-status.md`)
 
 Repository baseline: `fbae374a2cd6172505204b1bc1bee1ef247afd5f` (production-code baseline; subsequent planning-only commits do not alter implementation state)
+
+Implementation commit: `b8df427` (HEAD) → implementation PR (see closure record).
 
 Source roadmap:
 
