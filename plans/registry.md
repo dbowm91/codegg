@@ -26,7 +26,7 @@ Canonical direction remains in:
 |---|---|---|---|---|
 | Domain identity and compatibility | active | `plans/subsystems/domain-identity-roadmap.md` | Milestone 2 — project/repository storage migration | None |
 | Runtime assets and harness interoperability | active | `plans/subsystems/runtime-assets-roadmap.md` | Milestone 1 — source-aware registry and portable skill discovery | Domain identity Milestone 2 context interface |
-| Provider connections and Eggpool | active | `plans/subsystems/provider-connections-roadmap.md` | Milestone 1 — durable connection and secret-reference foundation | None |
+| Provider connections and Eggpool | active | `plans/subsystems/provider-connections-roadmap.md` | Milestone 2 — Eggpool connect workflow | Milestone 1 closed; next handoff not yet registered |
 | Project catalog and lazy discovery | active | `plans/subsystems/project-catalog-roadmap.md` | Milestone 1 — durable project and repository catalog | Domain identity storage/migration milestones |
 | Multi-project TUI and sessions | active | `plans/subsystems/tui-project-sessions-roadmap.md` | Milestone 1 — project-aware state and catalog client | Runtime asset refresh and project catalog protocol |
 | Frontend-neutral session projections | active | `plans/subsystems/session-projections-roadmap.md` | Milestone 1 — projection contracts and canonical reducer | Domain identity, project catalog, and multi-project TUI state |
@@ -35,7 +35,6 @@ Canonical direction remains in:
 
 | Subsystem | Milestone | Class | Plan | Baseline | Status |
 |---|---|---|---|---|---|
-| Provider connections and Eggpool | 001 — durable connection foundation | infrastructure | `plans/implementation/provider-connections/001-connection-foundation.md` | `f203ed9` | ready |
 
 ## Active closure work
 
@@ -57,6 +56,7 @@ Canonical direction remains in:
 | Subsystem | Milestone | Closure record | Closed at commit | Follow-up |
 |---|---|---|---|---|
 | Domain identity and compatibility | 001 — typed identity foundation | `plans/closure/domain-identity/001-status.md` | `f203ed9` | Milestone 2 — project/repository storage migration |
+| Provider connections and Eggpool | 001 — durable connection foundation | `plans/closure/provider-connections/001-status.md` | `bccca00` | Milestone 2 — Eggpool connect workflow |
 
 ## Registry maintenance rules
 

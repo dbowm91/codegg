@@ -1,6 +1,12 @@
 # Provider Connections Milestone 001 — Durable Connection Foundation
 
-Status: ready for handoff
+Status: implemented
+
+Implementation commit: `bccca00` (`feat: add durable provider connections foundation`)
+
+Closure record:
+
+- `plans/closure/provider-connections/001-status.md`
 
 Repository baseline: `f203ed9` (typed identity foundation implementation and closure committed; subsequent planning-only commits do not alter implementation state)
 
@@ -42,7 +48,12 @@ not substitute arbitrary strings or path-valued project IDs.
 - Provider server routes expose registered providers but not durable connection lifecycle or scope.
 - Legacy config can contain inline/encrypted API key and endpoint data.
 
-Known gap: there is no stable `ProviderConnection` record, no personal/project/deployment scope, no secret reference stored separately from connection metadata, no daemon connection manager, and no compatibility mapping from sessions/config to a connection identity.
+At handoff, the known gap was the absence of a stable `ProviderConnection`
+record, explicit scope, secret-reference adapter, daemon connection manager,
+and connection-identity compatibility seam. Those infrastructure gaps are
+closed by implementation commit `bccca00`; Eggpool UI, session migration,
+authorization, health probing, and rotation remain the explicit follow-up
+scope described below.
 
 ## 4. Invariants that must not regress
 
