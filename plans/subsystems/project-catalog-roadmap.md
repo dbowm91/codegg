@@ -225,6 +225,6 @@ This roadmap closes when the daemon maintains a durable, bounded, path-independe
 | Milestone | Status | Implementation plan | Closure record | Blockers |
 |---|---|---|---|---|
 | 1 | closed | `plans/implementation/project-catalog/001-durable-catalog-foundation.md` | `plans/closure/project-catalog/001-status.md` | — |
-| 2 | not started | — | — | Milestone 1 closure (satisfied) |
-| 3 | not started | — | — | Milestones 1–2 and runtime asset activation interface |
+| 2 | ready | `plans/implementation/project-catalog/002-bounded-discovery-reconciliation.md` | — | Milestone 1 closure satisfied |
+| 3 | not started | — | — | Milestone 2 closure and runtime asset refresh interface |
 | 4 | not started | — | — | Milestones 1–3 closure |
