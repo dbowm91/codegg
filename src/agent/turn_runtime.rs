@@ -247,11 +247,19 @@ impl TurnRuntime for DefaultTurnRuntime {
         // ── System prompt assembly ───────────────────────────────────
         let agents = crate::protocol_conversions::dtos_to_agents(agents_dto.clone());
 
-        let mut system = crate::agent::prompt::load_agent_prompt(
-            &crate::protocol_conversions::dto_to_agent(agents_dto[current_agent_idx].clone()),
-            &config,
-            &model_name,
-        );
+        let mut system = {
+            let ctx = crate::agent::asset_context::AssetContextBuilder::new()
+                .with_synthetic_project_id(crate::agent::asset_context::ProjectId::new())
+                .with_workspace_root(&execution.workspace_root)
+                .build()
+                .expect("execution.workspace_root is a valid workspace root");
+            crate::agent::prompt::load_agent_prompt_with_context(
+                &crate::protocol_conversions::dto_to_agent(agents_dto[current_agent_idx].clone()),
+                &config,
+                &model_name,
+                &ctx,
+            )
+        };
         system.push_str(&memory_context);
 
         // Goal context

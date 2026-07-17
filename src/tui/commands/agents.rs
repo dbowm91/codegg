@@ -3,6 +3,7 @@
 //! Handles `/agents` (list, show, diff, validate, reload) and
 //! `/agent <name>` (select active agent).
 
+use crate::agent::asset_context::{AssetContext, AssetContextBuilder, ProjectId};
 use crate::agent::registry::{AgentRegistry, AgentSourceKind};
 #[cfg(test)]
 use crate::agent::resolve_agents;
@@ -11,10 +12,35 @@ use crate::config::schema::Config;
 use crate::tui::app::state::agent::AgentState;
 use crate::util::truncate::truncate_prefix;
 
+/// Build an `AssetContext` rooted at the given workspace for
+/// `/agents` commands. CLI bootstrap is allowed to fall back to
+/// process-global cwd for the project root; the result is still an
+/// explicit context with a synthetic `ProjectId` so the registry no
+/// longer reads `PWD` directly.
+fn cli_compat_context(workspace_root: &std::path::Path) -> AssetContext {
+    AssetContextBuilder::new()
+        .with_synthetic_project_id(ProjectId::new())
+        .with_workspace_root(workspace_root)
+        .build()
+        .expect("workspace root is valid")
+}
+
+/// Production CLI bootstrap helper. Reads `current_dir` exactly once at
+/// the boundary so the agent registry no longer needs to.
+fn cli_compat_context_from_cwd() -> AssetContext {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    cli_compat_context(&cwd)
+}
+
+fn load_cli_registry() -> Result<AgentRegistry, crate::error::AgentError> {
+    let config = Config::load().unwrap_or_default();
+    let ctx = cli_compat_context_from_cwd();
+    AgentRegistry::load_for_context(&config, &ctx)
+}
+
 /// Format `/agents` output: visible agents grouped by mode.
 pub(crate) fn format_agents_list(agent_state: &AgentState, show_all: bool) -> Vec<String> {
-    let config = Config::load().unwrap_or_default();
-    let registry = match AgentRegistry::load(&config) {
+    let registry = match load_cli_registry() {
         Ok(r) => r,
         Err(e) => return vec![format!("Failed to load agent registry: {e}")],
     };
@@ -96,8 +122,7 @@ pub(crate) fn format_agents_list(agent_state: &AgentState, show_all: bool) -> Ve
 
 /// Format `/agents show <name>` output: resolved agent metadata.
 pub(crate) fn format_agent_show(name: &str) -> Vec<String> {
-    let config = Config::load().unwrap_or_default();
-    let registry = match AgentRegistry::load(&config) {
+    let registry = match load_cli_registry() {
         Ok(r) => r,
         Err(e) => return vec![format!("Failed to load agent registry: {e}")],
     };
@@ -198,8 +223,7 @@ pub(crate) fn format_agent_show(name: &str) -> Vec<String> {
 
 /// Format `/agents diff <name>` output: overlay changes.
 pub(crate) fn format_agent_diff(name: &str) -> Vec<String> {
-    let config = Config::load().unwrap_or_default();
-    let registry = match AgentRegistry::load(&config) {
+    let registry = match load_cli_registry() {
         Ok(r) => r,
         Err(e) => return vec![format!("Failed to load agent registry: {e}")],
     };
@@ -246,7 +270,12 @@ pub(crate) fn format_agent_diff(name: &str) -> Vec<String> {
         // Check if any overlay replaced the builtin
         let builtin_agent = {
             let base_config = Config::default();
-            if let Ok(base_reg) = AgentRegistry::load(&base_config) {
+            let base_ctx = AssetContextBuilder::new()
+                .with_synthetic_project_id(ProjectId::new())
+                .with_workspace_root(std::path::PathBuf::from("."))
+                .build()
+                .expect("base context is valid");
+            if let Ok(base_reg) = AgentRegistry::load_for_context(&base_config, &base_ctx) {
                 base_reg.get(name).map(|ra| ra.agent.clone())
             } else {
                 None
@@ -359,8 +388,7 @@ pub(crate) fn format_agents_validate() -> Vec<String> {
 /// Validate agents and return diagnostics with error status.
 /// Returns (lines, has_errors) for headless/CLI mode.
 fn format_agents_validate_inner() -> (Vec<String>, bool) {
-    let config = Config::load().unwrap_or_default();
-    let registry = match AgentRegistry::load(&config) {
+    let registry = match load_cli_registry() {
         Ok(r) => r,
         Err(e) => return (vec![format!("error: failed to load registry: {e}")], true),
     };
@@ -428,8 +456,7 @@ fn format_agents_validate_inner() -> (Vec<String>, bool) {
 /// Unlike reload, this uses the full AgentRegistry to capture source provenance
 /// and diagnostics, then converts to plain agents.
 pub(crate) fn rebuild_agents() -> (Vec<crate::agent::Agent>, Vec<String>) {
-    let config = Config::load().unwrap_or_default();
-    match AgentRegistry::load(&config) {
+    match load_cli_registry() {
         Ok(registry) => {
             let count = registry.list().count();
             let visible = registry.list_visible().len();
@@ -490,6 +517,7 @@ mod tests {
     #[test]
     fn format_agents_list_shows_primary_and_subagents() {
         let state = AgentState {
+            snapshot: None,
             agents: resolve_agents(&Config::default()).unwrap_or_default(),
             current_agent: 0,
             current_model: String::new(),
@@ -528,6 +556,7 @@ mod tests {
     #[test]
     fn validate_agent_select_rejects_subagent() {
         let state = AgentState {
+            snapshot: None,
             agents: resolve_agents(&Config::default()).unwrap_or_default(),
             current_agent: 0,
             current_model: String::new(),
@@ -545,6 +574,7 @@ mod tests {
     #[test]
     fn validate_agent_select_accepts_primary() {
         let state = AgentState {
+            snapshot: None,
             agents: resolve_agents(&Config::default()).unwrap_or_default(),
             current_agent: 0,
             current_model: String::new(),
@@ -560,6 +590,7 @@ mod tests {
     #[test]
     fn format_agents_list_all_shows_hidden() {
         let state = AgentState {
+            snapshot: None,
             agents: resolve_agents(&Config::default()).unwrap_or_default(),
             current_agent: 0,
             current_model: String::new(),
@@ -590,6 +621,7 @@ mod tests {
             ..Default::default()
         };
         let state = AgentState {
+            snapshot: None,
             agents: vec![hidden_agent],
             current_agent: 0,
             current_model: String::new(),

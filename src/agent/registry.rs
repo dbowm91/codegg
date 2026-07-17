@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 
+use crate::agent::asset_context::AssetContext;
 use crate::config::schema::{AgentConfig, Config};
 use crate::error::AgentError;
 
@@ -291,6 +292,75 @@ pub struct ResolvedAgent {
     pub diagnostics: Vec<AgentDiagnostic>,
 }
 
+impl ResolvedAgent {
+    /// Compute a stable, semantic content digest for the effective
+    /// agent. The digest is computed over normalized effective fields
+    /// only and must not include absolute paths or wall-clock time.
+    pub fn content_digest(&self) -> String {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(self.agent.name.as_bytes());
+        hasher.update(b"\n");
+        hasher.update(self.agent.description.as_bytes());
+        hasher.update(b"\n");
+        hasher.update(self.agent.role.as_deref().unwrap_or("").as_bytes());
+        hasher.update(b"\n");
+        hasher.update(format!("{:?}\n", self.agent.mode).as_bytes());
+        hasher.update(self.agent.model.as_deref().unwrap_or("").as_bytes());
+        hasher.update(b"\n");
+        hasher.update(
+            self.agent
+                .fallback_model
+                .as_deref()
+                .unwrap_or("")
+                .as_bytes(),
+        );
+        hasher.update(b"\n");
+        hasher.update(self.agent.variant.as_deref().unwrap_or("").as_bytes());
+        hasher.update(b"\n");
+        if let Some(t) = self.agent.temperature {
+            hasher.update(format!("temperature:{t}\n").as_bytes());
+        }
+        if let Some(t) = self.agent.top_p {
+            hasher.update(format!("top_p:{t}\n").as_bytes());
+        }
+        hasher.update(self.agent.color.as_deref().unwrap_or("").as_bytes());
+        hasher.update(b"\n");
+        if let Some(s) = self.agent.steps {
+            hasher.update(format!("steps:{s}\n").as_bytes());
+        }
+        if let Some(b) = self.agent.thinking_budget {
+            hasher.update(format!("thinking_budget:{b}\n").as_bytes());
+        }
+        hasher.update(
+            self.agent
+                .reasoning_effort
+                .as_deref()
+                .unwrap_or("")
+                .as_bytes(),
+        );
+        hasher.update(b"\n");
+        if let Some(rk) = &self.agent.runtime_kind {
+            hasher.update(format!("runtime_kind:{rk}\n").as_bytes());
+        }
+        hasher.update(format!("hidden:{}\n", self.agent.hidden).as_bytes());
+        if let Some(p) = &self.agent.system_prompt {
+            hasher.update(p.as_bytes());
+        }
+        hasher.update(b"\nperms:\n");
+        // Sort permission keys for stability.
+        let mut perms: Vec<_> = self.agent.permissions.iter().collect();
+        perms.sort_by(|a, b| a.0.cmp(b.0));
+        for (k, v) in perms {
+            hasher.update(k.as_bytes());
+            hasher.update(b"=");
+            hasher.update(v.as_bytes());
+            hasher.update(b"\n");
+        }
+        hex::encode(hasher.finalize())
+    }
+}
+
 /// Central registry that resolves and indexes agents with source provenance.
 #[derive(Debug)]
 pub struct AgentRegistry {
@@ -301,7 +371,38 @@ pub struct AgentRegistry {
 impl AgentRegistry {
     /// Load agents by replicating the exact resolution logic from `resolve_agents()`,
     /// but tracking source provenance and emitting diagnostics.
+    ///
+    /// **Deprecated**: this constructor reads `PWD` from the process
+    /// environment. Daemon/runtime code must call
+    /// [`AgentRegistry::load_for_context`] with an explicit
+    /// [`AssetContext`]. This method is preserved for CLI bootstrap,
+    /// tests, and embedding constructors that do not have a closed
+    /// identity interface. New production code MUST NOT call it.
+    #[deprecated(
+        since = "0.0.0",
+        note = "reads PWD; use AgentRegistry::load_for_context with an explicit AssetContext"
+    )]
     pub fn load(config: &Config) -> Result<Self, AgentError> {
+        let project_root = std::env::var("PWD")
+            .ok()
+            .filter(|p| !p.is_empty())
+            .map(PathBuf::from);
+        Self::load_with_project_root(config, project_root.as_deref())
+    }
+
+    /// Primary constructor. Resolves agents using the explicit
+    /// project root from the supplied [`AssetContext`]. Honors the
+    /// existing built-in/global/project/config/session overlay order.
+    pub fn load_for_context(config: &Config, ctx: &AssetContext) -> Result<Self, AgentError> {
+        Self::load_with_project_root(config, Some(ctx.workspace_root()))
+    }
+
+    /// Internal constructor that takes the project root explicitly.
+    /// Pass `None` to skip project-file discovery entirely.
+    fn load_with_project_root(
+        config: &Config,
+        project_root: Option<&std::path::Path>,
+    ) -> Result<Self, AgentError> {
         let mut resolved: BTreeMap<String, ResolvedAgent> = BTreeMap::new();
         let mut diagnostics: Vec<AgentDiagnostic> = Vec::new();
 
@@ -387,10 +488,12 @@ impl AgentRegistry {
             }
         }
 
-        // Layer 3: Project agent files (.codegg/agents/*.toml relative to PWD)
-        // Overlay merge by default; replace=true replaces the entire definition.
-        if let Some(project_dir) = std::env::var("PWD").ok().filter(|p| !p.is_empty()) {
-            let project_agents_dir = PathBuf::from(&project_dir).join(".codegg").join("agents");
+        // Layer 3: Project agent files (.codegg/agents/*.toml relative to the
+        // explicit project root). When no root is supplied, project-file
+        // discovery is skipped entirely — the daemon never falls back to
+        // process-global cwd.
+        if let Some(project_root) = project_root {
+            let project_agents_dir = project_root.join(".codegg").join("agents");
             if let Ok(file_agents) = load_agents_from_dir(&project_agents_dir) {
                 for file_agent in file_agents {
                     let name = file_agent.agent.name.clone();
@@ -846,6 +949,7 @@ impl AgentRegistry {
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use super::*;
     use crate::config::schema::Config;

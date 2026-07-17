@@ -1352,7 +1352,11 @@ async fn run_single_shot(prompt: &str, cli: &Cli) -> Result<(), AppError> {
         .ok_or_else(|| AppError::Other(anyhow::anyhow!("Provider not found: {}", provider_id)))?
         .clone_box();
 
-    let agents = agent::resolve_agents(&config)?;
+    let project_dir = env::current_dir()
+        .ok()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let agents = agent::resolve_agents_with_context(&config, Some(Path::new(&project_dir)))?;
     let target_agent = cli
         .agent
         .as_deref()
@@ -1404,11 +1408,19 @@ async fn run_single_shot(prompt: &str, cli: &Cli) -> Result<(), AppError> {
         }],
         model: model_name.to_string(),
         tools: None,
-        system: Some(codegg::agent::prompt::load_agent_prompt(
-            &safe_agent,
-            &config,
-            &model_name,
-        )),
+        system: Some({
+            let ctx = codegg::agent::asset_context::AssetContextBuilder::new()
+                .with_synthetic_project_id(codegg::agent::asset_context::ProjectId::new())
+                .with_workspace_root(std::path::Path::new(&project_dir))
+                .build()
+                .expect("project_dir is a valid workspace root");
+            codegg::agent::prompt::load_agent_prompt_with_context(
+                &safe_agent,
+                &config,
+                &model_name,
+                &ctx,
+            )
+        }),
         temperature: safe_agent.temperature,
         top_p: safe_agent.top_p,
         max_tokens: None,
@@ -1514,17 +1526,9 @@ async fn launch_tui(cli: &Cli) -> Result<(), AppError> {
 
     // Only initialize heavy local resources for inproc/stdio modes.
     // In socket mode the daemon owns the DB, providers, scheduler, etc.
-    let (pool, session_store, message_store, memory_store, user_prefs, model_ids, agents) =
+    let (pool, session_store, message_store, memory_store, user_prefs, model_ids, agents, snapshot) =
         if is_socket_mode {
-            (
-                None,
-                None,
-                None,
-                None,
-                None,
-                Vec::new(),
-                agent::resolve_agents(&config)?,
-            )
+            (None, None, None, None, None, Vec::new(), Vec::new(), None)
         } else {
             let pool = storage::init_legacy_project_store(Path::new(&project_dir)).await?;
             let session_store = Arc::new(SessionStore::new(pool.clone()));
@@ -1554,7 +1558,23 @@ async fn launch_tui(cli: &Cli) -> Result<(), AppError> {
                 discovery.get_model_ids().await
             };
 
-            let agents = agent::resolve_agents(&config)?;
+            // Build the explicit asset context once and use it for
+            // both the snapshot and the legacy agent list. The
+            // snapshot is the canonical type; the agent list is
+            // retained for legacy consumers that have not yet
+            // migrated.
+            let asset_ctx = codegg::agent::asset_context::AssetContextBuilder::new()
+                .with_synthetic_project_id(codegg::agent::asset_context::ProjectId::new())
+                .with_workspace_root(PathBuf::from(&project_dir))
+                .build()
+                .expect("project_dir is a valid workspace root");
+            let snapshot = codegg::agent::asset_snapshot_builder::ProjectAssetSnapshotBuilder::with_default_config_doc(
+                Arc::new(config.clone()),
+            )
+            .build(&asset_ctx)
+            .map_err(|e| AppError::Other(anyhow::anyhow!("snapshot build failed: {e}")))?;
+            let agents: Vec<codegg::agent::Agent> =
+                snapshot.agents().map(|(_, ra)| ra.agent.clone()).collect();
             (
                 Some(pool),
                 Some(session_store),
@@ -1563,6 +1583,7 @@ async fn launch_tui(cli: &Cli) -> Result<(), AppError> {
                 Some(user_prefs),
                 model_ids,
                 agents,
+                Some(Arc::new(snapshot)),
             )
         };
 
@@ -1581,6 +1602,7 @@ async fn launch_tui(cli: &Cli) -> Result<(), AppError> {
     }
     app.set_models(model_ids.clone());
     app.agent_state.agents = agents.clone();
+    app.agent_state.snapshot = snapshot.clone();
     app.notification_manager = Some(notification_mgr);
     app.init_plugin_manager().await;
 
@@ -2084,7 +2106,7 @@ async fn run_daemon(endpoint: Option<String>) {
         );
         MemoryStore::default()
     }));
-    let agents = match agent::resolve_agents(&config) {
+    let agents = match agent::resolve_agents_with_context(&config, Some(Path::new(&project_dir))) {
         Ok(a) => a,
         Err(e) => {
             eprintln!("Failed to resolve agents: {}", e);
@@ -2202,7 +2224,7 @@ async fn run_core_stdio() -> Result<(), AppError> {
     let session_store = Arc::new(SessionStore::new(pool.clone()));
     let memory_store = Arc::new(MemoryStore::new().unwrap_or_else(|_| MemoryStore::default()));
     let config = Config::load().unwrap_or_default();
-    let agents = agent::resolve_agents(&config)?;
+    let agents = agent::resolve_agents_with_context(&config, Some(Path::new(&project_dir)))?;
 
     let mut subagent_registry = ProviderRegistry::new();
     provider::register_builtin_with_config(&mut subagent_registry, &config);
@@ -2312,7 +2334,7 @@ async fn cmd_server(host: &str, port: u16, standalone_core: bool) -> Result<(), 
         MemoryStore::default()
     }));
     let config = Config::load().unwrap_or_default();
-    let agents = match agent::resolve_agents(&config) {
+    let agents = match agent::resolve_agents_with_context(&config, Some(Path::new(&project_dir))) {
         Ok(a) => a,
         Err(e) => {
             tracing::warn!("Failed to resolve agents: {}, continuing without daemon", e);

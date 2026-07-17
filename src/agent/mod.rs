@@ -6,9 +6,13 @@
 //! Subagent (limited), and All (combines multiple agents).
 
 pub mod agent_loop_factory;
+pub mod asset_context;
+pub mod asset_snapshot;
+pub mod asset_snapshot_builder;
 pub mod builtins;
 pub mod compaction;
 pub mod context_frame;
+pub mod instructions;
 pub mod r#loop;
 pub mod mention;
 pub mod policy;
@@ -494,6 +498,19 @@ impl ResolvedAgentExecutionProfile {
 }
 
 pub fn resolve_agents(config: &Config) -> Result<Vec<Agent>, AgentError> {
+    // CLI bootstrap path. Reads cwd exactly once at this boundary so
+    // the registry no longer reads process-global state. Daemon code
+    // must call `resolve_agents_with_context` with an explicit context.
+    let project_root = std::env::current_dir().ok();
+    resolve_agents_with_context(config, project_root.as_deref())
+}
+
+/// Resolve agents using the explicit project root (no `PWD` inference).
+/// When `project_root` is `None`, project-file discovery is skipped.
+pub fn resolve_agents_with_context(
+    config: &Config,
+    project_root: Option<&Path>,
+) -> Result<Vec<Agent>, AgentError> {
     let mut agents = builtin_agents();
 
     if let Some(config_dir) = dirs::config_dir() {
@@ -509,8 +526,8 @@ pub fn resolve_agents(config: &Config) -> Result<Vec<Agent>, AgentError> {
         }
     }
 
-    if let Some(project_dir) = std::env::var("PWD").ok().filter(|p| !p.is_empty()) {
-        let project_agents_dir = Path::new(&project_dir).join(".codegg").join("agents");
+    if let Some(project_dir) = project_root {
+        let project_agents_dir = project_dir.join(".codegg").join("agents");
         if let Ok(file_agents) = load_agents_from_dir(&project_agents_dir) {
             for file_agent in file_agents {
                 if let Some(pos) = agents.iter().position(|a| a.name == file_agent.agent.name) {

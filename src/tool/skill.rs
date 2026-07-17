@@ -41,20 +41,35 @@ impl Tool for SkillTool {
         let parsed: SkillInput = serde_json::from_value(input)
             .map_err(|e| ToolError::Execution(format!("invalid skill input: {e}")))?;
 
-        let project_dir = std::env::current_dir()
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_default();
+        // Build an explicit context. CLI bootstrap reads cwd exactly once
+        // at this boundary; the registry no longer reads process-global
+        // state.
+        let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        let ctx = crate::agent::asset_context::AssetContextBuilder::new()
+            .with_synthetic_project_id(crate::agent::asset_context::ProjectId::new())
+            .with_workspace_root(cwd)
+            .build()
+            .map_err(|e| ToolError::Execution(format!("invalid skill context: {e}")))?;
 
-        let mut loaded = crate::skills::SkillIndex::new();
-        if let Err(e) = loaded.load(&project_dir).await {
-            return Err(ToolError::Execution(format!("failed to load skills: {e}")));
-        }
+        let asset_config = crate::skills::AssetDiscoveryConfig::default();
+        let global_roots: Vec<std::path::PathBuf> = ctx
+            .global_roots()
+            .iter()
+            .chain(
+                crate::agent::asset_context::default_global_skills_root()
+                    .as_ref()
+                    .into_iter(),
+            )
+            .cloned()
+            .collect();
+        let registry =
+            crate::skills::AssetRegistry::build(&asset_config, ctx.workspace_root(), &global_roots);
 
-        let skill = loaded
+        let skill = registry
             .get(&parsed.name)
             .ok_or_else(|| ToolError::Execution(format!("skill '{}' not found", parsed.name)))?;
 
-        let resources = list_skill_resources(&skill.source).await;
+        let resources = list_skill_resources(&skill.source_path).await;
 
         let result = serde_json::json!({
             "name": skill.name,

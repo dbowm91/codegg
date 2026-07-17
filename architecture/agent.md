@@ -376,6 +376,113 @@ Existing callers continue using `resolve_agents(config)` and `builtin_agents()`.
 
 ---
 
+## AssetContext and ProjectAssetSnapshot (Runtime Assets Milestone 2)
+
+`AssetContext` (`src/agent/asset_context.rs`) and `ProjectAssetSnapshot`
+(`src/agent/asset_snapshot.rs` + `src/agent/asset_snapshot_builder.rs`)
+are the explicit-context layer for project agents, skills, and
+instructions. They replace `PWD`/`current_dir()` inference on the
+agent-resolution surface so the daemon can host multiple concurrent
+projects without cross-contamination.
+
+### `AssetContext`
+
+- `ProjectId` — typed opaque identifier (UUID string). Either
+  `Authoritative` (from `ProjectStorage`), `SyntheticEmbedding` (the
+  daemon synthesized one for an embedding caller), or `Unbound`
+  (no project; e.g. CLI bootstrap before identity binding).
+- `AssetContext` — immutable bundle: `project_id`, `workspace_root`,
+  global roots (agents, skills, instructions), `config_revision`,
+  and an explicit `ProjectIdSource`.
+- `AssetContextBuilder` — only constructor. Requires a workspace root;
+  refuses empty paths. `with_synthetic_project_id(ProjectId::new())`
+  is the canonical escape hatch for CLI bootstrap that has no
+  authoritative identity yet.
+- `default_global_agents_root()` / `default_global_skills_root()` /
+  `default_global_instructions_path()` — process-global roots derived
+  from `dirs::config_dir()`. These are the only `dirs::*` lookups
+  allowed in the agent-resolution surface.
+
+`AssetContext` never reads `std::env::current_dir()` and never reads
+`std::env::var("PWD")`. Process-global cwd is consumed exactly once at
+CLI bootstrap boundaries and converted to an `AssetContext` before any
+registry call.
+
+### `ProjectInstructionResolver`
+
+- `InstructionResolverConfig` — bounds: `max_file_size`, `max_total_bytes`,
+  `max_depth`, `max_fragment_count`, `include_global`.
+- `InstructionFragment` — `{ kind, source_path, content, content_digest,
+  size_bytes }`.
+- `InstructionResolution` — `{ fragments, merged, diagnostics }`.
+- The walk goes `workspace_root → parent → ...` up to either the
+  containing git root (`.git` directory) or `max_depth`, then reads
+  `<dir>/AGENTS.md`, `<dir>/.codegg/instructions.md`, and
+  `<dir>/INSTRUCTIONS.md` at each level. The deepest fragment
+  (closest to the workspace) is first in the output.
+- Ancestor paths above the workspace root are accepted; paths that are
+  neither ancestors nor descendants of the workspace root are
+  rejected and produce a `Warning` diagnostic.
+
+### `ProjectAssetSnapshot`
+
+- Immutable view of all effective runtime assets for one
+  `AssetContext`: resolved agents, source-aware skills, project
+  instruction fragments, and per-asset content digests.
+- `compute_snapshot_fingerprint(agents, skills, instructions)` — SHA-256
+  over sorted, semantically meaningful fields only. Stable across
+  unchanged builds. Does not depend on wall-clock time, map iteration
+  order, or absolute paths (paths live in provenance).
+- `SnapshotBuilder` trait — production builder is
+  `ProjectAssetSnapshotBuilder` (`src/agent/asset_snapshot_builder.rs`),
+  constructed with `(SnapshotBuilderConfig, Arc<Config>)`.
+- Builds do not perform publication or generation management.
+  Milestone 3 owns those concerns.
+
+### Primary constructors
+
+- `AgentRegistry::load_for_context(&Config, &AssetContext)` — primary
+  constructor. Project-file layer is included when the context's
+  workspace root resolves to a real directory; otherwise skipped.
+- `resolve_agents_with_context(&Config, Option<&Path>)` — surface
+  parity with legacy `resolve_agents(&Config)` but takes the project
+  root explicitly.
+- `load_agent_prompt_with_context(&Agent, &Config, &model_id,
+  &AssetContext)` — context-aware system-prompt assembly that
+  delegates to `ProjectInstructionResolver`.
+- `AssetRegistry::build(&AssetDiscoveryConfig, &workspace_root,
+  &global_roots)` — context-aware skill discovery used by the
+  snapshot builder.
+
+### Compatibility / deprecated surfaces
+
+- `AgentRegistry::load(&Config)` — **deprecated**. Reads `PWD` and
+  should only be called from CLI bootstrap, tests, or embedding
+  constructors that do not have a closed identity interface.
+- `resolve_agents(&Config)` — kept for backward compatibility. Reads
+  cwd exactly once at the boundary and forwards to
+  `resolve_agents_with_context`.
+- `load_agent_prompt` / `load_agent_prompt_async` /
+  `find_instructions_file` / `find_all_instruction_files` —
+  **deprecated**. They read process-global cwd and should be replaced
+  by `load_agent_prompt_with_context` (or
+  `ProjectInstructionResolver::resolve`).
+
+### Static guard
+
+`scripts/check_project_agent_pwd_inference.py` scans the
+project-agent resolution surface (`agent/asset_context.rs`,
+`agent/asset_snapshot*.rs`, `agent/instructions.rs`,
+`agent/registry.rs`, `agent/prompt.rs`, `agent/mod.rs`,
+`tool/skill.rs`) for new `std::env::var("PWD")` or
+`std::env::current_dir()` usage. The allowlist is intentionally
+narrow: only the deprecated `load` constructor, the legacy
+`resolve_agents` boundary, the legacy `find_*_instructions` helpers,
+and CLI-bootstrap contexts that immediately feed
+`AssetContextBuilder::with_workspace_root` are exempt.
+
+---
+
 ## 3. Compaction (`compaction.rs`)
 
 ### ContextTracker

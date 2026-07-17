@@ -36,7 +36,6 @@ Canonical direction remains in:
 | Subsystem | Milestone | Class | Plan | Baseline | Status |
 |---|---|---|---|---|---|
 | Domain identity and compatibility | 003 — daemon and protocol adoption | infrastructure | `plans/implementation/domain-identity/003-daemon-protocol-adoption.md` | `3ce0a7e` | corrective pass required |
-| Runtime assets and harness interoperability | 002 — explicit-context agent and instruction resolution | invariant | `plans/implementation/runtime-assets/002-explicit-context-agent-instruction-resolution.md` | `3ce0a7e` | ready |
 | Project catalog and lazy discovery | 002 — bounded discovery and reconciliation | capability | `plans/implementation/project-catalog/002-bounded-discovery-reconciliation.md` | `3ce0a7e` | ready |
 | Provider connections and Eggpool | 004 — lifecycle, rotation, health, and closure | capability | `plans/implementation/provider-connections/004-lifecycle-rotation-health-closure.md` | `3ce0a7e` | ready |
 
@@ -57,6 +56,7 @@ Canonical direction remains in:
 
 | Subsystem | Milestone | Closure record | Closed at commit | Follow-up |
 |---|---|---|---|---|
+| Runtime assets and harness interoperability | 002 — explicit-context agent and instruction resolution | `plans/closure/runtime-assets/002-status.md` | `155f7f3` (Milestone 2) | Milestone 3 — refresh lifecycle and operator surface |
 | Runtime assets and harness interoperability | 001 — project asset registry | `plans/closure/runtime-assets/001-status.md` | `f9db5c3` | Milestone 2 — explicit-context agent and instruction resolution |
 | Project catalog and lazy discovery | 001 — durable catalog foundation | `plans/closure/project-catalog/001-status.md` | `a2db5e4` | Milestone 2 — bounded discovery and reconciliation |
 | Provider connections and Eggpool | 003 — session/model selection by connection | `plans/closure/provider-connections/003-status.md` | `213783e` | Milestone 4 — lifecycle, rotation, refresh, and disable/delete UX |

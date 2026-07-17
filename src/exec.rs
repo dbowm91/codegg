@@ -95,7 +95,8 @@ impl ExecMode {
             AppError::Other(anyhow::anyhow!("Provider not found: {}", provider_id))
         })?;
 
-        let all_agents = agent::resolve_agents(&config)?;
+        let project_root = std::env::current_dir().ok();
+        let all_agents = agent::resolve_agents_with_context(&config, project_root.as_deref())?;
         let agent_name = input.agent.unwrap_or_else(|| "build".to_string());
         if !all_agents.iter().any(|a| a.name == agent_name) {
             return Err(AppError::Other(anyhow::anyhow!(

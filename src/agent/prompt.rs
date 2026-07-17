@@ -1,3 +1,5 @@
+use crate::agent::asset_context::AssetContext;
+use crate::agent::instructions::{InstructionResolution, ProjectInstructionResolver};
 use crate::agent::Agent;
 use crate::config::schema::Config;
 use crate::model_profile::{PromptProfileKind, ResolvedModelProfile};
@@ -153,6 +155,15 @@ pub fn load_instructions(path: &Path) -> Option<String> {
     std::fs::read_to_string(path).ok()
 }
 
+/// **Deprecated**: this helper reads process-global cwd to find a
+/// single legacy `instructions.md`. New callers must use
+/// [`load_agent_prompt_with_context`] (or
+/// [`crate::agent::instructions::ProjectInstructionResolver`]) which
+/// walks from an explicit [`AssetContext`].
+#[deprecated(
+    since = "0.0.0",
+    note = "reads process-global cwd; use load_agent_prompt_with_context"
+)]
 pub fn find_instructions_file() -> Option<String> {
     let candidates = [".codegg/instructions.md", "INSTRUCTIONS.md"];
 
@@ -175,6 +186,14 @@ pub fn find_instructions_file() -> Option<String> {
     None
 }
 
+/// **Deprecated**: this helper walks from process-global cwd. New
+/// callers must use [`load_agent_prompt_with_context`] (or
+/// [`crate::agent::instructions::ProjectInstructionResolver`]) which
+/// walks from an explicit [`AssetContext`].
+#[deprecated(
+    since = "0.0.0",
+    note = "reads process-global cwd; use load_agent_prompt_with_context"
+)]
 pub fn find_all_instruction_files() -> Vec<String> {
     let mut contents = Vec::new();
     let Ok(cwd) = std::env::current_dir() else {
@@ -251,8 +270,17 @@ pub fn is_url(s: &str) -> bool {
     s.starts_with("http://") || s.starts_with("https://")
 }
 
+/// **Deprecated**: reads process-global cwd via
+/// [`find_all_instruction_files`]. New callers must use
+/// [`load_agent_prompt_with_context`] with an explicit
+/// [`AssetContext`].
+#[deprecated(
+    since = "0.0.0",
+    note = "reads process-global cwd; use load_agent_prompt_with_context"
+)]
 pub async fn load_agent_prompt_async(agent: &Agent, config: &Config, model_id: &str) -> String {
     let mut parts = base_prompt_parts(agent, model_id);
+    #[allow(deprecated)]
     for content in find_all_instruction_files() {
         parts.push(content);
     }
@@ -282,8 +310,47 @@ pub async fn load_agent_prompt_async(agent: &Agent, config: &Config, model_id: &
     parts.join("\n\n")
 }
 
+/// Context-aware system-prompt assembly. Uses the explicit
+/// [`AssetContext`] to resolve project instructions rather than
+/// reading process-global cwd. The resolved instructions come from the
+/// [`ProjectInstructionResolver`].
+pub fn load_agent_prompt_with_context(
+    agent: &Agent,
+    config: &Config,
+    model_id: &str,
+    ctx: &AssetContext,
+) -> String {
+    let mut parts = base_prompt_parts(agent, model_id);
+    let resolution: InstructionResolution =
+        ProjectInstructionResolver::with_defaults().resolve(ctx);
+    if !resolution.merged.is_empty() {
+        parts.push(resolution.merged);
+    }
+    if let Some(instructions) = config.instructions.as_ref() {
+        for instruction in instructions {
+            if is_url(instruction) {
+                parts.push(format!(
+                    "[Remote instruction: {instruction} - fetched at runtime]"
+                ));
+            } else {
+                parts.push(instruction.clone());
+            }
+        }
+    }
+    parts.join("\n\n")
+}
+
+/// **Deprecated**: reads process-global cwd via
+/// [`find_all_instruction_files`]. New callers must use
+/// [`load_agent_prompt_with_context`] with an explicit
+/// [`AssetContext`].
+#[deprecated(
+    since = "0.0.0",
+    note = "reads process-global cwd; use load_agent_prompt_with_context"
+)]
 pub fn load_agent_prompt(agent: &Agent, config: &Config, model_id: &str) -> String {
     let mut parts = base_prompt_parts(agent, model_id);
+    #[allow(deprecated)]
     for content in find_all_instruction_files() {
         parts.push(content);
     }

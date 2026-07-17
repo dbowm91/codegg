@@ -1,6 +1,6 @@
 # Runtime Assets Milestone 002 — Explicit-Context Agent and Instruction Resolution
 
-Status: ready for handoff
+Status: implemented (closure evidence: `plans/closure/runtime-assets/002-status.md`)
 
 Repository baseline: `3ce0a7ea7c1a8baa41a2618eb293291435e9f9f0` (`main`; planning-only commits after this baseline do not alter production behavior)
 

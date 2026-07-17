@@ -1082,6 +1082,7 @@ impl App {
                 test_run_request: crate::tui::app::state::AsyncUiRequestState::new(),
             },
             agent_state: AgentState {
+                snapshot: None,
                 agents,
                 current_agent,
                 current_model,
@@ -1507,6 +1508,7 @@ impl App {
                 test_run_request: crate::tui::app::state::AsyncUiRequestState::new(),
             },
             agent_state: AgentState {
+                snapshot: None,
                 agents,
                 current_agent,
                 current_model,

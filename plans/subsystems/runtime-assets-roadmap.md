@@ -234,6 +234,6 @@ This roadmap closes when project assets are explicit-context, interoperable, sou
 | Milestone | Status | Implementation plan | Closure record | Blockers |
 |---|---|---|---|---|
 | 1 | closed | `plans/implementation/runtime-assets/001-project-asset-registry.md` | `plans/closure/runtime-assets/001-status.md` | — |
-| 2 | ready | `plans/implementation/runtime-assets/002-explicit-context-agent-instruction-resolution.md` | — | Milestone 1 closure satisfied; explicit project/workspace binding interface available |
-| 3 | not started | — | — | Milestone 2 snapshot-builder interface |
+| 2 | closed | `plans/implementation/runtime-assets/002-explicit-context-agent-instruction-resolution.md` | `plans/closure/runtime-assets/002-status.md` | — |
+| 3 | not started | — | — | Milestone 2 closure (snapshot-builder interface and `ProjectAssetSnapshot` available) |
 | 4 | not started | — | — | Milestones 2–3 closure |
