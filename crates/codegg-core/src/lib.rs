@@ -8,6 +8,7 @@ pub mod jobs;
 pub mod memory;
 pub mod migration;
 pub mod model_profile;
+pub mod project_catalog;
 pub mod project_storage;
 pub mod protocol_conversions;
 pub mod provider_connections;

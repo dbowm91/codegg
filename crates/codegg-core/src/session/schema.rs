@@ -103,6 +103,9 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), StorageError> {
     if current_version < 27 {
         migrate_and_record(pool, 27).await?;
     }
+    if current_version < 28 {
+        migrate_and_record(pool, 28).await?;
+    }
 
     Ok(())
 }
@@ -142,6 +145,7 @@ async fn migrate_and_record(pool: &SqlitePool, version: i64) -> Result<(), Stora
             25 => migrate_v25(pool).await?,
             26 => migrate_v26(pool).await?,
             27 => migrate_v27(pool).await?,
+            28 => migrate_v28(pool).await?,
             _ => {
                 return Err(StorageError::Migration(format!(
                     "unknown migration version {}",
@@ -1310,5 +1314,81 @@ async fn migrate_v27(pool: &SqlitePool) -> Result<(), StorageError> {
             .await
             .map_err(|e| StorageError::Migration(e.to_string()))?;
     }
+    Ok(())
+}
+
+/// Project Catalog Milestone 1: catalog-specific tables, archive timestamp,
+/// description/tags/registration-source columns on logical_project, and the
+/// legacy catalog association marker table. All tables and columns are
+/// additive and idempotent across restart.
+async fn migrate_v28(pool: &SqlitePool) -> Result<(), StorageError> {
+    for statement in [
+        "ALTER TABLE logical_project ADD COLUMN archived_at INTEGER",
+        "ALTER TABLE logical_project ADD COLUMN description TEXT",
+        "ALTER TABLE logical_project ADD COLUMN tags TEXT",
+        "ALTER TABLE logical_project ADD COLUMN registration_source TEXT NOT NULL DEFAULT 'unknown'",
+        "ALTER TABLE logical_project ADD COLUMN time_last_opened INTEGER",
+        r#"
+        CREATE TABLE IF NOT EXISTS project_locator (
+            id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL,
+            locator_kind TEXT NOT NULL CHECK (locator_kind IN ('local','ssh','linked_node')),
+            workspace_id TEXT,
+            canonical_root TEXT,
+            ssh_host TEXT,
+            ssh_port INTEGER,
+            ssh_user TEXT,
+            ssh_path TEXT,
+            ssh_label TEXT,
+            linked_node_id TEXT,
+            linked_node_alias TEXT,
+            linked_node_path_hint TEXT,
+            display_summary TEXT NOT NULL,
+            source TEXT NOT NULL,
+            time_created INTEGER NOT NULL,
+            time_updated INTEGER NOT NULL,
+            FOREIGN KEY(project_id) REFERENCES logical_project(id) ON DELETE CASCADE,
+            FOREIGN KEY(workspace_id) REFERENCES workspace(id) ON DELETE CASCADE
+        )
+        "#,
+        r#"
+        CREATE TABLE IF NOT EXISTS project_health (
+            project_id TEXT PRIMARY KEY,
+            status TEXT NOT NULL CHECK (status IN ('unknown','available','unavailable','unsupported','stale','error')),
+            error_code TEXT,
+            error_message TEXT,
+            source TEXT NOT NULL,
+            time_evaluated INTEGER NOT NULL,
+            notes TEXT,
+            FOREIGN KEY(project_id) REFERENCES logical_project(id) ON DELETE CASCADE
+        )
+        "#,
+        r#"
+        CREATE TABLE IF NOT EXISTS legacy_catalog_association_marker (
+            source TEXT PRIMARY KEY,
+            completed_at INTEGER NOT NULL,
+            projects_associated INTEGER NOT NULL,
+            diagnostics_recorded INTEGER NOT NULL
+        )
+        "#,
+        "CREATE INDEX IF NOT EXISTS idx_project_locator_project ON project_locator(project_id)",
+        "CREATE INDEX IF NOT EXISTS idx_project_locator_kind ON project_locator(locator_kind)",
+        "CREATE INDEX IF NOT EXISTS idx_project_health_status ON project_health(status)",
+    ] {
+        if statement.starts_with("ALTER TABLE") {
+            if let Err(e) = sqlx::query(statement).execute(pool).await {
+                let msg = e.to_string();
+                if !msg.contains("duplicate column name") {
+                    return Err(StorageError::Migration(msg));
+                }
+            }
+        } else {
+            sqlx::query(statement)
+                .execute(pool)
+                .await
+                .map_err(|e| StorageError::Migration(e.to_string()))?;
+        }
+    }
+
     Ok(())
 }

@@ -188,6 +188,10 @@ Migration versions v1-v26 are supported, covering:
   authorization header is stored. Startup/first-use reconciliation marks
   stale staged/probing operations failed and removes only their owned
   credential records.
+- v28 adds `project_locator`, `project_health`, and
+  `legacy_catalog_association_marker` tables and five columns to
+  `logical_project` (`archived_at`, `description`, `tags`,
+  `registration_source`, `time_last_opened`) for the project catalog layer.
 
 ## See Also
 

@@ -70,3 +70,7 @@ diagnostic. Rebind operations require the current binding revision.
 
 See [`project_identity_storage.md`](project_identity_storage.md) for the
 schema, reconciliation, import, inspection, and operator workflow.
+
+The catalog service in `codegg_core::project_catalog` provides
+list/get/register/archive/restore operations on top of the identity
+storage layer.

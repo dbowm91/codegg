@@ -191,3 +191,7 @@ python3 scripts/check_daemon_cwd_usage.py
   `WorkspaceSnapshot` protocol surface.
 - `architecture/workspace_services.md`
   — Full Phase 2 contract.
+
+Explicit project registration flows through
+`ProjectCatalog::register_local_project` from an already-registered
+workspace; the catalog does not own workspace records.

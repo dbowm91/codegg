@@ -1,6 +1,6 @@
 # Project Catalog Milestone 001 — Durable Catalog Foundation
 
-Status: ready for handoff
+Status: implemented; see `plans/closure/project-catalog/001-status.md` for closure evidence.
 
 Repository baseline: `fbae374a2cd6172505204b1bc1bee1ef247afd5f` (production-code baseline; subsequent planning-only commits do not alter implementation state)
 

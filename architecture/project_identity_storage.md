@@ -53,6 +53,13 @@ Use `list_diagnostics_for_workspace` for redacted reason-coded evidence. A
 manual rebind must name the typed target IDs and expected revision; a stale
 caller receives `ProjectStorageError::RevisionConflict`.
 
+## Project Catalog Layer
+
+The catalog service in `codegg_core::project_catalog` sits above
+`ProjectStorage` and provides list, get, register, archive, and restore
+operations on logical projects, with locator placeholders, health
+placeholders, and restart hydration. See `architecture/project_catalog.md`.
+
 ## Verification
 
 ```text

@@ -72,7 +72,7 @@ async fn migration_rerun_resumes_after_mid_migration_failure() {
     .fetch_one(&pool)
     .await
     .expect("failed to read final migration version");
-    assert_eq!(final_version, 27, "expected latest migration version");
+    assert_eq!(final_version, 28, "expected latest migration version");
 
     let allowed_paths_exists: i64 = sqlx::query(
         "SELECT COUNT(*) AS cnt FROM pragma_table_info('task') WHERE name = 'allowed_paths'",
@@ -193,4 +193,81 @@ async fn provider_connections_v26_is_additive_and_secret_free() {
     assert!(health_columns
         .iter()
         .any(|column| column == "catalog_revision"));
+}
+
+#[tokio::test]
+async fn project_catalog_v28_is_additive_and_idempotent() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("failed to connect test sqlite pool");
+    codegg::session::schema::migrate(&pool)
+        .await
+        .expect("migration should create v28");
+
+    for table in [
+        "project_locator",
+        "project_health",
+        "legacy_catalog_association_marker",
+    ] {
+        let exists: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?",
+        )
+        .bind(table)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(exists, 1, "missing catalog table {table}");
+    }
+
+    let logical_project_columns: Vec<String> =
+        sqlx::query_scalar("SELECT name FROM pragma_table_info('logical_project')")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    for column in [
+        "archived_at",
+        "description",
+        "tags",
+        "registration_source",
+        "time_last_opened",
+    ] {
+        assert!(
+            logical_project_columns.iter().any(|c| c == column),
+            "missing logical_project column {column}"
+        );
+    }
+
+    let locator_columns: Vec<String> =
+        sqlx::query_scalar("SELECT name FROM pragma_table_info('project_locator')")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    for column in [
+        "locator_kind",
+        "workspace_id",
+        "canonical_root",
+        "ssh_host",
+        "linked_node_id",
+        "display_summary",
+    ] {
+        assert!(
+            locator_columns.iter().any(|c| c == column),
+            "missing project_locator column {column}"
+        );
+    }
+
+    // Re-running the migration is idempotent: the migration_version table
+    // is the authoritative gate so the version stays at 28.
+    codegg::session::schema::migrate(&pool)
+        .await
+        .expect("rerun migration should be a no-op past v28");
+    let final_version: i64 = sqlx::query_scalar(
+        "SELECT COALESCE((SELECT version FROM migration_version WHERE id = 1), 0)",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("failed to read final migration version");
+    assert_eq!(final_version, 28, "expected version to remain at 28");
 }

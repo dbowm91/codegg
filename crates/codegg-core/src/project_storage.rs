@@ -82,7 +82,7 @@ pub enum ProjectLifecycle {
 }
 
 impl ProjectLifecycle {
-    fn parse(value: &str) -> Result<Self, ProjectStorageError> {
+    pub fn parse(value: &str) -> Result<Self, ProjectStorageError> {
         match value {
             "active" => Ok(Self::Active),
             "archived" => Ok(Self::Archived),
@@ -1021,7 +1021,7 @@ async fn select_workspace_revision(
         .map(|row| row.map(|value| value.get("revision")))
 }
 
-fn bounded_text(value: &str, max: usize, field: &str) -> Result<String, ProjectStorageError> {
+pub fn bounded_text(value: &str, max: usize, field: &str) -> Result<String, ProjectStorageError> {
     if value.is_empty() || value.len() > max || value.chars().any(char::is_control) {
         return Err(ProjectStorageError::InvalidValue(format!(
             "{field} is empty, oversized, or contains control characters"
@@ -1030,15 +1030,15 @@ fn bounded_text(value: &str, max: usize, field: &str) -> Result<String, ProjectS
     Ok(value.to_owned())
 }
 
-fn identity_error(error: crate::identity::IdentityParseError) -> ProjectStorageError {
+pub fn identity_error(error: crate::identity::IdentityParseError) -> ProjectStorageError {
     ProjectStorageError::InvalidValue(error.to_string())
 }
 
-fn db_error(error: sqlx::Error) -> ProjectStorageError {
+pub fn db_error(error: sqlx::Error) -> ProjectStorageError {
     ProjectStorageError::Database(error.to_string())
 }
 
-fn timestamp(value: i64, field: &str) -> Result<DateTime<Utc>, ProjectStorageError> {
+pub fn timestamp(value: i64, field: &str) -> Result<DateTime<Utc>, ProjectStorageError> {
     DateTime::<Utc>::from_timestamp_millis(value)
         .ok_or_else(|| ProjectStorageError::InvalidValue(format!("invalid timestamp in {field}")))
 }
