@@ -244,5 +244,5 @@ This roadmap closes when project identity is durable and path-independent across
 |---|---|---|---|---|
 | 1 | closed | `plans/implementation/domain-identity/001-typed-identity-foundation.md` | `plans/closure/domain-identity/001-status.md` | — |
 | 2 | closed | `plans/implementation/domain-identity/002-project-repository-storage-migration.md` | `plans/closure/domain-identity/002-status.md` | — |
-| 3 | not started | — | — | Implementation plan not yet authored |
+| 3 | ready | `plans/implementation/domain-identity/003-daemon-protocol-adoption.md` | — | Milestone 2 closure satisfied |
 | 4 | not started | — | — | Milestones 1–3 closure evidence |
