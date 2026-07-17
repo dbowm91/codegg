@@ -14,7 +14,7 @@ Repository baseline reviewed: `701aea8e9b2c0e3b7b8b0f3e4d1a2b3c4d5e6f70` (post P
 
 Implementation commits or pull requests:
 
-- Implementation landed on `main` after this plan was authored. The work adds `codegg_core::project_catalog` and additive SQLite schema v28 on top of the Domain Identity storage layer.
+- `a2db5e4` — feat: add durable project catalog foundation. Adds `codegg_core::project_catalog` and additive SQLite schema v28 on top of the Domain Identity storage layer.
 
 ## 1. Executive finding
 
