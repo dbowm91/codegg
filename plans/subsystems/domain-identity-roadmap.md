@@ -242,7 +242,7 @@ This roadmap closes when project identity is durable and path-independent across
 
 | Milestone | Status | Implementation plan | Closure record | Blockers |
 |---|---|---|---|---|
-| 1 | ready | `plans/implementation/domain-identity/001-typed-identity-foundation.md` | — | — |
-| 2 | not started | — | — | Milestone 1 closure |
+| 1 | closed | `plans/implementation/domain-identity/001-typed-identity-foundation.md` | `plans/closure/domain-identity/001-status.md` | — |
+| 2 | not started | — | — | — |
 | 3 | not started | — | — | Milestone 2 closure |
 | 4 | not started | — | — | Milestones 1–3 closure evidence |

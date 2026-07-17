@@ -1,6 +1,6 @@
 # Domain Identity Milestone 001 — Typed Identity Foundation
 
-Status: ready for handoff
+Status: implemented
 
 Repository baseline: `fbae374a2cd6172505204b1bc1bee1ef247afd5f` (production-code baseline; subsequent planning-only commits do not alter implementation state)
 

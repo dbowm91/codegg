@@ -1,8 +1,8 @@
 # Provider Connections Milestone 001 — Durable Connection Foundation
 
-Status: blocked
+Status: ready for handoff
 
-Repository baseline: `fbae374a2cd6172505204b1bc1bee1ef247afd5f` (production-code baseline; subsequent planning-only commits do not alter implementation state)
+Repository baseline: `f203ed9` (typed identity foundation implementation and closure committed; subsequent planning-only commits do not alter implementation state)
 
 Source roadmap:
 
@@ -24,13 +24,14 @@ Primary class: infrastructure
 
 Introduce durable, daemon-owned provider connection records, scopes, secret references, storage, and runtime resolution seams while preserving existing provider registration/configuration behavior. This milestone does not yet implement the Eggpool `/connect` UI; it creates the stable substrate that workflow will use.
 
-## 2. Why this milestone is blocked
+## 2. Why this milestone is ready
 
-Hard dependency:
+The hard dependency is now closed:
 
-- Domain Identity Milestone 001 must close with `ProviderConnectionId`, `ProjectId`, and compatible typed-ID contracts.
+- Domain Identity Milestone 001 closed with `ProviderConnectionId`, `ProjectId`, and compatible typed-ID contracts in `f203ed9`.
 
-Implementation may begin only after those types are stable. The agent must not substitute arbitrary strings or path-valued project IDs to bypass the dependency.
+Implementation may begin from the reviewed `f203ed9` baseline. The agent must
+not substitute arbitrary strings or path-valued project IDs.
 
 ## 3. Current implementation evidence
 
@@ -320,7 +321,8 @@ The agent must stop and report rather than improvise when:
 
 ## 16. Handoff notes
 
-- This plan is blocked until Domain Identity Milestone 001 closes.
+- Domain Identity Milestone 001 is closed; this plan is dependency-ready from
+  the `f203ed9` baseline.
 - Reuse existing auth primitives rather than creating parallel credential types without evidence.
 - Do not add synchronous network probes to daemon startup.
 - Treat planning-only commits after the baseline as non-production changes, but inspect current `main` before implementation.

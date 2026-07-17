@@ -30,7 +30,7 @@ The milestone succeeds when the daemon can list and operate durable project reco
 
 Hard dependencies:
 
-- Domain Identity Milestone 001 must close.
+- Domain Identity Milestone 001 is closed in `f203ed9`.
 - The following domain-identity storage/migration milestone must provide durable project/repository/workspace/session relations or an approved stable interface.
 
 The agent must not implement a temporary path-keyed project table or reuse legacy `project_id` path strings as the new authoritative identity.
