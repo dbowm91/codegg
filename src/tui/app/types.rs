@@ -108,11 +108,6 @@ pub enum TuiMsg {
     },
     SelectSession(Box<Session>),
     SubmitConnect,
-    ConnectConfigured {
-        provider_name: String,
-        env_var: Option<String>,
-        api_key: Option<String>,
-    },
     CloseDialog,
     ToggleSidebar,
     ToggleFullscreen,

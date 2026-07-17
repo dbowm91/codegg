@@ -42,6 +42,9 @@ pub struct CoreDaemon {
     /// `with_deps_and_identity` if the caller did not supply one via
     /// `CoreRuntimeDeps::with_workspace_services`.
     pub workspace_services: Arc<WorkspaceServiceRegistry>,
+    /// Daemon-owned Eggpool provisioning service. It is present only for
+    /// SQLite-backed daemons; legacy in-memory daemons retain compatibility.
+    pub eggpool_provisioner: Option<Arc<crate::core::eggpool::EggpoolProvisioner>>,
 }
 
 impl CoreDaemon {
@@ -111,6 +114,11 @@ impl CoreDaemon {
         // Keep `deps.workspace_services` in sync so callers reading the
         // field observe the active registry.
         let mut deps = deps;
+        let eggpool_provisioner = deps
+            .pool
+            .clone()
+            .map(crate::core::eggpool::EggpoolProvisioner::new)
+            .map(Arc::new);
         // The durable attempt generation must be the same identity that
         // owns this daemon. Otherwise restart recovery cannot distinguish
         // work from the current process from work left by a prior one.
@@ -173,6 +181,7 @@ impl CoreDaemon {
             started_at: Instant::now(),
             workspaces,
             workspace_services,
+            eggpool_provisioner,
         }
     }
 
@@ -686,6 +695,94 @@ impl CoreDaemon {
         request: RequestEnvelope<CoreRequest>,
     ) -> Result<CoreResponse, AppError> {
         match request.payload {
+            CoreRequest::EggpoolConnectionCreate { request } => {
+                let Some(provisioner) = self.eggpool_provisioner.as_ref() else {
+                    return Ok(CoreResponse::Error {
+                        code: "provider_connections_unavailable".to_string(),
+                        message: "Provider connections require a daemon SQLite catalog".to_string(),
+                    });
+                };
+                match provisioner.create(request).await {
+                    Ok(result) => Ok(CoreResponse::EggpoolConnectionCreated { result }),
+                    Err(error) => Ok(CoreResponse::Error {
+                        code: eggpool_error_code(&error).to_string(),
+                        message: eggpool_error_message(&error).to_string(),
+                    }),
+                }
+            }
+            CoreRequest::EggpoolConnectionCancel { operation_id } => {
+                let Some(provisioner) = self.eggpool_provisioner.as_ref() else {
+                    return Ok(CoreResponse::Error {
+                        code: "provider_connections_unavailable".to_string(),
+                        message: "Provider connections require a daemon SQLite catalog".to_string(),
+                    });
+                };
+                if provisioner.cancel(&operation_id) {
+                    Ok(CoreResponse::EggpoolConnectionCancelled { operation_id })
+                } else {
+                    Ok(CoreResponse::Error {
+                        code: "connection_not_in_flight".to_string(),
+                        message: "Connection operation is not in flight".to_string(),
+                    })
+                }
+            }
+            CoreRequest::EggpoolConnectionStatus { operation_id } => {
+                let Some(provisioner) = self.eggpool_provisioner.as_ref() else {
+                    return Ok(CoreResponse::Error {
+                        code: "provider_connections_unavailable".to_string(),
+                        message: "Provider connections require a daemon SQLite catalog".to_string(),
+                    });
+                };
+                match provisioner.status(&operation_id).await {
+                    Ok(status) => Ok(CoreResponse::EggpoolConnectionStatus { status }),
+                    Err(error) => Ok(CoreResponse::Error {
+                        code: eggpool_error_code(&error).to_string(),
+                        message: eggpool_error_message(&error).to_string(),
+                    }),
+                }
+            }
+            CoreRequest::ProviderConnectionList => {
+                let Some(provisioner) = self.eggpool_provisioner.as_ref() else {
+                    return Ok(CoreResponse::Error {
+                        code: "provider_connections_unavailable".to_string(),
+                        message: "Provider connections require a daemon SQLite catalog".to_string(),
+                    });
+                };
+                match provisioner.list().await {
+                    Ok(connections) => Ok(CoreResponse::ProviderConnections { connections }),
+                    Err(error) => Ok(CoreResponse::Error {
+                        code: eggpool_error_code(&error).to_string(),
+                        message: eggpool_error_message(&error).to_string(),
+                    }),
+                }
+            }
+            CoreRequest::ProviderConnectionModels { connection_id } => {
+                let Some(provisioner) = self.eggpool_provisioner.as_ref() else {
+                    return Ok(CoreResponse::Error {
+                        code: "provider_connections_unavailable".to_string(),
+                        message: "Provider connections require a daemon SQLite catalog".to_string(),
+                    });
+                };
+                let Ok(connection_id) =
+                    codegg_core::identity::ProviderConnectionId::parse(&connection_id)
+                else {
+                    return Ok(CoreResponse::Error {
+                        code: "invalid_connection_id".to_string(),
+                        message: "Provider connection ID is invalid".to_string(),
+                    });
+                };
+                match provisioner.models(&connection_id).await {
+                    Ok((catalog_revision, models)) => Ok(CoreResponse::ProviderConnectionModels {
+                        connection_id: connection_id.to_string(),
+                        catalog_revision,
+                        models,
+                    }),
+                    Err(error) => Ok(CoreResponse::Error {
+                        code: eggpool_error_code(&error).to_string(),
+                        message: eggpool_error_message(&error).to_string(),
+                    }),
+                }
+            }
             CoreRequest::TurnSubmit {
                 session_id,
                 model,
@@ -3166,6 +3263,57 @@ impl CoreDaemon {
                 })
             }
         }
+    }
+}
+
+fn eggpool_error_code(error: &crate::core::eggpool::EggpoolError) -> &'static str {
+    match error {
+        crate::core::eggpool::EggpoolError::InvalidEndpoint(_) => "invalid_endpoint",
+        crate::core::eggpool::EggpoolError::InvalidScope(_) => "invalid_scope",
+        crate::core::eggpool::EggpoolError::CredentialStore => "credential_store_unavailable",
+        crate::core::eggpool::EggpoolError::MasterKeyMissing => "master_key_missing",
+        crate::core::eggpool::EggpoolError::Conflict => "connection_conflict",
+        crate::core::eggpool::EggpoolError::Cancelled => "connection_cancelled",
+        crate::core::eggpool::EggpoolError::Probe(reason) => reason.code(),
+        crate::core::eggpool::EggpoolError::Storage => "connection_storage_error",
+    }
+}
+
+fn eggpool_error_message(error: &crate::core::eggpool::EggpoolError) -> &'static str {
+    match error {
+        crate::core::eggpool::EggpoolError::InvalidEndpoint(_) => "Eggpool endpoint is invalid",
+        crate::core::eggpool::EggpoolError::InvalidScope(_) => "Connection scope is invalid",
+        crate::core::eggpool::EggpoolError::CredentialStore => {
+            "Protected credential store is unavailable"
+        }
+        crate::core::eggpool::EggpoolError::MasterKeyMissing => {
+            "Configure the credential-store master key before connecting"
+        }
+        crate::core::eggpool::EggpoolError::Conflict => {
+            "An equivalent connection or provisioning operation already exists"
+        }
+        crate::core::eggpool::EggpoolError::Cancelled => "Connection provisioning was cancelled",
+        crate::core::eggpool::EggpoolError::Probe(reason) => match reason {
+            crate::core::eggpool::ProbeReason::AuthenticationFailed => {
+                "Eggpool rejected the credential"
+            }
+            crate::core::eggpool::ProbeReason::Unreachable => "Eggpool endpoint is unreachable",
+            crate::core::eggpool::ProbeReason::Timeout => "Eggpool probe timed out",
+            crate::core::eggpool::ProbeReason::TlsFailed => "Eggpool TLS negotiation failed",
+            crate::core::eggpool::ProbeReason::RedirectDisallowed => {
+                "Eggpool endpoint redirected unexpectedly"
+            }
+            crate::core::eggpool::ProbeReason::UnsupportedApi => {
+                "Eggpool endpoint does not expose the supported model API"
+            }
+            crate::core::eggpool::ProbeReason::InvalidJson => "Eggpool returned invalid model data",
+            crate::core::eggpool::ProbeReason::EmptyCatalog => "Eggpool returned no models",
+            crate::core::eggpool::ProbeReason::CatalogOversized => {
+                "Eggpool model catalog exceeded the safety limit"
+            }
+            crate::core::eggpool::ProbeReason::Cancelled => "Eggpool probe was cancelled",
+        },
+        crate::core::eggpool::EggpoolError::Storage => "Provider connection storage is unavailable",
     }
 }
 

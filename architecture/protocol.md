@@ -27,6 +27,7 @@ crates/codegg-protocol/src/
 ├── lib.rs     # Module exports
 ├── core.rs    # CoreRequest, CoreResponse, CoreEvent, envelopes
 ├── dto.rs     # Shared DTOs (Session, Message, etc.)
+├── provider.rs # Secret-safe provider connection/provisioning DTOs
 ├── frames.rs  # ClientCapabilities, RequestEnvelope, EventEnvelope
 ├── plugin.rs  # PluginManifestDto, PluginInvocation, PluginResponse, PLUGIN_PROTOCOL_VERSION
 ├── tui.rs     # TuiMessage, QuestionSpec, RemoteTuiStateSnapshot, REMOTE_TUI_PROTOCOL_VERSION
@@ -113,6 +114,18 @@ pub enum CoreRequest { ... }
 - `SessionExport { session_id }` - Export session
 - `SessionImportData { data }` - Import session data
 - `SessionCreateFromTemplate { template, project_id, directory }` - Create from template
+
+### Provider connection lifecycle
+
+`EggpoolConnectionCreate` carries a bounded `SecretInput` and is intended only
+for local authenticated core IPC. Its debug/display projection is redacted,
+and the remote core WebSocket rejects this secret-bearing request. The daemon
+returns only `EggpoolConnectionCreated`, provisioning status, redacted
+connection summaries, and bounded model DTOs. `EggpoolConnectionCancel`,
+`EggpoolConnectionStatus`, `ProviderConnectionList`, and
+`ProviderConnectionModels` are secret-free follow-up operations. These
+operations create connection metadata but do not migrate session
+provider/model selection.
 
 ### Turn Lifecycle (5 variants)
 - `TurnSubmit { session_id, text, plan_mode, model, agents, current_agent_idx, messages }` - Submit a turn

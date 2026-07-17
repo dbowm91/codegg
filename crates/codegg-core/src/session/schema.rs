@@ -97,6 +97,9 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), StorageError> {
     if current_version < 25 {
         migrate_and_record(pool, 25).await?;
     }
+    if current_version < 26 {
+        migrate_and_record(pool, 26).await?;
+    }
 
     Ok(())
 }
@@ -134,6 +137,7 @@ async fn migrate_and_record(pool: &SqlitePool, version: i64) -> Result<(), Stora
             23 => migrate_v23(pool).await?,
             24 => migrate_v24(pool).await?,
             25 => migrate_v25(pool).await?,
+            26 => migrate_v26(pool).await?,
             _ => {
                 return Err(StorageError::Migration(format!(
                     "unknown migration version {}",
@@ -1214,5 +1218,69 @@ async fn migrate_v25(pool: &SqlitePool) -> Result<(), StorageError> {
             .map_err(|e| StorageError::Migration(e.to_string()))?;
     }
 
+    Ok(())
+}
+
+/// Provider Connections Milestone 2: crash-recoverable provisioning state
+/// and bounded health/model catalog metadata. No credential material is
+/// stored in these tables.
+async fn migrate_v26(pool: &SqlitePool) -> Result<(), StorageError> {
+    for statement in [
+        r#"
+        CREATE TABLE IF NOT EXISTS provider_provisioning (
+            operation_id TEXT PRIMARY KEY,
+            connection_id TEXT NOT NULL,
+            idempotency_key TEXT NOT NULL,
+            provider_kind TEXT NOT NULL,
+            display_name TEXT NOT NULL,
+            endpoint TEXT NOT NULL,
+            tls_policy TEXT NOT NULL,
+            scope_kind TEXT NOT NULL,
+            scope_ref TEXT NOT NULL,
+            secret_ref TEXT NOT NULL,
+            secret_provider_ref TEXT NOT NULL,
+            secret_account_ref TEXT NOT NULL,
+            state TEXT NOT NULL CHECK (state IN ('staged', 'probing', 'committed', 'failed', 'cancelled')),
+            failure_code TEXT,
+            time_created INTEGER NOT NULL,
+            time_updated INTEGER NOT NULL,
+            UNIQUE(idempotency_key)
+        )
+        "#,
+        "CREATE INDEX IF NOT EXISTS idx_provider_provisioning_state ON provider_provisioning(state, time_updated DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_provider_provisioning_connection ON provider_provisioning(connection_id)",
+        r#"
+        CREATE TABLE IF NOT EXISTS provider_connection_health (
+            connection_id TEXT PRIMARY KEY,
+            revision INTEGER NOT NULL CHECK (revision > 0),
+            status TEXT NOT NULL CHECK (status IN ('healthy', 'unhealthy')),
+            reason_code TEXT,
+            duration_ms INTEGER NOT NULL CHECK (duration_ms >= 0),
+            checked_at INTEGER NOT NULL,
+            catalog_revision TEXT
+        )
+        "#,
+        "CREATE INDEX IF NOT EXISTS idx_provider_connection_health_status ON provider_connection_health(status, checked_at DESC)",
+        r#"
+        CREATE TABLE IF NOT EXISTS provider_connection_models (
+            connection_id TEXT NOT NULL,
+            revision INTEGER NOT NULL CHECK (revision > 0),
+            model_id TEXT NOT NULL,
+            model_name TEXT NOT NULL,
+            context_window INTEGER NOT NULL CHECK (context_window >= 0),
+            max_output_tokens INTEGER,
+            supports_tools INTEGER NOT NULL CHECK (supports_tools IN (0, 1)),
+            supports_vision INTEGER NOT NULL CHECK (supports_vision IN (0, 1)),
+            PRIMARY KEY(connection_id, revision, model_id),
+            FOREIGN KEY(connection_id) REFERENCES provider_connections(id) ON DELETE CASCADE
+        )
+        "#,
+        "CREATE INDEX IF NOT EXISTS idx_provider_connection_models_lookup ON provider_connection_models(connection_id, revision, model_id)",
+    ] {
+        sqlx::query(statement)
+            .execute(pool)
+            .await
+            .map_err(|e| StorageError::Migration(e.to_string()))?;
+    }
     Ok(())
 }

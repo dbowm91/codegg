@@ -72,7 +72,7 @@ async fn migration_rerun_resumes_after_mid_migration_failure() {
     .fetch_one(&pool)
     .await
     .expect("failed to read final migration version");
-    assert_eq!(final_version, 25, "expected latest migration version");
+    assert_eq!(final_version, 26, "expected latest migration version");
 
     let allowed_paths_exists: i64 = sqlx::query(
         "SELECT COUNT(*) AS cnt FROM pragma_table_info('task') WHERE name = 'allowed_paths'",
@@ -144,4 +144,53 @@ async fn domain_identity_v25_is_additive_and_indexed() {
     .await
     .unwrap();
     assert!(index_count >= 3, "expected binding lookup indexes");
+}
+
+#[tokio::test]
+async fn provider_connections_v26_is_additive_and_secret_free() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("failed to connect test sqlite pool");
+    codegg::session::schema::migrate(&pool)
+        .await
+        .expect("migration should create v26");
+
+    for table in [
+        "provider_connections",
+        "provider_provisioning",
+        "provider_connection_health",
+        "provider_connection_models",
+    ] {
+        let exists: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?",
+        )
+        .bind(table)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(exists, 1, "missing provider table {table}");
+    }
+
+    let provisioning_columns: Vec<String> =
+        sqlx::query_scalar("SELECT name FROM pragma_table_info('provider_provisioning')")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert!(!provisioning_columns.iter().any(|column| {
+        matches!(
+            column.as_str(),
+            "api_key" | "credential" | "ciphertext" | "plaintext"
+        )
+    }));
+
+    let health_columns: Vec<String> =
+        sqlx::query_scalar("SELECT name FROM pragma_table_info('provider_connection_health')")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert!(health_columns
+        .iter()
+        .any(|column| column == "catalog_revision"));
 }

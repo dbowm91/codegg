@@ -5,6 +5,10 @@ use crate::dto::{
     JobSummaryDto, RecoveryReportDto, RunQueryDto, RunRecordDto, RunSummaryDto, ScheduleCreateDto,
     ScheduleRecordDto, ScheduleSummaryDto, WorkspaceServiceHealthDto,
 };
+use crate::provider::{
+    ConnectionProvisioningStatusDto, CreateEggpoolConnectionRequest, CreateEggpoolConnectionResult,
+    ProviderConnectionSummaryDto, ProviderModelDto,
+};
 
 /// Core protocol version.
 ///
@@ -37,6 +41,23 @@ pub struct EventEnvelope<T> {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum CoreResponse {
     Ack,
+    EggpoolConnectionCreated {
+        result: CreateEggpoolConnectionResult,
+    },
+    EggpoolConnectionStatus {
+        status: ConnectionProvisioningStatusDto,
+    },
+    EggpoolConnectionCancelled {
+        operation_id: String,
+    },
+    ProviderConnections {
+        connections: Vec<ProviderConnectionSummaryDto>,
+    },
+    ProviderConnectionModels {
+        connection_id: String,
+        catalog_revision: Option<String>,
+        models: Vec<ProviderModelDto>,
+    },
     Json {
         data: serde_json::Value,
     },
@@ -235,6 +256,19 @@ pub struct ClientSnapshot {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum CoreRequest {
     Initialize,
+    EggpoolConnectionCreate {
+        request: CreateEggpoolConnectionRequest,
+    },
+    EggpoolConnectionCancel {
+        operation_id: String,
+    },
+    EggpoolConnectionStatus {
+        operation_id: String,
+    },
+    ProviderConnectionList,
+    ProviderConnectionModels {
+        connection_id: String,
+    },
     Subscribe {
         session_id: Option<String>,
     },

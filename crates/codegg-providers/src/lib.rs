@@ -17,6 +17,7 @@ pub mod connection;
 pub mod copilot;
 pub mod crypto;
 pub mod discovery;
+pub mod eggpool;
 pub mod error;
 pub mod fallback;
 pub mod gitlab;
@@ -41,6 +42,11 @@ pub use connection::{
     CredentialStoreAdapter, CredentialStoreSecretResolver, ProviderConnection,
     ProviderConnectionDescriptor, ProviderConnectionFactory, ProviderFactory, ProviderKind,
     SecretRef, SecretReference, SecretResolutionError, SecretResolver,
+};
+pub use eggpool::{
+    normalize_eggpool_base_url, EggpoolApiKey, EggpoolCancellationToken, EggpoolModelSummary,
+    EggpoolProbe, EggpoolProbeError, EggpoolProbeOptions, EggpoolProbeReasonCode,
+    EggpoolProbeSummary, EGGPOOL_DEFAULT_PORT,
 };
 pub use error::{ProviderError, StorageError};
 pub use provider_core::{

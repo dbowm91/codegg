@@ -420,6 +420,41 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
         } => {
             apply_session_state_refreshed(app, todos, active_goal, error);
         }
+        TuiCommand::EggpoolConnectionFinished {
+            operation_id,
+            result,
+        } => {
+            let is_current = app
+                .dialog_state
+                .connect_dialog
+                .as_ref()
+                .and_then(|dialog| dialog.operation_id.as_deref())
+                == Some(operation_id.as_str());
+            if !is_current {
+                return;
+            }
+            match result {
+                Ok(result) => {
+                    app.messages_state.toasts.success(&format!(
+                        "Eggpool connected on {} ({} models)",
+                        result.connection.endpoint,
+                        result.models.len()
+                    ));
+                    app.dialog_state.connect_dialog = None;
+                    app.close_dialog();
+                }
+                Err(error) => {
+                    app.messages_state
+                        .toasts
+                        .error(&format!("Eggpool connection failed: {error}"));
+                    if let Some(dialog) = app.dialog_state.connect_dialog.as_mut() {
+                        dialog.operation_id = None;
+                        dialog.clear_secret();
+                        dialog.set_error(error);
+                    }
+                }
+            }
+        }
         TuiCommand::TasksListed {
             request_id,
             tasks,

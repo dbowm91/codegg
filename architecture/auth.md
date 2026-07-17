@@ -177,6 +177,21 @@ error. The default input path is `read_key_from_stdin` (trims trailing
 newlines), so a `readline`-style prompt can be wired in later without
 changing the public API.
 
+### Eggpool `/connect` credentials
+
+The Eggpool `/connect` workflow writes its API key only through the existing
+protected `CredentialStore`, using an operation-owned account locator. A
+master key is required before a new connection can be committed. The TUI
+keeps the key in a masked field until submission, and the protocol request's
+`SecretInput` has redacted `Debug` and `Display` implementations.
+
+Provider-connection, provisioning, health, and model tables store only opaque
+secret/provider/account references. They never store the key, ciphertext, or
+authorization header. Probe failure and cancellation remove only the
+credential binding owned by that operation. Secret-bearing create requests
+are accepted over local authenticated core IPC; the remote core WebSocket
+rejects them.
+
 Both `set-key` and `logout` validate the provider and account ids
 up-front. Empty ids, ids containing whitespace, punctuation, or
 non-ASCII characters are rejected with a `Config(Invalid(...))` error

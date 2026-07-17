@@ -923,6 +923,19 @@ async fn handle_core_frame(
     match frame {
         CoreFrame::Request(envelope) => {
             let request_id = envelope.request_id.clone();
+            if matches!(
+                &envelope.payload,
+                crate::protocol::core::CoreRequest::EggpoolConnectionCreate { .. }
+            ) {
+                responses.push(CoreFrame::Response {
+                    request_id,
+                    response: Box::new(crate::protocol::core::CoreResponse::Error {
+                        code: "secret_operation_remote_denied".to_string(),
+                        message: "Secret-bearing provider connection creation is available only through local authenticated IPC".to_string(),
+                    }),
+                });
+                return responses;
+            }
             match daemon.handle_request(envelope).await {
                 Ok(response) => {
                     responses.push(CoreFrame::Response {

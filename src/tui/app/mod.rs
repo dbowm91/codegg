@@ -274,6 +274,12 @@ pub enum TuiCommand {
         message_counts: std::collections::HashMap<String, usize>,
         error: Option<String>,
     },
+    /// Completion for daemon-owned Eggpool provisioning. The result is
+    /// secret-free; the API key is never carried in a TUI command.
+    EggpoolConnectionFinished {
+        operation_id: String,
+        result: Result<crate::protocol::provider::CreateEggpoolConnectionResult, String>,
+    },
     /// Completion: session messages have been loaded from core.
     SessionMessagesLoaded {
         request_id: u64,
@@ -3071,51 +3077,6 @@ impl App {
             TuiMsg::SubmitConnect => {
                 self.handle_connect_send();
             }
-            TuiMsg::ConnectConfigured {
-                provider_name,
-                env_var,
-                api_key,
-            } => {
-                let provider_id = provider_name.to_lowercase();
-                if let (Some(env_var), Some(api_key)) = (env_var, api_key) {
-                    std::env::set_var(&env_var, &api_key);
-
-                    // Persist to config
-                    if let Ok(mut config) = crate::config::schema::Config::load() {
-                        let provider_map = config
-                            .provider
-                            .get_or_insert_with(std::collections::HashMap::new);
-                        let mut p_config =
-                            provider_map.get(&provider_id).cloned().unwrap_or_default();
-                        p_config.api_key = Some(api_key.clone());
-                        provider_map.insert(provider_id.clone(), p_config);
-
-                        if let Err(e) = config.save() {
-                            tracing::error!("Failed to save config: {}", e);
-                            self.messages_state
-                                .toasts
-                                .error(&format!("Failed to save API key to config: {}", e));
-                        } else {
-                            self.messages_state
-                                .toasts
-                                .success(&format!("API key saved to config for {}", provider_name));
-                        }
-                    }
-
-                    self.messages_state.toasts.info(&format!(
-                        "API key set for {}. {} environment variable updated.",
-                        provider_name, env_var
-                    ));
-                    self.refresh_models();
-                } else {
-                    self.messages_state.toasts.info(&format!(
-                        "Connected to {} (no API key required)",
-                        provider_name
-                    ));
-                }
-                self.dialog_state.connect_dialog = None;
-                self.close_dialog();
-            }
             TuiMsg::CloseDialog => {
                 self.close_dialog();
             }
@@ -3948,11 +3909,7 @@ impl App {
                     }
                 } else if matches!(self.ui_state.dialog, Dialog::Connect) {
                     if let Some(ref mut cd) = self.dialog_state.connect_dialog {
-                        if cd.step
-                            == crate::tui::components::dialogs::connect::ConnectStep::EnterApiKey
-                        {
-                            cd.back_to_provider_selection();
-                        } else {
+                        if !cd.back_step() {
                             self.dialog_state.connect_dialog = None;
                             self.close_dialog();
                         }
@@ -4011,7 +3968,13 @@ impl App {
                     }
                     Dialog::Connect => {
                         if let Some(ref mut cd) = self.dialog_state.connect_dialog {
-                            cd.cursor_up();
+                            if cd.step
+                                == crate::tui::components::dialogs::connect::ConnectStep::SelectTls
+                            {
+                                cd.cycle_tls_policy(false);
+                            } else {
+                                cd.cursor_up();
+                            }
                         }
                     }
                     Dialog::Context
@@ -4062,7 +4025,13 @@ impl App {
                     }
                     Dialog::Connect => {
                         if let Some(ref mut cd) = self.dialog_state.connect_dialog {
-                            cd.cursor_down();
+                            if cd.step
+                                == crate::tui::components::dialogs::connect::ConnectStep::SelectTls
+                            {
+                                cd.cycle_tls_policy(true);
+                            } else {
+                                cd.cursor_down();
+                            }
                         }
                     }
                     Dialog::Context
@@ -4389,9 +4358,7 @@ impl App {
                 }
                 Dialog::Connect => {
                     if let Some(ref mut cd) = self.dialog_state.connect_dialog {
-                        if cd.step
-                            == crate::tui::components::dialogs::connect::ConnectStep::EnterApiKey
-                        {
+                        if cd.is_text_input_step() {
                             cd.insert_char(c);
                         }
                     }
@@ -4436,9 +4403,7 @@ impl App {
                 }
                 Dialog::Connect => {
                     if let Some(ref mut cd) = self.dialog_state.connect_dialog {
-                        if cd.step
-                            == crate::tui::components::dialogs::connect::ConnectStep::EnterApiKey
-                        {
+                        if cd.is_text_input_step() {
                             cd.backspace();
                         }
                     }
@@ -7698,6 +7663,30 @@ impl App {
                 self.dialog_state.worktree_list_request.cancel();
                 self.dialog_state.template_create_request.cancel();
             }
+            Dialog::Connect => {
+                self.task_registry.cancel_kind(TuiTaskKind::Command);
+                let operation_id = self
+                    .dialog_state
+                    .connect_dialog
+                    .as_mut()
+                    .and_then(|dialog| {
+                        dialog.clear_secret();
+                        dialog.operation_id.take()
+                    });
+                if let (Some(client), Some(operation_id)) = (self.core_client.clone(), operation_id)
+                {
+                    tokio::spawn(async move {
+                        let _ = client
+                            .request(crate::core::new_request(
+                                uuid::Uuid::new_v4().to_string(),
+                                crate::protocol::core::CoreRequest::EggpoolConnectionCancel {
+                                    operation_id,
+                                },
+                            ))
+                            .await;
+                    });
+                }
+            }
             Dialog::ShellShow => {
                 self.dialog_state.shell_detail_id = None;
                 self.dialog_state.shell_detail_dialog = None;
@@ -9328,136 +9317,14 @@ impl App {
     }
 
     fn open_connect_dialog(&mut self) {
-        use crate::tui::components::dialogs::connect::{ProviderAuthMode, ProviderInfo};
+        use crate::tui::components::dialogs::connect::ProviderInfo;
 
-        let mk = |id: &str, name: &str, desc: &str, env: Option<&str>, url: Option<&str>| {
-            let mut info = if env.is_some() {
-                ProviderInfo::api_key(id, name, desc, env.map(|s| s.to_string()))
-            } else {
-                ProviderInfo::no_auth(id, name, desc)
-            };
-            info.base_url_example = url.map(|s| s.to_string());
-            info
-        };
-
-        let providers = vec![
-            mk(
-                "openai",
-                "OpenAI",
-                "GPT-4, GPT-4o, and other OpenAI models",
-                Some("OPENAI_API_KEY"),
-                Some("https://api.openai.com/v1"),
-            ),
-            mk(
-                "anthropic",
-                "Anthropic",
-                "Claude models (Note: API access restricted)",
-                Some("ANTHROPIC_API_KEY"),
-                Some("https://api.anthropic.com"),
-            ),
-            mk(
-                "google",
-                "Google",
-                "Gemini models",
-                Some("GOOGLE_API_KEY"),
-                Some("https://generativelanguage.googleapis.com/v1"),
-            ),
-            mk(
-                "ollama",
-                "Ollama",
-                "Local and self-hosted models",
-                None,
-                Some("http://localhost:11434"),
-            ),
-            mk(
-                "openrouter",
-                "OpenRouter",
-                "Unified API for 100+ models",
-                Some("OPENROUTER_API_KEY"),
-                Some("https://openrouter.ai/api/v1"),
-            ),
-            mk(
-                "lmstudio",
-                "LM Studio",
-                "Local models via LM Studio",
-                None,
-                Some("http://localhost:1234/v1"),
-            ),
-            mk(
-                "deepseek",
-                "DeepSeek",
-                "DeepSeek models",
-                Some("DEEPSEEK_API_KEY"),
-                Some("https://api.deepseek.com/v1"),
-            ),
-            mk(
-                "xai",
-                "xAI",
-                "xAI (Grok)",
-                Some("XAI_API_KEY"),
-                Some("https://api.x.ai/v1"),
-            ),
-            mk(
-                "cohere",
-                "Cohere",
-                "Command R models",
-                Some("COHERE_API_KEY"),
-                Some("https://api.cohere.ai/v1"),
-            ),
-            mk(
-                "fireworks",
-                "Fireworks",
-                "Fireworks AI models",
-                Some("FIREWORKS_API_KEY"),
-                Some("https://api.fireworks.ai/v1"),
-            ),
-            mk(
-                "novai",
-                "Novae",
-                "Novae AI models",
-                Some("NOVAI_API_KEY"),
-                Some("https://api.novai.ai/v1"),
-            ),
-            mk(
-                "opencode_zen",
-                "Codegg Zen",
-                "Free models from Codegg",
-                Some("OPENCODE_ZEN_API_KEY"),
-                Some("https://opencode.ai/zen/v1"),
-            ),
-            mk(
-                "opencode_go",
-                "OpenCode Go",
-                "Enterprise models from OpenCode",
-                Some("OPENCODE_GO_API_KEY"),
-                Some("https://opencode.ai/go/v1"),
-            ),
-            mk(
-                "minimax",
-                "MiniMax",
-                "Chinese LLM provider",
-                Some("MINIMAX_API_KEY"),
-                Some("https://api.minimax.chat"),
-            ),
-            mk(
-                "zai",
-                "Z.ai",
-                "Z.ai provider",
-                Some("ZAI_API_KEY"),
-                Some("https://api.z.ai"),
-            ),
-            mk(
-                "generalcompute",
-                "GeneralCompute",
-                "GeneralCompute.com LLM provider",
-                Some("GENERALCOMPUTE_API_KEY"),
-                Some("https://api.generalcompute.com/v1"),
-            ),
-        ];
-        // First pass: every provider supports API-key entry. Future
-        // officially-supported OAuth / external-command providers can be
-        // added by extending `auth_modes` here.
-        let _ = ProviderAuthMode::ApiKey; // anchor the import for future use
+        let providers = vec![ProviderInfo::api_key(
+            "eggpool",
+            "Eggpool",
+            "Connect to an Eggpool OpenAI-compatible model gateway",
+            None,
+        )];
 
         let connect_dialog = crate::tui::components::dialogs::connect::ConnectDialog::new(
             providers,
@@ -9537,71 +9404,83 @@ impl App {
 
     fn handle_connect_send(&mut self) {
         use crate::tui::components::dialogs::connect::ConnectStep;
-
-        let provider_info = {
-            let connect_dialog = match &mut self.dialog_state.connect_dialog {
-                Some(cd) => cd,
-                None => return,
-            };
-
-            match connect_dialog.step {
-                ConnectStep::SelectProvider => {
-                    let provider = match connect_dialog.select_provider() {
-                        Some(p) => p.clone(),
-                        None => {
-                            connect_dialog.set_error("No provider selected".to_string());
-                            return;
-                        }
-                    };
-
-                    if provider.requires_api_key {
-                        connect_dialog.move_to_api_key_step();
-                        return;
-                    } else {
-                        self.dialog_state.connect_dialog = None;
-                        self.close_dialog();
-                        self.messages_state.toasts.info(&format!(
-                            "Connected to {} (no API key required)",
-                            provider.name
-                        ));
-                        return;
-                    }
-                }
-                ConnectStep::EnterApiKey => {
-                    let api_key = connect_dialog.get_api_key();
-                    if api_key.trim().is_empty() {
-                        connect_dialog.set_error("API key cannot be empty".to_string());
-                        return;
-                    }
-
-                    let provider = match connect_dialog.select_provider() {
-                        Some(p) => p.clone(),
-                        None => {
-                            connect_dialog.set_error("No provider selected".to_string());
-                            return;
-                        }
-                    };
-
-                    Some((provider, api_key))
-                }
-            }
+        use crate::tui::task_lifecycle::TuiTaskKind;
+        use codegg_protocol::provider::{
+            CreateEggpoolConnectionRequest, EggpoolConnectionScope, SecretInput,
         };
 
-        if let Some((provider, api_key)) = provider_info {
-            if let Some(env_var) = &provider.env_var_name {
-                std::env::set_var(env_var, &api_key);
-                self.dialog_state.connect_dialog = None;
-                self.close_dialog();
-                self.messages_state.toasts.info(&format!(
-                    "API key set for {}. {} environment variable updated.",
-                    provider.name, env_var
-                ));
-            } else {
-                if let Some(cd) = &mut self.dialog_state.connect_dialog {
-                    cd.set_error("Provider has no environment variable configured".to_string());
-                }
+        let (host, port, display_name, tls_policy, api_key, operation_id) = {
+            let Some(dialog) = self.dialog_state.connect_dialog.as_mut() else {
+                return;
+            };
+            if dialog.step != ConnectStep::Review {
+                return;
             }
-        }
+            let Ok(port) = dialog.port.parse::<u16>() else {
+                dialog.set_error("Port must be between 1 and 65535".to_string());
+                return;
+            };
+            let Ok(api_key) = SecretInput::new(dialog.get_api_key()) else {
+                dialog.set_error("API key is invalid".to_string());
+                return;
+            };
+            let operation_id = format!("prov-{}", uuid::Uuid::new_v4());
+            dialog.operation_id = Some(operation_id.clone());
+            let host = dialog.host.clone();
+            let display_name =
+                (!dialog.display_name.trim().is_empty()).then(|| dialog.display_name.clone());
+            let tls_policy = dialog.tls_policy;
+            dialog.clear_secret();
+            (host, port, display_name, tls_policy, api_key, operation_id)
+        };
+
+        let Some(client) = self.core_client.clone() else {
+            if let Some(dialog) = self.dialog_state.connect_dialog.as_mut() {
+                dialog.set_error("Daemon connection is unavailable".to_string());
+            }
+            return;
+        };
+        let request = crate::core::new_request(
+            uuid::Uuid::new_v4().to_string(),
+            crate::protocol::core::CoreRequest::EggpoolConnectionCreate {
+                request: CreateEggpoolConnectionRequest {
+                    host,
+                    port: Some(port),
+                    tls_policy,
+                    api_key,
+                    display_name,
+                    scope: EggpoolConnectionScope::Personal {
+                        owner_id: "local-user".to_string(),
+                    },
+                    operation_id: Some(operation_id.clone()),
+                },
+            },
+        );
+        crate::tui::async_cmd::spawn_registered_tui_task(
+            self.tui_cmd_tx.clone(),
+            &mut self.task_registry,
+            TuiTaskKind::Command,
+            "eggpool_connect",
+            async move {
+                let result = match client.request(request).await {
+                    Ok(crate::protocol::core::CoreResponse::EggpoolConnectionCreated {
+                        result,
+                    }) => Ok(result),
+                    Ok(crate::protocol::core::CoreResponse::Error { code, message }) => {
+                        Err(format!("{code}: {message}"))
+                    }
+                    Ok(_) => Err("unexpected daemon response".to_string()),
+                    Err(error) => Err(error.to_string()),
+                };
+                Some(TuiCommand::EggpoolConnectionFinished {
+                    operation_id,
+                    result,
+                })
+            },
+        );
+        self.messages_state
+            .toasts
+            .info("Connecting to Eggpool (probe in progress)…");
     }
 
     fn on_char(&mut self, c: char) {

@@ -234,7 +234,7 @@ tui/
 │   │   ├── agent.rs        # AgentDialog
 │   │   ├── command.rs      # CommandPalette
 │   │   ├── confirm.rs      # ConfirmDialog
-│   │   ├── connect.rs      # ConnectDialog (provider API key entry)
+│   │   ├── connect.rs      # ConnectDialog (Eggpool endpoint/API key entry)
 │   │   ├── diff.rs         # DiffDialog
 │   │   ├── goto.rs         # GotoDialog (jump to message)
 │   │   ├── help.rs         # HelpDialog
@@ -939,6 +939,21 @@ pub struct App {
 ```
 
 **`busy_spinner: SpinnerWidget`** - Located at `src/tui/components/spinner.rs`. Shows animated busy indicator (frames: `["░", "▏", "▎", "▍", "▌", "▋", "▊", "▉"]`). Starts when `session_status` is `Working`, stops on `Idle` or `Error`. Tick called every render frame (~60fps).
+
+## Eggpool `/connect`
+
+`ConnectDialog` is a local asynchronous form for the daemon-owned Eggpool
+workflow. It collects provider, host, port (default `11300`), TLS policy,
+masked API key, optional display name, and personal scope, then shows a
+redacted review before submitting `CoreRequest::EggpoolConnectionCreate`.
+The key is cleared from dialog state immediately after submission and on
+close/error. Probe completion is delivered through a registered task; closing
+the dialog cancels the operation and stale completions are ignored by the
+normal command-task lifecycle.
+
+The dialog creates a connection and discovers models, but does not alter the
+session's selected provider/model. Project scope remains unavailable from
+this context until authoritative project-aware TUI state is available.
 
 ## Remote TUI Protocol (Phase 8)
 

@@ -131,6 +131,8 @@ Deferred work: Eggpool UX and session migration.
 
 ### Milestone 2 — Eggpool `/connect` workflow
 
+Status: closed; see `plans/closure/provider-connections/002-status.md`.
+
 Class: capability
 
 Objective: add an explicit, tested Eggpool connection flow with default port 11300 and bounded validation.
@@ -150,6 +152,9 @@ Exit conditions:
 Deferred work: broad provider-management UI.
 
 ### Milestone 3 — Session and model selection by connection
+
+Status: ready for handoff; see
+`plans/implementation/provider-connections/003-session-and-model-selection-by-connection.md`.
 
 Class: infrastructure
 

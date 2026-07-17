@@ -1085,7 +1085,7 @@ mod tests {
             .fetch_one(&database)
             .await
             .unwrap();
-        assert_eq!(version, 25);
+        assert_eq!(version, 26);
         let store = ProviderConnectionStore::new(database.clone());
         let created = store
             .create(input(ProviderScope::project(ProjectId::new())))

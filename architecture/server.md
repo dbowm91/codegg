@@ -198,6 +198,12 @@ The primary WebSocket for remote TUI communication. Handles bidirectional TuiMes
 ### Auth Validation
 
 Both WebSocket endpoints share `validate_ws_auth()`:
+
+Secret-bearing provider provisioning is narrower than ordinary authenticated
+WebSocket traffic. `CoreRequest::EggpoolConnectionCreate` is rejected by the
+remote core WebSocket because the transport is not the local trusted IPC
+boundary used by the TUI. Clients may use the secret-free status, list, and
+model operations after a local create completes.
 1. Check `CODEGG_SERVER_AUTH_DISABLED` env var - skip auth if set
 2. Extract Bearer token from Authorization header
 3. Compare against `CODEGG_SERVER_TOKEN` env var using constant-time comparison

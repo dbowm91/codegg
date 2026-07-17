@@ -1,6 +1,10 @@
 # Provider Connections Milestone 002 — Eggpool `/connect` Workflow
 
-Status: ready for handoff
+Status: implemented
+
+Closure record:
+
+- `plans/closure/provider-connections/002-status.md`
 
 Repository baseline: `9dcde707f6fe001cc6d73e7f562ccccf9f782f1a` (`main`; Provider Connections Milestone 001 is closed; later planning-only commits do not alter the production baseline)
 

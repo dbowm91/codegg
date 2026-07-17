@@ -1934,6 +1934,31 @@ fn test_connect_dialog_handle_paste() {
 }
 
 #[test]
+fn test_connect_dialog_cycles_tls_policy_without_exposing_secret() {
+    use codegg::protocol::provider::EggpoolTlsPolicy;
+    use codegg::tui::components::dialogs::connect::{ConnectDialog, ConnectStep, ProviderInfo};
+
+    let theme = Arc::new(codegg::tui::theme::Theme::dark());
+    let providers = vec![ProviderInfo {
+        id: "eggpool".to_string(),
+        name: "Eggpool".to_string(),
+        description: "OpenAI-compatible Eggpool".to_string(),
+        requires_api_key: true,
+        auth_modes: vec![codegg::tui::components::dialogs::connect::ProviderAuthMode::ApiKey],
+        env_var_name: None,
+        base_url_example: None,
+    }];
+    let mut dialog = ConnectDialog::new(providers, theme);
+    dialog.step = ConnectStep::SelectTls;
+
+    assert_eq!(dialog.tls_policy, EggpoolTlsPolicy::Optional);
+    dialog.cycle_tls_policy(true);
+    assert_eq!(dialog.tls_policy, EggpoolTlsPolicy::Disabled);
+    dialog.cycle_tls_policy(false);
+    assert_eq!(dialog.tls_policy, EggpoolTlsPolicy::Optional);
+}
+
+#[test]
 fn test_import_dialog_handle_paste() {
     use codegg::tui::components::component::Component;
     use codegg::tui::components::dialogs::import::ImportDialog;

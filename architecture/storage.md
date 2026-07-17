@@ -59,7 +59,7 @@ real directory; new code MUST NOT use it.
 | `init_legacy_project_store(root)` | `<root>/.codegg/sessions.db`. |
 | `init(project_dir)` (deprecated) | Empty → user config directory + `codegg/sessions.db`. Non-empty → legacy project store. |
 
-`STORAGE_LAYOUT_VERSION = 25` is exported from `storage::mod` and is
+`STORAGE_LAYOUT_VERSION = 26` is exported from `storage::mod` and is
 referenced from `MigrationMarker.storage_layout_version` so the
 migration tooling can report which layout a legacy database was
 imported under.
@@ -140,7 +140,7 @@ Gracefully closes the connection pool using async pool shutdown. The `self` para
 
 Migrations are implemented in `src/session/schema.rs`, not in the storage module itself. The storage module calls `session::schema::migrate()` during initialization.
 
-Migration versions v1-v25 are supported, covering:
+Migration versions v1-v26 are supported, covering:
 - v1: Initial schema (project, session, message, part, todo, permission, session_share tables)
 - v2: Additional indexes
 - v3: cached_models table
@@ -181,6 +181,13 @@ Migration versions v1-v25 are supported, covering:
   `identity_diagnostic`, with typed-ID foreign-key relations, status/revision
   constraints, and lookup indexes. It does not rewrite the historical
   `project` or session compatibility fields.
+- v26 creates additive daemon-owned provider provisioning, health, and model
+  catalog tables. Provisioning rows contain operation, endpoint, scope, and
+  opaque credential locators only; health is revisioned and bounded model
+  metadata is keyed by connection and revision. No API key, ciphertext, or
+  authorization header is stored. Startup/first-use reconciliation marks
+  stale staged/probing operations failed and removes only their owned
+  credential records.
 
 ## See Also
 

@@ -6,6 +6,21 @@ The provider module (`crates/codegg-providers/`) provides the interface and impl
 
 **Re-export**: `codegg::provider` via `pub use codegg_providers as provider` in `src/lib.rs`
 
+## Eggpool connection provisioning
+
+Eggpool is exposed as a daemon-owned provider connection through `/connect`.
+The workflow accepts a host, optional port, TLS policy, API key, display name,
+and scope. Host-only input uses port `11300`; the daemon validates the final
+HTTP(S) endpoint, disables redirects, and performs a bounded `/models` probe
+before publishing the connection as active.
+
+The providers crate owns the transport-independent `EggpoolProbe`. It caps
+request/response time, response bytes, model count, and model-field size, and
+returns stable redacted reason codes. The daemon stores the API key in the
+existing protected credential store and writes only opaque references plus
+health and revisioned model-catalog metadata to SQLite. Session model
+selection still uses the legacy path until Provider Connections Milestone 3.
+
 ## Provider Trait and Core Types
 
 ### Provider Trait (`src/provider/mod.rs:74-87`)

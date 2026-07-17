@@ -168,6 +168,7 @@ Representative built-ins:
 | `/unshare` | | Unshare session |
 | `/rename` | | Rename session |
 | `/compact` | `summarize` | Compact session |
+
 | `/timeline` | | Jump to message |
 | `/fork` | | Fork from message |
 | `/undo` | | Undo previous message |
@@ -210,6 +211,12 @@ Representative built-ins:
 | `/shell-list` | | List recent shell commands |
 | `/test` | | Run supervised tests (/test, /test workspace, /test changed, /test package <name>, /test file <path>, /test previous|prev|last, /test custom <command>). Previous failures scope reruns the most recent failing test from the bounded index. Custom commands are validated as argv-prefix matches against a strict allowlist — see `architecture/test_runner.md`. |
 | `/tui-stats` | | Show TUI runtime diagnostics |
+
+`/connect` opens the local Eggpool workflow. It collects the endpoint, default
+port `11300`, TLS policy, masked API key, display name, and scope, then sends
+the secret-bearing create request through local authenticated core IPC. It
+does not accept an API key in slash-command arguments, write provider config,
+or change the session's selected model.
 
 ### Dynamic Commands
 

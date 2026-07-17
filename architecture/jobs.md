@@ -83,7 +83,9 @@ Terminal states never transition. `AttemptState::Interrupted` is used during dae
 ## Storage Schema
 
 Migration v23 adds five tables. Domain Identity migration v25 adds the
-canonical project/repository binding tables. `STORAGE_LAYOUT_VERSION = 25`.
+canonical project/repository binding tables, and Provider Connections
+migration v26 adds provisioning/health/model catalog state.
+`STORAGE_LAYOUT_VERSION = 26`.
 
 ```sql
 CREATE TABLE job (

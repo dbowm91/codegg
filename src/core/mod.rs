@@ -9,6 +9,7 @@ use crate::protocol::core::{
 
 pub mod client_registry;
 pub mod daemon;
+pub mod eggpool;
 pub mod event_log;
 pub mod instance;
 pub mod notification;
