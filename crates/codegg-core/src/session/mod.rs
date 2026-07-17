@@ -6,8 +6,10 @@
 
 pub mod checkpoint;
 pub mod events;
+pub mod legacy_resolution;
 pub mod message;
 pub mod schema;
+pub mod selection_catalog;
 pub mod state;
 pub mod status;
 
@@ -24,8 +26,8 @@ pub use events::{
     AgentPlan, AgentPlanItem, EventMeta, FileChangeKind, PlanItemStatus, SessionEvent, ToolRisk,
 };
 pub use models::{
-    CreateSession, PermissionEntry, Session, SessionAnalytics, SessionSummaryProvider, TodoItem,
-    TodoItemInput, UpdateSession, UsageRecord,
+    CreateSession, LegacyResolution, PermissionEntry, Session, SessionAnalytics,
+    SessionSummaryProvider, TodoItem, TodoItemInput, UpdateSession, UsageRecord,
 };
 pub use row::{MessageRow, PartRow, PermissionRow, SessionRow, TodoRow};
 pub use state::TuiSessionState;
@@ -37,11 +39,15 @@ pub use store::{
 const SESSION_COLUMNS: &str = r#"id, project_id, workspace_id, parent_id, slug, directory,
     title, version, share_url, summary_additions, summary_deletions,
     summary_files, summary_diffs, revert, permission, tags,
+    provider_connection_id, provider_connection_revision, model_catalog_revision,
+    selected_model_id, agent, model,
     time_created, time_updated, time_compacting, time_archived, time_deleted"#;
 
 const SESSION_COLUMNS_QUALIFIED: &str = r#"s.id, s.project_id, s.workspace_id, s.parent_id, s.slug, s.directory,
     s.title, s.version, s.share_url, s.summary_additions, s.summary_deletions,
     s.summary_files, s.summary_diffs, s.revert, s.permission, s.tags,
+    s.provider_connection_id, s.provider_connection_revision, s.model_catalog_revision,
+    s.selected_model_id, s.agent, s.model,
     s.time_created, s.time_updated, s.time_compacting, s.time_archived, s.time_deleted"#;
 
 const MESSAGE_QUERY: &str = r#"SELECT id, session_id, time_created, time_updated, data

@@ -1366,7 +1366,9 @@ pub(crate) async fn handle_load_session_messages(app: &mut App, session_id: Stri
             | Ok(CoreResponse::EggpoolConnectionStatus { .. })
             | Ok(CoreResponse::EggpoolConnectionCancelled { .. })
             | Ok(CoreResponse::ProviderConnections { .. })
-            | Ok(CoreResponse::ProviderConnectionModels { .. }) => None,
+            | Ok(CoreResponse::ProviderConnectionModels { .. })
+            | Ok(CoreResponse::SessionSelection { .. })
+            | Ok(CoreResponse::SessionSelectionUpdated { .. }) => None,
             Err(e) => {
                 app.messages_state
                     .toasts

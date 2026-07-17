@@ -45,6 +45,11 @@ pub struct CoreDaemon {
     /// Daemon-owned Eggpool provisioning service. It is present only for
     /// SQLite-backed daemons; legacy in-memory daemons retain compatibility.
     pub eggpool_provisioner: Option<Arc<crate::core::eggpool::EggpoolProvisioner>>,
+    /// Provider Connections Milestone 3: daemon-owned session selection
+    /// service. Reads and writes the connection/model selection on the
+    /// session row through the typed core crate; never mutates provider
+    /// credentials or constructs a provider in the frontend.
+    pub selection_service: Option<Arc<crate::core::session_selection::SelectionService>>,
 }
 
 impl CoreDaemon {
@@ -119,6 +124,21 @@ impl CoreDaemon {
             .clone()
             .map(crate::core::eggpool::EggpoolProvisioner::new)
             .map(Arc::new);
+        let selection_service = match deps.pool.clone() {
+            Some(pool) => {
+                let session_store = Arc::new(codegg_core::session::SessionStore::new(pool.clone()));
+                let connection_store =
+                    Arc::new(codegg_core::provider_connections::ProviderConnectionStore::new(pool));
+                Some(Arc::new(
+                    crate::core::session_selection::SelectionService::new(
+                        session_store,
+                        connection_store,
+                        eggpool_provisioner.clone(),
+                    ),
+                ))
+            }
+            None => None,
+        };
         // The durable attempt generation must be the same identity that
         // owns this daemon. Otherwise restart recovery cannot distinguish
         // work from the current process from work left by a prior one.
@@ -182,6 +202,7 @@ impl CoreDaemon {
             workspaces,
             workspace_services,
             eggpool_provisioner,
+            selection_service,
         }
     }
 
@@ -783,6 +804,120 @@ impl CoreDaemon {
                     }),
                 }
             }
+            CoreRequest::SessionSelectionGet { session_id } => {
+                let Some(service) = self.selection_service.as_ref() else {
+                    return Ok(CoreResponse::Error {
+                        code: "session_selection_unavailable".to_string(),
+                        message: "Session selection requires a daemon SQLite catalog".to_string(),
+                    });
+                };
+                match service.get(&session_id).await {
+                    Ok(selection) => Ok(CoreResponse::SessionSelection {
+                        session_id,
+                        selection,
+                    }),
+                    Err(error) => Ok(CoreResponse::Error {
+                        code: crate::core::session_selection::selection_error_code(&error)
+                            .to_string(),
+                        message: crate::core::session_selection::selection_error_message(&error),
+                    }),
+                }
+            }
+            CoreRequest::SessionSelectionList { session_id } => {
+                let Some(service) = self.selection_service.as_ref() else {
+                    return Ok(CoreResponse::Error {
+                        code: "session_selection_unavailable".to_string(),
+                        message: "Session selection requires a daemon SQLite catalog".to_string(),
+                    });
+                };
+                match service.list(&session_id).await {
+                    Ok(connections) => Ok(CoreResponse::ProviderConnections { connections }),
+                    Err(error) => Ok(CoreResponse::Error {
+                        code: crate::core::session_selection::selection_error_code(&error)
+                            .to_string(),
+                        message: crate::core::session_selection::selection_error_message(&error),
+                    }),
+                }
+            }
+            CoreRequest::SessionSelectionModels {
+                session_id,
+                connection_id,
+            } => {
+                let Some(service) = self.selection_service.as_ref() else {
+                    return Ok(CoreResponse::Error {
+                        code: "session_selection_unavailable".to_string(),
+                        message: "Session selection requires a daemon SQLite catalog".to_string(),
+                    });
+                };
+                let Ok(connection_id) =
+                    codegg_core::identity::ProviderConnectionId::parse(&connection_id)
+                else {
+                    return Ok(CoreResponse::Error {
+                        code: "invalid_connection_id".to_string(),
+                        message: "Provider connection ID is invalid".to_string(),
+                    });
+                };
+                match service.models(&session_id, &connection_id).await {
+                    Ok((catalog_revision, models)) => Ok(CoreResponse::ProviderConnectionModels {
+                        connection_id: connection_id.to_string(),
+                        catalog_revision,
+                        models,
+                    }),
+                    Err(error) => Ok(CoreResponse::Error {
+                        code: crate::core::session_selection::selection_error_code(&error)
+                            .to_string(),
+                        message: crate::core::session_selection::selection_error_message(&error),
+                    }),
+                }
+            }
+            CoreRequest::SessionSelectionUpdate { request } => {
+                let Some(service) = self.selection_service.as_ref() else {
+                    return Ok(CoreResponse::Error {
+                        code: "session_selection_unavailable".to_string(),
+                        message: "Session selection requires a daemon SQLite catalog".to_string(),
+                    });
+                };
+                let req = *request;
+                let Ok(connection_id) =
+                    codegg_core::identity::ProviderConnectionId::parse(&req.connection_id)
+                else {
+                    return Ok(CoreResponse::Error {
+                        code: "invalid_connection_id".to_string(),
+                        message: "Provider connection ID is invalid".to_string(),
+                    });
+                };
+                match service
+                    .update(
+                        &req.session_id,
+                        &connection_id,
+                        &req.model_id,
+                        req.expected_connection_revision,
+                        req.expected_catalog_revision,
+                    )
+                    .await
+                {
+                    Ok(outcome) => match outcome {
+                        crate::core::session_selection::SelectionUpdateOutcome::Updated(
+                            selection,
+                        ) => Ok(CoreResponse::SessionSelectionUpdated {
+                            session_id: req.session_id,
+                            selection,
+                        }),
+                        other => Ok(CoreResponse::Error {
+                            code: crate::core::session_selection::selection_outcome_code(&other)
+                                .to_string(),
+                            message: crate::core::session_selection::selection_outcome_message(
+                                &other,
+                            ),
+                        }),
+                    },
+                    Err(error) => Ok(CoreResponse::Error {
+                        code: crate::core::session_selection::selection_error_code(&error)
+                            .to_string(),
+                        message: crate::core::session_selection::selection_error_message(&error),
+                    }),
+                }
+            }
             CoreRequest::TurnSubmit {
                 session_id,
                 model,
@@ -990,6 +1125,10 @@ impl CoreDaemon {
                         agent: None,
                         model: None,
                         tags: None,
+                        provider_connection_id: None,
+                        provider_connection_revision: None,
+                        model_catalog_revision: None,
+                        selected_model_id: None,
                     })
                     .await
                 {
@@ -1222,6 +1361,10 @@ impl CoreDaemon {
                             tags: None,
                             time_compacting: None,
                             time_archived: None,
+                            provider_connection_id: None,
+                            provider_connection_revision: None,
+                            model_catalog_revision: None,
+                            selected_model_id: None,
                         },
                     )
                     .await

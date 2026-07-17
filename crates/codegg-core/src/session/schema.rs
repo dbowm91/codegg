@@ -100,6 +100,9 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), StorageError> {
     if current_version < 26 {
         migrate_and_record(pool, 26).await?;
     }
+    if current_version < 27 {
+        migrate_and_record(pool, 27).await?;
+    }
 
     Ok(())
 }
@@ -138,6 +141,7 @@ async fn migrate_and_record(pool: &SqlitePool, version: i64) -> Result<(), Stora
             24 => migrate_v24(pool).await?,
             25 => migrate_v25(pool).await?,
             26 => migrate_v26(pool).await?,
+            27 => migrate_v27(pool).await?,
             _ => {
                 return Err(StorageError::Migration(format!(
                     "unknown migration version {}",
@@ -1276,6 +1280,30 @@ async fn migrate_v26(pool: &SqlitePool) -> Result<(), StorageError> {
         )
         "#,
         "CREATE INDEX IF NOT EXISTS idx_provider_connection_models_lookup ON provider_connection_models(connection_id, revision, model_id)",
+    ] {
+        sqlx::query(statement)
+            .execute(pool)
+            .await
+            .map_err(|e| StorageError::Migration(e.to_string()))?;
+    }
+    Ok(())
+}
+
+/// Provider Connections Milestone 3: additive session selection fields.
+/// The legacy `agent`/`model` strings are now persisted alongside the
+/// authoritative connection ID + revision + model catalog revision + model
+/// ID. All columns are nullable; existing rows migrate unchanged and the
+/// legacy compatibility adapter resolves them lazily on read.
+async fn migrate_v27(pool: &SqlitePool) -> Result<(), StorageError> {
+    for statement in [
+        "ALTER TABLE session ADD COLUMN provider_connection_id TEXT",
+        "ALTER TABLE session ADD COLUMN provider_connection_revision INTEGER",
+        "ALTER TABLE session ADD COLUMN model_catalog_revision TEXT",
+        "ALTER TABLE session ADD COLUMN selected_model_id TEXT",
+        "ALTER TABLE session ADD COLUMN agent TEXT",
+        "ALTER TABLE session ADD COLUMN model TEXT",
+        "CREATE INDEX IF NOT EXISTS idx_session_provider_connection ON session(provider_connection_id)",
+        "CREATE INDEX IF NOT EXISTS idx_session_selected_model ON session(selected_model_id)",
     ] {
         sqlx::query(statement)
             .execute(pool)

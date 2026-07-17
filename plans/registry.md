@@ -26,7 +26,7 @@ Canonical direction remains in:
 |---|---|---|---|---|
 | Domain identity and compatibility | active | `plans/subsystems/domain-identity-roadmap.md` | Milestone 3 — daemon and protocol adoption | Milestone 2 closed; next implementation plan not yet authored |
 | Runtime assets and harness interoperability | active | `plans/subsystems/runtime-assets-roadmap.md` | Milestone 1 — source-aware registry and portable skill discovery | Plan is dependency-ready after Domain Identity Milestone 2 |
-| Provider connections and Eggpool | active | `plans/subsystems/provider-connections-roadmap.md` | Milestone 3 — session/model selection by connection | Milestone 2 closed; Milestone 3 ready for handoff |
+| Provider connections and Eggpool | active | `plans/subsystems/provider-connections-roadmap.md` | Milestone 4 — lifecycle, rotation, refresh, and disable/delete UX | Milestone 3 closed; Milestone 4 ready for handoff |
 | Project catalog and lazy discovery | active | `plans/subsystems/project-catalog-roadmap.md` | Milestone 1 — durable project and repository catalog | Plan is dependency-ready after Domain Identity Milestone 2 |
 | Multi-project TUI and sessions | active | `plans/subsystems/tui-project-sessions-roadmap.md` | Milestone 1 — project-aware state and catalog client | Runtime asset refresh and project catalog protocol |
 | Frontend-neutral session projections | active | `plans/subsystems/session-projections-roadmap.md` | Milestone 1 — projection contracts and canonical reducer | Domain identity, project catalog, and multi-project TUI state |
@@ -37,7 +37,6 @@ Canonical direction remains in:
 |---|---|---|---|---|---|
 | Runtime assets and harness interoperability | 001 — project asset registry | infrastructure | `plans/implementation/runtime-assets/001-project-asset-registry.md` | `fbae374` | ready |
 | Project catalog and lazy discovery | 001 — durable catalog foundation | infrastructure | `plans/implementation/project-catalog/001-durable-catalog-foundation.md` | `fbae374` | ready |
-| Provider connections and Eggpool | 003 — session/model selection by connection | infrastructure | `plans/implementation/provider-connections/003-session-and-model-selection-by-connection.md` | `8c1675c` | ready |
 
 ## Active closure work
 
@@ -56,6 +55,7 @@ Canonical direction remains in:
 
 | Subsystem | Milestone | Closure record | Closed at commit | Follow-up |
 |---|---|---|---|---|
+| Provider connections and Eggpool | 003 — session/model selection by connection | `plans/closure/provider-connections/003-status.md` | `213783e` | Milestone 4 — lifecycle, rotation, refresh, and disable/delete UX |
 | Domain identity and compatibility | 002 — project/repository storage migration | `plans/closure/domain-identity/002-status.md` | `84d92f0` | Runtime Assets 001 and Project Catalog 001 are ready |
 | Domain identity and compatibility | 001 — typed identity foundation | `plans/closure/domain-identity/001-status.md` | `f203ed9` | Milestone 2 — project/repository storage migration |
 | Provider connections and Eggpool | 002 — Eggpool `/connect` workflow | `plans/closure/provider-connections/002-status.md` | `8c1675c` | Milestone 3 — session/model selection by connection |

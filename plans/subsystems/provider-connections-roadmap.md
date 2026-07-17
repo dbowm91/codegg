@@ -153,8 +153,7 @@ Deferred work: broad provider-management UI.
 
 ### Milestone 3 — Session and model selection by connection
 
-Status: ready for handoff; see
-`plans/implementation/provider-connections/003-session-and-model-selection-by-connection.md`.
+Status: closed; see `plans/closure/provider-connections/003-status.md`.
 
 Class: infrastructure
 
@@ -241,6 +240,6 @@ This roadmap closes when Eggpool and other endpoints can be represented as reusa
 | Milestone | Status | Implementation plan | Closure record | Blockers |
 |---|---|---|---|---|
 | 1 | closed | `plans/implementation/provider-connections/001-connection-foundation.md` | `plans/closure/provider-connections/001-status.md` | — |
-| 2 | ready | `plans/implementation/provider-connections/002-eggpool-connect-workflow.md` | — | — |
-| 3 | not started | — | — | Milestones 1–2 closure |
+| 2 | closed | `plans/implementation/provider-connections/002-eggpool-connect-workflow.md` | `plans/closure/provider-connections/002-status.md` | — |
+| 3 | closed | `plans/implementation/provider-connections/003-session-and-model-selection-by-connection.md` | `plans/closure/provider-connections/003-status.md` | — |
 | 4 | not started | — | — | Milestones 2–3 closure |

@@ -36,6 +36,28 @@ pub struct Session {
     pub permission: Option<serde_json::Value>,
     #[serde(default)]
     pub tags: Vec<String>,
+    /// Provider Connections Milestone 3: stable daemon-owned connection
+    /// identity for this session. `None` for sessions that still use the
+    /// legacy `agent`/`model` compatibility adapter.
+    #[serde(default)]
+    pub provider_connection_id: Option<String>,
+    /// Provider Connections Milestone 3: revision of the selected connection
+    /// at the time of selection. Stale revisions are rejected on update.
+    #[serde(default)]
+    pub provider_connection_revision: Option<u64>,
+    /// Provider Connections Milestone 3: revision of the model catalog that
+    /// contained the selected model ID.
+    #[serde(default)]
+    pub model_catalog_revision: Option<String>,
+    /// Provider Connections Milestone 3: model ID selected for this session.
+    #[serde(default)]
+    pub selected_model_id: Option<String>,
+    /// Legacy agent name. Retained for compatibility only.
+    #[serde(default)]
+    pub agent: Option<String>,
+    /// Legacy `"provider/model"` string. Retained for compatibility only.
+    #[serde(default)]
+    pub model: Option<String>,
     pub time_created: i64,
     pub time_updated: i64,
     #[serde(default)]

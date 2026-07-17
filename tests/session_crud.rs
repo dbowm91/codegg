@@ -47,6 +47,10 @@ async fn test_session_create() {
             title: Some("Test Session".to_string()),
             parent_id: None,
             workspace_id: None,
+            provider_connection_id: None,
+            provider_connection_revision: None,
+            model_catalog_revision: None,
+            selected_model_id: None,
         })
         .await
         .unwrap();
@@ -74,6 +78,10 @@ async fn test_session_create_untitled() {
             title: None,
             parent_id: None,
             workspace_id: None,
+            provider_connection_id: None,
+            provider_connection_revision: None,
+            model_catalog_revision: None,
+            selected_model_id: None,
         })
         .await
         .unwrap();
@@ -97,6 +105,10 @@ async fn test_session_get() {
             title: Some("Get Test".to_string()),
             parent_id: None,
             workspace_id: None,
+            provider_connection_id: None,
+            provider_connection_revision: None,
+            model_catalog_revision: None,
+            selected_model_id: None,
         })
         .await
         .unwrap();
@@ -130,6 +142,10 @@ async fn test_session_list() {
             title: Some("Session 1".to_string()),
             parent_id: None,
             workspace_id: None,
+            provider_connection_id: None,
+            provider_connection_revision: None,
+            model_catalog_revision: None,
+            selected_model_id: None,
         })
         .await
         .unwrap();
@@ -144,6 +160,10 @@ async fn test_session_list() {
             title: Some("Session 2".to_string()),
             parent_id: None,
             workspace_id: None,
+            provider_connection_id: None,
+            provider_connection_revision: None,
+            model_catalog_revision: None,
+            selected_model_id: None,
         })
         .await
         .unwrap();
@@ -167,6 +187,10 @@ async fn test_session_list_filters_archived() {
             title: Some("Active".to_string()),
             parent_id: None,
             workspace_id: None,
+            provider_connection_id: None,
+            provider_connection_revision: None,
+            model_catalog_revision: None,
+            selected_model_id: None,
         })
         .await
         .unwrap();
@@ -181,6 +205,10 @@ async fn test_session_list_filters_archived() {
             title: Some("Archived".to_string()),
             parent_id: None,
             workspace_id: None,
+            provider_connection_id: None,
+            provider_connection_revision: None,
+            model_catalog_revision: None,
+            selected_model_id: None,
         })
         .await
         .unwrap();
@@ -208,6 +236,10 @@ async fn test_session_list_limit() {
                 title: Some(format!("Session {i}")),
                 parent_id: None,
                 workspace_id: None,
+                provider_connection_id: None,
+                provider_connection_revision: None,
+                model_catalog_revision: None,
+                selected_model_id: None,
             })
             .await
             .unwrap();
@@ -232,6 +264,10 @@ async fn test_session_update() {
             title: Some("Original".to_string()),
             parent_id: None,
             workspace_id: None,
+            provider_connection_id: None,
+            provider_connection_revision: None,
+            model_catalog_revision: None,
+            selected_model_id: None,
         })
         .await
         .unwrap();
@@ -251,6 +287,10 @@ async fn test_session_update() {
                 permission: None,
                 time_compacting: None,
                 time_archived: None,
+                provider_connection_id: None,
+                provider_connection_revision: None,
+                model_catalog_revision: None,
+                selected_model_id: None,
             },
         )
         .await
@@ -274,6 +314,10 @@ async fn test_session_update_partial() {
             title: Some("Original".to_string()),
             parent_id: None,
             workspace_id: None,
+            provider_connection_id: None,
+            provider_connection_revision: None,
+            model_catalog_revision: None,
+            selected_model_id: None,
         })
         .await
         .unwrap();
@@ -293,6 +337,10 @@ async fn test_session_update_partial() {
                 permission: None,
                 time_compacting: None,
                 time_archived: None,
+                provider_connection_id: None,
+                provider_connection_revision: None,
+                model_catalog_revision: None,
+                selected_model_id: None,
             },
         )
         .await
@@ -320,6 +368,10 @@ async fn test_session_delete() {
             title: Some("To Delete".to_string()),
             parent_id: None,
             workspace_id: None,
+            provider_connection_id: None,
+            provider_connection_revision: None,
+            model_catalog_revision: None,
+            selected_model_id: None,
         })
         .await
         .unwrap();
@@ -345,6 +397,10 @@ async fn test_session_fork() {
             title: Some("Parent".to_string()),
             parent_id: None,
             workspace_id: Some("ws_1".to_string()),
+            provider_connection_id: None,
+            provider_connection_revision: None,
+            model_catalog_revision: None,
+            selected_model_id: None,
         })
         .await
         .unwrap();
@@ -373,6 +429,10 @@ async fn test_session_archive() {
             title: Some("To Archive".to_string()),
             parent_id: None,
             workspace_id: None,
+            provider_connection_id: None,
+            provider_connection_revision: None,
+            model_catalog_revision: None,
+            selected_model_id: None,
         })
         .await
         .unwrap();
@@ -399,6 +459,10 @@ async fn test_session_unarchive() {
             title: Some("Unarchive Test".to_string()),
             parent_id: None,
             workspace_id: None,
+            provider_connection_id: None,
+            provider_connection_revision: None,
+            model_catalog_revision: None,
+            selected_model_id: None,
         })
         .await
         .unwrap();
@@ -426,6 +490,10 @@ async fn test_session_set_share_url() {
             title: Some("Share Test".to_string()),
             parent_id: None,
             workspace_id: None,
+            provider_connection_id: None,
+            provider_connection_revision: None,
+            model_catalog_revision: None,
+            selected_model_id: None,
         })
         .await
         .unwrap();
@@ -456,6 +524,10 @@ async fn test_session_children() {
             title: Some("Parent".to_string()),
             parent_id: None,
             workspace_id: None,
+            provider_connection_id: None,
+            provider_connection_revision: None,
+            model_catalog_revision: None,
+            selected_model_id: None,
         })
         .await
         .unwrap();
@@ -470,6 +542,10 @@ async fn test_session_children() {
             title: Some("Child 1".to_string()),
             parent_id: Some(parent.id.clone()),
             workspace_id: None,
+            provider_connection_id: None,
+            provider_connection_revision: None,
+            model_catalog_revision: None,
+            selected_model_id: None,
         })
         .await
         .unwrap();
@@ -484,6 +560,10 @@ async fn test_session_children() {
             title: Some("Child 2".to_string()),
             parent_id: Some(parent.id.clone()),
             workspace_id: None,
+            provider_connection_id: None,
+            provider_connection_revision: None,
+            model_catalog_revision: None,
+            selected_model_id: None,
         })
         .await
         .unwrap();
@@ -507,6 +587,10 @@ async fn test_session_share_session() {
             title: Some("Share".to_string()),
             parent_id: None,
             workspace_id: None,
+            provider_connection_id: None,
+            provider_connection_revision: None,
+            model_catalog_revision: None,
+            selected_model_id: None,
         })
         .await
         .unwrap();
@@ -537,6 +621,10 @@ async fn test_message_create_and_list() {
             title: Some("Message Test".to_string()),
             parent_id: None,
             workspace_id: None,
+            provider_connection_id: None,
+            provider_connection_revision: None,
+            model_catalog_revision: None,
+            selected_model_id: None,
         })
         .await
         .unwrap();
@@ -582,6 +670,10 @@ async fn test_message_get() {
             title: Some("Get Message Test".to_string()),
             parent_id: None,
             workspace_id: None,
+            provider_connection_id: None,
+            provider_connection_revision: None,
+            model_catalog_revision: None,
+            selected_model_id: None,
         })
         .await
         .unwrap();
@@ -619,6 +711,10 @@ async fn test_message_delete() {
             title: Some("Delete Message Test".to_string()),
             parent_id: None,
             workspace_id: None,
+            provider_connection_id: None,
+            provider_connection_revision: None,
+            model_catalog_revision: None,
+            selected_model_id: None,
         })
         .await
         .unwrap();
@@ -655,6 +751,10 @@ async fn test_part_create_and_list() {
             title: Some("Part Test".to_string()),
             parent_id: None,
             workspace_id: None,
+            provider_connection_id: None,
+            provider_connection_revision: None,
+            model_catalog_revision: None,
+            selected_model_id: None,
         })
         .await
         .unwrap();
@@ -699,6 +799,10 @@ async fn test_todo_set_and_list() {
             title: Some("Todo Test".to_string()),
             parent_id: None,
             workspace_id: None,
+            provider_connection_id: None,
+            provider_connection_revision: None,
+            model_catalog_revision: None,
+            selected_model_id: None,
         })
         .await
         .unwrap();
@@ -738,6 +842,10 @@ async fn test_todo_add() {
             title: Some("Todo Add Test".to_string()),
             parent_id: None,
             workspace_id: None,
+            provider_connection_id: None,
+            provider_connection_revision: None,
+            model_catalog_revision: None,
+            selected_model_id: None,
         })
         .await
         .unwrap();
@@ -768,6 +876,10 @@ async fn test_todo_clear() {
             title: Some("Todo Clear Test".to_string()),
             parent_id: None,
             workspace_id: None,
+            provider_connection_id: None,
+            provider_connection_revision: None,
+            model_catalog_revision: None,
+            selected_model_id: None,
         })
         .await
         .unwrap();
@@ -801,6 +913,10 @@ async fn test_revert_to_message() {
             title: Some("Revert Test".to_string()),
             parent_id: None,
             workspace_id: None,
+            provider_connection_id: None,
+            provider_connection_revision: None,
+            model_catalog_revision: None,
+            selected_model_id: None,
         })
         .await
         .unwrap();
@@ -879,6 +995,10 @@ async fn test_revert_to_message_not_found() {
             title: Some("Revert Not Found Test".to_string()),
             parent_id: None,
             workspace_id: None,
+            provider_connection_id: None,
+            provider_connection_revision: None,
+            model_catalog_revision: None,
+            selected_model_id: None,
         })
         .await
         .unwrap();
@@ -920,6 +1040,10 @@ async fn test_import_session() {
             title: Some("Original Session".to_string()),
             parent_id: None,
             workspace_id: None,
+            provider_connection_id: None,
+            provider_connection_revision: None,
+            model_catalog_revision: None,
+            selected_model_id: None,
         })
         .await
         .unwrap();

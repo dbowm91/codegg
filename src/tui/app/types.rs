@@ -15,6 +15,7 @@ pub enum Dialog {
     Import,
     Template,
     Connect,
+    ConnectionSelection,
     Context,
     Cost,
     Usage,
@@ -257,6 +258,32 @@ pub enum TuiMsg {
     },
     RunCopyId {
         run_id: String,
+    },
+    /// Provider Connections Milestone 3: user confirms a connection +
+    /// model selection update from the dialog.
+    SubmitSelectionUpdate {
+        session_id: String,
+        connection_id: String,
+        connection_revision: Option<u64>,
+        model_id: String,
+        catalog_revision: Option<String>,
+    },
+    /// Provider Connections Milestone 3: the daemon reported the
+    /// current selection state for the dialog.
+    SessionSelectionUpdated {
+        selection: crate::protocol::provider::SessionSelectionDto,
+    },
+    /// Provider Connections Milestone 3: the daemon reported the
+    /// updated list of selectable connections.
+    ProviderConnectionsUpdated {
+        connections: Vec<crate::protocol::provider::ProviderConnectionSummaryDto>,
+    },
+    /// Provider Connections Milestone 3: the daemon reported the
+    /// bounded model catalog for a connection.
+    ProviderConnectionModelsUpdated {
+        connection_id: String,
+        catalog_revision: Option<String>,
+        models: Vec<crate::protocol::provider::SelectedModelDto>,
     },
 }
 

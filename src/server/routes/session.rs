@@ -71,6 +71,10 @@ pub async fn create_session(
         agent: req.agent,
         model: req.model,
         tags: req.tags,
+        provider_connection_id: None,
+        provider_connection_revision: None,
+        model_catalog_revision: None,
+        selected_model_id: None,
     };
     let session = store.create(input).await?;
     Ok((StatusCode::CREATED, Json(session)))

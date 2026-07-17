@@ -982,6 +982,10 @@ async fn cmd_import(file: &str) -> Result<(), AppError> {
         agent: None,
         model: None,
         tags: None,
+        provider_connection_id: None,
+        provider_connection_revision: None,
+        model_catalog_revision: None,
+        selected_model_id: None,
     };
 
     let created = session_store.create(input).await?;

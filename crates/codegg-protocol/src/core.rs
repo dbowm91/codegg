@@ -7,7 +7,8 @@ use crate::dto::{
 };
 use crate::provider::{
     ConnectionProvisioningStatusDto, CreateEggpoolConnectionRequest, CreateEggpoolConnectionResult,
-    ProviderConnectionSummaryDto, ProviderModelDto,
+    ProviderConnectionSummaryDto, ProviderModelDto, SessionSelectionDto,
+    UpdateSessionSelectionRequest,
 };
 
 /// Core protocol version.
@@ -57,6 +58,18 @@ pub enum CoreResponse {
         connection_id: String,
         catalog_revision: Option<String>,
         models: Vec<ProviderModelDto>,
+    },
+    /// Provider Connections Milestone 3: redacted list of selectable
+    /// connections plus their model catalogs for the current session.
+    SessionSelection {
+        session_id: String,
+        selection: SessionSelectionDto,
+    },
+    /// Provider Connections Milestone 3: confirmation of a successful
+    /// session selection update.
+    SessionSelectionUpdated {
+        session_id: String,
+        selection: SessionSelectionDto,
     },
     Json {
         data: serde_json::Value,
@@ -357,6 +370,32 @@ pub enum CoreRequest {
     ModelSelect {
         session_id: String,
         model: String,
+    },
+    /// Provider Connections Milestone 3: read the session's current
+    /// connection/model selection. Resolves the legacy `provider/model`
+    /// string on demand and returns a typed diagnostic when no
+    /// connection matches.
+    SessionSelectionGet {
+        session_id: String,
+    },
+    /// Provider Connections Milestone 3: list connections available to
+    /// the current session for selection. Always redacted; never carries
+    /// credentials.
+    SessionSelectionList {
+        session_id: String,
+    },
+    /// Provider Connections Milestone 3: write a new connection + model
+    /// selection for a session with optimistic revision checks.
+    SessionSelectionUpdate {
+        request: Box<UpdateSessionSelectionRequest>,
+    },
+    /// Provider Connections Milestone 3: list the bounded model catalog
+    /// for a single connection, scoped to the session's authoritative
+    /// context. The catalog revision is returned so stale revisions are
+    /// detected.
+    SessionSelectionModels {
+        session_id: String,
+        connection_id: String,
     },
     ModelsRefresh,
     PermissionRespond {

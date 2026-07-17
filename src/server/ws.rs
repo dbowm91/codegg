@@ -408,6 +408,10 @@ async fn handle_rpc_direct(
                 agent: None,
                 model: None,
                 tags: None,
+                provider_connection_id: None,
+                provider_connection_revision: None,
+                model_catalog_revision: None,
+                selected_model_id: None,
             };
             match store.create(input).await {
                 Ok(s) => RpcResponse {

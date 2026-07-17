@@ -343,7 +343,7 @@ pub enum ProviderConnectionState {
 }
 
 impl ProviderConnectionState {
-    fn storage_key(self) -> &'static str {
+    pub fn storage_key(self) -> &'static str {
         match self {
             Self::Active => "active",
             Self::Disabled => "disabled",
@@ -589,6 +589,13 @@ pub struct ProviderConnectionStore {
 impl ProviderConnectionStore {
     pub fn new(pool: SqlitePool) -> Self {
         Self { pool }
+    }
+
+    /// Borrow the underlying SQLite pool. Provided so read-only catalog
+    /// helpers can run bounded queries without re-implementing every
+    /// existing read path.
+    pub fn pool(&self) -> &SqlitePool {
+        &self.pool
     }
 
     pub async fn create(
@@ -1085,7 +1092,7 @@ mod tests {
             .fetch_one(&database)
             .await
             .unwrap();
-        assert_eq!(version, 26);
+        assert_eq!(version, 27);
         let store = ProviderConnectionStore::new(database.clone());
         let created = store
             .create(input(ProviderScope::project(ProjectId::new())))

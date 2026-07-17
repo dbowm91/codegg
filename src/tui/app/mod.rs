@@ -287,6 +287,28 @@ pub enum TuiCommand {
         messages: Vec<crate::session::message::Message>,
         error: Option<String>,
     },
+    /// Provider Connections Milestone 3: trigger the connection
+    /// selection dialog refresh flow. Emitted when the dialog opens or
+    /// when the user requests an explicit reload.
+    SessionSelectionRefresh,
+    /// Provider Connections Milestone 3: trigger an explicit
+    /// selection-list load for a specific session ID. Handlers in the
+    /// command runner spawn the actual `CoreRequest` calls.
+    SessionSelectionLoad {
+        session_id: String,
+    },
+    /// Provider Connections Milestone 3: completion for the selection
+    /// refresh flow. Carries the resolved selection, the redacted
+    /// connection list, and (when known) the model catalog for the
+    /// currently focused connection.
+    SessionSelectionLoaded {
+        session_id: String,
+        selection: Option<crate::protocol::provider::SessionSelectionDto>,
+        connections: Vec<crate::protocol::provider::ProviderConnectionSummaryDto>,
+        models: Vec<crate::protocol::provider::SelectedModelDto>,
+        focused_connection_id: Option<String>,
+        error: Option<String>,
+    },
     /// Completion: tree dialog nodes have been loaded from core.
     TreeDialogLoaded {
         current_session_id: Option<String>,
@@ -1027,6 +1049,7 @@ impl App {
                 import_dialog: None,
                 template_dialog: None,
                 connect_dialog: None,
+                connection_selection_dialog: None,
                 goto_dialog: None,
                 plan_dialog: None,
                 diff_dialog: None,
@@ -1451,6 +1474,7 @@ impl App {
                 import_dialog: None,
                 template_dialog: None,
                 connect_dialog: None,
+                connection_selection_dialog: None,
                 goto_dialog: None,
                 plan_dialog: None,
                 diff_dialog: None,
@@ -3339,6 +3363,22 @@ impl App {
             TuiMsg::ConfirmImport => {
                 self.handle_import_send();
             }
+            TuiMsg::SubmitSelectionUpdate {
+                session_id,
+                connection_id,
+                connection_revision,
+                model_id,
+                catalog_revision,
+            } => {
+                crate::tui::commands::session_selection::start_selection_update(
+                    self,
+                    session_id,
+                    connection_id,
+                    model_id,
+                    connection_revision,
+                    catalog_revision,
+                );
+            }
             TuiMsg::SubmitPermission { choice_index } => {
                 let choice = match choice_index {
                     0 => crate::permission::PermissionChoice::AllowOnce,
@@ -4917,6 +4957,10 @@ impl App {
             "/connect" => {
                 self.ui_state.command_mode = false;
                 self.open_connect_dialog();
+            }
+            "/connections" | "/connection" | "/select-connection" => {
+                self.ui_state.command_mode = false;
+                self.open_connection_selection_dialog();
             }
             "/status" => {
                 self.messages_state.toasts.info(&format!(
@@ -9332,6 +9376,35 @@ impl App {
         );
         self.dialog_state.connect_dialog = Some(connect_dialog);
         self.open_dialog(Dialog::Connect);
+    }
+
+    /// Provider Connections Milestone 3: open the connection selection
+    /// dialog. The dialog is session-scoped and reads the current
+    /// selection before showing choices, so the user sees what they have
+    /// now and what they can change it to.
+    fn open_connection_selection_dialog(&mut self) {
+        let session_id = match self.session_state.session.as_ref() {
+            Some(s) => s.id.clone(),
+            None => {
+                self.messages_state
+                    .toasts
+                    .error("No active session. Open or create one before selecting a connection.");
+                return;
+            }
+        };
+        self.dialog_state.connection_selection_dialog = Some(
+            crate::tui::components::dialogs::connection_selection::ConnectionSelectionDialog::new(
+                session_id,
+                Arc::clone(&self.ui_state.theme),
+            ),
+        );
+        self.open_dialog(Dialog::ConnectionSelection);
+        // Trigger an initial selection fetch so the dialog renders with
+        // current state.
+        let tx = self.tui_cmd_tx.clone();
+        if let Some(tx) = tx {
+            let _ = tx.try_send(TuiCommand::SessionSelectionRefresh);
+        }
     }
 
     fn open_tree_dialog(&mut self) {

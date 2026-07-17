@@ -224,6 +224,10 @@ pub async fn migrate_legacy_project_database(
                     } else {
                         Some(session.tags.clone())
                     },
+                    provider_connection_id: None,
+                    provider_connection_revision: None,
+                    model_catalog_revision: None,
+                    selected_model_id: None,
                 },
             )
             .await
@@ -476,6 +480,10 @@ mod tests {
                 agent: None,
                 model: None,
                 tags: None,
+                provider_connection_id: None,
+                provider_connection_revision: None,
+                model_catalog_revision: None,
+                selected_model_id: None,
             })
             .await
             .unwrap();

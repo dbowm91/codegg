@@ -41,6 +41,8 @@ pub struct DialogState {
     pub import_dialog: Option<crate::tui::components::dialogs::import::ImportDialog>,
     pub template_dialog: Option<crate::tui::components::dialogs::template::TemplateDialog>,
     pub connect_dialog: Option<crate::tui::components::dialogs::connect::ConnectDialog>,
+    pub connection_selection_dialog:
+        Option<crate::tui::components::dialogs::connection_selection::ConnectionSelectionDialog>,
     pub goto_dialog: Option<crate::tui::components::dialogs::goto::GotoDialog>,
     pub plan_dialog: Option<crate::tui::components::dialogs::plan::PlanDialog>,
     pub diff_dialog: Option<crate::tui::components::dialogs::diff::DiffDialog>,

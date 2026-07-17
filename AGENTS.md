@@ -543,7 +543,7 @@ CI runs on push/PR to dev/main: `agent-assets` → `fmt` → `check` → `clippy
 
 | Document | Key Gotchas |
 |----------|-------------|
-| `architecture/overview.md` | Module map, verified counts (105 commands, 44 events, 39 LSP servers, ~37 tools, 9 agents) |
+| `architecture/overview.md` | Module map, verified counts (107 commands, 44 events, 39 LSP servers, ~37 tools, 9 agents) |
 | `architecture/agent.md` | AgentLoop has ~49 fields at `src/agent/loop.rs:1380` |
 | `architecture/bus.md` | 44 AppEvent variants; PermissionRegistry/QuestionRegistry are synchronous |
 | `architecture/lsp.md` | egglsp is authoritative; 39 servers; `src/lsp/` is thin re-export shim |
@@ -559,7 +559,7 @@ CI runs on push/PR to dev/main: `agent-assets` → `fmt` → `check` → `clippy
 | `architecture/python_script.md` | Module-based Python scripting: types, sandbox, executor, projection, tool registration |
 | `architecture/jobs.md` | Phase 4 durable jobs, attempts, schedules, recovery, idempotency |
 | `architecture/scheduler.md` | Phase 5 admission control, fair queue, executor dispatch |
-| `architecture/command.md` | 105 built-in slash commands |
+| `architecture/command.md` | 107 built-in slash commands |
 | `architecture/config.md` | Config schema in `crates/codegg-config/src/schema.rs` |
 | `architecture/provider.md` | 16 auto-registered providers via env vars; CircuitBreaker pattern |
 | `architecture/preflight.md` | Harness-side eggsact preflight: types, policy config, tool integration, anti-recursion |

@@ -455,6 +455,54 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
                 }
             }
         }
+        TuiCommand::SessionSelectionRefresh => {
+            // The dialog was opened (or the user requested a refresh).
+            // Drive a fresh selection fetch through the daemon.
+            if app.dialog_state.connection_selection_dialog.is_some() {
+                let session_id = app
+                    .dialog_state
+                    .connection_selection_dialog
+                    .as_ref()
+                    .map(|d| d.session_id.clone())
+                    .unwrap_or_default();
+                if let Some(tx) = app.tui_cmd_tx.clone() {
+                    let _ = tx.try_send(TuiCommand::SessionSelectionLoad { session_id });
+                }
+            }
+        }
+        TuiCommand::SessionSelectionLoad { session_id } => {
+            crate::tui::commands::session_selection::start_selection_refresh(app, session_id);
+        }
+        TuiCommand::SessionSelectionLoaded {
+            session_id,
+            selection,
+            connections,
+            models,
+            focused_connection_id,
+            error,
+        } => {
+            let Some(dialog) = app.dialog_state.connection_selection_dialog.as_mut() else {
+                return;
+            };
+            if dialog.session_id != session_id {
+                return;
+            }
+            dialog.finish_loading();
+            if let Some(err) = error {
+                dialog.set_error(err);
+                return;
+            }
+            dialog.set_connections(connections);
+            dialog.set_models(models);
+            if let Some(focused) = focused_connection_id {
+                if let Some(idx) = dialog.connections.iter().position(|c| c.id == focused) {
+                    dialog.connection_idx = idx;
+                }
+            }
+            if let Some(sel) = selection {
+                dialog.set_selection(sel);
+            }
+        }
         TuiCommand::TasksListed {
             request_id,
             tasks,

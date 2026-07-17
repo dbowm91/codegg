@@ -8,6 +8,7 @@ pub(super) mod plugin_management;
 pub(super) mod plugins;
 pub(super) mod research;
 pub(super) mod security;
+pub(super) mod session_selection;
 pub(super) mod sessions;
 pub(super) mod shell;
 pub(super) mod tasks;

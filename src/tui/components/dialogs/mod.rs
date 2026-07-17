@@ -2,6 +2,7 @@ pub mod agent;
 pub mod command;
 pub mod confirm;
 pub mod connect;
+pub mod connection_selection;
 pub mod diff;
 pub mod goto;
 pub mod help;

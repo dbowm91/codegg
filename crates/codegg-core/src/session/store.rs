@@ -97,8 +97,12 @@ impl SessionStore {
             r#"
             INSERT INTO session (
                 id, project_id, workspace_id, parent_id, slug, directory,
-                title, version, tags, time_created, time_updated
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                title, version, tags,
+                provider_connection_id, provider_connection_revision,
+                model_catalog_revision, selected_model_id,
+                agent, model,
+                time_created, time_updated
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(id)
@@ -110,6 +114,12 @@ impl SessionStore {
         .bind(&title)
         .bind(&version)
         .bind(&tags_json)
+        .bind(input.provider_connection_id.as_deref())
+        .bind(input.provider_connection_revision.map(|v| v as i64))
+        .bind(input.model_catalog_revision.as_deref())
+        .bind(input.selected_model_id.as_deref())
+        .bind(input.agent.as_deref())
+        .bind(input.model.as_deref())
         .bind(now)
         .bind(now)
         .execute(&self.pool)
@@ -126,6 +136,12 @@ impl SessionStore {
             title,
             version,
             tags,
+            provider_connection_id: input.provider_connection_id,
+            provider_connection_revision: input.provider_connection_revision,
+            model_catalog_revision: input.model_catalog_revision,
+            selected_model_id: input.selected_model_id,
+            agent: input.agent,
+            model: input.model,
             time_created: now,
             time_updated: now,
             time_archived: None,
@@ -156,6 +172,10 @@ impl SessionStore {
             agent: template.agent.clone(),
             model: template.model.clone(),
             tags: template.tags.clone(),
+            provider_connection_id: None,
+            provider_connection_revision: None,
+            model_catalog_revision: None,
+            selected_model_id: None,
         };
         self.create(input).await
     }
@@ -664,6 +684,12 @@ impl SessionStore {
             revert: None,
             permission: None,
             tags: Vec::new(),
+            provider_connection_id: None,
+            provider_connection_revision: None,
+            model_catalog_revision: None,
+            selected_model_id: None,
+            agent: None,
+            model: None,
             time_created: now,
             time_updated: now,
             time_compacting: None,
@@ -674,6 +700,27 @@ impl SessionStore {
 
     pub async fn update(&self, id: &str, input: UpdateSession) -> Result<Session, StorageError> {
         let now = Utc::now().timestamp_millis();
+
+        // Provider Connections Milestone 3: selection columns use a
+        // double-Option encoding so callers can explicitly clear them.
+        // `None` outer = no change; `Some(None)` = clear; `Some(Some(v))`
+        // = set.
+        let conn_id = input
+            .provider_connection_id
+            .as_ref()
+            .map(|inner| inner.as_deref());
+        let conn_revision = input
+            .provider_connection_revision
+            .as_ref()
+            .map(|inner| inner.map(|v| v as i64));
+        let catalog_revision = input
+            .model_catalog_revision
+            .as_ref()
+            .map(|inner| inner.as_deref());
+        let model_id = input
+            .selected_model_id
+            .as_ref()
+            .map(|inner| inner.as_deref());
 
         let result = sqlx::query_as::<_, SessionRow>(
             r#"
@@ -689,7 +736,11 @@ impl SessionStore {
                 permission = COALESCE(?, permission),
                 tags = COALESCE(?, tags),
                 time_compacting = COALESCE(?, time_compacting),
-                time_archived = COALESCE(?, time_archived)
+                time_archived = COALESCE(?, time_archived),
+                provider_connection_id = COALESCE(?, provider_connection_id),
+                provider_connection_revision = COALESCE(?, provider_connection_revision),
+                model_catalog_revision = COALESCE(?, model_catalog_revision),
+                selected_model_id = COALESCE(?, selected_model_id)
             WHERE id = ?
             RETURNING *
             "#,
@@ -711,6 +762,10 @@ impl SessionStore {
         )
         .bind(input.time_compacting)
         .bind(input.time_archived)
+        .bind(conn_id)
+        .bind(conn_revision)
+        .bind(catalog_revision)
+        .bind(model_id)
         .bind(id)
         .fetch_one(&self.pool)
         .await
@@ -989,6 +1044,12 @@ impl SessionStore {
             revert: None,
             permission: None,
             tags: parent.tags,
+            provider_connection_id: parent.provider_connection_id,
+            provider_connection_revision: parent.provider_connection_revision,
+            model_catalog_revision: parent.model_catalog_revision,
+            selected_model_id: parent.selected_model_id,
+            agent: parent.agent.clone(),
+            model: parent.model.clone(),
             time_created: now,
             time_updated: now,
             time_compacting: None,
@@ -1234,6 +1295,10 @@ impl SessionStore {
             tags: None,
             time_compacting: None,
             time_archived: None,
+            provider_connection_id: None,
+            provider_connection_revision: None,
+            model_catalog_revision: None,
+            selected_model_id: None,
         };
 
         self.update(session_id, update).await
@@ -1266,6 +1331,10 @@ impl SessionStore {
             tags: None,
             time_compacting: None,
             time_archived: None,
+            provider_connection_id: None,
+            provider_connection_revision: None,
+            model_catalog_revision: None,
+            selected_model_id: None,
         };
 
         self.update(session_id, update).await

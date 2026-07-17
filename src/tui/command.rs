@@ -99,6 +99,9 @@ impl CommandRegistry {
         vec![
             Command::new("/connect", CommandCategory::System, None)
                 .with_description("Connect provider"),
+            Command::new("/connections", CommandCategory::System, None)
+                .with_aliases(&["/connection", "/select-connection"])
+                .with_description("Select provider connection and model for current session"),
             Command::new("/exit", CommandCategory::System, None)
                 .with_aliases(&["quit", "q"])
                 .with_description("Exit the app"),
@@ -516,7 +519,7 @@ mod tests {
 
     #[test]
     fn built_in_command_count_matches_release_docs() {
-        assert_eq!(CommandRegistry::built_in_commands().len(), 106);
+        assert_eq!(CommandRegistry::built_in_commands().len(), 107);
     }
 
     #[test]

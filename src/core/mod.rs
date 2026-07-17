@@ -16,6 +16,7 @@ pub mod notification;
 pub mod provider_connections;
 pub mod runtime_deps;
 pub mod session_runtime;
+pub mod session_selection;
 pub mod transport;
 
 #[async_trait]

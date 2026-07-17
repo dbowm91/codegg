@@ -139,3 +139,60 @@ pub struct ConnectionProvisioningStatusDto {
     pub connection_id: Option<String>,
     pub reason_code: Option<String>,
 }
+
+// ── Provider Connections Milestone 3: session selection ────────────────
+
+/// Wire-level model descriptor returned alongside a session's selected
+/// connection. Mirrors `ProviderModelDto` plus a `catalog_revision` so
+/// clients can detect stale selections without further round trips.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SelectedModelDto {
+    pub connection_id: String,
+    pub model_id: String,
+    pub model_name: String,
+    pub context_window: u64,
+    pub max_output_tokens: Option<u64>,
+    pub supports_tools: bool,
+    pub supports_vision: bool,
+    pub catalog_revision: String,
+}
+
+/// Result of resolving the current session selection. One of three
+/// variants is always present:
+///
+/// - `selected`: a durable connection + model is bound to the session.
+/// - `legacy_unresolved`: the session persists a legacy `provider/model`
+///   string but no matching connection was found.
+/// - `unselected`: the session has neither a connection nor a legacy
+///   provider/model.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum SessionSelectionDto {
+    Selected {
+        connection: ProviderConnectionSummaryDto,
+        model: SelectedModelDto,
+        connection_revision: u64,
+        catalog_revision: String,
+    },
+    LegacyUnresolved {
+        legacy_provider: String,
+        legacy_model: Option<String>,
+        reason: String,
+    },
+    Unselected {},
+}
+
+/// Request to update a session's connection + model selection. The
+/// `expected_connection_revision` and `expected_catalog_revision` fields
+/// implement optimistic concurrency: when set, an update that conflicts
+/// returns `selection_revision_conflict` rather than overwriting the
+/// stored selection. When `None`, the update is treated as a fresh
+/// selection that replaces whatever the session had.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UpdateSessionSelectionRequest {
+    pub session_id: String,
+    pub connection_id: String,
+    pub model_id: String,
+    pub expected_connection_revision: Option<u64>,
+    pub expected_catalog_revision: Option<String>,
+}
