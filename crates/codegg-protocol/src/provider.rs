@@ -167,6 +167,7 @@ pub struct SelectedModelDto {
 ///   provider/model.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "state", rename_all = "snake_case")]
+#[allow(clippy::large_enum_variant)]
 pub enum SessionSelectionDto {
     Selected {
         connection: ProviderConnectionSummaryDto,

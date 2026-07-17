@@ -34,6 +34,7 @@ use crate::core::eggpool::EggpoolProvisioner;
 
 /// Outcome of a session selection update.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(clippy::large_enum_variant)]
 pub enum SelectionUpdateOutcome {
     Updated(SessionSelectionDto),
     /// The supplied `expected_connection_revision` did not match the

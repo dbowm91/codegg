@@ -110,7 +110,7 @@ pub async fn health_for(
     connection_id: &ProviderConnectionId,
 ) -> Result<Option<HealthRow>, StorageError> {
     let pool = store.pool().clone();
-    let row: Option<(String, Option<String>, i64, i64, Option<String>)> = sqlx::query_as(
+    let row: Option<HealthRow> = sqlx::query_as(
         "SELECT status, reason_code, checked_at, duration_ms, catalog_revision \
          FROM provider_connection_health WHERE connection_id = ?",
     )

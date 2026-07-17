@@ -9,7 +9,7 @@ Production implementation baseline:
 - `f203ed9` — typed domain identity primitives and relation contracts.
 - `84d92f0` — durable project/repository storage, workspace/session bindings, reconciliation, and migration diagnostics.
 - `a2db5e4` — durable project catalog foundation over the canonical identity stores.
-- `213783e` — additive session connection/model selection, demonstrating the current typed daemon/protocol migration pattern.
+- `efe1995` — additive session connection/model selection, demonstrating the current typed daemon/protocol migration pattern.
 
 Source roadmap:
 

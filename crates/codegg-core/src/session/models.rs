@@ -58,7 +58,7 @@ pub struct Session {
     pub time_deleted: Option<i64>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CreateSession {
     /// Legacy string projection; do not derive a durable project identity from
     /// this field.
@@ -82,25 +82,6 @@ pub struct CreateSession {
     pub model_catalog_revision: Option<String>,
     /// Provider Connections Milestone 3: optional initial model ID.
     pub selected_model_id: Option<String>,
-}
-
-impl Default for CreateSession {
-    fn default() -> Self {
-        Self {
-            project_id: String::new(),
-            directory: String::new(),
-            title: None,
-            parent_id: None,
-            workspace_id: None,
-            agent: None,
-            model: None,
-            tags: None,
-            provider_connection_id: None,
-            provider_connection_revision: None,
-            model_catalog_revision: None,
-            selected_model_id: None,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

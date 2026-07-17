@@ -8,7 +8,7 @@ Production implementation baseline:
 
 - `bccca00` — durable provider connections, secret references, revisioned lifecycle, and lazy daemon manager.
 - `8c1675c` — Eggpool `/connect` provisioning, bounded probe, redacted model catalog, and cancellation cleanup.
-- `213783e` — session/model selection by stable connection ID and catalog revision.
+- `efe1995` — session/model selection by stable connection ID and catalog revision.
 
 Source roadmap:
 
