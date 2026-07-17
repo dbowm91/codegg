@@ -59,7 +59,7 @@ real directory; new code MUST NOT use it.
 | `init_legacy_project_store(root)` | `<root>/.codegg/sessions.db`. |
 | `init(project_dir)` (deprecated) | Empty → user config directory + `codegg/sessions.db`. Non-empty → legacy project store. |
 
-`STORAGE_LAYOUT_VERSION = 26` is exported from `storage::mod` and is
+`STORAGE_LAYOUT_VERSION = 27` is exported from `storage::mod` and is
 referenced from `MigrationMarker.storage_layout_version` so the
 migration tooling can report which layout a legacy database was
 imported under.

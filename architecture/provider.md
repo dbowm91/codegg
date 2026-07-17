@@ -19,7 +19,10 @@ request/response time, response bytes, model count, and model-field size, and
 returns stable redacted reason codes. The daemon stores the API key in the
 existing protected credential store and writes only opaque references plus
 health and revisioned model-catalog metadata to SQLite. Session model
-selection still uses the legacy path until Provider Connections Milestone 3.
+selection moves to the durable connection/revision flow in Provider
+Connections Milestone 003 (`docs: plans/closure/provider-connections/003-status.md`);
+legacy `provider/model` strings remain readable through a deterministic
+`LegacyResolution` adapter.
 
 ## Provider Trait and Core Types
 

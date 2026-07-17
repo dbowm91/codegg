@@ -296,7 +296,7 @@ python3 scripts/check_daemon_cwd_usage.py
 - [`architecture/workspace.md`](workspace.md) — Phase 2 workspace
   identity, `WorkspaceRegistry`, `ExecutionContext`, and path policy.
 - [`architecture/storage.md`](storage.md) — Storage layout and migration
-  index (now `STORAGE_LAYOUT_VERSION = 26`).
+  index (now `STORAGE_LAYOUT_VERSION = 27`).
 - [`architecture/run_store.md`](run_store.md) — `RunStore` and
   `RunManifest` semantics used by the bundle.
 - [`architecture/protocol.md`](protocol.md) — Phase 3 protocol variants
