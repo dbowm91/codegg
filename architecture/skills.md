@@ -4,114 +4,192 @@ The `skills` module provides specialized capabilities activated via `/skill:` co
 
 ## Overview
 
-**Location**: `src/skills/mod.rs`
+**Location**: `src/skills/`
 
 **Key Responsibilities**:
-- Skill loading from markdown files with YAML frontmatter
+- Source-aware asset discovery from CodeGG, `.agents`, OpenCode, and Claude-compatible harness locations
+- Portable `SKILL.md` package parsing with YAML frontmatter
+- Deterministic precedence and duplicate resolution
+- Content digest computation for change detection
+- Security-bounded discovery (symlink escape, path traversal, bounded sizes)
 - Skill activation via `/skill:<name>` commands
 - System prompt augmentation with skill content
+- Backward-compatible `SkillIndex` facade for existing consumers
 
-The runtime loader reads skills from the global config directory and the
-project-local `.codegg/skills/` directory. This repository does not maintain a
-separate checked-in `.skills/` mirror; the bundled `util` skill is an example
-of the project-local layout. `SkillIndex::load()` loads from the global and
-project directories directly.
+## Architecture
 
-## Key Types
+### Asset Registry
 
-### Skill
+The `AssetRegistry` is the primary public type. It is constructed once at startup via `AssetRegistry::build(config, project_root, global_roots)` and produces an immutable, source-aware snapshot of all discovered skills.
 
 ```rust
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Skill {
-    pub name: String,
-    pub description: String,
-    pub version: Option<String>,    // not in older docs
-    pub tags: Vec<String>,
-    pub body: String,
-    pub source: PathBuf,            // not in older docs
+pub struct AssetRegistry {
+    pub effective: Vec<EffectiveSkill>,
+    pub diagnostics: Vec<Diagnostic>,
+    pub sources: Vec<SourceSummary>,
 }
 ```
 
-### SkillIndex
+Key methods:
+- `get(name)` — exact name lookup (case-insensitive normalized)
+- `list()` — all effective skills
+- `find_matching(query)` — partial match across name, description, metadata
+- `build_system_prompt()` — formatted skill listing for agent prompts
+- `activate(name)` — retrieve skill body by name
 
-```rust
-pub struct SkillIndex {
-    skills: Vec<Skill>,
-}
+### Source Kinds and Precedence
 
-impl Default for SkillIndex {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+Each discovered skill is tagged with a `SourceKind` indicating its origin. Lower precedence rank wins:
 
-impl SkillIndex {
-    pub fn new() -> Self {
-        Self { skills: Vec::new() }
-    }
-    pub async fn load(&mut self, project_dir: &str) -> Result<(), AppError>;
-    pub fn get(&self, name: &str) -> Option<&Skill>;
-    pub fn list(&self) -> &[Skill];
-    pub fn find_matching(&self, query: &str) -> Vec<&Skill>;
-    pub fn build_system_prompt(&self) -> String;
-    pub fn activate(&self, name: &str) -> Option<String>;
-}
+| Rank | SourceKind | Location |
+|------|-----------|----------|
+| 0 | `CodeGGProject` | `<project>/.codegg/skills/<name>/SKILL.md` |
+| 10 | `AgentsProject` | `<project>/.agents/skills/<name>/SKILL.md` |
+| 20 | `OpenCodeProject` | `<project>/.opencode/skills/<name>/SKILL.md` |
+| 30 | `ClaudeProject` | `<project>/.claude/skills/<name>/SKILL.md` |
+| 40 | `CodeGGGlobal` | `<config>/codegg/skills/<name>/SKILL.md` |
+| 50 | `AgentsGlobal` | `~/.agents/skills/<name>/SKILL.md` |
+| 60 | `OpenCodeGlobal` | `~/.config/opencode/skills/<name>/SKILL.md` |
+| 70 | `ClaudeGlobal` | `~/.claude/skills/<name>/SKILL.md` |
+| 80 | `CodeGGNativeCompat` | `<project>/.codegg/skills/*.md` (direct markdown) |
 
-### SkillIndex Methods
+Project-local sources always take precedence over global sources. The CodeGG-native direct markdown path has the lowest precedence.
 
-- `get(name)` - Retrieves a skill by exact name match (case-sensitive)
-- `list()` - Returns all skills as a slice
-- `find_matching(query)` - Case-insensitive partial match across name, description, and tags
-- `activate(name)` - Retrieves skill body by exact name match (case-sensitive)
-
-### SkillFrontmatter
-
-Internal struct for parsing YAML frontmatter:
-
-```rust
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct SkillFrontmatter {
-    pub name: Option<String>,
-    pub description: Option<String>,
-    pub version: Option<String>,
-    #[serde(default)]
-    pub tags: Vec<String>,
-}
-```
-
-## Skill File Format
+### Portable Skill Schema
 
 Skills are stored as markdown files with YAML frontmatter:
 
 ```markdown
 ---
-name: git
-description: Advanced git operations
+name: my-skill
+description: A portable skill
+license: MIT
+compatibility: ">=1.0"
+metadata:
+  author: someone
+allowed-tools:
+  - bash
+  - read
+---
+
+# Skill body content
+```
+
+**Required fields**: `name`, `description`
+**Optional fields**: `license`, `compatibility`, `metadata` (preserved as-is), `allowed-tools` (preserved as metadata only, never expanded into permissions)
+
+### Native Compatibility
+
+CodeGG-native skills in `.codegg/skills/` continue to accept the legacy frontmatter shape:
+
+```markdown
+---
+name: my-skill
 version: 1.0.0
 tags: [vcs, git]
 ---
-
-# Git Skill
-
-You have access to advanced git operations. Use these commands:
-
-## Branches
-- `git branch -a` - List all branches
-- `git checkout -b <name>` - Create and switch to branch
 ```
 
-## Skill Loading
+The parser auto-detects portable vs native frontmatter. Direct `.md` files in `.codegg/skills/` are treated as `CodeGGNativeCompat` entries.
 
-Skills are loaded from two locations:
-- **Global**: `~/.config/codegg/skills/` (via `dirs::config_dir()`)
-  - On macOS: `~/Library/Application Support/codegg/skills/`
-  - On Linux: `~/.config/codegg/skills/`
-- **Project**: `.codegg/skills/` (in project directory)
+### Digest Computation
 
-Loading is recursive:
-- Direct `.md` files are loaded as skills
-- Directories containing `SKILL.md` are loaded as skills
+Content digests are SHA-256 hashes computed over:
+1. Canonical frontmatter (serialized YAML)
+2. Body with CRLF→LF normalization
+
+This ensures format-stable, content-stable digests across platforms.
+
+### Diagnostics
+
+Invalid skills produce `Diagnostic` entries (severity + reason + location) without aborting the registry. The registry always completes; diagnostics are available for inspection.
+
+- `Severity::Error` — skill is invalid, skipped
+- `Severity::Warning` — non-fatal issue (oversized description, allowed-tools metadata)
+- `Severity::Info` — informational (shadowing notification)
+
+### Security Bounds
+
+- `AssetDiscoveryConfig` carries all configurable bounds with safe defaults:
+  - `max_skill_file_size`: 256 KB
+  - `max_frontmatter_size`: 64 KB
+  - `max_skills_per_root`: 256
+  - `max_resources_per_skill`: 64
+  - `max_skill_name_length`: 128
+  - `max_description_length`: 2048
+  - `enabled_sources`: all source kinds enabled
+- Symlink escape containment: canonicalize paths and reject candidates that escape the source root
+- Resource path traversal: relative paths only, no `..` components
+- Script files are inventoried (name + size) but never executed
+
+### Compatibility Adapter
+
+`SkillIndexCompat` wraps `AssetRegistry` behind the legacy `SkillIndex` API:
+
+```rust
+pub struct SkillIndexCompat {
+    registry: Arc<AssetRegistry>,
+}
+```
+
+This preserves the existing `load(&str)` → `get()` → `activate()` flow used by `src/main.rs` and `src/tool/skill.rs`. The adapter uses `std::env::current_dir()` fallback for the `load` method (grandfathered), while the new `AssetRegistry::build` API requires explicit roots.
+
+## Key Types
+
+### Skill (legacy, preserved for backward compatibility)
+
+```rust
+pub struct Skill {
+    pub name: String,
+    pub description: String,
+    pub version: Option<String>,
+    pub tags: Vec<String>,
+    pub body: String,
+    pub source: PathBuf,
+}
+```
+
+### SkillIndex (legacy, preserved for backward compatibility)
+
+```rust
+pub struct SkillIndex {
+    skills: Vec<Skill>,
+}
+```
+
+Methods: `new()`, `load(&str)`, `get(&str)`, `list()`, `find_matching(&str)`, `build_system_prompt()`, `activate(&str)`.
+
+## File Layout
+
+```
+src/skills/
+  mod.rs           — pub re-exports; legacy Skill + SkillIndex
+  registry.rs      — AssetRegistry, build logic, resolution
+  source.rs        — SourceKind, SourceRoot, SourceSummary, AssetDiscoveryConfig
+  parser.rs        — frontmatter parsing, candidate construction, digest computation
+  candidate.rs     — SkillCandidate, EffectiveSkill, ResolvedRegistry, ResourceDescriptor
+  diagnostic.rs    — Diagnostic, Severity
+  compat.rs        — SkillIndexCompat adapter
+```
+
+## Loading Locations
+
+### Project-local
+- `.codegg/skills/<name>/SKILL.md` (portable package)
+- `.codegg/skills/*.md` (native compat direct markdown)
+- `.agents/skills/<name>/SKILL.md`
+- `.opencode/skills/<name>/SKILL.md`
+- `.claude/skills/<name>/SKILL.md`
+
+### Global
+- `<config>/codegg/skills/<name>/SKILL.md`
+- `~/.agents/skills/<name>/SKILL.md`
+- `~/.config/opencode/skills/<name>/SKILL.md`
+- `~/.claude/skills/<name>/SKILL.md`
+
+### Absent directories are harmless
+
+Missing global or foreign directories produce no errors.
 
 ## Activation
 
@@ -121,18 +199,12 @@ User activates skill via `/skill:` command:
 /skill:git
 ```
 
-The `SkillTool` (`src/tool/skill.rs`) handles runtime skill loading:
-
-```rust
-// Execute with /skill:<name>
-let result = skill_tool.execute(json!({"name": "git"})).await;
-// Returns JSON with name, description, body, and resources (list of resource file names in skill directory)
-```
+The `SkillTool` (`src/tool/skill.rs`) handles runtime skill loading.
 
 ## Usage in Agent
 
 ```rust
-// In main.rs - load at startup
+// In main.rs - load at startup using compat adapter
 let mut skills = SkillIndex::new();
 skills.load(&project_dir).await?;
 
@@ -142,9 +214,19 @@ if let Some(skill_body) = skills.activate(skill_name) {
 }
 ```
 
-The `assemble_system_prompt()` in `src/agent/prompt.rs` accepts skill names but skill bodies are injected separately via prompt modification.
+For new code, prefer the primary `AssetRegistry` API:
+
+```rust
+let config = AssetDiscoveryConfig::default();
+let registry = AssetRegistry::build(&config, &project_root, &global_roots);
+if let Some(skill_body) = registry.activate("my-skill") {
+    // ...
+}
+```
 
 ## See Also
 
 - [tool.md](tool.md) - `/skill:` tool
-- `src/skills/mod.rs` - Runtime loader implementation
+- `src/skills/` - Runtime loader implementation
+- `tests/skills.rs` - Legacy SkillIndex tests
+- `tests/skills_registry.rs` - AssetRegistry integration tests

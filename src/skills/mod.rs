@@ -1,3 +1,16 @@
+pub mod candidate;
+pub mod compat;
+pub mod diagnostic;
+pub mod parser;
+pub mod registry;
+pub mod source;
+
+pub use candidate::{EffectiveSkill, ResourceDescriptor, ShadowedAlternative, SkillCandidate};
+pub use compat::SkillIndexCompat;
+pub use diagnostic::{Diagnostic, Severity};
+pub use registry::AssetRegistry;
+pub use source::{AssetDiscoveryConfig, SourceKind, SourceRoot, SourceSummary};
+
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use tokio::fs;
