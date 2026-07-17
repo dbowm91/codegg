@@ -1,6 +1,6 @@
 # Runtime Assets Milestone 001 — Project Asset Registry and Portable Skill Discovery
 
-Status: blocked
+Status: ready for handoff
 
 Repository baseline: `fbae374a2cd6172505204b1bc1bee1ef247afd5f` (production-code baseline; subsequent planning-only commits do not alter implementation state)
 
@@ -26,11 +26,15 @@ Replace the current mutable, CodeGG-only skill index with a project/workspace-sc
 
 This milestone establishes discovery and registry correctness only. Session lifecycle refresh, manual commands, agent loader migration, and turn snapshot pinning are later milestones.
 
-## 2. Why this milestone is blocked
+## 2. Why this milestone is ready
 
 Hard dependency:
 
-- `plans/implementation/domain-identity/001-typed-identity-foundation.md` must close, and the following domain milestone must provide an authoritative explicit project/workspace context interface suitable for asset-service construction.
+- `plans/implementation/domain-identity/001-typed-identity-foundation.md` is
+  closed, and Domain Identity Milestone 002 is implemented at `84d92f0`.
+  `ProjectStorage` plus `WorkspaceBindingRecord` provide the authoritative
+  explicit project/workspace context interface required for asset-service
+  construction.
 
 The plan may be reviewed now, but production implementation must not begin by inventing temporary path-derived project identity or reading `PWD`.
 

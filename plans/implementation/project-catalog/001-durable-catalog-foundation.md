@@ -1,6 +1,6 @@
 # Project Catalog Milestone 001 — Durable Catalog Foundation
 
-Status: blocked
+Status: ready for handoff
 
 Repository baseline: `fbae374a2cd6172505204b1bc1bee1ef247afd5f` (production-code baseline; subsequent planning-only commits do not alter implementation state)
 
@@ -26,12 +26,16 @@ Add durable logical project and repository catalog records, lifecycle, local/rem
 
 The milestone succeeds when the daemon can list and operate durable project records independently of active sessions and paths, while existing workspaces/sessions can be associated through the completed domain-identity migration interfaces.
 
-## 2. Why this milestone is blocked
+## 2. Why this milestone is ready
 
 Hard dependencies:
 
 - Domain Identity Milestone 001 is closed in `f203ed9`.
-- The following domain-identity storage/migration milestone must provide durable project/repository/workspace/session relations or an approved stable interface.
+- Domain Identity Milestone 002 is implemented at `84d92f0` and provides
+  durable project/repository/workspace/session relations through
+  `codegg_core::project_storage::ProjectStorage` and schema v25.
+- The catalog may consume those typed storage and inspection interfaces without
+  reusing path-valued compatibility fields.
 
 The agent must not implement a temporary path-keyed project table or reuse legacy `project_id` path strings as the new authoritative identity.
 

@@ -224,7 +224,7 @@ This roadmap closes when the daemon maintains a durable, bounded, path-independe
 
 | Milestone | Status | Implementation plan | Closure record | Blockers |
 |---|---|---|---|---|
-| 1 | blocked | `plans/implementation/project-catalog/001-durable-catalog-foundation.md` | — | Domain identity storage and relations |
+| 1 | ready | `plans/implementation/project-catalog/001-durable-catalog-foundation.md` | — | — |
 | 2 | not started | — | — | Milestone 1 closure |
 | 3 | not started | — | — | Milestones 1–2 and runtime asset activation interface |
 | 4 | not started | — | — | Milestones 1–3 closure |

@@ -243,6 +243,6 @@ This roadmap closes when project identity is durable and path-independent across
 | Milestone | Status | Implementation plan | Closure record | Blockers |
 |---|---|---|---|---|
 | 1 | closed | `plans/implementation/domain-identity/001-typed-identity-foundation.md` | `plans/closure/domain-identity/001-status.md` | — |
-| 2 | ready | `plans/implementation/domain-identity/002-project-repository-storage-migration.md` | — | — |
-| 3 | not started | — | — | Milestone 2 closure |
+| 2 | closed | `plans/implementation/domain-identity/002-project-repository-storage-migration.md` | `plans/closure/domain-identity/002-status.md` | — |
+| 3 | not started | — | — | Implementation plan not yet authored |
 | 4 | not started | — | — | Milestones 1–3 closure evidence |

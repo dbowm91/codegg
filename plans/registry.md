@@ -24,10 +24,10 @@ Canonical direction remains in:
 
 | Subsystem | Status | Roadmap | Current milestone | Dependencies or blockers |
 |---|---|---|---|---|
-| Domain identity and compatibility | active | `plans/subsystems/domain-identity-roadmap.md` | Milestone 2 — project/repository storage migration | Plan registered; ready for handoff |
-| Runtime assets and harness interoperability | active | `plans/subsystems/runtime-assets-roadmap.md` | Milestone 1 — source-aware registry and portable skill discovery | Domain identity Milestone 2 context interface |
+| Domain identity and compatibility | active | `plans/subsystems/domain-identity-roadmap.md` | Milestone 3 — daemon and protocol adoption | Milestone 2 closed; next implementation plan not yet authored |
+| Runtime assets and harness interoperability | active | `plans/subsystems/runtime-assets-roadmap.md` | Milestone 1 — source-aware registry and portable skill discovery | Plan is dependency-ready after Domain Identity Milestone 2 |
 | Provider connections and Eggpool | active | `plans/subsystems/provider-connections-roadmap.md` | Milestone 2 — Eggpool connect workflow | Plan registered; ready for handoff |
-| Project catalog and lazy discovery | active | `plans/subsystems/project-catalog-roadmap.md` | Milestone 1 — durable project and repository catalog | Domain identity storage/migration milestones |
+| Project catalog and lazy discovery | active | `plans/subsystems/project-catalog-roadmap.md` | Milestone 1 — durable project and repository catalog | Plan is dependency-ready after Domain Identity Milestone 2 |
 | Multi-project TUI and sessions | active | `plans/subsystems/tui-project-sessions-roadmap.md` | Milestone 1 — project-aware state and catalog client | Runtime asset refresh and project catalog protocol |
 | Frontend-neutral session projections | active | `plans/subsystems/session-projections-roadmap.md` | Milestone 1 — projection contracts and canonical reducer | Domain identity, project catalog, and multi-project TUI state |
 
@@ -35,7 +35,8 @@ Canonical direction remains in:
 
 | Subsystem | Milestone | Class | Plan | Baseline | Status |
 |---|---|---|---|---|---|
-| Domain identity and compatibility | 002 — project/repository storage migration | infrastructure | `plans/implementation/domain-identity/002-project-repository-storage-migration.md` | `9dcde70` | ready |
+| Runtime assets and harness interoperability | 001 — project asset registry | infrastructure | `plans/implementation/runtime-assets/001-project-asset-registry.md` | `fbae374` | ready |
+| Project catalog and lazy discovery | 001 — durable catalog foundation | infrastructure | `plans/implementation/project-catalog/001-durable-catalog-foundation.md` | `fbae374` | ready |
 | Provider connections and Eggpool | 002 — Eggpool `/connect` workflow | capability | `plans/implementation/provider-connections/002-eggpool-connect-workflow.md` | `9dcde70` | ready |
 
 ## Active closure work
@@ -48,8 +49,6 @@ Canonical direction remains in:
 
 | Work item | Blocker | Required resolution | Owner document |
 |---|---|---|---|
-| Runtime Assets 001 — project asset registry | Domain Identity Milestone 2 context interface is not closed | Close the required Domain Identity milestone; do not substitute `PWD` or path-derived project IDs | `plans/implementation/runtime-assets/001-project-asset-registry.md` |
-| Project Catalog 001 — durable catalog foundation | Domain Identity storage/migration milestone is not closed | Close the required Domain Identity storage/migration milestone; do not reuse path-valued project IDs | `plans/implementation/project-catalog/001-durable-catalog-foundation.md` |
 | Multi-Project TUI 001 — project-aware state | Catalog protocol and runtime asset refresh/generation interfaces are unavailable | Close required Project Catalog and Runtime Assets milestones | `plans/implementation/tui-project-sessions/001-project-aware-state.md` |
 | Session Projections 001 — projection contracts | Stable project/session routing and project-aware TUI state are unavailable | Close Domain Identity daemon/protocol adoption, Project Catalog protocol migration, and Multi-Project TUI state foundation | `plans/implementation/session-projections/001-projection-contracts.md` |
 
@@ -57,6 +56,7 @@ Canonical direction remains in:
 
 | Subsystem | Milestone | Closure record | Closed at commit | Follow-up |
 |---|---|---|---|---|
+| Domain identity and compatibility | 002 — project/repository storage migration | `plans/closure/domain-identity/002-status.md` | `84d92f0` | Runtime Assets 001 and Project Catalog 001 are ready |
 | Domain identity and compatibility | 001 — typed identity foundation | `plans/closure/domain-identity/001-status.md` | `f203ed9` | Milestone 2 — project/repository storage migration |
 | Provider connections and Eggpool | 001 — durable connection foundation | `plans/closure/provider-connections/001-status.md` | `bccca00` | Milestone 2 — Eggpool connect workflow |
 

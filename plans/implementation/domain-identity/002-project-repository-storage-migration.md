@@ -1,6 +1,6 @@
 # Domain Identity Milestone 002 — Project and Repository Storage Migration
 
-Status: ready for handoff
+Status: implemented
 
 Repository baseline: `9dcde707f6fe001cc6d73e7f562ccccf9f782f1a` (`main`; Domain Identity Milestone 001 and Provider Connections Milestone 001 are closed)
 
@@ -22,6 +22,7 @@ Long-term requirements:
 Applicable closure evidence:
 
 - `plans/closure/domain-identity/001-status.md`
+- `plans/closure/domain-identity/002-status.md`
 
 Applicable ADRs:
 
