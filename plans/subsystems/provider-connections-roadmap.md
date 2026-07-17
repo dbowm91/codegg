@@ -236,6 +236,6 @@ This roadmap closes when Eggpool and other endpoints can be represented as reusa
 | Milestone | Status | Implementation plan | Closure record | Blockers |
 |---|---|---|---|---|
 | 1 | closed | `plans/implementation/provider-connections/001-connection-foundation.md` | `plans/closure/provider-connections/001-status.md` | — |
-| 2 | not started | — | — | — |
+| 2 | ready | — | — | Dependency Milestone 1 is closed; implementation plan not yet registered |
 | 3 | not started | — | — | Milestones 1–2 closure |
 | 4 | not started | — | — | Milestones 2–3 closure |
