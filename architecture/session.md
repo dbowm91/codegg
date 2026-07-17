@@ -64,11 +64,13 @@ src/session/
 
 ### Typed identity compatibility
 
-`codegg-core::identity::SessionBinding` is the internal relation for
-`Session -> ProjectId + WorkspaceId`. The `project_id` and `workspace_id`
-columns remain string-backed, and `directory` remains a filesystem locator,
-for compatibility with existing rows and protocol DTOs. Milestone 1 does not
-reinterpret path-valued `project_id` strings or add a schema migration.
+`codegg-core::identity::SessionBinding` is the in-memory relation for
+`Session -> ProjectId + WorkspaceId`. Schema migration v25 adds the durable
+`session_project_binding` table with typed-ID validation at hydration,
+status/provenance, and an optimistic-concurrency revision. The `project_id`,
+`workspace_id`, and `directory` columns remain string-backed compatibility
+projections; path-valued `project_id` strings are never reinterpreted as
+canonical IDs.
 
 #### `message`
 | Column | Type | Constraints |

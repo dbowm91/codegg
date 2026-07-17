@@ -146,7 +146,7 @@ into two entry points:
 | `init_pool_at(db_path)` | arbitrary | Test-friendly escape hatch used by integration tests. |
 | `init(project_dir)` *(deprecated)* | ambiguous | Routes to one of the above based on whether `project_dir` is empty or a real directory. New code MUST NOT use this. |
 
-`STORAGE_LAYOUT_VERSION` is now `24` and is referenced from
+`STORAGE_LAYOUT_VERSION` is now `25` and is referenced from
 `MigrationMarker.storage_layout_version` so the migration tooling can
 report which layout a legacy database was imported under.
 
@@ -296,7 +296,7 @@ python3 scripts/check_daemon_cwd_usage.py
 - [`architecture/workspace.md`](workspace.md) — Phase 2 workspace
   identity, `WorkspaceRegistry`, `ExecutionContext`, and path policy.
 - [`architecture/storage.md`](storage.md) — Storage layout and migration
-  index (now `STORAGE_LAYOUT_VERSION = 24`).
+  index (now `STORAGE_LAYOUT_VERSION = 25`).
 - [`architecture/run_store.md`](run_store.md) — `RunStore` and
   `RunManifest` semantics used by the bundle.
 - [`architecture/protocol.md`](protocol.md) — Phase 3 protocol variants

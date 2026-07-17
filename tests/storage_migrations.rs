@@ -72,7 +72,7 @@ async fn migration_rerun_resumes_after_mid_migration_failure() {
     .fetch_one(&pool)
     .await
     .expect("failed to read final migration version");
-    assert_eq!(final_version, 24, "expected latest migration version");
+    assert_eq!(final_version, 25, "expected latest migration version");
 
     let allowed_paths_exists: i64 = sqlx::query(
         "SELECT COUNT(*) AS cnt FROM pragma_table_info('task') WHERE name = 'allowed_paths'",
@@ -85,4 +85,63 @@ async fn migration_rerun_resumes_after_mid_migration_failure() {
         allowed_paths_exists, 1,
         "expected v14 schema change to be present"
     );
+}
+
+#[tokio::test]
+async fn domain_identity_v25_is_additive_and_indexed() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("failed to connect test sqlite pool");
+    codegg::session::schema::migrate(&pool)
+        .await
+        .expect("migration should create v25");
+
+    sqlx::query(
+        "INSERT INTO project (id, worktree, sandboxes, time_created, time_updated) VALUES ('legacy-project', '/legacy/root', '[]', 1, 1)",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO session (id, project_id, slug, directory, title, version, time_created, time_updated) VALUES ('legacy-session', 'legacy-project', 'legacy', '/legacy/root', 'Legacy', '1', 1, 1)",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    for table in [
+        "logical_project",
+        "repository",
+        "project_repository",
+        "workspace_project_binding",
+        "session_project_binding",
+        "identity_diagnostic",
+    ] {
+        let exists: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?",
+        )
+        .bind(table)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(exists, 1, "missing canonical table {table}");
+    }
+    let legacy: (String, String) =
+        sqlx::query_as("SELECT project_id, directory FROM session WHERE id = 'legacy-session'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        legacy,
+        ("legacy-project".to_string(), "/legacy/root".to_string())
+    );
+    let index_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name LIKE 'idx_%project%binding%'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(index_count >= 3, "expected binding lookup indexes");
 }

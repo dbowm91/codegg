@@ -49,7 +49,24 @@ fields remain strings. They are legacy projections until a later additive
 migration. `directory` is a locator, not a project identity, and no path or
 Git remote is accepted as an identity source.
 
-`scripts/check_identity_path_usage.py` is an opt-in guard seam for future
-project-storage work. It checks only explicit path-derived `ProjectId`
-construction patterns and is intentionally not enabled as a broad CI rule in
-this milestone.
+`scripts/check_identity_path_usage.py` guards the canonical project-storage
+module as well as the identity primitives. It rejects explicit path-derived
+`ProjectId` construction; compatibility string projections remain allowed.
+
+## Durable project and repository authority
+
+Domain Identity Milestone 002 adds `codegg_core::project_storage::ProjectStorage`
+and additive schema migration v25. `logical_project`, `repository`,
+`project_repository`, `workspace_project_binding`,
+`session_project_binding`, and `identity_diagnostic` are canonical authority.
+The historical `project` table, `session.project_id`, and `session.directory`
+remain readable compatibility projections and are never used to infer a
+canonical ID.
+
+Repository matching is local-only and bounded. Only a unique normalized Git
+remote can establish repository lineage; missing, conflicting, redacted, or
+insufficient evidence produces a non-resolved binding and a reason-coded
+diagnostic. Rebind operations require the current binding revision.
+
+See [`project_identity_storage.md`](project_identity_storage.md) for the
+schema, reconciliation, import, inspection, and operator workflow.

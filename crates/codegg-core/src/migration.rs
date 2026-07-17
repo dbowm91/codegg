@@ -23,6 +23,7 @@ use sqlx::SqlitePool;
 use tracing::info;
 
 use crate::error::StorageError;
+use crate::project_storage::ProjectStorage;
 use crate::session::{MessageStore, SessionStore};
 use crate::workspace::{WorkspaceRecord, WorkspaceRegistry};
 
@@ -151,11 +152,21 @@ pub async fn migrate_legacy_project_database(
         .await
         .map_err(|e| StorageError::Database(format!("workspace resolution: {}", e)))?;
 
+    // Gather bounded local repository evidence and establish canonical
+    // project/workspace authority before importing sessions. The legacy
+    // `project_id` and `directory` values below remain compatibility writes;
+    // they are never used as canonical identity input.
+    let project_storage = ProjectStorage::new(catalog_pool.clone());
+    let canonical_workspace = project_storage
+        .reconcile_workspace_path(&workspace, "legacy_project_import")
+        .await
+        .map_err(|e| StorageError::Database(format!("canonical workspace binding: {}", e)))?;
+
     let source_session_store = SessionStore::new(source_pool.clone());
     let source_msg_store = MessageStore::new(source_pool.clone());
 
     let sessions = source_session_store
-        .list_all("", None)
+        .list_all_sessions(None)
         .await
         .map_err(|e| StorageError::Database(format!("list source sessions: {}", e)))?;
 
@@ -166,8 +177,6 @@ pub async fn migrate_legacy_project_database(
     let dest_msg_store = MessageStore::new(catalog_pool.clone());
 
     for session in sessions {
-        let project_root_str = workspace.canonical_root.to_string_lossy().into_owned();
-
         // Skip if a session with the same id already exists in the
         // catalog.
         let exists = dest_session_store
@@ -176,6 +185,15 @@ pub async fn migrate_legacy_project_database(
             .map_err(|e| StorageError::Database(format!("check existing session: {}", e)))?
             .is_some();
         if exists {
+            project_storage
+                .bind_session(
+                    &session.id,
+                    &canonical_workspace.binding.project_id,
+                    &canonical_workspace.binding.workspace_id,
+                    "legacy_project_import",
+                )
+                .await
+                .map_err(|e| StorageError::Database(format!("bind existing session: {}", e)))?;
             continue;
         }
 
@@ -188,29 +206,44 @@ pub async fn migrate_legacy_project_database(
         // Insert the session into the catalog. The session id is
         // preserved so `SessionLoad` semantics remain identical.
         dest_session_store
-            .create(crate::session::CreateSession {
-                project_id: project_root_str.clone(),
-                directory: project_root_str,
-                title: Some(session.title.clone()),
-                parent_id: session.parent_id.clone(),
-                workspace_id: Some(workspace.id.as_str().to_string()),
-                agent: None,
-                model: None,
-                tags: if session.tags.is_empty() {
-                    None
-                } else {
-                    Some(session.tags.clone())
+            .create_with_id(
+                &session.id,
+                crate::session::CreateSession {
+                    // Preserve the source compatibility projections. These
+                    // fields are never used as canonical identity authority;
+                    // the binding record written below is authoritative.
+                    project_id: session.project_id.clone(),
+                    directory: session.directory.clone(),
+                    title: Some(session.title.clone()),
+                    parent_id: session.parent_id.clone(),
+                    workspace_id: Some(workspace.id.as_str().to_string()),
+                    agent: None,
+                    model: None,
+                    tags: if session.tags.is_empty() {
+                        None
+                    } else {
+                        Some(session.tags.clone())
+                    },
                 },
-            })
+            )
             .await
             .map_err(|e| StorageError::Database(format!("create session: {}", e)))?;
+        project_storage
+            .bind_session(
+                &session.id,
+                &canonical_workspace.binding.project_id,
+                &canonical_workspace.binding.workspace_id,
+                "legacy_project_import",
+            )
+            .await
+            .map_err(|e| StorageError::Database(format!("bind session: {}", e)))?;
         imported_sessions += 1;
 
         for msg in &messages {
             let data = serde_json::to_value(&msg.data)
                 .map_err(|e| StorageError::Database(format!("encode message data: {}", e)))?;
             dest_msg_store
-                .create(&session.id, data)
+                .create_with_id(&msg.id, &session.id, data)
                 .await
                 .map_err(|e| StorageError::Database(format!("insert message: {}", e)))?;
         }
@@ -292,6 +325,7 @@ mod tests {
     use super::*;
     use crate::session::schema::migrate;
     use crate::workspace::InMemoryWorkspaceStore;
+    use std::str::FromStr;
     use std::time::Duration;
 
     async fn empty_pool() -> SqlitePool {
@@ -408,5 +442,95 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(outcome2, MigrationOutcome::AlreadyMigrated);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn import_preserves_session_and_message_ids_and_adds_canonical_binding() {
+        let catalog = empty_pool().await;
+        let registry = WorkspaceRegistry::load(Arc::new(InMemoryWorkspaceStore::new()))
+            .await
+            .unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let source_path = tmp.path().join(".codegg").join("sessions.db");
+        std::fs::create_dir_all(source_path.parent().unwrap()).unwrap();
+        let source_options = sqlx::sqlite::SqliteConnectOptions::from_str(&format!(
+            "sqlite://{}",
+            source_path.display()
+        ))
+        .unwrap()
+        .create_if_missing(true)
+        .foreign_keys(true);
+        let source = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(source_options)
+            .await
+            .unwrap();
+        migrate(&source).await.unwrap();
+        let source_session = SessionStore::new(source.clone())
+            .create(crate::session::CreateSession {
+                project_id: "legacy-project".to_string(),
+                directory: tmp.path().display().to_string(),
+                title: Some("Imported".to_string()),
+                parent_id: None,
+                workspace_id: None,
+                agent: None,
+                model: None,
+                tags: None,
+            })
+            .await
+            .unwrap();
+        let source_message = MessageStore::new(source.clone())
+            .create(
+                &source_session.id,
+                serde_json::json!({
+                    "id": "source-message",
+                    "sessionID": source_session.id,
+                    "messageID": "source-message",
+                    "parts": []
+                }),
+            )
+            .await
+            .unwrap();
+        source.close().await;
+
+        let outcome = migrate_legacy_project_database(catalog.clone(), registry, tmp.path())
+            .await
+            .unwrap();
+        assert_eq!(
+            outcome,
+            MigrationOutcome::Imported {
+                sessions: 1,
+                messages: 1
+            }
+        );
+
+        let imported_session: (String, String, Option<String>) =
+            sqlx::query_as("SELECT id, project_id, workspace_id FROM session WHERE id = ?")
+                .bind(&source_session.id)
+                .fetch_one(&catalog)
+                .await
+                .unwrap();
+        assert_eq!(imported_session.0, source_session.id);
+        assert_eq!(imported_session.1, "legacy-project");
+        assert!(imported_session.2.is_some());
+
+        let imported_message: (String,) =
+            sqlx::query_as("SELECT id FROM message WHERE session_id = ?")
+                .bind(&source_session.id)
+                .fetch_one(&catalog)
+                .await
+                .unwrap();
+        assert_eq!(imported_message.0, source_message.id);
+
+        let canonical: (String, String, String) = sqlx::query_as(
+            "SELECT b.project_id, b.workspace_id, b.status FROM session_project_binding b WHERE b.session_id = ?",
+        )
+        .bind(&source_session.id)
+        .fetch_one(&catalog)
+        .await
+        .unwrap();
+        assert_ne!(canonical.0, imported_session.1);
+        assert_eq!(canonical.1, imported_session.2.unwrap());
+        assert_eq!(canonical.2, "resolved");
     }
 }

@@ -100,6 +100,17 @@ canonicalized into a workspace record. Sessions whose `directory` does not
 canonicalize to a real directory remain unbound and are rejected at turn
 submission.
 
+Schema migration v25 adds the canonical `workspace_project_binding` relation.
+It binds one workspace to one logical `ProjectId`, an optional `RepositoryId`,
+status, provenance, locator, and optimistic-concurrency revision. A project
+may have many workspace bindings. Session bindings are stored separately in
+`session_project_binding`; the legacy session columns remain projections.
+
+`ProjectStorage::reconcile_workspace_path` probes only the explicitly
+registered workspace and gathers Git evidence before opening a write
+transaction. Missing or ambiguous lineage is retained as a diagnostic and
+never merged from path names or directory basenames.
+
 ## Protocol
 
 - DTO: `WorkspaceSnapshot { workspace_id, canonical_root, display_name, active_sessions }` in `crates/codegg-protocol/src/dto.rs`.
@@ -147,11 +158,9 @@ protected modules:
 Existing legacy uses in tool `default()` constructors are explicitly
 allowlisted. New production-path uses fail CI.
 
-`scripts/check_identity_path_usage.py` is an opt-in, narrow guard seam for
-future project-storage work. It checks for explicit path-derived `ProjectId`
-constructors while leaving the current compatibility projections untouched;
-it is intentionally not enabled as a repository-wide CI rule in this
-milestone.
+`scripts/check_identity_path_usage.py` checks the canonical project-storage
+module for path-derived `ProjectId` construction while leaving compatibility
+projections untouched. Its `--fixture` mode verifies the negative case.
 
 ## Tests
 

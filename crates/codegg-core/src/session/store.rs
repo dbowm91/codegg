@@ -60,6 +60,16 @@ impl SessionStore {
 
     pub async fn create(&self, input: CreateSession) -> Result<Session, StorageError> {
         let id = Uuid::new_v4().to_string();
+        self.create_with_id(&id, input).await
+    }
+
+    /// Create a session with a caller-supplied stable ID for compatibility
+    /// imports. New interactive sessions should use [`Self::create`].
+    pub async fn create_with_id(
+        &self,
+        id: &str,
+        input: CreateSession,
+    ) -> Result<Session, StorageError> {
         let slug = generate_slug(&input.title);
         let title = input.title.unwrap_or_else(|| "Untitled".to_string());
         let version = "1".to_string();
@@ -91,7 +101,7 @@ impl SessionStore {
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
-        .bind(&id)
+        .bind(id)
         .bind(&input.project_id)
         .bind(&input.workspace_id)
         .bind(&input.parent_id)
@@ -107,7 +117,7 @@ impl SessionStore {
         .map_err(|e| StorageError::Database(e.to_string()))?;
 
         Ok(Session {
-            id,
+            id: id.to_string(),
             project_id: input.project_id,
             workspace_id: input.workspace_id,
             parent_id: input.parent_id,
@@ -238,6 +248,30 @@ impl SessionStore {
         limit: Option<usize>,
     ) -> Result<Vec<Session>, StorageError> {
         self.list_all_with_offset(project_id, limit, 0).await
+    }
+
+    /// List every non-deleted session in a catalog. This is intentionally
+    /// separate from the project-scoped compatibility API and is used by
+    /// bounded legacy database imports.
+    pub async fn list_all_sessions(
+        &self,
+        limit: Option<usize>,
+    ) -> Result<Vec<Session>, StorageError> {
+        let mut sql = format!(
+            "SELECT {} FROM session WHERE time_deleted IS NULL ORDER BY time_updated DESC",
+            SESSION_COLUMNS
+        );
+        if limit.is_some() {
+            sql.push_str(" LIMIT ?");
+        }
+        let query = sqlx::query_as::<_, SessionRow>(&sql);
+        let rows = if let Some(limit) = limit {
+            query.bind(limit as i64).fetch_all(&self.pool).await
+        } else {
+            query.fetch_all(&self.pool).await
+        }
+        .map_err(|e| StorageError::Database(e.to_string()))?;
+        Ok(rows.into_iter().map(|row| row.into()).collect())
     }
 
     pub async fn list_all_with_offset(
@@ -1771,6 +1805,17 @@ impl MessageStore {
         data: serde_json::Value,
     ) -> Result<message::Message, StorageError> {
         let id = Uuid::new_v4().to_string();
+        self.create_with_id(&id, session_id, data).await
+    }
+
+    /// Create a message with a caller-supplied stable ID for compatibility
+    /// imports. New messages should use [`Self::create`].
+    pub async fn create_with_id(
+        &self,
+        id: &str,
+        session_id: &str,
+        data: serde_json::Value,
+    ) -> Result<message::Message, StorageError> {
         let now = Utc::now().timestamp_millis();
         let data_str =
             serde_json::to_string(&data).map_err(|e| StorageError::Database(e.to_string()))?;
@@ -1781,7 +1826,7 @@ impl MessageStore {
             VALUES (?, ?, ?, ?, ?)
             "#,
         )
-        .bind(&id)
+        .bind(id)
         .bind(session_id)
         .bind(now)
         .bind(now)
@@ -1793,7 +1838,7 @@ impl MessageStore {
         let message_data: message::MessageData =
             serde_json::from_value(data).map_err(|e| StorageError::Database(e.to_string()))?;
         Ok(message::Message {
-            id,
+            id: id.to_string(),
             session_id: session_id.to_string(),
             time_created: now,
             time_updated: now,

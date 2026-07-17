@@ -94,6 +94,9 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), StorageError> {
     if current_version < 24 {
         migrate_and_record(pool, 24).await?;
     }
+    if current_version < 25 {
+        migrate_and_record(pool, 25).await?;
+    }
 
     Ok(())
 }
@@ -130,6 +133,7 @@ async fn migrate_and_record(pool: &SqlitePool, version: i64) -> Result<(), Stora
             22 => migrate_v22(pool).await?,
             23 => migrate_v23(pool).await?,
             24 => migrate_v24(pool).await?,
+            25 => migrate_v25(pool).await?,
             _ => {
                 return Err(StorageError::Migration(format!(
                     "unknown migration version {}",
@@ -1093,6 +1097,122 @@ async fn migrate_v24(pool: &SqlitePool) -> Result<(), StorageError> {
     .execute(pool)
     .await
     .map_err(|e| StorageError::Migration(e.to_string()))?;
+
+    Ok(())
+}
+
+/// Domain Identity Milestone 002: additive canonical project/repository
+/// authority. The historical `project` table and string-backed session
+/// fields intentionally remain untouched compatibility projections.
+async fn migrate_v25(pool: &SqlitePool) -> Result<(), StorageError> {
+    for statement in [
+        r#"
+        CREATE TABLE IF NOT EXISTS logical_project (
+            id TEXT PRIMARY KEY,
+            display_name TEXT NOT NULL,
+            lifecycle TEXT NOT NULL CHECK (lifecycle IN ('active', 'archived')),
+            time_created INTEGER NOT NULL,
+            time_updated INTEGER NOT NULL
+        )
+        "#,
+        r#"
+        CREATE TABLE IF NOT EXISTS repository (
+            id TEXT PRIMARY KEY,
+            vcs_kind TEXT NOT NULL,
+            lineage_key TEXT,
+            remote_identity TEXT,
+            common_directory TEXT,
+            default_branch TEXT,
+            head TEXT,
+            provenance TEXT NOT NULL,
+            status TEXT NOT NULL CHECK (status IN ('resolved', 'unresolved', 'ambiguous', 'stale_locator', 'rebind_required')),
+            time_created INTEGER NOT NULL,
+            time_updated INTEGER NOT NULL,
+            UNIQUE(vcs_kind, lineage_key)
+        )
+        "#,
+        r#"
+        CREATE TABLE IF NOT EXISTS project_repository (
+            project_id TEXT NOT NULL,
+            repository_id TEXT NOT NULL,
+            relation_kind TEXT NOT NULL CHECK (relation_kind IN ('primary')),
+            time_created INTEGER NOT NULL,
+            revision INTEGER NOT NULL CHECK (revision > 0),
+            PRIMARY KEY(project_id, repository_id),
+            FOREIGN KEY(project_id) REFERENCES logical_project(id) ON DELETE CASCADE,
+            FOREIGN KEY(repository_id) REFERENCES repository(id) ON DELETE CASCADE
+        )
+        "#,
+        r#"
+        CREATE TABLE IF NOT EXISTS workspace_project_binding (
+            workspace_id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL,
+            repository_id TEXT,
+            worktree_id TEXT,
+            node_id TEXT,
+            locator TEXT,
+            status TEXT NOT NULL CHECK (status IN ('resolved', 'unresolved', 'ambiguous', 'stale_locator', 'rebind_required')),
+            source TEXT NOT NULL,
+            revision INTEGER NOT NULL CHECK (revision > 0),
+            time_created INTEGER NOT NULL,
+            time_updated INTEGER NOT NULL,
+            FOREIGN KEY(workspace_id) REFERENCES workspace(id) ON DELETE CASCADE,
+            FOREIGN KEY(project_id) REFERENCES logical_project(id) ON DELETE RESTRICT,
+            FOREIGN KEY(repository_id) REFERENCES repository(id) ON DELETE RESTRICT
+        )
+        "#,
+        r#"
+        CREATE TABLE IF NOT EXISTS session_project_binding (
+            session_id TEXT PRIMARY KEY,
+            project_id TEXT,
+            workspace_id TEXT,
+            status TEXT NOT NULL CHECK (status IN ('resolved', 'unresolved', 'ambiguous', 'stale_locator', 'rebind_required')),
+            source TEXT NOT NULL,
+            revision INTEGER NOT NULL CHECK (revision > 0),
+            time_created INTEGER NOT NULL,
+            time_updated INTEGER NOT NULL,
+            FOREIGN KEY(session_id) REFERENCES session(id) ON DELETE CASCADE,
+            FOREIGN KEY(project_id) REFERENCES logical_project(id) ON DELETE RESTRICT,
+            FOREIGN KEY(workspace_id) REFERENCES workspace(id) ON DELETE RESTRICT
+        )
+        "#,
+        r#"
+        CREATE TABLE IF NOT EXISTS identity_diagnostic (
+            id TEXT PRIMARY KEY,
+            workspace_id TEXT,
+            session_id TEXT,
+            project_id TEXT,
+            code TEXT NOT NULL,
+            status TEXT NOT NULL CHECK (status IN ('resolved', 'unresolved', 'ambiguous', 'stale_locator', 'rebind_required')),
+            message TEXT NOT NULL,
+            source TEXT NOT NULL,
+            time_created INTEGER NOT NULL,
+            time_updated INTEGER NOT NULL,
+            FOREIGN KEY(workspace_id) REFERENCES workspace(id) ON DELETE CASCADE,
+            FOREIGN KEY(session_id) REFERENCES session(id) ON DELETE CASCADE,
+            FOREIGN KEY(project_id) REFERENCES logical_project(id) ON DELETE CASCADE
+        )
+        "#,
+        "CREATE INDEX IF NOT EXISTS idx_logical_project_lifecycle ON logical_project(lifecycle)",
+        "CREATE INDEX IF NOT EXISTS idx_logical_project_updated ON logical_project(time_updated DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_repository_lineage ON repository(vcs_kind, lineage_key)",
+        "CREATE INDEX IF NOT EXISTS idx_repository_status ON repository(status)",
+        "CREATE INDEX IF NOT EXISTS idx_project_repository_repository ON project_repository(repository_id)",
+        "CREATE INDEX IF NOT EXISTS idx_workspace_project_binding_project ON workspace_project_binding(project_id)",
+        "CREATE INDEX IF NOT EXISTS idx_workspace_project_binding_repository ON workspace_project_binding(repository_id)",
+        "CREATE INDEX IF NOT EXISTS idx_workspace_project_binding_status ON workspace_project_binding(status)",
+        "CREATE INDEX IF NOT EXISTS idx_session_project_binding_project ON session_project_binding(project_id)",
+        "CREATE INDEX IF NOT EXISTS idx_session_project_binding_workspace ON session_project_binding(workspace_id)",
+        "CREATE INDEX IF NOT EXISTS idx_session_project_binding_status ON session_project_binding(status)",
+        "CREATE INDEX IF NOT EXISTS idx_identity_diagnostic_workspace ON identity_diagnostic(workspace_id, time_updated DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_identity_diagnostic_session ON identity_diagnostic(session_id, time_updated DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_identity_diagnostic_status ON identity_diagnostic(status, time_updated DESC)",
+    ] {
+        sqlx::query(statement)
+            .execute(pool)
+            .await
+            .map_err(|e| StorageError::Migration(e.to_string()))?;
+    }
 
     Ok(())
 }
