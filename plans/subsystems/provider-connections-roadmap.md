@@ -242,4 +242,4 @@ This roadmap closes when Eggpool and other endpoints can be represented as reusa
 | 1 | closed | `plans/implementation/provider-connections/001-connection-foundation.md` | `plans/closure/provider-connections/001-status.md` | — |
 | 2 | closed | `plans/implementation/provider-connections/002-eggpool-connect-workflow.md` | `plans/closure/provider-connections/002-status.md` | — |
 | 3 | closed | `plans/implementation/provider-connections/003-session-and-model-selection-by-connection.md` | `plans/closure/provider-connections/003-status.md` | — |
-| 4 | not started | — | — | Milestones 2–3 closure |
+| 4 | ready | `plans/implementation/provider-connections/004-lifecycle-rotation-health-closure.md` | — | Milestones 2–3 closure satisfied |
