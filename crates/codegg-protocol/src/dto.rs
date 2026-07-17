@@ -6,13 +6,16 @@ use std::collections::HashMap;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Session {
     pub id: String,
+    /// Legacy string projection of the internal `ProjectId` relation.
     pub project_id: String,
     #[serde(default)]
+    /// Legacy string projection of the internal `WorkspaceId` relation.
     pub workspace_id: Option<String>,
     #[serde(default)]
     pub parent_id: Option<String>,
     #[serde(default)]
     pub slug: String,
+    /// Filesystem locator retained for wire compatibility; not a project ID.
     pub directory: String,
     pub title: String,
     #[serde(default)]

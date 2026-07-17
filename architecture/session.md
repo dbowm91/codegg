@@ -62,6 +62,14 @@ src/session/
 | time_archived | INTEGER | |
 | time_deleted | INTEGER | DEFAULT NULL |
 
+### Typed identity compatibility
+
+`codegg-core::identity::SessionBinding` is the internal relation for
+`Session -> ProjectId + WorkspaceId`. The `project_id` and `workspace_id`
+columns remain string-backed, and `directory` remains a filesystem locator,
+for compatibility with existing rows and protocol DTOs. Milestone 1 does not
+reinterpret path-valued `project_id` strings or add a schema migration.
+
 #### `message`
 | Column | Type | Constraints |
 |--------|------|-------------|

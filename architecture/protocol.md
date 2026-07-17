@@ -6,6 +6,12 @@ The `protocol` module defines the shared request/response envelopes and message 
 
 **Location**: `crates/codegg-protocol/` (the `codegg-protocol` crate)
 
+Domain identity types live in `codegg-core::identity`, not in this wire crate.
+Protocol DTOs intentionally keep string-backed `project_id`, `workspace_id`,
+and `directory` fields in this milestone. Core conversions may use typed
+relations internally, but serialization remains unchanged and a directory is
+never promoted to a durable project identity.
+
 **Re-export**: `codegg::protocol` via `pub use codegg_protocol as protocol` in `src/lib.rs`
 
 **Key Responsibilities**:

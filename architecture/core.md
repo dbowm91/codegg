@@ -20,6 +20,7 @@ This document covers two distinct "core" concerns:
 | `bus` | GlobalEventBus, PermissionRegistry, QuestionRegistry |
 | `error` | AppError, ProviderError, ToolError, is_retryable |
 | `goal` | Goal, GoalStatus, GoalBudget, GoalStore, runtime |
+| `identity` | Path-independent typed IDs and project/repository/workspace/session relations |
 | `memory` | persistent session-to-session learning |
 | `model_profile` | model profile types |
 | `protocol_conversions` | core-safe domain↔DTO conversions (session, message, provider, config) |
@@ -37,6 +38,7 @@ Root `src/lib.rs` re-exports these modules so downstream code can use `crate::bu
 ```rust
 pub use codegg_core::bus;
 pub use codegg_core::goal;
+pub use codegg_core::identity;
 pub use codegg_core::memory;
 pub use codegg_core::model_profile;
 pub use codegg_core::resilience;

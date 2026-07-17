@@ -3,6 +3,7 @@
 pub mod bus;
 pub mod error;
 pub mod goal;
+pub mod identity;
 pub mod jobs;
 pub mod memory;
 pub mod migration;

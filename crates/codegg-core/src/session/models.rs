@@ -5,10 +5,15 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Session {
     pub id: String,
+    /// Legacy string projection. Internal typed session relations use
+    /// [`crate::identity::ProjectId`]; this field remains wire/storage
+    /// compatible until a later additive migration.
     pub project_id: String,
+    /// Legacy string projection of the registered workspace identity.
     pub workspace_id: Option<String>,
     pub parent_id: Option<String>,
     pub slug: String,
+    /// Filesystem locator retained for compatibility; it is not a project ID.
     pub directory: String,
     pub title: String,
     pub version: String,
@@ -29,10 +34,14 @@ pub struct Session {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateSession {
+    /// Legacy string projection; do not derive a durable project identity from
+    /// this field.
     pub project_id: String,
+    /// Filesystem locator retained for compatibility.
     pub directory: String,
     pub title: Option<String>,
     pub parent_id: Option<String>,
+    /// Legacy string projection of the registered workspace identity.
     pub workspace_id: Option<String>,
     pub agent: Option<String>,
     pub model: Option<String>,

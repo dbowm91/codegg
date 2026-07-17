@@ -7,6 +7,12 @@ This module owns the lowest-level abstraction at which the daemon reasons about
 "which project is the agent working on". It is UI-, server-, and plugin-free
 and lives in `crates/codegg-core/src/workspace.rs`.
 
+The typed identity foundation in `crates/codegg-core/src/identity.rs` keeps
+logical project identity separate from this workspace locator. A
+`ProjectBinding` can associate one `ProjectId`/`RepositoryId` pair with many
+`WorkspaceId` values, and optional `WorktreeId`/`NodeId` values describe the
+execution location without changing project identity.
+
 ## Why it exists
 
 The single-daemon multi-project orchestration roadmap replaces the implicit
@@ -59,11 +65,13 @@ so callers can render precise diagnostics.
 The authoritative relation is:
 
 ```text
-Session -> WorkspaceId -> canonical root
+Session -> ProjectId + WorkspaceId -> canonical root
 ```
 
-`project_id` and `directory` remain as compatibility projections in storage
-and DTOs. New daemon code reads `workspace_id`. `CoreDaemon::bind_runtime_for_session`
+`SessionBinding` expresses the typed internal relation. `project_id` and
+`directory` remain as compatibility projections in storage and DTOs; the
+directory is a filesystem locator, not a project identity. New daemon code
+reads `workspace_id`. `CoreDaemon::bind_runtime_for_session`
 resolves a `session_id` to a `SessionRuntime` through `SessionStore` +
 `WorkspaceRegistry`. `TurnSubmit`, `AgentSelect`, and `ModelSelect` reject
 sessions whose `workspace_id` is `NULL` until rebound via
@@ -138,6 +146,12 @@ protected modules:
 
 Existing legacy uses in tool `default()` constructors are explicitly
 allowlisted. New production-path uses fail CI.
+
+`scripts/check_identity_path_usage.py` is an opt-in, narrow guard seam for
+future project-storage work. It checks for explicit path-derived `ProjectId`
+constructors while leaving the current compatibility projections untouched;
+it is intentionally not enabled as a repository-wide CI rule in this
+milestone.
 
 ## Tests
 

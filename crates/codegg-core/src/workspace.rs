@@ -25,6 +25,7 @@ use thiserror::Error;
 use tokio::sync::Mutex;
 
 use crate::error::StorageError;
+use crate::identity::{validate_identity, IdentityParseError};
 
 /// Opaque, stable identifier for a registered workspace.
 ///
@@ -33,11 +34,24 @@ use crate::error::StorageError;
 /// display paths can change (renames, host moves) without renaming
 /// identifiers. Equality is structural (string compare) and the type is
 /// `Hash` so it can be used as a map key.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct WorkspaceId(String);
 
 impl WorkspaceId {
+    /// Generate a fresh opaque workspace identity.
+    pub fn new() -> Self {
+        Self(uuid::Uuid::new_v4().to_string())
+    }
+
+    /// Parse a persisted or protocol workspace identity using the common
+    /// identity lexical contract. `new_unchecked` remains for compatibility
+    /// with existing internal fixtures and legacy storage hydration.
+    pub fn parse(value: &str) -> Result<Self, IdentityParseError> {
+        validate_identity("workspace_id", value)?;
+        Ok(Self(value.to_owned()))
+    }
+
     /// Wrap an already-validated identifier. Prefer
     /// [`WorkspaceRegistry::register`] for new workspaces.
     pub fn new_unchecked(id: impl Into<String>) -> Self {
@@ -46,6 +60,38 @@ impl WorkspaceId {
 
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+
+    pub fn into_string(self) -> String {
+        self.0
+    }
+}
+
+impl Default for WorkspaceId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl AsRef<str> for WorkspaceId {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl std::str::FromStr for WorkspaceId {
+    type Err = IdentityParseError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::parse(value)
+    }
+}
+
+impl TryFrom<&str> for WorkspaceId {
+    type Error = IdentityParseError;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        Self::parse(value)
     }
 }
 
@@ -435,7 +481,7 @@ impl WorkspaceRegistry {
 
         let now = Utc::now();
         let record = WorkspaceRecord {
-            id: WorkspaceId::new_unchecked(uuid::Uuid::new_v4().to_string()),
+            id: WorkspaceId::new(),
             canonical_root: canonical_root.clone(),
             display_name,
             created_at: now,
