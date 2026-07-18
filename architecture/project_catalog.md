@@ -130,6 +130,8 @@ EXISTS` for new tables and indexes.
   — Implementation plan for the durable catalog foundation.
 - `plans/closure/project-catalog/001-status.md` — Closure record (link to
   be added when available).
+- `plans/implementation/project-catalog/003-lazy-activation-and-health.md` —
+  Lazy activation and health implementation plan.
 
 ## Static guard
 
@@ -157,6 +159,37 @@ key. Remote-only, fork-like, ambiguous, and plain-directory move evidence
 remains unresolved rather than being merged by path or remote URL. Missing
 candidates and unavailable roots update observations only; they do not archive
 or delete catalog authority. Scan generations are persisted in schema v29.
+
+## Lazy activation and health (Milestone 3)
+
+Project activation is explicit and scoped by `(ProjectId, WorkspaceId)` plus a
+bounded owner identifier. `CoreDaemon::activate_project_workspace` first
+resolves the typed catalog binding, then acquires an owner-scoped
+`ProjectActivationLease` from `src/core/project_activation.rs`. The lease has a
+finite lifetime and releases the underlying `WorkspaceServicesLease` on drop,
+explicit release, or bounded expiry eviction. Repeated activation by the same
+owner is idempotent; different owners may hold independent leases while sharing
+the one workspace service bundle.
+
+Activation never creates a second service authority. Workspace bundle
+construction and same-workspace single-flight behavior remain owned by
+`WorkspaceServiceRegistry`. Asset publication is delegated to
+`CoreDaemon::refresh_project_activation`, so the existing runtime-asset
+coordinator remains the only refresh authority and can report published,
+retained, invalid, cancelled, or coalesced outcomes.
+
+`CoreDaemon::project_health` is a read-only, bounded aggregate of catalog,
+workspace, runtime-asset, and service state. Health output contains only typed
+IDs, layer states, bounded codes/messages, and bounded diagnostics; it does not
+include filesystem paths, credentials, or asset bodies. The aggregate
+distinguishes unavailable, stale, contended, and error states. Health reads do
+not activate services, probe repositories, or start external processes.
+
+On restart, durable catalog and runtime-asset metadata are hydrated, but
+activation leases and service bundles are intentionally empty. A later explicit
+selection recreates only the selected workspace bundle. After handles release,
+the normal workspace-service idle eviction policy removes the inactive bundle
+without deleting catalog, workspace, or session history.
 
 ## See Also
 

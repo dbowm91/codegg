@@ -13,6 +13,7 @@ pub mod eggpool;
 pub mod event_log;
 pub mod instance;
 pub mod notification;
+pub mod project_activation;
 pub mod provider_connections;
 pub mod runtime_deps;
 pub mod session_runtime;

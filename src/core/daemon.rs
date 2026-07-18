@@ -10,6 +10,10 @@ use super::event_log::EventFilter;
 use super::runtime_deps::CoreRuntimeDeps;
 use crate::core::session_runtime::RuntimeSessionStatus;
 
+use super::project_activation::{
+    self, ProjectActivation, ProjectActivationPolicy, ProjectActivationRegistry,
+    ProjectHealthSnapshot,
+};
 use codegg_core::context::{
     ContextResolutionError, ProjectContext, ProjectContextRequest, ProjectContextResolver,
     SessionId,
@@ -60,6 +64,8 @@ pub struct CoreDaemon {
     /// Daemon-owned immutable runtime-asset publication coordinator. Every
     /// lifecycle and manual refresh path uses this one service.
     pub asset_refresh: Arc<crate::agent::asset_refresh::AssetRefreshCoordinator>,
+    /// Project Catalog Milestone 3: explicit owner-scoped activation leases.
+    pub project_activation: Arc<ProjectActivationRegistry>,
 }
 
 impl CoreDaemon {
@@ -170,6 +176,10 @@ impl CoreDaemon {
         let asset_refresh = Arc::new(crate::agent::asset_refresh::AssetRefreshCoordinator::new(
             asset_builder,
         ));
+        let project_activation = ProjectActivationRegistry::new(
+            workspace_services.clone(),
+            ProjectActivationPolicy::default(),
+        );
 
         // Phase 5: global admission control scheduler. Daemon-owned work
         // is scheduler-authoritative by default; an explicitly disabled
@@ -230,6 +240,7 @@ impl CoreDaemon {
             eggpool_provisioner,
             selection_service,
             asset_refresh,
+            project_activation,
         }
     }
 
@@ -298,6 +309,112 @@ impl CoreDaemon {
             crate::agent::asset_refresh::RefreshReason::ProjectActivation,
         )
         .await
+    }
+
+    /// Explicitly activate one project/workspace for a bounded owner lease.
+    /// Workspace services are acquired lazily and runtime assets are refreshed
+    /// through the existing daemon-owned coordinator seam.
+    pub async fn activate_project_workspace(
+        &self,
+        project_id: &str,
+        workspace_id: &str,
+        owner: &str,
+    ) -> Result<ProjectActivation, AppError> {
+        let resolver = self.context_resolver.as_ref().ok_or_else(|| {
+            AppError::Other(anyhow::anyhow!(
+                "project context resolver is unavailable for this daemon"
+            ))
+        })?;
+        let context = resolver
+            .resolve_raw(project_id, workspace_id, None)
+            .await
+            .map_err(|error| Self::context_error(&error))?;
+        let lease = self
+            .project_activation
+            .acquire(project_id, workspace_id, owner)
+            .await
+            .map_err(|error| AppError::Other(anyhow::anyhow!(error.to_string())))?;
+        let refresh = match self
+            .refresh_project_activation(project_id, workspace_id)
+            .await
+        {
+            Ok(report) => report,
+            Err(error) => {
+                drop(lease);
+                return Err(error);
+            }
+        };
+        if let Some(error) = Self::refresh_report_error(&refresh) {
+            drop(lease);
+            return Err(error);
+        }
+        let health = self.project_health(project_id, workspace_id).await?;
+        Ok(ProjectActivation {
+            lease,
+            refresh,
+            health,
+            binding_revision: context.binding_revision,
+            diagnostics: vec![format!(
+                "activated project/workspace binding revision {}",
+                context.binding_revision
+            )],
+        })
+    }
+
+    /// Return a bounded, path-free health aggregate for a project/workspace.
+    /// This method only reads durable catalog state and in-memory status; it
+    /// never activates services or probes a repository.
+    pub async fn project_health(
+        &self,
+        project_id: &str,
+        workspace_id: &str,
+    ) -> Result<ProjectHealthSnapshot, AppError> {
+        let resolver = self.context_resolver.as_ref().ok_or_else(|| {
+            AppError::Other(anyhow::anyhow!(
+                "project context resolver is unavailable for this daemon"
+            ))
+        })?;
+        let context = resolver
+            .resolve_raw(project_id, workspace_id, None)
+            .await
+            .map_err(|error| Self::context_error(&error))?;
+        let pool = self.pool.clone().ok_or_else(|| {
+            AppError::Other(anyhow::anyhow!("project health requires a database pool"))
+        })?;
+        let catalog = codegg_core::project_catalog::ProjectCatalog::new(pool);
+        let catalog_health = catalog
+            .get_health(&context.project_id)
+            .await
+            .map_err(|error| AppError::Other(anyhow::anyhow!(error.to_string())))?
+            .map(|record| record.status);
+        let typed_workspace_id =
+            codegg_core::workspace::WorkspaceId::new_unchecked(context.workspace_id.to_string());
+        let service_snapshot = self.workspace_services.peek(&typed_workspace_id);
+        let asset_status = self
+            .asset_refresh
+            .status(&crate::agent::asset_refresh::AssetScope::new(
+                project_id,
+                workspace_id,
+            ))
+            .await;
+        Ok(project_activation::aggregate_health(
+            project_id,
+            workspace_id,
+            project_activation::catalog_health_layer(catalog_health),
+            project_activation::workspace_health_layer(true),
+            project_activation::service_health_layer(service_snapshot.as_ref()),
+            project_activation::asset_health_layer(&asset_status),
+        ))
+    }
+
+    /// Evict project activation leases whose bounded lifetime has elapsed.
+    /// Underlying workspace service bundles become idle and are then eligible
+    /// for the normal workspace-service eviction policy.
+    pub fn evict_project_activation_leases(
+        &self,
+        now: chrono::DateTime<Utc>,
+    ) -> project_activation::ActivationEvictionReport {
+        self.project_activation.evict_expired(now)
     }
 
     async fn refresh_runtime_assets(
