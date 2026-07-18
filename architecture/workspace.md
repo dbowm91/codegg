@@ -200,3 +200,10 @@ python3 scripts/check_daemon_cwd_usage.py
 Explicit project registration flows through
 `ProjectCatalog::register_local_project` from an already-registered
 workspace; the catalog does not own workspace records.
+## Identity and locator separation
+
+`WorkspaceId` is durable identity and `canonical_root` is execution locator
+data. The daemon registry may hydrate or resolve an existing workspace, but
+session load and turn submission do not register a workspace from a historical
+directory. Directory compatibility is delegated to the canonical context
+resolver and succeeds only for an existing unique project/workspace binding.

@@ -10061,7 +10061,12 @@ impl App {
             InitialSessionRequest::New { directory, title } => {
                 let req = crate::core::new_request(
                     uuid::Uuid::new_v4().to_string(),
-                    CoreRequest::SessionCreate { directory, title },
+                    CoreRequest::SessionCreate {
+                        directory,
+                        title,
+                        project_id: None,
+                        workspace_id: None,
+                    },
                 );
                 match core_client.request(req).await {
                     Ok(CoreResponse::Session { session }) => {
@@ -11726,6 +11731,32 @@ mod remote_core_loader_tests {
             .await
             .unwrap();
         crate::session::schema::migrate(&pool).await.unwrap();
+        let now = chrono::Utc::now();
+        let workspace = codegg_core::workspace::WorkspaceRecord {
+            id: codegg_core::workspace::WorkspaceId::new(),
+            canonical_root: std::path::PathBuf::from("/tmp"),
+            display_name: "TUI test workspace".to_string(),
+            created_at: now,
+            last_opened_at: now,
+            archived_at: None,
+        };
+        let workspace_store = codegg_core::workspace::SqliteWorkspaceStore::new(pool.clone());
+        codegg_core::workspace::WorkspaceStore::upsert(&workspace_store, &workspace)
+            .await
+            .unwrap();
+        codegg_core::project_catalog::ProjectCatalog::new(pool.clone())
+            .register_local_project(
+                codegg_core::project_catalog::RegisterLocalProject {
+                    display_name: "TUI test project".to_string(),
+                    description: None,
+                    tags: Vec::new(),
+                    primary_repository_id: None,
+                },
+                &workspace.id,
+                "tui-test",
+            )
+            .await
+            .unwrap();
         Arc::new(InprocCoreClient::new(
             None,
             None,
@@ -11743,8 +11774,10 @@ mod remote_core_loader_tests {
         let create_req = new_request(
             "create-1".into(),
             CoreRequest::SessionCreate {
-                directory: "/tmp/proj".into(),
+                directory: "/tmp".into(),
                 title: Some("Existing".into()),
+                project_id: None,
+                workspace_id: None,
             },
         );
         let session_id = match client.request(create_req).await.unwrap() {
@@ -11752,7 +11785,7 @@ mod remote_core_loader_tests {
             other => panic!("expected Session, got {:?}", other),
         };
 
-        let mut app = App::new_for_testing("/tmp/proj".to_string());
+        let mut app = App::new_for_testing("/tmp".to_string());
         app.ui_state.mode = AppMode::RemoteCore {
             endpoint: "unix:///tmp/test.sock".to_string(),
         };
@@ -11779,8 +11812,10 @@ mod remote_core_loader_tests {
         let req_a = new_request(
             "create-a".into(),
             CoreRequest::SessionCreate {
-                directory: "/tmp/proj".into(),
+                directory: "/tmp".into(),
                 title: Some("A".into()),
+                project_id: None,
+                workspace_id: None,
             },
         );
         let id_a = match client.request(req_a).await.unwrap() {
@@ -11792,8 +11827,10 @@ mod remote_core_loader_tests {
         let req_b = new_request(
             "create-b".into(),
             CoreRequest::SessionCreate {
-                directory: "/tmp/proj".into(),
+                directory: "/tmp".into(),
                 title: Some("B".into()),
+                project_id: None,
+                workspace_id: None,
             },
         );
         let id_b = match client.request(req_b).await.unwrap() {
@@ -11802,14 +11839,14 @@ mod remote_core_loader_tests {
         };
         assert_ne!(id_a, id_b);
 
-        let mut app = App::new_for_testing("/tmp/proj".to_string());
+        let mut app = App::new_for_testing("/tmp".to_string());
         app.ui_state.mode = AppMode::RemoteCore {
             endpoint: "unix:///tmp/test.sock".to_string(),
         };
         app.set_core_client(client);
 
         app.load_initial_session_via_core(InitialSessionRequest::Continue {
-            project_dir: "/tmp/proj".to_string(),
+            project_dir: "/tmp".to_string(),
         })
         .await;
 
@@ -11828,14 +11865,14 @@ mod remote_core_loader_tests {
     async fn load_initial_session_new_creates_session() {
         let client = build_inproc_client().await;
 
-        let mut app = App::new_for_testing("/tmp/proj-new".to_string());
+        let mut app = App::new_for_testing("/tmp".to_string());
         app.ui_state.mode = AppMode::RemoteCore {
             endpoint: "unix:///tmp/test.sock".to_string(),
         };
         app.set_core_client(client);
 
         app.load_initial_session_via_core(InitialSessionRequest::New {
-            directory: "/tmp/proj-new".to_string(),
+            directory: "/tmp".to_string(),
             title: Some("Brand New".to_string()),
         })
         .await;
@@ -11846,7 +11883,7 @@ mod remote_core_loader_tests {
             .as_ref()
             .expect("New should create a session");
         assert_eq!(sess.title, "Brand New");
-        assert_eq!(sess.directory, "/tmp/proj-new");
+        assert_eq!(sess.directory, "/tmp");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
@@ -11856,8 +11893,10 @@ mod remote_core_loader_tests {
         let create_req = new_request(
             "create-fork".into(),
             CoreRequest::SessionCreate {
-                directory: "/tmp/proj".into(),
+                directory: "/tmp".into(),
                 title: Some("Parent".into()),
+                project_id: None,
+                workspace_id: None,
             },
         );
         let parent_id = match client.request(create_req).await.unwrap() {
@@ -11865,7 +11904,7 @@ mod remote_core_loader_tests {
             other => panic!("expected Session, got {:?}", other),
         };
 
-        let mut app = App::new_for_testing("/tmp/proj".to_string());
+        let mut app = App::new_for_testing("/tmp".to_string());
         app.ui_state.mode = AppMode::RemoteCore {
             endpoint: "unix:///tmp/test.sock".to_string(),
         };

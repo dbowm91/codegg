@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use crate::dto::{
     CancelResultDto, ConfigDiagnosticDto, JobAttemptDto, JobQueryDto, JobRecordDto, JobSubmitDto,
     JobSummaryDto, RecoveryReportDto, RunQueryDto, RunRecordDto, RunSummaryDto, ScheduleCreateDto,
-    ScheduleRecordDto, ScheduleSummaryDto, WorkspaceServiceHealthDto,
+    ScheduleRecordDto, ScheduleSummaryDto, SessionBindingDto, WorkspaceServiceHealthDto,
 };
 use crate::provider::{
     ConnectionProvisioningStatusDto, CreateEggpoolConnectionRequest, CreateEggpoolConnectionResult,
@@ -244,6 +244,9 @@ pub struct SessionSnapshot {
     pub project_id: String,
     #[serde(default)]
     pub workspace_id: Option<String>,
+    /// Canonical project/workspace binding. Absent on legacy sessions.
+    #[serde(default)]
+    pub binding: Option<SessionBindingDto>,
     #[serde(default)]
     pub directory: String,
     pub status: String,
@@ -297,6 +300,12 @@ pub enum CoreRequest {
     SessionCreate {
         directory: String,
         title: Option<String>,
+        /// Optional canonical identity for identity-aware clients.
+        #[serde(default)]
+        project_id: Option<String>,
+        /// Optional canonical workspace for identity-aware clients.
+        #[serde(default)]
+        workspace_id: Option<String>,
     },
     SessionAttach {
         session_id: String,
@@ -342,8 +351,14 @@ pub enum CoreRequest {
     },
     SessionCreateFromTemplate {
         template: crate::dto::SessionTemplate,
-        project_id: String,
+        /// Legacy project projection, now optional for identity-aware
+        /// clients that provide the explicit project/workspace context.
+        #[serde(default)]
+        project_id: Option<String>,
         directory: String,
+        /// Optional canonical workspace for identity-aware clients.
+        #[serde(default)]
+        workspace_id: Option<String>,
     },
     TurnSubmit {
         session_id: String,
@@ -947,11 +962,103 @@ mod tests {
             payload: CoreRequest::SessionCreate {
                 directory: "/tmp".to_string(),
                 title: Some("Test".to_string()),
+                project_id: None,
+                workspace_id: None,
             },
         };
         let json = serde_json::to_string(&req).unwrap();
         assert!(json.contains("session_create"));
         assert!(json.contains("test-1"));
+    }
+
+    #[test]
+    fn legacy_session_create_fixture_decodes_without_identity_context() {
+        let request: CoreRequest = serde_json::from_str(
+            r#"{"type":"session_create","directory":"/tmp/legacy","title":null}"#,
+        )
+        .unwrap();
+
+        match request {
+            CoreRequest::SessionCreate {
+                directory,
+                title,
+                project_id,
+                workspace_id,
+            } => {
+                assert_eq!(directory, "/tmp/legacy");
+                assert_eq!(title, None);
+                assert_eq!(project_id, None);
+                assert_eq!(workspace_id, None);
+            }
+            other => panic!("expected legacy SessionCreate, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn identity_aware_session_create_round_trips_without_version_bump() {
+        let request = CoreRequest::SessionCreate {
+            directory: "/tmp/project".to_string(),
+            title: Some("Identity-aware".to_string()),
+            project_id: Some("project-1".to_string()),
+            workspace_id: Some("workspace-1".to_string()),
+        };
+
+        let json = serde_json::to_string(&request).unwrap();
+        let decoded: CoreRequest = serde_json::from_str(&json).unwrap();
+        assert!(matches!(
+            decoded,
+            CoreRequest::SessionCreate {
+                project_id: Some(ref project_id),
+                workspace_id: Some(ref workspace_id),
+                ..
+            } if project_id == "project-1" && workspace_id == "workspace-1"
+        ));
+        assert_eq!(PROTOCOL_VERSION, 2);
+    }
+
+    #[test]
+    fn legacy_template_create_fixture_decodes_with_optional_context_fields() {
+        let request: CoreRequest = serde_json::from_str(
+            r#"{"type":"session_create_from_template","template":{},"project_id":"legacy-project","directory":"/tmp/legacy"}"#,
+        )
+        .unwrap();
+
+        match request {
+            CoreRequest::SessionCreateFromTemplate {
+                project_id,
+                directory,
+                workspace_id,
+                ..
+            } => {
+                assert_eq!(project_id.as_deref(), Some("legacy-project"));
+                assert_eq!(directory, "/tmp/legacy");
+                assert_eq!(workspace_id, None);
+            }
+            other => panic!("expected legacy template request, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn legacy_session_snapshot_fixture_defaults_binding() {
+        let snapshot: SessionSnapshot = serde_json::from_str(
+            r#"{
+                "session_id":"session-1",
+                "project_id":"legacy-project",
+                "status":"idle",
+                "selected_model":null,
+                "selected_agent":null,
+                "has_active_turn":false,
+                "pending_permissions":[],
+                "pending_questions":[],
+                "input_tokens":null,
+                "output_tokens":null,
+                "active_subagents":0
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(snapshot.binding, None);
+        assert_eq!(snapshot.directory, "");
     }
 
     #[test]

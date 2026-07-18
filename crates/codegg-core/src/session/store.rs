@@ -157,6 +157,149 @@ impl SessionStore {
         })
     }
 
+    /// Atomically create a session and its canonical project/workspace
+    /// binding. The compatibility `project_id`, `workspace_id`, and
+    /// `directory` columns are written from the already-resolved context;
+    /// none of them participates in resolving identity.
+    pub async fn create_with_binding(
+        &self,
+        input: CreateSession,
+        project_id: &crate::identity::ProjectId,
+        workspace_id: &crate::workspace::WorkspaceId,
+        source: &str,
+    ) -> Result<Session, StorageError> {
+        if source.is_empty() || source.len() > 512 || source.chars().any(char::is_control) {
+            return Err(StorageError::Database(
+                "invalid session binding source".to_string(),
+            ));
+        }
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| StorageError::Database(e.to_string()))?;
+
+        let binding: Option<(String, String)> = sqlx::query_as(
+            "SELECT project_id, status FROM workspace_project_binding WHERE workspace_id = ?",
+        )
+        .bind(workspace_id.as_str())
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| StorageError::Database(e.to_string()))?;
+
+        match binding {
+            Some((bound_project, status))
+                if bound_project == project_id.as_str() && status == "resolved" => {}
+            Some((_, status)) => {
+                return Err(StorageError::Database(format!(
+                    "workspace context is not resolved ({status})"
+                )))
+            }
+            None => {
+                return Err(StorageError::NotFound(format!(
+                    "workspace {}",
+                    workspace_id
+                )))
+            }
+        }
+
+        let id = Uuid::new_v4().to_string();
+        let slug = generate_slug(&input.title);
+        let title = input.title.unwrap_or_else(|| "Untitled".to_string());
+        let version = "1".to_string();
+        let now = Utc::now().timestamp_millis();
+        let tags = input.tags.unwrap_or_default();
+        let tags_json = serde_json::to_string(&tags)
+            .map_err(|e| StorageError::Database(format!("failed to serialize tags: {e}")))?;
+
+        sqlx::query(
+            "INSERT OR IGNORE INTO project (id, worktree, sandboxes, time_created, time_updated) VALUES (?, ?, '[]', ?, ?)",
+        )
+        .bind(project_id.as_str())
+        .bind(&input.directory)
+        .bind(now)
+        .bind(now)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| StorageError::Database(e.to_string()))?;
+        sqlx::query(
+            r#"INSERT INTO session (
+                id, project_id, workspace_id, parent_id, slug, directory,
+                title, version, tags, provider_connection_id,
+                provider_connection_revision, model_catalog_revision,
+                selected_model_id, agent, model, time_created, time_updated
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
+        )
+        .bind(&id)
+        .bind(project_id.as_str())
+        .bind(workspace_id.as_str())
+        .bind(&input.parent_id)
+        .bind(&slug)
+        .bind(&input.directory)
+        .bind(&title)
+        .bind(&version)
+        .bind(&tags_json)
+        .bind(input.provider_connection_id.as_deref())
+        .bind(input.provider_connection_revision.map(|v| v as i64))
+        .bind(input.model_catalog_revision.as_deref())
+        .bind(input.selected_model_id.as_deref())
+        .bind(input.agent.as_deref())
+        .bind(input.model.as_deref())
+        .bind(now)
+        .bind(now)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| StorageError::Database(e.to_string()))?;
+        sqlx::query(
+            r#"INSERT INTO session_project_binding
+               (session_id, project_id, workspace_id, status, source, revision,
+                time_created, time_updated)
+               VALUES (?, ?, ?, 'resolved', ?, 1, ?, ?)"#,
+        )
+        .bind(&id)
+        .bind(project_id.as_str())
+        .bind(workspace_id.as_str())
+        .bind(source)
+        .bind(now)
+        .bind(now)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| StorageError::Database(e.to_string()))?;
+        tx.commit()
+            .await
+            .map_err(|e| StorageError::Database(e.to_string()))?;
+
+        Ok(Session {
+            id,
+            project_id: project_id.as_str().to_string(),
+            workspace_id: Some(workspace_id.as_str().to_string()),
+            parent_id: input.parent_id,
+            slug,
+            directory: input.directory,
+            title,
+            version,
+            share_url: None,
+            summary_additions: None,
+            summary_deletions: None,
+            summary_files: None,
+            summary_diffs: None,
+            revert: None,
+            permission: None,
+            tags,
+            provider_connection_id: input.provider_connection_id,
+            provider_connection_revision: input.provider_connection_revision,
+            model_catalog_revision: input.model_catalog_revision,
+            selected_model_id: input.selected_model_id,
+            agent: input.agent,
+            model: input.model,
+            time_created: now,
+            time_updated: now,
+            time_compacting: None,
+            time_archived: None,
+            time_deleted: None,
+        })
+    }
+
     pub async fn create_from_template(
         &self,
         template: &SessionTemplate,
@@ -194,6 +337,35 @@ impl SessionStore {
 
     pub async fn list(&self, project_id: &str, limit: usize) -> Result<Vec<Session>, StorageError> {
         self.list_with_offset(project_id, limit, 0).await
+    }
+
+    /// List sessions through the canonical project binding rather than the
+    /// historical path-valued `session.project_id` projection. A `Some`
+    /// limit returns active sessions; `None` includes archived sessions.
+    pub async fn list_by_canonical_project(
+        &self,
+        project_id: &str,
+        limit: Option<usize>,
+    ) -> Result<Vec<Session>, StorageError> {
+        let mut sql = format!(
+            "SELECT {} FROM session s INNER JOIN session_project_binding b ON b.session_id = s.id WHERE b.project_id = ? AND b.status = 'resolved' AND s.time_deleted IS NULL",
+            SESSION_COLUMNS_QUALIFIED
+        );
+        if limit.is_some() {
+            sql.push_str(" AND s.time_archived IS NULL");
+        }
+        sql.push_str(" ORDER BY s.time_updated DESC");
+        if limit.is_some() {
+            sql.push_str(" LIMIT ?");
+        }
+        let query = sqlx::query_as::<_, SessionRow>(&sql).bind(project_id);
+        let rows = if let Some(limit) = limit {
+            query.bind(limit as i64).fetch_all(&self.pool).await
+        } else {
+            query.fetch_all(&self.pool).await
+        }
+        .map_err(|e| StorageError::Database(e.to_string()))?;
+        Ok(rows.into_iter().map(|row| row.into()).collect())
     }
 
     pub async fn list_with_offset(
@@ -498,6 +670,42 @@ impl SessionStore {
         data: serde_json::Value,
         new_project_id: Option<&str>,
     ) -> Result<Session, StorageError> {
+        self.import_session_inner(data, new_project_id, None).await
+    }
+
+    /// Import a session and persist its canonical binding in the same
+    /// transaction as the imported session and its contents.
+    pub async fn import_session_with_binding(
+        &self,
+        data: serde_json::Value,
+        new_project_id: Option<&str>,
+        project_id: &crate::identity::ProjectId,
+        workspace_id: &crate::workspace::WorkspaceId,
+        source: &str,
+    ) -> Result<Session, StorageError> {
+        if source.is_empty() || source.len() > 512 || source.chars().any(char::is_control) {
+            return Err(StorageError::Database(
+                "invalid session binding source".to_string(),
+            ));
+        }
+        self.import_session_inner(
+            data,
+            new_project_id,
+            Some((project_id, workspace_id, source)),
+        )
+        .await
+    }
+
+    async fn import_session_inner(
+        &self,
+        data: serde_json::Value,
+        new_project_id: Option<&str>,
+        binding: Option<(
+            &crate::identity::ProjectId,
+            &crate::workspace::WorkspaceId,
+            &str,
+        )>,
+    ) -> Result<Session, StorageError> {
         validate_import_size(&data)?;
 
         let import: SessionImport = serde::Deserialize::deserialize(data)
@@ -661,6 +869,46 @@ impl SessionStore {
                 .execute(&mut *tx)
                 .await
                 .map_err(|e| StorageError::Database(e.to_string()))?;
+        }
+
+        if let Some((canonical_project_id, canonical_workspace_id, source)) = binding {
+            let workspace_binding: Option<(String, String)> = sqlx::query_as(
+                "SELECT project_id, status FROM workspace_project_binding WHERE workspace_id = ?",
+            )
+            .bind(canonical_workspace_id.as_str())
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| StorageError::Database(e.to_string()))?;
+            match workspace_binding {
+                Some((bound_project, status))
+                    if bound_project == canonical_project_id.as_str() && status == "resolved" => {}
+                Some((_, status)) => {
+                    return Err(StorageError::Database(format!(
+                        "workspace context is not resolved ({status})"
+                    )))
+                }
+                None => {
+                    return Err(StorageError::NotFound(format!(
+                        "workspace {}",
+                        canonical_workspace_id
+                    )))
+                }
+            }
+            sqlx::query(
+                r#"INSERT INTO session_project_binding
+                   (session_id, project_id, workspace_id, status, source, revision,
+                    time_created, time_updated)
+                   VALUES (?, ?, ?, 'resolved', ?, 1, ?, ?)"#,
+            )
+            .bind(&id)
+            .bind(canonical_project_id.as_str())
+            .bind(canonical_workspace_id.as_str())
+            .bind(source)
+            .bind(now)
+            .bind(now)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| StorageError::Database(e.to_string()))?;
         }
 
         tx.commit()

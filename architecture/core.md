@@ -303,3 +303,10 @@ compatibility boundary.
 ### Test Coverage
 
 - `turn_submit_uses_injected_runtime` (`src/core/daemon.rs:3100`) — Verifies that `TurnSubmit` delegates to the injected `TurnRuntime` rather than constructing one inline.
+## Project context resolver
+
+Daemon request handlers use the core-owned `ProjectContextResolver` for session
+creation, loading, turns, and project-scoped listing. It performs bounded input
+parsing and durable membership/lifecycle checks before execution. The resolver
+does not authorize principals and does not scan the filesystem or use process
+cwd as identity authority.

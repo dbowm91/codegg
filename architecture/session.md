@@ -656,3 +656,11 @@ Database rows implement `sqlx::FromRow` and convert to domain models:
 9. **Checkpoints**: Store complete session state including provider/model info and working file checksums
 
 10. **Message/Part Ordering**: All queries use `ORDER BY time_created ASC, id ASC` for deterministic ordering
+## Canonical session binding
+
+Executable sessions require a resolved project/workspace binding. Creation and
+template creation use the atomic `SessionStore::create_with_binding` path;
+forks copy the canonical binding inside their transaction. Existing rows remain
+loadable, but a legacy directory can become executable only when it resolves to
+one existing active binding. Otherwise the daemon returns a bounded
+`project_context_required`-class diagnostic.

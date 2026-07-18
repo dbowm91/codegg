@@ -581,6 +581,32 @@ mod tests {
             .await
             .expect("connect in-memory sqlite");
         migrate(&pool).await.expect("migrate");
+        let now = chrono::Utc::now();
+        let workspace = codegg_core::workspace::WorkspaceRecord {
+            id: codegg_core::workspace::WorkspaceId::new(),
+            canonical_root: std::path::PathBuf::from("/tmp"),
+            display_name: "Core test workspace".to_string(),
+            created_at: now,
+            last_opened_at: now,
+            archived_at: None,
+        };
+        let workspace_store = codegg_core::workspace::SqliteWorkspaceStore::new(pool.clone());
+        codegg_core::workspace::WorkspaceStore::upsert(&workspace_store, &workspace)
+            .await
+            .expect("test workspace registration");
+        codegg_core::project_catalog::ProjectCatalog::new(pool.clone())
+            .register_local_project(
+                codegg_core::project_catalog::RegisterLocalProject {
+                    display_name: "Core test project".to_string(),
+                    description: None,
+                    tags: Vec::new(),
+                    primary_repository_id: None,
+                },
+                &workspace.id,
+                "core-test",
+            )
+            .await
+            .expect("test project registration");
         pool
     }
 
@@ -591,8 +617,10 @@ mod tests {
         let req = new_request(
             "req-1".into(),
             CoreRequest::SessionCreate {
-                directory: "/tmp/test".into(),
+                directory: "/tmp".into(),
                 title: Some("Test Session".into()),
+                project_id: None,
+                workspace_id: None,
             },
         );
         let resp = client.request(req).await.unwrap();
@@ -613,8 +641,10 @@ mod tests {
         let create_req = new_request(
             "req-1".into(),
             CoreRequest::SessionCreate {
-                directory: "/tmp/test".into(),
+                directory: "/tmp".into(),
                 title: Some("Load Me".into()),
+                project_id: None,
+                workspace_id: None,
             },
         );
         let session_id = match client.request(create_req).await.unwrap() {
@@ -663,8 +693,10 @@ mod tests {
         let create_req = new_request(
             "req-1".into(),
             CoreRequest::SessionCreate {
-                directory: "/tmp/test".into(),
+                directory: "/tmp".into(),
                 title: Some("Msg Test".into()),
+                project_id: None,
+                workspace_id: None,
             },
         );
         let session_id = match client.request(create_req).await.unwrap() {
@@ -751,6 +783,8 @@ mod tests {
             CoreRequest::SessionCreate {
                 directory: "/tmp".into(),
                 title: None,
+                project_id: None,
+                workspace_id: None,
             },
         );
         let resp = client.request(req).await.unwrap();

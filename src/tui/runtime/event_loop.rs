@@ -61,6 +61,8 @@ async fn ensure_local_session(app: &mut app::App) {
             CoreRequest::SessionCreate {
                 directory: project_dir,
                 title: None,
+                project_id: None,
+                workspace_id: None,
             },
         );
         match core_client.request(request).await {

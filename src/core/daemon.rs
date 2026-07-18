@@ -1,4 +1,3 @@
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -10,6 +9,10 @@ use super::event_log::EventFilter;
 use super::runtime_deps::CoreRuntimeDeps;
 use crate::core::session_runtime::RuntimeSessionStatus;
 
+use codegg_core::context::{
+    ContextResolutionError, ProjectContext, ProjectContextRequest, ProjectContextResolver,
+    SessionId,
+};
 use codegg_core::workspace::{WorkspaceRecord, WorkspaceRegistry};
 use codegg_core::workspace_services::{
     ProductionWorkspaceServicesFactory, WorkspaceServiceRegistry,
@@ -35,6 +38,9 @@ pub struct CoreDaemon {
     /// permitted. The registry deduplicates canonical project roots and
     /// gates turn submission behind a valid `WorkspaceId`.
     pub workspaces: Arc<WorkspaceRegistry>,
+    /// Canonical project/workspace/session resolver. Directory compatibility
+    /// is read-only and succeeds only for an existing unique binding.
+    pub context_resolver: Option<Arc<ProjectContextResolver>>,
     /// Phase 3: workspace services registry. The daemon owns the
     /// canonical [`WorkspaceServiceRegistry`] which lazily activates
     /// per-workspace `WorkspaceServices` bundles and shares them
@@ -95,16 +101,18 @@ impl CoreDaemon {
         // Workspace registry: prefer the on-disk SQLite store when a
         // session DB pool is available; fall back to an in-memory store
         // for standalone / in-process test daemons.
-        let workspaces = match deps.pool {
-            Some(ref p) => {
-                let store = Arc::new(codegg_core::workspace::SqliteWorkspaceStore::new(p.clone()));
-                WorkspaceRegistry::new_for_tests(store)
-            }
-            None => {
-                let store = Arc::new(codegg_core::workspace::InMemoryWorkspaceStore::new());
-                WorkspaceRegistry::new_for_tests(store)
-            }
+        let workspace_store: Arc<dyn codegg_core::workspace::WorkspaceStore> = match deps.pool {
+            Some(ref p) => Arc::new(codegg_core::workspace::SqliteWorkspaceStore::new(p.clone())),
+            None => Arc::new(codegg_core::workspace::InMemoryWorkspaceStore::new()),
         };
+        let workspaces = WorkspaceRegistry::new_for_tests(workspace_store.clone());
+        let context_resolver = deps.pool.clone().map(|pool| {
+            Arc::new(ProjectContextResolver::new(
+                codegg_core::project_storage::ProjectStorage::new(pool.clone()),
+                codegg_core::project_catalog::ProjectCatalog::new(pool),
+                workspace_store.clone(),
+            ))
+        });
 
         // Phase 3: workspace services registry. Use the one supplied
         // via `with_workspace_services` if present; otherwise create
@@ -200,6 +208,7 @@ impl CoreDaemon {
             audio_arbiter,
             started_at: Instant::now(),
             workspaces,
+            context_resolver,
             workspace_services,
             eggpool_provisioner,
             selection_service,
@@ -217,25 +226,167 @@ impl CoreDaemon {
         self.workspaces.hydrate_from_store().await
     }
 
-    /// Resolve a session's directory to a workspace, registering one if
-    /// the directory is a real, canonicalizable directory. Returns an
-    /// `AppError` when the directory is not a workspace (e.g. a stale
-    /// session whose directory no longer exists). All daemon execution
-    /// paths go through this helper.
+    /// Resolve a session's compatibility directory to an already registered
+    /// workspace. This never registers a workspace or creates project
+    /// identity from path text.
     pub async fn workspace_for_session_directory(
         &self,
         session_id: &str,
         session_directory: &str,
     ) -> Result<Arc<WorkspaceRecord>, AppError> {
         let path = std::path::Path::new(session_directory);
-        self.workspaces.get_or_register(path).await.map_err(|e| {
+        self.workspaces.resolve_root(path).await.ok_or_else(|| {
             AppError::Other(anyhow::anyhow!(
-                "session {} has no workspace ({}): {}",
-                session_id,
-                session_directory,
-                e
+                "session {} has no registered workspace for its compatibility locator",
+                session_id
             ))
         })
+    }
+
+    fn context_error(error: &ContextResolutionError) -> AppError {
+        let code =
+            match error {
+                ContextResolutionError::DirectoryNotFound
+                | ContextResolutionError::DirectoryAmbiguous(_) => "project_context_required",
+                ContextResolutionError::ProjectNotFound
+                | ContextResolutionError::WorkspaceNotFound => "project_context_not_found",
+                ContextResolutionError::ProjectArchived
+                | ContextResolutionError::WorkspaceArchived => "project_context_archived",
+                ContextResolutionError::BindingProjectMismatch
+                | ContextResolutionError::SessionBindingMismatch => "project_context_mismatch",
+                ContextResolutionError::BindingMissing
+                | ContextResolutionError::BindingNotResolved { .. }
+                | ContextResolutionError::SessionBindingMissing
+                | ContextResolutionError::SessionBindingNotResolved { .. } => {
+                    "project_context_unresolved"
+                }
+                ContextResolutionError::InvalidInput(_) => "invalid_project_context",
+                ContextResolutionError::CatalogFailure(_)
+                | ContextResolutionError::StorageFailure(_)
+                | ContextResolutionError::WorkspaceStoreFailure(_) => "project_context_unavailable",
+            };
+        AppError::Other(anyhow::anyhow!(
+            "{code}: project/workspace context is not executable"
+        ))
+    }
+
+    async fn resolve_session_context(
+        &self,
+        session_id: &str,
+        directory: &str,
+    ) -> Result<ProjectContext, AppError> {
+        let resolver = self.context_resolver.as_ref().ok_or_else(|| {
+            AppError::Other(anyhow::anyhow!(
+                "project context resolver is unavailable for this daemon"
+            ))
+        })?;
+        let session_id = SessionId::parse(session_id)
+            .map_err(|e| Self::context_error(&ContextResolutionError::InvalidInput(e)))?;
+        let storage = codegg_core::project_storage::ProjectStorage::new(
+            self.pool.clone().ok_or_else(|| {
+                AppError::Other(anyhow::anyhow!(
+                    "no database pool available for context lookup"
+                ))
+            })?,
+        );
+        if let Some(binding) = storage
+            .session_binding(session_id.as_str())
+            .await
+            .map_err(|e| AppError::Other(anyhow::anyhow!(e.to_string())))?
+        {
+            let project_id = binding.project_id.ok_or_else(|| {
+                Self::context_error(&ContextResolutionError::SessionBindingNotResolved {
+                    status: binding.status,
+                })
+            })?;
+            let workspace_id = binding.workspace_id.ok_or_else(|| {
+                Self::context_error(&ContextResolutionError::SessionBindingNotResolved {
+                    status: binding.status,
+                })
+            })?;
+            return resolver
+                .resolve(
+                    ProjectContextRequest::new(project_id, workspace_id)
+                        .with_session_id(session_id),
+                )
+                .await
+                .map_err(|e| Self::context_error(&e));
+        }
+        resolver
+            .resolve_directory(directory)
+            .await
+            .map_err(|e| Self::context_error(&e))
+    }
+
+    async fn resolve_request_context(
+        &self,
+        directory: &str,
+        project_id: Option<&str>,
+        workspace_id: Option<&str>,
+    ) -> Result<ProjectContext, AppError> {
+        let resolver = self.context_resolver.as_ref().ok_or_else(|| {
+            AppError::Other(anyhow::anyhow!(
+                "project context resolver is unavailable for this daemon"
+            ))
+        })?;
+        match (project_id, workspace_id) {
+            (Some(project_id), Some(workspace_id)) => resolver
+                .resolve_raw(project_id, workspace_id, None)
+                .await
+                .map_err(|e| Self::context_error(&e)),
+            (None, None) => resolver
+                .resolve_directory(directory)
+                .await
+                .map_err(|e| Self::context_error(&e)),
+            _ => Err(AppError::Other(anyhow::anyhow!(
+                "project_context_required: project_id and workspace_id must be provided together"
+            ))),
+        }
+    }
+
+    async fn resolve_session_list_project(
+        &self,
+        project_id_or_directory: &str,
+    ) -> Result<codegg_core::identity::ProjectId, AppError> {
+        if let Ok(project_id) = codegg_core::identity::ProjectId::parse(project_id_or_directory) {
+            return Ok(project_id);
+        }
+        self.context_resolver
+            .as_ref()
+            .ok_or_else(|| {
+                AppError::Other(anyhow::anyhow!(
+                    "project_context_required: project resolver is unavailable"
+                ))
+            })?
+            .resolve_directory(project_id_or_directory)
+            .await
+            .map(|context| context.project_id)
+            .map_err(|error| Self::context_error(&error))
+    }
+
+    fn session_dto(
+        session: crate::session::Session,
+        context: Option<&ProjectContext>,
+    ) -> crate::protocol::dto::Session {
+        let mut dto = crate::protocol_conversions::session_to_dto(session);
+        if let Some(context) = context {
+            dto.binding = Some(crate::protocol::dto::SessionBindingDto {
+                project_id: context.project_id.as_str().to_string(),
+                workspace_id: context.workspace_id.as_str().to_string(),
+                repository_id: context
+                    .repository_id
+                    .as_ref()
+                    .map(|id| id.as_str().to_string()),
+                binding_state: Some(context.binding_status.as_str().to_string()),
+                binding_revision: u64::try_from(context.binding_revision).ok(),
+                compatibility_directory: Some(
+                    context.workspace_root.to_string_lossy().into_owned(),
+                ),
+            });
+            dto.project_id = context.project_id.as_str().to_string();
+            dto.workspace_id = Some(context.workspace_id.as_str().to_string());
+        }
+        dto
     }
 
     /// Bind a `SessionRuntime` to a workspace record. Stores
@@ -276,14 +427,19 @@ impl CoreDaemon {
             .await
             .map_err(|e| AppError::Other(anyhow::anyhow!("session store error: {}", e)))?
             .ok_or_else(|| AppError::Other(anyhow::anyhow!("session not found: {}", session_id)))?;
-        let workspace = self
-            .workspace_for_session_directory(session_id, &session.directory)
+        let context = self
+            .resolve_session_context(session_id, &session.directory)
             .await?;
+        let workspace = self
+            .workspaces
+            .resolve(&context.workspace_id)
+            .await
+            .ok_or_else(|| Self::context_error(&ContextResolutionError::WorkspaceNotFound))?;
         Ok(self.bind_runtime(
             session_id,
             workspace,
-            session.project_id.clone(),
-            PathBuf::from(&session.directory),
+            context.project_id.as_str().to_string(),
+            context.workspace_root,
         ))
     }
 
@@ -1107,33 +1263,59 @@ impl CoreDaemon {
                     }),
                 }
             }
-            CoreRequest::SessionCreate { directory, title } => {
+            CoreRequest::SessionCreate {
+                directory,
+                title,
+                project_id,
+                workspace_id,
+            } => {
                 let Some(pool) = self.pool.clone() else {
                     return Ok(CoreResponse::Error {
                         code: "missing_pool".to_string(),
                         message: "Core client missing database pool".to_string(),
                     });
                 };
-                let store = crate::session::SessionStore::new(pool);
+                let context = match self
+                    .resolve_request_context(
+                        &directory,
+                        project_id.as_deref(),
+                        workspace_id.as_deref(),
+                    )
+                    .await
+                {
+                    Ok(context) => context,
+                    Err(error) => {
+                        return Ok(CoreResponse::Error {
+                            code: "project_context_required".to_string(),
+                            message: error.to_string(),
+                        });
+                    }
+                };
+                let store = crate::session::SessionStore::new(pool.clone());
                 match store
-                    .create(crate::session::CreateSession {
-                        project_id: directory.clone(),
-                        directory,
-                        title,
-                        parent_id: None,
-                        workspace_id: None,
-                        agent: None,
-                        model: None,
-                        tags: None,
-                        provider_connection_id: None,
-                        provider_connection_revision: None,
-                        model_catalog_revision: None,
-                        selected_model_id: None,
-                    })
+                    .create_with_binding(
+                        crate::session::CreateSession {
+                            project_id: context.project_id.as_str().to_string(),
+                            directory,
+                            title,
+                            parent_id: None,
+                            workspace_id: Some(context.workspace_id.as_str().to_string()),
+                            agent: None,
+                            model: None,
+                            tags: None,
+                            provider_connection_id: None,
+                            provider_connection_revision: None,
+                            model_catalog_revision: None,
+                            selected_model_id: None,
+                        },
+                        &context.project_id,
+                        &context.workspace_id,
+                        "daemon_session_create",
+                    )
                     .await
                 {
                     Ok(session) => Ok(CoreResponse::Session {
-                        session: crate::protocol_conversions::session_to_dto(session),
+                        session: Self::session_dto(session, Some(&context)),
                     }),
                     Err(e) => Ok(CoreResponse::Error {
                         code: "session_create_failed".to_string(),
@@ -1151,33 +1333,34 @@ impl CoreDaemon {
                 let store = crate::session::SessionStore::new(pool);
                 match store.get(&session_id).await {
                     Ok(Some(session)) => {
-                        // Resolve or register a workspace for this session's
-                        // directory. Falls back to a session-unbound error
-                        // when the directory is no longer a canonicalizable
-                        // workspace (which the client can repair with an
-                        // explicit WorkspaceRegister request).
-                        match self
-                            .workspace_for_session_directory(&session_id, &session.directory)
+                        let context = match self
+                            .resolve_session_context(&session_id, &session.directory)
                             .await
                         {
-                            Ok(workspace) => {
-                                self.bind_runtime(
-                                    &session_id,
-                                    workspace,
-                                    session.project_id.clone(),
-                                    PathBuf::from(&session.directory),
-                                );
+                            Ok(context) => {
+                                if let Some(workspace) =
+                                    self.workspaces.resolve(&context.workspace_id).await
+                                {
+                                    self.bind_runtime(
+                                        &session_id,
+                                        workspace,
+                                        context.project_id.as_str().to_string(),
+                                        context.workspace_root.clone(),
+                                    );
+                                }
+                                Some(context)
                             }
                             Err(e) => {
                                 tracing::warn!(
                                     session_id = %session_id,
                                     error = %e,
-                                    "session loaded but workspace could not be resolved; turn submission will be rejected until rebound",
+                                    "session loaded without executable canonical context",
                                 );
+                                None
                             }
-                        }
+                        };
                         Ok(CoreResponse::Session {
-                            session: crate::protocol_conversions::session_to_dto(session),
+                            session: Self::session_dto(session, context.as_ref()),
                         })
                     }
                     Ok(None) => Ok(CoreResponse::Error {
@@ -1201,15 +1384,49 @@ impl CoreDaemon {
                         message: "Core client missing database pool".to_string(),
                     });
                 };
+                let project_id = match self.resolve_session_list_project(&project_id).await {
+                    Ok(project_id) => project_id,
+                    Err(error) => {
+                        return Ok(CoreResponse::Error {
+                            code: "project_context_required".to_string(),
+                            message: error.to_string(),
+                        });
+                    }
+                };
+                let catalog = codegg_core::project_catalog::ProjectCatalog::new(pool.clone());
+                match catalog.get_project(&project_id).await {
+                    Ok(project)
+                        if project.lifecycle
+                            == codegg_core::project_storage::ProjectLifecycle::Active => {}
+                    Ok(_) => {
+                        return Ok(CoreResponse::Error {
+                            code: "project_context_archived".to_string(),
+                            message: "project is archived".to_string(),
+                        });
+                    }
+                    Err(_) => {
+                        return Ok(CoreResponse::Error {
+                            code: "project_context_not_found".to_string(),
+                            message: "project was not found".to_string(),
+                        });
+                    }
+                }
                 let store = crate::session::SessionStore::new(pool);
                 let sessions = if show_archived {
-                    store.list_all(&project_id, None).await
+                    store
+                        .list_by_canonical_project(project_id.as_str(), None)
+                        .await
                 } else {
-                    store.list(&project_id, limit).await
+                    store
+                        .list_by_canonical_project(project_id.as_str(), Some(limit))
+                        .await
                 };
                 match sessions {
                     Ok(sessions) => Ok(CoreResponse::SessionList {
-                        sessions: crate::protocol_conversions::sessions_to_dtos(sessions),
+                        sessions: sessions
+                            .into_iter()
+                            .map(|session| Self::session_dto(session, None))
+                            .collect(),
                     }),
                     Err(e) => Ok(CoreResponse::Error {
                         code: "session_list_failed".to_string(),
@@ -1224,9 +1441,54 @@ impl CoreDaemon {
                         message: "Core client missing database pool".to_string(),
                     });
                 };
-                let store = crate::session::SessionStore::new(pool);
+                let store = crate::session::SessionStore::new(pool.clone());
+                let parent = match store.get(&session_id).await {
+                    Ok(Some(parent)) => parent,
+                    Ok(None) => {
+                        return Ok(CoreResponse::Error {
+                            code: "session_not_found".to_string(),
+                            message: "session not found".to_string(),
+                        });
+                    }
+                    Err(error) => {
+                        return Ok(CoreResponse::Error {
+                            code: "session_fork_failed".to_string(),
+                            message: error.to_string(),
+                        });
+                    }
+                };
+                let context = match self
+                    .resolve_session_context(&session_id, &parent.directory)
+                    .await
+                {
+                    Ok(context) => context,
+                    Err(error) => {
+                        return Ok(CoreResponse::Error {
+                            code: "project_context_required".to_string(),
+                            message: error.to_string(),
+                        });
+                    }
+                };
                 match store.fork(&session_id).await {
-                    Ok(_) => Ok(CoreResponse::Ack),
+                    Ok(child) => {
+                        let storage = codegg_core::project_storage::ProjectStorage::new(pool);
+                        if let Err(error) = storage
+                            .bind_session(
+                                &child.id,
+                                &context.project_id,
+                                &context.workspace_id,
+                                "daemon_session_fork",
+                            )
+                            .await
+                        {
+                            let _ = store.delete(&child.id).await;
+                            return Ok(CoreResponse::Error {
+                                code: "session_binding_failed".to_string(),
+                                message: error.to_string(),
+                            });
+                        }
+                        Ok(CoreResponse::Ack)
+                    }
                     Err(e) => Ok(CoreResponse::Error {
                         code: "session_fork_failed".to_string(),
                         message: e.to_string(),
@@ -1402,9 +1664,33 @@ impl CoreDaemon {
                     });
                 };
                 let store = crate::session::SessionStore::new(pool);
-                match store.import_session(data, None).await {
+                let directory = data
+                    .get("session")
+                    .and_then(|session| session.get("directory"))
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                let context = match self.resolve_request_context(&directory, None, None).await {
+                    Ok(context) => context,
+                    Err(error) => {
+                        return Ok(CoreResponse::Error {
+                            code: "project_context_required".to_string(),
+                            message: error.to_string(),
+                        });
+                    }
+                };
+                match store
+                    .import_session_with_binding(
+                        data,
+                        None,
+                        &context.project_id,
+                        &context.workspace_id,
+                        "daemon_session_import",
+                    )
+                    .await
+                {
                     Ok(session) => Ok(CoreResponse::Session {
-                        session: crate::protocol_conversions::session_to_dto(session),
+                        session: Self::session_dto(session, Some(&context)),
                     }),
                     Err(e) => Ok(CoreResponse::Error {
                         code: "session_import_failed".to_string(),
@@ -1416,6 +1702,7 @@ impl CoreDaemon {
                 template,
                 project_id,
                 directory,
+                workspace_id,
             } => {
                 let Some(pool) = self.pool.clone() else {
                     return Ok(CoreResponse::Error {
@@ -1423,17 +1710,48 @@ impl CoreDaemon {
                         message: "Core client missing database pool".to_string(),
                     });
                 };
-                let store = crate::session::SessionStore::new(pool);
-                match store
-                    .create_from_template(
-                        &crate::protocol_conversions::dto_to_session_template(template),
-                        &project_id,
+                let context = match self
+                    .resolve_request_context(
                         &directory,
+                        project_id.as_deref(),
+                        workspace_id.as_deref(),
+                    )
+                    .await
+                {
+                    Ok(context) => context,
+                    Err(error) => {
+                        return Ok(CoreResponse::Error {
+                            code: "project_context_required".to_string(),
+                            message: error.to_string(),
+                        });
+                    }
+                };
+                let store = crate::session::SessionStore::new(pool.clone());
+                let template = crate::protocol_conversions::dto_to_session_template(template);
+                match store
+                    .create_with_binding(
+                        crate::session::CreateSession {
+                            project_id: context.project_id.as_str().to_string(),
+                            directory,
+                            title: Some(template.name),
+                            parent_id: None,
+                            workspace_id: Some(context.workspace_id.as_str().to_string()),
+                            agent: template.agent,
+                            model: template.model,
+                            tags: template.tags,
+                            provider_connection_id: None,
+                            provider_connection_revision: None,
+                            model_catalog_revision: None,
+                            selected_model_id: None,
+                        },
+                        &context.project_id,
+                        &context.workspace_id,
+                        "daemon_template_create",
                     )
                     .await
                 {
                     Ok(session) => Ok(CoreResponse::Session {
-                        session: crate::protocol_conversions::session_to_dto(session),
+                        session: Self::session_dto(session, Some(&context)),
                     }),
                     Err(e) => Ok(CoreResponse::Error {
                         code: "session_create_from_template_failed".to_string(),
@@ -3050,6 +3368,16 @@ impl CoreDaemon {
                             session_id: sid.clone(),
                             project_id: runtime.project_id.clone(),
                             workspace_id: Some(runtime.workspace_id.as_str().to_string()),
+                            binding: Some(crate::protocol::dto::SessionBindingDto {
+                                project_id: runtime.project_id.clone(),
+                                workspace_id: runtime.workspace_id.as_str().to_string(),
+                                repository_id: None,
+                                binding_state: Some("resolved".to_string()),
+                                binding_revision: None,
+                                compatibility_directory: Some(
+                                    runtime.directory.to_string_lossy().into_owned(),
+                                ),
+                            }),
                             directory: runtime.directory.to_string_lossy().into_owned(),
                             status,
                             selected_model: model,
@@ -3497,6 +3825,33 @@ mod tests {
         CoreDaemon::new(Some(pool), None, None, None)
     }
 
+    async fn seed_test_context(daemon: &CoreDaemon, root: &std::path::Path) -> (String, String) {
+        let workspace = daemon
+            .workspaces
+            .get_or_register(root)
+            .await
+            .expect("test workspace registration");
+        let project = codegg_core::project_catalog::ProjectCatalog::new(
+            daemon.pool.clone().expect("test daemon pool"),
+        )
+        .register_local_project(
+            codegg_core::project_catalog::RegisterLocalProject {
+                display_name: "Daemon test project".to_string(),
+                description: None,
+                tags: Vec::new(),
+                primary_repository_id: None,
+            },
+            &workspace.id,
+            "daemon-test",
+        )
+        .await
+        .expect("test project registration");
+        (
+            project.project_id.as_str().to_string(),
+            workspace.id.as_str().to_string(),
+        )
+    }
+
     #[tokio::test]
     async fn daemon_has_unique_id() {
         let d1 = test_daemon().await;
@@ -3507,11 +3862,15 @@ mod tests {
     #[tokio::test]
     async fn session_create_through_daemon() {
         let daemon = test_daemon().await;
+        let (project_id, workspace_id) =
+            seed_test_context(&daemon, std::path::Path::new("/tmp")).await;
         let req = crate::core::new_request(
             "req-1".into(),
             CoreRequest::SessionCreate {
-                directory: "/tmp/test".into(),
+                directory: "/tmp".into(),
                 title: Some("Test".into()),
+                project_id: Some(project_id),
+                workspace_id: Some(workspace_id),
             },
         );
         let resp = daemon.handle_request(req).await.unwrap();
@@ -3539,11 +3898,15 @@ mod tests {
     #[tokio::test]
     async fn turn_submit_rejects_when_active() {
         let daemon = test_daemon().await;
+        let (project_id, workspace_id) =
+            seed_test_context(&daemon, std::path::Path::new("/tmp")).await;
         let req = crate::core::new_request(
             "req-1".into(),
             CoreRequest::SessionCreate {
                 directory: "/tmp".into(),
                 title: None,
+                project_id: Some(project_id),
+                workspace_id: Some(workspace_id),
             },
         );
         let session_id = match daemon.handle_request(req).await.unwrap() {
@@ -4124,11 +4487,14 @@ mod tests {
 
         // Pre-create a session so TurnSubmit can resolve its workspace.
         let workspace_dir = tempfile::tempdir().unwrap();
+        let (project_id, workspace_id) = seed_test_context(&daemon, workspace_dir.path()).await;
         let create_req = crate::core::new_request(
             "req-create".into(),
             CoreRequest::SessionCreate {
                 directory: workspace_dir.path().to_string_lossy().into_owned(),
                 title: None,
+                project_id: Some(project_id),
+                workspace_id: Some(workspace_id),
             },
         );
         let session_id = match daemon.handle_request(create_req).await.unwrap() {
@@ -4402,11 +4768,14 @@ mod tests {
 
         // Pre-create a session so TurnSubmit can resolve its workspace.
         let workspace_dir = tempfile::tempdir().unwrap();
+        let (project_id, workspace_id) = seed_test_context(&daemon, workspace_dir.path()).await;
         let create_req = crate::core::new_request(
             "req-inject-create".into(),
             CoreRequest::SessionCreate {
                 directory: workspace_dir.path().to_string_lossy().into_owned(),
                 title: None,
+                project_id: Some(project_id),
+                workspace_id: Some(workspace_id),
             },
         );
         let session_id = match daemon.handle_request(create_req).await.unwrap() {

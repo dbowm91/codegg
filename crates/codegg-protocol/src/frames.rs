@@ -98,6 +98,48 @@ pub struct ServerCapabilities {
     /// Phase 4: daemon supports durable schedules.
     #[serde(default)]
     pub durable_schedules: bool,
+    /// Daemon and client understand canonical project/workspace context and
+    /// session bindings in addition to legacy string projections.
+    #[serde(default)]
+    pub identity_aware_context: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_server_capabilities_fixture_defaults_identity_awareness() {
+        let capabilities: ServerCapabilities = serde_json::from_str(
+            r#"{
+                "event_replay":true,
+                "session_management":true,
+                "permission_routing":false
+            }"#,
+        )
+        .unwrap();
+
+        assert!(!capabilities.identity_aware_context);
+    }
+
+    #[test]
+    fn identity_aware_server_capability_round_trips() {
+        let capabilities = ServerCapabilities {
+            event_replay: true,
+            session_management: true,
+            permission_routing: true,
+            workspace_registration: true,
+            workspace_snapshots: true,
+            durable_jobs: false,
+            durable_schedules: false,
+            identity_aware_context: true,
+        };
+
+        let json = serde_json::to_string(&capabilities).unwrap();
+        assert!(json.contains("identity_aware_context"));
+        let decoded: ServerCapabilities = serde_json::from_str(&json).unwrap();
+        assert!(decoded.identity_aware_context);
+    }
 }
 
 #[allow(clippy::large_enum_variant)]

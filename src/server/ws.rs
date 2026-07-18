@@ -209,6 +209,8 @@ async fn handle_rpc_request(
                 CoreRequest::SessionCreate {
                     directory: dir.to_string(),
                     title: None,
+                    project_id: None,
+                    workspace_id: None,
                 }
             }
             "providers.list" | "tools.list" => {
@@ -345,7 +347,24 @@ async fn handle_rpc_direct(
             let store = crate::session::SessionStore::new(state.pool.clone());
             match store.get(id).await {
                 Ok(Some(s)) => {
-                    if s.project_id != state.project_dir {
+                    let context = crate::server::routes::project::context_for_locator(
+                        &state.pool,
+                        std::path::Path::new(&state.project_dir),
+                    )
+                    .await;
+                    let binding = crate::project_storage::ProjectStorage::new(state.pool.clone())
+                        .session_binding(&s.id)
+                        .await
+                        .ok()
+                        .flatten();
+                    let in_context = context.as_ref().is_ok_and(|context| {
+                        binding.as_ref().is_some_and(|binding| {
+                            binding.status == crate::project_storage::BindingStatus::Resolved
+                                && binding.project_id.as_ref() == Some(&context.project_id)
+                                && binding.workspace_id.as_ref() == Some(&context.workspace_id)
+                        })
+                    });
+                    if !in_context {
                         return RpcResponse {
                             jsonrpc: "2.0".to_string(),
                             id: req.id.clone(),
@@ -399,8 +418,27 @@ async fn handle_rpc_direct(
                 &state.project_dir
             };
             let store = crate::session::SessionStore::new(state.pool.clone());
+            let context = match crate::server::routes::project::context_for_locator(
+                &state.pool,
+                std::path::Path::new(dir),
+            )
+            .await
+            {
+                Ok(context) => context,
+                Err(error) => {
+                    return RpcResponse {
+                        jsonrpc: "2.0".to_string(),
+                        id: req.id.clone(),
+                        result: None,
+                        error: Some(RpcError {
+                            code: -32602,
+                            message: format!("{:?}", error.0),
+                        }),
+                    };
+                }
+            };
             let input = crate::session::CreateSession {
-                project_id: state.project_dir.clone(),
+                project_id: context.project_id.as_str().to_string(),
                 directory: dir.to_string(),
                 title: None,
                 parent_id: None,
@@ -413,7 +451,15 @@ async fn handle_rpc_direct(
                 model_catalog_revision: None,
                 selected_model_id: None,
             };
-            match store.create(input).await {
+            match store
+                .create_with_binding(
+                    input,
+                    &context.project_id,
+                    &context.workspace_id,
+                    "server_ws_session_create",
+                )
+                .await
+            {
                 Ok(s) => RpcResponse {
                     jsonrpc: "2.0".to_string(),
                     id: req.id.clone(),

@@ -74,3 +74,11 @@ schema, reconciliation, import, inspection, and operator workflow.
 The catalog service in `codegg_core::project_catalog` provides
 list/get/register/archive/restore operations on top of the identity
 storage layer.
+## Daemon context authority
+
+Domain Identity Milestone 003 makes `codegg_core::context::ProjectContextResolver`
+the shared authority for executable project/workspace/session context. It validates
+typed `ProjectId` and `WorkspaceId` against durable catalog and binding records,
+and rejects archived, mismatched, unresolved, or stale contexts. A directory is
+only a compatibility locator for a unique existing binding; it never creates an
+identity.

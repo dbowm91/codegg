@@ -1124,6 +1124,7 @@ mod async_cmd_tests {
             id: String::new(),
             project_id: String::new(),
             workspace_id: None,
+            binding: None,
             parent_id: None,
             slug: String::new(),
             directory: String::new(),

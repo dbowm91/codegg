@@ -164,3 +164,10 @@ or delete catalog authority. Scan generations are persisted in schema v29.
 - [`architecture/identity.md`](identity.md)
 - [`architecture/workspace.md`](workspace.md)
 - [`architecture/storage.md`](storage.md)
+## Protocol-facing identity boundary
+
+Catalog-backed routes return the durable logical `ProjectId` in `ProjectInfo.id`.
+The local path is a separately named compatibility locator. Catalog and session
+counts are read from canonical project/workspace/session bindings, and local
+registration first registers the workspace locator before delegating to
+`ProjectCatalog::register_local_project`.

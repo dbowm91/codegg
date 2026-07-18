@@ -16,13 +16,25 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 IDENTITY_MODULE = ROOT / "crates/codegg-core/src/identity.rs"
 SOURCE_ROOT = ROOT / "crates/codegg-core/src"
-AUTHORITATIVE_MODULES = {ROOT / "crates/codegg-core/src/project_storage.rs"}
+AUTHORITATIVE_MODULES = {
+    ROOT / "crates/codegg-core/src/project_storage.rs",
+    ROOT / "crates/codegg-core/src/context.rs",
+}
+DAEMON_PROTOCOL_SOURCES = {
+    ROOT / "src/core/daemon.rs",
+    ROOT / "src/server/routes/project.rs",
+    ROOT / "src/server/routes/session.rs",
+    ROOT / "src/server/ws.rs",
+}
 MARKER = "identity-path-guard: project IDs must not be derived from paths"
 FORBIDDEN_PATTERNS = (
     re.compile(r"ProjectId::new_unchecked\b"),
     re.compile(r"ProjectId::from_path\b"),
     re.compile(r"ProjectId::parse\(\s*&?(?:path|directory|canonical_root)\b"),
     re.compile(r"ProjectId::parse\(\s*&?\w+\.(?:to_string_lossy|display)\b"),
+    re.compile(r"project_id\s*:\s*(?:directory|project_dir)\b"),
+    re.compile(r"id\s*:\s*state\.project_dir\b"),
+    re.compile(r"\b\w+\.project_id\s*(?:!=|==)\s*state\.project_dir\b"),
 )
 
 
@@ -57,6 +69,13 @@ def main() -> int:
             continue
         text = source.read_text(encoding="utf-8")
         for pattern in find_violations(text):
+            violations.append(f"{source.relative_to(ROOT)}: {pattern}")
+
+    for source in DAEMON_PROTOCOL_SOURCES:
+        if not source.exists():
+            violations.append(f"missing daemon/protocol source: {source.relative_to(ROOT)}")
+            continue
+        for pattern in find_violations(source.read_text(encoding="utf-8")):
             violations.append(f"{source.relative_to(ROOT)}: {pattern}")
 
     for source in AUTHORITATIVE_MODULES:

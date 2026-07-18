@@ -1,6 +1,41 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+/// Canonical project/workspace context used by identity-aware protocol
+/// requests and responses.
+///
+/// Legacy session identity and locator fields remain alongside this DTO for
+/// wire compatibility. `locator_summary` is display-safe compatibility data,
+/// not an identity authority.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectContextDto {
+    pub project_id: String,
+    pub workspace_id: String,
+    #[serde(default)]
+    pub repository_id: Option<String>,
+    #[serde(default)]
+    pub binding_state: Option<String>,
+    #[serde(default)]
+    pub binding_revision: Option<u64>,
+    #[serde(default)]
+    pub locator_summary: Option<String>,
+}
+
+/// Canonical session binding with explicitly named legacy locator data.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionBindingDto {
+    pub project_id: String,
+    pub workspace_id: String,
+    #[serde(default)]
+    pub repository_id: Option<String>,
+    #[serde(default)]
+    pub binding_state: Option<String>,
+    #[serde(default)]
+    pub binding_revision: Option<u64>,
+    #[serde(default)]
+    pub compatibility_directory: Option<String>,
+}
+
 /// Simplified session DTO for protocol messages.
 /// Matches the wire format of `session::models::Session`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -11,6 +46,9 @@ pub struct Session {
     #[serde(default)]
     /// Legacy string projection of the internal `WorkspaceId` relation.
     pub workspace_id: Option<String>,
+    /// Canonical project/workspace binding. Absent on legacy sessions.
+    #[serde(default)]
+    pub binding: Option<SessionBindingDto>,
     #[serde(default)]
     pub parent_id: Option<String>,
     #[serde(default)]
@@ -66,6 +104,61 @@ pub struct Session {
     pub time_archived: Option<i64>,
     #[serde(default)]
     pub time_deleted: Option<i64>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn project_context_round_trips_all_identity_fields() {
+        let context = ProjectContextDto {
+            project_id: "project-1".into(),
+            workspace_id: "workspace-1".into(),
+            repository_id: Some("repository-1".into()),
+            binding_state: Some("bound".into()),
+            binding_revision: Some(7),
+            locator_summary: Some("project workspace".into()),
+        };
+
+        let json = serde_json::to_string(&context).unwrap();
+        let decoded: ProjectContextDto = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded, context);
+    }
+
+    #[test]
+    fn legacy_session_fixture_defaults_canonical_binding() {
+        let session: Session = serde_json::from_str(
+            r#"{
+                "id":"session-1",
+                "project_id":"legacy-project",
+                "directory":"/tmp/legacy",
+                "title":"Legacy",
+                "time_created":1,
+                "time_updated":2
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(session.binding, None);
+        assert_eq!(session.workspace_id, None);
+    }
+
+    #[test]
+    fn session_binding_round_trips_canonical_ids_and_compatibility_locator() {
+        let binding = SessionBindingDto {
+            project_id: "project-1".into(),
+            workspace_id: "workspace-1".into(),
+            repository_id: None,
+            binding_state: Some("bound".into()),
+            binding_revision: Some(3),
+            compatibility_directory: Some("/tmp/legacy".into()),
+        };
+
+        let json = serde_json::to_string(&binding).unwrap();
+        let decoded: SessionBindingDto = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded, binding);
+    }
 }
 
 /// Simplified message DTO for protocol messages.

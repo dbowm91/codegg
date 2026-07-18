@@ -483,3 +483,11 @@ These timeouts are configured client-side.
 - [protocol.md](protocol.md) - CoreRequest/CoreResponse and TuiMessage protocol envelopes
 - [bus.md](bus.md) - GlobalEventBus, PermissionRegistry, QuestionRegistry
 - `architecture/server.md` - Implementation guide
+## Transitional project routes
+
+Project routes now source IDs and session counts from `ProjectCatalog` and
+canonical binding tables. `ProjectInfo.id` is never populated from
+`ServerState.project_dir`; `path` is a compatibility locator for the current
+single-workspace surface. When the configured locator has no unique canonical
+binding, routes return an actionable context-required diagnostic. Full
+multi-project catalog protocol remains Project Catalog Milestone 004 scope.

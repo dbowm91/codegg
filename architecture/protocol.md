@@ -647,3 +647,11 @@ When multiple frontends are connected:
 5. Delegates to `App::apply_plugin_ui_effect(effect, plugin_id_opt)`.
 
 `App::validate_plugin_ui_effects(effects)` is the batch validator used by lifecycle hooks and the event bridge.
+## Identity-aware additive protocol
+
+Protocol version 2 remains wire-compatible. `ProjectContextDto` and
+`SessionBindingDto` expose stable project/workspace identities while legacy
+directory fields remain explicitly compatibility data. `SessionCreate` and
+`SessionCreateFromTemplate` accept optional canonical IDs; omitted IDs are
+accepted only through deterministic lookup of an existing unique locator.
+`ServerCapabilities.identity_aware_context` advertises support.

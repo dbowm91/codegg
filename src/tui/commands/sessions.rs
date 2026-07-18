@@ -1666,8 +1666,9 @@ pub(crate) fn start_create_from_template(
                 format!("session-create-template-{}", uuid::Uuid::new_v4()),
                 CoreRequest::SessionCreateFromTemplate {
                     template: crate::protocol_conversions::session_template_to_dto(template),
-                    project_id: project_dir.clone(),
+                    project_id: Some(project_dir.clone()),
                     directory: project_dir,
+                    workspace_id: None,
                 },
             );
             match core_client.request(request).await {
@@ -1785,8 +1786,9 @@ pub(crate) async fn handle_create_from_template(
             format!("session-create-template-{}", uuid::Uuid::new_v4()),
             CoreRequest::SessionCreateFromTemplate {
                 template: crate::protocol_conversions::session_template_to_dto(template.clone()),
-                project_id: project_dir.clone(),
+                project_id: Some(project_dir.clone()),
                 directory: project_dir.clone(),
+                workspace_id: None,
             },
         );
         match core_client.request(request).await {
