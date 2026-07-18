@@ -174,6 +174,8 @@ Deferred work: role-based access enforcement.
 
 ### Milestone 4 — Rotation, health, deletion, and closure
 
+Status: corrective pass required; see `plans/closure/provider-connections/004-status.md`.
+
 Class: capability
 
 Objective: complete connection lifecycle correctness and closure evidence.
@@ -189,6 +191,36 @@ Exit conditions:
 - deletion/disable is explicit and recoverable where policy allows;
 - health probes are bounded and do not overload Eggpool;
 - all Phase 2 exit criteria are evidenced.
+
+Disposition: the original implementation plan was authored and registered as `ready for handoff` but no production work landed. The closure record at `plans/closure/provider-connections/004-status.md` is **corrective pass required** with zero fully-passing, four partial, and seven failing criteria against the plan §13 acceptance set. A corrective implementation plan is filed at `plans/implementation/provider-connections/005-corrective-lifecycle-rotation.md` and inherits the original scope verbatim while adding the implementation seams, static guards, and reference/tombstone/audit schema that the original plan left to the implementer.
+
+Deferred work: role-based access enforcement.
+
+### Milestone 5 — Corrective lifecycle, rotation, health, and closure
+
+Class: capability
+
+Objective: implement the Milestone 4 deliverable surface in one corrective pass and close the Provider Connections and Eggpool roadmap.
+
+Dependencies: hard on Milestones 1–3; interface on the new static guards `scripts/check_provider_connections_m4_coverage.sh` and `scripts/check_provider_connections_tombstone_compat.sh`; precondition on extending `src/server/ws.rs:930-941` to cover `ConnectionRotateBegin` before introducing the request variant.
+
+Deliverable boundary: staged credential/endpoint rotation with atomic revision commit; bounded coalesced refresh coordinator with backoff/jitter and last-good preservation; seven-state lifecycle machine including `Tombstoned`/`Error`/`Stale` with reference-counted purge eligibility and restore; selected-session lifecycle projection and turn-submit typed connection-state failures; TUI lifecycle controls on `/connections` with secret-free local input; deterministic fake-daemon/CoreClient lifecycle harness; stabilization of the originally flaky provisioning test; architecture documentation and Phase 2 closure matrix.
+
+Exit conditions:
+
+- rotation takes effect for new requests without exposing secrets, with atomic commit and rollback-safe failure;
+- in-flight requests keep their captured revision; new requests use the new committed revision;
+- refresh is bounded, coalesced, cancellable, and startup-independent, with last-good preservation;
+- disable/tombstone/restore/purge are explicit and recoverable where policy allows, with typed blockers and restart-safe state;
+- selected sessions expose actionable lifecycle/model state;
+- `/connections` supports lifecycle actions without exposing secrets;
+- end-to-end fake-daemon/TUI lifecycle coverage exists;
+- the provisioning timing test is deterministically stabilized;
+- all Phase 2 exit criteria are evidenced.
+
+Implementation plan: `plans/implementation/provider-connections/005-corrective-lifecycle-rotation.md`.
+
+Deferred work: role-based access enforcement; cross-node secret distribution.
 
 ## 8. Cross-cutting requirements
 
@@ -242,4 +274,5 @@ This roadmap closes when Eggpool and other endpoints can be represented as reusa
 | 1 | closed | `plans/implementation/provider-connections/001-connection-foundation.md` | `plans/closure/provider-connections/001-status.md` | — |
 | 2 | closed | `plans/implementation/provider-connections/002-eggpool-connect-workflow.md` | `plans/closure/provider-connections/002-status.md` | — |
 | 3 | closed | `plans/implementation/provider-connections/003-session-and-model-selection-by-connection.md` | `plans/closure/provider-connections/003-status.md` | — |
-| 4 | ready | `plans/implementation/provider-connections/004-lifecycle-rotation-health-closure.md` | — | Milestones 2–3 closure satisfied |
+| 4 | corrective pass required | `plans/implementation/provider-connections/004-lifecycle-rotation-health-closure.md` | `plans/closure/provider-connections/004-status.md` | Original plan never executed against a baseline; corrective plan filed at Milestone 5 |
+| 5 | ready | `plans/implementation/provider-connections/005-corrective-lifecycle-rotation.md` | — | Milestones 1–3 closure satisfied; static guards and WS guard extension are preconditions |
