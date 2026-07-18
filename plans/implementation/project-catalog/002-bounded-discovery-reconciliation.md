@@ -1,10 +1,12 @@
 # Project Catalog Milestone 002 — Bounded Discovery and Reconciliation
 
-Status: ready for handoff
+Status: closed — see `plans/closure/project-catalog/002-status.md`
 
 Repository baseline: `3ce0a7ea7c1a8baa41a2618eb293291435e9f9f0` (`main`; planning-only commits after this baseline do not alter production behavior)
 
 Production implementation baseline:
+
+- `5974976` — bounded discovery configuration, scanner, reconciliation coordinator, schema v29 persistence, guards, tests, and architecture documentation.
 
 - `84d92f0` — canonical project/repository/workspace/session storage and lineage reconciliation.
 - `a2db5e4` — durable project catalog foundation, inert locators, archive/restore, health placeholders, and probe-free restart hydration.

@@ -225,6 +225,6 @@ This roadmap closes when the daemon maintains a durable, bounded, path-independe
 | Milestone | Status | Implementation plan | Closure record | Blockers |
 |---|---|---|---|---|
 | 1 | closed | `plans/implementation/project-catalog/001-durable-catalog-foundation.md` | `plans/closure/project-catalog/001-status.md` | — |
-| 2 | corrective pass required | `plans/implementation/project-catalog/002-bounded-discovery-reconciliation.md` | `plans/closure/project-catalog/002-status.md` | Discovery config, scanner, reconciliation engine, scan-state store, coordinator, M2 static guard, and M2 architecture updates unimplemented; the plan must be re-handed against the closure record |
-| 3 | not started | — | — | Milestone 2 closure and runtime asset refresh interface |
+| 2 | closed | `plans/implementation/project-catalog/002-bounded-discovery-reconciliation.md` | `plans/closure/project-catalog/002-status.md` | — |
+| 3 | not started | — | — | Runtime Assets Milestone 3 refresh/activation interface |
 | 4 | not started | — | — | Milestones 1–3 closure |

@@ -25,9 +25,9 @@ Canonical direction remains in:
 | Subsystem | Status | Roadmap | Current milestone | Dependencies or blockers |
 |---|---|---|---|---|
 | Domain identity and compatibility | active | `plans/subsystems/domain-identity-roadmap.md` | Milestone 3 — daemon and protocol adoption | Corrective pass required; no production implementation has landed against the plan |
-| Runtime assets and harness interoperability | active | `plans/subsystems/runtime-assets-roadmap.md` | Milestone 2 — explicit-context agent and instruction resolution | Plan registered; ready for handoff |
+| Runtime assets and harness interoperability | active | `plans/subsystems/runtime-assets-roadmap.md` | Milestone 3 — refresh lifecycle and operator surface | Milestone 2 closed; Milestone 3 handoff plan is dependency-ready |
 | Provider connections and Eggpool | active | `plans/subsystems/provider-connections-roadmap.md` | Milestone 5 — corrective lifecycle, rotation, health, and closure | Milestone 4 corrective pass required; Milestone 5 registered as the corrective implementation plan |
-| Project catalog and lazy discovery | active | `plans/subsystems/project-catalog-roadmap.md` | Milestone 2 — bounded discovery and reconciliation | Corrective pass required; no production implementation has landed against the plan |
+| Project catalog and lazy discovery | active | `plans/subsystems/project-catalog-roadmap.md` | Milestone 3 — lazy activation and health | Milestone 2 closed; blocked on the Runtime Assets Milestone 3 refresh/activation interface |
 | Multi-project TUI and sessions | active | `plans/subsystems/tui-project-sessions-roadmap.md` | Milestone 1 — project-aware state and catalog client | Project Catalog 4 protocol/server migration and Runtime Assets refresh/activation interfaces |
 | Frontend-neutral session projections | active | `plans/subsystems/session-projections-roadmap.md` | Milestone 1 — projection contracts and canonical reducer | Domain Identity 3, Project Catalog 4, and Multi-Project TUI 1 |
 
@@ -38,13 +38,13 @@ Canonical direction remains in:
 | Domain identity and compatibility | 003 — daemon and protocol adoption | infrastructure | `plans/implementation/domain-identity/003-daemon-protocol-adoption.md` | `3ce0a7e` | corrective pass required (see active closure work) |
 | Provider connections and Eggpool | 004 — lifecycle, rotation, health, and closure | capability | `plans/implementation/provider-connections/004-lifecycle-rotation-health-closure.md` | `3ce0a7e` | corrective pass required (see active closure work) |
 | Provider connections and Eggpool | 005 — corrective lifecycle, rotation, health, and closure | capability | `plans/implementation/provider-connections/005-corrective-lifecycle-rotation.md` | `213272c` | ready |
+| Runtime assets and harness interoperability | 003 — refresh lifecycle and operator surface | capability | `plans/implementation/runtime-assets/003-refresh-lifecycle-operator-surface.md` | `5974976` | ready |
 
 ## Active closure work
 
 | Subsystem | Milestone | Closure record | Status | Open findings |
 |---|---|---|---|---|
 | Domain identity and compatibility | 003 — daemon and protocol adoption | `plans/closure/domain-identity/003-status.md` | corrective pass required | Resolver, additive protocol DTOs, daemon handler migration, server route cleanup, and expanded static guard are not implemented; the plan must be re-handed. |
-| Project catalog and lazy discovery | 002 — bounded discovery and reconciliation | `plans/closure/project-catalog/002-status.md` | corrective pass required | Discovery config schema, bounded scanner, reconciliation engine, scan-state store, coordinator service, M2 static guard, and M2 architecture updates are unfulfilled; the plan was never implemented and must be re-handed. |
 | Provider connections and Eggpool | 004 — lifecycle, rotation, health, and closure | `plans/closure/provider-connections/004-status.md` | corrective pass required | Rotation, refresh coordinator, lifecycle states, session/protocol reconciliation, TUI lifecycle controls, fake-daemon harness, and the flaky provisioning test are unfulfilled; corrective plan filed as Milestone 5. |
 
 ## Blocked work
@@ -58,8 +58,9 @@ Canonical direction remains in:
 
 | Subsystem | Milestone | Closure record | Closed at commit | Follow-up |
 |---|---|---|---|---|
-| Runtime assets and harness interoperability | 002 — explicit-context agent and instruction resolution | `plans/closure/runtime-assets/002-status.md` | `155f7f3` (Milestone 2) | Milestone 3 — refresh lifecycle and operator surface |
+| Runtime assets and harness interoperability | 002 — explicit-context agent and instruction resolution | `plans/closure/runtime-assets/002-status.md` | `155f7f3` (Milestone 2) | `plans/implementation/runtime-assets/003-refresh-lifecycle-operator-surface.md` |
 | Runtime assets and harness interoperability | 001 — project asset registry | `plans/closure/runtime-assets/001-status.md` | `f9db5c3` | Milestone 2 — explicit-context agent and instruction resolution |
+| Project catalog and lazy discovery | 002 — bounded discovery and reconciliation | `plans/closure/project-catalog/002-status.md` | `5974976` (implementation) | Milestone 3 — lazy activation and health; blocked on Runtime Assets Milestone 3 |
 | Project catalog and lazy discovery | 001 — durable catalog foundation | `plans/closure/project-catalog/001-status.md` | `a2db5e4` | Milestone 2 — bounded discovery and reconciliation |
 | Provider connections and Eggpool | 003 — session/model selection by connection | `plans/closure/provider-connections/003-status.md` | `efe1995` | Milestone 5 — corrective lifecycle, rotation, health, and closure (Milestone 4 is corrective-pass-required) |
 | Domain identity and compatibility | 002 — project/repository storage migration | `plans/closure/domain-identity/002-status.md` | `84d92f0` | Runtime Assets 001 and Project Catalog 001 are ready |
