@@ -281,7 +281,6 @@ async fn config_reload_bumps_revision_and_keeps_leases() {
 
     let lease = services.acquire(&rec.id).await.unwrap();
     let initial_revision = lease.config_snapshot().revision;
-    drop(lease);
 
     // Reload the configuration — the registry bumps the revision and
     // emits any diagnostics the bundle carries.
@@ -291,6 +290,12 @@ async fn config_reload_bumps_revision_and_keeps_leases() {
     assert_eq!(reload.new_revision, initial_revision + 1);
     // No diagnostics were configured in the initial bundle.
     assert_eq!(reload.diagnostics.len(), 0);
+    assert_eq!(
+        services.peek(&rec.id).unwrap().active_leases,
+        0,
+        "reloading must not copy old leases into the replacement bundle"
+    );
+    drop(lease);
 
     // Re-acquire and confirm revision is preserved.
     let lease2 = services.acquire(&rec.id).await.unwrap();

@@ -140,6 +140,8 @@ Deferred work: remote scanning.
 
 ### Milestone 3 — Lazy activation and health
 
+Status: closed; see `plans/closure/project-catalog/003-status.md`.
+
 Class: infrastructure
 
 Objective: activate workspace service bundles only for selected projects/workspaces and expose bounded health.
@@ -160,11 +162,14 @@ Deferred work: TUI tab lifetime rules.
 
 ### Milestone 4 — Protocol, server migration, and closure
 
+Status: ready for handoff; implementation plan not yet registered.
+
 Class: capability
 
 Objective: expose complete catalog operations through the native protocol and remove single-project assumptions from network server state.
 
-Dependencies: hard on Milestones 1–3.
+Dependencies: hard on Milestones 1–3. Milestones 1–3 are closed; the M004
+implementation handoff is ready to be authored and registered.
 
 Deliverable boundary: project DTOs/requests/responses/events, capability flags, REST/WS adapter changes, removal of authoritative `ServerState.project_dir`, compatibility behavior, restart and scale tests, and architecture docs.
 

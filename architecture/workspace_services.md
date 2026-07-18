@@ -134,6 +134,29 @@ and as the source for the migration tooling.
 - `ReloadResult { workspace_id, previous_revision, new_revision, diagnostics }`
   — returned by `reload_config`.
 
+### Project activation ownership
+
+Project Catalog Milestone 3 wraps the workspace lease in the root crate's
+`ProjectActivationLease`. This keeps project/workspace selection and owner
+identity above the core workspace bundle while preserving one activation
+authority:
+
+- `ProjectActivationRegistry` validates bounded owner and identity fields,
+  coalesces repeated acquisition by the same owner, and caps active project
+  lease records.
+- `ProjectActivationLease` has a finite expiry and releases its underlying
+  `WorkspaceServicesLease` on explicit release, drop, or expiry eviction.
+- `CoreDaemon::activate_project_workspace` resolves the canonical binding,
+  acquires the workspace bundle, and calls the existing daemon-owned runtime
+  asset refresh seam. It does not add a second asset coordinator or infer
+  identity from process cwd.
+- `CoreDaemon::project_health` reads catalog, workspace, asset, and service
+  state without activating a bundle. Its output is bounded and path-free.
+
+The project activation registry is not a protocol or TUI authority in
+Milestone 3. Project protocol/server migration and tab lifetime policy remain
+Project Catalog Milestone 4 and later work.
+
 ## Storage ownership (Phase 3)
 
 `crates/codegg-core/src/storage/mod.rs` splits the SQLite storage layer
@@ -277,6 +300,9 @@ introduce any UI-, server-, plugin-, or auth-crate dependencies. The
 - `crates/codegg-core/src/workspace_services.rs` inline tests — cover
   `acquire`, `activate` (existing + new bundle paths), `reload_config`,
   `shutdown_all` (with and without active leases).
+- `tests/project_activation.rs` — catalog-list probe-free behavior, owner
+  lease idempotency, runtime-asset refresh on activation, two-project
+  isolation, and restart hydration without eager reactivation.
 - `crates/codegg-core/src/migration.rs` inline tests — cover
   `source_missing_is_reported`, `invalid_schema_is_rejected`, and
   `idempotent_marker_is_recorded`.

@@ -1,6 +1,6 @@
 # Project Catalog Milestone 003 — Lazy Activation and Health
 
-Status: ready for handoff
+Status: closed; see `plans/closure/project-catalog/003-status.md`
 
 Repository baseline: `972c286` (Runtime Assets Milestone 003 closed; explicit
 activation refresh seam available)

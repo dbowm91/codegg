@@ -679,8 +679,16 @@ impl WorkspaceServiceRegistry {
             locks: services.locks.clone(),
             artifact_root: services.artifact_root.clone(),
             activated_at: services.activated_at,
-            last_used_at: AtomicI64::new(services.last_used_at.load(Ordering::Relaxed)),
-            active_leases: AtomicUsize::new(services.active_leases.load(Ordering::Relaxed)),
+            // Reload is an explicit use of the bundle. Mark the replacement
+            // recent so an immediate idle-eviction pass cannot discard the
+            // new configuration before a future lease observes it.
+            last_used_at: AtomicI64::new(Utc::now().timestamp()),
+            // Existing leases still point at `services` and continue to
+            // observe its old immutable configuration snapshot. They must
+            // not be copied into the replacement bundle: doing so leaves the
+            // replacement with phantom leases after the old handles drop and
+            // makes idle eviction permanently skip it.
+            active_leases: AtomicUsize::new(0),
             shutdown: services.shutdown.clone(),
         });
         self.active.insert(workspace_id.clone(), replacement);
@@ -822,6 +830,27 @@ mod tests {
         let result = registry.reload_config(&record.id).unwrap();
         assert_eq!(result.previous_revision, 0);
         assert_eq!(result.new_revision, 1);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn reload_refreshes_recency_before_idle_eviction() {
+        let (tmp, workspaces, registry) = fresh_registry().await;
+        let record = record_for_tmp(&tmp);
+        workspaces.upsert_test_record(record.clone()).await;
+        let lease = registry.acquire(&record.id).await.unwrap();
+        drop(lease);
+        registry
+            .active
+            .get(&record.id)
+            .unwrap()
+            .last_used_at
+            .store(Utc::now().timestamp() - 3_600, Ordering::Relaxed);
+
+        let result = registry.reload_config(&record.id).unwrap();
+        assert_eq!(result.new_revision, 1);
+        let report = registry.evict_idle(Utc::now());
+        assert!(report.evicted.is_empty());
+        assert_eq!(registry.peek(&record.id).unwrap().config_revision, 1);
     }
 
     #[tokio::test(flavor = "current_thread")]
