@@ -1,6 +1,6 @@
 # Runtime Assets and Harness Interoperability Roadmap
 
-Status: active
+Status: closed; see `plans/closure/runtime-assets/004-status.md`
 
 Long-term references:
 
@@ -236,4 +236,4 @@ This roadmap closes when project assets are explicit-context, interoperable, sou
 | 1 | closed | `plans/implementation/runtime-assets/001-project-asset-registry.md` | `plans/closure/runtime-assets/001-status.md` | — |
 | 2 | closed | `plans/implementation/runtime-assets/002-explicit-context-agent-instruction-resolution.md` | `plans/closure/runtime-assets/002-status.md` | — |
 | 3 | closed | `plans/implementation/runtime-assets/003-refresh-lifecycle-operator-surface.md` | `plans/closure/runtime-assets/003-status.md` | — |
-| 4 | ready | `plans/implementation/runtime-assets/004-immutable-runtime-pinning-and-closure.md` | — | Milestones 2–3 closed; handoff ready |
+| 4 | closed | `plans/implementation/runtime-assets/004-immutable-runtime-pinning-and-closure.md` | `plans/closure/runtime-assets/004-status.md` | — |

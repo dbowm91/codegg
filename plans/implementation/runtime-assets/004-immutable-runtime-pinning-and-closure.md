@@ -1,6 +1,6 @@
 # Runtime Assets Milestone 004 — Immutable Runtime Pinning and Closure
 
-Status: ready for handoff
+Status: closed; see `plans/closure/runtime-assets/004-status.md`
 
 Repository baseline: `972c286` (Runtime Assets Milestone 003 closed)
 
