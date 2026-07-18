@@ -7,6 +7,7 @@
 
 pub mod agent_loop_factory;
 pub mod asset_context;
+pub mod asset_refresh;
 pub mod asset_snapshot;
 pub mod asset_snapshot_builder;
 pub mod builtins;

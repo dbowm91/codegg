@@ -124,6 +124,10 @@ pub struct TurnRunInput {
     pub execution: Arc<codegg_core::workspace::ExecutionContext>,
     /// Daemon-owned heavy-job submission boundary.
     pub submission: Option<Arc<crate::scheduler::JobSubmissionService>>,
+    /// Immutable runtime-asset snapshot captured before this turn starts.
+    /// Active turns retain this `Arc` even when the daemon publishes a later
+    /// generation for the same workspace.
+    pub asset_snapshot: Option<Arc<crate::agent::asset_snapshot::ProjectAssetSnapshot>>,
 }
 
 /// Minimal output from a turn execution.
@@ -182,6 +186,7 @@ impl TurnRuntime for DefaultTurnRuntime {
             plugin_service,
             execution,
             submission,
+            asset_snapshot,
         } = input;
 
         // ── Provider resolution ──────────────────────────────────────
@@ -253,12 +258,22 @@ impl TurnRuntime for DefaultTurnRuntime {
                 .with_workspace_root(&execution.workspace_root)
                 .build()
                 .expect("execution.workspace_root is a valid workspace root");
-            crate::agent::prompt::load_agent_prompt_with_context(
-                &crate::protocol_conversions::dto_to_agent(agents_dto[current_agent_idx].clone()),
-                &config,
-                &model_name,
-                &ctx,
-            )
+            let selected_agent =
+                crate::protocol_conversions::dto_to_agent(agents_dto[current_agent_idx].clone());
+            match asset_snapshot.as_deref() {
+                Some(snapshot) => crate::agent::prompt::load_agent_prompt_with_snapshot(
+                    &selected_agent,
+                    &config,
+                    &model_name,
+                    snapshot,
+                ),
+                None => crate::agent::prompt::load_agent_prompt_with_context(
+                    &selected_agent,
+                    &config,
+                    &model_name,
+                    &ctx,
+                ),
+            }
         };
         system.push_str(&memory_context);
 

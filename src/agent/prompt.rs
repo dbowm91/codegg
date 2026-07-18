@@ -340,6 +340,38 @@ pub fn load_agent_prompt_with_context(
     parts.join("\n\n")
 }
 
+/// Assemble a system prompt from an already-published immutable asset
+/// snapshot.  Turn construction uses this path after the daemon has captured
+/// a generation, so instruction and skill resolution cannot observe a later
+/// refresh while the turn is being assembled.
+pub fn load_agent_prompt_with_snapshot(
+    agent: &Agent,
+    config: &Config,
+    model_id: &str,
+    snapshot: &crate::agent::asset_snapshot::ProjectAssetSnapshot,
+) -> String {
+    let mut parts = base_prompt_parts(agent, model_id);
+    if !snapshot.instruction_block().is_empty() {
+        parts.push(snapshot.instruction_block().to_string());
+    }
+    let skill_prompt = snapshot.build_skill_prompt();
+    if !skill_prompt.is_empty() {
+        parts.push(skill_prompt);
+    }
+    if let Some(instructions) = config.instructions.as_ref() {
+        for instruction in instructions {
+            if is_url(instruction) {
+                parts.push(format!(
+                    "[Remote instruction: {instruction} - fetched at runtime]"
+                ));
+            } else {
+                parts.push(instruction.clone());
+            }
+        }
+    }
+    parts.join("\n\n")
+}
+
 /// **Deprecated**: reads process-global cwd via
 /// [`find_all_instruction_files`]. New callers must use
 /// [`load_agent_prompt_with_context`] with an explicit

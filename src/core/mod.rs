@@ -345,6 +345,7 @@ pub fn core_event_type(event: &crate::protocol::core::CoreEvent) -> &'static str
         CoreEvent::PermissionPending { .. } => "permission_pending",
         CoreEvent::QuestionPending { .. } => "question_pending",
         CoreEvent::SessionUpdated { .. } => "session_updated",
+        CoreEvent::AssetRefreshCompleted { .. } => "asset_refresh_completed",
         CoreEvent::SubagentStarted { .. } => "subagent_started",
         CoreEvent::SubagentCompleted { .. } => "subagent_completed",
         CoreEvent::SubagentFailed { .. } => "subagent_failed",

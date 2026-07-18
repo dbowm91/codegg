@@ -159,6 +159,13 @@ pub enum TuiCommand {
     BulkExport {
         session_ids: Vec<String>,
     },
+    /// Refresh all project runtime assets through the daemon-owned
+    /// coordinator. Focused `/reload` aliases use this same variant.
+    RefreshAssets,
+    AssetRefreshFinished {
+        report: Option<crate::protocol::core::AssetRefreshReportDto>,
+        error: Option<String>,
+    },
     ReloadSessions,
     OpenTreeDialog,
     PreviewImport {
@@ -4773,6 +4780,12 @@ impl App {
             return;
         }
         match cmd.name.as_str() {
+            "/reload" => {
+                self.enqueue_tui_command(TuiCommand::RefreshAssets);
+                self.ui_state.command_mode = false;
+                self.prompt_state.prompt.clear();
+                self.prompt_state.show_completions = false;
+            }
             "/exit" | "/quit" | "/q" => {
                 self.ui_state.running = false;
                 let _ = self.ui_state.shutdown_tx.take().map(|tx| tx.send(()));

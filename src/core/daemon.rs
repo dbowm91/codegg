@@ -4,6 +4,7 @@ use std::time::Instant;
 use crate::error::AppError;
 use crate::protocol::core::{CoreRequest, CoreResponse, RequestEnvelope};
 use chrono::Utc;
+use sqlx::Row;
 
 use super::event_log::EventFilter;
 use super::runtime_deps::CoreRuntimeDeps;
@@ -56,6 +57,9 @@ pub struct CoreDaemon {
     /// session row through the typed core crate; never mutates provider
     /// credentials or constructs a provider in the frontend.
     pub selection_service: Option<Arc<crate::core::session_selection::SelectionService>>,
+    /// Daemon-owned immutable runtime-asset publication coordinator. Every
+    /// lifecycle and manual refresh path uses this one service.
+    pub asset_refresh: Arc<crate::agent::asset_refresh::AssetRefreshCoordinator>,
 }
 
 impl CoreDaemon {
@@ -154,6 +158,16 @@ impl CoreDaemon {
             codegg_core::jobs::DaemonGeneration::new_unchecked(generation.clone());
         deps.workspace_services = Some(workspace_services.clone());
 
+        let asset_builder = Arc::new(
+            crate::agent::asset_snapshot_builder::ProjectAssetSnapshotBuilder::new(
+                crate::agent::asset_snapshot_builder::SnapshotBuilderConfig::default(),
+                Arc::new(config.clone()),
+            ),
+        );
+        let asset_refresh = Arc::new(crate::agent::asset_refresh::AssetRefreshCoordinator::new(
+            asset_builder,
+        ));
+
         // Phase 5: global admission control scheduler. Daemon-owned work
         // is scheduler-authoritative by default; an explicitly disabled
         // scheduler produces a placeholder that rejects heavy submission.
@@ -212,6 +226,204 @@ impl CoreDaemon {
             workspace_services,
             eggpool_provisioner,
             selection_service,
+            asset_refresh,
+        }
+    }
+
+    fn asset_context_for_project(
+        context: &ProjectContext,
+        session_id: Option<&str>,
+    ) -> Result<crate::agent::asset_context::AssetContext, AppError> {
+        let project_id = crate::agent::asset_context::ProjectId::parse(context.project_id.as_str())
+            .map_err(|e| AppError::Other(anyhow::anyhow!(e.to_string())))?;
+        let mut builder = crate::agent::asset_context::AssetContextBuilder::new()
+            .with_project_id(project_id)
+            .with_workspace_root(context.workspace_root.clone())
+            .with_config_revision(u64::try_from(context.binding_revision).unwrap_or_default());
+        if let Some(session_id) = session_id {
+            builder = builder.with_session_id(session_id);
+        }
+        // AssetRegistry expects the configuration directory as the parent of
+        // the global CodeGG/foreign-harness roots. The path is configuration
+        // data, never an identity or a secret-bearing report field.
+        if let Some(config_dir) = dirs::config_dir() {
+            builder = builder.with_global_root(config_dir);
+        }
+        builder
+            .build()
+            .map_err(|e| AppError::Other(anyhow::anyhow!(e.to_string())))
+    }
+
+    async fn refresh_project_context(
+        &self,
+        context: &ProjectContext,
+        session_id: Option<&str>,
+        reason: crate::agent::asset_refresh::RefreshReason,
+    ) -> Result<crate::agent::asset_refresh::RefreshReport, AppError> {
+        let asset_context = Self::asset_context_for_project(context, session_id)?;
+        let scope = crate::agent::asset_refresh::AssetScope::new(
+            context.project_id.as_str(),
+            context.workspace_id.as_str(),
+        );
+        let report = self
+            .asset_refresh
+            .refresh(scope, asset_context, reason)
+            .await;
+        self.persist_asset_refresh_metadata(&report).await;
+        Ok(report)
+    }
+
+    /// Refresh the explicitly activated project/workspace scope. Project
+    /// Catalog owns activation policy; this is its daemon-side refresh seam.
+    pub async fn refresh_project_activation(
+        &self,
+        project_id: &str,
+        workspace_id: &str,
+    ) -> Result<crate::agent::asset_refresh::RefreshReport, AppError> {
+        let resolver = self.context_resolver.as_ref().ok_or_else(|| {
+            AppError::Other(anyhow::anyhow!(
+                "project context resolver is unavailable for this daemon"
+            ))
+        })?;
+        let context = resolver
+            .resolve_raw(project_id, workspace_id, None)
+            .await
+            .map_err(|e| Self::context_error(&e))?;
+        self.refresh_project_context(
+            &context,
+            None,
+            crate::agent::asset_refresh::RefreshReason::ProjectActivation,
+        )
+        .await
+    }
+
+    async fn refresh_runtime_assets(
+        &self,
+        runtime: &Arc<crate::core::session_runtime::SessionRuntime>,
+        session_id: &str,
+        reason: crate::agent::asset_refresh::RefreshReason,
+    ) -> Result<crate::agent::asset_refresh::RefreshReport, AppError> {
+        let project_id = crate::agent::asset_context::ProjectId::parse(&runtime.project_id)
+            .map_err(|e| AppError::Other(anyhow::anyhow!(e.to_string())))?;
+        let mut builder = crate::agent::asset_context::AssetContextBuilder::new()
+            .with_project_id(project_id)
+            .with_workspace_root(runtime.workspace_root.clone())
+            .with_session_id(session_id);
+        if let Some(config_dir) = dirs::config_dir() {
+            builder = builder.with_global_root(config_dir);
+        }
+        let context = builder
+            .build()
+            .map_err(|e| AppError::Other(anyhow::anyhow!(e.to_string())))?;
+        let scope = crate::agent::asset_refresh::AssetScope::new(
+            &runtime.project_id,
+            runtime.workspace_id.as_str(),
+        );
+        let report = self.asset_refresh.refresh(scope, context, reason).await;
+        self.persist_asset_refresh_metadata(&report).await;
+        Ok(report)
+    }
+
+    fn refresh_report_error(
+        report: &crate::agent::asset_refresh::RefreshReport,
+    ) -> Option<AppError> {
+        if report.generation.is_some() {
+            return None;
+        }
+        Some(AppError::Other(anyhow::anyhow!(
+            "runtime asset refresh {:?} did not publish a usable generation: {}",
+            report.outcome,
+            report
+                .diagnostics
+                .first()
+                .map(String::as_str)
+                .unwrap_or("no diagnostic"),
+        )))
+    }
+
+    fn asset_refresh_reason_dto(
+        reason: crate::agent::asset_refresh::RefreshReason,
+    ) -> crate::protocol::core::AssetRefreshReasonDto {
+        match reason {
+            crate::agent::asset_refresh::RefreshReason::Startup => {
+                crate::protocol::core::AssetRefreshReasonDto::Startup
+            }
+            crate::agent::asset_refresh::RefreshReason::ProjectActivation => {
+                crate::protocol::core::AssetRefreshReasonDto::ProjectActivation
+            }
+            crate::agent::asset_refresh::RefreshReason::SessionLifecycle => {
+                crate::protocol::core::AssetRefreshReasonDto::SessionLifecycle
+            }
+            crate::agent::asset_refresh::RefreshReason::Manual => {
+                crate::protocol::core::AssetRefreshReasonDto::Manual
+            }
+            crate::agent::asset_refresh::RefreshReason::Reload => {
+                crate::protocol::core::AssetRefreshReasonDto::Reload
+            }
+        }
+    }
+
+    fn asset_refresh_outcome_dto(
+        outcome: crate::agent::asset_refresh::RefreshOutcome,
+    ) -> crate::protocol::core::AssetRefreshOutcomeDto {
+        match outcome {
+            crate::agent::asset_refresh::RefreshOutcome::Published => {
+                crate::protocol::core::AssetRefreshOutcomeDto::Published
+            }
+            crate::agent::asset_refresh::RefreshOutcome::Retained => {
+                crate::protocol::core::AssetRefreshOutcomeDto::Retained
+            }
+            crate::agent::asset_refresh::RefreshOutcome::Cancelled => {
+                crate::protocol::core::AssetRefreshOutcomeDto::Cancelled
+            }
+            crate::agent::asset_refresh::RefreshOutcome::Invalid => {
+                crate::protocol::core::AssetRefreshOutcomeDto::Invalid
+            }
+            crate::agent::asset_refresh::RefreshOutcome::Coalesced => {
+                crate::protocol::core::AssetRefreshOutcomeDto::Coalesced
+            }
+        }
+    }
+
+    fn asset_refresh_report_dto(
+        report: crate::agent::asset_refresh::RefreshReport,
+    ) -> crate::protocol::core::AssetRefreshReportDto {
+        crate::protocol::core::AssetRefreshReportDto {
+            scope: crate::protocol::core::AssetRefreshScopeDto {
+                project_id: report.scope.project_id,
+                workspace_id: report.scope.workspace_id,
+            },
+            reason: Self::asset_refresh_reason_dto(report.reason),
+            outcome: Self::asset_refresh_outcome_dto(report.outcome),
+            generation: report.generation,
+            previous_generation: report.previous_generation,
+            fingerprint: report.fingerprint,
+            added: report.added,
+            removed: report.removed,
+            changed: report.changed,
+            shadowed: report.shadowed,
+            invalid: report.invalid,
+            retained: report.retained,
+            diagnostics: report.diagnostics,
+            coalesced: report.coalesced,
+            completed_at_ms: report.completed_at.timestamp_millis(),
+        }
+    }
+
+    fn asset_refresh_status_dto(
+        status: crate::agent::asset_refresh::RefreshStatus,
+    ) -> crate::protocol::core::AssetRefreshStatusDto {
+        crate::protocol::core::AssetRefreshStatusDto {
+            scope: crate::protocol::core::AssetRefreshScopeDto {
+                project_id: status.scope.project_id,
+                workspace_id: status.scope.workspace_id,
+            },
+            generation: status.generation,
+            fingerprint: status.fingerprint,
+            last_success_at_ms: status.last_success_at.map(|value| value.timestamp_millis()),
+            in_flight: status.in_flight,
+            last_outcome: status.last_outcome.map(Self::asset_refresh_outcome_dto),
+            last_diagnostics: status.last_diagnostics,
         }
     }
 
@@ -223,7 +435,98 @@ impl CoreDaemon {
     pub async fn hydrate_workspace_registry(
         &self,
     ) -> Result<(), codegg_core::workspace::WorkspaceError> {
-        self.workspaces.hydrate_from_store().await
+        self.workspaces.hydrate_from_store().await?;
+        self.hydrate_asset_refresh_metadata().await;
+        Ok(())
+    }
+
+    async fn hydrate_asset_refresh_metadata(&self) {
+        let Some(pool) = self.pool.as_ref() else {
+            return;
+        };
+        let rows = match sqlx::query(
+            "SELECT project_id, workspace_id, generation, fingerprint \
+             FROM runtime_asset_refresh",
+        )
+        .fetch_all(pool)
+        .await
+        {
+            Ok(rows) => rows,
+            Err(error) => {
+                tracing::debug!(error = %error, "runtime asset metadata unavailable during hydration");
+                return;
+            }
+        };
+        for row in rows {
+            let Ok(project_id) = row.try_get::<String, _>("project_id") else {
+                continue;
+            };
+            let Ok(workspace_id) = row.try_get::<String, _>("workspace_id") else {
+                continue;
+            };
+            let Ok(generation) = row.try_get::<i64, _>("generation") else {
+                continue;
+            };
+            let fingerprint = row
+                .try_get::<Option<String>, _>("fingerprint")
+                .ok()
+                .flatten();
+            self.asset_refresh
+                .restore_metadata(
+                    crate::agent::asset_refresh::AssetScope::new(project_id, workspace_id),
+                    u64::try_from(generation).unwrap_or_default(),
+                    fingerprint,
+                )
+                .await;
+        }
+    }
+
+    async fn persist_asset_refresh_metadata(
+        &self,
+        report: &crate::agent::asset_refresh::RefreshReport,
+    ) {
+        let Some(pool) = self.pool.as_ref() else {
+            return;
+        };
+        let Some(generation) = report.generation else {
+            return;
+        };
+        if !matches!(
+            report.outcome,
+            crate::agent::asset_refresh::RefreshOutcome::Published
+                | crate::agent::asset_refresh::RefreshOutcome::Coalesced
+        ) {
+            return;
+        }
+        let diagnostics =
+            serde_json::to_string(&report.diagnostics).unwrap_or_else(|_| "[]".into());
+        if let Err(error) = sqlx::query(
+            "INSERT INTO runtime_asset_refresh \
+             (project_id, workspace_id, generation, fingerprint, last_success_at, diagnostics_json, time_updated) \
+             VALUES (?, ?, ?, ?, ?, ?, ?) \
+             ON CONFLICT(project_id, workspace_id) DO UPDATE SET \
+             generation = excluded.generation, fingerprint = excluded.fingerprint, \
+             last_success_at = excluded.last_success_at, diagnostics_json = excluded.diagnostics_json, \
+             time_updated = excluded.time_updated",
+        )
+        .bind(&report.scope.project_id)
+        .bind(&report.scope.workspace_id)
+        .bind(i64::try_from(generation).unwrap_or(i64::MAX))
+        .bind(&report.fingerprint)
+        .bind(report.completed_at.timestamp_millis())
+        .bind(diagnostics)
+        .bind(Utc::now().timestamp_millis())
+        .execute(pool)
+        .await
+        {
+            tracing::warn!(
+                error = %error,
+                project_id = %report.scope.project_id,
+                workspace_id = %report.scope.workspace_id,
+                generation,
+                "failed to persist runtime asset refresh metadata"
+            );
+        }
     }
 
     /// Resolve a session's compatibility directory to an already registered
@@ -872,6 +1175,102 @@ impl CoreDaemon {
         request: RequestEnvelope<CoreRequest>,
     ) -> Result<CoreResponse, AppError> {
         match request.payload {
+            CoreRequest::AssetRefresh { request } => {
+                let Some(resolver) = self.context_resolver.as_ref() else {
+                    return Ok(CoreResponse::Error {
+                        code: "asset_refresh_unavailable".to_string(),
+                        message: "asset refresh requires the daemon project context resolver"
+                            .to_string(),
+                    });
+                };
+                let project_id =
+                    match codegg_core::identity::ProjectId::parse(&request.scope.project_id) {
+                        Ok(id) => id,
+                        Err(error) => {
+                            return Ok(CoreResponse::Error {
+                                code: "invalid_asset_refresh_scope".to_string(),
+                                message: error.to_string(),
+                            });
+                        }
+                    };
+                let workspace_id =
+                    match codegg_core::workspace::WorkspaceId::parse(&request.scope.workspace_id) {
+                        Ok(id) => id,
+                        Err(error) => {
+                            return Ok(CoreResponse::Error {
+                                code: "invalid_asset_refresh_scope".to_string(),
+                                message: error.to_string(),
+                            });
+                        }
+                    };
+                let context = match resolver
+                    .resolve(ProjectContextRequest::new(project_id, workspace_id))
+                    .await
+                {
+                    Ok(context) => context,
+                    Err(error) => {
+                        return Ok(CoreResponse::Error {
+                            code: "asset_refresh_context_failed".to_string(),
+                            message: Self::context_error(&error).to_string(),
+                        });
+                    }
+                };
+                let reason = match request.reason {
+                    crate::protocol::core::AssetRefreshReasonDto::Startup => {
+                        crate::agent::asset_refresh::RefreshReason::Startup
+                    }
+                    crate::protocol::core::AssetRefreshReasonDto::ProjectActivation => {
+                        crate::agent::asset_refresh::RefreshReason::ProjectActivation
+                    }
+                    crate::protocol::core::AssetRefreshReasonDto::SessionLifecycle => {
+                        crate::agent::asset_refresh::RefreshReason::SessionLifecycle
+                    }
+                    crate::protocol::core::AssetRefreshReasonDto::Manual => {
+                        crate::agent::asset_refresh::RefreshReason::Manual
+                    }
+                    crate::protocol::core::AssetRefreshReasonDto::Reload => {
+                        crate::agent::asset_refresh::RefreshReason::Reload
+                    }
+                };
+                let report = match self
+                    .refresh_project_context(&context, request.session_id.as_deref(), reason)
+                    .await
+                {
+                    Ok(report) => report,
+                    Err(error) => {
+                        return Ok(CoreResponse::Error {
+                            code: "asset_refresh_failed".to_string(),
+                            message: error.to_string(),
+                        });
+                    }
+                };
+                let dto = Self::asset_refresh_report_dto(report);
+                let _ = self
+                    .event_log
+                    .publish(
+                        None,
+                        None,
+                        crate::protocol::core::CoreEvent::AssetRefreshCompleted {
+                            report: dto.clone(),
+                        },
+                    )
+                    .await;
+                Ok(CoreResponse::AssetRefresh { report: dto })
+            }
+            CoreRequest::AssetRefreshStatus { scope } => {
+                let scope_internal = crate::agent::asset_refresh::AssetScope::new(
+                    scope.project_id.clone(),
+                    scope.workspace_id.clone(),
+                );
+                let status = self.asset_refresh.status(&scope_internal).await;
+                Ok(CoreResponse::AssetRefreshStatus {
+                    status: Self::asset_refresh_status_dto(status),
+                })
+            }
+            CoreRequest::AssetRefreshCapabilities => Ok(CoreResponse::AssetRefreshCapabilities {
+                supported: true,
+                max_report_entries: 64,
+            }),
             CoreRequest::EggpoolConnectionCreate { request } => {
                 let Some(provisioner) = self.eggpool_provisioner.as_ref() else {
                     return Ok(CoreResponse::Error {
@@ -1136,6 +1535,41 @@ impl CoreDaemon {
                     }
                 };
 
+                // Session-open and manual refreshes converge here as the
+                // final correctness gate: the turn captures the currently
+                // published immutable generation before runtime assembly.
+                let asset_refresh = match self
+                    .refresh_runtime_assets(
+                        &runtime,
+                        &session_id,
+                        crate::agent::asset_refresh::RefreshReason::SessionLifecycle,
+                    )
+                    .await
+                {
+                    Ok(report) => report,
+                    Err(error) => {
+                        return Ok(CoreResponse::Error {
+                            code: "turn_asset_refresh_failed".to_string(),
+                            message: error.to_string(),
+                        });
+                    }
+                };
+                if let Some(error) = Self::refresh_report_error(&asset_refresh) {
+                    return Ok(CoreResponse::Error {
+                        code: "turn_asset_refresh_failed".to_string(),
+                        message: error.to_string(),
+                    });
+                }
+                let asset_scope = crate::agent::asset_refresh::AssetScope::new(
+                    &runtime.project_id,
+                    runtime.workspace_id.as_str(),
+                );
+                let asset_snapshot = self
+                    .asset_refresh
+                    .snapshot(&asset_scope)
+                    .await
+                    .map(|published| published.snapshot.clone());
+
                 let turn_id = {
                     let mut active = runtime.active_turn.write().await;
                     if active.is_some() {
@@ -1214,6 +1648,7 @@ impl CoreDaemon {
                     plugin_service,
                     execution,
                     submission: self.deps.submission.clone(),
+                    asset_snapshot,
                 };
                 let turn_output = self.deps.turn_runtime.run_turn(turn_input).await?;
 
@@ -1314,9 +1749,33 @@ impl CoreDaemon {
                     )
                     .await
                 {
-                    Ok(session) => Ok(CoreResponse::Session {
-                        session: Self::session_dto(session, Some(&context)),
-                    }),
+                    Ok(session) => {
+                        let refresh = self
+                            .refresh_project_context(
+                                &context,
+                                Some(session.id.as_str()),
+                                crate::agent::asset_refresh::RefreshReason::SessionLifecycle,
+                            )
+                            .await;
+                        match refresh {
+                            Ok(report) => {
+                                if let Some(error) = Self::refresh_report_error(&report) {
+                                    Ok(CoreResponse::Error {
+                                        code: "session_asset_refresh_failed".to_string(),
+                                        message: error.to_string(),
+                                    })
+                                } else {
+                                    Ok(CoreResponse::Session {
+                                        session: Self::session_dto(session, Some(&context)),
+                                    })
+                                }
+                            }
+                            Err(error) => Ok(CoreResponse::Error {
+                                code: "session_asset_refresh_failed".to_string(),
+                                message: error.to_string(),
+                            }),
+                        }
+                    }
                     Err(e) => Ok(CoreResponse::Error {
                         code: "session_create_failed".to_string(),
                         message: e.to_string(),
@@ -1359,6 +1818,31 @@ impl CoreDaemon {
                                 None
                             }
                         };
+                        if let Some(context) = context.as_ref() {
+                            match self
+                                .refresh_project_context(
+                                    context,
+                                    Some(session_id.as_str()),
+                                    crate::agent::asset_refresh::RefreshReason::SessionLifecycle,
+                                )
+                                .await
+                            {
+                                Ok(report) => {
+                                    if let Some(error) = Self::refresh_report_error(&report) {
+                                        return Ok(CoreResponse::Error {
+                                            code: "session_asset_refresh_failed".to_string(),
+                                            message: error.to_string(),
+                                        });
+                                    }
+                                }
+                                Err(error) => {
+                                    return Ok(CoreResponse::Error {
+                                        code: "session_asset_refresh_failed".to_string(),
+                                        message: error.to_string(),
+                                    });
+                                }
+                            }
+                        }
                         Ok(CoreResponse::Session {
                             session: Self::session_dto(session, context.as_ref()),
                         })
@@ -1689,9 +2173,33 @@ impl CoreDaemon {
                     )
                     .await
                 {
-                    Ok(session) => Ok(CoreResponse::Session {
-                        session: Self::session_dto(session, Some(&context)),
-                    }),
+                    Ok(session) => {
+                        let refresh = self
+                            .refresh_project_context(
+                                &context,
+                                Some(session.id.as_str()),
+                                crate::agent::asset_refresh::RefreshReason::SessionLifecycle,
+                            )
+                            .await;
+                        match refresh {
+                            Ok(report) => {
+                                if let Some(error) = Self::refresh_report_error(&report) {
+                                    Ok(CoreResponse::Error {
+                                        code: "session_asset_refresh_failed".to_string(),
+                                        message: error.to_string(),
+                                    })
+                                } else {
+                                    Ok(CoreResponse::Session {
+                                        session: Self::session_dto(session, Some(&context)),
+                                    })
+                                }
+                            }
+                            Err(error) => Ok(CoreResponse::Error {
+                                code: "session_asset_refresh_failed".to_string(),
+                                message: error.to_string(),
+                            }),
+                        }
+                    }
                     Err(e) => Ok(CoreResponse::Error {
                         code: "session_import_failed".to_string(),
                         message: e.to_string(),
@@ -1750,9 +2258,33 @@ impl CoreDaemon {
                     )
                     .await
                 {
-                    Ok(session) => Ok(CoreResponse::Session {
-                        session: Self::session_dto(session, Some(&context)),
-                    }),
+                    Ok(session) => {
+                        let refresh = self
+                            .refresh_project_context(
+                                &context,
+                                Some(session.id.as_str()),
+                                crate::agent::asset_refresh::RefreshReason::SessionLifecycle,
+                            )
+                            .await;
+                        match refresh {
+                            Ok(report) => {
+                                if let Some(error) = Self::refresh_report_error(&report) {
+                                    Ok(CoreResponse::Error {
+                                        code: "session_asset_refresh_failed".to_string(),
+                                        message: error.to_string(),
+                                    })
+                                } else {
+                                    Ok(CoreResponse::Session {
+                                        session: Self::session_dto(session, Some(&context)),
+                                    })
+                                }
+                            }
+                            Err(error) => Ok(CoreResponse::Error {
+                                code: "session_asset_refresh_failed".to_string(),
+                                message: error.to_string(),
+                            }),
+                        }
+                    }
                     Err(e) => Ok(CoreResponse::Error {
                         code: "session_create_from_template_failed".to_string(),
                         message: e.to_string(),

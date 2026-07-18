@@ -109,6 +109,9 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), StorageError> {
     if current_version < 29 {
         migrate_and_record(pool, 29).await?;
     }
+    if current_version < 30 {
+        migrate_and_record(pool, 30).await?;
+    }
 
     Ok(())
 }
@@ -150,6 +153,7 @@ async fn migrate_and_record(pool: &SqlitePool, version: i64) -> Result<(), Stora
             27 => migrate_v27(pool).await?,
             28 => migrate_v28(pool).await?,
             29 => migrate_v29(pool).await?,
+            30 => migrate_v30(pool).await?,
             _ => {
                 return Err(StorageError::Migration(format!(
                     "unknown migration version {}",
@@ -1477,6 +1481,34 @@ async fn migrate_v29(pool: &SqlitePool) -> Result<(), StorageError> {
         "CREATE INDEX IF NOT EXISTS idx_discovery_observation_workspace ON discovery_observation(workspace_id, status)",
         "CREATE INDEX IF NOT EXISTS idx_discovery_observation_status ON discovery_observation(status, time_observed DESC)",
         "CREATE INDEX IF NOT EXISTS idx_discovery_observation_lineage ON discovery_observation(lineage_key)",
+    ] {
+        sqlx::query(statement)
+            .execute(pool)
+            .await
+            .map_err(|e| StorageError::Migration(e.to_string()))?;
+    }
+    Ok(())
+}
+
+/// Runtime Assets Milestone 3: bounded publication metadata. Snapshot bodies
+/// remain reconstructible from an explicit workspace context; this table only
+/// preserves the last successful generation, fingerprint, and diagnostics
+/// needed for restart/operator continuity.
+async fn migrate_v30(pool: &SqlitePool) -> Result<(), StorageError> {
+    for statement in [
+        r#"
+        CREATE TABLE IF NOT EXISTS runtime_asset_refresh (
+            project_id TEXT NOT NULL,
+            workspace_id TEXT NOT NULL,
+            generation INTEGER NOT NULL CHECK (generation >= 0),
+            fingerprint TEXT,
+            last_success_at INTEGER,
+            diagnostics_json TEXT NOT NULL DEFAULT '[]',
+            time_updated INTEGER NOT NULL,
+            PRIMARY KEY (project_id, workspace_id)
+        )
+        "#,
+        "CREATE INDEX IF NOT EXISTS idx_runtime_asset_refresh_updated ON runtime_asset_refresh(time_updated DESC)",
     ] {
         sqlx::query(statement)
             .execute(pool)

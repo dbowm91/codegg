@@ -123,6 +123,15 @@ impl ProjectAssetSnapshotBuilder {
     }
 }
 
+impl crate::agent::asset_snapshot::SnapshotBuilder for ProjectAssetSnapshotBuilder {
+    fn build(
+        &self,
+        ctx: &AssetContext,
+    ) -> Result<ProjectAssetSnapshot, crate::agent::asset_snapshot::SnapshotBuildError> {
+        Self::build(self, ctx)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

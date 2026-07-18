@@ -35,6 +35,7 @@ fn should_persist(event: &CoreEvent) -> bool {
             | CoreEvent::SubagentCompleted { .. }
             | CoreEvent::SubagentFailed { .. }
             | CoreEvent::SessionUpdated { .. }
+            | CoreEvent::AssetRefreshCompleted { .. }
             | CoreEvent::Error { .. }
     )
 }

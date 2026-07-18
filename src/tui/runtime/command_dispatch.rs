@@ -4,6 +4,8 @@ use super::super::app::state::session::GitSidebarInfo;
 use super::super::app::{App, TuiCommand};
 
 #[allow(unused_imports)]
+use super::super::commands::agents::{apply_asset_refresh_finished, start_refresh_assets};
+#[allow(unused_imports)]
 use super::super::commands::diagnostics::{apply_doctor_result, start_run_doctor};
 #[allow(unused_imports)]
 use super::super::commands::goals::{
@@ -61,6 +63,12 @@ use crate::tui::components::toast::Toast;
 
 pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
     match cmd {
+        TuiCommand::RefreshAssets => {
+            start_refresh_assets(app);
+        }
+        TuiCommand::AssetRefreshFinished { report, error } => {
+            apply_asset_refresh_finished(app, report, error);
+        }
         TuiCommand::DeleteSession { session_id } => {
             start_delete_session(app, session_id);
         }

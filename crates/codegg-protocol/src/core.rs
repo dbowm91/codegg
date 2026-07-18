@@ -20,12 +20,101 @@ use crate::provider::{
 /// path. Old clients that ignore unknown variants remain
 /// forward-compatible.
 pub const PROTOCOL_VERSION: u32 = 2;
+pub const ASSET_REFRESH_CAPABILITY: &str = "runtime_assets.refresh.v1";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RequestEnvelope<T> {
     pub protocol_version: u32,
     pub request_id: String,
     pub payload: T,
+}
+
+/// Bounded project/workspace runtime-asset refresh protocol surface. Asset
+/// bodies and absolute paths stay local to the daemon and are never carried
+/// in these DTOs.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AssetRefreshScopeDto {
+    pub project_id: String,
+    pub workspace_id: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AssetRefreshReasonDto {
+    Startup,
+    ProjectActivation,
+    SessionLifecycle,
+    Manual,
+    Reload,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AssetRefreshOutcomeDto {
+    Published,
+    Retained,
+    Cancelled,
+    Invalid,
+    Coalesced,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AssetRefreshRequestDto {
+    pub scope: AssetRefreshScopeDto,
+    #[serde(default = "default_manual_refresh_reason")]
+    pub reason: AssetRefreshReasonDto,
+    #[serde(default)]
+    pub session_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AssetRefreshReportDto {
+    pub scope: AssetRefreshScopeDto,
+    pub reason: AssetRefreshReasonDto,
+    pub outcome: AssetRefreshOutcomeDto,
+    #[serde(default)]
+    pub generation: Option<u64>,
+    #[serde(default)]
+    pub previous_generation: Option<u64>,
+    #[serde(default)]
+    pub fingerprint: Option<String>,
+    #[serde(default)]
+    pub added: Vec<String>,
+    #[serde(default)]
+    pub removed: Vec<String>,
+    #[serde(default)]
+    pub changed: Vec<String>,
+    #[serde(default)]
+    pub shadowed: Vec<String>,
+    #[serde(default)]
+    pub invalid: Vec<String>,
+    #[serde(default)]
+    pub retained: Vec<String>,
+    #[serde(default)]
+    pub diagnostics: Vec<String>,
+    #[serde(default)]
+    pub coalesced: bool,
+    pub completed_at_ms: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AssetRefreshStatusDto {
+    pub scope: AssetRefreshScopeDto,
+    #[serde(default)]
+    pub generation: Option<u64>,
+    #[serde(default)]
+    pub fingerprint: Option<String>,
+    #[serde(default)]
+    pub last_success_at_ms: Option<i64>,
+    pub in_flight: bool,
+    #[serde(default)]
+    pub last_outcome: Option<AssetRefreshOutcomeDto>,
+    #[serde(default)]
+    pub last_diagnostics: Vec<String>,
+}
+
+fn default_manual_refresh_reason() -> AssetRefreshReasonDto {
+    AssetRefreshReasonDto::Manual
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -42,6 +131,16 @@ pub struct EventEnvelope<T> {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum CoreResponse {
     Ack,
+    AssetRefresh {
+        report: AssetRefreshReportDto,
+    },
+    AssetRefreshStatus {
+        status: AssetRefreshStatusDto,
+    },
+    AssetRefreshCapabilities {
+        supported: bool,
+        max_report_entries: usize,
+    },
     EggpoolConnectionCreated {
         result: CreateEggpoolConnectionResult,
     },
@@ -272,6 +371,13 @@ pub struct ClientSnapshot {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum CoreRequest {
     Initialize,
+    AssetRefresh {
+        request: AssetRefreshRequestDto,
+    },
+    AssetRefreshStatus {
+        scope: AssetRefreshScopeDto,
+    },
+    AssetRefreshCapabilities,
     EggpoolConnectionCreate {
         request: CreateEggpoolConnectionRequest,
     },
@@ -640,6 +746,9 @@ pub enum CoreRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum CoreEvent {
+    AssetRefreshCompleted {
+        report: AssetRefreshReportDto,
+    },
     SnapshotSession {
         session_id: String,
     },
@@ -1368,5 +1477,45 @@ mod tests {
         };
         let json = serde_json::to_string(&env).unwrap();
         assert!(!json.contains("log_dir"));
+    }
+
+    #[test]
+    fn asset_refresh_protocol_is_bounded_and_defaults_manual_reason() {
+        let request: CoreRequest = serde_json::from_str(
+            r#"{"type":"asset_refresh","request":{"scope":{"project_id":"p1","workspace_id":"w1"}}}"#,
+        )
+        .unwrap();
+        match request {
+            CoreRequest::AssetRefresh { request } => {
+                assert_eq!(request.reason, AssetRefreshReasonDto::Manual);
+                assert!(request.session_id.is_none());
+            }
+            other => panic!("expected asset refresh request, got {other:?}"),
+        }
+
+        let report = AssetRefreshReportDto {
+            scope: AssetRefreshScopeDto {
+                project_id: "p1".into(),
+                workspace_id: "w1".into(),
+            },
+            reason: AssetRefreshReasonDto::Reload,
+            outcome: AssetRefreshOutcomeDto::Published,
+            generation: Some(3),
+            previous_generation: Some(2),
+            fingerprint: Some("abc".into()),
+            added: vec!["skill:review".into()],
+            removed: vec![],
+            changed: vec![],
+            shadowed: vec![],
+            invalid: vec![],
+            retained: vec![],
+            diagnostics: vec!["bounded diagnostic".into()],
+            coalesced: false,
+            completed_at_ms: 1,
+        };
+        let json = serde_json::to_string(&report).unwrap();
+        assert!(!json.contains("body"));
+        assert!(!json.contains("absolute_path"));
+        assert!(json.len() < 1024);
     }
 }

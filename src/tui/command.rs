@@ -147,6 +147,9 @@ impl CommandRegistry {
             Command::new("/models-refresh", CommandCategory::System, None)
                 .with_aliases(&["refresh-models"])
                 .with_description("Refresh model list"),
+            Command::new("/reload", CommandCategory::System, None)
+                .with_aliases(&["reload", "/skills-refresh", "/agents-refresh"])
+                .with_description("Refresh project runtime assets (/reload skills|agents)"),
             Command::new("/variants", CommandCategory::System, None)
                 .with_description("Switch model variant"),
             Command::new("/agents", CommandCategory::Agent, None)
@@ -519,7 +522,7 @@ mod tests {
 
     #[test]
     fn built_in_command_count_matches_release_docs() {
-        assert_eq!(CommandRegistry::built_in_commands().len(), 107);
+        assert_eq!(CommandRegistry::built_in_commands().len(), 108);
     }
 
     #[test]

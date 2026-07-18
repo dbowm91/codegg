@@ -51,7 +51,7 @@ The agent layer owns the core execution cycle: receiving user input, routing thr
 | Module | Purpose | Key Files | Docs |
 |--------|---------|-----------|------|
 | Agent | Main agent loop, compaction, routing, team coordination, multi-agent orchestration | `loop.rs`, `worker.rs`, `compaction.rs`, `router.rs`, `team.rs` | [agent.md](agent.md) |
-| AssetContext / Snapshot | Explicit project context, instruction resolver, unified `ProjectAssetSnapshot` (Runtime Assets Milestone 2) | `asset_context.rs`, `instructions.rs`, `asset_snapshot.rs`, `asset_snapshot_builder.rs` | [agent.md](agent.md) |
+| AssetContext / Snapshot / Refresh | Explicit context, immutable snapshot builder, generation coordinator, bounded operator refresh, and turn pinning (Runtime Assets Milestones 2–3) | `asset_context.rs`, `instructions.rs`, `asset_snapshot.rs`, `asset_snapshot_builder.rs`, `asset_refresh.rs` | [agent.md](agent.md) |
 | Command Intent | Command intent classification, risk assessment, execution capability model — pipeline stage 1 | `mod.rs`, `shell_shape.rs`, `plan.rs` | [command_intent.md](command_intent.md) |
 | Command Planner | Maps classified intents to execution backends, generates permissions, selects projection policy — pipeline stage 2 | `plan.rs` (re-exported via `src/command_planner.rs`) | [command_planner.md](command_planner.md) |
 | Command Routing | Resolves planned execution to concrete subsystems (TestRunner, Shell, Python, Git, ManagedProcess) — pipeline stage 3 | `src/command_routing.rs` | [command_routing.md](command_routing.md) |

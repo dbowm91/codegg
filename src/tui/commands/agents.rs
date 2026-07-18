@@ -9,8 +9,125 @@ use crate::agent::registry::{AgentRegistry, AgentSourceKind};
 use crate::agent::resolve_agents;
 use crate::agent::AgentMode;
 use crate::config::schema::Config;
+use crate::protocol::core::{
+    AssetRefreshReasonDto, AssetRefreshRequestDto, AssetRefreshScopeDto, CoreRequest, CoreResponse,
+};
 use crate::tui::app::state::agent::AgentState;
+use crate::tui::app::TuiCommand;
+use crate::tui::async_cmd::spawn_registered_tui_task;
+use crate::tui::task_lifecycle::TuiTaskKind;
 use crate::util::truncate::truncate_prefix;
+
+/// Route `/reload` and all focused reload aliases through the daemon-owned
+/// refresh coordinator. The TUI never discovers assets or edits foreign
+/// harness directories locally.
+pub(crate) fn start_refresh_assets(app: &mut crate::tui::app::App) {
+    let Some(session) = app.session_state.session.as_ref() else {
+        app.messages_state
+            .toasts
+            .error("Cannot refresh assets without an attached session");
+        return;
+    };
+    let Some(workspace_id) = session.workspace_id.clone() else {
+        app.messages_state
+            .toasts
+            .error("Asset refresh requires a canonical project/workspace binding");
+        return;
+    };
+    let core_client = app.core_client.clone();
+    let tx = app.tui_cmd_tx.clone();
+    let session_id = session.id.clone();
+    let project_id = session.project_id.clone();
+    spawn_registered_tui_task(
+        tx,
+        &mut app.task_registry,
+        TuiTaskKind::Command,
+        "refresh-assets",
+        async move {
+            let Some(core_client) = core_client else {
+                return Some(TuiCommand::AssetRefreshFinished {
+                    report: None,
+                    error: Some("Core unavailable — check daemon status with /doctor".to_string()),
+                });
+            };
+            let request = crate::core::new_request(
+                format!("asset-refresh-{}", uuid::Uuid::new_v4()),
+                CoreRequest::AssetRefresh {
+                    request: AssetRefreshRequestDto {
+                        scope: AssetRefreshScopeDto {
+                            project_id,
+                            workspace_id,
+                        },
+                        reason: AssetRefreshReasonDto::Reload,
+                        session_id: Some(session_id),
+                    },
+                },
+            );
+            match core_client.request(request).await {
+                Ok(CoreResponse::AssetRefresh { report }) => {
+                    Some(TuiCommand::AssetRefreshFinished {
+                        report: Some(report),
+                        error: None,
+                    })
+                }
+                Ok(CoreResponse::Error { code, message }) => {
+                    Some(TuiCommand::AssetRefreshFinished {
+                        report: None,
+                        error: Some(format!("Asset refresh failed ({}): {}", code, message)),
+                    })
+                }
+                Ok(_) => Some(TuiCommand::AssetRefreshFinished {
+                    report: None,
+                    error: Some("Unexpected daemon response for asset refresh".to_string()),
+                }),
+                Err(error) => Some(TuiCommand::AssetRefreshFinished {
+                    report: None,
+                    error: Some(format!("Asset refresh request failed: {error}")),
+                }),
+            }
+        },
+    );
+}
+
+pub(crate) fn apply_asset_refresh_finished(
+    app: &mut crate::tui::app::App,
+    report: Option<crate::protocol::core::AssetRefreshReportDto>,
+    error: Option<String>,
+) {
+    if let Some(error) = error {
+        app.messages_state.toasts.error(&error);
+        return;
+    }
+    let Some(report) = report else {
+        app.messages_state
+            .toasts
+            .error("Asset refresh returned no report");
+        return;
+    };
+    let outcome = format!("{:?}", report.outcome).to_lowercase();
+    let message = format!(
+        "Runtime assets {} (generation {}): +{} -{} ~{} shadowed {} invalid {} retained {}",
+        outcome,
+        report
+            .generation
+            .map(|generation| generation.to_string())
+            .unwrap_or_else(|| "none".to_string()),
+        report.added.len(),
+        report.removed.len(),
+        report.changed.len(),
+        report.shadowed.len(),
+        report.invalid.len(),
+        report.retained.len(),
+    );
+    if matches!(
+        report.outcome,
+        crate::protocol::core::AssetRefreshOutcomeDto::Published
+    ) {
+        app.messages_state.toasts.success(&message);
+    } else {
+        app.messages_state.toasts.info(&message);
+    }
+}
 
 /// Build an `AssetContext` rooted at the given workspace for
 /// `/agents` commands. CLI bootstrap is allowed to fall back to

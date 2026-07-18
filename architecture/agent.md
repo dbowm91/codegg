@@ -198,6 +198,28 @@ Ensures tool results match tool calls (no orphans):
 
 ## 2. Agent Struct and AgentMode (`mod.rs`)
 
+## 2A. Runtime asset refresh and immutable turn capture
+
+`AssetRefreshCoordinator` in `src/agent/asset_refresh.rs` owns one
+publication stream per `(project_id, workspace_id)`. It accepts an explicit
+`AssetContext`, builds a candidate with `ProjectAssetSnapshotBuilder` outside
+the publication lock, and assigns a generation only when the candidate is
+published. Failures, invalid contexts, and cancellation retain the previous
+valid `Arc<ProjectAssetSnapshot>`. Concurrent requests for one scope are
+single-flight/coalesced; different scopes remain isolated.
+
+The daemon invokes the coordinator from session create/load/attach/import and
+template seams, from manual `AssetRefresh` protocol requests, and as the
+final gate before `TurnSubmit`. `TurnRunInput::asset_snapshot` pins the
+published `Arc` for the whole turn, so later refreshes cannot change an
+in-flight prompt. Reports contain bounded names, digests, counts, and
+diagnostics only; bodies and absolute paths stay local.
+
+`runtime_asset_refresh` stores only generation/fingerprint metadata for
+restart continuity. Snapshot bodies are reconstructed from the explicit
+workspace on demand. `/reload`, `/reload skills`, and `/reload agents` are
+native aliases for the same daemon protocol request.
+
 ### Agent Struct
 
 ```rust

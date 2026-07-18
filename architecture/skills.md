@@ -108,6 +108,15 @@ Invalid skills produce `Diagnostic` entries (severity + reason + location) witho
 - `Severity::Warning` — non-fatal issue (oversized description, allowed-tools metadata)
 - `Severity::Info` — informational (shadowing notification)
 
+### Refresh lifecycle
+
+The daemon refreshes the immutable asset snapshot on session lifecycle and
+through the native `/reload` command. The command and its focused aliases
+share the `AssetRefresh` protocol request; they do not scan or mutate assets
+in the TUI. Refresh reports are bounded to names, digests, counts, and
+diagnostics. A failed or cancelled candidate leaves the previous generation
+published, and a turn retains the `Arc` captured before prompt construction.
+
 ### Security Bounds
 
 - `AssetDiscoveryConfig` carries all configurable bounds with safe defaults:
