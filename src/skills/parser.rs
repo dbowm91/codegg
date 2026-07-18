@@ -169,7 +169,7 @@ pub fn parse_candidate(
         content_digest,
         frontmatter_raw: frontmatter_str,
         body,
-        metadata: metadata,
+        metadata,
         resources,
         diagnostics,
     })

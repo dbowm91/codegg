@@ -332,14 +332,21 @@ pub struct SecretBindingSummary {
     pub account_ref: String,
 }
 
-/// Durable lifecycle state. `Deleted` is represented by row absence after
-/// [`ProviderConnectionStore::delete_metadata`].
+/// Durable lifecycle state for a daemon-owned provider connection.
+///
+/// The original three-state column remains a compatibility projection. The
+/// additive lifecycle table (introduced after the project-catalog migrations)
+/// stores the extended states without rewriting the historical provider table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProviderConnectionState {
     Active,
     Disabled,
     CredentialMissing,
+    ProvisioningRotating,
+    Tombstoned,
+    Error,
+    Stale,
 }
 
 impl ProviderConnectionState {
@@ -348,6 +355,10 @@ impl ProviderConnectionState {
             Self::Active => "active",
             Self::Disabled => "disabled",
             Self::CredentialMissing => "credential_missing",
+            Self::ProvisioningRotating => "provisioning_rotating",
+            Self::Tombstoned => "tombstoned",
+            Self::Error => "error",
+            Self::Stale => "stale",
         }
     }
 
@@ -356,6 +367,10 @@ impl ProviderConnectionState {
             "active" => Ok(Self::Active),
             "disabled" => Ok(Self::Disabled),
             "credential_missing" => Ok(Self::CredentialMissing),
+            "provisioning_rotating" => Ok(Self::ProvisioningRotating),
+            "tombstoned" => Ok(Self::Tombstoned),
+            "error" => Ok(Self::Error),
+            "stale" => Ok(Self::Stale),
             _ => Err(ProviderConnectionError::InvalidStorage(
                 "unknown provider connection state".to_owned(),
             )),
@@ -363,15 +378,55 @@ impl ProviderConnectionState {
     }
 
     pub fn can_transition_to(self, target: Self) -> bool {
-        matches!(
-            (self, target),
-            (Self::Active, Self::Disabled)
-                | (Self::Active, Self::CredentialMissing)
-                | (Self::Disabled, Self::Active)
-                | (Self::Disabled, Self::CredentialMissing)
-                | (Self::CredentialMissing, Self::Active)
-                | (Self::CredentialMissing, Self::Disabled)
-        ) || self == target
+        if self == target {
+            return true;
+        }
+        match self {
+            Self::Active | Self::Disabled | Self::CredentialMissing => matches!(
+                target,
+                Self::Active
+                    | Self::Disabled
+                    | Self::CredentialMissing
+                    | Self::ProvisioningRotating
+                    | Self::Tombstoned
+                    | Self::Error
+                    | Self::Stale
+            ),
+            Self::ProvisioningRotating => matches!(
+                target,
+                Self::Active
+                    | Self::Disabled
+                    | Self::CredentialMissing
+                    | Self::Tombstoned
+                    | Self::Error
+                    | Self::Stale
+            ),
+            Self::Tombstoned => matches!(
+                target,
+                Self::Active | Self::Disabled | Self::CredentialMissing
+            ),
+            Self::Error => matches!(
+                target,
+                Self::Active
+                    | Self::Disabled
+                    | Self::CredentialMissing
+                    | Self::Tombstoned
+                    | Self::Stale
+            ),
+            Self::Stale => matches!(
+                target,
+                Self::Active
+                    | Self::Disabled
+                    | Self::CredentialMissing
+                    | Self::Tombstoned
+                    | Self::Error
+            ),
+        }
+    }
+
+    /// Whether a connection may be selected or resolved for a new request.
+    pub fn is_selectable(self) -> bool {
+        matches!(self, Self::Active)
     }
 }
 
@@ -488,6 +543,56 @@ pub struct ProviderConnectionDetail {
     pub updated_at: i64,
 }
 
+/// Kinds of durable references that prevent a tombstoned connection from
+/// being purged. The reference table is authoritative; these values are also
+/// safe to expose in redacted operator diagnostics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderConnectionReferenceKind {
+    SelectedSession,
+    ProvisioningOperation,
+    ActiveRuntime,
+}
+
+impl ProviderConnectionReferenceKind {
+    pub fn storage_key(self) -> &'static str {
+        match self {
+            Self::SelectedSession => "selected_session",
+            Self::ProvisioningOperation => "provisioning_operation",
+            Self::ActiveRuntime => "active_runtime",
+        }
+    }
+
+    fn from_storage_key(value: &str) -> Result<Self, ProviderConnectionError> {
+        match value {
+            "selected_session" => Ok(Self::SelectedSession),
+            "provisioning_operation" => Ok(Self::ProvisioningOperation),
+            "active_runtime" => Ok(Self::ActiveRuntime),
+            _ => Err(ProviderConnectionError::InvalidStorage(
+                "unknown provider connection reference kind".to_owned(),
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderConnectionReference {
+    pub connection_id: ProviderConnectionId,
+    pub kind: ProviderConnectionReferenceKind,
+    pub reference_id: String,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderConnectionTombstone {
+    pub connection_id: ProviderConnectionId,
+    pub tombstoned_at: i64,
+    pub tombstoned_by_actor: String,
+    pub last_known_revision: u64,
+    pub last_known_catalog_revision: Option<String>,
+    pub last_known_endpoint_authority: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct NewProviderConnection {
     pub provider_kind: ProviderKind,
@@ -547,6 +652,20 @@ impl ProviderConnectionUpdate {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum PurgeBlocker {
+    SelectedSessions { count: u64 },
+    ProvisioningOperation { operation_id: String },
+    ActiveRuntime { reference_id: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PurgeOutcome {
+    Purged,
+    Blocked(Vec<PurgeBlocker>),
+}
+
 #[derive(Debug, Error)]
 pub enum ProviderConnectionError {
     #[error("invalid provider connection: {0}")]
@@ -576,6 +695,8 @@ pub enum ProviderConnectionError {
         from: ProviderConnectionState,
         to: ProviderConnectionState,
     },
+    #[error("provider connection purge is blocked")]
+    PurgeBlocked(Vec<PurgeBlocker>),
     #[error("provider connection storage error: {0}")]
     Storage(#[from] StorageError),
 }
@@ -584,6 +705,63 @@ pub enum ProviderConnectionError {
 #[derive(Clone)]
 pub struct ProviderConnectionStore {
     pool: SqlitePool,
+}
+
+/// Explicit lease for a daemon-owned runtime reference. The lease is
+/// intentionally released asynchronously so purge cannot race an active
+/// provider instance without the owner acknowledging completion.
+pub struct ProviderConnectionRuntimeLease {
+    store: ProviderConnectionStore,
+    connection_id: ProviderConnectionId,
+    reference_id: String,
+    released: bool,
+}
+
+impl ProviderConnectionRuntimeLease {
+    pub fn connection_id(&self) -> &ProviderConnectionId {
+        &self.connection_id
+    }
+
+    pub fn reference_id(&self) -> &str {
+        &self.reference_id
+    }
+
+    pub async fn release(mut self) -> Result<(), ProviderConnectionError> {
+        if !self.released {
+            self.store
+                .remove_reference(
+                    &self.connection_id,
+                    ProviderConnectionReferenceKind::ActiveRuntime,
+                    &self.reference_id,
+                )
+                .await?;
+            self.released = true;
+        }
+        Ok(())
+    }
+}
+
+impl Drop for ProviderConnectionRuntimeLease {
+    fn drop(&mut self) {
+        if self.released {
+            return;
+        }
+        let store = self.store.clone();
+        let connection_id = self.connection_id.clone();
+        let reference_id = self.reference_id.clone();
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                let _ = store
+                    .remove_reference(
+                        &connection_id,
+                        ProviderConnectionReferenceKind::ActiveRuntime,
+                        &reference_id,
+                    )
+                    .await;
+            });
+        }
+        self.released = true;
+    }
 }
 
 impl ProviderConnectionStore {
@@ -657,7 +835,11 @@ impl ProviderConnectionStore {
         .await
         .map_err(StorageError::from)
         .map_err(ProviderConnectionError::Storage)?;
-        row.map(ProviderConnectionRow::into_domain).transpose()
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let connection = row.into_domain()?;
+        Ok(Some(self.apply_lifecycle_state(connection).await?))
     }
 
     pub async fn list(&self) -> Result<Vec<ProviderConnection>, ProviderConnectionError> {
@@ -671,9 +853,11 @@ impl ProviderConnectionStore {
         .await
         .map_err(StorageError::from)
         .map_err(ProviderConnectionError::Storage)?;
-        rows.into_iter()
-            .map(ProviderConnectionRow::into_domain)
-            .collect()
+        let mut connections = Vec::with_capacity(rows.len());
+        for row in rows {
+            connections.push(self.apply_lifecycle_state(row.into_domain()?).await?);
+        }
+        Ok(connections)
     }
 
     pub async fn list_for_scope(
@@ -694,9 +878,29 @@ impl ProviderConnectionStore {
         .await
         .map_err(StorageError::from)
         .map_err(ProviderConnectionError::Storage)?;
-        rows.into_iter()
-            .map(ProviderConnectionRow::into_domain)
-            .collect()
+        let mut connections = Vec::with_capacity(rows.len());
+        for row in rows {
+            connections.push(self.apply_lifecycle_state(row.into_domain()?).await?);
+        }
+        Ok(connections)
+    }
+
+    async fn apply_lifecycle_state(
+        &self,
+        mut connection: ProviderConnection,
+    ) -> Result<ProviderConnection, ProviderConnectionError> {
+        let state = sqlx::query_scalar::<_, String>(
+            "SELECT state FROM provider_connection_lifecycle WHERE connection_id = ?",
+        )
+        .bind(connection.id.as_str())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(StorageError::from)
+        .map_err(ProviderConnectionError::Storage)?;
+        if let Some(state) = state {
+            connection.state = ProviderConnectionState::from_storage_key(&state)?;
+        }
+        Ok(connection)
     }
 
     pub async fn update(
@@ -706,6 +910,20 @@ impl ProviderConnectionStore {
         update: ProviderConnectionUpdate,
     ) -> Result<ProviderConnection, ProviderConnectionError> {
         update.validate()?;
+        if let Some(current) = self.get(id).await? {
+            if matches!(
+                current.state,
+                ProviderConnectionState::Tombstoned
+                    | ProviderConnectionState::Error
+                    | ProviderConnectionState::Stale
+                    | ProviderConnectionState::ProvisioningRotating
+            ) {
+                return Err(ProviderConnectionError::InvalidTransition {
+                    from: current.state,
+                    to: current.state,
+                });
+            }
+        }
         let (scope_kind, scope_ref) = update.scope.storage_parts();
         let provider_kind = update.provider_kind.storage_key()?;
         let (secret_ref, secret_provider_ref, secret_account_ref) =
@@ -766,21 +984,79 @@ impl ProviderConnectionStore {
         if next.revision == current.revision {
             return Ok(current);
         }
+        let mut tx = self.pool.begin().await.map_err(map_sql_error)?;
         let result = sqlx::query(
             "UPDATE provider_connections SET state = ?, revision = ?, time_updated = ? \
              WHERE id = ? AND revision = ?",
         )
-        .bind(target.storage_key())
+        .bind(compatibility_state(target).storage_key())
         .bind(next.revision as i64)
         .bind(next.updated_at)
         .bind(id.as_str())
         .bind(expected_revision as i64)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
         .map_err(map_sql_error)?;
         if result.rows_affected() != 1 {
+            tx.rollback().await.map_err(map_sql_error)?;
             return self.revision_conflict(id, expected_revision).await;
         }
+        if is_extended_state(target) {
+            sqlx::query(
+                "INSERT INTO provider_connection_lifecycle (connection_id, state, revision, time_updated) VALUES (?, ?, ?, ?) \
+                 ON CONFLICT(connection_id) DO UPDATE SET state = excluded.state, revision = excluded.revision, time_updated = excluded.time_updated",
+            )
+            .bind(id.as_str())
+            .bind(target.storage_key())
+            .bind(next.revision as i64)
+            .bind(next.updated_at)
+            .execute(&mut *tx)
+            .await
+            .map_err(map_sql_error)?;
+        } else {
+            sqlx::query("DELETE FROM provider_connection_lifecycle WHERE connection_id = ?")
+                .bind(id.as_str())
+                .execute(&mut *tx)
+                .await
+                .map_err(map_sql_error)?;
+        }
+        if target == ProviderConnectionState::Tombstoned {
+            let catalog_revision = sqlx::query_scalar::<_, Option<String>>(
+                "SELECT catalog_revision FROM provider_connection_health WHERE connection_id = ?",
+            )
+            .bind(id.as_str())
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(map_sql_error)?
+            .flatten();
+            sqlx::query(
+                "INSERT INTO provider_connection_tombstones (connection_id, tombstoned_at, tombstoned_by_actor, last_known_revision, last_known_catalog_revision, last_known_endpoint_authority) \
+                 VALUES (?, ?, 'system', ?, ?, ?) \
+                 ON CONFLICT(connection_id) DO UPDATE SET tombstoned_at = excluded.tombstoned_at, last_known_revision = excluded.last_known_revision, last_known_catalog_revision = excluded.last_known_catalog_revision, last_known_endpoint_authority = excluded.last_known_endpoint_authority",
+            )
+            .bind(id.as_str())
+            .bind(next.updated_at)
+            .bind(next.revision as i64)
+            .bind(catalog_revision)
+            .bind(next.endpoint.to_string())
+            .execute(&mut *tx)
+            .await
+            .map_err(map_sql_error)?;
+        }
+        sqlx::query(
+            "INSERT INTO provider_connection_audit_events (event_id, connection_id, action, actor_seam, old_revision, new_revision, endpoint_authority, outcome, time_created) VALUES (?, ?, ?, 'local_operator', ?, ?, ?, 'committed', ?)",
+        )
+        .bind(uuid::Uuid::new_v4().to_string())
+        .bind(id.as_str())
+        .bind(format!("transition:{}", target.storage_key()))
+        .bind(expected_revision as i64)
+        .bind(next.revision as i64)
+        .bind(current.endpoint.to_string())
+        .bind(now_millis())
+        .execute(&mut *tx)
+        .await
+        .map_err(map_sql_error)?;
+        tx.commit().await.map_err(map_sql_error)?;
         self.get(id)
             .await?
             .ok_or_else(|| ProviderConnectionError::NotFound(id.clone()))
@@ -795,39 +1071,234 @@ impl ProviderConnectionStore {
             .await
     }
 
-    pub async fn delete_metadata(
+    pub async fn enable(
+        &self,
+        id: &ProviderConnectionId,
+        expected_revision: u64,
+    ) -> Result<ProviderConnection, ProviderConnectionError> {
+        let current = self
+            .get(id)
+            .await?
+            .ok_or_else(|| ProviderConnectionError::NotFound(id.clone()))?;
+        let target = if current.secret_binding.is_some() {
+            ProviderConnectionState::Active
+        } else {
+            ProviderConnectionState::CredentialMissing
+        };
+        self.transition(id, expected_revision, target).await
+    }
+
+    pub async fn restore(
+        &self,
+        id: &ProviderConnectionId,
+        expected_revision: u64,
+    ) -> Result<ProviderConnection, ProviderConnectionError> {
+        self.enable(id, expected_revision).await
+    }
+
+    /// Logical deletion preserving connection identity, history, and
+    /// reference diagnostics. Use [`Self::purge`] only after blockers clear.
+    pub async fn delete(
         &self,
         id: &ProviderConnectionId,
         expected_revision: u64,
     ) -> Result<bool, ProviderConnectionError> {
-        let result = sqlx::query("DELETE FROM provider_connections WHERE id = ? AND revision = ?")
-            .bind(id.as_str())
-            .bind(expected_revision as i64)
-            .execute(&self.pool)
+        let current = self
+            .get(id)
+            .await?
+            .ok_or_else(|| ProviderConnectionError::NotFound(id.clone()))?;
+        self.transition(id, expected_revision, ProviderConnectionState::Tombstoned)
             .await
-            .map_err(map_sql_error)?;
-        if result.rows_affected() == 1 {
-            return Ok(true);
+            .map(|_| current.state != ProviderConnectionState::Tombstoned)
+    }
+
+    pub async fn add_reference(
+        &self,
+        connection_id: &ProviderConnectionId,
+        kind: ProviderConnectionReferenceKind,
+        reference_id: &str,
+    ) -> Result<(), ProviderConnectionError> {
+        validate_reference("provider connection reference", reference_id)?;
+        sqlx::query(
+            "INSERT OR IGNORE INTO provider_connection_references (connection_id, reference_kind, reference_id, created_at) VALUES (?, ?, ?, ?)",
+        )
+        .bind(connection_id.as_str())
+        .bind(kind.storage_key())
+        .bind(reference_id)
+        .bind(now_millis())
+        .execute(&self.pool)
+        .await
+        .map_err(map_sql_error)?;
+        Ok(())
+    }
+
+    /// Acquire a purge-blocking runtime reference after validating that the
+    /// connection is currently active at the requested revision.
+    pub async fn acquire_active_runtime_reference(
+        &self,
+        connection_id: &ProviderConnectionId,
+        expected_revision: u64,
+        reference_id: &str,
+    ) -> Result<ProviderConnectionRuntimeLease, ProviderConnectionError> {
+        let current = self
+            .get(connection_id)
+            .await?
+            .ok_or_else(|| ProviderConnectionError::NotFound(connection_id.clone()))?;
+        if current.revision != expected_revision {
+            return Err(ProviderConnectionError::RevisionConflict {
+                id: connection_id.clone(),
+                expected: expected_revision,
+                current: current.revision,
+            });
         }
-        if let Some(current) = self.get(id).await? {
+        if current.state != ProviderConnectionState::Active {
+            return Err(ProviderConnectionError::InvalidTransition {
+                from: current.state,
+                to: ProviderConnectionState::Active,
+            });
+        }
+        self.add_reference(
+            connection_id,
+            ProviderConnectionReferenceKind::ActiveRuntime,
+            reference_id,
+        )
+        .await?;
+        Ok(ProviderConnectionRuntimeLease {
+            store: self.clone(),
+            connection_id: connection_id.clone(),
+            reference_id: reference_id.to_owned(),
+            released: false,
+        })
+    }
+
+    pub async fn remove_reference(
+        &self,
+        connection_id: &ProviderConnectionId,
+        kind: ProviderConnectionReferenceKind,
+        reference_id: &str,
+    ) -> Result<(), ProviderConnectionError> {
+        sqlx::query(
+            "DELETE FROM provider_connection_references WHERE connection_id = ? AND reference_kind = ? AND reference_id = ?",
+        )
+        .bind(connection_id.as_str())
+        .bind(kind.storage_key())
+        .bind(reference_id)
+        .execute(&self.pool)
+        .await
+        .map_err(map_sql_error)?;
+        Ok(())
+    }
+
+    pub async fn references(
+        &self,
+        connection_id: &ProviderConnectionId,
+    ) -> Result<Vec<ProviderConnectionReference>, ProviderConnectionError> {
+        let rows = sqlx::query_as::<_, (String, String, i64)>(
+            "SELECT reference_kind, reference_id, created_at FROM provider_connection_references WHERE connection_id = ? ORDER BY created_at, reference_id",
+        )
+        .bind(connection_id.as_str())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(map_sql_error)?;
+        rows.into_iter()
+            .map(|(kind, reference_id, created_at)| {
+                Ok(ProviderConnectionReference {
+                    connection_id: connection_id.clone(),
+                    kind: ProviderConnectionReferenceKind::from_storage_key(&kind)?,
+                    reference_id,
+                    created_at,
+                })
+            })
+            .collect()
+    }
+
+    pub async fn purge_eligibility(
+        &self,
+        id: &ProviderConnectionId,
+    ) -> Result<Vec<PurgeBlocker>, ProviderConnectionError> {
+        let mut blockers = Vec::new();
+        let refs = self.references(id).await?;
+        let selected = refs
+            .iter()
+            .filter(|reference| reference.kind == ProviderConnectionReferenceKind::SelectedSession)
+            .count() as u64;
+        if selected > 0 {
+            blockers.push(PurgeBlocker::SelectedSessions { count: selected });
+        }
+        for reference in refs {
+            match reference.kind {
+                ProviderConnectionReferenceKind::ProvisioningOperation => {
+                    blockers.push(PurgeBlocker::ProvisioningOperation {
+                        operation_id: reference.reference_id,
+                    });
+                }
+                ProviderConnectionReferenceKind::ActiveRuntime => {
+                    blockers.push(PurgeBlocker::ActiveRuntime {
+                        reference_id: reference.reference_id,
+                    });
+                }
+                ProviderConnectionReferenceKind::SelectedSession => {}
+            }
+        }
+        Ok(blockers)
+    }
+
+    pub async fn purge(
+        &self,
+        id: &ProviderConnectionId,
+        expected_revision: u64,
+    ) -> Result<PurgeOutcome, ProviderConnectionError> {
+        let current = self
+            .get(id)
+            .await?
+            .ok_or_else(|| ProviderConnectionError::NotFound(id.clone()))?;
+        if current.revision != expected_revision {
             return Err(ProviderConnectionError::RevisionConflict {
                 id: id.clone(),
                 expected: expected_revision,
                 current: current.revision,
             });
         }
-        Ok(false)
+        if current.state != ProviderConnectionState::Tombstoned {
+            return Err(ProviderConnectionError::InvalidTransition {
+                from: current.state,
+                to: ProviderConnectionState::Tombstoned,
+            });
+        }
+        let blockers = self.purge_eligibility(id).await?;
+        if !blockers.is_empty() {
+            return Ok(PurgeOutcome::Blocked(blockers));
+        }
+        let mut tx = self.pool.begin().await.map_err(map_sql_error)?;
+        for statement in [
+            "DELETE FROM provider_connection_references WHERE connection_id = ?",
+            "DELETE FROM provider_connection_audit_events WHERE connection_id = ?",
+            "DELETE FROM provider_connection_tombstones WHERE connection_id = ?",
+            "DELETE FROM provider_connection_lifecycle WHERE connection_id = ?",
+            "DELETE FROM provider_connections WHERE id = ? AND revision = ?",
+        ] {
+            let mut query = sqlx::query(statement).bind(id.as_str());
+            if statement.contains("revision = ?") {
+                query = query.bind(expected_revision as i64);
+            }
+            query.execute(&mut *tx).await.map_err(map_sql_error)?;
+        }
+        tx.commit().await.map_err(map_sql_error)?;
+        Ok(PurgeOutcome::Purged)
     }
 
-    /// Delete only the durable metadata row after an optimistic revision
-    /// check. Credential-store records are owned by the secret subsystem and
-    /// are intentionally not touched here.
-    pub async fn delete(
+    /// Compatibility name for older callers. Deletion is now always a
+    /// tombstone transition; callers that need physical removal must use
+    /// [`Self::purge`] after reference blockers clear.
+    pub async fn delete_metadata(
         &self,
         id: &ProviderConnectionId,
         expected_revision: u64,
     ) -> Result<bool, ProviderConnectionError> {
-        self.delete_metadata(id, expected_revision).await
+        if self.get(id).await?.is_none() {
+            return Ok(false);
+        }
+        self.delete(id, expected_revision).await
     }
 
     async fn revision_conflict(
@@ -944,6 +1415,24 @@ fn validate_reference(kind: &str, value: &str) -> Result<(), ProviderConnectionE
         )));
     }
     Ok(())
+}
+
+fn compatibility_state(state: ProviderConnectionState) -> ProviderConnectionState {
+    match state {
+        ProviderConnectionState::Active => ProviderConnectionState::Active,
+        ProviderConnectionState::CredentialMissing => ProviderConnectionState::CredentialMissing,
+        _ => ProviderConnectionState::Disabled,
+    }
+}
+
+fn is_extended_state(state: ProviderConnectionState) -> bool {
+    matches!(
+        state,
+        ProviderConnectionState::ProvisioningRotating
+            | ProviderConnectionState::Tombstoned
+            | ProviderConnectionState::Error
+            | ProviderConnectionState::Stale
+    )
 }
 
 fn secret_columns(binding: Option<&SecretBindingLocator>) -> (&str, &str, &str) {
@@ -1082,6 +1571,43 @@ mod tests {
             .is_ok());
     }
 
+    #[test]
+    fn lifecycle_transition_matrix_covers_all_49_pairs() {
+        let states = [
+            ProviderConnectionState::Active,
+            ProviderConnectionState::Disabled,
+            ProviderConnectionState::CredentialMissing,
+            ProviderConnectionState::ProvisioningRotating,
+            ProviderConnectionState::Tombstoned,
+            ProviderConnectionState::Error,
+            ProviderConnectionState::Stale,
+        ];
+        let mut pairs = 0;
+        for from in states {
+            for to in states {
+                pairs += 1;
+                let connection = ProviderConnection {
+                    id: ProviderConnectionId::new(),
+                    provider_kind: ProviderKind::Eggpool,
+                    display_name: "Provider".to_owned(),
+                    endpoint: Endpoint::new("https://example.com", TlsPolicy::Required).unwrap(),
+                    tls_policy: TlsPolicy::Required,
+                    scope: ProviderScope::project(ProjectId::new()),
+                    secret_binding: None,
+                    state: from,
+                    revision: 1,
+                    created_at: 1,
+                    updated_at: 1,
+                };
+                assert_eq!(
+                    connection.transition(to).is_ok(),
+                    from.can_transition_to(to)
+                );
+            }
+        }
+        assert_eq!(pairs, 49);
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn migration_is_idempotent_and_store_crud_is_revision_safe() {
         let database = pool().await;
@@ -1092,7 +1618,7 @@ mod tests {
             .fetch_one(&database)
             .await
             .unwrap();
-        assert_eq!(version, 30);
+        assert_eq!(version, 31);
         let store = ProviderConnectionStore::new(database.clone());
         let created = store
             .create(input(ProviderScope::project(ProjectId::new())))
@@ -1124,7 +1650,12 @@ mod tests {
             ProviderConnectionState::Disabled
         );
         assert!(store.delete_metadata(&created.id, 3).await.unwrap());
-        assert!(store.get(&created.id).await.unwrap().is_none());
+        let tombstone = store.get(&created.id).await.unwrap().unwrap();
+        assert_eq!(tombstone.state, ProviderConnectionState::Tombstoned);
+        assert!(matches!(
+            store.purge(&created.id, tombstone.revision).await.unwrap(),
+            PurgeOutcome::Purged
+        ));
         assert!(!store.delete_metadata(&created.id, 1).await.unwrap());
     }
 
@@ -1143,5 +1674,55 @@ mod tests {
             store.create(duplicate).await,
             Err(ProviderConnectionError::Conflict)
         ));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn tombstone_restore_and_purge_are_reference_safe() {
+        let database = pool().await;
+        let store = ProviderConnectionStore::new(database);
+        let created = store
+            .create(input(ProviderScope::project(ProjectId::new())))
+            .await
+            .unwrap();
+        let tombstoned = store.delete(&created.id, created.revision).await.unwrap();
+        assert!(tombstoned);
+        let tombstone = store.get(&created.id).await.unwrap().unwrap();
+        assert_eq!(tombstone.state, ProviderConnectionState::Tombstoned);
+        store
+            .add_reference(
+                &created.id,
+                ProviderConnectionReferenceKind::SelectedSession,
+                "session-1",
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            store.purge(&created.id, tombstone.revision).await.unwrap(),
+            PurgeOutcome::Blocked(_)
+        ));
+        store
+            .remove_reference(
+                &created.id,
+                ProviderConnectionReferenceKind::SelectedSession,
+                "session-1",
+            )
+            .await
+            .unwrap();
+        let restored = store
+            .restore(&created.id, tombstone.revision)
+            .await
+            .unwrap();
+        assert_eq!(restored.state, ProviderConnectionState::Active);
+        let tombstoned_again = store.delete(&created.id, restored.revision).await.unwrap();
+        assert!(tombstoned_again);
+        let tombstone_again = store.get(&created.id).await.unwrap().unwrap();
+        assert!(matches!(
+            store
+                .purge(&created.id, tombstone_again.revision)
+                .await
+                .unwrap(),
+            PurgeOutcome::Purged
+        ));
+        assert!(store.get(&created.id).await.unwrap().is_none());
     }
 }

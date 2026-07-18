@@ -4,6 +4,15 @@ The `storage` module handles SQLite database initialization and connection pooli
 
 ## Overview
 
+## Provider connection lifecycle migration
+
+Storage layout 31 adds lifecycle projection, reference, tombstone, and audit
+tables. The historical three-state provider column remains a compatibility
+projection; the additive lifecycle table is authoritative for extended states.
+Tombstones preserve identity and endpoint history, while the reference table
+is authoritative for purge blockers. Credential material remains outside
+SQLite.
+
 **Location**: `crates/codegg-core/src/storage/`
 
 **Key Responsibilities**:

@@ -252,7 +252,7 @@ async fn archive_preserves_related_rows() {
         .archive_project(&record.project_id, "test")
         .await
         .unwrap();
-    assert_eq!(archived.archived_at.is_some(), true);
+    assert!(archived.archived_at.is_some());
 
     // Workspace binding still exists
     let bindings = catalog
@@ -611,14 +611,14 @@ async fn conservative_legacy_association_idempotent() {
     .unwrap();
 
     // Run association
-    let report = conservative_legacy_association(&p, &[ws.clone()], "test_legacy")
+    let report = conservative_legacy_association(&p, std::slice::from_ref(&ws), "test_legacy")
         .await
         .unwrap();
     assert!(!report.already_migrated);
     assert!(report.projects_associated <= report.diagnostics_recorded + 1);
 
     // Run again — should be idempotent
-    let report2 = conservative_legacy_association(&p, &[ws.clone()], "test_legacy")
+    let report2 = conservative_legacy_association(&p, std::slice::from_ref(&ws), "test_legacy")
         .await
         .unwrap();
     assert!(report2.already_migrated);

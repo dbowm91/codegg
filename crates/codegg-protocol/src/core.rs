@@ -6,8 +6,10 @@ use crate::dto::{
     ScheduleRecordDto, ScheduleSummaryDto, SessionBindingDto, WorkspaceServiceHealthDto,
 };
 use crate::provider::{
-    ConnectionProvisioningStatusDto, CreateEggpoolConnectionRequest, CreateEggpoolConnectionResult,
-    ProviderConnectionSummaryDto, ProviderModelDto, SessionSelectionDto,
+    ConnectionDetailDto, ConnectionProvisioningStatusDto, ConnectionRefreshStatusDto,
+    ConnectionRotateChange, ConnectionRotateStatusDto, CreateEggpoolConnectionRequest,
+    CreateEggpoolConnectionResult, ProviderConnectionSummaryDto, ProviderModelDto, PurgeOutcome,
+    SecretInput, SecretInputRef, SessionLifecycleProjection, SessionSelectionDto,
     UpdateSessionSelectionRequest,
 };
 
@@ -157,6 +159,31 @@ pub enum CoreResponse {
         connection_id: String,
         catalog_revision: Option<String>,
         models: Vec<ProviderModelDto>,
+    },
+    ConnectionDetail {
+        detail: ConnectionDetailDto,
+    },
+    ConnectionDetails {
+        details: Vec<ConnectionDetailDto>,
+    },
+    ConnectionRotateStatus {
+        result: ConnectionRotateStatusDto,
+    },
+    ConnectionRotateSecretStaged {
+        request_id: String,
+        secret: SecretInputRef,
+    },
+    ConnectionRefreshStatus {
+        result: ConnectionRefreshStatusDto,
+    },
+    ConnectionRefreshResult {
+        result: ConnectionRefreshStatusDto,
+    },
+    ConnectionPurge {
+        outcome: PurgeOutcome,
+    },
+    SessionLifecycle {
+        projection: SessionLifecycleProjection,
     },
     /// Provider Connections Milestone 3: redacted list of selectable
     /// connections plus their model catalogs for the current session.
@@ -391,6 +418,64 @@ pub enum CoreRequest {
     ProviderConnectionModels {
         connection_id: String,
     },
+    /// Secret-bearing rotation request. The secret is an opaque local input
+    /// handle and is rejected by the remote WebSocket transport.
+    ConnectionRotateBegin {
+        request_id: String,
+        connection_id: String,
+        expected_revision: u64,
+        change: ConnectionRotateChange,
+        secret: SecretInputRef,
+    },
+    /// Local-only staging request. The plaintext is accepted only across the
+    /// daemon's local authenticated boundary and is immediately moved into a
+    /// bounded daemon-owned secret buffer.
+    ConnectionRotateSecretStage {
+        request_id: String,
+        secret: SecretInput,
+    },
+    ConnectionRotateCancel {
+        request_id: String,
+    },
+    ConnectionRotateStatus {
+        request_id: String,
+    },
+    ConnectionRefreshBegin {
+        connection_id: String,
+        expected_revision: u64,
+    },
+    ConnectionRefreshCancel {
+        operation_id: String,
+    },
+    ConnectionRefreshStatus {
+        operation_id: String,
+    },
+    ConnectionGet {
+        connection_id: String,
+    },
+    ConnectionListDetail,
+    ConnectionEnable {
+        connection_id: String,
+        expected_revision: u64,
+        #[serde(default)]
+        require_probe: bool,
+    },
+    ConnectionDisable {
+        connection_id: String,
+        expected_revision: u64,
+    },
+    ConnectionDelete {
+        connection_id: String,
+        expected_revision: u64,
+    },
+    ConnectionRestore {
+        connection_id: String,
+        expected_revision: u64,
+    },
+    ConnectionPurge {
+        connection_id: String,
+        expected_revision: u64,
+    },
     Subscribe {
         session_id: Option<String>,
     },
@@ -517,6 +602,9 @@ pub enum CoreRequest {
     SessionSelectionModels {
         session_id: String,
         connection_id: String,
+    },
+    SessionLifecycleGet {
+        session_id: String,
     },
     ModelsRefresh,
     PermissionRespond {
@@ -748,6 +836,19 @@ pub enum CoreRequest {
 pub enum CoreEvent {
     AssetRefreshCompleted {
         report: AssetRefreshReportDto,
+    },
+    ConnectionRotated {
+        connection_id: String,
+        new_revision: u64,
+        catalog_revision: Option<String>,
+        actor_seam: String,
+    },
+    ConnectionStateChanged {
+        connection_id: String,
+        old_state: String,
+        new_state: String,
+        actor_seam: String,
+        at: i64,
     },
     SnapshotSession {
         session_id: String,

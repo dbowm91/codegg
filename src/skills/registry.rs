@@ -241,7 +241,7 @@ fn discover_in_root(
     };
 
     let mut entries: Vec<_> = entries.filter_map(|e| e.ok()).collect();
-    entries.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
+    entries.sort_by_key(|a| a.file_name());
 
     for entry in &entries {
         if skill_count >= config.max_skills_per_root {
@@ -278,30 +278,29 @@ fn discover_in_root(
                     }
                 }
             }
-        } else if source_kind == SourceKind::CodeGGNativeCompat
-            || source_kind == SourceKind::CodeGGProject
+        } else if (source_kind == SourceKind::CodeGGNativeCompat
+            || source_kind == SourceKind::CodeGGProject)
+            && path.extension().and_then(|e| e.to_str()) == Some("md")
         {
-            if path.extension().and_then(|e| e.to_str()) == Some("md") {
-                match validate_symlink_boundary(&path, &source_root.canonical_path) {
-                    Ok(()) => {}
-                    Err(diag) => {
-                        diagnostics.push(diag);
-                        continue;
-                    }
+            match validate_symlink_boundary(&path, &source_root.canonical_path) {
+                Ok(()) => {}
+                Err(diag) => {
+                    diagnostics.push(diag);
+                    continue;
                 }
-                let compat_kind = if source_kind == SourceKind::CodeGGProject {
-                    SourceKind::CodeGGNativeCompat
-                } else {
-                    source_kind
-                };
-                match parser::parse_candidate(&path, compat_kind, config) {
-                    Ok(candidate) => {
-                        candidates.push(candidate);
-                        skill_count += 1;
-                    }
-                    Err(diag) => {
-                        diagnostics.push(diag);
-                    }
+            }
+            let compat_kind = if source_kind == SourceKind::CodeGGProject {
+                SourceKind::CodeGGNativeCompat
+            } else {
+                source_kind
+            };
+            match parser::parse_candidate(&path, compat_kind, config) {
+                Ok(candidate) => {
+                    candidates.push(candidate);
+                    skill_count += 1;
+                }
+                Err(diag) => {
+                    diagnostics.push(diag);
                 }
             }
         }

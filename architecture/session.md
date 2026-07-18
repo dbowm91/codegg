@@ -2,6 +2,14 @@
 
 ## Overview
 
+## Selected provider-connection lifecycle
+
+Session selection remains an explicit connection ID plus model ID. Disable,
+tombstone, missing credentials, stale health, and removed models are surfaced
+as lifecycle diagnostics and never trigger fallback to another connection.
+`SessionLifecycleGet` provides the current state, health timestamp, selected
+model, and bounded removed-model list.
+
 The session module (`src/session/`) handles session storage, retrieval, and management for AI coding conversations. Sessions track conversation history, metadata, and analytics, enabling sessions to be archived, resumed, forked, and shared across CLI invocations.
 
 ```

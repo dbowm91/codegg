@@ -26,6 +26,26 @@ legacy `provider/model` strings remain readable through a deterministic
 
 ## Provider Trait and Core Types
 
+## Connection lifecycle and corrective rotation
+
+Durable connections use the states `active`, `disabled`,
+`credential_missing`, `provisioning_rotating`, `tombstoned`, `error`, and
+`stale`. Only `active` is selectable or resolvable for a new request. A
+tombstone preserves connection identity and endpoint history until an
+explicit purge succeeds with no references.
+
+Rotation stages a new opaque credential binding, validates the endpoint, runs
+the bounded Eggpool model probe, and commits metadata, health, and the
+revisioned catalog in one SQLite transaction. New resolutions use the new
+revision after cache invalidation; an already captured provider `Arc` remains
+valid for its in-flight request. Failed work removes only the staged binding.
+
+Connection refresh is explicit, single-flight per connection, bounded by the
+provider probe limits, and preserves the last-good catalog on failure.
+
+Operator flow: connect → select → rotate → refresh → disable → delete
+(tombstone) → restore → purge after all reference blockers clear.
+
 ### Provider Trait (`src/provider/mod.rs:74-87`)
 
 ```rust

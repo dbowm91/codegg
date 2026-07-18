@@ -112,6 +112,9 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), StorageError> {
     if current_version < 30 {
         migrate_and_record(pool, 30).await?;
     }
+    if current_version < 31 {
+        migrate_and_record(pool, 31).await?;
+    }
 
     Ok(())
 }
@@ -154,6 +157,7 @@ async fn migrate_and_record(pool: &SqlitePool, version: i64) -> Result<(), Stora
             28 => migrate_v28(pool).await?,
             29 => migrate_v29(pool).await?,
             30 => migrate_v30(pool).await?,
+            31 => migrate_v31(pool).await?,
             _ => {
                 return Err(StorageError::Migration(format!(
                     "unknown migration version {}",
@@ -1509,6 +1513,67 @@ async fn migrate_v30(pool: &SqlitePool) -> Result<(), StorageError> {
         )
         "#,
         "CREATE INDEX IF NOT EXISTS idx_runtime_asset_refresh_updated ON runtime_asset_refresh(time_updated DESC)",
+    ] {
+        sqlx::query(statement)
+            .execute(pool)
+            .await
+            .map_err(|e| StorageError::Migration(e.to_string()))?;
+    }
+    Ok(())
+}
+
+/// Provider Connections Milestone 5: additive lifecycle, reference,
+/// tombstone, and audit metadata. The historical provider_connections.state
+/// CHECK constraint remains a compatibility projection; extended lifecycle
+/// states are authoritative in provider_connection_lifecycle.
+async fn migrate_v31(pool: &SqlitePool) -> Result<(), StorageError> {
+    for statement in [
+        r#"
+        CREATE TABLE IF NOT EXISTS provider_connection_lifecycle (
+            connection_id TEXT PRIMARY KEY,
+            state TEXT NOT NULL CHECK (state IN ('active','disabled','credential_missing','provisioning_rotating','tombstoned','error','stale')),
+            revision INTEGER NOT NULL CHECK (revision > 0),
+            time_updated INTEGER NOT NULL,
+            FOREIGN KEY(connection_id) REFERENCES provider_connections(id) ON DELETE CASCADE
+        )
+        "#,
+        r#"
+        CREATE TABLE IF NOT EXISTS provider_connection_references (
+            connection_id TEXT NOT NULL,
+            reference_kind TEXT NOT NULL CHECK (reference_kind IN ('selected_session','provisioning_operation','active_runtime')),
+            reference_id TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            PRIMARY KEY(connection_id, reference_kind, reference_id)
+        )
+        "#,
+        "CREATE INDEX IF NOT EXISTS idx_provider_connection_references_connection ON provider_connection_references(connection_id, reference_kind)",
+        r#"
+        CREATE TABLE IF NOT EXISTS provider_connection_tombstones (
+            connection_id TEXT PRIMARY KEY,
+            tombstoned_at INTEGER NOT NULL,
+            tombstoned_by_actor TEXT NOT NULL,
+            last_known_revision INTEGER NOT NULL,
+            last_known_catalog_revision TEXT,
+            last_known_endpoint_authority TEXT NOT NULL,
+            FOREIGN KEY(connection_id) REFERENCES provider_connections(id) ON DELETE CASCADE
+        )
+        "#,
+        r#"
+        CREATE TABLE IF NOT EXISTS provider_connection_audit_events (
+            event_id TEXT PRIMARY KEY,
+            connection_id TEXT NOT NULL,
+            action TEXT NOT NULL,
+            actor_seam TEXT NOT NULL,
+            old_revision INTEGER,
+            new_revision INTEGER,
+            endpoint_authority TEXT,
+            outcome TEXT NOT NULL,
+            duration_ms INTEGER NOT NULL DEFAULT 0,
+            time_created INTEGER NOT NULL,
+            FOREIGN KEY(connection_id) REFERENCES provider_connections(id) ON DELETE CASCADE
+        )
+        "#,
+        "CREATE INDEX IF NOT EXISTS idx_provider_connection_audit_connection ON provider_connection_audit_events(connection_id, time_created DESC)",
     ] {
         sqlx::query(statement)
             .execute(pool)

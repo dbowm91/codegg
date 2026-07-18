@@ -21,7 +21,8 @@ use std::sync::Arc;
 
 use codegg_core::identity::ProviderConnectionId;
 use codegg_core::provider_connections::{
-    ProviderConnection, ProviderConnectionState, ProviderConnectionStore, ProviderScope,
+    ProviderConnection, ProviderConnectionReferenceKind, ProviderConnectionState,
+    ProviderConnectionStore, ProviderScope,
 };
 use codegg_core::session::{
     legacy_resolution, LegacyResolution, Session, SessionStore, UpdateSession,
@@ -42,6 +43,7 @@ pub enum SelectionUpdateOutcome {
     StaleRevision {
         current_connection_id: String,
         current_revision: u64,
+        current_selected_model_id: Option<String>,
     },
     /// The supplied `expected_catalog_revision` did not match the
     /// catalog at the current revision. The stored selection is
@@ -49,6 +51,7 @@ pub enum SelectionUpdateOutcome {
     StaleCatalog {
         current_revision: u64,
         current_catalog_revision: Option<String>,
+        current_selected_model_id: Option<String>,
     },
     /// The targeted connection is not active (disabled, credential
     /// missing, or deleted). The stored selection is unchanged.
@@ -134,15 +137,48 @@ async fn resolve_for_session(
             Some(resolved) => {
                 let summary = summary_dto_for(&resolved.connection, connection_store).await?;
                 return Ok(SessionSelectionDto::Selected {
-                    connection: summary,
-                    model: resolved.model,
+                    connection: Box::new(summary),
+                    model: Box::new(resolved.model),
                     connection_revision: resolved.connection.revision,
                     catalog_revision: resolved.catalog_revision.unwrap_or_else(|| "0".to_string()),
                 });
             }
             None => {
-                // Stale connection or removed model — fall through to
-                // legacy resolution to surface a typed diagnostic.
+                // Preserve the durable selection as an explicit lifecycle
+                // diagnostic. Never reinterpret it through the legacy
+                // provider/model resolver, which could silently choose a
+                // different credentialed endpoint.
+                if let Some(connection) = connection_store
+                    .get(&connection_id)
+                    .await
+                    .map_err(|e| SelectionError::ConnectionStore(e.to_string()))?
+                {
+                    let summary = summary_dto_for(&connection, connection_store).await?;
+                    let catalog_revision = session
+                        .model_catalog_revision
+                        .clone()
+                        .unwrap_or_else(|| "0".to_string());
+                    return Ok(SessionSelectionDto::Selected {
+                        connection: Box::new(summary),
+                        model: Box::new(SelectedModelDto {
+                            connection_id: connection.id.to_string(),
+                            model_id: model_id.clone(),
+                            model_name: model_id.clone(),
+                            context_window: 0,
+                            max_output_tokens: None,
+                            supports_tools: false,
+                            supports_vision: false,
+                            catalog_revision: catalog_revision.clone(),
+                        }),
+                        connection_revision: connection.revision,
+                        catalog_revision,
+                    });
+                }
+                return Ok(SessionSelectionDto::LegacyUnresolved {
+                    legacy_provider: "provider_connection".to_string(),
+                    legacy_model: Some(model_id.clone()),
+                    reason: "selected provider connection is no longer present".to_string(),
+                });
             }
         }
     }
@@ -345,7 +381,7 @@ pub async fn list_selection(
     connection_store: &ProviderConnectionStore,
     session_id: &str,
 ) -> Result<Vec<ProviderConnectionSummaryDto>, SelectionError> {
-    let _ = session_store
+    let session = session_store
         .get(session_id)
         .await
         .map_err(|e| SelectionError::SessionStore(e.to_string()))?
@@ -356,6 +392,14 @@ pub async fn list_selection(
         .map_err(|e| SelectionError::ConnectionStore(e.to_string()))?;
     let mut out = Vec::with_capacity(connections.len());
     for connection in &connections {
+        let in_scope = match &connection.scope {
+            ProviderScope::Personal { .. } => true,
+            ProviderScope::Project { project_id } => project_id.as_str() == session.project_id,
+            ProviderScope::Deployment { .. } => false,
+        };
+        if !in_scope {
+            continue;
+        }
         out.push(summary_dto_for(connection, connection_store).await?);
     }
     Ok(out)
@@ -439,6 +483,7 @@ pub async fn update_selection(
             return Ok(SelectionUpdateOutcome::StaleRevision {
                 current_connection_id: connection_id.as_str().to_string(),
                 current_revision: connection.revision,
+                current_selected_model_id: session.selected_model_id.clone(),
             });
         }
     }
@@ -459,6 +504,7 @@ pub async fn update_selection(
             return Ok(SelectionUpdateOutcome::StaleCatalog {
                 current_revision: connection.revision,
                 current_catalog_revision: catalog_revision,
+                current_selected_model_id: session.selected_model_id.clone(),
             });
         }
     }
@@ -476,6 +522,27 @@ pub async fn update_selection(
         .update(&session.id, update)
         .await
         .map_err(|e| SelectionError::SessionStore(e.to_string()))?;
+    if let Some(previous_connection_id) = session.provider_connection_id.as_deref() {
+        if previous_connection_id != connection_id.as_str() {
+            if let Ok(previous_connection_id) = ProviderConnectionId::parse(previous_connection_id)
+            {
+                let _ = connection_store
+                    .remove_reference(
+                        &previous_connection_id,
+                        ProviderConnectionReferenceKind::SelectedSession,
+                        session.id.as_str(),
+                    )
+                    .await;
+            }
+        }
+    }
+    let _ = connection_store
+        .add_reference(
+            connection_id,
+            ProviderConnectionReferenceKind::SelectedSession,
+            session.id.as_str(),
+        )
+        .await;
 
     let summary = summary_dto_for(&connection, connection_store).await?;
     let selected_model = SelectedModelDto {
@@ -490,8 +557,8 @@ pub async fn update_selection(
     };
     Ok(SelectionUpdateOutcome::Updated(
         SessionSelectionDto::Selected {
-            connection: summary,
-            model: selected_model,
+            connection: Box::new(summary),
+            model: Box::new(selected_model),
             connection_revision: connection.revision,
             catalog_revision: catalog_revision_str,
         },
@@ -617,15 +684,18 @@ pub fn selection_outcome_message(outcome: &SelectionUpdateOutcome) -> String {
         SelectionUpdateOutcome::StaleRevision {
             current_connection_id,
             current_revision,
+            current_selected_model_id,
         } => format!(
-            "Connection '{current_connection_id}' is at revision {current_revision}; reload and retry."
+            "Connection '{current_connection_id}' is at revision {current_revision} with selected model {:?}; reload and retry.",
+            current_selected_model_id
         ),
         SelectionUpdateOutcome::StaleCatalog {
             current_revision,
             current_catalog_revision,
+            current_selected_model_id,
         } => format!(
-            "Catalog for connection revision {current_revision} is at revision {:?}; reload and retry.",
-            current_catalog_revision
+            "Catalog for connection revision {current_revision} is at revision {:?} with selected model {:?}; reload and retry.",
+            current_catalog_revision, current_selected_model_id
         ),
         SelectionUpdateOutcome::ConnectionNotSelectable {
             connection_id,

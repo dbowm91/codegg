@@ -8,7 +8,8 @@
 use async_trait::async_trait;
 use codegg_core::identity::ProviderConnectionId;
 use codegg_core::provider_connections::{
-    ProviderConnection, ProviderConnectionState, ProviderKind as CoreProviderKind,
+    ProviderConnection, ProviderConnectionRuntimeLease, ProviderConnectionState,
+    ProviderKind as CoreProviderKind,
 };
 use codegg_providers::{
     ConnectionError as ProviderConnectionError, ProviderConnectionDescriptor, ProviderFactory,
@@ -60,6 +61,17 @@ pub trait ConnectionStore: Send + Sync {
         &self,
         connection_id: &ProviderConnectionId,
     ) -> Result<Option<ProviderConnection>, ConnectionStoreError>;
+
+    async fn acquire_active_runtime_reference(
+        &self,
+        _connection_id: &ProviderConnectionId,
+        _expected_revision: u64,
+        _reference_id: &str,
+    ) -> Result<ProviderConnectionRuntimeLease, ConnectionStoreError> {
+        Err(ConnectionStoreError::Unavailable(
+            "runtime reference leases are unavailable for this store".to_owned(),
+        ))
+    }
 }
 
 #[async_trait]
@@ -71,6 +83,22 @@ impl ConnectionStore for codegg_core::provider_connections::ProviderConnectionSt
         codegg_core::provider_connections::ProviderConnectionStore::get(self, connection_id)
             .await
             .map_err(|error| ConnectionStoreError::Unavailable(error.to_string()))
+    }
+
+    async fn acquire_active_runtime_reference(
+        &self,
+        connection_id: &ProviderConnectionId,
+        expected_revision: u64,
+        reference_id: &str,
+    ) -> Result<ProviderConnectionRuntimeLease, ConnectionStoreError> {
+        codegg_core::provider_connections::ProviderConnectionStore::acquire_active_runtime_reference(
+            self,
+            connection_id,
+            expected_revision,
+            reference_id,
+        )
+        .await
+        .map_err(|error| ConnectionStoreError::Unavailable(error.to_string()))
     }
 }
 
@@ -116,6 +144,17 @@ impl ConnectionManager {
         &self,
         connection_id: &ProviderConnectionId,
     ) -> Result<ProviderInstance, ConnectionError> {
+        self.resolve_at(connection_id, None).await
+    }
+
+    /// Resolve a connection at an optional optimistic revision. A caller that
+    /// supplies a revision pins the provider instance to that committed
+    /// generation for the lifetime of the returned `Arc`.
+    pub async fn resolve_at(
+        &self,
+        connection_id: &ProviderConnectionId,
+        expected_revision: Option<u64>,
+    ) -> Result<ProviderInstance, ConnectionError> {
         let connection = self
             .store
             .get(connection_id)
@@ -135,6 +174,17 @@ impl ConnectionManager {
                 reason: "store returned metadata for a different connection".to_string(),
             });
         }
+        if let Some(expected_revision) = expected_revision {
+            if connection.revision != expected_revision {
+                return Err(ConnectionError::Unavailable {
+                    connection_id: connection_id.clone(),
+                    reason: format!(
+                        "revision conflict: expected {expected_revision}, current {}",
+                        connection.revision
+                    ),
+                });
+            }
+        }
         match connection.state {
             ProviderConnectionState::Disabled => {
                 return Err(ConnectionError::Disabled(connection_id.clone()))
@@ -143,6 +193,12 @@ impl ConnectionManager {
                 return Err(ConnectionError::CredentialMissing(connection_id.clone()))
             }
             ProviderConnectionState::Active => {}
+            state => {
+                return Err(ConnectionError::Unavailable {
+                    connection_id: connection_id.clone(),
+                    reason: format!("connection lifecycle state is {}", state.storage_key()),
+                })
+            }
         }
         if connection.secret_binding.is_none() {
             return Err(ConnectionError::CredentialMissing(connection_id.clone()));
@@ -164,6 +220,42 @@ impl ConnectionManager {
             .get_or_init(|| async { self.construct(&connection) })
             .await;
         result.clone()
+    }
+
+    /// Resolve and acquire the purge-blocking runtime lease as one daemon
+    /// operation. The returned lease is released asynchronously on `Drop`,
+    /// while callers may release it explicitly at a known request boundary.
+    pub async fn resolve_with_runtime_reference(
+        &self,
+        connection_id: &ProviderConnectionId,
+        expected_revision: Option<u64>,
+    ) -> Result<(ProviderInstance, ProviderConnectionRuntimeLease), ConnectionError> {
+        let provider = self.resolve_at(connection_id, expected_revision).await?;
+        let connection = self
+            .store
+            .get(connection_id)
+            .await
+            .map_err(|error| ConnectionError::Unavailable {
+                connection_id: connection_id.clone(),
+                reason: error.to_string(),
+            })?
+            .ok_or_else(|| ConnectionError::Unavailable {
+                connection_id: connection_id.clone(),
+                reason: "metadata not found after provider resolution".to_owned(),
+            })?;
+        let lease = self
+            .store
+            .acquire_active_runtime_reference(
+                connection_id,
+                connection.revision,
+                &format!("runtime-{}", uuid::Uuid::new_v4()),
+            )
+            .await
+            .map_err(|error| ConnectionError::Unavailable {
+                connection_id: connection_id.clone(),
+                reason: error.to_string(),
+            })?;
+        Ok((provider, lease))
     }
 
     fn construct(&self, connection: &ProviderConnection) -> Resolution {
@@ -199,6 +291,34 @@ impl ConnectionManager {
             .lock()
             .expect("connection cache poisoned")
             .clear();
+    }
+
+    /// Lifecycle seams used by the daemon transaction coordinator. Storage
+    /// commits happen in the owning provider service; these methods make the
+    /// cache invalidation boundary explicit and keep old `Arc` instances
+    /// valid for in-flight requests.
+    pub fn rotate(&self, connection_id: &ProviderConnectionId, old_revision: u64) {
+        self.invalidate_revision(connection_id, old_revision);
+    }
+
+    pub fn refresh(&self, connection_id: &ProviderConnectionId) {
+        self.invalidate(connection_id);
+    }
+
+    pub fn disable(&self, connection_id: &ProviderConnectionId) {
+        self.invalidate(connection_id);
+    }
+
+    pub fn enable(&self, connection_id: &ProviderConnectionId) {
+        self.invalidate(connection_id);
+    }
+
+    pub fn delete(&self, connection_id: &ProviderConnectionId) {
+        self.invalidate(connection_id);
+    }
+
+    pub fn restore(&self, connection_id: &ProviderConnectionId) {
+        self.invalidate(connection_id);
     }
 
     #[cfg(test)]

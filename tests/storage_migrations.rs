@@ -72,7 +72,7 @@ async fn migration_rerun_resumes_after_mid_migration_failure() {
     .fetch_one(&pool)
     .await
     .expect("failed to read final migration version");
-    assert_eq!(final_version, 29, "expected latest migration version");
+    assert_eq!(final_version, 31, "expected latest migration version");
 
     let allowed_paths_exists: i64 = sqlx::query(
         "SELECT COUNT(*) AS cnt FROM pragma_table_info('task') WHERE name = 'allowed_paths'",
@@ -262,15 +262,15 @@ async fn project_catalog_v28_and_discovery_v29_are_additive_and_idempotent() {
     }
 
     // Re-running the migration is idempotent: the migration_version table
-    // is the authoritative gate so the version stays at 29.
+    // is the authoritative gate so the version stays at 31.
     codegg::session::schema::migrate(&pool)
         .await
-        .expect("rerun migration should be a no-op past v29");
+        .expect("rerun migration should be a no-op past v31");
     let final_version: i64 = sqlx::query_scalar(
         "SELECT COALESCE((SELECT version FROM migration_version WHERE id = 1), 0)",
     )
     .fetch_one(&pool)
     .await
     .expect("failed to read final migration version");
-    assert_eq!(final_version, 29, "expected version to remain at 29");
+    assert_eq!(final_version, 31, "expected version to remain at 31");
 }

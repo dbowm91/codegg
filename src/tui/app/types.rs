@@ -285,6 +285,25 @@ pub enum TuiMsg {
         catalog_revision: Option<String>,
         models: Vec<crate::protocol::provider::SelectedModelDto>,
     },
+    OpenConnectionRotation {
+        connection_id: String,
+        expected_revision: u64,
+    },
+    ConnectionLifecycle {
+        action: ConnectionLifecycleAction,
+        connection_id: String,
+        expected_revision: u64,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConnectionLifecycleAction {
+    Refresh,
+    Enable,
+    Disable,
+    Delete,
+    Restore,
+    Purge,
 }
 
 #[derive(Debug, Clone)]

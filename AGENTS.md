@@ -100,6 +100,8 @@ python3 scripts/check_project_catalog_invariants.py # project-catalog and discov
 python3 scripts/check_scheduler_bypass.py           # scheduler-bypass guard
 python3 scripts/check_execution_ownership.py        # process-spawn site ownership manifest
 python3 scripts/check_git_forbidden_patterns.py     # git secret boundary + policy drift
+scripts/check_provider_connections_m4_coverage.sh   # provider lifecycle/protocol coverage
+scripts/check_provider_connections_tombstone_compat.sh # additive tombstone/reference guard
 python3 scripts/check_builtin_agents.py             # verify TOML matches generated.rs
 python3 scripts/check-tokio-test-flavors.py         # regression guard for bare #[tokio::test]
 python3 scripts/generate_builtin_agents.py --check  # agent asset staleness + schema validation

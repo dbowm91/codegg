@@ -96,6 +96,9 @@ pub struct ConnectDialog {
     pub tls_policy: EggpoolTlsPolicy,
     pub scope_personal: bool,
     pub operation_id: Option<String>,
+    /// When set, the dialog is the masked credential editor for an existing
+    /// connection rather than a new provisioning flow.
+    pub rotation_target: Option<(String, u64)>,
     pub cursor_pos: usize,
     pub error_message: Option<String>,
     pub list_state: ListState,
@@ -118,6 +121,7 @@ impl Clone for ConnectDialog {
             tls_policy: self.tls_policy,
             scope_personal: self.scope_personal,
             operation_id: self.operation_id.clone(),
+            rotation_target: self.rotation_target.clone(),
             cursor_pos: self.cursor_pos,
             error_message: self.error_message.clone(),
             list_state: self.list_state.clone(),
@@ -155,6 +159,7 @@ impl ConnectDialog {
             tls_policy: EggpoolTlsPolicy::Optional,
             scope_personal: true,
             operation_id: None,
+            rotation_target: None,
             cursor_pos: 0,
             error_message: None,
             list_state,
@@ -290,6 +295,14 @@ impl ConnectDialog {
     pub fn clear_secret(&mut self) {
         self.api_key_input.replace_range(.., "");
         self.api_key_input.shrink_to_fit();
+    }
+
+    pub fn set_rotation_target(&mut self, connection_id: String, expected_revision: u64) {
+        self.rotation_target = Some((connection_id, expected_revision));
+        self.step = ConnectStep::EnterApiKey;
+        self.form_input.clear();
+        self.cursor_pos = 0;
+        self.error_message = None;
     }
 
     pub fn back_to_provider_selection(&mut self) {
@@ -646,6 +659,8 @@ impl Component for ConnectDialog {
                     let api_key = self.get_api_key();
                     if api_key.trim().is_empty() {
                         self.set_error("API key cannot be empty".to_string());
+                    } else if self.rotation_target.is_some() {
+                        return Some(TuiMsg::SubmitConnect);
                     } else {
                         self.form_input = self.display_name.clone();
                         self.cursor_pos = self.form_input.len();

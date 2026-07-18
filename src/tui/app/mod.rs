@@ -2,7 +2,10 @@
 
 mod types;
 
-pub use types::{CompletionType, Dialog, HistoryEntry, SessionStatus, TodoEntry, TuiMsg};
+pub use types::{
+    CompletionType, ConnectionLifecycleAction, Dialog, HistoryEntry, SessionStatus, TodoEntry,
+    TuiMsg,
+};
 
 pub mod state;
 pub use state::session::GitSidebarInfo;
@@ -287,6 +290,10 @@ pub enum TuiCommand {
         operation_id: String,
         result: Result<crate::protocol::provider::CreateEggpoolConnectionResult, String>,
     },
+    ConnectionRotationFinished {
+        operation_id: String,
+        result: Result<crate::protocol::provider::ConnectionRotateStatusDto, String>,
+    },
     /// Completion: session messages have been loaded from core.
     SessionMessagesLoaded {
         request_id: u64,
@@ -304,6 +311,11 @@ pub enum TuiCommand {
     SessionSelectionLoad {
         session_id: String,
     },
+    ConnectionLifecycle {
+        action: ConnectionLifecycleAction,
+        connection_id: String,
+        expected_revision: u64,
+    },
     /// Provider Connections Milestone 3: completion for the selection
     /// refresh flow. Carries the resolved selection, the redacted
     /// connection list, and (when known) the model catalog for the
@@ -314,6 +326,12 @@ pub enum TuiCommand {
         connections: Vec<crate::protocol::provider::ProviderConnectionSummaryDto>,
         models: Vec<crate::protocol::provider::SelectedModelDto>,
         focused_connection_id: Option<String>,
+        error: Option<String>,
+    },
+    ConnectionLifecycleFinished {
+        action: ConnectionLifecycleAction,
+        connection_id: String,
+        message: Option<String>,
         error: Option<String>,
     },
     /// Completion: tree dialog nodes have been loaded from core.
@@ -1076,6 +1094,7 @@ impl App {
                 pending_bulk_archive: None,
                 pending_bulk_archive_ids: None,
                 pending_shell_command: None,
+                pending_connection_lifecycle: None,
                 shell_detail_id: None,
                 import_request: crate::tui::app::state::AsyncUiRequestState::new(),
                 research_request: crate::tui::app::state::AsyncUiRequestState::new(),
@@ -1502,6 +1521,7 @@ impl App {
                 pending_bulk_archive: None,
                 pending_bulk_archive_ids: None,
                 pending_shell_command: None,
+                pending_connection_lifecycle: None,
                 shell_detail_id: None,
                 import_request: crate::tui::app::state::AsyncUiRequestState::new(),
                 research_request: crate::tui::app::state::AsyncUiRequestState::new(),
@@ -3116,7 +3136,16 @@ impl App {
             TuiMsg::ConfirmResult(confirmed) => {
                 self.close_dialog();
                 if confirmed == Some(true) {
-                    if let Some(session_id) = self.dialog_state.pending_delete_session.take() {
+                    if let Some((action, connection_id, expected_revision)) =
+                        self.dialog_state.pending_connection_lifecycle.take()
+                    {
+                        let _ = self.enqueue_tui_command(TuiCommand::ConnectionLifecycle {
+                            action,
+                            connection_id,
+                            expected_revision,
+                        });
+                    } else if let Some(session_id) = self.dialog_state.pending_delete_session.take()
+                    {
                         let undo_id = session_id.clone();
                         if self.enqueue_tui_command(TuiCommand::DeleteSession { session_id }) {
                             self.undo_session_id = Some(undo_id);
@@ -3171,6 +3200,7 @@ impl App {
                     self.dialog_state.pending_bulk_archive = None;
                     self.dialog_state.pending_bulk_archive_ids = None;
                     self.dialog_state.pending_shell_command = None;
+                    self.dialog_state.pending_connection_lifecycle = None;
                 }
             }
             TuiMsg::McpAction {
@@ -3387,6 +3417,49 @@ impl App {
                     connection_revision,
                     catalog_revision,
                 );
+            }
+            TuiMsg::OpenConnectionRotation {
+                connection_id,
+                expected_revision,
+            } => {
+                self.open_connection_rotation_dialog(connection_id, expected_revision);
+            }
+            TuiMsg::ConnectionLifecycle {
+                action,
+                connection_id,
+                expected_revision,
+            } => {
+                if matches!(
+                    action,
+                    ConnectionLifecycleAction::Delete | ConnectionLifecycleAction::Purge
+                ) {
+                    let title = match action {
+                        ConnectionLifecycleAction::Delete => "Delete Provider Connection",
+                        ConnectionLifecycleAction::Purge => "Purge Provider Connection",
+                        _ => unreachable!(),
+                    };
+                    let message = match action {
+                        ConnectionLifecycleAction::Delete => {
+                            "Tombstone this connection? It will stop being selectable."
+                        }
+                        ConnectionLifecycleAction::Purge => {
+                            "Permanently purge this tombstoned connection and its history?"
+                        }
+                        _ => unreachable!(),
+                    };
+                    self.dialog_state.pending_connection_lifecycle =
+                        Some((action, connection_id, expected_revision));
+                    self.push_dialog(
+                        Dialog::Confirm,
+                        Box::new(ConfirmDialog::new(title.to_string(), message.to_string())),
+                    );
+                } else {
+                    let _ = self.enqueue_tui_command(TuiCommand::ConnectionLifecycle {
+                        action,
+                        connection_id,
+                        expected_revision,
+                    });
+                }
             }
             TuiMsg::SubmitPermission { choice_index } => {
                 let choice = match choice_index {
@@ -9393,6 +9466,24 @@ impl App {
         self.open_dialog(Dialog::Connect);
     }
 
+    fn open_connection_rotation_dialog(&mut self, connection_id: String, expected_revision: u64) {
+        use crate::tui::components::dialogs::connect::ProviderInfo;
+
+        let providers = vec![ProviderInfo::api_key(
+            "eggpool",
+            "Eggpool",
+            "Rotate the stored Eggpool credential",
+            None,
+        )];
+        let mut dialog = crate::tui::components::dialogs::connect::ConnectDialog::new(
+            providers,
+            Arc::clone(&self.ui_state.theme),
+        );
+        dialog.set_rotation_target(connection_id, expected_revision);
+        self.dialog_state.connect_dialog = Some(dialog);
+        self.open_dialog(Dialog::Connect);
+    }
+
     /// Provider Connections Milestone 3: open the connection selection
     /// dialog. The dialog is session-scoped and reads the current
     /// selection before showing choices, so the user sees what they have
@@ -9494,32 +9585,51 @@ impl App {
         use crate::tui::components::dialogs::connect::ConnectStep;
         use crate::tui::task_lifecycle::TuiTaskKind;
         use codegg_protocol::provider::{
-            CreateEggpoolConnectionRequest, EggpoolConnectionScope, SecretInput,
+            ConnectionRotateChange, CreateEggpoolConnectionRequest, EggpoolConnectionScope,
+            SecretInput,
         };
 
-        let (host, port, display_name, tls_policy, api_key, operation_id) = {
+        let (host, port, display_name, tls_policy, api_key, operation_id, rotation_target) = {
             let Some(dialog) = self.dialog_state.connect_dialog.as_mut() else {
                 return;
             };
-            if dialog.step != ConnectStep::Review {
+            if dialog.step != ConnectStep::Review && dialog.rotation_target.is_none() {
                 return;
             }
-            let Ok(port) = dialog.port.parse::<u16>() else {
-                dialog.set_error("Port must be between 1 and 65535".to_string());
-                return;
+            let port = if dialog.rotation_target.is_some() {
+                0
+            } else {
+                let Ok(port) = dialog.port.parse::<u16>() else {
+                    dialog.set_error("Port must be between 1 and 65535".to_string());
+                    return;
+                };
+                port
             };
             let Ok(api_key) = SecretInput::new(dialog.get_api_key()) else {
                 dialog.set_error("API key is invalid".to_string());
                 return;
             };
-            let operation_id = format!("prov-{}", uuid::Uuid::new_v4());
+            let operation_id = if dialog.rotation_target.is_some() {
+                format!("rot-{}", uuid::Uuid::new_v4())
+            } else {
+                format!("prov-{}", uuid::Uuid::new_v4())
+            };
             dialog.operation_id = Some(operation_id.clone());
             let host = dialog.host.clone();
             let display_name =
                 (!dialog.display_name.trim().is_empty()).then(|| dialog.display_name.clone());
             let tls_policy = dialog.tls_policy;
+            let rotation_target = dialog.rotation_target.clone();
             dialog.clear_secret();
-            (host, port, display_name, tls_policy, api_key, operation_id)
+            (
+                host,
+                port,
+                display_name,
+                tls_policy,
+                api_key,
+                operation_id,
+                rotation_target,
+            )
         };
 
         let Some(client) = self.core_client.clone() else {
@@ -9528,6 +9638,67 @@ impl App {
             }
             return;
         };
+        if let Some((connection_id, expected_revision)) = rotation_target {
+            let stage_request = crate::core::new_request(
+                uuid::Uuid::new_v4().to_string(),
+                crate::protocol::core::CoreRequest::ConnectionRotateSecretStage {
+                    request_id: operation_id.clone(),
+                    secret: api_key,
+                },
+            );
+            let rotation_operation_id = operation_id.clone();
+            crate::tui::async_cmd::spawn_registered_tui_task(
+                self.tui_cmd_tx.clone(),
+                &mut self.task_registry,
+                TuiTaskKind::Command,
+                "eggpool_connection_rotate",
+                async move {
+                    let result = match client.request(stage_request).await {
+                        Ok(crate::protocol::core::CoreResponse::ConnectionRotateSecretStaged {
+                            secret,
+                            ..
+                        }) => {
+                            let request = crate::core::new_request(
+                                uuid::Uuid::new_v4().to_string(),
+                                crate::protocol::core::CoreRequest::ConnectionRotateBegin {
+                                    request_id: rotation_operation_id.clone(),
+                                    connection_id,
+                                    expected_revision,
+                                    change: ConnectionRotateChange::CredentialOnly,
+                                    secret,
+                                },
+                            );
+                            match client.request(request).await {
+                                Ok(
+                                    crate::protocol::core::CoreResponse::ConnectionRotateStatus {
+                                        result,
+                                    },
+                                ) => Ok(result),
+                                Ok(crate::protocol::core::CoreResponse::Error {
+                                    code,
+                                    message,
+                                }) => Err(format!("{code}: {message}")),
+                                Ok(_) => Err("unexpected rotation response".to_string()),
+                                Err(error) => Err(error.to_string()),
+                            }
+                        }
+                        Ok(crate::protocol::core::CoreResponse::Error { code, message }) => {
+                            Err(format!("{code}: {message}"))
+                        }
+                        Ok(_) => Err("unexpected secret staging response".to_string()),
+                        Err(error) => Err(error.to_string()),
+                    };
+                    Some(TuiCommand::ConnectionRotationFinished {
+                        operation_id: rotation_operation_id,
+                        result,
+                    })
+                },
+            );
+            self.messages_state
+                .toasts
+                .info("Rotating Eggpool credential (probe in progress)…");
+            return;
+        }
         let request = crate::core::new_request(
             uuid::Uuid::new_v4().to_string(),
             crate::protocol::core::CoreRequest::EggpoolConnectionCreate {

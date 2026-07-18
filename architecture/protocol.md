@@ -4,6 +4,14 @@ The `protocol` module defines the shared request/response envelopes and message 
 
 ## Overview
 
+## Provider-connection lifecycle operations
+
+Lifecycle requests and responses are additive and redacted: detail/status
+DTOs expose IDs, endpoint authority, state, revisions, health, and bounded
+diagnostic codes, never credential material. Rotation carries an opaque local
+secret-input handle. `ConnectionStateChanged` and `ConnectionRotated` carry
+actor seams and revisions for audit-ready projection.
+
 **Location**: `crates/codegg-protocol/` (the `codegg-protocol` crate)
 
 Domain identity types live in `codegg-core::identity`, not in this wire crate.

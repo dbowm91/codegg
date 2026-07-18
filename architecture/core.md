@@ -5,6 +5,15 @@ This document covers two distinct "core" concerns:
 1. **`codegg-core` workspace crate** — domain types, storage, bus, and state
 2. **`src/core/` module** — the daemon/transport facade (CoreClient, InprocCoreClient, etc.)
 
+## Provider connection runtime ownership
+
+`ConnectionManager` caches provider instances by `(connection_id, revision)`.
+Rotation and refresh invalidate future resolutions after their transaction
+commits while preserving already captured instances for in-flight requests.
+Durable lifecycle transitions and purge eligibility live in the core
+provider-connection store; the daemon protocol routes operator actions through
+that authority.
+
 ---
 
 ## `codegg-core` Workspace Crate

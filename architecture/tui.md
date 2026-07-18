@@ -4,6 +4,14 @@ The `tui` module provides the terminal user interface using Ratatui.
 
 ## Overview
 
+## `/connections` lifecycle contract
+
+The `/connections` surface consumes redacted connection detail/status and
+keeps selection explicit. Lifecycle actions use daemon protocol requests;
+secret rotation input is local-only, masked, bounded, and never copied into
+normal prompt history or remote snapshots. Delete presents tombstone/purge
+consequences and renders reference blockers.
+
 **Location**: `src/tui/`
 
 **Key Responsibilities**:

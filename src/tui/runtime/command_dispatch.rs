@@ -23,6 +23,8 @@ use super::super::commands::plugins::{
     apply_plugin_command_finished, apply_plugin_ui_effect, start_plugin_command,
 };
 #[allow(unused_imports)]
+use super::super::commands::provider_connections::start_connection_lifecycle;
+#[allow(unused_imports)]
 use super::super::commands::research::{
     apply_research_run_loaded, apply_research_runs_loaded, apply_research_section_loaded,
     start_research_list_runs, start_research_load_run, start_research_load_section,
@@ -463,6 +465,41 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
                 }
             }
         }
+        TuiCommand::ConnectionRotationFinished {
+            operation_id,
+            result,
+        } => {
+            let is_current = app
+                .dialog_state
+                .connect_dialog
+                .as_ref()
+                .and_then(|dialog| dialog.operation_id.as_deref())
+                == Some(operation_id.as_str());
+            if !is_current {
+                return;
+            }
+            match result {
+                Ok(result) => {
+                    app.messages_state
+                        .toasts
+                        .success(&format!("Provider credential rotation {}", result.state));
+                    app.dialog_state.connect_dialog = None;
+                    app.close_dialog();
+                    if let Some(tx) = app.tui_cmd_tx.clone() {
+                        let _ = tx.try_send(TuiCommand::SessionSelectionRefresh);
+                    }
+                }
+                Err(error) => {
+                    app.messages_state
+                        .toasts
+                        .error(&format!("Provider credential rotation failed: {error}"));
+                    if let Some(dialog) = app.dialog_state.connect_dialog.as_mut() {
+                        dialog.operation_id = None;
+                        dialog.clear_secret();
+                    }
+                }
+            }
+        }
         TuiCommand::SessionSelectionRefresh => {
             // The dialog was opened (or the user requested a refresh).
             // Drive a fresh selection fetch through the daemon.
@@ -480,6 +517,38 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
         }
         TuiCommand::SessionSelectionLoad { session_id } => {
             crate::tui::commands::session_selection::start_selection_refresh(app, session_id);
+        }
+        TuiCommand::ConnectionLifecycle {
+            action,
+            connection_id,
+            expected_revision,
+        } => {
+            start_connection_lifecycle(app, action, connection_id, expected_revision);
+        }
+        TuiCommand::ConnectionLifecycleFinished {
+            action,
+            connection_id,
+            message,
+            error,
+        } => {
+            if let Some(error) = error {
+                app.messages_state.toasts.error(&format!(
+                    "Provider connection {connection_id} {action:?} failed: {error}"
+                ));
+            } else if let Some(message) = message {
+                app.messages_state.toasts.info(&message);
+            }
+            if app.dialog_state.connection_selection_dialog.is_some() {
+                let session_id = app
+                    .dialog_state
+                    .connection_selection_dialog
+                    .as_ref()
+                    .map(|dialog| dialog.session_id.clone())
+                    .unwrap_or_default();
+                if let Some(tx) = app.tui_cmd_tx.clone() {
+                    let _ = tx.try_send(TuiCommand::SessionSelectionLoad { session_id });
+                }
+            }
         }
         TuiCommand::SessionSelectionLoaded {
             session_id,

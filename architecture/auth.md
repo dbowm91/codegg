@@ -33,6 +33,14 @@ device-flow scaffolding (typed but unimplemented in this pass), and a
 
 ## `Credential` envelope
 
+## Provider-connection rotation input
+
+The local TUI may place a typed secret into a bounded daemon-owned input
+buffer. `ConnectionRotateBegin` carries only a redacted `SecretInputRef`
+handle. Remote WebSocket requests carrying the variant are rejected with
+`secret_operation_remote_denied`. Rotation allocates a new credential account
+reference and removes the previous exact binding only after commit.
+
 The `Credential` type is what providers consume at request time:
 
 ```rust

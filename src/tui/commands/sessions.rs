@@ -1372,6 +1372,7 @@ pub(crate) async fn handle_load_session_messages(app: &mut App, session_id: Stri
             | Ok(CoreResponse::AssetRefresh { .. })
             | Ok(CoreResponse::AssetRefreshStatus { .. })
             | Ok(CoreResponse::AssetRefreshCapabilities { .. }) => None,
+            Ok(_) => None,
             Err(e) => {
                 app.messages_state
                     .toasts

@@ -95,6 +95,13 @@ fn classify_single(
                 connection_id,
             })
         }
+        ProviderConnectionState::ProvisioningRotating
+        | ProviderConnectionState::Tombstoned
+        | ProviderConnectionState::Error
+        | ProviderConnectionState::Stale => Ok(LegacyResolution::DisabledLegacyConnection {
+            provider_kind,
+            connection_id,
+        }),
     }
 }
 

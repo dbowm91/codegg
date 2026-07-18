@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use crate::error::AppError;
-use crate::protocol::core::{CoreRequest, CoreResponse, RequestEnvelope};
+use crate::protocol::core::{CoreEvent, CoreRequest, CoreResponse, RequestEnvelope};
 use chrono::Utc;
 use sqlx::Row;
 
@@ -136,6 +136,9 @@ impl CoreDaemon {
             .clone()
             .map(crate::core::eggpool::EggpoolProvisioner::new)
             .map(Arc::new);
+        if let Some(provisioner) = eggpool_provisioner.as_ref() {
+            provisioner.start_background_refresh();
+        }
         let selection_service = match deps.pool.clone() {
             Some(pool) => {
                 let session_store = Arc::new(codegg_core::session::SessionStore::new(pool.clone()));
@@ -1359,6 +1362,348 @@ impl CoreDaemon {
                     }),
                 }
             }
+            CoreRequest::ConnectionGet { connection_id } => {
+                let Some(provisioner) = self.eggpool_provisioner.as_ref() else {
+                    return Ok(CoreResponse::Error {
+                        code: "provider_connections_unavailable".to_string(),
+                        message: "Provider connections require a daemon SQLite catalog".to_string(),
+                    });
+                };
+                let summaries = match provisioner.list().await {
+                    Ok(summaries) => summaries,
+                    Err(error) => {
+                        return Ok(CoreResponse::Error {
+                            code: "provider_connections_unavailable".to_string(),
+                            message: error.to_string(),
+                        });
+                    }
+                };
+                let Some(summary) = summaries
+                    .into_iter()
+                    .find(|summary| summary.id == connection_id)
+                else {
+                    return Ok(CoreResponse::Error {
+                        code: "connection_not_found".to_string(),
+                        message: "Provider connection was not found".to_string(),
+                    });
+                };
+                Ok(CoreResponse::ConnectionDetail {
+                    detail: connection_detail_dto(&summary),
+                })
+            }
+            CoreRequest::ConnectionListDetail => {
+                let Some(provisioner) = self.eggpool_provisioner.as_ref() else {
+                    return Ok(CoreResponse::Error {
+                        code: "provider_connections_unavailable".to_string(),
+                        message: "Provider connections require a daemon SQLite catalog".to_string(),
+                    });
+                };
+                let summaries = match provisioner.list().await {
+                    Ok(summaries) => summaries,
+                    Err(error) => {
+                        return Ok(CoreResponse::Error {
+                            code: "provider_connections_unavailable".to_string(),
+                            message: error.to_string(),
+                        });
+                    }
+                };
+                let details = summaries.iter().map(connection_detail_dto).collect();
+                Ok(CoreResponse::ConnectionDetails { details })
+            }
+            CoreRequest::ConnectionRotateSecretStage { request_id, secret } => {
+                let Some(provisioner) = self.eggpool_provisioner.as_ref() else {
+                    return Ok(CoreResponse::Error {
+                        code: "provider_connections_unavailable".to_string(),
+                        message: "Provider connections require a daemon SQLite catalog".to_string(),
+                    });
+                };
+                let handle = codegg_protocol::provider::SecretInputRef::new(format!(
+                    "rot-secret-{}",
+                    uuid::Uuid::new_v4()
+                ))
+                .expect("generated rotation secret handle must satisfy protocol bounds");
+                if !provisioner.register_rotation_secret(handle.clone(), secret.expose().to_owned())
+                {
+                    return Ok(CoreResponse::Error {
+                        code: "connection_rotation_secret_rejected".to_string(),
+                        message: "Rotation secret was rejected by the bounded local secret buffer"
+                            .to_string(),
+                    });
+                }
+                Ok(CoreResponse::ConnectionRotateSecretStaged {
+                    request_id,
+                    secret: handle,
+                })
+            }
+            CoreRequest::ConnectionRotateBegin {
+                request_id,
+                connection_id,
+                expected_revision,
+                change,
+                secret,
+            } => {
+                let Some(provisioner) = self.eggpool_provisioner.as_ref() else {
+                    return Ok(CoreResponse::Error {
+                        code: "provider_connections_unavailable".to_string(),
+                        message: "Provider connections require a daemon SQLite catalog".to_string(),
+                    });
+                };
+                let Ok(connection_id) =
+                    codegg_core::identity::ProviderConnectionId::parse(&connection_id)
+                else {
+                    return Ok(CoreResponse::Error {
+                        code: "invalid_connection_id".to_string(),
+                        message: "Provider connection ID is invalid".to_string(),
+                    });
+                };
+                let delete_previous = matches!(
+                    change,
+                    codegg_protocol::provider::ConnectionRotateChange::CredentialOnly
+                        | codegg_protocol::provider::ConnectionRotateChange::CredentialAndEndpoint { .. }
+                );
+                match provisioner
+                    .rotate(
+                        &request_id,
+                        &connection_id,
+                        expected_revision,
+                        change,
+                        secret,
+                        delete_previous,
+                    )
+                    .await
+                {
+                    Ok(result) => {
+                        if let Some(manager) = self.deps.connection_manager.as_ref() {
+                            manager.rotate(
+                                &connection_id,
+                                result
+                                    .new_revision
+                                    .unwrap_or(expected_revision)
+                                    .saturating_sub(1),
+                            );
+                        }
+                        let _ = self
+                            .event_log
+                            .publish(
+                                None,
+                                None,
+                                CoreEvent::ConnectionRotated {
+                                    connection_id: connection_id.to_string(),
+                                    new_revision: result.new_revision.unwrap_or(expected_revision),
+                                    catalog_revision: result.catalog_revision.clone(),
+                                    actor_seam: "local_operator".to_string(),
+                                },
+                            )
+                            .await;
+                        Ok(CoreResponse::ConnectionRotateStatus { result })
+                    }
+                    Err(error) => Ok(CoreResponse::Error {
+                        code: "connection_rotation_failed".to_string(),
+                        message: error.to_string(),
+                    }),
+                }
+            }
+            CoreRequest::ConnectionRotateCancel { request_id } => {
+                let Some(provisioner) = self.eggpool_provisioner.as_ref() else {
+                    return Ok(CoreResponse::Error {
+                        code: "provider_connections_unavailable".to_string(),
+                        message: "Provider connections require a daemon SQLite catalog".to_string(),
+                    });
+                };
+                let cancelled = provisioner.cancel(&request_id);
+                let result = provisioner.rotation_status(&request_id).unwrap_or(
+                    codegg_protocol::provider::ConnectionRotateStatusDto {
+                        request_id,
+                        connection_id: String::new(),
+                        state: if cancelled { "cancelling" } else { "unknown" }.to_string(),
+                        new_revision: None,
+                        catalog_revision: None,
+                        error_code: (!cancelled).then(|| "operation_not_found".to_string()),
+                    },
+                );
+                Ok(CoreResponse::ConnectionRotateStatus { result })
+            }
+            CoreRequest::ConnectionRotateStatus { request_id } => {
+                let result = self
+                    .eggpool_provisioner
+                    .as_ref()
+                    .and_then(|provisioner| provisioner.rotation_status(&request_id))
+                    .unwrap_or(codegg_protocol::provider::ConnectionRotateStatusDto {
+                        request_id,
+                        connection_id: String::new(),
+                        state: "unknown".to_string(),
+                        new_revision: None,
+                        catalog_revision: None,
+                        error_code: Some("operation_not_found".to_string()),
+                    });
+                Ok(CoreResponse::ConnectionRotateStatus { result })
+            }
+            CoreRequest::ConnectionRefreshBegin {
+                connection_id,
+                expected_revision,
+            } => {
+                let Some(provisioner) = self.eggpool_provisioner.as_ref() else {
+                    return Ok(CoreResponse::Error {
+                        code: "provider_connections_unavailable".to_string(),
+                        message: "Provider connections require a daemon SQLite catalog".to_string(),
+                    });
+                };
+                let Ok(connection_id) =
+                    codegg_core::identity::ProviderConnectionId::parse(&connection_id)
+                else {
+                    return Ok(CoreResponse::Error {
+                        code: "invalid_connection_id".to_string(),
+                        message: "Provider connection ID is invalid".to_string(),
+                    });
+                };
+                let operation_id = format!("refresh-{}", uuid::Uuid::new_v4());
+                match provisioner
+                    .refresh_with_operation(&operation_id, &connection_id, expected_revision)
+                    .await
+                {
+                    Ok(result) => {
+                        if let Some(manager) = self.deps.connection_manager.as_ref() {
+                            manager.refresh(&connection_id);
+                        }
+                        Ok(CoreResponse::ConnectionRefreshResult { result })
+                    }
+                    Err(error) => Ok(CoreResponse::Error {
+                        code: "connection_refresh_failed".to_string(),
+                        message: error.to_string(),
+                    }),
+                }
+            }
+            CoreRequest::ConnectionRefreshCancel { operation_id } => {
+                let Some(provisioner) = self.eggpool_provisioner.as_ref() else {
+                    return Ok(CoreResponse::Error {
+                        code: "provider_connections_unavailable".to_string(),
+                        message: "Provider connections require a daemon SQLite catalog".to_string(),
+                    });
+                };
+                let cancelled = provisioner.cancel(&operation_id);
+                let result = provisioner.refresh_status(&operation_id).unwrap_or(
+                    codegg_protocol::provider::ConnectionRefreshStatusDto {
+                        operation_id,
+                        connection_id: String::new(),
+                        state: if cancelled { "cancelling" } else { "unknown" }.to_string(),
+                        revision: None,
+                        catalog_revision: None,
+                        error_code: (!cancelled).then(|| "operation_not_found".to_string()),
+                    },
+                );
+                Ok(CoreResponse::ConnectionRefreshStatus { result })
+            }
+            CoreRequest::ConnectionRefreshStatus { operation_id } => {
+                let result = self
+                    .eggpool_provisioner
+                    .as_ref()
+                    .and_then(|provisioner| provisioner.refresh_status(&operation_id))
+                    .unwrap_or(codegg_protocol::provider::ConnectionRefreshStatusDto {
+                        operation_id,
+                        connection_id: String::new(),
+                        state: "unknown".to_string(),
+                        revision: None,
+                        catalog_revision: None,
+                        error_code: Some("operation_not_found".to_string()),
+                    });
+                Ok(CoreResponse::ConnectionRefreshStatus { result })
+            }
+            CoreRequest::ConnectionEnable {
+                connection_id,
+                expected_revision,
+                require_probe: _,
+            } => {
+                connection_lifecycle_response(
+                    self.pool.clone(),
+                    connection_id,
+                    expected_revision,
+                    "enable",
+                )
+                .await
+            }
+            CoreRequest::ConnectionDisable {
+                connection_id,
+                expected_revision,
+            } => {
+                connection_lifecycle_response(
+                    self.pool.clone(),
+                    connection_id,
+                    expected_revision,
+                    "disable",
+                )
+                .await
+            }
+            CoreRequest::ConnectionDelete {
+                connection_id,
+                expected_revision,
+            } => {
+                connection_lifecycle_response(
+                    self.pool.clone(),
+                    connection_id,
+                    expected_revision,
+                    "delete",
+                )
+                .await
+            }
+            CoreRequest::ConnectionRestore {
+                connection_id,
+                expected_revision,
+            } => {
+                connection_lifecycle_response(
+                    self.pool.clone(),
+                    connection_id,
+                    expected_revision,
+                    "restore",
+                )
+                .await
+            }
+            CoreRequest::ConnectionPurge {
+                connection_id,
+                expected_revision,
+            } => {
+                let Some(_pool) = self.pool.clone() else {
+                    return Ok(CoreResponse::Error {
+                        code: "provider_connections_unavailable".to_string(),
+                        message: "Provider connections require a daemon SQLite catalog".to_string(),
+                    });
+                };
+                let Ok(id) = codegg_core::identity::ProviderConnectionId::parse(&connection_id)
+                else {
+                    return Ok(CoreResponse::Error {
+                        code: "invalid_connection_id".to_string(),
+                        message: "Provider connection ID is invalid".to_string(),
+                    });
+                };
+                let provisioner = self
+                    .eggpool_provisioner
+                    .as_ref()
+                    .ok_or_else(|| anyhow::anyhow!("Eggpool provisioner is unavailable for purge"));
+                let Ok(provisioner) = provisioner else {
+                    return Ok(CoreResponse::Error {
+                        code: "provider_connections_unavailable".to_string(),
+                        message: "Provider connection purge requires the daemon provisioner"
+                            .to_string(),
+                    });
+                };
+                match provisioner.purge(&id, expected_revision).await {
+                    Ok(codegg_core::provider_connections::PurgeOutcome::Purged) => {
+                        Ok(CoreResponse::ConnectionPurge {
+                            outcome: codegg_protocol::provider::PurgeOutcome::Purged,
+                        })
+                    }
+                    Ok(codegg_core::provider_connections::PurgeOutcome::Blocked(blockers)) => {
+                        Ok(CoreResponse::ConnectionPurge {
+                            outcome: codegg_protocol::provider::PurgeOutcome::Blocked(
+                                blockers.into_iter().map(purge_blocker_dto).collect(),
+                            ),
+                        })
+                    }
+                    Err(error) => Ok(CoreResponse::Error {
+                        code: "connection_purge_failed".to_string(),
+                        message: error.to_string(),
+                    }),
+                }
+            }
             CoreRequest::SessionSelectionGet { session_id } => {
                 let Some(service) = self.selection_service.as_ref() else {
                     return Ok(CoreResponse::Error {
@@ -1371,6 +1716,57 @@ impl CoreDaemon {
                         session_id,
                         selection,
                     }),
+                    Err(error) => Ok(CoreResponse::Error {
+                        code: crate::core::session_selection::selection_error_code(&error)
+                            .to_string(),
+                        message: crate::core::session_selection::selection_error_message(&error),
+                    }),
+                }
+            }
+            CoreRequest::SessionLifecycleGet { session_id } => {
+                let Some(service) = self.selection_service.as_ref() else {
+                    return Ok(CoreResponse::Error {
+                        code: "session_selection_unavailable".to_string(),
+                        message: "Session lifecycle requires a daemon SQLite catalog".to_string(),
+                    });
+                };
+                match service.get(&session_id).await {
+                    Ok(crate::protocol::provider::SessionSelectionDto::Selected {
+                        connection,
+                        model,
+                        ..
+                    }) => Ok(CoreResponse::SessionLifecycle {
+                        projection: crate::protocol::provider::SessionLifecycleProjection {
+                            connection_id: connection.id,
+                            state: connection.state,
+                            last_health_at: connection.health.map(|health| health.checked_at),
+                            current_selected_model_id: Some(model.model_id),
+                            removed_models: Vec::new(),
+                        },
+                    }),
+                    Ok(crate::protocol::provider::SessionSelectionDto::LegacyUnresolved {
+                        reason,
+                        ..
+                    }) => Ok(CoreResponse::SessionLifecycle {
+                        projection: crate::protocol::provider::SessionLifecycleProjection {
+                            connection_id: String::new(),
+                            state: "legacy_unresolved".to_string(),
+                            last_health_at: None,
+                            current_selected_model_id: None,
+                            removed_models: vec![reason],
+                        },
+                    }),
+                    Ok(crate::protocol::provider::SessionSelectionDto::Unselected {}) => {
+                        Ok(CoreResponse::SessionLifecycle {
+                            projection: crate::protocol::provider::SessionLifecycleProjection {
+                                connection_id: String::new(),
+                                state: "unselected".to_string(),
+                                last_health_at: None,
+                                current_selected_model_id: None,
+                                removed_models: Vec::new(),
+                            },
+                        })
+                    }
                     Err(error) => Ok(CoreResponse::Error {
                         code: crate::core::session_selection::selection_error_code(&error)
                             .to_string(),
@@ -1496,6 +1892,26 @@ impl CoreDaemon {
                         code: "invalid_agent_index".to_string(),
                         message: "Invalid agent index".to_string(),
                     });
+                }
+                // A durable session selection is authoritative for new
+                // turns. Never silently route around a selected connection
+                // that has entered a non-active lifecycle state.
+                if let Some(selection_service) = self.selection_service.as_ref() {
+                    if let Ok(crate::protocol::provider::SessionSelectionDto::Selected {
+                        connection,
+                        ..
+                    }) = selection_service.get(&session_id).await
+                    {
+                        if connection.state != "active" {
+                            return Ok(CoreResponse::Error {
+                                code: "connection_state".to_string(),
+                                message: format!(
+                                    "selected provider connection {} is {}",
+                                    connection.id, connection.state
+                                ),
+                            });
+                        }
+                    }
                 }
                 // Validate the provider exists before delegating to the turn
                 // runtime. This preserves the existing `provider_not_found`
@@ -4269,6 +4685,78 @@ impl CoreDaemon {
     }
 }
 
+fn connection_detail_dto(
+    summary: &crate::protocol::provider::ProviderConnectionSummaryDto,
+) -> crate::protocol::provider::ConnectionDetailDto {
+    crate::protocol::provider::ConnectionDetailDto {
+        connection_id: summary.id.clone(),
+        display_name: summary.display_name.clone(),
+        endpoint_authority: summary.endpoint.clone(),
+        tls_policy: summary.tls_policy.clone(),
+        scope: summary.scope.clone(),
+        state: summary.state.clone(),
+        revision: summary.revision,
+        catalog_revision: summary.catalog_revision.clone(),
+        health: summary.health.clone(),
+        actor_seam: Some("local_operator".to_string()),
+    }
+}
+
+fn purge_blocker_dto(
+    blocker: codegg_core::provider_connections::PurgeBlocker,
+) -> crate::protocol::provider::PurgeBlocker {
+    match blocker {
+        codegg_core::provider_connections::PurgeBlocker::SelectedSessions { count } => {
+            crate::protocol::provider::PurgeBlocker::SelectedSessions { count }
+        }
+        codegg_core::provider_connections::PurgeBlocker::ProvisioningOperation { operation_id } => {
+            crate::protocol::provider::PurgeBlocker::ProvisioningOperation { operation_id }
+        }
+        codegg_core::provider_connections::PurgeBlocker::ActiveRuntime { reference_id } => {
+            crate::protocol::provider::PurgeBlocker::ActiveRuntime { reference_id }
+        }
+    }
+}
+
+async fn connection_lifecycle_response(
+    pool: Option<sqlx::SqlitePool>,
+    connection_id: String,
+    expected_revision: u64,
+    action: &str,
+) -> Result<CoreResponse, AppError> {
+    let Some(pool) = pool else {
+        return Ok(CoreResponse::Error {
+            code: "provider_connections_unavailable".to_string(),
+            message: "Provider connections require a daemon SQLite catalog".to_string(),
+        });
+    };
+    let Ok(id) = codegg_core::identity::ProviderConnectionId::parse(&connection_id) else {
+        return Ok(CoreResponse::Error {
+            code: "invalid_connection_id".to_string(),
+            message: "Provider connection ID is invalid".to_string(),
+        });
+    };
+    let store = codegg_core::provider_connections::ProviderConnectionStore::new(pool);
+    let result = match action {
+        "enable" => store.enable(&id, expected_revision).await.map(|_| ()),
+        "disable" => store.disable(&id, expected_revision).await.map(|_| ()),
+        "delete" => store.delete(&id, expected_revision).await.map(|_| ()),
+        "restore" => store.restore(&id, expected_revision).await.map(|_| ()),
+        _ => Err(
+            codegg_core::provider_connections::ProviderConnectionError::Invalid(
+                "unknown lifecycle action".to_string(),
+            ),
+        ),
+    };
+    match result {
+        Ok(()) => Ok(CoreResponse::Ack),
+        Err(error) => Ok(CoreResponse::Error {
+            code: "connection_lifecycle_failed".to_string(),
+            message: error.to_string(),
+        }),
+    }
+}
+
 fn eggpool_error_code(error: &crate::core::eggpool::EggpoolError) -> &'static str {
     match error {
         crate::core::eggpool::EggpoolError::InvalidEndpoint(_) => "invalid_endpoint",
@@ -4279,6 +4767,8 @@ fn eggpool_error_code(error: &crate::core::eggpool::EggpoolError) -> &'static st
         crate::core::eggpool::EggpoolError::Cancelled => "connection_cancelled",
         crate::core::eggpool::EggpoolError::Probe(reason) => reason.code(),
         crate::core::eggpool::EggpoolError::Storage => "connection_storage_error",
+        crate::core::eggpool::EggpoolError::Rotation(_) => "connection_rotation_failed",
+        crate::core::eggpool::EggpoolError::Refresh(_) => "connection_refresh_failed",
     }
 }
 
@@ -4317,6 +4807,8 @@ fn eggpool_error_message(error: &crate::core::eggpool::EggpoolError) -> &'static
             crate::core::eggpool::ProbeReason::Cancelled => "Eggpool probe was cancelled",
         },
         crate::core::eggpool::EggpoolError::Storage => "Provider connection storage is unavailable",
+        crate::core::eggpool::EggpoolError::Rotation(_) => "Provider connection rotation failed",
+        crate::core::eggpool::EggpoolError::Refresh(_) => "Provider connection refresh failed",
     }
 }
 

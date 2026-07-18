@@ -122,6 +122,11 @@ pub struct PendingSelectionUpdate {
 
 impl Component for ConnectionSelectionDialog {
     fn handle_key(&mut self, key: KeyEvent) -> Option<crate::tui::app::TuiMsg> {
+        let selected = || {
+            self.connections
+                .get(self.connection_idx)
+                .map(|connection| (connection.id.clone(), connection.revision))
+        };
         match key.code {
             KeyCode::Esc | KeyCode::Char('q') => Some(crate::tui::app::TuiMsg::CloseDialog),
             KeyCode::Down | KeyCode::Char('j') => {
@@ -150,6 +155,61 @@ impl Component for ConnectionSelectionDialog {
                     catalog_revision: Some(p.catalog_revision),
                 })
             }
+            // `r` is a bounded manual catalog refresh; uppercase `R` opens
+            // the masked local-only credential rotation flow.
+            KeyCode::Char('r') => selected().map(|(connection_id, expected_revision)| {
+                crate::tui::app::TuiMsg::ConnectionLifecycle {
+                    action: crate::tui::app::ConnectionLifecycleAction::Refresh,
+                    connection_id,
+                    expected_revision,
+                }
+            }),
+            KeyCode::Char('R') => selected().map(|(connection_id, expected_revision)| {
+                crate::tui::app::TuiMsg::OpenConnectionRotation {
+                    connection_id,
+                    expected_revision,
+                }
+            }),
+            KeyCode::Char('e') => selected().map(|(connection_id, expected_revision)| {
+                let action = self
+                    .connections
+                    .get(self.connection_idx)
+                    .map(|connection| connection.state.as_str())
+                    .map(|state| {
+                        if state == "active" {
+                            crate::tui::app::ConnectionLifecycleAction::Disable
+                        } else {
+                            crate::tui::app::ConnectionLifecycleAction::Enable
+                        }
+                    })
+                    .unwrap_or(crate::tui::app::ConnectionLifecycleAction::Enable);
+                crate::tui::app::TuiMsg::ConnectionLifecycle {
+                    action,
+                    connection_id,
+                    expected_revision,
+                }
+            }),
+            KeyCode::Char('d') => selected().map(|(connection_id, expected_revision)| {
+                crate::tui::app::TuiMsg::ConnectionLifecycle {
+                    action: crate::tui::app::ConnectionLifecycleAction::Delete,
+                    connection_id,
+                    expected_revision,
+                }
+            }),
+            KeyCode::Char('u') => selected().map(|(connection_id, expected_revision)| {
+                crate::tui::app::TuiMsg::ConnectionLifecycle {
+                    action: crate::tui::app::ConnectionLifecycleAction::Restore,
+                    connection_id,
+                    expected_revision,
+                }
+            }),
+            KeyCode::Char('p') => selected().map(|(connection_id, expected_revision)| {
+                crate::tui::app::TuiMsg::ConnectionLifecycle {
+                    action: crate::tui::app::ConnectionLifecycleAction::Purge,
+                    connection_id,
+                    expected_revision,
+                }
+            }),
             _ => None,
         }
     }

@@ -212,6 +212,9 @@ pub struct Config {
     pub autoupdate: Option<AutoupdateConfig>,
     pub server: Option<ServerConfig>,
     pub provider: Option<HashMap<String, ProviderConfig>>,
+    /// Daemon-owned provider-connection refresh policy. Background work is
+    /// disabled by default; explicit refresh remains bounded by these caps.
+    pub provider_connections: Option<ProviderConnectionsConfig>,
     pub disabled_providers: Option<Vec<String>>,
     pub enabled_providers: Option<Vec<String>>,
     pub agent: Option<HashMap<String, AgentConfig>>,
@@ -271,6 +274,34 @@ pub struct Config {
     pub preflight: Option<PreflightConfig>,
     /// Command intent classification and routing configuration.
     pub command_intent: Option<CommandIntentConfig>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, PartialEq)]
+#[serde(default)]
+pub struct ProviderConnectionsConfig {
+    pub background_refresh: bool,
+    pub max_concurrent_refreshes: usize,
+    pub global_refresh_cap: usize,
+    pub refresh_connect_timeout_ms: u64,
+    pub refresh_read_timeout_ms: u64,
+    pub refresh_overall_timeout_ms: u64,
+    pub health_stale_after_ms: u64,
+    pub refresh_backoff_base_ms: u64,
+}
+
+impl Default for ProviderConnectionsConfig {
+    fn default() -> Self {
+        Self {
+            background_refresh: false,
+            max_concurrent_refreshes: 1,
+            global_refresh_cap: 4,
+            refresh_connect_timeout_ms: 3_000,
+            refresh_read_timeout_ms: 5_000,
+            refresh_overall_timeout_ms: 10_000,
+            health_stale_after_ms: 5 * 60 * 1_000,
+            refresh_backoff_base_ms: 1_000,
+        }
+    }
 }
 
 /// Configuration for the context ledger and artifact projection system.

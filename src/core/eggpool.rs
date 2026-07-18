@@ -8,10 +8,15 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::{
+    collections::hash_map::DefaultHasher,
+    hash::{Hash, Hasher},
+};
 
 use dashmap::DashMap;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
+use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 
 use codegg_core::identity::{PrincipalId, ProjectId, ProviderConnectionId};
@@ -19,13 +24,16 @@ use codegg_core::provider_connections::{
     Endpoint, ProviderConnection, ProviderConnectionState, ProviderScope, SecretRef, TlsPolicy,
 };
 use codegg_protocol::provider::{
-    ConnectionHealthDto, ConnectionProvisioningStatusDto, CreateEggpoolConnectionRequest,
+    ConnectionHealthDto, ConnectionProvisioningStatusDto, ConnectionRefreshStatusDto,
+    ConnectionRotateChange, ConnectionRotateStatusDto, CreateEggpoolConnectionRequest,
     CreateEggpoolConnectionResult, EggpoolConnectionScope, EggpoolTlsPolicy,
-    ProviderConnectionSummaryDto, ProviderModelDto,
+    ProviderConnectionSummaryDto, ProviderModelDto, SecretInputRef,
 };
 
 const DEFAULT_PORT: u16 = 11_300;
 const WORKFLOW_TIMEOUT: Duration = Duration::from_secs(20);
+type RefreshCell = tokio::sync::OnceCell<Result<ConnectionRefreshStatusDto, RefreshError>>;
+type RefreshFlights = DashMap<ProviderConnectionId, Arc<RefreshCell>>;
 
 #[derive(Debug, Error)]
 pub enum EggpoolError {
@@ -45,6 +53,58 @@ pub enum EggpoolError {
     Probe(ProbeReason),
     #[error("connection persistence failed")]
     Storage,
+    #[error("rotation failed: {0}")]
+    Rotation(#[from] RotationError),
+    #[error("refresh failed: {0}")]
+    Refresh(#[from] RefreshError),
+}
+
+#[derive(Debug, Error, Clone, PartialEq, Eq)]
+pub enum RotationError {
+    #[error("connection not found")]
+    NotFound,
+    #[error("connection revision is stale")]
+    StaleRevision,
+    #[error("connection lifecycle state does not permit rotation")]
+    InvalidState,
+    #[error("rotation secret handle is unavailable")]
+    SecretUnavailable,
+    #[error("endpoint policy rejected")]
+    EndpointPolicy,
+    #[error("rotation probe failed")]
+    ProbeFailed,
+    #[error("rotation cancelled")]
+    Cancelled,
+    #[error("rotation persistence failed")]
+    Storage,
+}
+
+#[derive(Debug, Error, Clone, PartialEq, Eq)]
+pub enum RefreshError {
+    #[error("connection not found")]
+    NotFound,
+    #[error("connection revision is stale")]
+    StaleRevision,
+    #[error("connection is disabled")]
+    Disabled,
+    #[error("credential is missing")]
+    CredentialMissing,
+    #[error("connection is tombstoned")]
+    Tombstoned,
+    #[error("refresh probe timed out")]
+    Timeout,
+    #[error("endpoint policy rejected")]
+    EndpointPolicy,
+    #[error("bounded provider response rejected")]
+    BoundedBody,
+    #[error("refresh was cancelled")]
+    Cancelled,
+    #[error("refresh is backing off after a recent failure")]
+    Backoff,
+    #[error("refresh persistence failed")]
+    Storage,
+    #[error("refresh failed")]
+    Unknown,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -103,11 +163,24 @@ struct ProbeResult {
     duration_ms: u64,
 }
 
+struct RotationSecret {
+    value: String,
+    expires_at: Instant,
+}
+
 #[derive(Clone)]
 pub struct EggpoolProvisioner {
     pool: sqlx::SqlitePool,
     credential_store: Option<Arc<codegg_providers::CredentialStore>>,
     operations: Arc<DashMap<String, CancellationToken>>,
+    refreshes: Arc<RefreshFlights>,
+    refresh_statuses: Arc<DashMap<String, ConnectionRefreshStatusDto>>,
+    rotation_secrets: Arc<DashMap<String, RotationSecret>>,
+    rotation_statuses: Arc<DashMap<String, ConnectionRotateStatusDto>>,
+    refresh_cap: Arc<Semaphore>,
+    refresh_failures: Arc<DashMap<ProviderConnectionId, u32>>,
+    refresh_next_at: Arc<DashMap<ProviderConnectionId, Instant>>,
+    background_started: Arc<AtomicBool>,
     reconciled: Arc<AtomicBool>,
 }
 
@@ -127,8 +200,56 @@ impl EggpoolProvisioner {
             pool,
             credential_store,
             operations: Arc::new(DashMap::new()),
+            refreshes: Arc::new(DashMap::new()),
+            refresh_statuses: Arc::new(DashMap::new()),
+            rotation_secrets: Arc::new(DashMap::new()),
+            rotation_statuses: Arc::new(DashMap::new()),
+            refresh_cap: Arc::new(Semaphore::new(
+                codegg_config::schema::Config::load()
+                    .ok()
+                    .and_then(|config| config.provider_connections)
+                    .map(|config| config.global_refresh_cap.max(1))
+                    .unwrap_or(4),
+            )),
+            refresh_failures: Arc::new(DashMap::new()),
+            refresh_next_at: Arc::new(DashMap::new()),
+            background_started: Arc::new(AtomicBool::new(false)),
             reconciled: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    /// Start the optional bounded health refresh loop. Background provider
+    /// I/O is disabled by default and is never part of daemon startup.
+    pub fn start_background_refresh(self: &Arc<Self>) {
+        let enabled = codegg_config::schema::Config::load()
+            .ok()
+            .and_then(|config| config.provider_connections)
+            .map(|config| config.background_refresh)
+            .unwrap_or(false);
+        if !enabled || self.background_started.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let provisioner = Arc::clone(self);
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(30));
+            loop {
+                interval.tick().await;
+                let store = codegg_core::provider_connections::ProviderConnectionStore::new(
+                    provisioner.pool.clone(),
+                );
+                let Ok(connections) = store.list().await else {
+                    continue;
+                };
+                for connection in connections {
+                    if connection.state != ProviderConnectionState::Active {
+                        continue;
+                    }
+                    let _ = provisioner
+                        .refresh(&connection.id, connection.revision)
+                        .await;
+                }
+            }
+        });
     }
 
     pub async fn create(
@@ -198,6 +319,16 @@ impl EggpoolProvisioner {
         .map_err(|_| EggpoolError::Conflict)?;
 
         let cancel = CancellationToken::new();
+        let store =
+            codegg_core::provider_connections::ProviderConnectionStore::new(self.pool.clone());
+        store
+            .add_reference(
+                &connection_id,
+                codegg_core::provider_connections::ProviderConnectionReferenceKind::ProvisioningOperation,
+                &operation_id,
+            )
+            .await
+            .map_err(|_| EggpoolError::Storage)?;
         self.operations.insert(operation_id.clone(), cancel.clone());
         let result = self
             .create_inner(
@@ -211,6 +342,13 @@ impl EggpoolProvisioner {
             )
             .await;
         self.operations.remove(&operation_id);
+        let _ = store
+            .remove_reference(
+                &connection_id,
+                codegg_core::provider_connections::ProviderConnectionReferenceKind::ProvisioningOperation,
+                &operation_id,
+            )
+            .await;
         result
     }
 
@@ -510,6 +648,669 @@ impl EggpoolProvisioner {
         ))
     }
 
+    /// Register a bounded local secret for a rotation request. The handle is
+    /// the only value that enters the protocol; the plaintext remains in this
+    /// daemon-owned map until the rotation commits or fails.
+    pub fn register_rotation_secret(&self, secret: SecretInputRef, value: String) -> bool {
+        if value.is_empty()
+            || value.len() > codegg_protocol::provider::SecretInput::MAX_LEN
+            || value.chars().any(char::is_control)
+        {
+            return false;
+        }
+        let now = Instant::now();
+        self.rotation_secrets
+            .retain(|_, entry| entry.expires_at > now);
+        if self.rotation_secrets.len() >= 32 {
+            return false;
+        }
+        self.rotation_secrets.insert(
+            secret.handle,
+            RotationSecret {
+                value,
+                expires_at: now + Duration::from_secs(300),
+            },
+        );
+        true
+    }
+
+    pub async fn rotate(
+        &self,
+        request_id: &str,
+        connection_id: &ProviderConnectionId,
+        expected_revision: u64,
+        change: ConnectionRotateChange,
+        secret: SecretInputRef,
+        delete_previous_on_commit: bool,
+    ) -> Result<ConnectionRotateStatusDto, RotationError> {
+        let cancel = CancellationToken::new();
+        self.operations
+            .insert(request_id.to_owned(), cancel.clone());
+        self.rotation_statuses.insert(
+            request_id.to_owned(),
+            ConnectionRotateStatusDto {
+                request_id: request_id.to_owned(),
+                connection_id: connection_id.to_string(),
+                state: "probing".to_owned(),
+                new_revision: None,
+                catalog_revision: None,
+                error_code: None,
+            },
+        );
+        let result = self
+            .rotate_inner(
+                request_id,
+                connection_id,
+                expected_revision,
+                change,
+                secret,
+                delete_previous_on_commit,
+                cancel,
+            )
+            .await;
+        self.operations.remove(request_id);
+        match &result {
+            Ok(status) => {
+                self.rotation_statuses
+                    .insert(request_id.to_owned(), status.clone());
+            }
+            Err(error) => {
+                self.rotation_statuses.insert(
+                    request_id.to_owned(),
+                    ConnectionRotateStatusDto {
+                        request_id: request_id.to_owned(),
+                        connection_id: connection_id.to_string(),
+                        state: if matches!(error, RotationError::Cancelled) {
+                            "cancelled"
+                        } else {
+                            "failed"
+                        }
+                        .to_owned(),
+                        new_revision: None,
+                        catalog_revision: None,
+                        error_code: Some(rotation_error_code(error).to_owned()),
+                    },
+                );
+            }
+        }
+        result
+    }
+
+    async fn rotate_inner(
+        &self,
+        request_id: &str,
+        connection_id: &ProviderConnectionId,
+        expected_revision: u64,
+        change: ConnectionRotateChange,
+        secret: SecretInputRef,
+        delete_previous_on_commit: bool,
+        cancel: CancellationToken,
+    ) -> Result<ConnectionRotateStatusDto, RotationError> {
+        let result = self
+            .rotate_transaction(
+                request_id,
+                connection_id,
+                expected_revision,
+                change,
+                secret,
+                delete_previous_on_commit,
+                cancel,
+            )
+            .await;
+        let _ = sqlx::query(
+            "DELETE FROM provider_connection_lifecycle WHERE connection_id = ? AND state = 'provisioning_rotating'",
+        )
+        .bind(connection_id.as_str())
+        .execute(&self.pool)
+        .await;
+        result
+    }
+
+    async fn rotate_transaction(
+        &self,
+        request_id: &str,
+        connection_id: &ProviderConnectionId,
+        expected_revision: u64,
+        change: ConnectionRotateChange,
+        secret: SecretInputRef,
+        delete_previous_on_commit: bool,
+        cancel: CancellationToken,
+    ) -> Result<ConnectionRotateStatusDto, RotationError> {
+        let store =
+            codegg_core::provider_connections::ProviderConnectionStore::new(self.pool.clone());
+        let current = store
+            .get(connection_id)
+            .await
+            .map_err(|_| RotationError::Storage)?
+            .ok_or(RotationError::NotFound)?;
+        if current.revision != expected_revision {
+            return Err(RotationError::StaleRevision);
+        }
+        if !matches!(current.state, ProviderConnectionState::Active) {
+            return Err(RotationError::InvalidState);
+        }
+        sqlx::query(
+            "INSERT INTO provider_connection_lifecycle (connection_id, state, revision, time_updated) VALUES (?, 'provisioning_rotating', ?, ?) ON CONFLICT(connection_id) DO UPDATE SET state = excluded.state, revision = excluded.revision, time_updated = excluded.time_updated",
+        )
+        .bind(connection_id.as_str())
+        .bind(expected_revision as i64)
+        .bind(now_millis())
+        .execute(&self.pool)
+        .await
+        .map_err(|_| RotationError::Storage)?;
+
+        let changes_credential = matches!(
+            change,
+            ConnectionRotateChange::CredentialOnly
+                | ConnectionRotateChange::CredentialAndEndpoint { .. }
+        );
+        if !changes_credential {
+            let _ = self.rotation_secrets.remove(&secret.handle);
+        }
+        let old_binding = current.secret_binding.clone();
+        let staged_secret = if changes_credential {
+            Some(
+                self.rotation_secrets
+                    .remove(&secret.handle)
+                    .filter(|(_, value)| value.expires_at > Instant::now())
+                    .map(|(_, value)| value.value)
+                    .ok_or(RotationError::SecretUnavailable)?,
+            )
+        } else {
+            None
+        };
+        let (endpoint, tls_policy, display_name) = match &change {
+            ConnectionRotateChange::CredentialOnly => (
+                current.endpoint.clone(),
+                current.tls_policy,
+                current.display_name.clone(),
+            ),
+            ConnectionRotateChange::EndpointOnly {
+                endpoint,
+                tls_policy,
+                display_name,
+            }
+            | ConnectionRotateChange::CredentialAndEndpoint {
+                endpoint,
+                tls_policy,
+                display_name,
+            } => {
+                let policy = parse_tls_policy(tls_policy).ok_or(RotationError::EndpointPolicy)?;
+                let endpoint =
+                    Endpoint::new(endpoint, policy).map_err(|_| RotationError::EndpointPolicy)?;
+                (
+                    endpoint,
+                    policy,
+                    display_name
+                        .clone()
+                        .unwrap_or_else(|| current.display_name.clone()),
+                )
+            }
+        };
+
+        let credential_store = self
+            .credential_store
+            .clone()
+            .ok_or(RotationError::Storage)?;
+        let (binding, probe_secret) = if let Some(value) = staged_secret.as_deref() {
+            let account = format!("rot-{}", uuid::Uuid::new_v4());
+            let secret_ref = SecretRef::new();
+            credential_store
+                .put(
+                    "eggpool",
+                    Some(&account),
+                    codegg_providers::CredentialKind::ApiKey,
+                    value,
+                    None,
+                    Vec::new(),
+                )
+                .map_err(|_| RotationError::Storage)?;
+            (
+                codegg_core::provider_connections::SecretBindingLocator::new(
+                    secret_ref, "eggpool", &account,
+                )
+                .map_err(|_| RotationError::Storage)?,
+                value.to_owned(),
+            )
+        } else {
+            let binding = old_binding
+                .clone()
+                .ok_or(RotationError::SecretUnavailable)?;
+            let value = credential_store
+                .get_plaintext("eggpool", Some(&binding.account_ref), |_| true)
+                .map_err(|_| RotationError::Storage)?
+                .ok_or(RotationError::SecretUnavailable)?;
+            (binding, value)
+        };
+        let probe_result = tokio::time::timeout(
+            WORKFLOW_TIMEOUT,
+            probe(endpoint.as_str(), &probe_secret, cancel),
+        )
+        .await
+        .map_err(|_| RotationError::ProbeFailed)?
+        .map_err(|error| match error {
+            ProbeReason::Cancelled => RotationError::Cancelled,
+            _ => RotationError::ProbeFailed,
+        });
+        let probe_result = match probe_result {
+            Ok(result) => result,
+            Err(error) => {
+                if staged_secret.is_some() {
+                    let _ = credential_store.remove("eggpool", Some(&binding.account_ref));
+                }
+                return Err(error);
+            }
+        };
+
+        let new_revision = current.revision.saturating_add(1);
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|_| RotationError::Storage)?;
+        let update = sqlx::query(
+            "UPDATE provider_connections SET endpoint = ?, tls_policy = ?, display_name = ?, secret_ref = ?, secret_provider_ref = ?, secret_account_ref = ?, state = 'active', revision = ?, time_updated = ? WHERE id = ? AND revision = ?",
+        )
+        .bind(endpoint.as_str())
+        .bind(tls_key(tls_policy))
+        .bind(&display_name)
+        .bind(binding.secret_ref.as_str())
+        .bind(&binding.provider_ref)
+        .bind(&binding.account_ref)
+        .bind(new_revision as i64)
+        .bind(now_millis())
+        .bind(connection_id.as_str())
+        .bind(expected_revision as i64)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| RotationError::Storage)?;
+        if update.rows_affected() != 1 {
+            drop(tx);
+            if staged_secret.is_some() {
+                let _ = credential_store.remove("eggpool", Some(&binding.account_ref));
+            }
+            return Err(RotationError::StaleRevision);
+        }
+        let old_catalog = sqlx::query_scalar::<_, Option<String>>(
+            "SELECT catalog_revision FROM provider_connection_health WHERE connection_id = ?",
+        )
+        .bind(connection_id.as_str())
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|_| RotationError::Storage)?
+        .flatten();
+        let catalog_unchanged =
+            old_catalog.as_deref() == Some(probe_result.catalog_revision.as_str());
+        if catalog_unchanged {
+            sqlx::query(
+                "INSERT INTO provider_connection_models (connection_id, revision, model_id, model_name, context_window, max_output_tokens, supports_tools, supports_vision) SELECT connection_id, ?, model_id, model_name, context_window, max_output_tokens, supports_tools, supports_vision FROM provider_connection_models WHERE connection_id = ? AND revision = ?",
+            )
+            .bind(new_revision as i64)
+            .bind(connection_id.as_str())
+            .bind(expected_revision as i64)
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| RotationError::Storage)?;
+        } else {
+            for model in &probe_result.models {
+                sqlx::query("INSERT INTO provider_connection_models (connection_id, revision, model_id, model_name, context_window, max_output_tokens, supports_tools, supports_vision) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+                    .bind(connection_id.as_str())
+                    .bind(new_revision as i64)
+                    .bind(&model.id)
+                    .bind(&model.name)
+                    .bind(model.context_window as i64)
+                    .bind(model.max_output_tokens.map(|v| v as i64))
+                    .bind(i64::from(model.supports_tools))
+                    .bind(i64::from(model.supports_vision))
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|_| RotationError::Storage)?;
+            }
+        }
+        sqlx::query("UPDATE provider_connection_health SET revision = ?, status = 'healthy', reason_code = NULL, duration_ms = ?, checked_at = ?, catalog_revision = ? WHERE connection_id = ?")
+            .bind(new_revision as i64)
+            .bind(probe_result.duration_ms as i64)
+            .bind(now_millis())
+            .bind(&probe_result.catalog_revision)
+            .bind(connection_id.as_str())
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| RotationError::Storage)?;
+        sqlx::query(
+            "DELETE FROM provider_connection_lifecycle WHERE connection_id = ? AND state = 'provisioning_rotating'",
+        )
+        .bind(connection_id.as_str())
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| RotationError::Storage)?;
+        sqlx::query(
+            "INSERT INTO provider_connection_audit_events (event_id, connection_id, action, actor_seam, old_revision, new_revision, endpoint_authority, outcome, duration_ms, time_created) VALUES (?, ?, 'rotate', 'local_operator', ?, ?, ?, 'committed', ?, ?)",
+        )
+        .bind(uuid::Uuid::new_v4().to_string())
+        .bind(connection_id.as_str())
+        .bind(expected_revision as i64)
+        .bind(new_revision as i64)
+        .bind(endpoint.to_string())
+        .bind(probe_result.duration_ms as i64)
+        .bind(now_millis())
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| RotationError::Storage)?;
+        tx.commit().await.map_err(|_| RotationError::Storage)?;
+
+        if staged_secret.is_some() && delete_previous_on_commit {
+            if let Some(old) = old_binding {
+                let _ = credential_store.remove("eggpool", Some(&old.account_ref));
+            }
+        }
+        Ok(ConnectionRotateStatusDto {
+            request_id: request_id.to_owned(),
+            connection_id: connection_id.to_string(),
+            state: "committed".to_owned(),
+            new_revision: Some(new_revision),
+            catalog_revision: Some(probe_result.catalog_revision),
+            error_code: None,
+        })
+    }
+
+    pub async fn refresh(
+        &self,
+        connection_id: &ProviderConnectionId,
+        expected_revision: u64,
+    ) -> Result<ConnectionRefreshStatusDto, RefreshError> {
+        let operation_id = format!("refresh-{}", uuid::Uuid::new_v4());
+        self.refresh_with_operation(&operation_id, connection_id, expected_revision)
+            .await
+    }
+
+    pub async fn refresh_with_operation(
+        &self,
+        operation_id: &str,
+        connection_id: &ProviderConnectionId,
+        expected_revision: u64,
+    ) -> Result<ConnectionRefreshStatusDto, RefreshError> {
+        if self
+            .refresh_next_at
+            .get(connection_id)
+            .is_some_and(|next| *next > Instant::now())
+        {
+            return Err(RefreshError::Backoff);
+        }
+        let cancel = CancellationToken::new();
+        self.operations
+            .insert(operation_id.to_owned(), cancel.clone());
+        self.refresh_statuses.insert(
+            operation_id.to_owned(),
+            ConnectionRefreshStatusDto {
+                operation_id: operation_id.to_owned(),
+                connection_id: connection_id.to_string(),
+                state: "running".to_owned(),
+                revision: None,
+                catalog_revision: None,
+                error_code: None,
+            },
+        );
+        let cell = self
+            .refreshes
+            .entry(connection_id.clone())
+            .or_insert_with(|| Arc::new(tokio::sync::OnceCell::new()))
+            .clone();
+        let result = cell
+            .get_or_init(|| async {
+                self.refresh_inner(operation_id, connection_id, expected_revision, cancel)
+                    .await
+            })
+            .await
+            .clone();
+        self.refreshes.remove(connection_id);
+        self.operations.remove(operation_id);
+        if let Err(error) = &result {
+            if matches!(
+                error,
+                RefreshError::Timeout
+                    | RefreshError::EndpointPolicy
+                    | RefreshError::BoundedBody
+                    | RefreshError::Unknown
+            ) {
+                let attempt = self
+                    .refresh_failures
+                    .entry(connection_id.clone())
+                    .and_modify(|attempt| *attempt = attempt.saturating_add(1))
+                    .or_insert(1)
+                    .to_owned();
+                let config = codegg_config::schema::Config::load().unwrap_or_default();
+                let base = config
+                    .provider_connections
+                    .unwrap_or_default()
+                    .refresh_backoff_base_ms
+                    .max(1);
+                let exponential = base.saturating_mul(1u64 << attempt.min(16));
+                let mut hasher = DefaultHasher::new();
+                connection_id.hash(&mut hasher);
+                attempt.hash(&mut hasher);
+                let jitter = (exponential / 5).saturating_mul(hasher.finish() % 100) / 100;
+                self.refresh_next_at.insert(
+                    connection_id.clone(),
+                    Instant::now()
+                        + Duration::from_millis(exponential.saturating_add(jitter).min(3_600_000)),
+                );
+            }
+            let _ = sqlx::query(
+                "UPDATE provider_connection_health SET status = 'unhealthy', reason_code = ?, checked_at = ? WHERE connection_id = ? AND revision = ?",
+            )
+            .bind(refresh_error_code(error))
+            .bind(now_millis())
+            .bind(connection_id.as_str())
+            .bind(expected_revision as i64)
+            .execute(&self.pool)
+            .await;
+        }
+        if result.is_ok() {
+            self.refresh_failures.remove(connection_id);
+            self.refresh_next_at.remove(connection_id);
+        }
+        self.refresh_statuses.insert(
+            operation_id.to_owned(),
+            result
+                .clone()
+                .unwrap_or_else(|error| ConnectionRefreshStatusDto {
+                    operation_id: operation_id.to_owned(),
+                    connection_id: connection_id.to_string(),
+                    state: if matches!(error, RefreshError::Cancelled) {
+                        "cancelled"
+                    } else {
+                        "failed"
+                    }
+                    .to_owned(),
+                    revision: None,
+                    catalog_revision: None,
+                    error_code: Some(refresh_error_code(&error).to_owned()),
+                }),
+        );
+        result
+    }
+
+    pub fn refresh_status(&self, operation_id: &str) -> Option<ConnectionRefreshStatusDto> {
+        self.refresh_statuses
+            .get(operation_id)
+            .map(|entry| entry.value().clone())
+    }
+
+    pub fn rotation_status(&self, request_id: &str) -> Option<ConnectionRotateStatusDto> {
+        self.rotation_statuses
+            .get(request_id)
+            .map(|entry| entry.value().clone())
+    }
+
+    /// Purge durable metadata and, after the metadata transaction commits,
+    /// remove the exact credential binding that belonged to that connection.
+    /// Credential cleanup is best-effort because the metadata store is the
+    /// authoritative purge boundary; reconciliation removes any orphan left
+    /// by a credential-store failure.
+    pub async fn purge(
+        &self,
+        connection_id: &ProviderConnectionId,
+        expected_revision: u64,
+    ) -> Result<
+        codegg_core::provider_connections::PurgeOutcome,
+        codegg_core::provider_connections::ProviderConnectionError,
+    > {
+        let store =
+            codegg_core::provider_connections::ProviderConnectionStore::new(self.pool.clone());
+        let binding = store
+            .get(connection_id)
+            .await?
+            .and_then(|connection| connection.secret_binding);
+        let outcome = store.purge(connection_id, expected_revision).await?;
+        if matches!(
+            outcome,
+            codegg_core::provider_connections::PurgeOutcome::Purged
+        ) {
+            if let (Some(binding), Some(credentials)) = (binding, self.credential_store.clone()) {
+                let _ = credentials.remove(&binding.provider_ref, Some(&binding.account_ref));
+            }
+        }
+        Ok(outcome)
+    }
+
+    async fn refresh_inner(
+        &self,
+        operation_id: &str,
+        connection_id: &ProviderConnectionId,
+        expected_revision: u64,
+        cancel: CancellationToken,
+    ) -> Result<ConnectionRefreshStatusDto, RefreshError> {
+        let _permit = tokio::select! {
+            _ = cancel.cancelled() => return Err(RefreshError::Cancelled),
+            permit = self.refresh_cap.clone().acquire_owned() => {
+                permit.map_err(|_| RefreshError::Cancelled)?
+            }
+        };
+        let store =
+            codegg_core::provider_connections::ProviderConnectionStore::new(self.pool.clone());
+        let current = store
+            .get(connection_id)
+            .await
+            .map_err(|_| RefreshError::Storage)?
+            .ok_or(RefreshError::NotFound)?;
+        if current.revision != expected_revision {
+            return Err(RefreshError::StaleRevision);
+        }
+        match current.state {
+            ProviderConnectionState::Active => {}
+            ProviderConnectionState::Disabled => return Err(RefreshError::Disabled),
+            ProviderConnectionState::CredentialMissing => {
+                return Err(RefreshError::CredentialMissing)
+            }
+            ProviderConnectionState::Tombstoned => return Err(RefreshError::Tombstoned),
+            _ => return Err(RefreshError::Unknown),
+        }
+        let binding = current
+            .secret_binding
+            .ok_or(RefreshError::CredentialMissing)?;
+        let store_credentials = self
+            .credential_store
+            .clone()
+            .ok_or(RefreshError::CredentialMissing)?;
+        let api_key = store_credentials
+            .get_plaintext("eggpool", Some(&binding.account_ref), |_| true)
+            .map_err(|_| RefreshError::CredentialMissing)?
+            .ok_or(RefreshError::CredentialMissing)?;
+        let config = codegg_config::schema::Config::load().unwrap_or_default();
+        let refresh_config = config.provider_connections.unwrap_or_default();
+        let probe_options = codegg_providers::EggpoolProbeOptions {
+            connect_timeout: Duration::from_millis(refresh_config.refresh_connect_timeout_ms),
+            request_timeout: Duration::from_millis(refresh_config.refresh_read_timeout_ms),
+            overall_timeout: Duration::from_millis(refresh_config.refresh_overall_timeout_ms),
+            ..codegg_providers::EggpoolProbeOptions::default()
+        };
+        let probe_result = tokio::time::timeout(
+            Duration::from_millis(refresh_config.refresh_overall_timeout_ms),
+            probe_with_options(current.endpoint.as_str(), &api_key, cancel, probe_options),
+        )
+        .await
+        .map_err(|_| RefreshError::Timeout)?
+        .map_err(|error| match error {
+            ProbeReason::Timeout => RefreshError::Timeout,
+            ProbeReason::CatalogOversized => RefreshError::BoundedBody,
+            ProbeReason::Cancelled => RefreshError::Cancelled,
+            ProbeReason::RedirectDisallowed | ProbeReason::TlsFailed => {
+                RefreshError::EndpointPolicy
+            }
+            _ => RefreshError::Unknown,
+        })?;
+        let mut tx = self.pool.begin().await.map_err(|_| RefreshError::Storage)?;
+        let old_catalog = sqlx::query_scalar::<_, Option<String>>(
+            "SELECT catalog_revision FROM provider_connection_health WHERE connection_id = ?",
+        )
+        .bind(connection_id.as_str())
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|_| RefreshError::Storage)?
+        .flatten();
+        let catalog_changed =
+            old_catalog.as_deref() != Some(probe_result.catalog_revision.as_str());
+        let revision = if catalog_changed {
+            let next = current.revision.saturating_add(1);
+            sqlx::query("UPDATE provider_connections SET revision = ?, time_updated = ? WHERE id = ? AND revision = ?")
+                .bind(next as i64)
+                .bind(now_millis())
+                .bind(connection_id.as_str())
+                .bind(expected_revision as i64)
+                .execute(&mut *tx)
+                .await
+                .map_err(|_| RefreshError::StaleRevision)?;
+            for model in &probe_result.models {
+                sqlx::query("INSERT INTO provider_connection_models (connection_id, revision, model_id, model_name, context_window, max_output_tokens, supports_tools, supports_vision) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+                    .bind(connection_id.as_str())
+                    .bind(next as i64)
+                    .bind(&model.id)
+                    .bind(&model.name)
+                    .bind(model.context_window as i64)
+                    .bind(model.max_output_tokens.map(|v| v as i64))
+                    .bind(i64::from(model.supports_tools))
+                    .bind(i64::from(model.supports_vision))
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|_| RefreshError::Storage)?;
+            }
+            next
+        } else {
+            current.revision
+        };
+        sqlx::query("UPDATE provider_connection_health SET revision = ?, status = 'healthy', reason_code = NULL, duration_ms = ?, checked_at = ?, catalog_revision = ? WHERE connection_id = ?")
+            .bind(revision as i64)
+            .bind(probe_result.duration_ms as i64)
+            .bind(now_millis())
+            .bind(&probe_result.catalog_revision)
+            .bind(connection_id.as_str())
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| RefreshError::Storage)?;
+        sqlx::query(
+            "INSERT INTO provider_connection_audit_events (event_id, connection_id, action, actor_seam, old_revision, new_revision, endpoint_authority, outcome, duration_ms, time_created) VALUES (?, ?, 'refresh', 'daemon_refresh', ?, ?, ?, 'committed', ?, ?)",
+        )
+        .bind(uuid::Uuid::new_v4().to_string())
+        .bind(connection_id.as_str())
+        .bind(current.revision as i64)
+        .bind(revision as i64)
+        .bind(current.endpoint.to_string())
+        .bind(probe_result.duration_ms as i64)
+        .bind(now_millis())
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| RefreshError::Storage)?;
+        tx.commit().await.map_err(|_| RefreshError::Storage)?;
+        Ok(ConnectionRefreshStatusDto {
+            operation_id: operation_id.to_owned(),
+            connection_id: connection_id.to_string(),
+            state: "completed".to_owned(),
+            revision: Some(revision),
+            catalog_revision: Some(probe_result.catalog_revision),
+            error_code: None,
+        })
+    }
+
     async fn summary(
         &self,
         connection: &ProviderConnection,
@@ -562,6 +1363,11 @@ impl EggpoolProvisioner {
         if self.reconciled.load(Ordering::Acquire) {
             return;
         }
+        let _ = sqlx::query(
+            "DELETE FROM provider_connection_references WHERE reference_kind = 'provisioning_operation' AND reference_id NOT IN (SELECT operation_id FROM provider_provisioning WHERE state IN ('staged', 'probing'))",
+        )
+        .execute(&self.pool)
+        .await;
         let rows = match sqlx::query_as::<_, (String, String, String)>(
             "SELECT operation_id, secret_provider_ref, secret_account_ref FROM provider_provisioning WHERE state IN ('staged', 'probing')",
         )
@@ -706,11 +1512,26 @@ async fn probe(
     api_key: &str,
     cancel: CancellationToken,
 ) -> Result<ProbeResult, ProbeReason> {
+    probe_with_options(
+        endpoint,
+        api_key,
+        cancel,
+        codegg_providers::EggpoolProbeOptions::default(),
+    )
+    .await
+}
+
+async fn probe_with_options(
+    endpoint: &str,
+    api_key: &str,
+    cancel: CancellationToken,
+    options: codegg_providers::EggpoolProbeOptions,
+) -> Result<ProbeResult, ProbeReason> {
     let started = Instant::now();
     let probe = codegg_providers::EggpoolProbe::new(
         endpoint,
         codegg_providers::EggpoolApiKey::from(api_key),
-        codegg_providers::EggpoolProbeOptions::default(),
+        options,
     )
     .map_err(|error| map_probe_reason(error.reason_code()))?;
     let provider_cancel = codegg_providers::EggpoolCancellationToken::new();
@@ -765,6 +1586,8 @@ fn error_code(error: &EggpoolError) -> &'static str {
         EggpoolError::InvalidScope(_) => "invalid_scope",
         EggpoolError::Conflict => "connection_conflict",
         EggpoolError::Storage => "connection_storage_error",
+        EggpoolError::Rotation(_) => "connection_rotation_failed",
+        EggpoolError::Refresh(_) => "connection_refresh_failed",
     }
 }
 
@@ -803,11 +1626,55 @@ fn tls_key(policy: TlsPolicy) -> &'static str {
         TlsPolicy::Disabled => "disabled",
     }
 }
+
+fn parse_tls_policy(value: &str) -> Option<TlsPolicy> {
+    match value {
+        "required" => Some(TlsPolicy::Required),
+        "optional" => Some(TlsPolicy::Optional),
+        "disabled" => Some(TlsPolicy::Disabled),
+        _ => None,
+    }
+}
+
+fn refresh_error_code(error: &RefreshError) -> &'static str {
+    match error {
+        RefreshError::NotFound => "not_found",
+        RefreshError::StaleRevision => "stale_revision",
+        RefreshError::Disabled => "disabled",
+        RefreshError::CredentialMissing => "credential_missing",
+        RefreshError::Tombstoned => "tombstoned",
+        RefreshError::Timeout => "timeout",
+        RefreshError::EndpointPolicy => "endpoint_policy",
+        RefreshError::BoundedBody => "bounded_body",
+        RefreshError::Cancelled => "cancelled",
+        RefreshError::Backoff => "backoff",
+        RefreshError::Storage => "storage",
+        RefreshError::Unknown => "unknown",
+    }
+}
+
+fn rotation_error_code(error: &RotationError) -> &'static str {
+    match error {
+        RotationError::NotFound => "not_found",
+        RotationError::StaleRevision => "stale_revision",
+        RotationError::InvalidState => "invalid_state",
+        RotationError::SecretUnavailable => "secret_unavailable",
+        RotationError::EndpointPolicy => "endpoint_policy",
+        RotationError::ProbeFailed => "probe_failed",
+        RotationError::Cancelled => "cancelled",
+        RotationError::Storage => "storage",
+    }
+}
+
 fn state_key(state: ProviderConnectionState) -> &'static str {
     match state {
         ProviderConnectionState::Active => "active",
         ProviderConnectionState::Disabled => "disabled",
         ProviderConnectionState::CredentialMissing => "credential_missing",
+        ProviderConnectionState::ProvisioningRotating => "provisioning_rotating",
+        ProviderConnectionState::Tombstoned => "tombstoned",
+        ProviderConnectionState::Error => "error",
+        ProviderConnectionState::Stale => "stale",
     }
 }
 fn now_millis() -> i64 {
@@ -821,7 +1688,10 @@ fn now_millis() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use codegg_protocol::provider::{EggpoolConnectionScope, EggpoolTlsPolicy, SecretInput};
+    use codegg_protocol::provider::{
+        ConnectionRotateChange, EggpoolConnectionScope, EggpoolTlsPolicy, SecretInput,
+        SecretInputRef,
+    };
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::thread;
@@ -879,15 +1749,24 @@ mod tests {
             .expect("configure fake Eggpool listener");
         let address = listener.local_addr().expect("fake Eggpool address");
         let join = thread::spawn(move || {
-            let deadline = std::time::Instant::now() + Duration::from_secs(2);
+            // Binding the listener before returning the address is the
+            // readiness barrier. Yield-only polling avoids fixed sleeps while
+            // retaining a bounded exit when a cancellation test deliberately
+            // drops the detached fixture before a request arrives.
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
             let (mut stream, _) = loop {
                 match listener.accept() {
-                    Ok(connection) => break connection,
+                    Ok((stream, _address)) => {
+                        stream
+                            .set_nonblocking(false)
+                            .expect("configure fake Eggpool stream");
+                        break (stream, address);
+                    }
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                         if std::time::Instant::now() >= deadline {
                             return "no-request".to_string();
                         }
-                        thread::sleep(Duration::from_millis(5));
+                        thread::yield_now();
                     }
                     Err(error) => panic!("accept fake Eggpool request: {error}"),
                 }
@@ -1122,6 +2001,157 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn rotation_commits_new_revision_and_removes_only_previous_credential() {
+        let _master = MasterKeyGuard::new("eggpool-workflow-rotation-master");
+        let directory = tempdir().expect("credential tempdir");
+        let credential_store = Arc::new(
+            codegg_providers::CredentialStore::at_path(directory.path().join("credentials.json"))
+                .expect("credential store"),
+        );
+        let pool = migrated_pool().await;
+        let (host, server) = fake_eggpool(Duration::ZERO);
+        let provisioner =
+            EggpoolProvisioner::with_credential_store(pool.clone(), Some(credential_store.clone()));
+        let result = provisioner
+            .create(request(&host))
+            .await
+            .expect("initial provision succeeds");
+        server.join().expect("initial fake server joins");
+        let connection_id = ProviderConnectionId::parse(&result.connection.id).unwrap();
+
+        let failed = provisioner
+            .rotate(
+                "rotation-invalid-endpoint",
+                &connection_id,
+                result.connection.revision,
+                ConnectionRotateChange::EndpointOnly {
+                    endpoint: "http://user:secret@example.invalid".to_owned(),
+                    tls_policy: "disabled".to_owned(),
+                    display_name: None,
+                },
+                SecretInputRef::new("unused-rotation-handle").unwrap(),
+                false,
+            )
+            .await;
+        assert!(matches!(failed, Err(RotationError::EndpointPolicy)));
+        assert_eq!(
+            codegg_core::provider_connections::ProviderConnectionStore::new(pool.clone())
+                .get(&connection_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .revision,
+            result.connection.revision
+        );
+
+        let (rotated_host, rotated_server) = fake_eggpool(Duration::ZERO);
+        let secret_ref = SecretInputRef::new("rotation-secret-handle").unwrap();
+        assert!(provisioner.register_rotation_secret(secret_ref.clone(), "rotated-key".to_owned()));
+        let status = provisioner
+            .rotate(
+                "rotation-success",
+                &connection_id,
+                result.connection.revision,
+                ConnectionRotateChange::CredentialAndEndpoint {
+                    endpoint: format!("{rotated_host}/v1"),
+                    tls_policy: "disabled".to_owned(),
+                    display_name: Some("Rotated Eggpool".to_owned()),
+                },
+                secret_ref,
+                true,
+            )
+            .await
+            .expect("rotation succeeds");
+        rotated_server.join().expect("rotation fake server joins");
+
+        assert_eq!(status.state, "committed");
+        assert_eq!(status.new_revision, Some(result.connection.revision + 1));
+        assert_eq!(credential_store.list().len(), 1);
+        let stored = codegg_core::provider_connections::ProviderConnectionStore::new(pool)
+            .get(&connection_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.revision, result.connection.revision + 1);
+        assert_eq!(stored.endpoint.as_str(), format!("{rotated_host}/v1"));
+        assert_eq!(stored.display_name, "Rotated Eggpool");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn refresh_coalesces_and_preserves_revision_for_unchanged_catalog() {
+        let _master = MasterKeyGuard::new("eggpool-workflow-refresh-master");
+        let directory = tempdir().expect("credential tempdir");
+        let credential_store = Arc::new(
+            codegg_providers::CredentialStore::at_path(directory.path().join("credentials.json"))
+                .expect("credential store"),
+        );
+        let pool = migrated_pool().await;
+        let (host, server) = fake_eggpool(Duration::ZERO);
+        let provisioner =
+            EggpoolProvisioner::with_credential_store(pool.clone(), Some(credential_store));
+        let result = provisioner
+            .create(request(&host))
+            .await
+            .expect("initial provision succeeds");
+        server.join().expect("initial fake server joins");
+        let connection_id = ProviderConnectionId::parse(&result.connection.id).unwrap();
+
+        let (refresh_host, refresh_server) = fake_eggpool(Duration::from_millis(100));
+        sqlx::query("UPDATE provider_connections SET endpoint = ? WHERE id = ?")
+            .bind(format!("{refresh_host}/v1"))
+            .bind(connection_id.as_str())
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let first = provisioner.clone();
+        let first_id = connection_id.clone();
+        let revision = result.connection.revision;
+        let first_task = tokio::spawn(async move {
+            first
+                .refresh_with_operation("refresh-a", &first_id, revision)
+                .await
+        });
+        let mut running_seen = false;
+        for _ in 0..100 {
+            if provisioner
+                .refresh_status("refresh-a")
+                .is_some_and(|status| status.state == "running")
+            {
+                running_seen = true;
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            running_seen,
+            "first refresh did not enter the running state"
+        );
+        let second = provisioner.clone();
+        let second_id = connection_id.clone();
+        let second_task = tokio::spawn(async move {
+            second
+                .refresh_with_operation("refresh-b", &second_id, revision)
+                .await
+        });
+        let first_result = first_task.await.unwrap().unwrap();
+        let second_result = second_task.await.unwrap().unwrap();
+        refresh_server.join().expect("refresh fake server joins");
+
+        assert_eq!(first_result.state, "completed");
+        assert_eq!(second_result.state, "completed");
+        assert_eq!(first_result.revision, Some(revision));
+        assert_eq!(second_result.revision, Some(revision));
+        let stored_revision: i64 =
+            sqlx::query_scalar("SELECT revision FROM provider_connections WHERE id = ?")
+                .bind(connection_id.as_str())
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(stored_revision, revision as i64);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn cancellation_compensates_operation_owned_credential() {
         let _master = MasterKeyGuard::new("eggpool-workflow-cancel-master");
         let directory = tempdir().expect("credential tempdir");
@@ -1149,10 +2179,11 @@ mod tests {
         assert!(cancelled, "provisioning operation was not registered");
         let result = task.await.expect("provision task joins");
         assert!(matches!(result, Err(EggpoolError::Cancelled)));
-        // The client may be cancelled before the HTTP request reaches the
-        // listener. Dropping the handle intentionally detaches this bounded
-        // test fixture rather than making cleanup depend on socket timing.
-        drop(server);
+        // Wake the bounded fixture if cancellation happened before the
+        // request reached the listener, then join it deterministically.
+        let wake_address = host.strip_prefix("http://").unwrap_or(&host);
+        let _ = std::net::TcpStream::connect(wake_address);
+        let _ = server.join();
 
         let active: i64 =
             sqlx::query_scalar("SELECT COUNT(*) FROM provider_connections WHERE state = 'active'")

@@ -38,6 +38,8 @@ fn personal_scope() -> ProviderScope {
     ProviderScope::personal(PrincipalId::parse("test-user").unwrap())
 }
 
+type SeedModel<'a> = (&'a str, &'a str, u64, Option<u64>, bool, bool);
+
 /// Seed a provider connection via the store and return its ID.
 async fn seed_connection(
     store: &ProviderConnectionStore,
@@ -63,7 +65,7 @@ async fn seed_connection(
 async fn seed_models(
     pool: &sqlx::SqlitePool,
     connection_id: &ProviderConnectionId,
-    models: &[(&str, &str, u64, Option<u64>, bool, bool)],
+    models: &[SeedModel<'_>],
     catalog_revision: &str,
 ) {
     let now = std::time::SystemTime::now()
@@ -257,6 +259,7 @@ async fn session_selection_update_stale_revision() {
         SelectionUpdateOutcome::StaleRevision {
             current_connection_id,
             current_revision,
+            ..
         } => {
             assert_eq!(current_connection_id, conn_id.as_str());
             assert_eq!(current_revision, 2);
@@ -328,6 +331,7 @@ async fn session_selection_update_stale_catalog() {
         SelectionUpdateOutcome::StaleCatalog {
             current_revision,
             current_catalog_revision,
+            ..
         } => {
             assert_eq!(current_revision, 1);
             assert_eq!(current_catalog_revision.as_deref(), Some("cat-v2"));
@@ -905,6 +909,7 @@ async fn update_with_concurrent_revision_conflict() {
         SelectionUpdateOutcome::StaleRevision {
             current_connection_id,
             current_revision,
+            ..
         } => {
             assert_eq!(current_connection_id, conn_id.as_str());
             assert_eq!(current_revision, 2);
@@ -913,13 +918,19 @@ async fn update_with_concurrent_revision_conflict() {
     }
 
     // The session's stored selection is unchanged (StaleRevision did not
-    // mutate it), but get_selection returns Unselected because the stored
-    // connection revision (1) no longer matches the connection's current
-    // revision (2), so the resolver falls through to legacy resolution.
+    // mutate it), but the projection remains explicit and reports the
+    // current connection revision. It must not fall through to legacy
+    // provider resolution and silently choose another endpoint.
     let dto = get_selection(&session_store, &conn_store, &session_id)
         .await
         .unwrap();
-    assert!(matches!(dto, SessionSelectionDto::Unselected {}));
+    assert!(matches!(
+        dto,
+        SessionSelectionDto::Selected {
+            connection_revision: 2,
+            ..
+        }
+    ));
 }
 
 #[tokio::test(flavor = "current_thread")]

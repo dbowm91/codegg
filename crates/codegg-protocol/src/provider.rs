@@ -45,6 +45,131 @@ impl fmt::Display for SecretInput {
     }
 }
 
+/// Opaque reference to a secret already held by the daemon's bounded local
+/// input buffer. Rotation requests carry this handle, never credential bytes.
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SecretInputRef {
+    pub handle: String,
+}
+
+impl SecretInputRef {
+    pub const MAX_HANDLE_LEN: usize = 256;
+
+    pub fn new(value: impl Into<String>) -> Result<Self, &'static str> {
+        let handle = value.into();
+        if handle.is_empty()
+            || handle.len() > Self::MAX_HANDLE_LEN
+            || handle.chars().any(char::is_control)
+        {
+            return Err(
+                "secret input handle must be non-empty, bounded, and free of control characters",
+            );
+        }
+        Ok(Self { handle })
+    }
+}
+
+impl fmt::Debug for SecretInputRef {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("SecretInputRef(REDACTED)")
+    }
+}
+
+impl fmt::Display for SecretInputRef {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("<secret-input-ref>")
+    }
+}
+
+/// Metadata changes supported by the staged rotation transaction. Endpoint
+/// values are validated again by the daemon before they reach storage.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum ConnectionRotateChange {
+    CredentialOnly,
+    EndpointOnly {
+        endpoint: String,
+        tls_policy: String,
+        #[serde(default)]
+        display_name: Option<String>,
+    },
+    CredentialAndEndpoint {
+        endpoint: String,
+        tls_policy: String,
+        #[serde(default)]
+        display_name: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ConnectionRotateStatusDto {
+    pub request_id: String,
+    pub connection_id: String,
+    pub state: String,
+    #[serde(default)]
+    pub new_revision: Option<u64>,
+    #[serde(default)]
+    pub catalog_revision: Option<String>,
+    #[serde(default)]
+    pub error_code: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ConnectionRefreshStatusDto {
+    pub operation_id: String,
+    pub connection_id: String,
+    pub state: String,
+    #[serde(default)]
+    pub revision: Option<u64>,
+    #[serde(default)]
+    pub catalog_revision: Option<String>,
+    #[serde(default)]
+    pub error_code: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ConnectionDetailDto {
+    pub connection_id: String,
+    pub display_name: String,
+    pub endpoint_authority: String,
+    pub tls_policy: String,
+    pub scope: String,
+    pub state: String,
+    pub revision: u64,
+    #[serde(default)]
+    pub catalog_revision: Option<String>,
+    #[serde(default)]
+    pub health: Option<ConnectionHealthDto>,
+    #[serde(default)]
+    pub actor_seam: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum PurgeBlocker {
+    SelectedSessions { count: u64 },
+    ProvisioningOperation { operation_id: String },
+    ActiveRuntime { reference_id: String },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum PurgeOutcome {
+    Purged,
+    Blocked(Vec<PurgeBlocker>),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionLifecycleProjection {
+    pub connection_id: String,
+    pub state: String,
+    #[serde(default)]
+    pub last_health_at: Option<i64>,
+    #[serde(default)]
+    pub current_selected_model_id: Option<String>,
+    #[serde(default)]
+    pub removed_models: Vec<String>,
+}
+
 /// TLS policy selected by the Eggpool connect form.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -167,11 +292,10 @@ pub struct SelectedModelDto {
 ///   provider/model.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "state", rename_all = "snake_case")]
-#[allow(clippy::large_enum_variant)]
 pub enum SessionSelectionDto {
     Selected {
-        connection: ProviderConnectionSummaryDto,
-        model: SelectedModelDto,
+        connection: Box<ProviderConnectionSummaryDto>,
+        model: Box<SelectedModelDto>,
         connection_revision: u64,
         catalog_revision: String,
     },

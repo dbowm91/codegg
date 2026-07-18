@@ -160,7 +160,7 @@ fn symlink_escape_rejected() {
 
     let skills_dir = root.join(".codegg/skills/escaped_link");
     fs::create_dir_all(&skills_dir).unwrap();
-    std::os::unix::fs::symlink(&outside.join("SKILL.md"), skills_dir.join("SKILL.md")).unwrap();
+    std::os::unix::fs::symlink(outside.join("SKILL.md"), skills_dir.join("SKILL.md")).unwrap();
 
     let config = test_config();
     let registry = AssetRegistry::build(&config, root, &[]);
@@ -251,7 +251,7 @@ fn duplicate_behavior_stable() {
 
     let config = test_config();
 
-    let r1 = AssetRegistry::build(&config, root, &[global_root.clone()]);
+    let r1 = AssetRegistry::build(&config, root, std::slice::from_ref(&global_root));
     let r2 = AssetRegistry::build(&config, root, &[global_root]);
 
     assert_eq!(r1.effective.len(), r2.effective.len());

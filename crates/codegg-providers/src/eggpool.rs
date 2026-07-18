@@ -508,7 +508,11 @@ fn parse_summary(
     Ok(EggpoolProbeSummary { models, digest })
 }
 
-fn digest_models(models: &[EggpoolModelSummary]) -> String {
+/// Compute the deterministic catalog revision for a bounded normalized model
+/// list. Callers may reuse this helper during refresh without changing the
+/// catalog revision when the provider returns the same content in another
+/// order.
+pub fn digest_models(models: &[EggpoolModelSummary]) -> String {
     let mut hasher = Sha256::new();
     for model in models {
         hash_string(&mut hasher, &model.id);

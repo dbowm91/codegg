@@ -976,6 +976,8 @@ async fn handle_core_frame(
             if matches!(
                 &envelope.payload,
                 crate::protocol::core::CoreRequest::EggpoolConnectionCreate { .. }
+                    | crate::protocol::core::CoreRequest::ConnectionRotateSecretStage { .. }
+                    | crate::protocol::core::CoreRequest::ConnectionRotateBegin { .. }
             ) {
                 responses.push(CoreFrame::Response {
                     request_id,
