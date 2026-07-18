@@ -51,7 +51,7 @@ The implementation is intentionally conservative: it preserves catalog authority
 | max depth | 4 |
 | max visited entries | 10,000 |
 | max candidates | 1,000 |
-| max elapsed | 5 seconds |
+| max elapsed | 10 seconds from config (5-second standalone scanner default) |
 | max output | 256 KiB |
 | max diagnostics | 128 |
 | stat concurrency | 4 |
