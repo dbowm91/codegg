@@ -1980,11 +1980,21 @@ impl CoreDaemon {
                     &runtime.project_id,
                     runtime.workspace_id.as_str(),
                 );
-                let asset_snapshot = self
-                    .asset_refresh
-                    .snapshot(&asset_scope)
-                    .await
-                    .map(|published| published.snapshot.clone());
+                let asset_snapshot =
+                    self.asset_refresh
+                        .snapshot(&asset_scope)
+                        .await
+                        .map(|published| {
+                            (
+                                published.snapshot.clone(),
+                                std::sync::Arc::new(std::sync::Mutex::new(
+                                    published.runtime_asset_pin(),
+                                )),
+                            )
+                        });
+                let (asset_snapshot, asset_pin) = asset_snapshot
+                    .map(|(snapshot, pin)| (Some(snapshot), Some(pin)))
+                    .unwrap_or((None, None));
 
                 let turn_id = {
                     let mut active = runtime.active_turn.write().await;
@@ -2000,6 +2010,7 @@ impl CoreDaemon {
                         cancel_tx: tokio::sync::watch::channel(false).0,
                         steer_tx: None,
                         started_at: chrono::Utc::now(),
+                        asset_pin: asset_pin.clone(),
                     });
                     turn_id
                 };
@@ -2065,6 +2076,7 @@ impl CoreDaemon {
                     execution,
                     submission: self.deps.submission.clone(),
                     asset_snapshot,
+                    asset_pin,
                 };
                 let turn_output = self.deps.turn_runtime.run_turn(turn_input).await?;
 
@@ -5349,6 +5361,7 @@ mod tests {
             cancel_tx: cancel_tx.clone(),
             steer_tx: Some(steer_tx),
             started_at: chrono::Utc::now(),
+            asset_pin: None,
         });
         (cancel_tx, cancel_rx, steer_rx)
     }

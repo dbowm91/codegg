@@ -128,6 +128,10 @@ pub struct TurnRunInput {
     /// Active turns retain this `Arc` even when the daemon publishes a later
     /// generation for the same workspace.
     pub asset_snapshot: Option<Arc<crate::agent::asset_snapshot::ProjectAssetSnapshot>>,
+    /// Bounded audit identity for the captured asset snapshot. This is kept
+    /// separate from the `Arc` so run/agent metadata can record provenance
+    /// without serializing asset bodies or paths.
+    pub asset_pin: Option<Arc<std::sync::Mutex<crate::agent::asset_snapshot::RuntimeAssetPin>>>,
 }
 
 /// Minimal output from a turn execution.
@@ -187,6 +191,7 @@ impl TurnRuntime for DefaultTurnRuntime {
             execution,
             submission,
             asset_snapshot,
+            asset_pin,
         } = input;
 
         // ── Provider resolution ──────────────────────────────────────
@@ -221,7 +226,13 @@ impl TurnRuntime for DefaultTurnRuntime {
             task_state_policy.clone(),
             Some(model.clone()),
             Arc::clone(&execution),
-            submission.clone(),
+            crate::tool::factory::SessionToolContext {
+                submission: submission.clone(),
+                runtime_assets: crate::tool::factory::RuntimeAssetContext {
+                    snapshot: asset_snapshot.clone(),
+                    pin: asset_pin.clone(),
+                },
+            },
         );
 
         // ── Memory context ───────────────────────────────────────────
@@ -340,6 +351,7 @@ impl TurnRuntime for DefaultTurnRuntime {
         };
         let runtime_provider = crate::agent::agent_loop_factory::DefaultAgentLoopFactory;
         let mut agent_loop = runtime_provider.build_agent_loop(agent_loop_input);
+        agent_loop.set_runtime_asset_pin(asset_pin);
         agent_loop.load_persisted_todos().await;
 
         // ── Plugin service ────────────────────────────────────────────

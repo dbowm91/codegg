@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use super::candidate::{EffectiveSkill, ResolvedRegistry, ShadowedAlternative, SkillCandidate};
 use super::diagnostic::Diagnostic;
 use super::parser;
+use super::resource::{ResourceError, ResourceHandle, ResourceReadLimits};
 use super::source::{AssetDiscoveryConfig, SourceKind, SourceRoot, SourceSummary};
 
 #[derive(Debug)]
@@ -102,6 +103,21 @@ impl AssetRegistry {
 
     pub fn activate(&self, name: &str) -> Option<String> {
         self.get(name).map(|s| s.body.clone())
+    }
+
+    pub fn resource_handle(
+        &self,
+        skill_name: &str,
+        relative_path: impl AsRef<Path>,
+        limits: ResourceReadLimits,
+    ) -> Result<ResourceHandle, ResourceError> {
+        let skill = self
+            .get(skill_name)
+            .ok_or_else(|| ResourceError::NotFound {
+                skill: skill_name.to_string(),
+                path: relative_path.as_ref().to_path_buf(),
+            })?;
+        skill.resource_handle(relative_path, limits)
     }
 }
 

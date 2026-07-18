@@ -329,6 +329,7 @@ pub struct BashTool {
     command_intent_config: Option<CommandIntentConfig>,
     run_store: Option<Arc<dyn codegg_core::run_store::RunStore>>,
     submission: Option<Arc<crate::scheduler::JobSubmissionService>>,
+    asset_pin: Option<Arc<std::sync::Mutex<crate::agent::asset_snapshot::RuntimeAssetPin>>>,
 }
 
 impl BashTool {
@@ -380,6 +381,7 @@ impl BashTool {
             command_intent_config: None,
             run_store: None,
             submission: None,
+            asset_pin: None,
         }
     }
 
@@ -418,6 +420,14 @@ impl BashTool {
         submission: Arc<crate::scheduler::JobSubmissionService>,
     ) -> Self {
         self.submission = Some(submission);
+        self
+    }
+
+    pub fn with_asset_pin(
+        mut self,
+        asset_pin: Arc<std::sync::Mutex<crate::agent::asset_snapshot::RuntimeAssetPin>>,
+    ) -> Self {
+        self.asset_pin = Some(asset_pin);
         self
     }
 
@@ -1804,6 +1814,10 @@ impl Tool for BashTool {
                     planned_backend: Some(execution_outcome.planned.clone()),
                     actual_backend: Some(execution_outcome.actual.into_backend()),
                     ownership,
+                    asset_provenance: self
+                        .asset_pin
+                        .as_ref()
+                        .and_then(|pin| pin.lock().ok().map(|pin| pin.to_run_provenance())),
                 };
 
                 let exit_code = output.status.code().unwrap_or(-1);

@@ -73,6 +73,14 @@ referenced from `MigrationMarker.storage_layout_version` so the
 migration tooling can report which layout a legacy database was
 imported under.
 
+Runtime-asset provenance is additive and path-free. Run manifests may carry
+an optional generation, snapshot fingerprint, and activated-skill digest list
+through `RunAssetProvenance`; older JSON records omit the field and continue
+to deserialize. Snapshot bodies and local resource paths are never persisted
+in the run store. The refresh table remains the restart authority for the
+last published generation/fingerprint, while unchanged workspace assets are
+reconstructed from explicit context.
+
 `DaemonPaths` (in `crates/codegg-core/src/storage/paths.rs`) is the
 single source of truth for catalog and asset paths:
 

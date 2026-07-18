@@ -2,13 +2,30 @@ use crate::error::ToolError;
 use crate::tool::{Tool, ToolCategory};
 use async_trait::async_trait;
 use serde::Deserialize;
+use std::sync::{Arc, Mutex};
 
 #[derive(Debug, Deserialize)]
 struct SkillInput {
     name: String,
 }
 
-pub struct SkillTool;
+#[derive(Default)]
+pub struct SkillTool {
+    snapshot: Option<Arc<crate::agent::asset_snapshot::ProjectAssetSnapshot>>,
+    asset_pin: Option<Arc<Mutex<crate::agent::asset_snapshot::RuntimeAssetPin>>>,
+}
+
+impl SkillTool {
+    pub fn with_snapshot(
+        snapshot: Option<Arc<crate::agent::asset_snapshot::ProjectAssetSnapshot>>,
+        asset_pin: Option<Arc<Mutex<crate::agent::asset_snapshot::RuntimeAssetPin>>>,
+    ) -> Self {
+        Self {
+            snapshot,
+            asset_pin,
+        }
+    }
+}
 
 #[async_trait]
 impl Tool for SkillTool {
@@ -41,6 +58,19 @@ impl Tool for SkillTool {
         let parsed: SkillInput = serde_json::from_value(input)
             .map_err(|e| ToolError::Execution(format!("invalid skill input: {e}")))?;
 
+        if let Some(snapshot) = self.snapshot.as_ref() {
+            if let Some(pin) = self.asset_pin.as_ref() {
+                pin.lock()
+                    .map_err(|_| ToolError::Execution("asset pin lock poisoned".to_string()))?
+                    .record_skill_activation(&parsed.name)
+                    .map_err(|e| ToolError::Execution(e.to_string()))?;
+            }
+            let skill = snapshot.skills.get(&parsed.name).ok_or_else(|| {
+                ToolError::Execution(format!("skill '{}' not found", parsed.name))
+            })?;
+            return render_skill(skill);
+        }
+
         // Build an explicit context. CLI bootstrap reads cwd exactly once
         // at this boundary; the registry no longer reads process-global
         // state.
@@ -65,49 +95,27 @@ impl Tool for SkillTool {
             .get(&parsed.name)
             .ok_or_else(|| ToolError::Execution(format!("skill '{}' not found", parsed.name)))?;
 
-        let resources = list_skill_resources(&skill.source_path).await;
-
-        let result = serde_json::json!({
-            "name": skill.name,
-            "description": skill.description,
-            "body": skill.body,
-            "resources": resources,
-        });
-
-        serde_json::to_string_pretty(&result)
-            .map_err(|e| ToolError::Execution(format!("failed to serialize: {e}")))
+        render_skill(skill)
     }
 }
 
-async fn list_skill_resources(skill_path: &std::path::Path) -> Vec<String> {
-    let dir = if skill_path.is_dir() {
-        skill_path.to_path_buf()
-    } else {
-        skill_path
-            .parent()
-            .map(|p| p.to_path_buf())
-            .unwrap_or_default()
-    };
+fn render_skill(skill: &crate::skills::EffectiveSkill) -> Result<String, ToolError> {
+    // Discovery already inventories bounded resource metadata. Reuse it
+    // instead of scanning the package again; resource bodies are loaded
+    // only through an explicit ResourceHandle read.
+    let resources: Vec<&str> = skill
+        .resources
+        .iter()
+        .map(|resource| resource.name.as_str())
+        .collect();
 
-    if !tokio::fs::metadata(&dir)
-        .await
-        .map(|m| m.is_dir())
-        .unwrap_or(false)
-    {
-        return Vec::new();
-    }
+    let result = serde_json::json!({
+        "name": skill.name,
+        "description": skill.description,
+        "body": skill.body,
+        "resources": resources,
+    });
 
-    let mut resources = Vec::new();
-    if let Ok(mut entries) = tokio::fs::read_dir(&dir).await {
-        while let Ok(Some(entry)) = entries.next_entry().await {
-            let path = entry.path();
-            if path.file_name() != Some(std::ffi::OsStr::new("SKILL.md")) {
-                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                    resources.push(name.to_string());
-                }
-            }
-        }
-    }
-
-    resources
+    serde_json::to_string_pretty(&result)
+        .map_err(|e| ToolError::Execution(format!("failed to serialize: {e}")))
 }

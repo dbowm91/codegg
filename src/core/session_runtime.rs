@@ -57,6 +57,9 @@ pub struct TurnHandle {
     pub cancel_tx: watch::Sender<bool>,
     pub steer_tx: Option<mpsc::UnboundedSender<String>>,
     pub started_at: DateTime<Utc>,
+    /// Immutable runtime-asset identity captured when this turn started.
+    pub asset_pin:
+        Option<std::sync::Arc<std::sync::Mutex<crate::agent::asset_snapshot::RuntimeAssetPin>>>,
 }
 
 pub struct SessionRuntimeRegistry {

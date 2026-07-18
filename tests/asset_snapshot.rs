@@ -12,12 +12,15 @@ use std::fs;
 use std::sync::Arc;
 
 use codegg::agent::asset_context::{AssetContextBuilder, ProjectId};
-use codegg::agent::asset_snapshot::{compute_snapshot_fingerprint, ProjectAssetSnapshot};
+use codegg::agent::asset_snapshot::{
+    compute_snapshot_fingerprint, ProjectAssetSnapshot, RuntimeAssetPin,
+};
 use codegg::agent::asset_snapshot_builder::{ProjectAssetSnapshotBuilder, SnapshotBuilderConfig};
 use codegg::agent::instructions::{InstructionFragment, ProjectInstructionResolver};
 use codegg::agent::resolve_agents_with_context;
 use codegg::config::schema::Config;
 use codegg::skills::AssetDiscoveryConfig;
+use codegg::tool::{ToolRegistry, ToolRegistryOptions};
 use tempfile::TempDir;
 
 fn make_config() -> Arc<Config> {
@@ -226,4 +229,39 @@ fn snapshot_skills_reflect_project_source_aware_discovery() {
             .any(|s| s.normalized_name == "agents-only-skill"),
         "snapshot must surface the .agents/-only skill"
     );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn pinned_skill_activation_records_the_captured_digest() {
+    let dir = TempDir::new().unwrap();
+    let skill_dir = dir.path().join(".codegg/skills/review");
+    fs::create_dir_all(&skill_dir).unwrap();
+    fs::write(
+        skill_dir.join("SKILL.md"),
+        "---\nname: review\ndescription: review files\n---\nReview body",
+    )
+    .unwrap();
+
+    let snapshot = Arc::new(default_builder().build(&ctx_for(dir.path())).unwrap());
+    let pin = Arc::new(std::sync::Mutex::new(RuntimeAssetPin::from_snapshot(
+        3, &snapshot,
+    )));
+    let registry = ToolRegistry::with_options(ToolRegistryOptions {
+        asset_snapshot: Some(snapshot),
+        asset_pin: Some(Arc::clone(&pin)),
+        ..ToolRegistryOptions::default()
+    });
+
+    let output = registry
+        .get("skill")
+        .expect("skill tool is registered")
+        .execute(serde_json::json!({"name": "review"}))
+        .await
+        .unwrap();
+    assert!(output.contains("Review body"));
+    assert!(pin
+        .lock()
+        .unwrap()
+        .activated_skill_digest("review")
+        .is_some());
 }

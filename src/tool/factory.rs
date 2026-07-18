@@ -10,6 +10,23 @@ use crate::tool::{ToolRegistry, ToolRegistryOptions};
 
 use codegg_core::workspace::ExecutionContext;
 
+/// Immutable runtime-asset context captured for one session/turn tool
+/// registry. The snapshot is fixed for the turn; the pin records only
+/// path-free activation digests.
+#[derive(Default)]
+pub struct RuntimeAssetContext {
+    pub snapshot: Option<Arc<crate::agent::asset_snapshot::ProjectAssetSnapshot>>,
+    pub pin: Option<Arc<std::sync::Mutex<crate::agent::asset_snapshot::RuntimeAssetPin>>>,
+}
+
+/// Session-scoped inputs shared by the scheduler-backed task tool and the
+/// immutable runtime-asset surface.
+#[derive(Default)]
+pub struct SessionToolContext {
+    pub submission: Option<Arc<crate::scheduler::JobSubmissionService>>,
+    pub runtime_assets: RuntimeAssetContext,
+}
+
 /// Build a session-scoped [`ToolRegistry`] with default tools, goal tools,
 /// and the optional task tool (when a task tool runtime is available).
 ///
@@ -36,8 +53,12 @@ pub fn build_session_tool_registry(
     task_state_policy: TaskStatePolicy,
     parent_model: Option<String>,
     execution: Arc<ExecutionContext>,
-    submission: Option<Arc<crate::scheduler::JobSubmissionService>>,
+    session_context: SessionToolContext,
 ) -> (ToolRegistry, Arc<dyn ContextArtifactStore>) {
+    let SessionToolContext {
+        submission,
+        runtime_assets: asset_context,
+    } = session_context;
     let todo_state = Arc::new(tokio::sync::Mutex::new(crate::task_state::TodoState::new()));
 
     // Determine whether context_read should be registered.
@@ -88,6 +109,8 @@ pub fn build_session_tool_registry(
         submission: submission.clone(),
         command_intent: config.command_intent.clone(),
         workspace_root: Some(execution.workspace_root.clone()),
+        asset_snapshot: asset_context.snapshot,
+        asset_pin: asset_context.pin,
     });
 
     // Register the task/subagent tool when a runtime is available.
@@ -169,6 +192,6 @@ pub fn build_session_tool_registry_legacy(
         task_state_policy,
         parent_model,
         execution,
-        None,
+        SessionToolContext::default(),
     )
 }

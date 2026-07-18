@@ -36,6 +36,9 @@ Key methods:
 - `find_matching(query)` — partial match across name, description, metadata
 - `build_system_prompt()` — formatted skill listing for agent prompts
 - `activate(name)` — retrieve skill body by name
+- `resource_handle(skill, relative_path, limits)` — create a lazy,
+  containment-checked handle for an inventoried resource; the body is not
+  read during discovery
 
 ### Source Kinds and Precedence
 
@@ -117,6 +120,16 @@ in the TUI. Refresh reports are bounded to names, digests, counts, and
 diagnostics. A failed or cancelled candidate leaves the previous generation
 published, and a turn retains the `Arc` captured before prompt construction.
 
+### Bounded resource handles
+
+`ResourceHandle` (`src/skills/resource.rs`) is the only resource-body read
+surface for discovered skill resources. Handles accept relative paths only,
+canonicalize the package root and candidate at construction/read time, reject
+symlink escape, and enforce both a maximum resource size and maximum returned
+bytes. `read_text()` additionally rejects malformed UTF-8. Discovery records
+resource names and sizes only; it never eagerly reads or executes resource
+bodies.
+
 ### Security Bounds
 
 - `AssetDiscoveryConfig` carries all configurable bounds with safe defaults:
@@ -130,6 +143,8 @@ published, and a turn retains the `Arc` captured before prompt construction.
 - Symlink escape containment: canonicalize paths and reject candidates that escape the source root
 - Resource path traversal: relative paths only, no `..` components
 - Script files are inventoried (name + size) but never executed
+- Resource bodies are lazy and bounded by `ResourceReadLimits` (1 MiB file
+  size and 64 KiB read defaults)
 
 ### Compatibility Adapter
 
@@ -177,6 +192,7 @@ src/skills/
   source.rs        — SourceKind, SourceRoot, SourceSummary, AssetDiscoveryConfig
   parser.rs        — frontmatter parsing, candidate construction, digest computation
   candidate.rs     — SkillCandidate, EffectiveSkill, ResolvedRegistry, ResourceDescriptor
+  resource.rs      — ResourceHandle, ResourceReadLimits, bounded resource reads
   diagnostic.rs    — Diagnostic, Severity
   compat.rs        — SkillIndexCompat adapter
 ```

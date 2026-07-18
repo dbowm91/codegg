@@ -3,12 +3,14 @@ pub mod compat;
 pub mod diagnostic;
 pub mod parser;
 pub mod registry;
+pub mod resource;
 pub mod source;
 
 pub use candidate::{EffectiveSkill, ResourceDescriptor, ShadowedAlternative, SkillCandidate};
 pub use compat::SkillIndexCompat;
 pub use diagnostic::{Diagnostic, Severity};
 pub use registry::AssetRegistry;
+pub use resource::{ResourceError, ResourceHandle, ResourceReadLimits};
 pub use source::{AssetDiscoveryConfig, SourceKind, SourceRoot, SourceSummary};
 
 use serde::{Deserialize, Serialize};

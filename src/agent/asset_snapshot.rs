@@ -55,6 +55,94 @@ pub struct ProjectAssetSnapshot {
     pub build_metadata: SnapshotBuildMetadata,
 }
 
+/// Immutable runtime-asset identity captured at an execution boundary.
+///
+/// The snapshot itself is retained by the turn as an `Arc`, while this small
+/// value is the bounded audit record that can cross turn/agent-run and
+/// durable-metadata boundaries.  Skill digests are indexed by normalized
+/// name, so a later skill activation can be recorded without rereading the
+/// workspace or trusting a mutable registry.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RuntimeAssetPin {
+    pub generation: u64,
+    pub fingerprint: String,
+    #[serde(default)]
+    pub skill_digests: BTreeMap<String, String>,
+    #[serde(default)]
+    pub activated_skill_digests: BTreeMap<String, String>,
+}
+
+impl RuntimeAssetPin {
+    pub const MAX_SKILL_DIGESTS: usize = 256;
+
+    pub fn from_snapshot(generation: u64, snapshot: &ProjectAssetSnapshot) -> Self {
+        let skill_digests = snapshot
+            .skills
+            .effective
+            .iter()
+            .take(Self::MAX_SKILL_DIGESTS)
+            .map(|skill| (skill.normalized_name.clone(), skill.content_digest.clone()))
+            .collect();
+        Self {
+            generation,
+            fingerprint: snapshot.fingerprint.clone(),
+            skill_digests,
+            activated_skill_digests: BTreeMap::new(),
+        }
+    }
+
+    /// Record a skill activation against the captured digest.  This never
+    /// resolves a path or reads the filesystem.  Unknown skills are rejected
+    /// so an audit record cannot be forged by naming an asset absent from the
+    /// pinned snapshot.
+    pub fn record_skill_activation(&mut self, name: &str) -> Result<&str, RuntimeAssetPinError> {
+        let normalized = name.trim().to_lowercase();
+        let digest = self
+            .skill_digests
+            .get(&normalized)
+            .ok_or_else(|| RuntimeAssetPinError::UnknownSkill(normalized.clone()))?;
+        if self.activated_skill_digests.len() >= Self::MAX_SKILL_DIGESTS
+            && !self.activated_skill_digests.contains_key(&normalized)
+        {
+            return Err(RuntimeAssetPinError::ActivationLimit);
+        }
+        self.activated_skill_digests
+            .insert(normalized, digest.clone());
+        Ok(digest)
+    }
+
+    pub fn activated_skill_digest(&self, name: &str) -> Option<&str> {
+        self.activated_skill_digests
+            .get(&name.trim().to_lowercase())
+            .map(String::as_str)
+    }
+
+    /// Convert the captured identity to the additive durable run-store
+    /// projection. Only digests and generation metadata cross the boundary.
+    pub fn to_run_provenance(&self) -> codegg_core::run_store::RunAssetProvenance {
+        codegg_core::run_store::RunAssetProvenance {
+            generation: Some(self.generation),
+            fingerprint: Some(self.fingerprint.clone()),
+            activated_skill_digests: self.activated_skill_digests.values().cloned().collect(),
+        }
+        .bounded()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum RuntimeAssetPinError {
+    #[error("skill '{0}' is not present in the pinned snapshot")]
+    UnknownSkill(String),
+    #[error("activated skill digest limit reached")]
+    ActivationLimit,
+}
+
+impl ProjectAssetSnapshot {
+    pub fn runtime_asset_pin(&self, generation: u64) -> RuntimeAssetPin {
+        RuntimeAssetPin::from_snapshot(generation, self)
+    }
+}
+
 /// Build metadata for a snapshot. Not part of the snapshot fingerprint.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SnapshotBuildMetadata {
@@ -202,3 +290,37 @@ pub fn global_roots(ctx: &AssetContext) -> Vec<PathBuf> {
 /// Re-export [`InstructionResolution`] for callers that build a snapshot
 /// piecemeal (mostly for tests and the builder seam).
 pub use crate::agent::instructions::InstructionResolution as ResolvedInstructions;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn runtime_asset_pin_records_only_known_skill_digests() {
+        let mut pin = RuntimeAssetPin {
+            generation: 4,
+            fingerprint: "snapshot-fingerprint".to_string(),
+            skill_digests: BTreeMap::from([("review".to_string(), "digest-1".to_string())]),
+            activated_skill_digests: BTreeMap::new(),
+        };
+
+        assert_eq!(pin.record_skill_activation("REVIEW").unwrap(), "digest-1");
+        assert_eq!(pin.activated_skill_digest("review"), Some("digest-1"));
+        assert!(matches!(
+            pin.record_skill_activation("missing"),
+            Err(RuntimeAssetPinError::UnknownSkill(_))
+        ));
+
+        let encoded = serde_json::to_string(&pin).unwrap();
+        let decoded: RuntimeAssetPin = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, pin);
+        assert!(!encoded.contains("/"));
+        let provenance = pin.to_run_provenance();
+        assert_eq!(provenance.generation, Some(4));
+        assert_eq!(
+            provenance.fingerprint.as_deref(),
+            Some("snapshot-fingerprint")
+        );
+        assert_eq!(provenance.activated_skill_digests, vec!["digest-1"]);
+    }
+}

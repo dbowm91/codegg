@@ -92,6 +92,7 @@ pub async fn persist_python_run(
         planned_backend: Some(codegg_core::run_store::PlannedBackend::PythonScript),
         actual_backend: Some(codegg_core::run_store::ActualBackend::PythonScript),
         ownership: codegg_core::run_store::RunOwnership::DelegatedBackend,
+        asset_provenance: None,
     };
 
     let status = match &result.status {

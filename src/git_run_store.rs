@@ -88,6 +88,7 @@ pub async fn persist_mutation(
         planned_backend: Some(PlannedBackend::Git),
         actual_backend: Some(ActualBackend::Git),
         ownership: RunOwnership::DelegatedBackend,
+        asset_provenance: None,
     };
 
     let handle = match begin_run_safe(store, draft).await {

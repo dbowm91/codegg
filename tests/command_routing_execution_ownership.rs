@@ -290,6 +290,7 @@ async fn active_routing_fallback_preserves_planned_and_records_actual() {
         planned_backend: Some(outcome.planned.clone()),
         actual_backend: Some(outcome.actual.clone().into_backend()),
         ownership: codegg_core::run_store::RunOwnership::Caller,
+        asset_provenance: None,
     };
 
     let handle = store.begin_run(draft).await.unwrap();
@@ -630,6 +631,7 @@ async fn manifest_serde_roundtrip_with_provenance() {
             reason: "test".to_string(),
         }),
         ownership: RunOwnership::DelegatedBackend,
+        asset_provenance: None,
     };
 
     let json = serde_json::to_string(&m).unwrap();
@@ -936,6 +938,7 @@ async fn dispatch_failure_fallback_persists_caller_owned_raw_shell() {
         planned_backend: Some(outcome.planned.clone()),
         actual_backend: Some(outcome.actual.clone().into_backend()),
         ownership: codegg_core::run_store::RunOwnership::Caller,
+        asset_provenance: None,
     };
 
     let handle = store.begin_run(draft).await.unwrap();

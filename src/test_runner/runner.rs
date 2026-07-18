@@ -654,6 +654,7 @@ async fn persist_to_run_store(
         planned_backend: Some(codegg_core::run_store::PlannedBackend::TestRunner),
         actual_backend: Some(codegg_core::run_store::ActualBackend::TestRunner),
         ownership: codegg_core::run_store::RunOwnership::DelegatedBackend,
+        asset_provenance: None,
     };
 
     let status = match report.status {

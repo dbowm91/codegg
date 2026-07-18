@@ -97,6 +97,14 @@ pub struct PublishedAssetSnapshot {
     pub published_at: DateTime<Utc>,
 }
 
+impl PublishedAssetSnapshot {
+    /// Return the bounded identity captured by a turn or agent run.  The
+    /// returned value contains no filesystem paths or asset bodies.
+    pub fn runtime_asset_pin(&self) -> super::asset_snapshot::RuntimeAssetPin {
+        self.snapshot.runtime_asset_pin(self.generation)
+    }
+}
+
 struct ScopeState {
     publication: RwLock<Option<Arc<PublishedAssetSnapshot>>>,
     last_generation: AtomicU64,
@@ -594,6 +602,12 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn publishes_generation_and_pins_previous_snapshot() {
         let tmp = TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".codegg/skills/review")).unwrap();
+        std::fs::write(
+            tmp.path().join(".codegg/skills/review/SKILL.md"),
+            "---\nname: review\ndescription: review files\n---\nReview safely.",
+        )
+        .unwrap();
         let ctx = context(tmp.path(), "project-1");
         let scope = AssetScope::new("project-1", "workspace-1");
         let service = coordinator();
@@ -603,13 +617,21 @@ mod tests {
         assert_eq!(first.outcome, RefreshOutcome::Published);
         assert_eq!(first.generation, Some(1));
         let pinned = service.snapshot(&scope).await.unwrap();
+        let mut pin = pinned.runtime_asset_pin();
+        assert_eq!(pin.generation, 1);
+        assert_eq!(pin.fingerprint, pinned.snapshot.fingerprint);
+        assert_eq!(pin.record_skill_activation("review").unwrap().len(), 64);
+        assert!(pin.activated_skill_digest("review").is_some());
         std::fs::write(tmp.path().join("AGENTS.md"), "new instructions").unwrap();
         let second = service
             .refresh(scope.clone(), ctx, RefreshReason::Manual)
             .await;
+        let second_fingerprint = second.fingerprint.clone().unwrap();
         assert_eq!(second.generation, Some(2));
         assert_eq!(pinned.generation, 1);
-        assert_ne!(pinned.snapshot.fingerprint, second.fingerprint.unwrap());
+        assert_ne!(pinned.snapshot.fingerprint, second_fingerprint);
+        assert_eq!(pin.generation, 1);
+        assert_ne!(pin.fingerprint, second_fingerprint);
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -689,8 +711,12 @@ mod tests {
         assert_eq!(status.generation, Some(7));
         assert_eq!(status.fingerprint.as_deref(), Some("prior-fingerprint"));
 
+        let reference = coordinator()
+            .refresh(scope.clone(), ctx.clone(), RefreshReason::Startup)
+            .await;
         let report = restored.refresh(scope, ctx, RefreshReason::Startup).await;
         assert_eq!(report.generation, Some(8));
+        assert_eq!(report.fingerprint, reference.fingerprint);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

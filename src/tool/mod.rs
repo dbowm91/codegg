@@ -252,6 +252,10 @@ pub struct ToolRegistryOptions {
     /// should always set this; older call sites that omit it are
     /// tracked by the `check_daemon_cwd_usage` static guard.
     pub workspace_root: Option<std::path::PathBuf>,
+    /// Immutable runtime-asset snapshot captured for the current turn.
+    pub asset_snapshot: Option<Arc<crate::agent::asset_snapshot::ProjectAssetSnapshot>>,
+    /// Shared path-free audit identity for recording skill activations.
+    pub asset_pin: Option<Arc<std::sync::Mutex<crate::agent::asset_snapshot::RuntimeAssetPin>>>,
 }
 
 impl ToolRegistry {
@@ -284,6 +288,11 @@ impl ToolRegistry {
         };
         let bash_tool = if let Some(submission) = options.submission.clone() {
             bash_tool.with_submission(submission)
+        } else {
+            bash_tool
+        };
+        let bash_tool = if let Some(asset_pin) = options.asset_pin.clone() {
+            bash_tool.with_asset_pin(asset_pin)
         } else {
             bash_tool
         };
@@ -353,7 +362,10 @@ impl ToolRegistry {
             }
         }
 
-        registry.register(crate::tool::skill::SkillTool);
+        registry.register(crate::tool::skill::SkillTool::with_snapshot(
+            options.asset_snapshot,
+            options.asset_pin,
+        ));
         registry.register(crate::tool::apply_patch::ApplyPatchTool::new());
         registry.register(crate::tool::diff::DiffTool::default());
         registry.register(crate::tool::replace::ReplaceTool::default());
@@ -676,6 +688,8 @@ impl ToolRegistry {
             submission: None,
             command_intent: config.command_intent.clone(),
             workspace_root: None,
+            asset_snapshot: None,
+            asset_pin: None,
         })
     }
 
@@ -712,6 +726,8 @@ impl ToolRegistry {
             submission: None,
             command_intent: None,
             workspace_root: None,
+            asset_snapshot: None,
+            asset_pin: None,
         })
     }
 

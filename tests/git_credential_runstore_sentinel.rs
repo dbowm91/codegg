@@ -95,6 +95,7 @@ fn persist_mutation_to_store(
         planned_backend: Some(codegg_core::run_store::PlannedBackend::Git),
         actual_backend: Some(codegg_core::run_store::ActualBackend::Git),
         ownership: RunOwnership::DelegatedBackend,
+        asset_provenance: None,
     };
     futures::executor::block_on(async {
         let handle = store.begin_run(draft).await.expect("begin_run");

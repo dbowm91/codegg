@@ -1440,6 +1440,8 @@ pub struct AgentLoop {
     base_request_tools: Vec<crate::provider::ToolDefinition>,
     /// In-memory backoff/starvation state for the context policy (resets per run()).
     context_policy_runtime: ContextPolicyRuntimeState,
+    /// Immutable runtime-asset identity captured for this agent run.
+    runtime_asset_pin: Option<Arc<std::sync::Mutex<crate::agent::asset_snapshot::RuntimeAssetPin>>>,
 }
 
 impl AgentLoop {
@@ -1683,7 +1685,23 @@ impl AgentLoop {
             context_cache_stats: crate::context::ContextCacheStats::new(),
             base_request_tools: Vec::new(),
             context_policy_runtime: ContextPolicyRuntimeState::default(),
+            runtime_asset_pin: None,
         }
+    }
+
+    /// Retain the asset identity captured at agent-run start. The value is
+    /// path-free and bounded; later refreshes must not replace it.
+    pub fn set_runtime_asset_pin(
+        &mut self,
+        pin: Option<Arc<std::sync::Mutex<crate::agent::asset_snapshot::RuntimeAssetPin>>>,
+    ) {
+        self.runtime_asset_pin = pin;
+    }
+
+    pub fn runtime_asset_pin(
+        &self,
+    ) -> Option<Arc<std::sync::Mutex<crate::agent::asset_snapshot::RuntimeAssetPin>>> {
+        self.runtime_asset_pin.as_ref().map(Arc::clone)
     }
 
     /// Build a `ProjectionConfig` from the loaded `[context]` config section.

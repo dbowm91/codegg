@@ -1,5 +1,9 @@
-use codegg::skills::{AssetDiscoveryConfig, AssetRegistry, Severity, SkillIndexCompat, SourceKind};
+use codegg::skills::{
+    AssetDiscoveryConfig, AssetRegistry, ResourceError, ResourceHandle, ResourceReadLimits,
+    Severity, SkillIndexCompat, SourceKind,
+};
 use std::fs;
+use std::path::Path;
 use tempfile::TempDir;
 
 fn test_config() -> AssetDiscoveryConfig {
@@ -401,6 +405,97 @@ fn resource_path_traversal_rejected() {
             "resource path should not contain traversal"
         );
     }
+}
+
+#[test]
+fn resource_handle_rejects_absolute_and_traversal_paths() {
+    let dir = TempDir::new().unwrap();
+    let package = dir.path().join("package");
+    fs::create_dir_all(&package).unwrap();
+    fs::write(package.join("safe.txt"), "safe").unwrap();
+    let limits = ResourceReadLimits::new(64, 64);
+
+    assert!(matches!(
+        ResourceHandle::new(&package, Path::new("../outside.txt"), limits),
+        Err(ResourceError::InvalidPath(_))
+    ));
+    assert!(matches!(
+        ResourceHandle::new(&package, Path::new("/tmp/outside.txt"), limits),
+        Err(ResourceError::InvalidPath(_))
+    ));
+}
+
+#[cfg(unix)]
+#[test]
+fn resource_handle_rejects_symlink_escape() {
+    let dir = TempDir::new().unwrap();
+    let root = dir.path();
+    let skill_dir = root.join(".codegg/skills/link-skill");
+    let outside = root.join("outside.txt");
+    fs::create_dir_all(&skill_dir).unwrap();
+    fs::write(
+        skill_dir.join("SKILL.md"),
+        "---\nname: link-skill\ndescription: symlink test\n---\nBody",
+    )
+    .unwrap();
+    fs::write(&outside, "outside").unwrap();
+    std::os::unix::fs::symlink(&outside, skill_dir.join("escape.txt")).unwrap();
+
+    let registry = AssetRegistry::build(&test_config(), root, &[]);
+    let skill = registry.get("link-skill").unwrap();
+    assert!(skill
+        .resources
+        .iter()
+        .any(|resource| resource.name == "escape.txt"));
+    assert!(matches!(
+        skill.resource_handle("escape.txt", ResourceReadLimits::new(64, 64)),
+        Err(ResourceError::SymlinkEscape { .. })
+    ));
+}
+
+#[test]
+fn resource_handle_enforces_size_and_read_bounds() {
+    let dir = TempDir::new().unwrap();
+    let package = dir.path().join("package");
+    fs::create_dir_all(&package).unwrap();
+    fs::write(package.join("large.txt"), "12345").unwrap();
+
+    assert!(matches!(
+        ResourceHandle::new(&package, "large.txt", ResourceReadLimits::new(4, 64)),
+        Err(ResourceError::ResourceTooLarge { .. })
+    ));
+
+    let handle =
+        ResourceHandle::new(&package, "large.txt", ResourceReadLimits::new(64, 4)).unwrap();
+    assert!(matches!(
+        handle.read_bytes(),
+        Err(ResourceError::ReadTooLarge { .. })
+    ));
+}
+
+#[test]
+fn discovery_does_not_read_resource_bodies_and_text_rejects_malformed_utf8() {
+    let dir = TempDir::new().unwrap();
+    let root = dir.path();
+    let skill_dir = root.join(".codegg/skills/binary");
+    fs::create_dir_all(&skill_dir).unwrap();
+    fs::write(
+        skill_dir.join("SKILL.md"),
+        "---\nname: binary\ndescription: binary resource\n---\nBody",
+    )
+    .unwrap();
+    fs::write(skill_dir.join("binary.dat"), [0xff, 0xfe, 0xfd]).unwrap();
+
+    let registry = AssetRegistry::build(&test_config(), root, &[]);
+    let skill = registry.get("binary").unwrap();
+    assert_eq!(skill.resources.len(), 1);
+    let handle = registry
+        .resource_handle("binary", "binary.dat", ResourceReadLimits::new(64, 64))
+        .unwrap();
+    assert!(matches!(
+        handle.read_text(),
+        Err(ResourceError::InvalidUtf8 { .. })
+    ));
 }
 
 #[test]

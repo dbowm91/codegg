@@ -337,6 +337,7 @@ async fn row_2_native_typed_mutation() {
         planned_backend: Some(PlannedBackend::Git),
         actual_backend: Some(ActualBackend::Git),
         ownership: RunOwnership::DelegatedBackend,
+        asset_provenance: None,
     };
     assert_eq!(draft.ownership, RunOwnership::DelegatedBackend);
 
@@ -443,6 +444,7 @@ async fn row_3_native_raw_git_subcommand() {
         planned_backend: Some(PlannedBackend::Git),
         actual_backend: Some(ActualBackend::Git),
         ownership: RunOwnership::DelegatedBackend,
+        asset_provenance: None,
     };
     assert_eq!(draft.ownership, RunOwnership::DelegatedBackend);
 }
@@ -943,6 +945,7 @@ async fn row_6_managed_git_argv_fallback() {
         planned_backend: Some(PlannedBackend::Git),
         actual_backend: Some(ActualBackend::Git),
         ownership: RunOwnership::DelegatedBackend,
+        asset_provenance: None,
     };
     assert_eq!(draft.ownership, RunOwnership::DelegatedBackend);
 }
@@ -1107,6 +1110,7 @@ async fn row_8_tui_git_action() {
         planned_backend: Some(PlannedBackend::Git),
         actual_backend: Some(ActualBackend::Git),
         ownership: RunOwnership::DelegatedBackend,
+        asset_provenance: None,
     };
     assert_eq!(draft.ownership, RunOwnership::DelegatedBackend);
 }
@@ -1202,6 +1206,7 @@ async fn row_9_daemon_git_action() {
         planned_backend: Some(PlannedBackend::Git),
         actual_backend: Some(ActualBackend::Git),
         ownership: RunOwnership::DelegatedBackend,
+        asset_provenance: None,
     };
     assert_eq!(draft.ownership, RunOwnership::DelegatedBackend);
 }
@@ -1276,6 +1281,7 @@ fn row_10_replay_rerun_audit_safe_argv() {
         planned_backend: Some(PlannedBackend::Git),
         actual_backend: Some(ActualBackend::Git),
         ownership: RunOwnership::DelegatedBackend,
+        asset_provenance: None,
     };
     assert_eq!(draft.ownership, RunOwnership::DelegatedBackend);
 }

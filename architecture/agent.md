@@ -220,6 +220,24 @@ restart continuity. Snapshot bodies are reconstructed from the explicit
 workspace on demand. `/reload`, `/reload skills`, and `/reload agents` are
 native aliases for the same daemon protocol request.
 
+Each published snapshot also exposes a `RuntimeAssetPin`. The daemon captures
+its generation, fingerprint, and bounded skill-digest index at `TurnSubmit`,
+passes the immutable pin alongside the snapshot to `TurnRunInput`, and keeps
+the pin on the active `TurnHandle`. A pin can record activated skill names
+only against digests present in that captured snapshot; it never rereads the
+workspace. Refresh swaps affect subsequent turns only. Durable run manifests
+carry additive, optional path-free asset provenance for compatibility with
+older records.
+
+Remote workspace manifests use the inert DTOs in
+`codegg_protocol::runtime_assets`. They contain bounded identity, digest,
+size, source-kind, and compatibility diagnostics only. They do not contain
+local paths, executable instructions, permissions, or synchronization state,
+and therefore cannot authorize local execution. Rollback is the existing
+last-valid publication behavior: invalid, failed, or cancelled refreshes
+retain the prior `Arc` and its pin; restart reconstructs bodies from explicit
+context after restoring only generation/fingerprint metadata.
+
 ### Agent Struct
 
 ```rust

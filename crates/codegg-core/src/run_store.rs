@@ -496,6 +496,44 @@ pub struct RunManifest {
     /// Who owns this run record. Defaults to Caller (BashTool).
     #[serde(default)]
     pub ownership: RunOwnership,
+    /// Additive runtime-asset provenance captured at an execution boundary.
+    /// This is metadata only; asset bodies and local paths are never stored.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asset_provenance: Option<RunAssetProvenance>,
+}
+
+/// Bounded, path-free identity for the runtime assets used by a run.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RunAssetProvenance {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generation: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fingerprint: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub activated_skill_digests: Vec<String>,
+}
+
+impl RunAssetProvenance {
+    pub const MAX_ACTIVATED_SKILL_DIGESTS: usize = 256;
+    pub const MAX_DIGEST_LENGTH: usize = 128;
+
+    /// Keep persisted provenance bounded even when supplied by an older or
+    /// embedding caller. Bodies, paths, and executable metadata are never
+    /// accepted by this record type.
+    pub fn bounded(mut self) -> Self {
+        self.fingerprint = self.fingerprint.and_then(|value| {
+            let value = value.trim().to_owned();
+            (!value.is_empty() && value.len() <= Self::MAX_DIGEST_LENGTH).then_some(value)
+        });
+        self.activated_skill_digests = self
+            .activated_skill_digests
+            .into_iter()
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty() && value.len() <= Self::MAX_DIGEST_LENGTH)
+            .take(Self::MAX_ACTIVATED_SKILL_DIGESTS)
+            .collect();
+        self
+    }
 }
 
 // ── Run Summary (for listing) ───────────────────────────────────────────
@@ -530,6 +568,8 @@ pub struct RunDraft {
     pub actual_backend: Option<ActualBackend>,
     #[serde(default)]
     pub ownership: RunOwnership,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asset_provenance: Option<RunAssetProvenance>,
 }
 
 #[derive(Debug, Clone)]
@@ -1262,6 +1302,7 @@ impl RunStore for FsRunStore {
             actual_backend: draft.actual_backend,
             fallback: None,
             ownership: draft.ownership,
+            asset_provenance: draft.asset_provenance.map(RunAssetProvenance::bounded),
         };
 
         let data = serde_json::to_vec_pretty(&manifest).map_err(RunStoreError::Json)?;
@@ -1643,6 +1684,7 @@ impl RunStore for MemRunStore {
             actual_backend: draft.actual_backend,
             fallback: None,
             ownership: draft.ownership,
+            asset_provenance: draft.asset_provenance.map(RunAssetProvenance::bounded),
         };
 
         let mut runs = self.runs.write();
@@ -1854,6 +1896,7 @@ mod tests {
             planned_backend: None,
             actual_backend: None,
             ownership: RunOwnership::Caller,
+            asset_provenance: None,
         }
     }
 
@@ -1869,6 +1912,24 @@ mod tests {
             actual_backend: None,
             fallback: None,
         }
+    }
+
+    #[test]
+    fn asset_provenance_is_bounded_and_path_free() {
+        let provenance = RunAssetProvenance {
+            generation: Some(7),
+            fingerprint: Some("  fingerprint  ".to_string()),
+            activated_skill_digests: (0..300).map(|i| format!("digest-{i}")).collect(),
+        }
+        .bounded();
+        assert_eq!(provenance.generation, Some(7));
+        assert_eq!(provenance.fingerprint.as_deref(), Some("fingerprint"));
+        assert_eq!(
+            provenance.activated_skill_digests.len(),
+            RunAssetProvenance::MAX_ACTIVATED_SKILL_DIGESTS
+        );
+        let json = serde_json::to_string(&provenance).unwrap();
+        assert!(!json.contains("path"));
     }
 
     #[tokio::test]
@@ -1921,6 +1982,7 @@ mod tests {
             actual_backend: None,
             fallback: None,
             ownership: RunOwnership::Caller,
+            asset_provenance: None,
         };
 
         let json = serde_json::to_string(&manifest).unwrap();
