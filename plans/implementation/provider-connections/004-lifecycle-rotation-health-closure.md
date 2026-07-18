@@ -1,6 +1,6 @@
 # Provider Connections Milestone 004 — Lifecycle, Rotation, Health, and Closure
 
-Status: corrective pass required; see `plans/closure/provider-connections/004-status.md`. The corrective implementation plan is `plans/implementation/provider-connections/005-corrective-lifecycle-rotation.md`.
+Status: superseded by `plans/implementation/provider-connections/005-corrective-lifecycle-rotation.md`; historical closure: `plans/closure/provider-connections/004-status.md`.
 
 Repository baseline: `3ce0a7ea7c1a8baa41a2618eb293291435e9f9f0` (`main`; planning-only commits after this baseline do not alter production behavior)
 

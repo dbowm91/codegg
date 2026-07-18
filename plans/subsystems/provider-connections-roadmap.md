@@ -1,6 +1,6 @@
 # Provider Connections and Eggpool Roadmap
 
-Status: active
+Status: closed; see `plans/closure/provider-connections/005-status.md`.
 
 Long-term references:
 
@@ -174,7 +174,7 @@ Deferred work: role-based access enforcement.
 
 ### Milestone 4 — Rotation, health, deletion, and closure
 
-Status: corrective pass required; see `plans/closure/provider-connections/004-status.md`.
+Status: superseded by Milestone 5; historical closure: `plans/closure/provider-connections/004-status.md`.
 
 Class: capability
 
@@ -192,11 +192,13 @@ Exit conditions:
 - health probes are bounded and do not overload Eggpool;
 - all Phase 2 exit criteria are evidenced.
 
-Disposition: the original implementation plan was authored and registered as `ready for handoff` but no production work landed. The closure record at `plans/closure/provider-connections/004-status.md` is **corrective pass required** with zero fully-passing, four partial, and seven failing criteria against the plan §13 acceptance set. A corrective implementation plan is filed at `plans/implementation/provider-connections/005-corrective-lifecycle-rotation.md` and inherits the original scope verbatim while adding the implementation seams, static guards, and reference/tombstone/audit schema that the original plan left to the implementer.
+Disposition: the original implementation plan was authored and registered as `ready for handoff` but no production work landed. Its historical closure record at `plans/closure/provider-connections/004-status.md` remains **corrective pass required**; the executed corrective implementation and closure are recorded under Milestone 5.
 
 Deferred work: role-based access enforcement.
 
 ### Milestone 5 — Corrective lifecycle, rotation, health, and closure
+
+Status: closed; see `plans/closure/provider-connections/005-status.md`.
 
 Class: capability
 
@@ -274,5 +276,5 @@ This roadmap closes when Eggpool and other endpoints can be represented as reusa
 | 1 | closed | `plans/implementation/provider-connections/001-connection-foundation.md` | `plans/closure/provider-connections/001-status.md` | — |
 | 2 | closed | `plans/implementation/provider-connections/002-eggpool-connect-workflow.md` | `plans/closure/provider-connections/002-status.md` | — |
 | 3 | closed | `plans/implementation/provider-connections/003-session-and-model-selection-by-connection.md` | `plans/closure/provider-connections/003-status.md` | — |
-| 4 | corrective pass required | `plans/implementation/provider-connections/004-lifecycle-rotation-health-closure.md` | `plans/closure/provider-connections/004-status.md` | Original plan never executed against a baseline; corrective plan filed at Milestone 5 |
-| 5 | ready | `plans/implementation/provider-connections/005-corrective-lifecycle-rotation.md` | — | Milestones 1–3 closure satisfied; static guards and WS guard extension are preconditions |
+| 4 | superseded | `plans/implementation/provider-connections/004-lifecycle-rotation-health-closure.md` | `plans/closure/provider-connections/004-status.md` | Replaced by the executed corrective Milestone 5 plan |
+| 5 | closed | `plans/implementation/provider-connections/005-corrective-lifecycle-rotation.md` | `plans/closure/provider-connections/005-status.md` | — |

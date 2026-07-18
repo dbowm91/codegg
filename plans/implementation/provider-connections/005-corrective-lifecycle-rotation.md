@@ -1,8 +1,10 @@
 # Provider Connections Milestone 005 — Corrective Lifecycle, Rotation, Health, and Closure
 
-Status: ready for handoff
+Status: closed; see `plans/closure/provider-connections/005-status.md`.
 
-Repository baseline: `213272c3720a8fdd1694452c37553e012c645230` (`main`; closure of Milestone 003 plus subsequent planning-only commits; no production code in this milestone has landed yet)
+Repository baseline: `213272c3720a8fdd1694452c37553e012c645230` (`main`; the handoff baseline recorded by the plan; production implementation landed later in `0eadc85`)
+
+Implementation commit: `0eadc85`.
 
 Source original milestone:
 

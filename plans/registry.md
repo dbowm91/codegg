@@ -26,7 +26,7 @@ Canonical direction remains in:
 |---|---|---|---|---|
 | Domain identity and compatibility | active | `plans/subsystems/domain-identity-roadmap.md` | Milestone 4 — closure and legacy-removal criteria | Milestone 3 corrective implementation is complete; the next removal-criteria handoff is not yet registered |
 | Runtime assets and harness interoperability | active | `plans/subsystems/runtime-assets-roadmap.md` | Milestone 4 — immutable runtime pinning and closure | Milestone 3 closed; Milestone 4 handoff is dependency-ready |
-| Provider connections and Eggpool | active | `plans/subsystems/provider-connections-roadmap.md` | Milestone 5 — corrective lifecycle, rotation, health, and closure | Milestone 4 corrective pass required; Milestone 5 registered as the corrective implementation plan |
+| Provider connections and Eggpool | closed | `plans/subsystems/provider-connections-roadmap.md` | Milestone 5 — corrective lifecycle, rotation, health, and closure (closed) | — |
 | Project catalog and lazy discovery | active | `plans/subsystems/project-catalog-roadmap.md` | Milestone 3 — lazy activation and health | Milestone 2 closed; Runtime Assets Milestone 3 activation-refresh interface is closed |
 | Multi-project TUI and sessions | active | `plans/subsystems/tui-project-sessions-roadmap.md` | Milestone 1 — project-aware state and catalog client | Project Catalog 4 protocol/server migration; Runtime Assets refresh/activation interfaces are now available |
 | Frontend-neutral session projections | active | `plans/subsystems/session-projections-roadmap.md` | Milestone 1 — projection contracts and canonical reducer | Domain Identity 3, Project Catalog 4, and Multi-Project TUI 1 |
@@ -35,8 +35,6 @@ Canonical direction remains in:
 
 | Subsystem | Milestone | Class | Plan | Baseline | Status |
 |---|---|---|---|---|---|
-| Provider connections and Eggpool | 004 — lifecycle, rotation, health, and closure | capability | `plans/implementation/provider-connections/004-lifecycle-rotation-health-closure.md` | `3ce0a7e` | corrective pass required (see active closure work) |
-| Provider connections and Eggpool | 005 — corrective lifecycle, rotation, health, and closure | capability | `plans/implementation/provider-connections/005-corrective-lifecycle-rotation.md` | `213272c` | ready |
 | Runtime assets and harness interoperability | 004 — immutable runtime pinning and closure | invariant | `plans/implementation/runtime-assets/004-immutable-runtime-pinning-and-closure.md` | `972c286` | ready |
 | Project catalog and lazy discovery | 003 — lazy activation and health | infrastructure | `plans/implementation/project-catalog/003-lazy-activation-and-health.md` | `972c286` | ready |
 
@@ -44,7 +42,6 @@ Canonical direction remains in:
 
 | Subsystem | Milestone | Closure record | Status | Open findings |
 |---|---|---|---|---|
-| Provider connections and Eggpool | 004 — lifecycle, rotation, health, and closure | `plans/closure/provider-connections/004-status.md` | corrective pass required | Rotation, refresh coordinator, lifecycle states, session/protocol reconciliation, TUI lifecycle controls, fake-daemon harness, and the flaky provisioning test are unfulfilled; corrective plan filed as Milestone 5. |
 
 ## Blocked work
 
@@ -63,7 +60,8 @@ Canonical direction remains in:
 | Runtime assets and harness interoperability | 001 — project asset registry | `plans/closure/runtime-assets/001-status.md` | `f9db5c3` | Milestone 2 — explicit-context agent and instruction resolution |
 | Project catalog and lazy discovery | 002 — bounded discovery and reconciliation | `plans/closure/project-catalog/002-status.md` | `5974976` (implementation) | `plans/implementation/project-catalog/003-lazy-activation-and-health.md` (now ready) |
 | Project catalog and lazy discovery | 001 — durable catalog foundation | `plans/closure/project-catalog/001-status.md` | `a2db5e4` | Milestone 2 — bounded discovery and reconciliation |
-| Provider connections and Eggpool | 003 — session/model selection by connection | `plans/closure/provider-connections/003-status.md` | `efe1995` | Milestone 5 — corrective lifecycle, rotation, health, and closure (Milestone 4 is corrective-pass-required) |
+| Provider connections and Eggpool | 005 — corrective lifecycle, rotation, health, and closure | `plans/closure/provider-connections/005-status.md` | `0eadc85` | — |
+| Provider connections and Eggpool | 003 — session/model selection by connection | `plans/closure/provider-connections/003-status.md` | `efe1995` | Milestone 5 closed; no further provider-connections plan registered |
 | Domain identity and compatibility | 002 — project/repository storage migration | `plans/closure/domain-identity/002-status.md` | `84d92f0` | Runtime Assets 001 and Project Catalog 001 are ready |
 | Domain identity and compatibility | 001 — typed identity foundation | `plans/closure/domain-identity/001-status.md` | `f203ed9` | Milestone 2 — project/repository storage migration |
 | Provider connections and Eggpool | 002 — Eggpool `/connect` workflow | `plans/closure/provider-connections/002-status.md` | `8c1675c` | Milestone 3 — session/model selection by connection |
