@@ -226,5 +226,5 @@ This roadmap closes when the daemon maintains a durable, bounded, path-independe
 |---|---|---|---|---|
 | 1 | closed | `plans/implementation/project-catalog/001-durable-catalog-foundation.md` | `plans/closure/project-catalog/001-status.md` | — |
 | 2 | closed | `plans/implementation/project-catalog/002-bounded-discovery-reconciliation.md` | `plans/closure/project-catalog/002-status.md` | — |
-| 3 | not started | — | — | Runtime Assets Milestone 3 refresh/activation interface |
+| 3 | ready | `plans/implementation/project-catalog/003-lazy-activation-and-health.md` | — | —; Runtime Assets Milestone 3 activation-refresh interface closed |
 | 4 | not started | — | — | Milestones 1–3 closure |

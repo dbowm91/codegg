@@ -25,10 +25,10 @@ Canonical direction remains in:
 | Subsystem | Status | Roadmap | Current milestone | Dependencies or blockers |
 |---|---|---|---|---|
 | Domain identity and compatibility | active | `plans/subsystems/domain-identity-roadmap.md` | Milestone 4 — closure and legacy-removal criteria | Milestone 3 corrective implementation is complete; the next removal-criteria handoff is not yet registered |
-| Runtime assets and harness interoperability | active | `plans/subsystems/runtime-assets-roadmap.md` | Milestone 3 — refresh lifecycle and operator surface | Milestone 2 closed; Milestone 3 handoff plan is dependency-ready |
+| Runtime assets and harness interoperability | active | `plans/subsystems/runtime-assets-roadmap.md` | Milestone 4 — immutable runtime pinning and closure | Milestone 3 closed; Milestone 4 handoff is dependency-ready |
 | Provider connections and Eggpool | active | `plans/subsystems/provider-connections-roadmap.md` | Milestone 5 — corrective lifecycle, rotation, health, and closure | Milestone 4 corrective pass required; Milestone 5 registered as the corrective implementation plan |
-| Project catalog and lazy discovery | active | `plans/subsystems/project-catalog-roadmap.md` | Milestone 3 — lazy activation and health | Milestone 2 closed; blocked on the Runtime Assets Milestone 3 refresh/activation interface |
-| Multi-project TUI and sessions | active | `plans/subsystems/tui-project-sessions-roadmap.md` | Milestone 1 — project-aware state and catalog client | Project Catalog 4 protocol/server migration and Runtime Assets refresh/activation interfaces |
+| Project catalog and lazy discovery | active | `plans/subsystems/project-catalog-roadmap.md` | Milestone 3 — lazy activation and health | Milestone 2 closed; Runtime Assets Milestone 3 activation-refresh interface is closed |
+| Multi-project TUI and sessions | active | `plans/subsystems/tui-project-sessions-roadmap.md` | Milestone 1 — project-aware state and catalog client | Project Catalog 4 protocol/server migration; Runtime Assets refresh/activation interfaces are now available |
 | Frontend-neutral session projections | active | `plans/subsystems/session-projections-roadmap.md` | Milestone 1 — projection contracts and canonical reducer | Domain Identity 3, Project Catalog 4, and Multi-Project TUI 1 |
 
 ## Dependency-ready implementation plans
@@ -37,7 +37,8 @@ Canonical direction remains in:
 |---|---|---|---|---|---|
 | Provider connections and Eggpool | 004 — lifecycle, rotation, health, and closure | capability | `plans/implementation/provider-connections/004-lifecycle-rotation-health-closure.md` | `3ce0a7e` | corrective pass required (see active closure work) |
 | Provider connections and Eggpool | 005 — corrective lifecycle, rotation, health, and closure | capability | `plans/implementation/provider-connections/005-corrective-lifecycle-rotation.md` | `213272c` | ready |
-| Runtime assets and harness interoperability | 003 — refresh lifecycle and operator surface | capability | `plans/implementation/runtime-assets/003-refresh-lifecycle-operator-surface.md` | `5974976` | ready |
+| Runtime assets and harness interoperability | 004 — immutable runtime pinning and closure | invariant | `plans/implementation/runtime-assets/004-immutable-runtime-pinning-and-closure.md` | `972c286` | ready |
+| Project catalog and lazy discovery | 003 — lazy activation and health | infrastructure | `plans/implementation/project-catalog/003-lazy-activation-and-health.md` | `972c286` | ready |
 
 ## Active closure work
 
@@ -49,17 +50,18 @@ Canonical direction remains in:
 
 | Work item | Blocker | Required resolution | Owner document |
 |---|---|---|---|
-| Multi-Project TUI 001 — project-aware state | Project catalog protocol/server surface and runtime asset refresh/generation interfaces are unavailable | Close Project Catalog 004 and the Runtime Assets refresh/activation milestones; do not create frontend-local project authority | `plans/implementation/tui-project-sessions/001-project-aware-state.md` |
-| Session Projections 001 — projection contracts | Project Catalog 004 and project-aware TUI state are unavailable | Close Project Catalog 004 and Multi-Project TUI 001; consume the now-closed Domain Identity 003 identity contract | `plans/implementation/session-projections/001-projection-contracts.md` |
+| Multi-Project TUI 001 — project-aware state | Project Catalog 004 protocol/server migration is unavailable | Close Project Catalog 004; consume the closed Runtime Assets refresh/activation interfaces; do not create frontend-local project authority | `plans/implementation/tui-project-sessions/001-project-aware-state.md` |
+| Session Projections 001 — projection contracts | Project Catalog 004 and project-aware TUI state are unavailable | Close Project Catalog 004 and Multi-Project TUI 001; consume the now-closed Domain Identity 003 and Runtime Assets 003 identity/refresh contracts | `plans/implementation/session-projections/001-projection-contracts.md` |
 
 ## Recently closed work
 
 | Subsystem | Milestone | Closure record | Closed at commit | Follow-up |
 |---|---|---|---|---|
 | Domain identity and compatibility | 003 — corrective daemon and protocol adoption | `plans/closure/domain-identity/003-corrective-status.md` | `ec42dce` | Milestone 4 — closure and legacy-removal criteria |
+| Runtime assets and harness interoperability | 003 — refresh lifecycle and operator surface | `plans/closure/runtime-assets/003-status.md` | `972c286` | `plans/implementation/runtime-assets/004-immutable-runtime-pinning-and-closure.md`; Project Catalog M003 is now ready |
 | Runtime assets and harness interoperability | 002 — explicit-context agent and instruction resolution | `plans/closure/runtime-assets/002-status.md` | `155f7f3` (Milestone 2) | `plans/implementation/runtime-assets/003-refresh-lifecycle-operator-surface.md` |
 | Runtime assets and harness interoperability | 001 — project asset registry | `plans/closure/runtime-assets/001-status.md` | `f9db5c3` | Milestone 2 — explicit-context agent and instruction resolution |
-| Project catalog and lazy discovery | 002 — bounded discovery and reconciliation | `plans/closure/project-catalog/002-status.md` | `5974976` (implementation) | Milestone 3 — lazy activation and health; blocked on Runtime Assets Milestone 3 |
+| Project catalog and lazy discovery | 002 — bounded discovery and reconciliation | `plans/closure/project-catalog/002-status.md` | `5974976` (implementation) | `plans/implementation/project-catalog/003-lazy-activation-and-health.md` (now ready) |
 | Project catalog and lazy discovery | 001 — durable catalog foundation | `plans/closure/project-catalog/001-status.md` | `a2db5e4` | Milestone 2 — bounded discovery and reconciliation |
 | Provider connections and Eggpool | 003 — session/model selection by connection | `plans/closure/provider-connections/003-status.md` | `efe1995` | Milestone 5 — corrective lifecycle, rotation, health, and closure (Milestone 4 is corrective-pass-required) |
 | Domain identity and compatibility | 002 — project/repository storage migration | `plans/closure/domain-identity/002-status.md` | `84d92f0` | Runtime Assets 001 and Project Catalog 001 are ready |

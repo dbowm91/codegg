@@ -1,8 +1,10 @@
 # Runtime Assets Milestone 003 — Refresh Lifecycle and Operator Surface
 
-Status: ready for handoff
+Status: implemented — see `plans/closure/runtime-assets/003-status.md`
 
 Repository baseline: `5974976` (`feat(project-catalog): add bounded discovery reconciliation`), with Runtime Assets Milestones 001–002 closed.
+
+Implementation commit: `972c286`
 
 Source roadmap:
 
