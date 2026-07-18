@@ -29,9 +29,12 @@ Define versioned, bounded, frontend-neutral session projection DTOs and one dete
 
 Hard dependencies:
 
-- Domain Identity daemon/protocol adoption must provide stable project/session/workspace identity.
 - Project Catalog protocol/server migration must provide project-scoped operation and subscription context.
 - Multi-Project TUI state foundation must establish project/session routing without frontend-global assumptions.
+
+The Domain Identity daemon/protocol dependency is closed by
+`plans/closure/domain-identity/003-corrective-status.md`; this plan must consume
+that stable identity contract and must not recreate a path-derived authority.
 
 The agent must not build projections around legacy path IDs, one global project directory, or one privileged current-session TUI state.
 
@@ -335,7 +338,7 @@ The agent must stop and report rather than improvise when:
 
 ## 16. Handoff notes
 
-- This plan remains blocked until domain, catalog, and TUI state dependencies close.
+- This plan remains blocked until the catalog and TUI state dependencies close.
 - Keep the reducer I/O-free and frontend-neutral.
 - Do not label the existing in-memory remote TUI buffer as durable replay.
 - Avoid overfitting DTOs to Ratatui layout or current web/server route shapes.

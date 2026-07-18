@@ -244,5 +244,5 @@ This roadmap closes when project identity is durable and path-independent across
 |---|---|---|---|---|
 | 1 | closed | `plans/implementation/domain-identity/001-typed-identity-foundation.md` | `plans/closure/domain-identity/001-status.md` | — |
 | 2 | closed | `plans/implementation/domain-identity/002-project-repository-storage-migration.md` | `plans/closure/domain-identity/002-status.md` | — |
-| 3 | corrective pass required | `plans/implementation/domain-identity/003-daemon-protocol-adoption.md` | `plans/closure/domain-identity/003-status.md` | Plan registered but never implemented; resolver, additive protocol DTOs, daemon handler migration, server route cleanup, and expanded static guard are absent |
-| 4 | not started | — | — | Milestones 1–3 closure evidence |
+| 3 | closed | `plans/implementation/domain-identity/003-corrective-daemon-protocol-adoption.md` | `plans/closure/domain-identity/003-corrective-status.md` | — |
+| 4 | not started | — | — | Milestone 3 closure evidence and a legacy-removal-criteria handoff |

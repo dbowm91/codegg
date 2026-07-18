@@ -1,6 +1,11 @@
 # Domain Identity Milestone 003 — Daemon and Protocol Adoption
 
-Status: ready for handoff
+Status: superseded
+
+Corrective implementation: `plans/implementation/domain-identity/003-corrective-daemon-protocol-adoption.md`.
+The original requirements and its corrective finding remain immutable reference
+material; production evidence is recorded by the corrective plan and closure
+record.
 
 Repository baseline: `3ce0a7ea7c1a8baa41a2618eb293291435e9f9f0` (`main`; planning-only commits after this baseline do not alter production behavior)
 

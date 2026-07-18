@@ -24,7 +24,7 @@ Canonical direction remains in:
 
 | Subsystem | Status | Roadmap | Current milestone | Dependencies or blockers |
 |---|---|---|---|---|
-| Domain identity and compatibility | active | `plans/subsystems/domain-identity-roadmap.md` | Milestone 3 — daemon and protocol adoption | Corrective pass required; no production implementation has landed against the plan |
+| Domain identity and compatibility | active | `plans/subsystems/domain-identity-roadmap.md` | Milestone 4 — closure and legacy-removal criteria | Milestone 3 corrective implementation is complete; the next removal-criteria handoff is not yet registered |
 | Runtime assets and harness interoperability | active | `plans/subsystems/runtime-assets-roadmap.md` | Milestone 3 — refresh lifecycle and operator surface | Milestone 2 closed; Milestone 3 handoff plan is dependency-ready |
 | Provider connections and Eggpool | active | `plans/subsystems/provider-connections-roadmap.md` | Milestone 5 — corrective lifecycle, rotation, health, and closure | Milestone 4 corrective pass required; Milestone 5 registered as the corrective implementation plan |
 | Project catalog and lazy discovery | active | `plans/subsystems/project-catalog-roadmap.md` | Milestone 3 — lazy activation and health | Milestone 2 closed; blocked on the Runtime Assets Milestone 3 refresh/activation interface |
@@ -35,7 +35,6 @@ Canonical direction remains in:
 
 | Subsystem | Milestone | Class | Plan | Baseline | Status |
 |---|---|---|---|---|---|
-| Domain identity and compatibility | 003 — daemon and protocol adoption | infrastructure | `plans/implementation/domain-identity/003-daemon-protocol-adoption.md` | `3ce0a7e` | corrective pass required (see active closure work) |
 | Provider connections and Eggpool | 004 — lifecycle, rotation, health, and closure | capability | `plans/implementation/provider-connections/004-lifecycle-rotation-health-closure.md` | `3ce0a7e` | corrective pass required (see active closure work) |
 | Provider connections and Eggpool | 005 — corrective lifecycle, rotation, health, and closure | capability | `plans/implementation/provider-connections/005-corrective-lifecycle-rotation.md` | `213272c` | ready |
 | Runtime assets and harness interoperability | 003 — refresh lifecycle and operator surface | capability | `plans/implementation/runtime-assets/003-refresh-lifecycle-operator-surface.md` | `5974976` | ready |
@@ -44,7 +43,6 @@ Canonical direction remains in:
 
 | Subsystem | Milestone | Closure record | Status | Open findings |
 |---|---|---|---|---|
-| Domain identity and compatibility | 003 — daemon and protocol adoption | `plans/closure/domain-identity/003-status.md` | corrective pass required | Resolver, additive protocol DTOs, daemon handler migration, server route cleanup, and expanded static guard are not implemented; the plan must be re-handed. |
 | Provider connections and Eggpool | 004 — lifecycle, rotation, health, and closure | `plans/closure/provider-connections/004-status.md` | corrective pass required | Rotation, refresh coordinator, lifecycle states, session/protocol reconciliation, TUI lifecycle controls, fake-daemon harness, and the flaky provisioning test are unfulfilled; corrective plan filed as Milestone 5. |
 
 ## Blocked work
@@ -52,12 +50,13 @@ Canonical direction remains in:
 | Work item | Blocker | Required resolution | Owner document |
 |---|---|---|---|
 | Multi-Project TUI 001 — project-aware state | Project catalog protocol/server surface and runtime asset refresh/generation interfaces are unavailable | Close Project Catalog 004 and the Runtime Assets refresh/activation milestones; do not create frontend-local project authority | `plans/implementation/tui-project-sessions/001-project-aware-state.md` |
-| Session Projections 001 — projection contracts | Stable project/session routing and project-aware TUI state are unavailable | Close Domain Identity 003, Project Catalog 004, and Multi-Project TUI 001 | `plans/implementation/session-projections/001-projection-contracts.md` |
+| Session Projections 001 — projection contracts | Project Catalog 004 and project-aware TUI state are unavailable | Close Project Catalog 004 and Multi-Project TUI 001; consume the now-closed Domain Identity 003 identity contract | `plans/implementation/session-projections/001-projection-contracts.md` |
 
 ## Recently closed work
 
 | Subsystem | Milestone | Closure record | Closed at commit | Follow-up |
 |---|---|---|---|---|
+| Domain identity and compatibility | 003 — corrective daemon and protocol adoption | `plans/closure/domain-identity/003-corrective-status.md` | `ec42dce` | Milestone 4 — closure and legacy-removal criteria |
 | Runtime assets and harness interoperability | 002 — explicit-context agent and instruction resolution | `plans/closure/runtime-assets/002-status.md` | `155f7f3` (Milestone 2) | `plans/implementation/runtime-assets/003-refresh-lifecycle-operator-surface.md` |
 | Runtime assets and harness interoperability | 001 — project asset registry | `plans/closure/runtime-assets/001-status.md` | `f9db5c3` | Milestone 2 — explicit-context agent and instruction resolution |
 | Project catalog and lazy discovery | 002 — bounded discovery and reconciliation | `plans/closure/project-catalog/002-status.md` | `5974976` (implementation) | Milestone 3 — lazy activation and health; blocked on Runtime Assets Milestone 3 |
