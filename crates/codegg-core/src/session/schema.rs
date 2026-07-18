@@ -106,6 +106,9 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), StorageError> {
     if current_version < 28 {
         migrate_and_record(pool, 28).await?;
     }
+    if current_version < 29 {
+        migrate_and_record(pool, 29).await?;
+    }
 
     Ok(())
 }
@@ -146,6 +149,7 @@ async fn migrate_and_record(pool: &SqlitePool, version: i64) -> Result<(), Stora
             26 => migrate_v26(pool).await?,
             27 => migrate_v27(pool).await?,
             28 => migrate_v28(pool).await?,
+            29 => migrate_v29(pool).await?,
             _ => {
                 return Err(StorageError::Migration(format!(
                     "unknown migration version {}",
@@ -1390,5 +1394,94 @@ async fn migrate_v28(pool: &SqlitePool) -> Result<(), StorageError> {
         }
     }
 
+    Ok(())
+}
+
+/// Project Catalog Milestone 2: bounded discovery roots, scan generations,
+/// and metadata-only observations. The tables are additive and retain catalog
+/// authority when a root becomes unavailable or a scan is cancelled.
+async fn migrate_v29(pool: &SqlitePool) -> Result<(), StorageError> {
+    for statement in [
+        r#"
+        CREATE TABLE IF NOT EXISTS discovery_root (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            canonical_root TEXT NOT NULL,
+            mode TEXT NOT NULL CHECK (mode IN ('git', 'directory', 'mixed')),
+            enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+            revision INTEGER NOT NULL CHECK (revision > 0),
+            max_depth INTEGER NOT NULL CHECK (max_depth >= 0 AND max_depth <= 64),
+            max_entries INTEGER NOT NULL CHECK (max_entries > 0 AND max_entries <= 1000000),
+            max_candidates INTEGER NOT NULL CHECK (max_candidates > 0 AND max_candidates <= 100000),
+            max_duration_ms INTEGER NOT NULL CHECK (max_duration_ms > 0 AND max_duration_ms <= 3600000),
+            stat_concurrency INTEGER NOT NULL CHECK (stat_concurrency > 0 AND stat_concurrency <= 256),
+            git_probe_concurrency INTEGER NOT NULL CHECK (git_probe_concurrency > 0 AND git_probe_concurrency <= 64),
+            include_hidden INTEGER NOT NULL CHECK (include_hidden IN (0, 1)),
+            follow_symlinks INTEGER NOT NULL CHECK (follow_symlinks IN (0, 1)),
+            ignore_names_json TEXT NOT NULL DEFAULT '[]',
+            directory_markers_json TEXT NOT NULL DEFAULT '[]',
+            direct_child_only INTEGER NOT NULL CHECK (direct_child_only IN (0, 1)),
+            time_created INTEGER NOT NULL,
+            time_updated INTEGER NOT NULL
+        )
+        "#,
+        r#"
+        CREATE TABLE IF NOT EXISTS discovery_scan (
+            id TEXT PRIMARY KEY,
+            root_id TEXT NOT NULL,
+            generation INTEGER NOT NULL CHECK (generation > 0),
+            status TEXT NOT NULL CHECK (status IN ('queued', 'running', 'completed', 'cancelled', 'failed', 'truncated', 'interrupted')),
+            visited_entries INTEGER NOT NULL CHECK (visited_entries >= 0),
+            ignored_entries INTEGER NOT NULL CHECK (ignored_entries >= 0),
+            candidate_count INTEGER NOT NULL CHECK (candidate_count >= 0),
+            reconciled_count INTEGER NOT NULL CHECK (reconciled_count >= 0),
+            ambiguous_count INTEGER NOT NULL CHECK (ambiguous_count >= 0),
+            unavailable_count INTEGER NOT NULL CHECK (unavailable_count >= 0),
+            error_count INTEGER NOT NULL CHECK (error_count >= 0),
+            duration_ms INTEGER NOT NULL CHECK (duration_ms >= 0),
+            truncated INTEGER NOT NULL CHECK (truncated IN (0, 1)),
+            diagnostics_json TEXT NOT NULL DEFAULT '[]',
+            started_at INTEGER NOT NULL,
+            completed_at INTEGER,
+            FOREIGN KEY(root_id) REFERENCES discovery_root(id) ON DELETE CASCADE,
+            UNIQUE(root_id, generation)
+        )
+        "#,
+        r#"
+        CREATE TABLE IF NOT EXISTS discovery_observation (
+            id TEXT PRIMARY KEY,
+            root_id TEXT NOT NULL,
+            scan_id TEXT NOT NULL,
+            generation INTEGER NOT NULL CHECK (generation > 0),
+            canonical_locator TEXT NOT NULL,
+            relative_path TEXT NOT NULL,
+            candidate_kind TEXT NOT NULL CHECK (candidate_kind IN ('git_repository', 'directory')),
+            lineage_key TEXT,
+            project_id TEXT,
+            workspace_id TEXT,
+            status TEXT NOT NULL CHECK (status IN ('present', 'moved', 'missing', 'ambiguous', 'inaccessible', 'ignored', 'stale')),
+            outcome TEXT NOT NULL,
+            diagnostic TEXT,
+            time_observed INTEGER NOT NULL,
+            FOREIGN KEY(root_id) REFERENCES discovery_root(id) ON DELETE CASCADE,
+            FOREIGN KEY(scan_id) REFERENCES discovery_scan(id) ON DELETE CASCADE,
+            FOREIGN KEY(project_id) REFERENCES logical_project(id) ON DELETE SET NULL,
+            FOREIGN KEY(workspace_id) REFERENCES workspace(id) ON DELETE SET NULL
+        )
+        "#,
+        "CREATE INDEX IF NOT EXISTS idx_discovery_root_path ON discovery_root(canonical_root)",
+        "CREATE INDEX IF NOT EXISTS idx_discovery_scan_root_generation ON discovery_scan(root_id, generation DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_discovery_scan_status ON discovery_scan(status, started_at DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_discovery_observation_root_generation ON discovery_observation(root_id, generation DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_discovery_observation_project ON discovery_observation(project_id, status)",
+        "CREATE INDEX IF NOT EXISTS idx_discovery_observation_workspace ON discovery_observation(workspace_id, status)",
+        "CREATE INDEX IF NOT EXISTS idx_discovery_observation_status ON discovery_observation(status, time_observed DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_discovery_observation_lineage ON discovery_observation(lineage_key)",
+    ] {
+        sqlx::query(statement)
+            .execute(pool)
+            .await
+            .map_err(|e| StorageError::Migration(e.to_string()))?;
+    }
     Ok(())
 }

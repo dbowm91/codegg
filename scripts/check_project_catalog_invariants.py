@@ -142,14 +142,17 @@ def check_no_unwrap_or_default_pathbuf() -> bool:
     return True
 
 
-def check_v28_migration_tables() -> bool:
-    """Verify v28 migration creates the three new tables."""
+def check_catalog_migration_tables() -> bool:
+    """Verify catalog and discovery migrations create their tables."""
     source = _read(SCHEMA_MODULE)
 
     tables = [
         "project_locator",
         "project_health",
         "legacy_catalog_association_marker",
+        "discovery_root",
+        "discovery_scan",
+        "discovery_observation",
     ]
 
     for table in tables:
@@ -159,7 +162,7 @@ def check_v28_migration_tables() -> bool:
     return True
 
 
-def check_v28_migration_columns() -> bool:
+def check_catalog_migration_columns() -> bool:
     """Verify v28 migration adds the 5 new columns to logical_project."""
     source = _read(SCHEMA_MODULE)
 
@@ -179,15 +182,15 @@ def check_v28_migration_columns() -> bool:
 
 
 def check_storage_layout_version() -> bool:
-    """Verify STORAGE_LAYOUT_VERSION is 28."""
+    """Verify STORAGE_LAYOUT_VERSION is 29."""
     source = _read(STORAGE_MODULE)
     match = re.search(r"STORAGE_LAYOUT_VERSION\s*:\s*u32\s*=\s*(\d+)", source)
     if not match:
         print("  FAIL: STORAGE_LAYOUT_VERSION not found")
         return False
     version = int(match.group(1))
-    if version != 28:
-        print(f"  FAIL: STORAGE_LAYOUT_VERSION is {version}, expected 28")
+    if version != 29:
+        print(f"  FAIL: STORAGE_LAYOUT_VERSION is {version}, expected 29")
         return False
     return True
 
@@ -210,9 +213,9 @@ def main() -> int:
             check_attach_locator_local_only,
         ),
         ("No unwrap_or_default PathBuf anti-pattern", check_no_unwrap_or_default_pathbuf),
-        ("v28 migration creates 3 tables", check_v28_migration_tables),
-        ("v28 migration adds 5 columns to logical_project", check_v28_migration_columns),
-        ("STORAGE_LAYOUT_VERSION is 28", check_storage_layout_version),
+        ("catalog/discovery migrations create tables", check_catalog_migration_tables),
+        ("v28 migration adds 5 columns to logical_project", check_catalog_migration_columns),
+        ("STORAGE_LAYOUT_VERSION is 29", check_storage_layout_version),
         ("lib.rs re-exports project_catalog", check_lib_reexport),
     ]
 

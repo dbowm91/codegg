@@ -1,6 +1,4 @@
-use codegg::skills::{
-    AssetDiscoveryConfig, AssetRegistry, Severity, SkillIndexCompat, SourceKind,
-};
+use codegg::skills::{AssetDiscoveryConfig, AssetRegistry, Severity, SkillIndexCompat, SourceKind};
 use std::fs;
 use tempfile::TempDir;
 

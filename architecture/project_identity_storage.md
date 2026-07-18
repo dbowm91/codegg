@@ -60,6 +60,16 @@ The catalog service in `codegg_core::project_catalog` sits above
 operations on logical projects, with locator placeholders, health
 placeholders, and restart hydration. See `architecture/project_catalog.md`.
 
+## Discovery reconciliation boundary
+
+Milestone 2 adds discovery as a caller of the existing catalog/workspace
+authority. Candidates carry canonical locator observations and optional,
+redacted local lineage evidence; their paths never become `ProjectId` values.
+Unique lineage can preserve a project across a path move, while ambiguous
+lineage, fork-like evidence, and plain-directory moves require explicit
+association. Discovery never creates a second SQL authority for project or
+workspace bindings.
+
 ## Verification
 
 ```text

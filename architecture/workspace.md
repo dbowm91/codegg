@@ -66,6 +66,11 @@ The authoritative relation is:
 
 ```text
 Session -> ProjectId + WorkspaceId -> canonical root
+
+Project discovery may register an observed canonical root through the existing
+workspace registry, but it does not activate a workspace service bundle. A
+discovery observation is not an execution context; activation still requires
+an explicit later project/workspace selection.
 ```
 
 `SessionBinding` expresses the typed internal relation. `project_id` and

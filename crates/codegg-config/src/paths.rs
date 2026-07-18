@@ -204,6 +204,12 @@ pub fn merge_configs(configs: &[Config]) -> Config {
             context_packer,
             context_policy
         );
+        if let Some(ref discovery) = config.discovery {
+            match &mut merged.discovery {
+                Some(ref mut existing) => existing.merge(discovery),
+                None => merged.discovery = Some(discovery.clone()),
+            }
+        }
         if let Some(ref search) = config.search {
             match &mut merged.search {
                 Some(ref mut existing) => {
@@ -432,6 +438,44 @@ mod tests {
         let merged = merge_configs(&[c1, c2]);
         assert_eq!(merged.log_level, Some("debug".to_string()));
         assert_eq!(merged.model, Some("provider/model1".to_string()));
+    }
+
+    #[test]
+    fn test_merge_configs_merges_discovery_roots_by_id() {
+        let first = Config {
+            discovery: Some(crate::schema::DiscoveryConfig {
+                enabled: Some(true),
+                roots: Some(vec![crate::schema::DiscoveryRootConfig {
+                    id: Some("work".to_string()),
+                    path: Some("/workspaces".to_string()),
+                    max_depth: Some(5),
+                    ..Default::default()
+                }]),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let second = Config {
+            discovery: Some(crate::schema::DiscoveryConfig {
+                max_concurrent_scans: Some(2),
+                roots: Some(vec![crate::schema::DiscoveryRootConfig {
+                    id: Some("work".to_string()),
+                    path: Some("/renamed".to_string()),
+                    max_candidates: Some(25),
+                    ..Default::default()
+                }]),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let merged = merge_configs(&[first, second]);
+        let discovery = merged.discovery.expect("discovery config");
+        assert_eq!(discovery.max_concurrent_scans(), 2);
+        assert_eq!(discovery.roots().len(), 1);
+        assert_eq!(discovery.roots()[0].path(), Some("/renamed"));
+        assert_eq!(discovery.roots()[0].max_depth(), 5);
+        assert_eq!(discovery.roots()[0].max_candidates(), 25);
     }
 
     #[test]

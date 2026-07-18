@@ -59,7 +59,7 @@ real directory; new code MUST NOT use it.
 | `init_legacy_project_store(root)` | `<root>/.codegg/sessions.db`. |
 | `init(project_dir)` (deprecated) | Empty → user config directory + `codegg/sessions.db`. Non-empty → legacy project store. |
 
-`STORAGE_LAYOUT_VERSION = 27` is exported from `storage::mod` and is
+`STORAGE_LAYOUT_VERSION = 29` is exported from `storage::mod` and is
 referenced from `MigrationMarker.storage_layout_version` so the
 migration tooling can report which layout a legacy database was
 imported under.
@@ -140,7 +140,7 @@ Gracefully closes the connection pool using async pool shutdown. The `self` para
 
 Migrations are implemented in `src/session/schema.rs`, not in the storage module itself. The storage module calls `session::schema::migrate()` during initialization.
 
-Migration versions v1-v26 are supported, covering:
+Migration versions v1-v29 are supported, covering:
 - v1: Initial schema (project, session, message, part, todo, permission, session_share tables)
 - v2: Additional indexes
 - v3: cached_models table
@@ -192,6 +192,12 @@ Migration versions v1-v26 are supported, covering:
   `legacy_catalog_association_marker` tables and five columns to
   `logical_project` (`archived_at`, `description`, `tags`,
   `registration_source`, `time_last_opened`) for the project catalog layer.
+- v29 adds bounded discovery metadata tables: `discovery_root`,
+  `discovery_scan`, and `discovery_observation`. Scan rows record only bounded
+  counts, lifecycle, generation, and diagnostics; observations record canonical
+  locators, optional lineage keys, typed status, and catalog/workspace links.
+  The last completed generation remains authoritative when a scan fails or is
+  cancelled. Retention may prune old runs/observations but never catalog rows.
 
 ## See Also
 

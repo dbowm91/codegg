@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 pub const CONFIG_VERSION: &str = "1";
 pub const MIN_SUPPORTED_VERSION: &str = "1";
@@ -241,6 +242,8 @@ pub struct Config {
     pub daemon: Option<DaemonConfig>,
     pub scheduler: Option<SchedulerConfig>,
     pub catalog: Option<CatalogConfig>,
+    /// Explicit, opt-in project discovery configuration.
+    pub discovery: Option<DiscoveryConfig>,
     pub tool_deferral: Option<ToolDeferralConfig>,
     pub model_profile: Option<HashMap<String, ModelProfileConfig>>,
     pub security: Option<SecurityConfig>,
@@ -1312,6 +1315,518 @@ pub struct CatalogConfig {
     pub search_max_results: Option<usize>,
 }
 
+/// Maximum number of configured discovery roots.
+pub const MAX_DISCOVERY_ROOTS: usize = 64;
+/// Maximum length of a discovery root id in bytes.
+pub const MAX_DISCOVERY_ROOT_ID_BYTES: usize = 128;
+/// Maximum length of a discovery root name in bytes.
+pub const MAX_DISCOVERY_ROOT_NAME_BYTES: usize = 256;
+/// Maximum length of a discovery path in bytes.
+pub const MAX_DISCOVERY_PATH_BYTES: usize = 4_096;
+/// Maximum number of ignore patterns or directory markers on one root.
+pub const MAX_DISCOVERY_PATTERNS: usize = 256;
+/// Maximum length of one ignore pattern or directory marker in bytes.
+pub const MAX_DISCOVERY_PATTERN_BYTES: usize = 512;
+
+/// Configuration for bounded, explicitly-enabled local project discovery.
+///
+/// `Config::default()` leaves this section absent.  An explicitly supplied
+/// section is also disabled and empty by default, so discovery cannot become
+/// active because a config object was merely deserialized.
+#[derive(Deserialize, Serialize, Debug, Clone, PartialEq)]
+#[serde(default)]
+pub struct DiscoveryConfig {
+    pub enabled: Option<bool>,
+    pub roots: Option<Vec<DiscoveryRootConfig>>,
+    /// Maximum number of roots scanned at once by a future coordinator.
+    pub max_concurrent_scans: Option<usize>,
+}
+
+impl Default for DiscoveryConfig {
+    fn default() -> Self {
+        Self {
+            enabled: Some(false),
+            roots: Some(Vec::new()),
+            max_concurrent_scans: None,
+        }
+    }
+}
+
+impl DiscoveryConfig {
+    pub fn enabled(&self) -> bool {
+        self.enabled.unwrap_or(false)
+    }
+
+    pub fn roots(&self) -> &[DiscoveryRootConfig] {
+        self.roots.as_deref().unwrap_or(&[])
+    }
+
+    pub fn max_concurrent_scans(&self) -> usize {
+        self.max_concurrent_scans.unwrap_or(1)
+    }
+
+    /// Merge a later config layer into this one. Root entries are merged by
+    /// stable id/name where possible and otherwise by normalized path.
+    pub fn merge(&mut self, other: &Self) {
+        if other.enabled.is_some() {
+            self.enabled = other.enabled;
+        }
+        if other.max_concurrent_scans.is_some() {
+            self.max_concurrent_scans = other.max_concurrent_scans;
+        }
+
+        if let Some(incoming_roots) = &other.roots {
+            let roots = self.roots.get_or_insert_with(Vec::new);
+            for incoming in incoming_roots {
+                if let Some(existing) = roots
+                    .iter_mut()
+                    .find(|existing| discovery_roots_match(existing, incoming))
+                {
+                    existing.merge(incoming);
+                } else {
+                    roots.push(incoming.clone());
+                }
+            }
+        }
+    }
+
+    pub fn validate(&self) -> Result<(), Vec<String>> {
+        let mut errors = Vec::new();
+
+        if let Some(max) = self.max_concurrent_scans {
+            validate_bound(&mut errors, "discovery.max_concurrent_scans", max, 1, 16);
+        }
+
+        let roots = self.roots();
+        if roots.len() > MAX_DISCOVERY_ROOTS {
+            errors.push(format!(
+                "discovery.roots has {} entries; maximum is {}",
+                roots.len(),
+                MAX_DISCOVERY_ROOTS
+            ));
+        }
+
+        for (index, root) in roots.iter().enumerate() {
+            if let Err(root_errors) = root.validate() {
+                errors.extend(
+                    root_errors
+                        .into_iter()
+                        .map(|error| format!("discovery.roots[{index}]: {error}")),
+                );
+            }
+        }
+
+        for (left_index, left) in roots.iter().enumerate() {
+            for (right_index, right) in roots.iter().enumerate().skip(left_index + 1) {
+                if let (Some(left_id), Some(right_id)) = (&left.id, &right.id) {
+                    if left_id == right_id {
+                        errors.push(format!(
+                            "discovery.roots[{left_index}] and discovery.roots[{right_index}] duplicate id '{left_id}'"
+                        ));
+                    }
+                }
+                if let (Some(left_name), Some(right_name)) = (&left.name, &right.name) {
+                    if left_name == right_name {
+                        errors.push(format!(
+                            "discovery.roots[{left_index}] and discovery.roots[{right_index}] duplicate name '{left_name}'"
+                        ));
+                    }
+                }
+                if let (Some(left_path), Some(right_path)) =
+                    (left.normalized_path(), right.normalized_path())
+                {
+                    if paths_overlap(&left_path, &right_path) {
+                        errors.push(format!(
+                            "discovery.roots[{left_index}] and discovery.roots[{right_index}] have overlapping paths"
+                        ));
+                    }
+                }
+            }
+        }
+
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors)
+        }
+    }
+}
+
+/// A single explicitly configured local discovery root.
+#[derive(Deserialize, Serialize, Debug, Clone, PartialEq)]
+#[serde(default)]
+pub struct DiscoveryRootConfig {
+    pub id: Option<String>,
+    pub name: Option<String>,
+    #[serde(alias = "root", alias = "root_path", alias = "local_path")]
+    pub path: Option<String>,
+    pub mode: Option<DiscoveryMode>,
+    pub enabled: Option<bool>,
+    /// Monotonically increasing identity revision for reload/merge consumers.
+    pub revision: Option<u64>,
+    pub max_depth: Option<usize>,
+    #[serde(alias = "max_entries")]
+    pub max_visited_entries: Option<usize>,
+    pub max_candidates: Option<usize>,
+    #[serde(alias = "max_elapsed_time_ms", alias = "max_duration_ms")]
+    pub max_elapsed_ms: Option<u64>,
+    #[serde(alias = "stat_read_concurrency")]
+    pub stat_concurrency: Option<usize>,
+    #[serde(alias = "git_concurrency")]
+    pub git_probe_concurrency: Option<usize>,
+    pub include_hidden: Option<bool>,
+    pub symlink_policy: Option<SymlinkPolicy>,
+    #[serde(alias = "ignore_patterns", alias = "ignore_names")]
+    pub ignore: Option<Vec<String>>,
+    pub directory_markers: Option<Vec<String>>,
+    pub direct_child_only: Option<bool>,
+}
+
+impl Default for DiscoveryRootConfig {
+    fn default() -> Self {
+        Self {
+            id: None,
+            name: None,
+            path: None,
+            mode: None,
+            enabled: Some(true),
+            revision: None,
+            max_depth: None,
+            max_visited_entries: None,
+            max_candidates: None,
+            max_elapsed_ms: None,
+            stat_concurrency: None,
+            git_probe_concurrency: None,
+            include_hidden: Some(false),
+            symlink_policy: Some(SymlinkPolicy::NoFollow),
+            ignore: Some(Vec::new()),
+            directory_markers: Some(Vec::new()),
+            direct_child_only: Some(false),
+        }
+    }
+}
+
+impl DiscoveryRootConfig {
+    pub fn id(&self) -> Option<&str> {
+        self.id.as_deref()
+    }
+
+    pub fn name(&self) -> Option<&str> {
+        self.name.as_deref()
+    }
+
+    pub fn path(&self) -> Option<&str> {
+        self.path.as_deref()
+    }
+
+    pub fn root_path(&self) -> Option<&str> {
+        self.path()
+    }
+
+    pub fn mode(&self) -> DiscoveryMode {
+        self.mode.unwrap_or_default()
+    }
+
+    pub fn enabled(&self) -> bool {
+        self.enabled.unwrap_or(true)
+    }
+
+    pub fn max_depth(&self) -> usize {
+        self.max_depth.unwrap_or(4)
+    }
+
+    pub fn max_visited_entries(&self) -> usize {
+        self.max_visited_entries.unwrap_or(10_000)
+    }
+
+    pub fn max_candidates(&self) -> usize {
+        self.max_candidates.unwrap_or(1_000)
+    }
+
+    pub fn max_elapsed_ms(&self) -> u64 {
+        self.max_elapsed_ms.unwrap_or(10_000)
+    }
+
+    pub fn stat_concurrency(&self) -> usize {
+        self.stat_concurrency.unwrap_or(4)
+    }
+
+    pub fn git_probe_concurrency(&self) -> usize {
+        self.git_probe_concurrency.unwrap_or(2)
+    }
+
+    pub fn include_hidden(&self) -> bool {
+        self.include_hidden.unwrap_or(false)
+    }
+
+    pub fn symlink_policy(&self) -> SymlinkPolicy {
+        self.symlink_policy.unwrap_or_default()
+    }
+
+    pub fn ignore(&self) -> Vec<String> {
+        self.ignore.clone().unwrap_or_default()
+    }
+
+    pub fn ignore_patterns(&self) -> Vec<String> {
+        self.ignore()
+    }
+
+    pub fn directory_markers(&self) -> Vec<String> {
+        self.directory_markers.clone().unwrap_or_default()
+    }
+
+    pub fn direct_child_only(&self) -> bool {
+        self.direct_child_only.unwrap_or(false)
+    }
+
+    fn normalized_path(&self) -> Option<PathBuf> {
+        self.path.as_deref().map(lexically_normalize)
+    }
+
+    pub fn validate(&self) -> Result<(), Vec<String>> {
+        let mut errors = Vec::new();
+
+        validate_optional_text(
+            &mut errors,
+            "id",
+            self.id.as_deref(),
+            MAX_DISCOVERY_ROOT_ID_BYTES,
+            false,
+        );
+        validate_optional_text(
+            &mut errors,
+            "name",
+            self.name.as_deref(),
+            MAX_DISCOVERY_ROOT_NAME_BYTES,
+            false,
+        );
+        validate_optional_text(
+            &mut errors,
+            "path",
+            self.path.as_deref(),
+            MAX_DISCOVERY_PATH_BYTES,
+            true,
+        );
+
+        if self.id.is_none() && self.name.is_none() {
+            errors.push("id or name is required".to_string());
+        }
+        if matches!(self.path.as_deref(), None | Some("")) {
+            errors.push("path is required and cannot be empty".to_string());
+        }
+
+        if let Some(value) = self.revision {
+            validate_bound(&mut errors, "revision", value, 1, u64::MAX);
+        }
+        if let Some(value) = self.max_depth {
+            validate_bound(&mut errors, "max_depth", value, 1, 32);
+        }
+        if let Some(value) = self.max_visited_entries {
+            validate_bound(&mut errors, "max_visited_entries", value, 1, 1_000_000);
+        }
+        if let Some(value) = self.max_candidates {
+            validate_bound(&mut errors, "max_candidates", value, 1, 100_000);
+        }
+        if self.max_candidates() > self.max_visited_entries() {
+            errors.push("max_candidates cannot exceed max_visited_entries".to_string());
+        }
+        if let Some(value) = self.max_elapsed_ms {
+            validate_bound(&mut errors, "max_elapsed_ms", value, 1, 600_000);
+        }
+        if let Some(value) = self.stat_concurrency {
+            validate_bound(&mut errors, "stat_concurrency", value, 1, 64);
+        }
+        if let Some(value) = self.git_probe_concurrency {
+            validate_bound(&mut errors, "git_probe_concurrency", value, 1, 32);
+        }
+
+        validate_string_list(&mut errors, "ignore", &self.ignore, MAX_DISCOVERY_PATTERNS);
+        validate_string_list(
+            &mut errors,
+            "directory_markers",
+            &self.directory_markers,
+            MAX_DISCOVERY_PATTERNS,
+        );
+
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors)
+        }
+    }
+
+    fn merge(&mut self, other: &Self) {
+        if other.id.is_some() {
+            self.id = other.id.clone();
+        }
+        if other.name.is_some() {
+            self.name = other.name.clone();
+        }
+        if other.path.is_some() {
+            self.path = other.path.clone();
+        }
+        if other.mode.is_some() {
+            self.mode = other.mode;
+        }
+        if other.enabled.is_some() {
+            self.enabled = other.enabled;
+        }
+        if other.revision.is_some() {
+            self.revision = other.revision;
+        }
+        if other.max_depth.is_some() {
+            self.max_depth = other.max_depth;
+        }
+        if other.max_visited_entries.is_some() {
+            self.max_visited_entries = other.max_visited_entries;
+        }
+        if other.max_candidates.is_some() {
+            self.max_candidates = other.max_candidates;
+        }
+        if other.max_elapsed_ms.is_some() {
+            self.max_elapsed_ms = other.max_elapsed_ms;
+        }
+        if other.stat_concurrency.is_some() {
+            self.stat_concurrency = other.stat_concurrency;
+        }
+        if other.git_probe_concurrency.is_some() {
+            self.git_probe_concurrency = other.git_probe_concurrency;
+        }
+        if other.include_hidden.is_some() {
+            self.include_hidden = other.include_hidden;
+        }
+        if other.symlink_policy.is_some() {
+            self.symlink_policy = other.symlink_policy;
+        }
+        if other.ignore.is_some() {
+            self.ignore = other.ignore.clone();
+        }
+        if other.directory_markers.is_some() {
+            self.directory_markers = other.directory_markers.clone();
+        }
+        if other.direct_child_only.is_some() {
+            self.direct_child_only = other.direct_child_only;
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum DiscoveryMode {
+    /// Discover repository roots by looking for Git metadata.
+    #[default]
+    Git,
+    /// Discover explicitly marked directories.
+    #[serde(alias = "directories")]
+    Directory,
+    /// Permit both Git repositories and explicitly marked directories.
+    Mixed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SymlinkPolicy {
+    /// Do not traverse symbolic links.
+    #[default]
+    NoFollow,
+    /// Traverse links only when the resolved target remains within the root.
+    #[serde(alias = "follow", alias = "within_root")]
+    FollowWithinRoot,
+}
+
+fn validate_bound<T>(errors: &mut Vec<String>, name: &str, value: T, min: T, max: T)
+where
+    T: Ord + std::fmt::Display + Copy,
+{
+    if value < min {
+        errors.push(format!("{name} must be at least {min}"));
+    } else if value > max {
+        errors.push(format!("{name} exceeds maximum {max}"));
+    }
+}
+
+fn validate_optional_text(
+    errors: &mut Vec<String>,
+    name: &str,
+    value: Option<&str>,
+    max_bytes: usize,
+    allow_path_separator: bool,
+) {
+    let Some(value) = value else { return };
+    if value.is_empty() && !allow_path_separator {
+        errors.push(format!("{name} cannot be empty"));
+    }
+    if value.len() > max_bytes {
+        errors.push(format!(
+            "{name} exceeds maximum length of {max_bytes} bytes"
+        ));
+    }
+    if value.chars().any(char::is_control) {
+        errors.push(format!("{name} cannot contain NUL or control characters"));
+    }
+}
+
+fn validate_string_list(
+    errors: &mut Vec<String>,
+    name: &str,
+    values: &Option<Vec<String>>,
+    max_items: usize,
+) {
+    let Some(values) = values else { return };
+    if values.len() > max_items {
+        errors.push(format!(
+            "{name} has {} entries; maximum is {max_items}",
+            values.len()
+        ));
+    }
+    for (index, value) in values.iter().enumerate() {
+        validate_optional_text(
+            errors,
+            &format!("{name}[{index}]"),
+            Some(value),
+            MAX_DISCOVERY_PATTERN_BYTES,
+            false,
+        );
+    }
+}
+
+fn lexically_normalize(path: &str) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in Path::new(path).components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                if !normalized.pop() {
+                    normalized.push(component.as_os_str());
+                }
+            }
+            _ => normalized.push(component.as_os_str()),
+        }
+    }
+    normalized
+}
+
+fn paths_overlap(left: &Path, right: &Path) -> bool {
+    left == right || left.starts_with(right) || right.starts_with(left)
+}
+
+fn discovery_roots_match(left: &DiscoveryRootConfig, right: &DiscoveryRootConfig) -> bool {
+    match (&left.id, &right.id) {
+        (Some(left), Some(right)) if left == right => return true,
+        (Some(_), Some(_)) => {}
+        _ => {}
+    }
+    if let (Some(left), Some(right)) = (&left.name, &right.name) {
+        if left == right {
+            return true;
+        }
+    }
+    match (left.normalized_path(), right.normalized_path()) {
+        (Some(left), Some(right)) => left == right,
+        _ => false,
+    }
+}
+
 /// Configuration for tool deferral and partitioning behavior.
 #[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq)]
 #[serde(default)]
@@ -1604,6 +2119,12 @@ impl Config {
         if let Some(ref pf) = self.preflight {
             if let Err(pf_errors) = pf.validate() {
                 errors.extend(pf_errors);
+            }
+        }
+
+        if let Some(ref discovery) = self.discovery {
+            if let Err(discovery_errors) = discovery.validate() {
+                errors.extend(discovery_errors);
             }
         }
 
@@ -2494,6 +3015,130 @@ pub struct SearchProviderConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn valid_discovery_root(path: &str, id: &str) -> DiscoveryRootConfig {
+        DiscoveryRootConfig {
+            id: Some(id.to_string()),
+            path: Some(path.to_string()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn discovery_defaults_are_disabled_and_bounded() {
+        let config = DiscoveryConfig::default();
+        assert!(!config.enabled());
+        assert!(config.roots().is_empty());
+        assert_eq!(config.max_concurrent_scans(), 1);
+
+        let root = DiscoveryRootConfig::default();
+        assert_eq!(root.mode(), DiscoveryMode::Git);
+        assert_eq!(root.max_depth(), 4);
+        assert_eq!(root.max_visited_entries(), 10_000);
+        assert_eq!(root.max_candidates(), 1_000);
+        assert_eq!(root.max_elapsed_ms(), 10_000);
+        assert_eq!(root.stat_concurrency(), 4);
+        assert_eq!(root.git_probe_concurrency(), 2);
+        assert!(!root.include_hidden());
+        assert_eq!(root.symlink_policy(), SymlinkPolicy::NoFollow);
+    }
+
+    #[test]
+    fn discovery_config_is_serde_compatible() {
+        let config: Config = serde_json::from_str(
+            r#"{
+                "discovery": {
+                    "enabled": true,
+                    "max_concurrent_scans": 2,
+                    "roots": [{
+                        "id": "work",
+                        "path": "/workspaces",
+                        "mode": "mixed",
+                        "symlink_policy": "follow_within_root",
+                        "max_entries": 2000,
+                        "ignore_patterns": ["target"]
+                    }]
+                }
+            }"#,
+        )
+        .expect("discovery config should deserialize");
+        let discovery = config.discovery.expect("discovery section");
+        assert!(discovery.enabled());
+        assert_eq!(discovery.max_concurrent_scans(), 2);
+        let root = &discovery.roots()[0];
+        assert_eq!(root.mode(), DiscoveryMode::Mixed);
+        assert_eq!(root.symlink_policy(), SymlinkPolicy::FollowWithinRoot);
+        assert_eq!(root.max_visited_entries(), 2_000);
+        assert_eq!(root.ignore_patterns(), vec!["target"]);
+    }
+
+    #[test]
+    fn discovery_validation_rejects_unsafe_text_and_bounds() {
+        let root = DiscoveryRootConfig {
+            id: Some("bad\0id".to_string()),
+            name: Some("x".repeat(MAX_DISCOVERY_ROOT_NAME_BYTES + 1)),
+            path: Some("/tmp/work\nspace".to_string()),
+            revision: Some(0),
+            max_depth: Some(0),
+            max_visited_entries: Some(2),
+            max_candidates: Some(3),
+            max_elapsed_ms: Some(0),
+            stat_concurrency: Some(0),
+            git_probe_concurrency: Some(33),
+            ignore: Some(vec![String::new()]),
+            ..Default::default()
+        };
+        let errors = root.validate().expect_err("invalid discovery root");
+        assert!(errors.iter().any(|error| error.contains("control")));
+        assert!(errors.iter().any(|error| error.contains("maximum length")));
+        assert!(errors.iter().any(|error| error.contains("revision")));
+        assert!(errors.iter().any(|error| error.contains("max_depth")));
+        assert!(errors
+            .iter()
+            .any(|error| error.contains("max_candidates cannot exceed")));
+        assert!(errors.iter().any(|error| error.contains("max_elapsed_ms")));
+        assert!(errors
+            .iter()
+            .any(|error| error.contains("stat_concurrency")));
+        assert!(errors
+            .iter()
+            .any(|error| error.contains("git_probe_concurrency")));
+        assert!(errors.iter().any(|error| error.contains("ignore[0]")));
+    }
+
+    #[test]
+    fn discovery_validation_rejects_duplicate_and_overlapping_roots() {
+        let config = DiscoveryConfig {
+            enabled: Some(true),
+            roots: Some(vec![
+                valid_discovery_root("/tmp/projects", "one"),
+                valid_discovery_root("/tmp/projects/child", "two"),
+                valid_discovery_root("/tmp/other", "one"),
+            ]),
+            ..Default::default()
+        };
+        let errors = config.validate().expect_err("overlapping roots");
+        assert!(errors
+            .iter()
+            .any(|error| error.contains("overlapping paths")));
+        assert!(errors.iter().any(|error| error.contains("duplicate id")));
+    }
+
+    #[test]
+    fn config_validation_includes_discovery_errors() {
+        let config = Config {
+            discovery: Some(DiscoveryConfig {
+                max_concurrent_scans: Some(0),
+                roots: Some(vec![valid_discovery_root("/tmp/projects", "one")]),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let errors = config.validate().expect_err("invalid discovery config");
+        assert!(errors
+            .iter()
+            .any(|error| error.contains("discovery.max_concurrent_scans")));
+    }
 
     #[test]
     fn search_config_default_backend_is_eggsearch() {

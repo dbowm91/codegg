@@ -95,6 +95,8 @@ Run these after changing execution surfaces, agent definitions, or codegg-core:
 python3 scripts/check-core-boundary.sh              # codegg-core boundary enforcement
 python3 scripts/check_daemon_cwd_usage.py           # workspace-bound daemon path guard
 python3 scripts/check_project_agent_pwd_inference.py # project-agent PWD-inference guard (Runtime Assets M2)
+python3 scripts/check_discovery_invariants.py       # bounded project-discovery safety guard
+python3 scripts/check_project_catalog_invariants.py # project-catalog and discovery invariants
 python3 scripts/check_scheduler_bypass.py           # scheduler-bypass guard
 python3 scripts/check_execution_ownership.py        # process-spawn site ownership manifest
 python3 scripts/check_git_forbidden_patterns.py     # git secret boundary + policy drift

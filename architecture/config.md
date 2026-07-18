@@ -428,3 +428,15 @@ for the full schema and dispatch details.
 - [search_backend.md](search_backend.md) - search/fetch backend dispatch
 - [lsp.md](lsp.md#phase-12-semantic-memory-cache) - LSP semantic cache config (`[lsp_semantic_cache]`); disk cache deferred (Phase 16)
 - [agent.md](agent.md) - Uses config
+
+### Project discovery configuration
+
+`Config::discovery` is disabled and empty by default. When enabled, each root
+must provide an explicit local path plus a stable id or name.
+`DiscoveryRootConfig` supports `git`, `directory`, and `mixed` modes, hidden-file
+policy, no-follow symlink policy, ignore names/patterns, directory markers,
+direct-child-only mode, and finite depth/entry/candidate/time/concurrency
+bounds. Validation rejects control/NUL text, oversized values, invalid bounds,
+duplicate ids or names, and lexically overlapping roots. Reload changes only
+future scans; it does not remove catalog records or prior successful
+generations.

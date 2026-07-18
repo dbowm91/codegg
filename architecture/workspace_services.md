@@ -293,10 +293,18 @@ python3 scripts/check_daemon_cwd_usage.py
 
 ## See Also
 
+## Discovery boundary
+
+Project discovery is intentionally upstream of this registry. A bounded scan
+may observe or register a canonical workspace through catalog APIs, but it must
+not call `acquire`, `activate`, create a service bundle, or retain a lease.
+Activation remains an explicit later operation for a selected project or
+workspace.
+
 - [`architecture/workspace.md`](workspace.md) — Phase 2 workspace
   identity, `WorkspaceRegistry`, `ExecutionContext`, and path policy.
 - [`architecture/storage.md`](storage.md) — Storage layout and migration
-  index (now `STORAGE_LAYOUT_VERSION = 27`).
+  index (now `STORAGE_LAYOUT_VERSION = 29`).
 - [`architecture/run_store.md`](run_store.md) — `RunStore` and
   `RunManifest` semantics used by the bundle.
 - [`architecture/protocol.md`](protocol.md) — Phase 3 protocol variants

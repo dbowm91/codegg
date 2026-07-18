@@ -10,7 +10,8 @@ pub use paths::{
     load_config, merge_configs, parse_config, resolve_config_paths, system_config_path,
 };
 pub use schema::{
-    AuthConfig, Config, ModelProfileConfig, SchedulerConfig, SchedulerFairnessConfig,
-    SchedulerQueueConfig, SchedulerResourceConfig, SchedulerRolloutConfig,
+    AuthConfig, Config, DiscoveryConfig, DiscoveryMode, DiscoveryRootConfig, ModelProfileConfig,
+    SchedulerConfig, SchedulerFairnessConfig, SchedulerQueueConfig, SchedulerResourceConfig,
+    SchedulerRolloutConfig, SymlinkPolicy,
 };
 pub use watcher::ConfigWatcher;

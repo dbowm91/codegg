@@ -140,6 +140,24 @@ python3 scripts/check_project_catalog_invariants.py --verbose
 Verifies module existence, locator safety invariants, migration schema,
 storage layout version, and lib.rs re-export.
 
+## Bounded discovery (Milestone 2)
+
+`codegg_core::project_discovery` is the core-only discovery boundary. It accepts
+only explicitly configured local roots and produces bounded metadata candidates;
+it does not activate workspace services, run LSP/index/build/provider work, or
+write inside candidate repositories. The scanner is deterministic, does not
+follow symlinks by default, skips heavy directories, and stops at finite depth,
+entry, candidate, elapsed-time, diagnostic, and Git-probe limits.
+
+Discovery configuration is opt-in under `discovery` in the config schema. Safe
+defaults are disabled, depth 4, 10,000 visited entries, 1,000 candidates,
+10 seconds, stat concurrency 4, and Git-probe concurrency 2. Reconciliation
+uses exact/canonical workspace evidence first, then a unique local Git lineage
+key. Remote-only, fork-like, ambiguous, and plain-directory move evidence
+remains unresolved rather than being merged by path or remote URL. Missing
+candidates and unavailable roots update observations only; they do not archive
+or delete catalog authority. Scan generations are persisted in schema v29.
+
 ## See Also
 
 - [`architecture/project_identity_storage.md`](project_identity_storage.md)
