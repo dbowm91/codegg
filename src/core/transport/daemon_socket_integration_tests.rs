@@ -82,6 +82,7 @@ async fn handshake_and_subscribe(
             plugin_ui_code: false,
             plugin_ui_progress: false,
             workspace_registration: false,
+            project_catalog: false,
         },
     });
     let json = serde_json::to_string(&hello).expect("serialize ClientHello");
@@ -394,6 +395,7 @@ async fn resume_replay_uses_same_filter_as_live_forwarding() {
             plugin_ui_code: false,
             plugin_ui_progress: false,
             workspace_registration: false,
+            project_catalog: false,
         },
     });
     write_half

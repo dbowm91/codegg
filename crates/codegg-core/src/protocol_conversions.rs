@@ -165,6 +165,121 @@ pub fn workspace_service_snapshot_to_dto(
     }
 }
 
+// ── Project Catalog M004 conversion helpers ─────────────────────────────
+
+fn bounded_wire_text(value: &str, max: usize) -> String {
+    if value.len() <= max {
+        return value.to_string();
+    }
+    let mut end = max;
+    while end > 0 && !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    value[..end].to_string()
+}
+
+fn optional_bounded_wire_text(value: &str, max: usize) -> Option<String> {
+    (value.len() <= max).then(|| value.to_string())
+}
+
+/// Convert durable project metadata without exposing unbounded catalog text.
+pub fn project_catalog_record_to_dto(
+    record: &crate::project_catalog::ProjectCatalogRecord,
+) -> codegg_protocol::dto::ProjectSummaryDto {
+    codegg_protocol::dto::ProjectSummaryDto {
+        project_id: record.project_id.as_str().to_string(),
+        display_name: bounded_wire_text(
+            &record.display_name,
+            codegg_protocol::dto::MAX_PROJECT_TEXT_LENGTH,
+        ),
+        lifecycle: match record.lifecycle {
+            crate::project_storage::ProjectLifecycle::Active => "active",
+            crate::project_storage::ProjectLifecycle::Archived => "archived",
+        }
+        .to_string(),
+        description: record
+            .description
+            .as_deref()
+            .map(|value| bounded_wire_text(value, codegg_protocol::dto::MAX_PROJECT_TEXT_LENGTH)),
+        tags: record
+            .tags
+            .iter()
+            .take(codegg_protocol::dto::MAX_PROJECT_TAGS)
+            .map(|value| bounded_wire_text(value, codegg_protocol::dto::MAX_PROJECT_TEXT_LENGTH))
+            .collect(),
+        time_last_opened_at: record
+            .time_last_opened_at
+            .map(|value| value.timestamp_millis()),
+        registration_source: bounded_wire_text(
+            &record.registration_source,
+            codegg_protocol::dto::MAX_PROJECT_TEXT_LENGTH,
+        ),
+        archived_at: record.archived_at.map(|value| value.timestamp_millis()),
+        created_at: record.created_at.timestamp_millis(),
+        updated_at: record.updated_at.timestamp_millis(),
+    }
+}
+
+pub fn project_workspace_summary_to_dto(
+    summary: &crate::project_catalog::WorkspaceSummary,
+) -> codegg_protocol::dto::ProjectWorkspaceSummaryDto {
+    codegg_protocol::dto::ProjectWorkspaceSummaryDto {
+        workspace_id: summary.workspace_id.as_str().to_string(),
+        display_name: bounded_wire_text(
+            &summary.display_name,
+            codegg_protocol::dto::MAX_PROJECT_TEXT_LENGTH,
+        ),
+        canonical_root: optional_bounded_wire_text(
+            &summary.canonical_root.to_string_lossy(),
+            codegg_protocol::dto::MAX_PROJECT_PATH_LENGTH,
+        ),
+    }
+}
+
+pub fn project_health_record_to_dto(
+    record: &crate::project_catalog::ProjectHealthRecord,
+) -> codegg_protocol::dto::ProjectHealthRecordDto {
+    codegg_protocol::dto::ProjectHealthRecordDto {
+        project_id: record.project_id.as_str().to_string(),
+        status: record.status.as_str().to_string(),
+        error_code: record
+            .error_code
+            .as_deref()
+            .map(|value| bounded_wire_text(value, codegg_protocol::dto::MAX_PROJECT_TEXT_LENGTH)),
+        error_message: record
+            .error_message
+            .as_deref()
+            .map(|value| bounded_wire_text(value, codegg_protocol::dto::MAX_PROJECT_TEXT_LENGTH)),
+        source: bounded_wire_text(
+            &record.source,
+            codegg_protocol::dto::MAX_PROJECT_TEXT_LENGTH,
+        ),
+        evaluated_at: record.evaluated_at.timestamp_millis(),
+        notes: record
+            .notes
+            .as_deref()
+            .map(|value| bounded_wire_text(value, codegg_protocol::dto::MAX_PROJECT_TEXT_LENGTH)),
+    }
+}
+
+pub fn project_details_to_dto(
+    record: &crate::project_catalog::ProjectCatalogRecord,
+    workspaces: &[crate::project_catalog::WorkspaceSummary],
+    session_count: usize,
+    health: Option<&crate::project_catalog::ProjectHealthRecord>,
+) -> codegg_protocol::dto::ProjectDetailsDto {
+    codegg_protocol::dto::ProjectDetailsDto {
+        project: project_catalog_record_to_dto(record),
+        workspaces: workspaces
+            .iter()
+            .take(codegg_protocol::dto::MAX_PROJECT_WORKSPACES)
+            .map(project_workspace_summary_to_dto)
+            .collect(),
+        session_count,
+        health: health.map(project_health_record_to_dto),
+    }
+}
+
 /// Phase 3: convert a config diagnostic to the wire DTO.
 pub fn config_diagnostic_to_dto(
     diag: &crate::workspace_services::ConfigDiagnostic,

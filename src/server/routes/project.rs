@@ -1,12 +1,17 @@
-use axum::{extract::State, http::StatusCode, Json};
+use axum::{
+    extract::{Query, State},
+    http::StatusCode,
+    Json,
+};
 use serde::{Deserialize, Serialize};
 
+use super::super::scope::{context_error, resolve_context, ScopeQuery};
 use super::super::state::ServerState;
-use crate::error::{AppError, AxumAppError, StorageError};
-use codegg_core::context::{ProjectContext, ProjectContextResolver};
-use codegg_core::identity::{ProjectId, WorkspaceId};
+use crate::error::{AppError, AxumAppError};
+use codegg_core::context::ProjectContext;
+use codegg_core::identity::ProjectId;
 use codegg_core::project_catalog::{ProjectCatalog, ProjectCatalogRecord, RegisterLocalProject};
-use codegg_core::workspace::{SqliteWorkspaceStore, WorkspaceRegistry, WorkspaceStore};
+use codegg_core::workspace::{SqliteWorkspaceStore, WorkspaceRegistry};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -26,68 +31,29 @@ pub struct ProjectListResponse {
     pub projects: Vec<ProjectInfo>,
 }
 
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct ProjectListQuery {
+    #[serde(default)]
+    pub include_archived: bool,
+    #[serde(default)]
+    pub limit: usize,
+}
+
 #[derive(Deserialize)]
 pub struct CreateProjectRequest {
     pub name: String,
     pub path: String,
 }
 
-fn context_error(code: &str, message: impl Into<String>) -> AxumAppError {
-    AppError::Storage(StorageError::NotFound(format!(
-        "{code}: {}",
-        message.into()
-    )))
-    .into()
-}
-
 pub(crate) async fn context_for_locator(
     pool: &sqlx::SqlitePool,
     locator: &Path,
 ) -> Result<ProjectContext, AxumAppError> {
-    let canonical = locator.canonicalize().map_err(AppError::Io)?;
-    let rows = sqlx::query(
-        "SELECT wpb.project_id, wpb.workspace_id FROM workspace_project_binding wpb INNER JOIN workspace w ON w.id = wpb.workspace_id WHERE w.canonical_root = ? AND wpb.status = 'resolved' LIMIT 2",
-    )
-    .bind(canonical.to_string_lossy().as_ref())
-    .fetch_all(pool)
-    .await
-    .map_err(|e| AppError::Storage(StorageError::Database(e.to_string())))?;
-
-    let (project_id, workspace_id) = match rows.as_slice() {
-        [] => {
-            return Err(context_error(
-                "project_context_required",
-                "no canonical project is registered for this workspace",
-            ))
-        }
-        [row] => {
-            let raw: String = sqlx::Row::try_get(row, "project_id")
-                .map_err(|e| AppError::Storage(StorageError::Database(e.to_string())))?;
-            let project_id = ProjectId::parse(&raw)
-                .map_err(|e| context_error("invalid_project_context", e.to_string()))?;
-            let workspace_raw: String = sqlx::Row::try_get(row, "workspace_id")
-                .map_err(|e| AppError::Storage(StorageError::Database(e.to_string())))?;
-            let workspace_id = WorkspaceId::parse(&workspace_raw)
-                .map_err(|e| context_error("invalid_project_context", e.to_string()))?;
-            (project_id, workspace_id)
-        }
-        _ => {
-            return Err(context_error(
-                "ambiguous_project_context",
-                "the workspace locator maps to more than one project",
-            ))
-        }
+    let scope = ScopeQuery {
+        directory: Some(locator.to_string_lossy().into_owned()),
+        ..ScopeQuery::default()
     };
-
-    let store: Arc<dyn WorkspaceStore> = Arc::new(SqliteWorkspaceStore::new(pool.clone()));
-    ProjectContextResolver::new(
-        codegg_core::project_storage::ProjectStorage::new(pool.clone()),
-        ProjectCatalog::new(pool.clone()),
-        store,
-    )
-    .resolve_raw(project_id.as_str(), workspace_id.as_str(), None)
-    .await
-    .map_err(|e| context_error("project_context_unavailable", e.to_string()))
+    resolve_context(pool, &scope, None).await
 }
 
 async fn project_for_locator(
@@ -116,8 +82,42 @@ fn project_info(project: ProjectCatalogRecord, path: PathBuf, session_count: usi
 
 pub async fn get_project(
     State(state): State<ServerState>,
+    Query(scope): Query<ScopeQuery>,
 ) -> Result<Json<ProjectInfo>, AxumAppError> {
-    let (project, path) = project_for_locator(&state.pool, Path::new(&state.project_dir)).await?;
+    if scope.workspace_id.is_some() && scope.project_id.is_none() {
+        return Err(context_error(
+            "project_context_required",
+            "workspace_id requires its project_id",
+        ));
+    }
+    let (project, path) = if scope.project_id.is_some() {
+        let project_id = ProjectId::parse(scope.project_id.as_deref().unwrap_or_default())
+            .map_err(|e| context_error("invalid_project_context", e.to_string()))?;
+        let project = ProjectCatalog::new(state.pool.clone())
+            .get_project(&project_id)
+            .await
+            .map_err(|e| context_error("project_context_not_found", e.to_string()))?;
+        let path = if scope.workspace_id.is_some() {
+            resolve_context(&state.pool, &scope, None)
+                .await?
+                .workspace_root
+        } else {
+            ProjectCatalog::new(state.pool.clone())
+                .list_workspaces_for_project(&project.project_id)
+                .await
+                .map_err(|e| context_error("project_context_unavailable", e.to_string()))?
+                .first()
+                .map(|workspace| workspace.canonical_root.clone())
+                .unwrap_or_default()
+        };
+        (project, path)
+    } else {
+        project_for_locator(
+            &state.pool,
+            Path::new(scope.directory.as_deref().unwrap_or_default()),
+        )
+        .await?
+    };
     let session_count = ProjectCatalog::new(state.pool.clone())
         .list_sessions_for_project(&project.project_id)
         .await
@@ -127,14 +127,22 @@ pub async fn get_project(
 
 pub async fn list_projects(
     State(state): State<ServerState>,
+    Query(query): Query<ProjectListQuery>,
 ) -> Result<Json<ProjectListResponse>, AxumAppError> {
+    let limit = if query.limit == 0 {
+        crate::protocol::dto::MAX_PROJECT_LIST_ITEMS
+    } else {
+        query
+            .limit
+            .min(crate::protocol::dto::MAX_PROJECT_LIST_ITEMS)
+    };
     let catalog = ProjectCatalog::new(state.pool.clone());
     let projects = catalog
-        .list_projects(false)
+        .list_projects(query.include_archived)
         .await
         .map_err(|e| context_error("project_catalog_unavailable", e.to_string()))?;
-    let mut result = Vec::with_capacity(projects.len());
-    for project in projects {
+    let mut result = Vec::with_capacity(projects.len().min(limit));
+    for project in projects.into_iter().take(limit) {
         let workspaces = catalog
             .list_workspaces_for_project(&project.project_id)
             .await
@@ -152,32 +160,86 @@ pub async fn list_projects(
     Ok(Json(ProjectListResponse { projects: result }))
 }
 
+pub async fn get_project_by_id(
+    State(state): State<ServerState>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    Query(mut scope): Query<ScopeQuery>,
+) -> Result<Json<ProjectInfo>, AxumAppError> {
+    if scope.project_id.as_deref().is_some_and(|value| value != id) {
+        return Err(context_error(
+            "project_context_mismatch",
+            "path project_id does not match query project_id",
+        ));
+    }
+    scope.project_id = Some(id);
+    get_project(State(state), Query(scope)).await
+}
+
+async fn project_lifecycle(
+    state: ServerState,
+    id: String,
+    restore: bool,
+) -> Result<Json<ProjectInfo>, AxumAppError> {
+    let project_id = ProjectId::parse(&id)
+        .map_err(|e| context_error("invalid_project_context", e.to_string()))?;
+    let catalog = ProjectCatalog::new(state.pool.clone());
+    let project = if restore {
+        catalog
+            .restore_project(&project_id, "server")
+            .await
+            .map_err(|e| context_error("project_restore_failed", e.to_string()))?
+    } else {
+        catalog
+            .archive_project(&project_id, "server")
+            .await
+            .map_err(|e| context_error("project_archive_failed", e.to_string()))?
+    };
+    let path = catalog
+        .list_workspaces_for_project(&project.project_id)
+        .await
+        .map_err(|e| context_error("project_context_unavailable", e.to_string()))?
+        .first()
+        .map(|workspace| workspace.canonical_root.clone())
+        .unwrap_or_default();
+    let session_count = catalog
+        .list_sessions_for_project(&project.project_id)
+        .await
+        .map_err(|e| context_error("project_context_unavailable", e.to_string()))?;
+    Ok(Json(project_info(project, path, session_count)))
+}
+
+pub async fn archive_project(
+    State(state): State<ServerState>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Result<Json<ProjectInfo>, AxumAppError> {
+    project_lifecycle(state, id, false).await
+}
+
+pub async fn restore_project(
+    State(state): State<ServerState>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Result<Json<ProjectInfo>, AxumAppError> {
+    project_lifecycle(state, id, true).await
+}
+
 pub async fn create_project(
     State(state): State<ServerState>,
     Json(req): Json<CreateProjectRequest>,
 ) -> Result<(StatusCode, Json<ProjectInfo>), AxumAppError> {
-    let project_root = Path::new(&state.project_dir)
-        .canonicalize()
-        .map_err(AppError::Io)?;
     let requested = Path::new(&req.path);
-    let full = if requested.is_absolute() {
-        requested.to_path_buf()
-    } else {
-        project_root.join(requested)
-    };
+    if !requested.is_absolute() {
+        return Err(context_error(
+            "project_context_required",
+            "project path must be an absolute local locator; the server has no default project",
+        ));
+    }
+    let full = requested.to_path_buf();
     if !full.exists() {
         tokio::fs::create_dir_all(&full)
             .await
             .map_err(AppError::Io)?;
     }
     let canonical = full.canonicalize().map_err(AppError::Io)?;
-    if !canonical.starts_with(&project_root) {
-        return Err(context_error(
-            "path_not_allowed",
-            "project locator is outside the server workspace",
-        ));
-    }
-
     let workspace = if let Some(daemon) = &state.daemon {
         daemon
             .workspaces

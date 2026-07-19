@@ -154,14 +154,15 @@ pub async fn run_server(
     port: u16,
     daemon: Option<Arc<crate::core::daemon::CoreDaemon>>,
 ) -> Result<(), crate::error::ServerRuntimeError> {
-    let project_dir = std::env::current_dir()
-        .ok()
-        .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_default();
-
-    let pool = crate::storage::init_legacy_project_store(std::path::Path::new(&project_dir))
-        .await
-        .map_err(|e| crate::error::ServerRuntimeError::Shutdown(e.to_string()))?;
+    // The server has no default project. Reuse the daemon's catalog when a
+    // daemon is supplied; the compatibility/no-daemon path uses the
+    // user-scoped catalog rather than a cwd-relative project store.
+    let pool = match daemon.as_ref().and_then(|daemon| daemon.pool.clone()) {
+        Some(pool) => pool,
+        None => crate::storage::init_daemon_catalog(&crate::storage::DaemonPaths::default())
+            .await
+            .map_err(|e| crate::error::ServerRuntimeError::Shutdown(e.to_string()))?,
+    };
 
     let config = crate::config::schema::Config::load().ok();
     let server_config = config.as_ref().and_then(|c| c.server.clone());
@@ -201,7 +202,6 @@ pub async fn run_server(
     }
 
     let state = ServerState {
-        project_dir: project_dir.clone(),
         pool,
         mcp_service: Arc::new(RwLock::new(mcp_service)),
         config: config.unwrap_or_default(),
@@ -257,6 +257,10 @@ pub async fn run_server(
             get(routes::get_project).post(routes::create_project),
         )
         .route("/api/project/list", get(routes::list_projects))
+        .route("/api/projects", get(routes::list_projects))
+        .route("/api/projects/:id", get(routes::get_project_by_id))
+        .route("/api/projects/:id/archive", post(routes::archive_project))
+        .route("/api/projects/:id/restore", post(routes::restore_project))
         .route(
             "/api/workspace",
             get(routes::get_workspace).post(routes::create_workspace),

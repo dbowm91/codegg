@@ -162,14 +162,14 @@ Deferred work: TUI tab lifetime rules.
 
 ### Milestone 4 — Protocol, server migration, and closure
 
-Status: ready for handoff; implementation plan not yet registered.
+Status: active; see `plans/implementation/project-catalog/004-protocol-server-migration-and-closure.md`.
 
 Class: capability
 
 Objective: expose complete catalog operations through the native protocol and remove single-project assumptions from network server state.
 
 Dependencies: hard on Milestones 1–3. Milestones 1–3 are closed; the M004
-implementation handoff is ready to be authored and registered.
+implementation handoff is active.
 
 Deliverable boundary: project DTOs/requests/responses/events, capability flags, REST/WS adapter changes, removal of authoritative `ServerState.project_dir`, compatibility behavior, restart and scale tests, and architecture docs.
 
@@ -231,5 +231,5 @@ This roadmap closes when the daemon maintains a durable, bounded, path-independe
 |---|---|---|---|---|
 | 1 | closed | `plans/implementation/project-catalog/001-durable-catalog-foundation.md` | `plans/closure/project-catalog/001-status.md` | — |
 | 2 | closed | `plans/implementation/project-catalog/002-bounded-discovery-reconciliation.md` | `plans/closure/project-catalog/002-status.md` | — |
-| 3 | ready | `plans/implementation/project-catalog/003-lazy-activation-and-health.md` | — | —; Runtime Assets Milestone 3 activation-refresh interface closed |
-| 4 | not started | — | — | Milestones 1–3 closure |
+| 3 | closed | `plans/implementation/project-catalog/003-lazy-activation-and-health.md` | `plans/closure/project-catalog/003-status.md` | — |
+| 4 | active | `plans/implementation/project-catalog/004-protocol-server-migration-and-closure.md` | — | —; Milestones 1–3 closure |

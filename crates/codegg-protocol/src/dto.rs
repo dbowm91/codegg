@@ -1,6 +1,13 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+/// Bounds applied to project catalog payloads at the protocol boundary.
+pub const MAX_PROJECT_LIST_ITEMS: usize = 128;
+pub const MAX_PROJECT_WORKSPACES: usize = 64;
+pub const MAX_PROJECT_TAGS: usize = 64;
+pub const MAX_PROJECT_TEXT_LENGTH: usize = 1_024;
+pub const MAX_PROJECT_PATH_LENGTH: usize = 4_096;
+
 /// Canonical project/workspace context used by identity-aware protocol
 /// requests and responses.
 ///
@@ -34,6 +41,106 @@ pub struct SessionBindingDto {
     pub binding_revision: Option<u64>,
     #[serde(default)]
     pub compatibility_directory: Option<String>,
+}
+
+/// Bounded project metadata used by catalog list and lifecycle responses.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectSummaryDto {
+    pub project_id: String,
+    pub display_name: String,
+    pub lifecycle: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub time_last_opened_at: Option<i64>,
+    pub registration_source: String,
+    #[serde(default)]
+    pub archived_at: Option<i64>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+/// Workspace metadata nested in a project response. The root is a bounded
+/// display locator; it is never an identity field.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectWorkspaceSummaryDto {
+    pub workspace_id: String,
+    pub display_name: String,
+    #[serde(default)]
+    pub canonical_root: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectHealthLayerDto {
+    pub state: String,
+    #[serde(default)]
+    pub code: Option<String>,
+    #[serde(default)]
+    pub message: Option<String>,
+}
+
+/// Path-free aggregate health for one explicit project/workspace scope.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectHealthDto {
+    pub project_id: String,
+    pub workspace_id: String,
+    pub overall: String,
+    pub catalog: ProjectHealthLayerDto,
+    pub workspace: ProjectHealthLayerDto,
+    pub assets: ProjectHealthLayerDto,
+    pub services: ProjectHealthLayerDto,
+    #[serde(default)]
+    pub diagnostics: Vec<String>,
+    /// Durable catalog health, when a project-get response includes it.
+    #[serde(default)]
+    pub durable: Option<ProjectHealthRecordDto>,
+}
+
+/// Durable, probe-free health record stored by the project catalog.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectHealthRecordDto {
+    pub project_id: String,
+    pub status: String,
+    #[serde(default)]
+    pub error_code: Option<String>,
+    #[serde(default)]
+    pub error_message: Option<String>,
+    pub source: String,
+    pub evaluated_at: i64,
+    #[serde(default)]
+    pub notes: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectDetailsDto {
+    pub project: ProjectSummaryDto,
+    #[serde(default)]
+    pub workspaces: Vec<ProjectWorkspaceSummaryDto>,
+    pub session_count: usize,
+    #[serde(default)]
+    pub health: Option<ProjectHealthRecordDto>,
+}
+
+/// Local registration input. A workspace must already be registered; paths
+/// are intentionally absent so a locator cannot become project identity.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectRegisterRequestDto {
+    pub workspace_id: String,
+    pub display_name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub repository_id: Option<String>,
+    #[serde(default = "default_project_registration_source")]
+    pub source: String,
+}
+
+fn default_project_registration_source() -> String {
+    "protocol".to_string()
 }
 
 /// Simplified session DTO for protocol messages.
