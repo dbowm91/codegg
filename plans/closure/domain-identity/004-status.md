@@ -18,6 +18,7 @@ Implementation commits or pull requests:
 - `84d92f0` — additive project/repository storage migration and canonical bindings.
 - `ec42dce` — daemon/protocol adoption corrective pass; canonical context became
   authoritative for new daemon-owned session operations.
+- `c4e9cf8` — formal M004 closure record, roadmap status, and registry update.
 
 No production-code commit is claimed for Milestone 004. This milestone records
 the closure evidence and removal criteria for the already-landed identity
