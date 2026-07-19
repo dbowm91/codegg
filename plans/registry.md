@@ -24,7 +24,7 @@ Canonical direction remains in:
 
 | Subsystem | Status | Roadmap | Current milestone | Dependencies or blockers |
 |---|---|---|---|---|
-| Domain identity and compatibility | active | `plans/subsystems/domain-identity-roadmap.md` | Milestone 4 — closure and legacy-removal criteria | Milestone 3 corrective implementation is complete; the next removal-criteria handoff is not yet registered |
+| Domain identity and compatibility | closed | `plans/subsystems/domain-identity-roadmap.md` | Milestone 4 — closure and legacy-removal criteria (closed) | — |
 | Runtime assets and harness interoperability | closed | `plans/subsystems/runtime-assets-roadmap.md` | Milestone 4 — immutable runtime pinning and closure (closed) | — |
 | Provider connections and Eggpool | closed | `plans/subsystems/provider-connections-roadmap.md` | Milestone 5 — corrective lifecycle, rotation, health, and closure (closed) | — |
 | Project catalog and lazy discovery | active | `plans/subsystems/project-catalog-roadmap.md` | Milestone 4 — protocol, server migration, and closure | Milestones 1–3 closed; M004 handoff is ready to be authored and registered |
@@ -52,6 +52,7 @@ Canonical direction remains in:
 
 | Subsystem | Milestone | Closure record | Closed at commit | Follow-up |
 |---|---|---|---|---|
+| Domain identity and compatibility | 004 — closure and legacy-removal criteria | `plans/closure/domain-identity/004-status.md` | closure/evidence commit | Project Catalog 004 owns the remaining server locator removal criteria; no unrelated plan was unblocked |
 | Domain identity and compatibility | 003 — corrective daemon and protocol adoption | `plans/closure/domain-identity/003-corrective-status.md` | `ec42dce` | Milestone 4 — closure and legacy-removal criteria |
 | Runtime assets and harness interoperability | 004 — immutable runtime pinning and closure | `plans/closure/runtime-assets/004-status.md` | `2293a11` | No downstream plan was newly unblocked; Project Catalog M003 was already ready |
 | Runtime assets and harness interoperability | 003 — refresh lifecycle and operator surface | `plans/closure/runtime-assets/003-status.md` | `972c286` | Project Catalog M003 remains ready |

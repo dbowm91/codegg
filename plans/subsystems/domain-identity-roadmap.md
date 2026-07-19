@@ -1,6 +1,6 @@
 # Domain Identity and Compatibility Roadmap
 
-Status: active
+Status: closed
 
 Long-term references:
 
@@ -245,4 +245,4 @@ This roadmap closes when project identity is durable and path-independent across
 | 1 | closed | `plans/implementation/domain-identity/001-typed-identity-foundation.md` | `plans/closure/domain-identity/001-status.md` | — |
 | 2 | closed | `plans/implementation/domain-identity/002-project-repository-storage-migration.md` | `plans/closure/domain-identity/002-status.md` | — |
 | 3 | closed | `plans/implementation/domain-identity/003-corrective-daemon-protocol-adoption.md` | `plans/closure/domain-identity/003-corrective-status.md` | — |
-| 4 | not started | — | — | Milestone 3 closure evidence and a legacy-removal-criteria handoff |
+| 4 | closed | `plans/implementation/domain-identity/004-closure-and-legacy-removal-criteria.md` | `plans/closure/domain-identity/004-status.md` | — |
