@@ -1,6 +1,6 @@
 # Project Catalog Milestone 004 — Protocol, Server Migration, and Closure
 
-Status: active
+Status: closed; see `plans/closure/project-catalog/004-status.md`
 
 Repository baseline: `a827ae8` (`docs(plans): record domain identity closure commit`)
 

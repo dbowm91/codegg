@@ -1,6 +1,6 @@
 # Project Catalog and Lazy Discovery Roadmap
 
-Status: active
+Status: closed; see `plans/closure/project-catalog/004-status.md`.
 
 Long-term references:
 
@@ -162,14 +162,13 @@ Deferred work: TUI tab lifetime rules.
 
 ### Milestone 4 — Protocol, server migration, and closure
 
-Status: active; see `plans/implementation/project-catalog/004-protocol-server-migration-and-closure.md`.
+Status: closed; see `plans/closure/project-catalog/004-status.md`.
 
 Class: capability
 
 Objective: expose complete catalog operations through the native protocol and remove single-project assumptions from network server state.
 
-Dependencies: hard on Milestones 1–3. Milestones 1–3 are closed; the M004
-implementation handoff is active.
+Dependencies: hard on Milestones 1–3. Milestones 1–3 are closed.
 
 Deliverable boundary: project DTOs/requests/responses/events, capability flags, REST/WS adapter changes, removal of authoritative `ServerState.project_dir`, compatibility behavior, restart and scale tests, and architecture docs.
 
@@ -232,4 +231,4 @@ This roadmap closes when the daemon maintains a durable, bounded, path-independe
 | 1 | closed | `plans/implementation/project-catalog/001-durable-catalog-foundation.md` | `plans/closure/project-catalog/001-status.md` | — |
 | 2 | closed | `plans/implementation/project-catalog/002-bounded-discovery-reconciliation.md` | `plans/closure/project-catalog/002-status.md` | — |
 | 3 | closed | `plans/implementation/project-catalog/003-lazy-activation-and-health.md` | `plans/closure/project-catalog/003-status.md` | — |
-| 4 | active | `plans/implementation/project-catalog/004-protocol-server-migration-and-closure.md` | — | —; Milestones 1–3 closure |
+| 4 | closed | `plans/implementation/project-catalog/004-protocol-server-migration-and-closure.md` | `plans/closure/project-catalog/004-status.md` | — |
