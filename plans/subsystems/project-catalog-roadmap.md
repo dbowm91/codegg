@@ -61,11 +61,11 @@ It consumes the stable identity foundation, workspace registry, project asset se
 
 ## 4. Current state
 
-The workspace registry already persists canonical roots and provides lazy workspace service bundles. Sessions are bound to workspaces, and daemon execution can resolve explicit workspace context.
+Milestones 1–3 are closed. The daemon now owns a durable project/repository catalog, bounded configured-root discovery and conservative reconciliation, lazy owner-scoped activation, runtime-asset refresh composition, bounded aggregate health, and restart-safe transient lease behavior.
 
-The current server project route derives project IDs from paths and groups sessions by legacy `project_id`. `ServerState` retains one `project_dir`, and project creation is constrained under that root. There is no durable catalog independent of sessions, no discovery-root configuration, no repository record, and no archive/restore lifecycle for logical projects.
+The remaining gap is the frontend-neutral protocol/server surface. `crates/codegg-protocol` does not yet expose project catalog, discovery, activation, or health operations. `ServerState` still retains `project_dir`, and compatibility HTTP routes still use that locator as a default root even though returned project IDs are canonical.
 
-Git root discovery and repository status primitives already exist through `egggit` and worktree helpers. Protocol infrastructure already supports workspace list/snapshot and capability negotiation, which can be extended with project operations.
+Milestone 4 owns the final native protocol, CoreClient, REST/WS migration, activation-handle transport, maintenance integration, multi-project scale/isolation evidence, and Phase 3 closure.
 
 ## 5. Target architecture
 
@@ -162,14 +162,13 @@ Deferred work: TUI tab lifetime rules.
 
 ### Milestone 4 — Protocol, server migration, and closure
 
-Status: ready for handoff; implementation plan not yet registered.
+Status: ready for handoff; see `plans/implementation/project-catalog/004-protocol-server-migration-and-closure.md`.
 
 Class: capability
 
 Objective: expose complete catalog operations through the native protocol and remove single-project assumptions from network server state.
 
-Dependencies: hard on Milestones 1–3. Milestones 1–3 are closed; the M004
-implementation handoff is ready to be authored and registered.
+Dependencies: hard on Milestones 1–3; satisfied. Runtime Assets refresh/activation interfaces are closed.
 
 Deliverable boundary: project DTOs/requests/responses/events, capability flags, REST/WS adapter changes, removal of authoritative `ServerState.project_dir`, compatibility behavior, restart and scale tests, and architecture docs.
 
@@ -231,5 +230,5 @@ This roadmap closes when the daemon maintains a durable, bounded, path-independe
 |---|---|---|---|---|
 | 1 | closed | `plans/implementation/project-catalog/001-durable-catalog-foundation.md` | `plans/closure/project-catalog/001-status.md` | — |
 | 2 | closed | `plans/implementation/project-catalog/002-bounded-discovery-reconciliation.md` | `plans/closure/project-catalog/002-status.md` | — |
-| 3 | ready | `plans/implementation/project-catalog/003-lazy-activation-and-health.md` | — | —; Runtime Assets Milestone 3 activation-refresh interface closed |
-| 4 | not started | — | — | Milestones 1–3 closure |
+| 3 | closed | `plans/implementation/project-catalog/003-lazy-activation-and-health.md` | `plans/closure/project-catalog/003-status.md` | — |
+| 4 | ready | `plans/implementation/project-catalog/004-protocol-server-migration-and-closure.md` | — | Milestones 1–3 and Runtime Assets refresh/activation closure satisfied |
