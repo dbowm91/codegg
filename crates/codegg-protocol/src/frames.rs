@@ -62,6 +62,11 @@ pub struct ClientCapabilities {
     /// operations and project-scoped lifecycle/health events.
     #[serde(default)]
     pub project_catalog: bool,
+    /// Session Projections Milestone 1: client understands the
+    /// frontend-neutral session projection contract
+    /// (`codegg_protocol::projection`).
+    #[serde(default)]
+    pub session_projection: bool,
 }
 
 impl ClientCapabilities {
@@ -122,6 +127,11 @@ pub struct ServerCapabilities {
     /// request/response/event family.
     #[serde(default)]
     pub project_catalog: bool,
+    /// Session Projections Milestone 1: daemon exposes the
+    /// frontend-neutral session projection contract
+    /// (`codegg_protocol::projection`).
+    #[serde(default)]
+    pub session_projection: bool,
 }
 
 #[cfg(test)]
@@ -154,6 +164,7 @@ mod tests {
             durable_schedules: false,
             identity_aware_context: true,
             project_catalog: true,
+            session_projection: true,
         };
 
         let json = serde_json::to_string(&capabilities).unwrap();

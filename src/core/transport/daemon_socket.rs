@@ -233,6 +233,7 @@ async fn handle_client(
                                     durable_schedules: true,
                                     identity_aware_context: true,
                                     project_catalog: true,
+                                    session_projection: true,
                                 },
                                 client_id: client_id.clone(),
                             });

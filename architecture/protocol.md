@@ -38,9 +38,45 @@ crates/codegg-protocol/src/
 ├── provider.rs # Secret-safe provider connection/provisioning DTOs
 ├── frames.rs  # ClientCapabilities, RequestEnvelope, EventEnvelope
 ├── plugin.rs  # PluginManifestDto, PluginInvocation, PluginResponse, PLUGIN_PROTOCOL_VERSION
+├── projection/ # Frontend-neutral session projection contract (Milestone 1)
 ├── tui.rs     # TuiMessage, QuestionSpec, RemoteTuiStateSnapshot, REMOTE_TUI_PROTOCOL_VERSION
 └── ui.rs      # UiNode, UiEffect, UiEffectEnvelope, UiLimits, validation, degradation
 ```
+
+## Session projection contract (Milestone 1)
+
+The `projection/` submodule under `codegg-protocol` defines the
+frontend-neutral, versioned, bounded session projection contract.
+It exposes:
+
+- `ProjectionCapabilities` and `PROJECTION_PROTOCOL_VERSION = 1`
+  for capability negotiation (`caps.rs`),
+- bounded payload and collection limits plus string truncation
+  helpers (`limits.rs`),
+- bounded summaries for sessions, turns, messages, tools, runs,
+  jobs, permissions, questions, artifacts, and the agent-tree
+  placeholder (`dto.rs`),
+- typed `ProjectionEvent` variants and `ProjectionEnvelope`
+  (`event.rs`),
+- `SessionProjectionSnapshot` and `ProjectionDiagnostic`
+  (`snapshot.rs`),
+- a deterministic canonical reducer `ProjectionReducer` plus
+  `ReducerEventInput` and `ReducerConfig` (`reducer.rs`),
+- adapters from existing `CoreResponse` snapshots and `CoreEvent`
+  families (`adapters.rs`),
+- golden fixtures (`fixtures.rs`).
+
+The reducer is pure, deterministic, and never performs I/O. It
+honours event sequence ordering, deduplicates by `event_seq`, and
+records diagnostics for impossible or out-of-order transitions
+rather than panicking. Unknown optional fields and variants are
+tolerated when the negotiated version is within the declared
+range; required version mismatches produce an explicit
+`ReducerError::UnsupportedProtocolVersion`.
+
+The contract is described in detail in `architecture/projection.md`
+and exercised by `cargo test -p codegg-protocol` and
+`cargo test --test session_projection_consumer`.
 
 ## Protocol Versions
 
@@ -53,12 +89,21 @@ pub const REMOTE_TUI_PROTOCOL_VERSION: u32 = 3;
 
 // crates/codegg-protocol/src/plugin.rs
 pub const PLUGIN_PROTOCOL_VERSION: u32 = 1;
+
+// crates/codegg-protocol/src/projection/caps.rs
+pub const PROJECTION_PROTOCOL_VERSION: u32 = 1;
+pub const PROJECTION_PROTOCOL_VERSION_MIN: u32 = 1;
+pub const PROJECTION_CAPABILITY: &str = "session_projection.v1";
 ```
 
 **Version history:**
 - `PROTOCOL_VERSION`: bumped 1 → 2 in Phase 15 to accommodate `CoreEvent::PluginUiEffect { envelope: UiEffectEnvelope }`.
 - `REMOTE_TUI_PROTOCOL_VERSION`: bumped 2 → 3 in Phase 15 to accommodate `TuiMessage::PluginUiEffect { envelope: UiEffectEnvelope }`.
 - `PLUGIN_PROTOCOL_VERSION`: stable at 1; plugin wire format is independent of core/TUI protocol versions.
+- `PROJECTION_PROTOCOL_VERSION`: initial value 1, introduced with the
+  frontend-neutral session projection contract (Session Projections
+  Milestone 1). The projection contract is additive — older clients
+  ignore unknown optional variants and continue to function.
 
 ## Envelopes
 
