@@ -1,8 +1,16 @@
-# Multi-Project TUI Milestone 001 — Project-Aware State Foundation
+# Multi-Project TUI Milestone 001 — Project-Aware State and Catalog Client
 
-Status: ready
+Status: ready for handoff
 
-Repository baseline: `fbae374a2cd6172505204b1bc1bee1ef247afd5f` (production-code baseline; subsequent planning-only commits do not alter implementation state)
+Repository baseline: `1df5ef88665889307b9db636b9742febd86a2f50` (`main`; planning-only commits after this baseline do not alter production behavior)
+
+Production implementation baseline:
+
+- `ec42dce` — canonical daemon request context, identity-aware session bindings, and additive project/workspace protocol identity.
+- `972c286` — runtime-asset refresh protocol, session lifecycle triggers, and generation/status reporting.
+- `2293a11` — immutable runtime-asset generation pinning and bounded asset resources.
+- `d1e5b70` — `project_catalog.v1`, bounded project DTOs, native catalog operations, request-scoped server context, and removal of `ServerState.project_dir` authority.
+- `1df5ef8` — merge/closure state confirming Project Catalog 004 is closed and this milestone is the sole dependency-ready downstream handoff.
 
 Source roadmap:
 
@@ -11,299 +19,531 @@ Source roadmap:
 Long-term requirements:
 
 - `plans/000-long-term-specification.md#17-tui-target-architecture`
-- `plans/001-terminology-and-domain-model.md`
+- `plans/001-terminology-and-domain-model.md` — project tab, project/workspace/session identity, frontend state, compatibility projection, and daemon authority.
 - `plans/002-long-term-roadmap.md#phase-4--multi-project-and-multi-session-tui`
+
+Applicable closure evidence:
+
+- `plans/closure/domain-identity/003-corrective-status.md`
+- `plans/closure/domain-identity/004-status.md`
+- `plans/closure/runtime-assets/003-status.md`
+- `plans/closure/runtime-assets/004-status.md`
+- `plans/closure/project-catalog/004-status.md`
 
 Applicable ADRs:
 
-- None. Stop if implementation requires making the TUI authoritative for project/session identity or replacing the native protocol boundary.
+- None. The canonical documents already establish the TUI as a daemon client and project tabs as frontend-local projections. Stop for an ADR if implementation requires making the TUI authoritative for project/session identity, changing native catalog semantics, or persisting heavy/durable session state in the frontend.
 
 Primary class: infrastructure
 
 ## 1. Objective
 
-Refactor the TUI state model so it can represent a daemon-level project catalog and several independent project-tab/session contexts, while preserving current single-project behavior. Add asynchronous catalog loading and one compatibility initial tab, but do not yet implement the `Space f` picker or full tab navigation.
+Refactor the TUI state model so one frontend can represent the daemon-level project catalog and several independent project-tab contexts while preserving the existing single-project workflow.
+
+Add bounded asynchronous catalog capability/list/get loading, a stable frontend-local tab container, one canonical startup tab derived from daemon identities, and active-tab accessor seams for existing components. Do not implement the `Space f` picker, visible tab navigation, persistent restoration, or the full project/session event reducer in this milestone.
+
+The milestone succeeds when:
+
+- `App` can hold a daemon catalog projection and several distinct project tabs;
+- startup and existing session workflows operate through one canonical active tab;
+- project/workspace/session/model/agent display state is scoped to the intended tab;
+- catalog completions and catalog lifecycle/health events cannot mutate the wrong project after refresh, reconnect, or tab removal;
+- no TUI operation infers project authority from cwd, `project_dir`, a path, or direct database access;
+- Milestone 002 can add the picker and visible tab navigation without redesigning ownership.
 
 ## 2. Why this milestone is ready
 
-Hard dependencies:
+All hard dependencies are closed.
 
-- Runtime Assets refresh interfaces expose project/workspace asset generation and session-open refresh sequencing through the closed Runtime Assets milestone.
-- Project Catalog protocol/server migration is closed at `d1e5b70` and exposes stable project list/get and project/workspace summaries.
+Project Catalog 004 provides:
 
-The agent must not create TUI-local project discovery, direct database access, or path-keyed pseudo-projects to bypass these dependencies.
+- `PROJECT_CATALOG_CAPABILITY` / `project_catalog.v1`;
+- `CoreRequest::ProjectCatalogCapabilities`;
+- `CoreRequest::ProjectList { include_archived, limit }`;
+- `CoreRequest::ProjectGet { project_id }`;
+- bounded `ProjectSummaryDto`, `ProjectDetailsDto`, `ProjectWorkspaceSummaryDto`, and health DTOs;
+- matching bounded `CoreResponse` variants;
+- project-scoped lifecycle and health events with stable IDs;
+- request-scoped server and transport authority without `ServerState.project_dir`.
+
+Runtime Assets 003–004 provide project/workspace refresh scope, asset generation/status reports, session-open refresh sequencing, and immutable turn pinning.
+
+Domain Identity 003–004 provide canonical session bindings and explicit compatibility failures. No temporary path-keyed TUI catalog or frontend-local discovery is required.
 
 ## 3. Current implementation evidence
 
-- The TUI defaults to `DaemonClient` and routes most session/history/task/memory/worktree operations through `CoreClient`.
-- `architecture/tui.md` documents spawn-and-complete async commands, `AsyncUiRequestState`, stale completion protection, `TuiTaskRegistry`, project-sensitive Git sidebar refresh, and current remote snapshot behavior.
-- Application state is split into several domains but retains one principal selected session/project context.
-- Existing handlers and render components frequently access current session state directly.
-- Remote and bus events filter mainly by current session rather than project-tab identity.
-- There is no global catalog cache, `ProjectTabId`, ordered open-tab model, per-tab request generations, or tab restoration state.
+At the repository baseline:
+
+- `CoreClient` remains a transport-neutral `request`/`subscribe` trait. In-process, socket, and stdio transports all carry the same `CoreRequest`, `CoreResponse`, and `CoreEvent` types.
+- Project Catalog 004 added the native catalog request/response family, but the TUI has no typed catalog client adapter, catalog cache, or command/reducer integration.
+- `src/tui/app/state/session.rs::SessionState` still owns one `session`, one `project_dir`, one Git sidebar state, one changed-file collection, and other current-session data.
+- `src/tui/app/types.rs::TuiMsg` contains current session/model/agent and provider lifecycle messages but no project-catalog or tab-state messages.
+- Existing TUI asynchronous operations use tracked spawn-and-complete patterns, request generations, and stale-result rejection in several domains.
+- Existing renderers and handlers commonly reach one current session/project context directly.
+- Current event filtering remains primarily session/global-shaped. Project Catalog 004 records that project lifecycle/health payloads carry explicit IDs, but downstream clients must route them before applying them to project state.
+- There is no `ProjectTabId`, ordered tab collection, active-tab ID, catalog request state, tab-local request generation, or project-specific lightweight presentation cache.
+- The current TUI can continue to render one active project during this milestone; visible multi-tab controls belong to Milestone 002.
 
 ## 4. Invariants that must not regress
 
-- The TUI remains a daemon client and never becomes storage authority.
-- No project authority is inferred from TUI process cwd.
-- Existing single-project startup and session workflows remain functional.
-- Async completions cannot mutate the wrong project/tab/session.
-- Closing or replacing a UI view does not delete durable sessions.
-- Heavy details are not loaded for every catalog entry or inactive tab.
-- Existing task lifecycle, stale-generation, modal priority, and terminal restoration behavior remain correct.
+- The daemon and native protocol remain the sole project, workspace, and session authority.
+- A frontend-local tab ID is never serialized as a daemon `ProjectId`, `WorkspaceId`, or `SessionId`.
+- Paths remain display/locator data only; the TUI never derives identity from cwd, `SessionState.project_dir`, Git roots, or file paths.
+- Catalog list/get remains bounded and does not activate projects, start services, scan roots, or load session histories.
+- Existing single-project startup, prompt submission, session selection, provider selection, Git sidebar refresh, modal priority, task tracking, and terminal restoration remain functional.
+- Async results carry enough request/tab/project identity to reject stale or misrouted completion.
+- Closing or replacing a frontend tab never deletes, archives, or cancels daemon-owned sessions/jobs unless a separate explicit action requests it.
+- Heavy messages, artifacts, diffs, LSP state, and full Git state are not loaded for every catalog entry or inactive tab.
+- The TUI stores no credentials, provider secrets, asset bodies, or unrestricted daemon-local paths in catalog/tab debug state.
+- Catalog lifecycle/health events are applied only to matching project IDs; unscoped global application is prohibited.
 
 ## 5. Scope
 
 ### In scope
 
-- `ProjectTabId` or equivalent stable frontend-local tab identity.
-- Separation of:
-  - global daemon/connection/capability state;
-  - project catalog cache/request state;
-  - ordered open project-tab state;
-  - active tab selection;
-  - per-project selected workspace/session/model/agent/presentation summaries.
-- Async project list/get commands through `CoreClient`.
-- Per-tab request-generation/state scaffolding.
-- Compatibility migration of current startup into one initial project tab.
-- Accessor/reducer seams allowing existing components to operate on the active tab without immediate broad rewrite.
-- Catalog loading/error/empty state suitable for future picker.
-- Focused tests and architecture documentation.
+- `ProjectTabId` or equivalent stable opaque frontend-local identifier.
+- A global project catalog projection and capability/request state.
+- An ordered tab container and active-tab identity.
+- Lightweight `ProjectTabState` keyed by stable daemon project identity.
+- Selected workspace/session IDs and bounded session/model/agent/provider presentation summaries per tab.
+- A single active heavy session/view payload associated with explicit tab/project/session identity, or another design that demonstrably avoids duplicating heavy state and dual authority.
+- Typed TUI-side catalog request helpers over the existing generic `CoreClient` trait.
+- Asynchronous `ProjectCatalogCapabilities`, `ProjectList`, and `ProjectGet` operations.
+- `truncated`, empty, unsupported, archived, unavailable, and error states.
+- One canonical startup tab from the current daemon session binding or explicitly resolved startup context.
+- Active-tab accessors/reducer seams for incremental migration of existing handlers/renderers.
+- Project-scoped application of catalog lifecycle and health events.
+- Reconnect/catalog refresh invalidation and stale-result protection.
+- Focused state, fake-client, transport, and regression tests.
+- TUI architecture and developer-boundary documentation.
 
 ### Explicitly out of scope
 
-- `Space f` picker UI.
-- Tab bar rendering and next/previous/close keybindings.
+- `Space f` project picker UI.
+- Visible tab bar, next/previous/reorder/close keybindings, or focus semantics.
+- Project-local session picker UX beyond the existing active-session compatibility surface.
 - Persistent tab restoration.
-- Presence, observer mode, chat, or ACP.
-- Project discovery or registration implementation.
-- Canonical session replay/projection.
-- Loading all session messages, Git state, or services for inactive projects.
+- Full project/session streaming-event reducer migration.
+- Presence, observer mode, project chat, ACP, raw screen replacement, or canonical replay.
+- Project discovery, registration, archive/restore, activation, or health mutation implementation inside the TUI.
+- Loading all session messages, Git state, diffs, artifacts, LSP state, or services for inactive tabs.
+- Changing catalog protocol semantics or introducing TUI-specific authoritative protocol variants.
+- A database migration.
 
-## 6. Required production changes
+## 6. Required design and production changes
 
-### Core/domain
+### 6.1 State ownership map
 
-No core domain authority changes are expected. Consume typed project/workspace/session IDs from protocol DTOs. Frontend-local tab IDs must never be reused as daemon project IDs.
+Before moving fields, produce and commit an explicit ownership inventory covering at least:
 
-### Storage and migrations
+- daemon connection, capability, and reconnect state;
+- catalog cache and catalog request state;
+- current project/workspace/session identifiers;
+- `SessionState.project_dir` and other path-shaped fields;
+- model, agent, provider connection, and selected session presentation;
+- Git sidebar, changed files, indexed files, prompt state, token counters, dialogs, notifications, and task registry;
+- state that must remain global;
+- state that becomes tab scoped;
+- heavy active-view state that is loaded only for the active tab/session;
+- compatibility accessors and their planned removal milestone.
 
-No database migration. Lightweight TUI preference persistence is deferred. Existing session storage remains daemon-owned.
+The implementation must establish one writable owner for each selected project/workspace/session/model/agent value. Do not keep global and tab-local copies that can diverge.
 
-### Protocol and DTOs
+### 6.2 Frontend-local tab identity and container
 
-Consume negotiated project catalog/list/get capabilities and bounded summaries. Add no TUI-specific authoritative protocol variants. If existing `CoreClient` abstractions lack catalog methods, extend the native request/response client interface consistently across socket/inproc/stdio transports.
+Introduce a bounded opaque `ProjectTabId` with no conversion to daemon IDs.
 
-### Runtime and concurrency
+Add a container equivalent to:
 
-Refactor `App`/state modules to contain:
+```text
+ProjectTabs
+|-- ordered: Vec<ProjectTabId>
+|-- by_id: Map<ProjectTabId, ProjectTabState>
+`-- active: Option<ProjectTabId>
+```
 
-- catalog request/cache state;
-- ordered tab collection keyed by stable tab IDs;
-- active tab ID;
-- `ProjectTabState` with project/workspace/session summaries and request states;
-- helper methods for active tab/session access;
-- event/command identity envelopes carrying project/tab/session where needed.
+`ProjectTabState` should contain only bounded project-specific state needed by this milestone, including:
 
-Use existing async command patterns and `spawn_registered_tui_task`. Catalog completions carry request IDs and are rejected when stale. No renderer performs network or filesystem operations.
+- canonical `project_id`;
+- selected/available workspace summaries;
+- selected workspace ID;
+- selected session ID and bounded session summary references;
+- cached selected model, agent, and provider-connection presentation where required by existing UI;
+- project summary/details and health projection;
+- asset generation/status summary;
+- tab-local request generations and error/loading states;
+- lightweight presentation/focus placeholders needed by later navigation.
 
-### Frontend or operator surface
+Do not use project display name, path, workspace root, or session title as a key.
 
-Provide the state and basic catalog load/refresh behavior, including actionable unsupported/error/empty diagnostics. Existing UI may still render only the active compatibility tab.
+Container operations must be deterministic:
 
-### Security and authorization
+- open or focus by canonical project ID according to explicit policy;
+- identical display names remain distinct;
+- removal selects a deterministic fallback;
+- removal invalidates tab-local UI requests;
+- removal does not delete daemon data;
+- reordering, if internally supported, does not change tab identity.
 
-Display only catalog/session entries returned by the daemon. Do not cache or synthesize hidden projects. Treat stale authorization/not-found responses as invalidation signals. Never place credentials in tab state.
+### 6.3 Heavy session/view state migration seam
 
-### Documentation and static guards
+The existing `SessionState` contains heavy and path-sensitive state. Choose and document one bounded migration model:
 
-Update TUI architecture with the new state hierarchy and authority boundaries. Add review guidance against direct `App` global session fields for new code and against TUI cwd project inference.
+1. move one heavy session/view state into the active `ProjectTabState` and keep inactive tabs lightweight/unloaded; or
+2. retain one active heavy view cache keyed by `(ProjectTabId, ProjectId, WorkspaceId, SessionId)` while all tab selections live in `ProjectTabState`.
+
+Either model must:
+
+- eliminate `SessionState.project_dir` as project authority;
+- validate that path-shaped Git/file operations use the selected workspace context returned by the daemon;
+- prevent heavy state from being applied after the active tab/session key changes;
+- avoid cloning full histories/diffs/indexes across every tab;
+- provide active-tab/session accessors so existing components can migrate incrementally;
+- avoid a second writable selected-session/model/agent source.
+
+A broad renderer rewrite is not required. Compatibility accessors may expose the active tab/session to existing code, but new code must not add more direct global-current-session dependencies.
+
+### 6.4 Catalog client adapter
+
+Keep `CoreClient` transport-neutral. Prefer a small typed TUI-side adapter/helper over changing every transport implementation because the trait already accepts generic requests.
+
+Support:
+
+- `ProjectCatalogCapabilities` → `CoreResponse::ProjectCatalogCapabilities`;
+- `ProjectList { include_archived: false, limit }` → bounded `CoreResponse::ProjectList { projects, truncated }`;
+- `ProjectGet { project_id }` → `CoreResponse::ProjectGet { project }`.
+
+Requirements:
+
+- create request envelopes with unique request IDs and the negotiated protocol version;
+- validate the expected response variant and convert protocol errors to bounded TUI diagnostics;
+- preserve the server's `truncated` indication;
+- never list with an unbounded/zero limit that relies on accidental server defaults;
+- avoid activation, health mutation, discovery scans, or session-history loads during list;
+- avoid storing canonical workspace roots unless the active local workflow requires a bounded locator; IDs remain authority.
+
+### 6.5 Global catalog state
+
+Add a global state equivalent to:
+
+```text
+ProjectCatalogState
+|-- capability: Unknown | Supported(bounds) | Unsupported
+|-- request_generation
+|-- loading/error/last_loaded
+|-- ordered summaries
+|-- details cache keyed by ProjectId
+|-- truncated
+`-- reconnect_epoch
+```
+
+The cache is a frontend projection only. Every reconnect or capability change invalidates data according to explicit policy.
+
+Catalog list and detail operations must use existing tracked TUI task infrastructure. Completion payloads carry:
+
+- request generation;
+- reconnect epoch;
+- requested project ID for detail requests;
+- expected active/request state;
+- bounded response data or error.
+
+Stale completions are dropped without mutating current state.
+
+### 6.6 Startup compatibility tab
+
+Preserve current startup without creating a path-keyed pseudo-project.
+
+Resolution order:
+
+1. if the current/loaded session has a canonical `SessionBindingDto`, create/focus the initial tab from its project/workspace IDs;
+2. otherwise consume an explicitly resolved canonical startup context already returned by the daemon/server path;
+3. if no canonical context exists, load the catalog and show a bounded no-active-project state rather than choosing the first project or interpreting cwd as identity;
+4. an older daemon lacking `project_catalog.v1` enters explicit single-project compatibility mode only when an existing canonical session/workspace context is available; otherwise report unsupported capability actionably.
+
+Do not choose the first catalog row when multiple projects exist. Do not create a project or workspace merely to make startup succeed.
+
+The initial tab may still be the only rendered tab in this milestone.
+
+### 6.7 Catalog command/reducer integration
+
+Add bounded start/completion messages or commands for:
+
+- capability load;
+- catalog list/refresh;
+- project detail load;
+- startup tab establishment;
+- catalog lifecycle/health event application.
+
+Large DTO payloads should be boxed or stored behind compact state transitions if adding them directly would worsen existing large-enum pressure.
+
+Reducers must check generation/epoch and project identity before mutation. A detail response for project A must never populate project B's tab after switching or reuse.
+
+### 6.8 Project-scoped catalog events
+
+Consume only the project catalog lifecycle and health events needed to keep summaries coherent.
+
+Requirements:
+
+- inspect stable project/workspace IDs in the event payload before applying;
+- update the matching catalog summary/detail and matching open tabs only;
+- archive/removal-like lifecycle changes mark tabs stale/actionable rather than silently switching them;
+- health events update only the matching project/workspace projection;
+- unknown/unopened project events may update the bounded global catalog cache if present but must not create a tab automatically;
+- event sequence/reconnect gaps trigger catalog revalidation rather than speculative local reconciliation.
+
+Full turn/tool/session event routing remains Milestone 003. Do not broaden this pass into the Phase 5 projection reducer.
+
+### 6.9 Active-tab compatibility accessors
+
+Provide explicit helpers for existing code, such as semantic equivalents of:
+
+- `active_project_tab()` / mutable variant;
+- `active_project_id()`;
+- `active_workspace_id()`;
+- `active_session_id()`;
+- `active_session_view_key()`;
+- `with_active_session_view(...)`.
+
+Accessors must fail or return `None` when no canonical active context exists. They must not fall back to `project_dir`, cwd, the first catalog row, or the most recently loaded session.
+
+Document which existing global fields are deprecated and forbid new call sites through a focused static/review guard where practical.
+
+### 6.10 Reconnect, failure, and cancellation
+
+Define and implement:
+
+- catalog load failure leaves an already validated active compatibility tab usable but stale-marked;
+- capability unsupported state is explicit and does not synthesize catalog entries;
+- reconnect increments an epoch, invalidates in-flight completions, and revalidates daemon summaries;
+- tab removal invalidates local work but does not cancel daemon jobs;
+- project archived/not-found invalidates affected tabs and selected session presentation without choosing another project;
+- truncated catalog results remain visible as truncated and do not imply complete absence;
+- cancellation/drop of a TUI task leaves the prior valid catalog projection active;
+- several TUI clients maintain independent frontend tab state while consuming the same daemon catalog.
 
 ## 7. Ordered work packages
 
-### Work package A — State inventory and migration design
+### Work package A — Inventory and state skeleton
 
-Intent: identify current global/current-session fields and create a safe compatibility migration path.
+Intent: establish ownership before migration.
 
 Required changes:
 
-- inventory App/state fields by global, project, session, presentation, and modal ownership;
-- define `ProjectTabState` and active-tab accessors;
-- identify components that can continue through accessors versus requiring immediate identity propagation;
+- commit the old-to-new field ownership map;
+- define `ProjectTabId`, `ProjectTabState`, `ProjectTabs`, and `ProjectCatalogState`;
+- add bounded constructors and deterministic container operations;
+- add active-tab accessors;
 - add no-op/single-tab compatibility construction.
 
 Acceptance evidence:
 
-- documented field ownership map;
-- existing startup/session tests compile through one active tab;
-- no duplicate durable state is introduced.
+- container tests cover multiple projects with identical names/titles;
+- tab IDs are not daemon IDs;
+- removal/fallback behavior is deterministic;
+- no duplicate writable selected-project/session state is introduced.
 
-### Work package B — Project catalog client state
+### Work package B — Native catalog client and async state
 
-Intent: load bounded project summaries asynchronously from the daemon.
-
-Required changes:
-
-- add catalog cache and `AsyncUiRequestState` or equivalent generation;
-- add start/completion command variants and handlers;
-- extend `CoreClient` transport implementations if needed;
-- handle unsupported capability, empty catalog, errors, and refresh;
-- avoid activation or detailed session loading during list.
-
-Acceptance evidence:
-
-- fake client tests for success/error/stale completion;
-- event loop remains responsive;
-- catalog data remains bounded summaries.
-
-### Work package C — Ordered tab container and active compatibility tab
-
-Intent: represent several project contexts without exposing navigation yet.
+Intent: consume the closed project catalog protocol without modifying authority.
 
 Required changes:
 
-- ordered tab storage and stable active tab ID;
-- create/update/remove internal tab operations;
-- initialize from current selected project/session through daemon IDs;
-- per-tab selected workspace/session/model/agent summaries;
-- tab-local request state and lightweight presentation fields;
-- active-tab accessors used by existing session/render paths where practical.
+- implement typed request helpers over `CoreClient`;
+- negotiate `project_catalog.v1`;
+- implement bounded capability/list/get async commands;
+- preserve `truncated`, unsupported, empty, loading, and error states;
+- attach generation and reconnect epoch to completions.
 
 Acceptance evidence:
 
-- unit tests create several tabs with identical session titles without collision;
-- switching active ID in tests changes accessors cleanly;
-- removal selects deterministic fallback and never deletes daemon sessions.
+- fake-client tests cover expected responses, protocol error variants, wrong response variants, unsupported capability, truncation, and stale completion;
+- socket/inproc/stdio clients require no divergent behavior;
+- list/get performs no activation or direct storage access.
 
-### Work package D — Identity-correct async seams and docs
+### Work package C — Canonical startup tab and heavy-state seam
 
-Intent: prevent future picker/navigation work from inheriting global stale-completion bugs.
+Intent: preserve the current workflow through canonical tab ownership.
 
 Required changes:
 
-- attach project/tab/session identity to relevant new async completions;
-- establish reducer/helper pattern that drops completions for removed/rebound tabs;
-- update architecture docs and TUI stats/debug summaries;
-- add compatibility notes for old daemon capability behavior.
+- establish initial tab from session binding or explicit canonical context;
+- associate active heavy session/view state with an explicit tab/project/workspace/session key;
+- remove `project_dir` as TUI project authority;
+- migrate selected session/model/agent/provider presentation to one tab-owned source;
+- route existing render/command paths through active-tab compatibility accessors where needed.
 
 Acceptance evidence:
 
-- stale catalog/tab completion tests;
-- current session async tests remain green;
-- no cwd mutation or direct project DB access.
+- existing startup/session tests pass through one canonical tab;
+- missing/ambiguous context does not use cwd or choose the first project;
+- switching active tab in state tests changes the active accessor/view key cleanly;
+- heavy state for one tab cannot apply to another.
 
-## 8. Failure, cancellation, restart, and contention semantics
+### Work package D — Catalog lifecycle/health routing
 
-- Catalog load failure leaves the current compatibility tab usable and records an actionable error.
-- Unsupported project-catalog capability enters explicit single-project compatibility mode; it does not invent a catalog.
-- Repeated catalog refresh invalidates older completions through request generations.
-- Removing a tab invalidates tab-local UI requests but does not cancel daemon jobs or delete sessions.
-- Reconnect clears/revalidates daemon-derived summaries and preserves only frontend-local tab intent where safe.
-- Several TUI clients remain independent; no frontend tab lock exists in the daemon.
+Intent: close the downstream event-boundary finding from Project Catalog 004 without implementing full session projections.
 
-## 9. Compatibility and migration
+Required changes:
 
-- Current CLI/startup path opens one active tab associated with the daemon-resolved current session/workspace/project.
-- Existing commands/renderers may temporarily use active-tab compatibility accessors.
-- Do not retain two writable sources of selected session/model/agent state; establish one authoritative tab/session projection and deprecate old fields deliberately.
-- Older daemons receive explicit compatibility behavior.
-- No persistent tab-state format is introduced yet.
+- add project-scoped lifecycle/health event handling;
+- check payload project/workspace IDs before mutation;
+- stale/archive/not-found handling for affected open tabs;
+- reconnect/gap revalidation path.
 
-## 10. Required tests
+Acceptance evidence:
 
-### Focused unit tests
+- events for project A do not mutate project B;
+- unopened project events do not auto-open tabs;
+- archived project state remains actionable and does not silently switch;
+- event gap/reconnect invalidates and reloads summaries.
 
-- tab ID/container operations;
-- active-tab fallback/removal;
-- identical session titles across projects;
-- per-tab selected model/agent/session state;
-- catalog cache/request state.
+### Work package E — Guards, documentation, and regression closure
 
-### Integration tests
+Intent: ensure the state foundation is safe for the visible-navigation milestone.
 
-- fake `CoreClient` project list/get;
-- startup compatibility tab;
-- two project tabs represented without cwd changes;
-- all transport clients compile with catalog methods.
+Required changes:
 
-### Restart and recovery tests
+- update TUI architecture and field ownership documentation;
+- add a focused guard against new TUI cwd/path project authority and direct project storage access;
+- add debug/stats summaries for catalog state, open tab count, active tab identity, and stale completion counters without paths/secrets;
+- run focused and broad regressions.
 
-- daemon reconnect invalidates/reloads catalog summaries;
-- unsupported capability fallback.
+Acceptance evidence:
 
-### Contention and cancellation tests
+- guards pass with negative fixtures;
+- existing modal/task/terminal/session/provider/Git sidebar tests remain green;
+- documentation names deferred picker/navigation/event/restoration work.
 
-- stale catalog completions;
-- tab removed/rebound before completion;
-- several concurrent catalog/detail requests remain scoped.
+## 8. Required tests
 
-### Security and negative tests
+### State and reducer unit tests
 
-- TUI displays only daemon-returned projects;
-- invalid project/session IDs fail without path fallback;
-- no credentials or full secret-bearing config in tab state/debug output.
+- `ProjectTabId` opacity and non-conversion to daemon identity.
+- open/focus/remove/fallback ordering.
+- identical project display names and identical session titles across projects.
+- selected workspace/session/model/agent/provider projection remains tab scoped.
+- active-tab accessors return no fallback when state is absent.
+- heavy session/view key rejects another tab/project/session.
+- archived/stale/error states.
 
-### Migration and compatibility tests
+### Catalog client tests
 
-- existing TUI async command tests;
-- existing session selection and Git sidebar tests;
-- current single-project keybindings and render snapshots where stable.
+- capability supported with advertised bounds.
+- capability unsupported.
+- bounded list success and `truncated = true`.
+- empty catalog.
+- project get success/not-found/error/wrong response variant.
+- stale generation and stale reconnect epoch rejection.
+- cancellation preserves prior valid cache.
 
-## 11. Required verification commands
+### Startup and compatibility tests
+
+- canonical session binding creates the initial tab.
+- explicit canonical startup context creates the initial tab.
+- missing or ambiguous context does not use cwd/path fallback.
+- multiple catalog projects do not cause first-row implicit selection.
+- older daemon compatibility mode is explicit and bounded.
+- existing single-project startup/session creation/attach/load remains functional.
+
+### Event-routing tests
+
+- project A lifecycle/health event updates only project A cache/tab.
+- unopened project event does not create a tab.
+- archive marks the matching tab stale/actionable.
+- reconnect/event gap triggers revalidation.
+- several clients maintain independent tab state.
+
+### Regression and negative tests
+
+- current TUI async request-generation tests.
+- provider connection selection/lifecycle dialogs.
+- Git sidebar generation and workspace scope.
+- modal priority and terminal cleanup.
+- no TUI direct database/project-catalog store calls.
+- no cwd/`project_dir` project authority.
+- no credential or asset-body material in catalog/tab debug serialization.
+
+## 9. Required verification commands
+
+Use repository-standard wrappers/caps where present and record exact results.
 
 ```bash
-cargo fmt --all -- --check
-cargo test tui::
-cargo test --test core_transport
-cargo test --test single_daemon
-cargo test -p codegg-protocol
-python3 scripts/check_daemon_cwd_usage.py
-cargo clippy --workspace --all-targets --all-features -- -D warnings
+rtk cargo fmt -- --check
+rtk cargo check --workspace --all-targets --all-features
+rtk cargo clippy --workspace --all-targets --all-features -- -D warnings
+rtk cargo test -p codegg-protocol
+rtk cargo test -p codegg --lib tui -- --test-threads=1
+rtk cargo test --test core_transport -- --test-threads=1
+rtk cargo test --test single_daemon -- --test-threads=1
+rtk env CARGO_BUILD_JOBS=1 cargo test --workspace --all-features -- --test-threads=14
+rtk python3 scripts/check_daemon_cwd_usage.py
+rtk python3 scripts/check_project_catalog_invariants.py
+rtk python3 scripts/check_project_agent_pwd_inference.py
+rtk python3 scripts/check_identity_path_usage.py
+rtk git diff --check
 ```
 
-Add a focused project-tab state test module and fake-client integration target; run those explicitly before the broad TUI filter.
+Add and run focused targets for project-tab state, catalog fake-client behavior, canonical startup, and project-scoped catalog event routing.
 
-## 12. Documentation updates
+If repository-wide tests encounter an environmental restriction, separate it from changed-scope failures and provide focused passing evidence; do not claim a broad pass that did not complete.
 
-- `architecture/tui.md` state hierarchy and async identity routing;
-- `architecture/protocol.md` catalog client capability usage if needed;
-- TUI compatibility mode and diagnostics;
-- developer guidance for active-tab accessors and new component ownership.
+## 10. Documentation updates
 
-## 13. Acceptance criteria
+Update at least:
 
-- `App` can represent a project catalog and several independent project-tab states.
-- Existing startup and single-project use work through one compatibility tab.
-- Catalog loading is daemon-backed, asynchronous, bounded, and stale-safe.
-- Project/session/model/agent state is tab scoped.
-- No cwd mutation, direct storage access, or frontend-authoritative project identity is introduced.
-- The next milestone can add picker/navigation without redesigning state ownership.
+- `architecture/tui.md` — state hierarchy, active heavy-view ownership, catalog async flow, startup behavior, and event routing boundary;
+- `architecture/protocol.md` or `architecture/client.md` — TUI consumption of `project_catalog.v1` where useful;
+- developer guidance for active-tab accessors and prohibited new global-current-session dependencies;
+- compatibility diagnostics for older daemons and missing canonical startup context;
+- the implementation plan status and closure record.
 
-## 14. Stop conditions
+## 11. Acceptance criteria
 
-The agent must stop and report rather than improvise when:
+1. `App` can represent a bounded daemon catalog and at least two independent project-tab states.
+2. Existing startup and single-project behavior execute through one canonical active tab.
+3. Catalog capabilities/list/get are daemon-backed, asynchronous, bounded, transport-neutral, and stale-safe.
+4. `ProjectSummaryDto`/`ProjectDetailsDto` identity is retained as stable IDs; paths are never tab keys or authority.
+5. Project/workspace/session/model/agent/provider presentation state has one tab-scoped writable owner.
+6. Heavy session/view state is explicitly keyed and cannot leak across tabs.
+7. Catalog lifecycle/health events mutate only matching project/workspace state.
+8. Reconnect, truncation, archive, unsupported capability, empty catalog, and errors are represented actionably.
+9. No cwd mutation, direct database access, frontend discovery, or path-derived pseudo-project is introduced.
+10. Existing session, provider, Git sidebar, modal, task-lifecycle, and terminal cleanup behavior remains compatible.
+11. The state/accessor/client seams are sufficient for Milestone 002 to add picker/tab navigation without another ownership redesign.
+12. Closure evidence records exact implementation commits, tests, guards, deferred work, and any remaining global-state migration debt.
 
-- project catalog protocol or runtime asset generation interfaces are unavailable;
-- existing TUI state cannot be migrated without creating dual authority;
-- completing the milestone requires project discovery or direct DB access in the TUI;
-- a broad renderer rewrite would exceed one coherent pass;
-- remote TUI canonical projection must be redesigned before Phase 5;
-- state ownership conflicts with daemon/session authority.
+## 12. Stop conditions
 
-## 15. Closure evidence required
+Stop and report rather than improvising when:
 
-- implementation commit(s);
-- old-to-new TUI field ownership map;
-- catalog async/stale-completion test evidence;
-- compatibility startup and existing TUI regression evidence;
-- proof no cwd/direct storage project authority was introduced;
-- exact verification commands/results;
-- list of deferred picker/navigation/restoration/projection work;
-- closure recommendation.
+- current `main` no longer exposes the documented `project_catalog.v1` operations or asset-generation contracts;
+- migration requires retaining two writable selected project/session/model/agent authorities;
+- completing the milestone requires TUI-local discovery, direct database access, or path-derived project identity;
+- a renderer-wide rewrite is required instead of an accessor-based migration seam;
+- the chosen heavy-state model would keep unbounded histories/artifacts for every inactive tab;
+- project catalog event routing requires redesigning the canonical Phase 5 session projection/replay model;
+- compatibility with the existing single-project workflow cannot be preserved within one coherent pass;
+- implementation requires a wire-breaking protocol change rather than additive client consumption.
 
-## 16. Handoff notes
+## 13. Closure evidence required
 
-- This plan is ready for handoff now that runtime-asset and project-catalog interfaces are closed.
-- Preserve modal priority, task lifecycle, and terminal cleanup behavior.
-- Use active-tab accessors as a migration seam, not as a permanent global-state disguise.
-- Inspect current `main` before implementation and record the actual production baseline in closure.
+- implementation commit(s) and actual reviewed baseline;
+- old-to-new field ownership map;
+- state/container and heavy-view ownership tests;
+- catalog capability/list/get fake-client and stale-completion evidence;
+- canonical startup and older-daemon compatibility evidence;
+- project-scoped catalog lifecycle/health event-routing evidence;
+- proof that no cwd/path/direct-storage project authority was introduced;
+- focused and broad verification commands/results;
+- inventory of deferred picker/navigation/full-event-routing/restoration work;
+- closure recommendation and next dependency decision.
+
+## 14. Handoff notes
+
+- This is the sole dependency-ready plan at the repository baseline.
+- Do not create the project picker or visible tab navigation in this pass.
+- Reuse the generic `CoreClient::request` boundary; do not fork transport-specific catalog implementations.
+- Treat `SessionState.project_dir` as a locator compatibility concern, not identity.
+- Use active-tab accessors as a controlled migration seam, not as a permanent disguise for global state.
+- Preserve project-catalog list/get probe-free behavior and runtime-asset refresh ownership.
+- Inspect current `main` before implementation and update closure evidence if production code advanced after the planning baseline.
