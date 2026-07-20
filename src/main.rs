@@ -1833,6 +1833,15 @@ async fn launch_tui(cli: &Cli) -> Result<(), AppError> {
         app.load_initial_session_via_core(request).await;
     }
 
+    // Kick off an async project catalog refresh so the eventual
+    // picker UI has bounded summaries available without blocking the
+    // event loop. The completion lands as a `ProjectCatalogRefreshed`
+    // TuiCommand and is ignored on older daemons (capability not
+    // advertised).
+    if let (Some(_), true) = (app.core_client.as_ref(), !cli.no_session) {
+        app.refresh_project_catalog();
+    }
+
     tui::run_event_loop(&mut app).await
 }
 

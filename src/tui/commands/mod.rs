@@ -6,6 +6,7 @@ pub(super) mod import;
 pub(super) mod memory;
 pub(super) mod plugin_management;
 pub(super) mod plugins;
+pub(super) mod project_catalog;
 pub(super) mod provider_connections;
 pub(super) mod research;
 pub(super) mod security;
