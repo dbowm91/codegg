@@ -29,14 +29,13 @@ Canonical direction remains in:
 | Provider connections and Eggpool | closed | `plans/subsystems/provider-connections-roadmap.md` | Milestone 5 — corrective lifecycle, rotation, health, and closure (closed) | — |
 | Project catalog and lazy discovery | closed | `plans/subsystems/project-catalog-roadmap.md` | Milestone 4 — protocol, server migration, and closure (closed) | — |
 | Multi-project TUI and sessions | active | `plans/subsystems/tui-project-sessions-roadmap.md` | Milestone 2 — project picker and tab navigation | Plan registered; ready for handoff |
-| Frontend-neutral session projections | active | `plans/subsystems/session-projections-roadmap.md` | Milestone 2 — scoped subscriptions and durable replay | Plan registered; ready for handoff |
+| Frontend-neutral session projections | active | `plans/subsystems/session-projections-roadmap.md` | Milestone 2 — scoped subscriptions and durable replay | Implementation never landed; see `plans/closure/session-projections/002-status.md`. Milestone 3 blocked until M2 implementation resumes. |
 
 ## Dependency-ready implementation plans
 
 | Subsystem | Milestone | Class | Plan | Baseline | Status |
 |---|---|---|---|---|---|
 | Multi-project TUI and sessions | 002 — project picker and tab navigation | capability | `plans/implementation/tui-project-sessions/002-project-picker-tab-navigation.md` | `1c37787` | ready |
-| Frontend-neutral session projections | 002 — scoped subscriptions and durable replay | capability | `plans/implementation/session-projections/002-scoped-subscriptions-durable-replay.md` | `1c37787` | ready |
 
 ## Active closure work
 
@@ -49,7 +48,7 @@ Canonical direction remains in:
 | Work item | Blocker | Required resolution | Owner document |
 |---|---|---|---|
 | Multi-Project TUI 003 — project-correct event routing and lifecycle | Multi-Project TUI 002 is not yet closed | Close TUI 002 and consume its picker/tab/session navigation ownership without creating a second tab model | `plans/subsystems/tui-project-sessions-roadmap.md` |
-| Session Projections 003 — visibility, redaction, and artifact handles | Session Projections 002 is not yet closed; future principal capability filtering seam remains required | Close Projection 002, then define the fail-closed visibility/redaction and bounded artifact-read policy around the durable replay authority | `plans/subsystems/session-projections-roadmap.md` |
+| Session Projections 003 — visibility, redaction, and artifact handles | Session Projections 002 implementation never landed (`plans/closure/session-projections/002-status.md`); future principal capability filtering seam remains required | Land Projection 002 production work against `plans/implementation/session-projections/002-scoped-subscriptions-durable-replay.md`, then define the fail-closed visibility/redaction and bounded artifact-read policy around the durable replay authority | `plans/subsystems/session-projections-roadmap.md` |
 
 ## Recently closed work
 
