@@ -171,6 +171,19 @@ pub enum TuiCommand {
     },
     ReloadSessions,
     OpenTreeDialog,
+    /// Completion of an async project catalog refresh
+    /// (`Multi-Project TUI milestone 1`). Carries the request id so
+    /// stale completions (after a new refresh has begun) are dropped
+    /// at apply time.
+    ProjectCatalogRefreshed {
+        request_id: u64,
+        supported: bool,
+        entries: Vec<crate::protocol::dto::ProjectSummaryDto>,
+        truncated: bool,
+        error: Option<String>,
+    },
+    /// Explicit user request to refresh the project catalog.
+    RefreshProjectCatalog,
     PreviewImport {
         source: super::components::dialogs::import::ImportSource,
     },
@@ -837,6 +850,21 @@ pub struct App {
     /// or skipped frames. Starts at 0 and never resets during a
     /// single app lifetime.
     pub remote_sequence: u64,
+    /// Ordered collection of open project tabs and the active tab id.
+    ///
+    /// Introduced by `Multi-Project TUI and Session Management
+    /// Roadmap` milestone 1 (`plans/implementation/tui-project-sessions/001-project-aware-state.md`).
+    /// Currently always holds exactly one compatibility tab that
+    /// mirrors the legacy single-project state. The accessor
+    /// `active_tab`, `active_project_id`, `active_session_id`,
+    /// `active_workspace_id`, `active_model`, and `active_agent` read
+    /// through this collection so future picker/navigation work does
+    /// not need to rewrite the App surface.
+    pub project_tabs: crate::tui::app::state::ProjectTabs,
+    /// Bounded cache of project catalog summaries plus the request
+    /// state for the most recent list/get operation. See
+    /// `tui::app::state::project_tabs::ProjectCatalogState`.
+    pub project_catalog: crate::tui::app::state::ProjectCatalogState,
 }
 
 /// What to do at TUI startup with respect to session loading. The TUI
@@ -979,6 +1007,19 @@ impl App {
         let resolution =
             crate::theme::ThemeResolutionConfig::from_config(cfg.and_then(|c| c.theme.as_ref()));
         let theme = theme_registry.resolve_tui_arc(&resolution);
+
+        let compat_agent_name = agents
+            .get(current_agent)
+            .map(|a| a.name.clone())
+            .unwrap_or_default();
+        let project_tabs = crate::tui::app::state::ProjectTabs::from_compat(
+            &project_dir,
+            None,
+            None,
+            None,
+            &current_model,
+            &compat_agent_name,
+        );
 
         Self {
             ui_state: UiState {
@@ -1173,6 +1214,8 @@ impl App {
             task_registry: crate::tui::task_lifecycle::TuiTaskRegistry::new(),
             render_panic_injection: RenderPanicInjection::all_false(),
             plugin_manager: None, // initialized lazily after construction
+            project_tabs,
+            project_catalog: crate::tui::app::state::ProjectCatalogState::new(),
         }
     }
 
@@ -1407,6 +1450,19 @@ impl App {
         let theme = Arc::new(Theme::dark());
         let indexed_files: Arc<RwLock<Vec<String>>> = Arc::new(RwLock::new(Vec::new()));
 
+        let compat_agent_name = agents
+            .get(current_agent)
+            .map(|a| a.name.clone())
+            .unwrap_or_default();
+        let project_tabs = crate::tui::app::state::ProjectTabs::from_compat(
+            &project_dir,
+            None,
+            None,
+            None,
+            &current_model,
+            &compat_agent_name,
+        );
+
         Self {
             ui_state: UiState {
                 running: true,
@@ -1593,6 +1649,8 @@ impl App {
             render_panic_injection: RenderPanicInjection::all_false(),
             remote_sequence: 0,
             plugin_manager: None, // initialized lazily after construction
+            project_tabs,
+            project_catalog: crate::tui::app::state::ProjectCatalogState::new(),
         }
     }
 
@@ -3102,6 +3160,9 @@ impl App {
                 if let Some(idx) = self.agent_state.models.iter().position(|m| m == &model) {
                     self.agent_state.model_idx = idx;
                 }
+                if let Some(tab) = self.project_tabs.active_mut() {
+                    tab.model = model.clone();
+                }
                 self.persist_model_selection(&model);
                 self.close_dialog();
             }
@@ -3113,6 +3174,9 @@ impl App {
                     .position(|a| a.name == agent_name)
                 {
                     self.agent_state.current_agent = idx;
+                }
+                if let Some(tab) = self.project_tabs.active_mut() {
+                    tab.agent = agent_name.clone();
                 }
                 self.close_dialog();
             }
@@ -10011,10 +10075,30 @@ impl App {
 
     pub fn set_session(&mut self, sess: Session) {
         let sess_id = sess.id.clone();
+        let project_id = if sess.project_id.is_empty() {
+            None
+        } else {
+            Some(sess.project_id.clone())
+        };
+        let workspace_id = sess.workspace_id.clone();
         self.session_state.session = Some(sess);
         self.ui_state
             .routes
             .navigate_to(Route::Session(sess_id.clone()));
+        // Mirror the selected session into the active tab. This keeps
+        // the active-tab accessor in sync with the legacy single-
+        // project surface so future picker/navigation code can rely
+        // on `active_session_id()` / `active_project_id()` /
+        // `active_workspace_id()` without rewriting the App surface.
+        if let Some(tab) = self.project_tabs.active_mut() {
+            tab.session_id = Some(sess_id.clone());
+            if project_id.is_some() {
+                tab.project_id = project_id;
+            }
+            if workspace_id.is_some() {
+                tab.workspace_id = workspace_id;
+            }
+        }
         if let Some(ref tx) = self.tui_cmd_tx {
             let _ = tx.try_send(TuiCommand::LoadSessionMessages {
                 session_id: sess_id.clone(),
@@ -10026,6 +10110,114 @@ impl App {
         // Refresh sidebar git status for the new project so render
         // never blocks on git probing.
         crate::tui::commands::git_sidebar::start_refresh_git_sidebar(self);
+    }
+
+    // -----------------------------------------------------------------
+    // Active-tab accessors (Multi-Project TUI milestone 1 seam)
+    //
+    // These read through `project_tabs.active_tab()` so future
+    // picker/navigation work does not need to rewrite the App
+    // surface. During the compatibility phase the active tab
+    // mirrors the legacy `session_state` / `agent_state` fields, so
+    // these accessors return values consistent with the legacy
+    // single-project behavior.
+    // -----------------------------------------------------------------
+
+    /// The active project tab, if any.
+    pub fn active_tab(&self) -> Option<&crate::tui::app::state::ProjectTabState> {
+        self.project_tabs.active()
+    }
+
+    /// Mutable handle to the active project tab.
+    pub fn active_tab_mut(&mut self) -> Option<&mut crate::tui::app::state::ProjectTabState> {
+        self.project_tabs.active_mut()
+    }
+
+    /// The active tab's stable id. Equivalent to the project's
+    /// frontend-local identity and intentionally distinct from any
+    /// daemon-typed project id.
+    pub fn active_tab_id(&self) -> Option<crate::tui::app::state::ProjectTabId> {
+        self.project_tabs.active_tab_id().cloned()
+    }
+
+    /// Daemon-typed project id of the active tab, if known.
+    pub fn active_project_id(&self) -> Option<&str> {
+        self.project_tabs
+            .active()
+            .and_then(|t| t.project_id.as_deref())
+    }
+
+    /// Daemon-typed workspace id of the active tab, if known.
+    pub fn active_workspace_id(&self) -> Option<&str> {
+        self.project_tabs
+            .active()
+            .and_then(|t| t.workspace_id.as_deref())
+    }
+
+    /// Daemon-typed session id of the active tab, if known.
+    pub fn active_session_id(&self) -> Option<&str> {
+        self.project_tabs
+            .active()
+            .and_then(|t| t.session_id.as_deref())
+    }
+
+    /// Selected model identifier for the active tab.
+    pub fn active_model(&self) -> &str {
+        self.project_tabs
+            .active()
+            .map(|t| t.model.as_str())
+            .unwrap_or("")
+    }
+
+    /// Selected agent name for the active tab.
+    pub fn active_agent(&self) -> &str {
+        self.project_tabs
+            .active()
+            .map(|t| t.agent.as_str())
+            .unwrap_or("")
+    }
+
+    /// Total number of open project tabs.
+    pub fn open_tab_count(&self) -> usize {
+        self.project_tabs.len()
+    }
+
+    /// Kick off an async refresh of the project catalog.
+    ///
+    /// This is the public entry point for the catalog client
+    /// (Multi-Project TUI milestone 1). Callers (e.g. the eventual
+    /// `Space f` picker, startup, or a `/projects` slash command)
+    /// dispatch this through the normal event loop so the result
+    /// lands back on the loop as a `TuiCommand::ProjectCatalogRefreshed`
+    /// completion. The method itself never blocks.
+    pub fn refresh_project_catalog(&mut self) {
+        crate::tui::commands::project_catalog::start_refresh_project_catalog(self);
+    }
+
+    /// Whether the daemon has advertised the project catalog
+    /// capability. Returns `false` before the first round-trip has
+    /// completed; the TUI uses this to show a clear "catalog
+    /// unavailable" diagnostic rather than pretending the catalog is
+    /// empty.
+    pub fn project_catalog_supported(&self) -> bool {
+        self.project_catalog.capability_supported
+    }
+
+    /// Apply a `ProjectCatalogRefreshed` completion to the local
+    /// catalog state. Public so tests and the eventual `/projects`
+    /// command dispatcher can route completions through this method
+    /// without exposing the private command module.
+    pub fn apply_project_catalog_refreshed(
+        &mut self,
+        request_id: u64,
+        supported: bool,
+        entries: Vec<crate::protocol::dto::ProjectSummaryDto>,
+        truncated: bool,
+        error: Option<String>,
+    ) {
+        crate::tui::commands::project_catalog::apply_project_catalog_refreshed(
+            self, request_id, supported, entries, truncated, error,
+        );
     }
 
     pub fn set_session_store(&mut self, store: Arc<SessionStore>) {

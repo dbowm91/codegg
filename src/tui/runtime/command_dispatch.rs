@@ -23,6 +23,10 @@ use super::super::commands::plugins::{
     apply_plugin_command_finished, apply_plugin_ui_effect, start_plugin_command,
 };
 #[allow(unused_imports)]
+use super::super::commands::project_catalog::{
+    apply_project_catalog_refreshed, start_refresh_project_catalog,
+};
+#[allow(unused_imports)]
 use super::super::commands::provider_connections::start_connection_lifecycle;
 #[allow(unused_imports)]
 use super::super::commands::research::{
@@ -112,6 +116,18 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
         }
         TuiCommand::ReloadSessions => {
             start_reload_sessions(app);
+        }
+        TuiCommand::RefreshProjectCatalog => {
+            start_refresh_project_catalog(app);
+        }
+        TuiCommand::ProjectCatalogRefreshed {
+            request_id,
+            supported,
+            entries,
+            truncated,
+            error,
+        } => {
+            apply_project_catalog_refreshed(app, request_id, supported, entries, truncated, error);
         }
         TuiCommand::OpenTreeDialog => {
             start_open_tree_dialog(app);

@@ -241,7 +241,7 @@ This roadmap closes when CodeGG has one versioned, bounded, redacted session pro
 
 | Milestone | Status | Implementation plan | Closure record | Blockers |
 |---|---|---|---|---|
-| 1 | blocked | `plans/implementation/session-projections/001-projection-contracts.md` | — | Multi-project TUI state (Domain Identity M003 and Project Catalog M004 are closed; consume their stable identity and protocol contracts) |
+| 1 | ready | `plans/implementation/session-projections/001-projection-contracts.md` | — | Multi-Project TUI M001 closed; Domain Identity M003 and Project Catalog M004 are closed and provide stable identity and protocol contracts |
 | 2 | not started | — | — | Milestone 1 closure |
 | 3 | not started | — | — | Milestones 1–2 and authorization interface |
 | 4 | not started | — | — | Milestones 1–3 closure |
