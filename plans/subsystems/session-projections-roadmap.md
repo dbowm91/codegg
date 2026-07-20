@@ -64,11 +64,11 @@ It consumes stable project/session identities, daemon events, turn/tool/run/job 
 
 ## 4. Current state
 
-The core protocol already has versioned request/event envelopes, monotonic event sequence fields, session/turn correlation, session and daemon snapshots, workspace operations, turn/tool/subagent/run/job events, and resume/resync variants. `SnapshotDaemon` exposes active sessions and connected clients.
+Milestone 1 added `codegg_protocol::projection`: versioned bounded projection DTOs, projection capability negotiation, deterministic reducer semantics, snapshot builders, adapters from existing core snapshots/events, and independent-consumer equivalence fixtures.
 
-The server/remote TUI path maintains a bounded in-memory event buffer and can emit structured snapshots. The TUI also has a local remote-snapshot sequence, but current resume behavior often returns a fresh snapshot because there is no authoritative durable per-session replay log. Raw render frames are explicitly unsupported, which aligns with the target architecture.
+The core protocol also has request/event envelopes, daemon-global event sequence fields, session/turn correlation, session and daemon snapshots, and raw subscribe/resume paths. The server/remote TUI path maintains bounded in-memory event buffers and selected raw core events are best-effort persisted in `core_event_log`.
 
-Events currently vary in payload sensitivity and do not share a complete visibility/redaction classification. Some large outputs can appear inline, while run stores and artifact handles already provide a useful seam. There is no single canonical projection reducer shared by all frontends.
+There is still no authoritative durable per-session/per-project projection stream, stable stream cursor, subscription/ack registry, retention/checkpoint policy, or restart-safe projection high-water ownership. Existing raw event persistence is intentionally not sufficient for canonical projection replay.
 
 ## 5. Target architecture
 
@@ -88,7 +88,7 @@ Define versioned projection types:
 
 A canonical projector consumes durable/session events and produces snapshots using deterministic reducer rules. Projection events carry stream scope, sequence, timestamp, causation/correlation references, visibility class, payload version, and bounded content.
 
-Replay storage may use append-only database rows plus periodic snapshots/checkpoints. Retention is bounded by count/time/bytes. A client subscribes at project or session scope, acknowledges a sequence, resumes from a cursor, or receives `ResyncRequired` with a fresh snapshot when history is unavailable or capabilities differ.
+Replay storage uses append-only bounded database rows plus periodic snapshots/checkpoints. Retention is bounded by count/time/bytes. A client subscribes at project or session scope, acknowledges a sequence, resumes from a cursor, or receives `ResyncRequired` with a fresh snapshot when history is unavailable or capabilities differ.
 
 Redaction occurs before publication into shared replay storage. Raw tool/run artifacts stay in existing stores and are referenced through authorized bounded handles.
 
@@ -115,6 +115,8 @@ Milestone 2: scoped subscriptions and durable replay
 
 ### Milestone 1 — Projection contracts and canonical reducer
 
+Status: closed; see `plans/closure/session-projections/001-status.md`.
+
 Class: infrastructure
 
 Objective: define bounded, versioned session projection types and one deterministic reducer shared by tests and frontend adapters.
@@ -136,6 +138,8 @@ Exit conditions:
 Deferred work: durable replay and final authorization filtering.
 
 ### Milestone 2 — Scoped subscriptions and durable replay
+
+Status: ready for handoff; see `plans/implementation/session-projections/002-scoped-subscriptions-durable-replay.md`.
 
 Class: capability
 
@@ -242,6 +246,6 @@ This roadmap closes when CodeGG has one versioned, bounded, redacted session pro
 | Milestone | Status | Implementation plan | Closure record | Blockers |
 |---|---|---|---|---|
 | 1 | closed | `plans/implementation/session-projections/001-projection-contracts.md` | `plans/closure/session-projections/001-status.md` | — |
-| 2 | not started | — | — | Milestone 1 closure |
+| 2 | ready | `plans/implementation/session-projections/002-scoped-subscriptions-durable-replay.md` | — | —; Milestone 1 closed |
 | 3 | not started | — | — | Milestones 1–2 and authorization interface |
 | 4 | not started | — | — | Milestones 1–3 closure |
