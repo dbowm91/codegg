@@ -5,6 +5,7 @@ use axum::{
 use serde::Serialize;
 use tracing::warn;
 
+use super::super::scope::{resolve_context, ScopeQuery};
 use super::super::state::ServerState;
 use crate::config::schema::Config;
 use crate::error::{AppError, AxumAppError};
@@ -99,6 +100,7 @@ pub struct MessageListResponse {
 
 pub async fn list_messages(
     State(state): State<ServerState>,
+    axum::extract::Query(scope): axum::extract::Query<ScopeQuery>,
     Path(id): Path<String>,
 ) -> Result<Json<MessageListResponse>, AxumAppError> {
     let store = SessionStore::new(state.pool.clone());
@@ -107,6 +109,7 @@ pub async fn list_messages(
             "session not found".to_string(),
         ))
     })?;
+    resolve_context(&state.pool, &scope, Some(&id)).await?;
 
     let msg_store = MessageStore::new(state.pool);
     let messages = msg_store.list(&id).await?;

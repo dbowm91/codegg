@@ -11,7 +11,6 @@ use crate::mcp::McpService;
 
 #[derive(Clone)]
 pub struct ServerState {
-    pub project_dir: String,
     pub pool: SqlitePool,
     pub mcp_service: Arc<RwLock<McpService>>,
     pub config: Config,

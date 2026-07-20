@@ -204,3 +204,28 @@ The local path is a separately named compatibility locator. Catalog and session
 counts are read from canonical project/workspace/session bindings, and local
 registration first registers the workspace locator before delegating to
 `ProjectCatalog::register_local_project`.
+
+## Native protocol and server migration (Milestone 4)
+
+The project catalog is exposed through the versioned native protocol rather
+than through a server-owned current project. Project list/get/register,
+archive/restore, and scoped health requests carry durable `project_id` and,
+where an executable workspace is required, `workspace_id` fields. Responses
+contain bounded project summaries, workspace summaries, session counts, and
+durable health records; they do not turn a path into an identity or include
+asset bodies.
+
+Project lifecycle and health changes are emitted as project-scoped events.
+Clients advertise and negotiate the project-catalog capability, while older
+clients retain the existing workspace/session wire projections. A legacy
+directory request is accepted only when `ProjectContextResolver` finds one
+active, resolved binding. Missing or ambiguous locators return an actionable
+`project_context_required` or `ambiguous_project_context` error and never
+select another project implicitly.
+
+The HTTP/WebSocket server stores the daemon/catalog pool and core authority,
+not a `project_dir` identity. File and compatibility operations must receive
+an explicit project/workspace scope or a bounded locator that is resolved
+through the same context authority. Catalog listing remains probe-free and
+does not acquire activation leases; project activation, refresh, expiry, and
+eviction remain owned by `CoreDaemon` and the existing registries.

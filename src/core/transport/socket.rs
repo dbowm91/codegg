@@ -70,6 +70,7 @@ impl SocketCoreClient {
                     plugin_ui_code: false,
                     plugin_ui_progress: false,
                     workspace_registration: true,
+                    project_catalog: true,
                 },
             });
             if let Ok(json) = serde_json::to_string(&hello) {

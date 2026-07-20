@@ -29,8 +29,8 @@ Define versioned, bounded, frontend-neutral session projection DTOs and one dete
 
 Hard dependencies:
 
-- Project Catalog protocol/server migration must provide project-scoped operation and subscription context.
-- Multi-Project TUI state foundation must establish project/session routing without frontend-global assumptions.
+- Project Catalog protocol/server migration is now closed and provides project-scoped operation and subscription context.
+- Multi-Project TUI state foundation must still establish project/session routing without frontend-global assumptions; that plan is now ready but not yet closed.
 
 The Domain Identity daemon/protocol dependency is closed by
 `plans/closure/domain-identity/003-corrective-status.md`; this plan must consume
@@ -338,7 +338,7 @@ The agent must stop and report rather than improvise when:
 
 ## 16. Handoff notes
 
-- This plan remains blocked until the catalog and TUI state dependencies close.
+- This plan remains blocked until Multi-Project TUI 001 closes; the catalog dependency is satisfied.
 - Keep the reducer I/O-free and frontend-neutral.
 - Do not label the existing in-memory remote TUI buffer as durable replay.
 - Avoid overfitting DTOs to Ratatui layout or current web/server route shapes.

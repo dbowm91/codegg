@@ -1,17 +1,8 @@
 # Project Catalog Milestone 004 — Protocol, Server Migration, and Closure
 
-Status: ready for handoff
+Status: closed; see `plans/closure/project-catalog/004-status.md`
 
-Repository baseline: `466356f8bef4242e24bafea1a4d5603e91d9f197` (`main`; planning-only commits after this baseline do not alter production behavior)
-
-Production implementation baseline:
-
-- `84d92f0` — canonical project/repository/workspace/session identity storage and reconciliation.
-- `ec42dce` — identity-aware daemon requests, session binding DTOs, canonical server project IDs, and bounded directory compatibility resolution.
-- `a2db5e4` — durable project catalog service with project lifecycle, locators, health placeholders, and probe-free hydration.
-- `5974976` — bounded discovery roots, scans, reconciliation, cancellation/status, unresolved observations, and schema v29.
-- `972c286` and `2293a11` — runtime-asset refresh protocol, lifecycle triggers, immutable generations, and activation-safe runtime pinning.
-- `27cbd43` — owner-scoped lazy project activation, asset refresh integration, bounded health aggregation, lease expiry, and restart-safe transient state.
+Repository baseline: `a827ae8` (`docs(plans): record domain identity closure commit`)
 
 Source roadmap:
 
@@ -19,511 +10,219 @@ Source roadmap:
 
 Long-term requirements:
 
-- `plans/000-long-term-specification.md` — durable multi-project catalog, project-scoped daemon authority, lazy activation, project-relative frontend operations, and TUI catalog consumption.
-- `plans/001-terminology-and-domain-model.md` — Project, Repository, Workspace, ProjectLocator, health, discovery observation, activation, and compatibility projection.
+- `plans/000-long-term-specification.md#10-project-catalog-and-discovery`
+- `plans/001-terminology-and-domain-model.md`
 - `plans/002-long-term-roadmap.md#phase-3--project-catalog-and-lazy-discovery`
-
-Applicable closure evidence:
-
-- `plans/closure/domain-identity/002-status.md`
-- `plans/closure/domain-identity/003-corrective-status.md`
-- `plans/closure/runtime-assets/003-status.md`
-- `plans/closure/runtime-assets/004-status.md`
-- `plans/closure/project-catalog/001-status.md`
-- `plans/closure/project-catalog/002-status.md`
-- `plans/closure/project-catalog/003-status.md`
 
 Applicable ADRs:
 
-- None. The canonical documents already select daemon-owned catalog authority and explicit project/workspace context. Stop for an ADR if implementation requires changing project/repository cardinality, exposing daemon-local paths as remote identity, or introducing a second activation/discovery authority.
+- None. Existing typed project/workspace context and catalog contracts are sufficient for this milestone.
 
 Primary class: capability
 
 ## 1. Objective
 
-Expose the complete closed project-catalog, discovery, activation, and health services through the native protocol and server adapters; remove the process-global `ServerState.project_dir` as project authority; preserve bounded compatibility behavior for older clients; and close Phase 3 with multi-project restart, isolation, scale, and transport evidence.
-
-The milestone succeeds when several projects can be listed, inspected, registered, discovered, activated, health-checked, archived/restored, and session-scoped through one daemon/server using stable `ProjectId + WorkspaceId` context. REST, WebSocket, in-process, socket, and stdio adapters must consume the same daemon authority, and no server route may infer a project identity from a default path.
-
-This milestone provides the stable protocol contract required by Multi-Project TUI Milestone 001. It does not implement TUI tabs, the `Space f` picker, remote SSH execution, team authorization, presence, or session projection reducers.
+Expose the durable project catalog and the existing lazy activation/health seam through the native protocol and server adapters, while removing single-project authority from `ServerState`. A daemon/server instance must be able to list and operate on multiple projects using explicit project/workspace scope, with bounded compatibility behavior for legacy locator calls.
 
 ## 2. Why this milestone is ready
 
-All hard dependencies are closed:
-
-- Project Catalog 001 provides durable catalog records and lifecycle.
-- Project Catalog 002 provides bounded discovery/reconciliation and operation status/cancellation.
-- Project Catalog 003 provides lazy activation, refresh composition, health aggregation, and transient lease ownership.
-- Domain Identity 003 provides canonical request context and additive compatibility DTOs.
-- Runtime Assets 003–004 provide refresh/generation and in-flight snapshot semantics required by activation.
-
-No downstream TUI or authorization implementation is needed to define and verify a frontend-neutral catalog protocol.
+- Project Catalog Milestones 001–003 are closed: durable catalog, bounded discovery/reconciliation, and lazy activation/health.
+- Runtime Assets Milestone 004 is closed and supplies the activation refresh contract.
+- `ProjectContextResolver` is the authority for explicit project/workspace/session scope and read-only directory compatibility lookup.
+- `ProjectCatalog`, `CoreDaemon::activate_project_workspace`, and `CoreDaemon::project_health` already provide the domain/runtime operations to adapt.
 
 ## 3. Current implementation evidence
 
-At the repository baseline:
-
-- `ProjectCatalog` exposes list/get/register/archive/restore, workspace/session/locator inspection, durable health, and probe-free restart hydration.
-- `DiscoveryCoordinator` exposes root validation/list/get, preview, refresh/start-refresh, refresh-all, cancellation, scan status, unresolved observations, and explicit revision-checked workspace association.
-- `CoreDaemon::activate_project_workspace` resolves canonical project/workspace binding, acquires a bounded owner-scoped activation lease, invokes the existing runtime-asset refresh authority, and returns transient health.
-- `CoreDaemon::project_health` is read-only and does not activate services.
-- `ProjectActivationRegistry` has bounded TTL/capacity and an eviction seam, but no native protocol consumer or recurring maintenance caller.
-- `crates/codegg-protocol` has canonical `ProjectContextDto`/`SessionBindingDto` and runtime-asset refresh DTOs, but no project catalog/discovery/activation DTO/request/response/event family.
-- `CoreRequest::SessionList` still accepts a required string `project_id`; session creation has additive optional canonical fields.
-- `src/server/routes/project.rs` returns stable catalog project IDs, but compatibility `get_project` and relative `create_project` still use `state.project_dir` as the default locator/root.
-- `ServerState` still stores `project_dir: String`.
-- Current HTTP project creation may create a directory beneath the server root before registering it; remote clients therefore still interact with daemon-local path semantics.
-- Multi-Project TUI 001 is blocked specifically on stable project list/get and project/workspace summaries over `CoreClient`.
+- `crates/codegg-protocol` has workspace and identity-aware session operations but no project catalog request/response/event family.
+- `src/core/daemon.rs` dispatches workspace operations and owns project activation/health methods, but does not expose catalog operations through `CoreRequest`.
+- `src/server/routes/project.rs` reads catalog data but still uses `ServerState.project_dir` for the default project and creation boundary.
+- `src/server/routes/session.rs`, `routes/workspace.rs`, `routes/file.rs`, and `ws.rs` retain single-project/default-locator assumptions.
+- `src/server/http.rs` constructs `ServerState` from process cwd and a legacy project-local store.
+- Existing core, catalog, activation, transport, and server tests provide focused seams for multi-project, restart, and compatibility coverage.
 
 ## 4. Invariants that must not regress
 
-- The daemon and catalog services remain the sole project authority; protocol/server/TUI layers are adapters only.
-- Project IDs are stable typed identities, never paths or locator strings.
-- Catalog list/get and health reads remain bounded and probe-free.
-- Discovery is explicit, bounded, cancellable, and never activates project services.
-- Activation is explicit and scoped to one validated `ProjectId + WorkspaceId` plus a server-derived client owner.
-- Runtime-asset refresh remains owned by the existing coordinator; the protocol does not create a second refresh path.
-- Archive is logical and non-destructive.
-- Remote locator variants remain inert; no SSH/linked-node locator is coerced into a local path.
-- Server compatibility defaults may select one existing canonical context but may not create identity from path text.
-- Protocol payloads are bounded, redacted, and contain no credentials or unrestricted daemon-local paths.
-- Catalog events include explicit project scope and are not emitted as unfilterable global detail streams.
+- A directory/path is a compatibility locator only; it never becomes a project or workspace identity.
+- Project IDs and workspace IDs are validated and resolved through typed catalog/context services before storage or filesystem work.
+- Catalog listing and health are bounded and probe-free; listing does not activate services or start external processes.
+- Archive is logical and non-destructive; sessions, workspaces, and catalog history remain durable.
+- Remote/placeholder locators remain data and are never executed by the local server.
+- Server requests cannot silently fall back to another project, workspace, credential, or process-global cwd.
+- Legacy clients remain wire-compatible where safe and receive bounded, actionable errors where explicit scope is required.
 
 ## 5. Scope
 
 ### In scope
 
-- Project/catalog/discovery/activation/health DTOs and capability negotiation.
-- Native `CoreRequest`, `CoreResponse`, and bounded `CoreEvent` variants.
-- Daemon handlers using existing catalog/discovery/activation authorities.
-- Client ownership and lifecycle for serializable activation handles.
-- REST and WebSocket project route migration.
-- Removal of authoritative `ServerState.project_dir`.
-- Explicit compatibility-default resolution for old routes/clients.
-- Multi-project list/get/register/archive/restore/workspace/session/locator/health operations.
-- Discovery root inspection, scan start/status/cancel, unresolved observation inspection, and explicit association.
-- Lazy activation/release/health and maintenance eviction integration.
-- Pagination/limits, stale revision outcomes, event scoping, restart, scale, and multi-client isolation tests.
-- Complete Phase 3 closure evidence and documentation.
+- Bounded project DTOs, catalog request/response variants, catalog lifecycle/health events, and protocol capability negotiation.
+- Core daemon dispatch for list/get/register/archive/restore, project health, and the existing activation seam as appropriate for transport.
+- REST and JSON-RPC/WebSocket adapter migration to explicit project/workspace scope.
+- Removal of `ServerState.project_dir` as authoritative identity; any compatibility locator must be request-scoped and resolved through `ProjectContextResolver`.
+- Multi-project, scope-isolation, restart/hydration, bounded-list, capability, and legacy-compatibility tests.
+- Architecture and operator documentation plus planning/closure artifacts.
 
 ### Explicitly out of scope
 
-- Multi-project TUI state, picker, tabs, or navigation.
-- Creating or editing arbitrary daemon-local directories from a remote client.
-- Remote SSH or linked-node discovery/execution.
-- Team membership/ACL enforcement; retain authorization seams and safe filtering defaults.
-- Presence, chat, observer mode, ACP, web-specific project models, or frontend-local catalog authority.
-- Starting LSP/indexer/build/provider services during list/get/discovery.
-- Changing project/repository cardinality or merging ambiguous repositories.
-- Removing historical session compatibility fields owned by Domain Identity 004.
+- Multi-project TUI tab state or session projection reducers.
+- SSH/linked-node execution, remote scanning, authorization, team membership, or project hiding policy.
+- New discovery/reconciliation semantics or a second asset refresh/activation coordinator.
+- Worktree lifecycle redesign, provider ownership, or unrelated server endpoint rewrites.
 
-## 6. Required protocol surface
+## 6. Required production changes
 
-### Capability negotiation
+### Core/domain
 
-Add a stable capability identifier such as `project_catalog.v1` and explicit feature flags for:
+- Use existing `ProjectCatalog` and `ProjectContextResolver` APIs as the sole authority for project operations and scope.
+- Add bounded conversions for catalog records, workspace summaries, and durable health records.
+- Keep activation/health aggregation path-free and do not persist transient activation health as durable catalog health.
 
-- catalog list/get/lifecycle;
-- workspace/session/locator summaries;
-- discovery inspection and refresh;
-- activation and health;
-- compatibility-default availability.
+### Protocol and DTOs
 
-Older clients that ignore unknown capabilities/variants remain decodable. Do not bump the protocol version unless current envelope compatibility cannot represent the additive surface.
+- Add project summary/workspace/health DTOs with bounded list fields and stable string-backed IDs.
+- Add request/response variants for project list/get/register/archive/restore and scoped health.
+- Add project lifecycle/health events with explicit project/workspace IDs.
+- Add client/server capability flags with serde defaults so older clients can negotiate/fallback.
 
-### Bounded DTOs
+### Runtime and concurrency
 
-Add frontend-neutral DTOs equivalent to:
+- Preserve daemon-owned activation lease, refresh, expiry, and eviction authority.
+- Do not hold unbounded project lists or perform synchronous probes in protocol/server list paths.
+- Ensure concurrent requests for separate projects remain isolated and same-scope operations retain existing coalescing behavior.
 
-- `ProjectSummaryDto` — project ID, display name, lifecycle, bounded tags/description summary, primary repository summary, last-opened/updated timestamps, workspace/session counts, locator/health summary, and revision where applicable;
-- `ProjectDetailDto` — bounded project metadata, repository relations, locator summaries, workspace summaries, durable health, and diagnostics without eager session bodies;
-- `ProjectWorkspaceSummaryDto` — project/workspace IDs, display label, lifecycle/binding state, locator summary, activity/activation summary, and asset generation summary;
-- `ProjectLocatorDto` — typed local/SSH/linked-node kind, display-safe summary, availability/support status, and revision; no remote secret/user credential material or raw local path for remote clients;
-- `ProjectHealthDto`/`HealthLayerDto` — catalog/workspace/asset/service states, bounded codes/messages, timestamps, and stale state;
-- `ProjectActivationDto` — lease ID, project/workspace IDs, owner/client identity class, acquired/expiry timestamps, refresh outcome/generation, health, and binding revision;
-- `DiscoveryRootSummaryDto` — root ID/name, mode, enabled/revision, display-safe locator summary, limits summary, and last status;
-- `DiscoveryScanStatusDto`/`DiscoveryRefreshResultDto` — operation/root/generation/status, bounded counts, duration, truncation/cancellation flags, and diagnostics;
-- `UnresolvedDiscoveryObservationDto` — bounded observation ID/root/generation/status/outcome/diagnostic and display-safe locator summary;
-- typed stale/conflict/not-found/unsupported outcomes rather than error-string parsing.
+### Server and compatibility
 
-Set explicit maximum list sizes, diagnostics, text lengths, locator summaries, and serialized payload sizes. Large session lists/messages remain behind existing session APIs.
+- Remove `ServerState.project_dir` and replace default-root assumptions with explicit scope or a clearly named, non-authoritative server resource needed only for safe compatibility/file operations.
+- Migrate project/workspace/session routes and JSON-RPC methods to use explicit IDs; locator-only requests resolve uniquely or fail with a typed context-required response.
+- Make file/workspace mutation boundaries explicit and reject ambiguous or out-of-scope paths rather than using cwd.
+- Keep legacy endpoints available only where their semantics remain unambiguous and document the compatibility behavior.
 
-### Native requests and responses
+### Documentation and static guards
 
-Add requests/responses equivalent to:
+- Update `architecture/project_catalog.md`, `architecture/protocol.md`, and `architecture/server.md` with ownership, DTO, capability, route, compatibility, restart, and bound semantics.
+- Run project-catalog, daemon-cwd, core-boundary, execution-ownership, and relevant Git/security guards.
 
-Catalog:
+## 7. Ordered work packages
 
-- project list with `include_archived`, limit, and cursor/offset contract;
-- project get by stable ID;
-- register existing local workspace by `WorkspaceId` plus bounded metadata;
-- archive/restore with expected revision where the store supports it;
-- list project workspaces;
-- list project session summaries/counts;
-- list project locators;
-- get durable/transient health.
+### Work package A — Protocol catalog surface
 
-Discovery:
+Intent: establish the stable wire contract before adapters depend on it.
 
-- list/get configured roots;
-- validate/preview an explicitly configured root;
-- start refresh for one root or all enabled roots;
-- get scan status;
-- cancel scan;
-- list unresolved observations with optional root filter;
-- explicitly associate an existing workspace to a project using expected binding revision.
+Required changes: add DTOs, request/response/event variants, capability flags, serde defaults, and protocol round-trip/legacy fixture tests.
 
-Activation:
+Acceptance evidence: old capability fixtures deserialize; new project messages round-trip; IDs and list sizes are bounded at the protocol boundary.
 
-- activate project/workspace;
-- release activation lease;
-- get activation/health status;
-- optional lease renewal only if required by client lifetime semantics;
-- maintenance/eviction remains daemon-owned, not an unrestricted client operation.
+### Work package B — Daemon catalog dispatch
 
-All handlers must route through existing `ProjectCatalog`, `DiscoveryCoordinator`, `ProjectContextResolver`, `ProjectActivationRegistry`, and runtime-asset refresh services. No handler may directly recreate their SQL or filesystem behavior unless a narrowly reviewed adapter is required.
+Intent: expose existing core-owned catalog operations without duplicating storage logic.
 
-### Events
+Required changes: add conversion helpers and `CoreDaemon::handle_request` branches for list/get/register/archive/restore/health; map typed failures to stable error codes; emit lifecycle/health events where state changes.
 
-Add bounded events for meaningful state transitions, not every read:
+Acceptance evidence: direct daemon tests cover two projects, archive/restore preservation, health scope, malformed IDs, and bounded list behavior.
 
-- project registered/updated/archived/restored;
-- discovery scan started/completed/cancelled/failed;
-- project locator or reconciliation state changed;
-- activation acquired/released/expired;
-- project health changed materially;
-- asset generation changed through the existing asset refresh event, referenced rather than duplicated.
+### Work package C — Server scope migration
 
-Each event carries stable project/root/workspace scope, correlation/operation ID, bounded summary, and visibility classification/filter seam. Do not broadcast raw discovery candidates, absolute paths, or unbounded diagnostics.
+Intent: make HTTP/WS adapters project-aware and remove process-global project authority.
 
-## 7. Daemon ownership and activation lifetime
+Required changes: refactor `ServerState` construction and project/session/workspace/file/WS adapters; route explicit IDs through the daemon/core services; retain only documented locator compatibility with unique resolution and actionable failures.
 
-### Core daemon handlers
+Acceptance evidence: adapter tests demonstrate two projects can be listed/operated by one server, cross-project session access is rejected, and legacy locator calls neither infer nor switch project identity.
 
-Add daemon methods that:
+### Work package D — Restart, scale, and operational closure
 
-- parse and validate typed IDs at the boundary;
-- call the closed service APIs;
-- map typed errors to stable protocol outcomes;
-- enforce list/report bounds;
-- publish scoped events after committed changes;
-- never activate on list/get/health/discovery inspection;
-- preserve cancellation and coalescing semantics from the underlying coordinator.
+Intent: prove the migration at the boundaries that motivated the milestone.
 
-### Serializable activation facade
+Required changes: add restart/hydration and bounded multi-project integration coverage; update architecture/operator docs; run focused and broad verification; record all deviations and residual findings.
 
-`ProjectActivationLease` is intentionally non-serializable. Add a daemon-owned facade that maps one opaque protocol lease ID to the in-memory lease and derives owner identity from the transport/client context rather than trusting a caller-supplied arbitrary owner string.
+Acceptance evidence: restart exposes durable catalog metadata without activation; a bounded list remains bounded; event/request scope is explicit; all required guards pass or are recorded with justified pre-existing findings.
 
-Required behavior:
+## 8. Failure, cancellation, restart, and contention semantics
 
-- one client/owner may idempotently activate the same project/workspace;
-- different clients may hold separate protocol handles while sharing one workspace bundle;
-- release, disconnect, expiry, and daemon shutdown drop the underlying lease exactly once;
-- stale/unknown lease IDs return typed outcomes;
-- a client cannot release another client's lease;
-- capacity/TTL remain bounded by the existing activation policy;
-- activation failure with no usable asset generation leaves no retained lease;
-- restart has zero active leases and requires explicit reactivation.
+- Invalid or archived project/workspace IDs return stable typed errors and never fall back to a different scope.
+- Duplicate registration is idempotent according to existing catalog/workspace binding semantics.
+- Archive/restore operations are durable and safe to retry; concurrent updates preserve catalog transaction/retry behavior.
+- Listing and health remain read-only and do not acquire activation leases. Activation continues to use the existing bounded lease/refresh seam.
+- Restart hydrates durable catalog/workspace/health metadata without eagerly recreating transient service leases.
+- WebSocket/event consumers receive only events allowed by their negotiated/requested scope; lag or unsupported capabilities result in bounded resync/actionable errors.
 
-Integrate `evict_project_activation_leases` into an existing daemon maintenance loop or a new bounded interval task with clear shutdown ownership. Do not create a free-running untracked task.
+## 9. Compatibility and migration
 
-## 8. Server and transport migration
+- New project-scoped operations are additive and capability-gated.
+- Existing workspace/session wire fields remain available during migration; directory fields remain locators and are never used as durable IDs.
+- Legacy server routes either resolve a unique existing context or return `project_context_required`/`ambiguous_project_context`; they do not use a process-global project as authority.
+- No destructive schema migration is required; the existing catalog and binding tables remain the durable source.
 
-### Remove `ServerState.project_dir` authority
+## 10. Required tests
 
-Replace `ServerState.project_dir: String` with daemon/catalog services plus, if compatibility requires it, an explicitly typed optional default context such as:
+### Focused unit tests
 
-- `default_project_id`;
-- `default_workspace_id`;
-- display-only default locator summary.
+- protocol DTO/request/response/event serialization and legacy capability defaults;
+- daemon catalog conversions, lifecycle operations, errors, limits, and event payloads.
 
-At server startup, any legacy path argument must resolve once through `ProjectContextResolver` to one existing canonical context. Missing or ambiguous resolution produces an actionable startup/route diagnostic; it must not synthesize a project ID.
+### Integration tests
 
-No route may use a raw path as a cache key, project ID, subscription scope, or ownership boundary.
+- one daemon/server listing and operating on multiple projects;
+- project/workspace/session scope isolation and archive/restore behavior;
+- REST/JSON-RPC/WebSocket project operations and capability negotiation.
 
-### REST routes
+### Restart and recovery tests
 
-Provide explicit canonical routes equivalent to:
+- catalog and health hydration after daemon restart without activation/service leases.
 
-- `GET /projects`;
-- `GET /projects/{project_id}`;
-- `POST /projects/register` with existing `workspace_id` and bounded metadata;
-- `POST /projects/{project_id}/archive|restore`;
-- `GET /projects/{project_id}/workspaces|sessions|locators|health`;
-- discovery list/scan/status/cancel/unresolved routes;
-- activation/release routes using canonical IDs.
+### Contention and cancellation tests
 
-The old no-ID `get_project` compatibility route may project the typed default context when one exists. Otherwise return `project_context_required`. It must not derive the ID from `project_dir`.
+- concurrent same-project operations, independent project isolation, bounded list limits, and event replay/filter scope.
 
-Replace or deprecate arbitrary path-creating `POST /projects` behavior. A remote request must not create directories on the daemon filesystem. Local-only explicit workspace registration may remain behind a separately named and permission-ready operation that validates an already registered workspace or uses a local administrative boundary.
+### Security and negative tests
 
-### WebSocket/socket/stdio/in-process adapters
+- malformed/oversized IDs, ambiguous locator, path traversal, remote locator non-execution, and cross-project access denial.
 
-- Route all native project requests through `CoreDaemon`.
-- Apply the same bounds and typed outcomes across transports.
-- Derive activation owner from the connection/client identity available to the transport.
-- On disconnect, release client-owned activation handles.
-- Apply project/root subscription filters to scoped events.
-- Preserve existing remote secret restrictions and avoid adding path-bearing privileged payloads.
-- Add `CoreClient` methods consumed by Multi-Project TUI 001; no TUI-specific protocol variants.
+### Migration and compatibility tests
 
-## 9. Compatibility requirements
+- older capability fixtures, legacy workspace/session requests, and actionable unsupported/explicit-scope errors.
 
-- Existing identity-aware and legacy session operations remain available.
-- Old REST clients using one default project may receive a projection only when startup resolved one canonical default context.
-- Legacy path arguments are locators used for unique existing-context lookup, never registration or authority.
-- Unknown new request/response/event variants retain current forward-compatibility behavior.
-- Additive DTO fields use serde defaults where old fixtures require them.
-- Explicitly document deprecated endpoints and their removal prerequisites; Domain Identity 004 owns the broader compatibility inventory.
-- Do not silently choose the first catalog project as a default.
-
-## 10. Performance and resource requirements
-
-- Project lists are bounded and paginated/limited; no unbounded `Vec` from the full catalog crosses the protocol.
-- List/get/health operations do not perform Git probes, scans, activation, LSP/index/build/provider initialization, or asset body loading.
-- Discovery uses existing depth/entry/candidate/time/output/stat/Git concurrency limits.
-- Concurrent refreshes for one root coalesce; global scan concurrency remains bounded.
-- Activation capacity/TTL remain bounded; disconnect cleanup and periodic eviction prevent leaked leases.
-- Events carry summaries only and do not replay large discovery reports or project details.
-- Scale tests include hundreds/thousands of catalog records and verify bounded response/latency behavior without service activation.
-
-## 11. Security and authorization seams
-
-- Stable IDs are not authorization. Every protocol handler must have a clear future principal/project authorization insertion point.
-- Until team authorization lands, do not introduce broader visibility than existing local/trusted daemon clients already possess.
-- Project-scoped events include filter metadata and are not globally broadcast with sensitive detail.
-- Local paths are omitted or reduced to display-safe summaries for remote clients.
-- SSH/linked-node locators expose bounded inert summaries only; no credentials, private keys, host-key material, or secret references.
-- Discovery cannot escape configured canonical roots through symlinks/permissions.
-- Activation owners are server-derived; clients cannot impersonate another owner or release another lease.
-- Remote clients cannot create arbitrary local directories.
-- Diagnostics are bounded/redacted and never include provider secrets or untrusted full path dumps.
-
-## 12. Ordered work packages
-
-### Work package A — DTO and capability contract
-
-Intent: establish the frontend-neutral contract before changing server routes.
-
-Required changes:
-
-- define bounded catalog/detail/workspace/locator/health/discovery/activation DTOs;
-- define capability flags and typed error/outcome enums;
-- add serialization fixtures for old/new clients;
-- document limits and path-redaction rules.
-
-Acceptance evidence:
-
-- protocol crate tests cover all variants and bounds;
-- old fixtures decode with defaults;
-- no DTO contains credential material or unrestricted remote path authority.
-
-### Work package B — Daemon catalog and discovery handlers
-
-Intent: expose closed services without duplicating authority.
-
-Required changes:
-
-- add catalog list/get/register/archive/restore and inspection handlers;
-- add discovery root/scan/status/cancel/unresolved/association handlers;
-- map errors to typed outcomes;
-- publish bounded scoped events after committed mutations;
-- preserve probe-free reads and scan coalescing.
-
-Acceptance evidence:
-
-- fake/in-process client tests operate two projects independently;
-- listing does not activate services;
-- scan cancellation/status survives normal completion and restart metadata lookup;
-- stale association revision is rejected without mutation.
-
-### Work package C — Activation protocol facade and maintenance
-
-Intent: safely bridge non-serializable leases to client lifetimes.
-
-Required changes:
-
-- opaque server-owned activation-handle table;
-- client-derived ownership and disconnect cleanup;
-- activate/release/status/health handlers;
-- bounded recurring expiry eviction with explicit shutdown;
-- scoped activation/health events.
-
-Acceptance evidence:
-
-- same-client idempotency and cross-client isolation;
-- disconnect/expiry releases services exactly once;
-- restart creates no phantom activation;
-- activation refresh failure retains no lease;
-- capacity cannot be exceeded under contention.
-
-### Work package D — Server state and REST/WS migration
-
-Intent: remove the last process-global single-project authority.
-
-Required changes:
-
-- remove `ServerState.project_dir`;
-- resolve optional typed compatibility default at startup;
-- add canonical project/discovery/activation REST routes;
-- deprecate arbitrary path-creating project route;
-- route WebSocket/socket/stdio/inproc through the same daemon handlers;
-- add project/root event filtering.
-
-Acceptance evidence:
-
-- no server authority derives project ID from path;
-- two projects are operated through one server concurrently;
-- compatibility route projects one typed default or fails actionably;
-- remote arbitrary directory creation is impossible;
-- disconnect releases activation handles.
-
-### Work package E — CoreClient contract for downstream TUI
-
-Intent: unlock Multi-Project TUI without implementing it here.
-
-Required changes:
-
-- add transport-neutral `CoreClient` methods for bounded project list/get/workspaces/health and activation/release;
-- expose capability/unsupported outcomes;
-- ensure stale completions can carry request/project/workspace IDs;
-- provide fake-client fixtures for downstream tests.
-
-Acceptance evidence:
-
-- all transports implement the same interface;
-- fake client can return multiple same-named projects with distinct IDs;
-- list/get does not load sessions/messages for inactive projects;
-- no TUI state or renderer change is required in this milestone.
-
-### Work package F — Scale, restart, compatibility, and closure
-
-Intent: close Phase 3 with realistic evidence.
-
-Required changes:
-
-- multi-project server/socket integration tests;
-- large-catalog bounded list tests;
-- discovery operation restart/status tests;
-- activation disconnect/expiry/shutdown tests;
-- old/new protocol and REST compatibility fixtures;
-- architecture updates and final closure record.
-
-Acceptance evidence:
-
-- all Phase 3 exit criteria map to passing evidence;
-- no critical/high unresolved catalog correctness issue remains;
-- Multi-Project TUI 001 dependency is explicitly marked unblocked only after closure.
-
-## 13. Failure, recovery, and concurrency requirements
-
-- Catalog mutations are transactional and emit events only after commit.
-- Discovery cancellation preserves durable prior catalog records and records operation status.
-- Unavailable roots update observations/health; they do not archive/delete projects automatically.
-- Concurrent scan requests for one root coalesce; different roots obey global caps.
-- Concurrent archive/restore/register/association operations use revision/uniqueness behavior and return typed conflicts.
-- Activation handle release is idempotent; disconnect, explicit release, expiry, and shutdown races cannot double-release or leak the underlying lease.
-- Daemon restart hydrates catalog/discovery metadata without scans or activation.
-- Server startup with an invalid legacy default fails clearly or starts without a default; it never creates a path-keyed project.
-
-## 14. Documentation
-
-Update at least:
-
-- `architecture/project_catalog.md`;
-- `architecture/protocol.md`;
-- `architecture/server.md`;
-- `architecture/core.md`;
-- `architecture/workspace.md`;
-- `architecture/workspace_services.md`;
-- `architecture/session.md`;
-- `architecture/tui.md` with the downstream contract only;
-- REST/WebSocket API documentation;
-- capability and compatibility/deprecation documentation.
-
-Document protocol bounds, activation ownership/lifetime, event scoping, optional typed default behavior, disabled path-creation behavior, discovery operation lifecycle, restart semantics, and downstream TUI expectations.
-
-## 15. Verification commands
-
-The implementation agent must run focused commands equivalent to:
+## 11. Required verification commands
 
 ```bash
-rtk cargo fmt --all -- --check
+rtk cargo fmt -- --check
 rtk cargo check --workspace --all-targets --all-features
 rtk cargo test -p codegg-protocol
 rtk cargo test -p codegg-core project_catalog
-rtk cargo test -p codegg-core project_discovery
-rtk cargo test -p codegg-core project_discovery_service
-rtk cargo test --lib core::project_activation
-rtk cargo test --lib core::daemon::tests
-rtk cargo test --test project_catalog
-rtk cargo test --test project_discovery
-rtk cargo test --test project_activation
-rtk cargo test --test <new_project_protocol_target>
-rtk cargo test --test <new_multi_project_server_target>
-rtk cargo test --lib core::transport::daemon_socket
-rtk cargo test --lib remote_core_loader_tests
-rtk python3 scripts/check_project_catalog_invariants.py
-rtk python3 scripts/check_identity_path_usage.py
+rtk cargo test -p codegg --lib core::daemon
+rtk cargo test --features server --lib server
+rtk cargo test --workspace --all-features -- --test-threads=14
+rtk scripts/check-core-boundary.sh
 rtk python3 scripts/check_daemon_cwd_usage.py
+rtk python3 scripts/check_project_catalog_invariants.py
 rtk python3 scripts/check_execution_ownership.py
-rtk python3 scripts/check_discovery_invariants.py
-rtk bash scripts/check-core-boundary.sh
+rtk python3 scripts/check_git_forbidden_patterns.py
 rtk git diff --check
 ```
 
-Run the capped workspace suite using the repository's documented test resource policy. Any environment-restricted socket binding failure must be recorded separately and supplemented with deterministic in-process/socket tests where possible; it does not excuse missing multi-project transport evidence.
+## 12. Documentation updates
 
-## 16. Stop conditions
+- `architecture/project_catalog.md`
+- `architecture/protocol.md`
+- `architecture/server.md`
+- `plans/subsystems/project-catalog-roadmap.md`
+- `plans/registry.md`
+- `plans/closure/project-catalog/004-status.md`
 
-Stop and record a corrective dependency or ADR if:
+## 13. Acceptance criteria
 
-- a protocol/server handler must derive project identity from a path;
-- catalog/discovery/activation logic would be duplicated outside existing authorities;
-- remote clients require arbitrary daemon-local path creation;
-- authorization must be fully implemented to avoid a new data exposure;
-- project/repository cardinality must change;
-- activation ownership cannot be bound to transport/client identity safely;
-- event filtering cannot prevent unscoped sensitive project broadcasts;
-- list/get requires eager activation or repository probing;
-- a protocol-breaking removal is required rather than an additive capability.
+- A single daemon/server can list and operate on several durable projects without a process-global project identity.
+- Project operations and health cross the native protocol with bounded DTOs, explicit scope, capability negotiation, and lifecycle/health events.
+- REST/WS adapters use explicit project/workspace context; compatibility locator calls are unique-resolution-only and actionable on failure.
+- Archive/restore, restart hydration, scope isolation, event filtering, and bounded list behavior are evidenced by tests.
+- Required architecture, operator, planning, and closure records are complete, and no high/critical finding remains.
 
-## 17. Acceptance criteria
+## 14. Stop conditions
 
-All criteria are required:
+Stop and report if implementation requires a new ownership boundary for discovery, authorization, remote execution, the TUI, or asset refresh; if a safe migration requires a schema rewrite; or if current code contradicts the typed project/workspace invariants. Do not silently widen this milestone.
 
-1. Native protocol capabilities and bounded DTOs cover catalog list/get/lifecycle, project workspaces/locators/health, discovery status/control, and activation/release.
-2. Every handler delegates to the existing catalog, discovery, context, activation, and asset-refresh authorities; no parallel authority is introduced.
-3. `ServerState.project_dir` is removed as project authority.
-4. Legacy default-project behavior resolves one typed canonical context or fails with an actionable diagnostic; it never synthesizes identity from a path or selects the first project silently.
-5. Several projects can be listed and operated concurrently through one daemon/server with stable IDs and no cross-project state leakage.
-6. Catalog list/get/health remain bounded and probe-free and do not retain activation/service leases.
-7. Discovery scans remain bounded, cancellable, coalesced, restart-inspectable, and non-destructive when roots are unavailable.
-8. Protocol activation handles are owner-scoped, capacity/TTL bounded, released on explicit release/disconnect/expiry/shutdown, and restart-empty.
-9. Remote clients cannot create arbitrary local directories or coerce SSH/linked-node locators into local execution.
-10. Project events are bounded, explicitly scoped, and filterable; no raw candidates, secrets, or unrestricted paths are broadcast.
-11. All CoreClient transports expose the same project list/get/workspace/health/activation contract required by Multi-Project TUI 001.
-12. Old protocol/REST compatibility fixtures remain decodable or fail actionably through documented deprecation behavior.
-13. Multi-project restart, scale, concurrency, cancellation, and transport tests pass under the repository's bounded test policy.
-14. All Phase 3 exit criteria are evidenced in the closure record with no critical/high unresolved catalog correctness issue.
+## 15. Closure evidence required
 
-## 18. Required closure evidence
+The closure record must include exact implementation commits, a requirement-to-evidence matrix, commands and outcomes, migration/compatibility review, invariant and failure/restart/contention/security review, updated architecture/operations docs, known limitations, unresolved findings by severity, roadmap disposition, registry updates, and explicit status decisions for Multi-Project TUI 001 and Session Projections 001.
 
-Create `plans/closure/project-catalog/004-status.md` containing:
+## 16. Handoff notes
 
-- executive closure finding;
-- Phase 3 requirement-to-evidence matrix;
-- protocol capability/DTO/request/response/event inventory;
-- daemon ownership review;
-- server-state and route migration evidence;
-- multi-project transport/isolation results;
-- catalog list probe-free and scale evidence;
-- discovery cancellation/restart/reconciliation evidence;
-- activation ownership/disconnect/expiry/shutdown evidence;
-- compatibility-default and deprecated endpoint behavior;
-- security/path/locator/event-filtering review;
-- exact verification commands and results;
-- unresolved findings with severity and owner;
-- downstream dependency disposition.
-
-After accepted closure, mark the Project Catalog roadmap closed and mark Multi-Project TUI Milestone 001 dependency-ready. Session Projections 001 remains blocked until Multi-Project TUI 001 closes.
+This handoff was authored because the repository baseline had closed Milestones 001–003 but no registered M004 implementation plan. Keep changes scoped to the project-catalog protocol/server boundary, preserve unrelated user changes, and use capped workspace verification because the suite is large.

@@ -6,21 +6,25 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use std::path::{Path as StdPath, PathBuf};
 
+use super::super::scope::{resolve_context, ScopeQuery};
 use super::super::state::ServerState;
 use crate::error::{AppError, AxumAppError, StorageError};
 use crate::tool::util::check_path_for_symlinks;
 
 pub fn sanitize_path(root: &str, requested: &str) -> Result<PathBuf, AppError> {
     let root = StdPath::new(root);
+    if !root.is_absolute() {
+        return Err(AppError::Storage(StorageError::NotFound(
+            "root path must be absolute; provide an explicit workspace context".into(),
+        )));
+    }
+    sanitize_path_from_root(root, requested)
+}
+
+pub fn sanitize_path_from_root(root: &StdPath, requested: &str) -> Result<PathBuf, AppError> {
     let joined = root.join(requested);
 
-    let mut root_clone = root.to_path_buf();
-    if root_clone.is_relative() {
-        root_clone = std::env::current_dir()
-            .map_err(AppError::Io)?
-            .join(root_clone);
-    }
-    let root_canonicalized = root_clone
+    let root_canonicalized = root
         .canonicalize()
         .map_err(|_| AppError::Storage(StorageError::NotFound("root path not found".into())))?;
 
@@ -65,6 +69,9 @@ pub fn sanitize_path(root: &str, requested: &str) -> Result<PathBuf, AppError> {
 #[derive(Deserialize)]
 pub struct ReadFileQuery {
     pub path: String,
+    pub project_id: Option<String>,
+    pub workspace_id: Option<String>,
+    pub directory: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -92,18 +99,42 @@ pub struct FileListResponse {
 pub struct WriteFileRequest {
     pub path: String,
     pub content: String,
+    pub project_id: Option<String>,
+    pub workspace_id: Option<String>,
+    pub directory: Option<String>,
 }
 
 #[derive(Deserialize)]
 pub struct DeleteFileRequest {
     pub path: String,
+    pub project_id: Option<String>,
+    pub workspace_id: Option<String>,
+    pub directory: Option<String>,
+}
+
+fn scope(
+    project_id: Option<String>,
+    workspace_id: Option<String>,
+    directory: Option<String>,
+) -> ScopeQuery {
+    ScopeQuery {
+        project_id,
+        workspace_id,
+        directory,
+    }
 }
 
 pub async fn read_file(
     State(state): State<ServerState>,
     Query(query): Query<ReadFileQuery>,
 ) -> Result<Json<FileReadResponse>, AxumAppError> {
-    let full = sanitize_path(&state.project_dir, &query.path)?;
+    let context = resolve_context(
+        &state.pool,
+        &scope(query.project_id, query.workspace_id, query.directory),
+        None,
+    )
+    .await?;
+    let full = sanitize_path_from_root(&context.workspace_root, &query.path)?;
     let content = tokio::fs::read_to_string(&full)
         .await
         .map_err(AppError::Io)?;
@@ -119,7 +150,13 @@ pub async fn list_files(
     State(state): State<ServerState>,
     Query(query): Query<ReadFileQuery>,
 ) -> Result<Json<FileListResponse>, AxumAppError> {
-    let dir = sanitize_path(&state.project_dir, &query.path)?;
+    let context = resolve_context(
+        &state.pool,
+        &scope(query.project_id, query.workspace_id, query.directory),
+        None,
+    )
+    .await?;
+    let dir = sanitize_path_from_root(&context.workspace_root, &query.path)?;
     let mut entries = Vec::new();
     let mut rd = tokio::fs::read_dir(&dir).await.map_err(AppError::Io)?;
     while let Ok(Some(entry)) = rd.next_entry().await {
@@ -141,7 +178,13 @@ pub async fn write_file(
     State(state): State<ServerState>,
     Json(req): Json<WriteFileRequest>,
 ) -> Result<Json<FileInfo>, AxumAppError> {
-    let full = sanitize_path(&state.project_dir, &req.path)?;
+    let context = resolve_context(
+        &state.pool,
+        &scope(req.project_id, req.workspace_id, req.directory),
+        None,
+    )
+    .await?;
+    let full = sanitize_path_from_root(&context.workspace_root, &req.path)?;
     if let Some(parent) = full.parent() {
         tokio::fs::create_dir_all(parent)
             .await
@@ -168,7 +211,13 @@ pub async fn delete_file(
     State(state): State<ServerState>,
     Json(req): Json<DeleteFileRequest>,
 ) -> Result<StatusCode, AxumAppError> {
-    let full = sanitize_path(&state.project_dir, &req.path)?;
+    let context = resolve_context(
+        &state.pool,
+        &scope(req.project_id, req.workspace_id, req.directory),
+        None,
+    )
+    .await?;
+    let full = sanitize_path_from_root(&context.workspace_root, &req.path)?;
     tokio::fs::remove_file(&full).await.map_err(AppError::Io)?;
     Ok(StatusCode::NO_CONTENT)
 }

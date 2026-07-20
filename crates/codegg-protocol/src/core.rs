@@ -2,8 +2,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::dto::{
     CancelResultDto, ConfigDiagnosticDto, JobAttemptDto, JobQueryDto, JobRecordDto, JobSubmitDto,
-    JobSummaryDto, RecoveryReportDto, RunQueryDto, RunRecordDto, RunSummaryDto, ScheduleCreateDto,
-    ScheduleRecordDto, ScheduleSummaryDto, SessionBindingDto, WorkspaceServiceHealthDto,
+    JobSummaryDto, ProjectDetailsDto, ProjectHealthDto, ProjectRegisterRequestDto,
+    ProjectSummaryDto, RecoveryReportDto, RunQueryDto, RunRecordDto, RunSummaryDto,
+    ScheduleCreateDto, ScheduleRecordDto, ScheduleSummaryDto, SessionBindingDto,
+    WorkspaceServiceHealthDto,
 };
 use crate::provider::{
     ConnectionDetailDto, ConnectionProvisioningStatusDto, ConnectionRefreshStatusDto,
@@ -23,6 +25,7 @@ use crate::provider::{
 /// forward-compatible.
 pub const PROTOCOL_VERSION: u32 = 2;
 pub const ASSET_REFRESH_CAPABILITY: &str = "runtime_assets.refresh.v1";
+pub const PROJECT_CATALOG_CAPABILITY: &str = "project_catalog.v1";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RequestEnvelope<T> {
@@ -234,6 +237,32 @@ pub enum CoreResponse {
         previous_revision: u64,
         new_revision: u64,
         diagnostics: Vec<ConfigDiagnosticDto>,
+    },
+    /// Project Catalog M004: bounded project catalog list.
+    ProjectList {
+        projects: Vec<ProjectSummaryDto>,
+        truncated: bool,
+    },
+    /// Project Catalog M004: one project and bounded relation summaries.
+    ProjectGet {
+        project: ProjectDetailsDto,
+    },
+    ProjectRegistered {
+        project: ProjectSummaryDto,
+    },
+    ProjectArchived {
+        project: ProjectSummaryDto,
+    },
+    ProjectRestored {
+        project: ProjectSummaryDto,
+    },
+    ProjectHealth {
+        health: ProjectHealthDto,
+    },
+    ProjectCatalogCapabilities {
+        supported: bool,
+        max_list_items: usize,
+        max_workspaces_per_project: usize,
     },
     /// Phase 3: run summaries returned from `RunList`.
     RunList {
@@ -669,6 +698,30 @@ pub enum CoreRequest {
     WorkspaceConfigReload {
         workspace_id: String,
     },
+    /// Project Catalog M004: list durable logical projects.
+    ProjectList {
+        #[serde(default)]
+        include_archived: bool,
+        #[serde(default)]
+        limit: usize,
+    },
+    ProjectGet {
+        project_id: String,
+    },
+    ProjectRegister {
+        request: ProjectRegisterRequestDto,
+    },
+    ProjectArchive {
+        project_id: String,
+    },
+    ProjectRestore {
+        project_id: String,
+    },
+    ProjectHealth {
+        project_id: String,
+        workspace_id: String,
+    },
+    ProjectCatalogCapabilities,
     /// Phase 3: list runs visible from the workspace's RunStore. The
     /// run query parameters mirror `RunStore::list_runs`.
     RunList {
@@ -831,6 +884,7 @@ pub enum CoreRequest {
     JobRecoveryReport,
 }
 
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum CoreEvent {
@@ -855,6 +909,23 @@ pub enum CoreEvent {
     },
     SnapshotWorkspace {
         project_dir: String,
+    },
+    ProjectRegistered {
+        project_id: String,
+        project: ProjectSummaryDto,
+    },
+    ProjectArchived {
+        project_id: String,
+        project: ProjectSummaryDto,
+    },
+    ProjectRestored {
+        project_id: String,
+        project: ProjectSummaryDto,
+    },
+    ProjectHealthChanged {
+        project_id: String,
+        workspace_id: String,
+        health: ProjectHealthDto,
     },
     SnapshotModels {
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -1618,5 +1689,56 @@ mod tests {
         assert!(!json.contains("body"));
         assert!(!json.contains("absolute_path"));
         assert!(json.len() < 1024);
+    }
+
+    #[test]
+    fn project_catalog_requests_responses_and_events_round_trip() {
+        let request: CoreRequest = serde_json::from_value(serde_json::json!({
+            "type": "project_list",
+            "include_archived": false,
+            "limit": 2
+        }))
+        .unwrap();
+        assert!(matches!(
+            request,
+            CoreRequest::ProjectList {
+                include_archived: false,
+                limit: 2
+            }
+        ));
+
+        let project = ProjectSummaryDto {
+            project_id: "project-1".into(),
+            display_name: "Project One".into(),
+            lifecycle: "active".into(),
+            description: None,
+            tags: vec![],
+            time_last_opened_at: None,
+            registration_source: "test".into(),
+            archived_at: None,
+            created_at: 1,
+            updated_at: 2,
+        };
+        let response = CoreResponse::ProjectList {
+            projects: vec![project.clone()],
+            truncated: false,
+        };
+        let decoded: CoreResponse =
+            serde_json::from_value(serde_json::to_value(response).unwrap()).unwrap();
+        assert!(matches!(
+            decoded,
+            CoreResponse::ProjectList {
+                projects,
+                truncated: false
+            } if projects == vec![project.clone()]
+        ));
+
+        let event = CoreEvent::ProjectRegistered {
+            project_id: "project-1".into(),
+            project,
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("project_registered"));
+        assert!(json.contains("project-1"));
     }
 }

@@ -121,6 +121,8 @@ Milestone 4: restoration, inactive resource bounds, badges, and closure
 
 ### Milestone 1 — Project-aware state and catalog client
 
+Status: ready; Project Catalog 004 and Runtime Assets refresh interfaces are closed.
+
 Class: infrastructure
 
 Objective: separate global daemon state, project-tab state, and session state while adding asynchronous catalog loading.
@@ -247,7 +249,7 @@ This roadmap closes when one TUI can use several project tabs and several sessio
 
 | Milestone | Status | Implementation plan | Closure record | Blockers |
 |---|---|---|---|---|
-| 1 | blocked | `plans/implementation/tui-project-sessions/001-project-aware-state.md` | — | Runtime asset refresh and project catalog protocol |
+| 1 | ready | `plans/implementation/tui-project-sessions/001-project-aware-state.md` | — | —; Project Catalog 004 and Runtime Assets refresh interfaces are closed |
 | 2 | not started | — | — | Milestone 1 closure |
 | 3 | not started | — | — | Milestones 1–2 closure |
 | 4 | not started | — | — | Milestones 2–3 closure |

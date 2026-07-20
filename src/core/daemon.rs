@@ -693,6 +693,152 @@ impl CoreDaemon {
         ))
     }
 
+    fn project_health_layer_dto(
+        layer: &project_activation::HealthLayer,
+    ) -> crate::protocol::dto::ProjectHealthLayerDto {
+        let state = match layer.state {
+            project_activation::HealthState::Available => "available",
+            project_activation::HealthState::Stale => "stale",
+            project_activation::HealthState::Unavailable => "unavailable",
+            project_activation::HealthState::Contended => "contended",
+            project_activation::HealthState::Error => "error",
+        };
+        crate::protocol::dto::ProjectHealthLayerDto {
+            state: state.to_string(),
+            code: layer.code.clone(),
+            message: layer.message.clone(),
+        }
+    }
+
+    fn project_health_dto(
+        snapshot: &ProjectHealthSnapshot,
+        durable: Option<crate::protocol::dto::ProjectHealthRecordDto>,
+    ) -> crate::protocol::dto::ProjectHealthDto {
+        crate::protocol::dto::ProjectHealthDto {
+            project_id: snapshot.project_id.clone(),
+            workspace_id: snapshot.workspace_id.clone(),
+            overall: match snapshot.overall {
+                project_activation::HealthState::Available => "available",
+                project_activation::HealthState::Stale => "stale",
+                project_activation::HealthState::Unavailable => "unavailable",
+                project_activation::HealthState::Contended => "contended",
+                project_activation::HealthState::Error => "error",
+            }
+            .to_string(),
+            catalog: Self::project_health_layer_dto(&snapshot.catalog),
+            workspace: Self::project_health_layer_dto(&snapshot.workspace),
+            assets: Self::project_health_layer_dto(&snapshot.assets),
+            services: Self::project_health_layer_dto(&snapshot.services),
+            diagnostics: snapshot.diagnostics.iter().take(16).cloned().collect(),
+            durable,
+        }
+    }
+
+    fn project_catalog_error(
+        operation: &'static str,
+        error: &codegg_core::project_catalog::CatalogError,
+    ) -> CoreResponse {
+        let code = match error {
+            codegg_core::project_catalog::CatalogError::NotFound(_) => "project_not_found",
+            codegg_core::project_catalog::CatalogError::InvalidValue(_) => {
+                "invalid_project_request"
+            }
+            codegg_core::project_catalog::CatalogError::Conflict(_) => "project_catalog_conflict",
+            codegg_core::project_catalog::CatalogError::AlreadyExists(_) => {
+                "project_already_exists"
+            }
+            codegg_core::project_catalog::CatalogError::Database(_) => {
+                "project_catalog_unavailable"
+            }
+        };
+        CoreResponse::Error {
+            code: code.to_string(),
+            message: format!("{operation}: {error}"),
+        }
+    }
+
+    async fn project_details(
+        &self,
+        project_id: &codegg_core::identity::ProjectId,
+    ) -> Result<crate::protocol::dto::ProjectDetailsDto, codegg_core::project_catalog::CatalogError>
+    {
+        let pool = self.pool.clone().ok_or_else(|| {
+            codegg_core::project_catalog::CatalogError::Database(
+                "project catalog requires a database pool".to_string(),
+            )
+        })?;
+        let catalog = codegg_core::project_catalog::ProjectCatalog::new(pool);
+        let record = catalog.get_project(project_id).await?;
+        let workspaces = catalog.list_workspaces_for_project(project_id).await?;
+        let session_count = catalog.list_sessions_for_project(project_id).await?;
+        let health = catalog.get_health(project_id).await?;
+        Ok(codegg_core::protocol_conversions::project_details_to_dto(
+            &record,
+            &workspaces,
+            session_count,
+            health.as_ref(),
+        ))
+    }
+
+    async fn project_lifecycle_request(
+        &self,
+        raw_project_id: &str,
+        restore: bool,
+    ) -> Result<CoreResponse, AppError> {
+        let project_id = match codegg_core::identity::ProjectId::parse(raw_project_id) {
+            Ok(id) => id,
+            Err(error) => {
+                return Ok(CoreResponse::Error {
+                    code: "invalid_project_id".to_string(),
+                    message: error.to_string(),
+                })
+            }
+        };
+        let Some(pool) = self.pool.clone() else {
+            return Ok(CoreResponse::Error {
+                code: "project_catalog_unavailable".to_string(),
+                message: "project lifecycle operations require a catalog".to_string(),
+            });
+        };
+        let catalog = codegg_core::project_catalog::ProjectCatalog::new(pool);
+        let result = if restore {
+            catalog.restore_project(&project_id, "protocol").await
+        } else {
+            catalog.archive_project(&project_id, "protocol").await
+        };
+        match result {
+            Ok(record) => {
+                let project =
+                    codegg_core::protocol_conversions::project_catalog_record_to_dto(&record);
+                let event = if restore {
+                    CoreEvent::ProjectRestored {
+                        project_id: project.project_id.clone(),
+                        project: project.clone(),
+                    }
+                } else {
+                    CoreEvent::ProjectArchived {
+                        project_id: project.project_id.clone(),
+                        project: project.clone(),
+                    }
+                };
+                let _ = self.event_log.publish(None, None, event).await;
+                Ok(if restore {
+                    CoreResponse::ProjectRestored { project }
+                } else {
+                    CoreResponse::ProjectArchived { project }
+                })
+            }
+            Err(error) => Ok(Self::project_catalog_error(
+                if restore {
+                    "project restore failed"
+                } else {
+                    "project archive failed"
+                },
+                &error,
+            )),
+        }
+    }
+
     async fn resolve_session_context(
         &self,
         session_id: &str,
@@ -3517,6 +3663,172 @@ impl CoreDaemon {
                     }),
                 }
             }
+            CoreRequest::ProjectCatalogCapabilities => {
+                Ok(CoreResponse::ProjectCatalogCapabilities {
+                    supported: self.pool.is_some(),
+                    max_list_items: crate::protocol::dto::MAX_PROJECT_LIST_ITEMS,
+                    max_workspaces_per_project: crate::protocol::dto::MAX_PROJECT_WORKSPACES,
+                })
+            }
+            CoreRequest::ProjectList {
+                include_archived,
+                limit,
+            } => {
+                let Some(pool) = self.pool.clone() else {
+                    return Ok(CoreResponse::Error {
+                        code: "project_catalog_unavailable".into(),
+                        message: "project listing requires a catalog".into(),
+                    });
+                };
+                let limit = if limit == 0 {
+                    crate::protocol::dto::MAX_PROJECT_LIST_ITEMS
+                } else {
+                    limit.min(crate::protocol::dto::MAX_PROJECT_LIST_ITEMS)
+                };
+                let catalog = codegg_core::project_catalog::ProjectCatalog::new(pool);
+                match catalog.list_projects(include_archived).await {
+                    Ok(records) => Ok(CoreResponse::ProjectList {
+                        truncated: records.len() > limit,
+                        projects: records
+                            .iter()
+                            .take(limit)
+                            .map(codegg_core::protocol_conversions::project_catalog_record_to_dto)
+                            .collect(),
+                    }),
+                    Err(error) => Ok(Self::project_catalog_error("project list failed", &error)),
+                }
+            }
+            CoreRequest::ProjectGet { project_id } => {
+                let project_id = match codegg_core::identity::ProjectId::parse(&project_id) {
+                    Ok(id) => id,
+                    Err(error) => {
+                        return Ok(CoreResponse::Error {
+                            code: "invalid_project_id".into(),
+                            message: error.to_string(),
+                        })
+                    }
+                };
+                match self.project_details(&project_id).await {
+                    Ok(project) => Ok(CoreResponse::ProjectGet { project }),
+                    Err(error) => Ok(Self::project_catalog_error("project get failed", &error)),
+                }
+            }
+            CoreRequest::ProjectRegister { request } => {
+                if request.tags.len() > crate::protocol::dto::MAX_PROJECT_TAGS {
+                    return Ok(CoreResponse::Error {
+                        code: "project_register_limit_exceeded".into(),
+                        message: "project tag count exceeds the protocol limit".into(),
+                    });
+                }
+                let workspace_id =
+                    match codegg_core::workspace::WorkspaceId::parse(&request.workspace_id) {
+                        Ok(id) => id,
+                        Err(error) => {
+                            return Ok(CoreResponse::Error {
+                                code: "invalid_workspace_id".into(),
+                                message: error.to_string(),
+                            })
+                        }
+                    };
+                let repository_id = match request.repository_id.as_deref() {
+                    Some(value) => match codegg_core::identity::RepositoryId::parse(value) {
+                        Ok(id) => Some(id),
+                        Err(error) => {
+                            return Ok(CoreResponse::Error {
+                                code: "invalid_repository_id".into(),
+                                message: error.to_string(),
+                            })
+                        }
+                    },
+                    None => None,
+                };
+                let Some(pool) = self.pool.clone() else {
+                    return Ok(CoreResponse::Error {
+                        code: "project_catalog_unavailable".into(),
+                        message: "project registration requires a catalog".into(),
+                    });
+                };
+                let catalog = codegg_core::project_catalog::ProjectCatalog::new(pool);
+                let input = codegg_core::project_catalog::RegisterLocalProject {
+                    display_name: request.display_name,
+                    description: request.description,
+                    tags: request.tags,
+                    primary_repository_id: repository_id,
+                };
+                match catalog
+                    .register_local_project(input, &workspace_id, &request.source)
+                    .await
+                {
+                    Ok(record) => {
+                        let project =
+                            codegg_core::protocol_conversions::project_catalog_record_to_dto(
+                                &record,
+                            );
+                        let _ = self
+                            .event_log
+                            .publish(
+                                None,
+                                None,
+                                CoreEvent::ProjectRegistered {
+                                    project_id: project.project_id.clone(),
+                                    project: project.clone(),
+                                },
+                            )
+                            .await;
+                        Ok(CoreResponse::ProjectRegistered { project })
+                    }
+                    Err(error) => Ok(Self::project_catalog_error(
+                        "project registration failed",
+                        &error,
+                    )),
+                }
+            }
+            CoreRequest::ProjectArchive { project_id } => {
+                self.project_lifecycle_request(&project_id, false).await
+            }
+            CoreRequest::ProjectRestore { project_id } => {
+                self.project_lifecycle_request(&project_id, true).await
+            }
+            CoreRequest::ProjectHealth {
+                project_id,
+                workspace_id,
+            } => {
+                if let Err(error) = codegg_core::identity::ProjectId::parse(&project_id) {
+                    return Ok(CoreResponse::Error {
+                        code: "invalid_project_id".into(),
+                        message: error.to_string(),
+                    });
+                }
+                if let Err(error) = codegg_core::workspace::WorkspaceId::parse(&workspace_id) {
+                    return Ok(CoreResponse::Error {
+                        code: "invalid_workspace_id".into(),
+                        message: error.to_string(),
+                    });
+                }
+                let snapshot = match self.project_health(&project_id, &workspace_id).await {
+                    Ok(snapshot) => snapshot,
+                    Err(error) => {
+                        return Ok(CoreResponse::Error {
+                            code: "project_health_unavailable".into(),
+                            message: error.to_string(),
+                        })
+                    }
+                };
+                let health = Self::project_health_dto(&snapshot, None);
+                let _ = self
+                    .event_log
+                    .publish(
+                        None,
+                        None,
+                        CoreEvent::ProjectHealthChanged {
+                            project_id: project_id.clone(),
+                            workspace_id: workspace_id.clone(),
+                            health: health.clone(),
+                        },
+                    )
+                    .await;
+                Ok(CoreResponse::ProjectHealth { health })
+            }
             CoreRequest::MemoryList { namespace } => {
                 let Some(memory_store) = self.deps.memory_store.clone() else {
                     return Ok(CoreResponse::Error {
@@ -5028,6 +5340,93 @@ mod tests {
         );
         let resp = daemon.handle_request(req).await.unwrap();
         assert!(matches!(resp, CoreResponse::Session { .. }));
+    }
+
+    #[tokio::test]
+    async fn project_catalog_protocol_lists_lifecycle_and_health_by_scope() {
+        let daemon = test_daemon().await;
+        let first_root = tempfile::tempdir().unwrap();
+        let second_root = tempfile::tempdir().unwrap();
+        let (first_project, first_workspace) = seed_test_context(&daemon, first_root.path()).await;
+        let (second_project, _second_workspace) =
+            seed_test_context(&daemon, second_root.path()).await;
+
+        let list = daemon
+            .handle_request(crate::core::new_request(
+                "project-list".into(),
+                CoreRequest::ProjectList {
+                    include_archived: false,
+                    limit: 1,
+                },
+            ))
+            .await
+            .unwrap();
+        assert!(matches!(
+            list,
+            CoreResponse::ProjectList {
+                projects,
+                truncated: true
+            } if projects.len() == 1
+        ));
+
+        let details = daemon
+            .handle_request(crate::core::new_request(
+                "project-get".into(),
+                CoreRequest::ProjectGet {
+                    project_id: first_project.clone(),
+                },
+            ))
+            .await
+            .unwrap();
+        assert!(matches!(
+            details,
+            CoreResponse::ProjectGet { project } if project.project.project_id == first_project
+        ));
+
+        let health = daemon
+            .handle_request(crate::core::new_request(
+                "project-health".into(),
+                CoreRequest::ProjectHealth {
+                    project_id: first_project.clone(),
+                    workspace_id: first_workspace,
+                },
+            ))
+            .await
+            .unwrap();
+        assert!(matches!(
+            health,
+            CoreResponse::ProjectHealth { health }
+                if health.project_id == first_project
+        ));
+
+        let archived = daemon
+            .handle_request(crate::core::new_request(
+                "project-archive".into(),
+                CoreRequest::ProjectArchive {
+                    project_id: second_project.clone(),
+                },
+            ))
+            .await
+            .unwrap();
+        assert!(matches!(
+            archived,
+            CoreResponse::ProjectArchived { project }
+                if project.project_id == second_project && project.lifecycle == "archived"
+        ));
+
+        let restored = daemon
+            .handle_request(crate::core::new_request(
+                "project-restore".into(),
+                CoreRequest::ProjectRestore {
+                    project_id: second_project,
+                },
+            ))
+            .await
+            .unwrap();
+        assert!(matches!(
+            restored,
+            CoreResponse::ProjectRestored { project } if project.lifecycle == "active"
+        ));
     }
 
     #[tokio::test]

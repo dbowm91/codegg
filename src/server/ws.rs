@@ -16,6 +16,30 @@ use crate::protocol::core::CoreRequest;
 use crate::protocol::frames::CoreFrame;
 use crate::protocol::tui::TuiMessage;
 use crate::server::rpc::{RpcError, RpcRequest, RpcResponse};
+use crate::server::scope::{resolve_context, ScopeQuery};
+
+fn rpc_error(req: &RpcRequest, code: i64, message: impl Into<String>) -> RpcResponse {
+    RpcResponse {
+        jsonrpc: "2.0".to_string(),
+        id: req.id.clone(),
+        result: None,
+        error: Some(RpcError {
+            code,
+            message: message.into(),
+        }),
+    }
+}
+
+async fn rpc_context(
+    state: &crate::server::state::ServerState,
+    params: &serde_json::Value,
+    session_id: Option<&str>,
+) -> Result<codegg_core::context::ProjectContext, String> {
+    let scope = ScopeQuery::from_json(params);
+    resolve_context(&state.pool, &scope, session_id)
+        .await
+        .map_err(|error| format!("{:?}", error.0))
+}
 
 #[derive(Clone, Debug)]
 pub struct WebSocketAuth {
@@ -159,58 +183,50 @@ async fn handle_rpc_request(
     if let Some(ref daemon) = state.daemon {
         let core_request = match req.method.as_str() {
             "sessions.list" => {
-                let params = if let serde_json::Value::Object(ref p) = req.params {
-                    p
-                } else {
-                    return RpcResponse {
-                        jsonrpc: "2.0".to_string(),
-                        id: req.id.clone(),
-                        result: None,
-                        error: Some(RpcError {
-                            code: -32602,
-                            message: "Invalid params".to_string(),
-                        }),
-                    };
+                let context = match rpc_context(state, &req.params, None).await {
+                    Ok(context) => context,
+                    Err(error) => return rpc_error(req, -32602, error),
                 };
-                let project_id = params
-                    .get("project_id")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
+                let params = req.params.as_object();
                 let show_archived = params
-                    .get("show_archived")
+                    .and_then(|p| p.get("show_archived"))
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
-                let limit = params.get("limit").and_then(|v| v.as_u64()).unwrap_or(50) as usize;
+                let limit = params
+                    .and_then(|p| p.get("limit"))
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(50)
+                    .min(50) as usize;
                 CoreRequest::SessionList {
-                    project_id,
+                    project_id: context.project_id.to_string(),
                     show_archived,
                     limit,
                 }
             }
             "sessions.get" => {
-                let id = if let serde_json::Value::Object(ref p) = req.params {
-                    p.get("id").and_then(|v| v.as_str()).unwrap_or("")
-                } else {
-                    ""
-                };
+                let id = req
+                    .params
+                    .as_object()
+                    .and_then(|p| p.get("id"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                if let Err(error) = rpc_context(state, &req.params, Some(id)).await {
+                    return rpc_error(req, -32602, error);
+                }
                 CoreRequest::SessionLoad {
                     session_id: id.to_string(),
                 }
             }
             "sessions.create" => {
-                let dir = if let serde_json::Value::Object(ref p) = req.params {
-                    p.get("directory")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or(&state.project_dir)
-                } else {
-                    &state.project_dir
+                let context = match rpc_context(state, &req.params, None).await {
+                    Ok(context) => context,
+                    Err(error) => return rpc_error(req, -32602, error),
                 };
                 CoreRequest::SessionCreate {
-                    directory: dir.to_string(),
+                    directory: context.workspace_root.to_string_lossy().into_owned(),
                     title: None,
-                    project_id: None,
-                    workspace_id: None,
+                    project_id: Some(context.project_id.to_string()),
+                    workspace_id: Some(context.workspace_id.to_string()),
                 }
             }
             "providers.list" | "tools.list" => {
@@ -218,15 +234,7 @@ async fn handle_rpc_request(
                 return handle_rpc_direct(req, state).await;
             }
             _ => {
-                return RpcResponse {
-                    jsonrpc: "2.0".to_string(),
-                    id: req.id.clone(),
-                    result: None,
-                    error: Some(RpcError {
-                        code: -32601,
-                        message: format!("Method not found: {}", req.method),
-                    }),
-                };
+                return rpc_error(req, -32601, format!("Method not found: {}", req.method));
             }
         };
 
@@ -306,8 +314,15 @@ async fn handle_rpc_direct(
 ) -> RpcResponse {
     match req.method.as_str() {
         "sessions.list" => {
+            let context = match rpc_context(state, &req.params, None).await {
+                Ok(context) => context,
+                Err(error) => return rpc_error(req, -32602, error),
+            };
             let store = crate::session::SessionStore::new(state.pool.clone());
-            match store.list(&state.project_dir, 50).await {
+            match store
+                .list_by_canonical_project(context.project_id.as_str(), Some(50))
+                .await
+            {
                 Ok(sessions) => {
                     let data: Vec<_> = sessions
                         .into_iter()
@@ -344,51 +359,24 @@ async fn handle_rpc_direct(
             } else {
                 ""
             };
+            if let Err(error) = rpc_context(state, &req.params, Some(id)).await {
+                return rpc_error(req, -32602, error);
+            }
             let store = crate::session::SessionStore::new(state.pool.clone());
             match store.get(id).await {
-                Ok(Some(s)) => {
-                    let context = crate::server::routes::project::context_for_locator(
-                        &state.pool,
-                        std::path::Path::new(&state.project_dir),
-                    )
-                    .await;
-                    let binding = crate::project_storage::ProjectStorage::new(state.pool.clone())
-                        .session_binding(&s.id)
-                        .await
-                        .ok()
-                        .flatten();
-                    let in_context = context.as_ref().is_ok_and(|context| {
-                        binding.as_ref().is_some_and(|binding| {
-                            binding.status == crate::project_storage::BindingStatus::Resolved
-                                && binding.project_id.as_ref() == Some(&context.project_id)
-                                && binding.workspace_id.as_ref() == Some(&context.workspace_id)
-                        })
-                    });
-                    if !in_context {
-                        return RpcResponse {
-                            jsonrpc: "2.0".to_string(),
-                            id: req.id.clone(),
-                            result: None,
-                            error: Some(RpcError {
-                                code: -32602,
-                                message: "Session not found".into(),
-                            }),
-                        };
-                    }
-                    RpcResponse {
-                        jsonrpc: "2.0".to_string(),
-                        id: req.id.clone(),
-                        result: Some(serde_json::json!({
-                            "id": s.id,
-                            "title": s.title,
-                            "project_id": s.project_id,
-                            "directory": s.directory,
-                            "created": s.time_created,
-                            "updated": s.time_updated,
-                        })),
-                        error: None,
-                    }
-                }
+                Ok(Some(s)) => RpcResponse {
+                    jsonrpc: "2.0".to_string(),
+                    id: req.id.clone(),
+                    result: Some(serde_json::json!({
+                        "id": s.id,
+                        "title": s.title,
+                        "project_id": s.project_id,
+                        "directory": s.directory,
+                        "created": s.time_created,
+                        "updated": s.time_updated,
+                    })),
+                    error: None,
+                },
                 Ok(None) => RpcResponse {
                     jsonrpc: "2.0".to_string(),
                     id: req.id.clone(),
@@ -410,39 +398,17 @@ async fn handle_rpc_direct(
             }
         }
         "sessions.create" => {
-            let dir = if let serde_json::Value::Object(ref p) = req.params {
-                p.get("directory")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or(&state.project_dir)
-            } else {
-                &state.project_dir
+            let context = match rpc_context(state, &req.params, None).await {
+                Ok(context) => context,
+                Err(error) => return rpc_error(req, -32602, error),
             };
             let store = crate::session::SessionStore::new(state.pool.clone());
-            let context = match crate::server::routes::project::context_for_locator(
-                &state.pool,
-                std::path::Path::new(dir),
-            )
-            .await
-            {
-                Ok(context) => context,
-                Err(error) => {
-                    return RpcResponse {
-                        jsonrpc: "2.0".to_string(),
-                        id: req.id.clone(),
-                        result: None,
-                        error: Some(RpcError {
-                            code: -32602,
-                            message: format!("{:?}", error.0),
-                        }),
-                    };
-                }
-            };
             let input = crate::session::CreateSession {
                 project_id: context.project_id.as_str().to_string(),
-                directory: dir.to_string(),
+                directory: context.workspace_root.to_string_lossy().into_owned(),
                 title: None,
                 parent_id: None,
-                workspace_id: None,
+                workspace_id: Some(context.workspace_id.to_string()),
                 agent: None,
                 model: None,
                 tags: None,

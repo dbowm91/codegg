@@ -1,6 +1,6 @@
 # Domain Identity and Compatibility Roadmap
 
-Status: active
+Status: closed
 
 Long-term references:
 
@@ -60,11 +60,11 @@ It consumes the existing workspace registry, session persistence, protocol envel
 
 ## 4. Current state
 
-Milestones 1–3 are closed. The repository now has typed project/repository/workspace identifiers, additive canonical project/repository/workspace/session binding storage, conservative migration/rebinding, canonical daemon request context, additive protocol binding DTOs, and guards against path-derived project authority.
+The repository already has a strong `WorkspaceId` and daemon-owned `WorkspaceRegistry` in `crates/codegg-core/src/workspace.rs`. Workspace IDs are generated independently of path text, sessions carry `workspace_id`, and `ExecutionContext` propagates canonical workspace roots into daemon-owned execution.
 
-Legacy `session.project_id`, `session.workspace_id`, `session.directory`, equivalent protocol projections, directory-only compatibility requests, and the server default-locator surface remain intentionally readable. They are compatibility data rather than authority, but they do not yet have one complete removal-readiness inventory and representative historical migration evidence corpus.
+The current model still treats `project_id` and `directory` as compatibility projections in several session DTOs and storage paths. Some server project routes derive project IDs directly from filesystem paths, and `ServerState` retains a process-global `project_dir`. Existing architecture documentation explicitly describes `Session -> WorkspaceId -> canonical root`, while the long-term model requires `Session -> ProjectId -> WorkspaceId -> NodeId -> locator`.
 
-Milestone 4 owns that final evidence, guard, documentation, and removal-criteria pass. It must not delete compatibility fields merely to close the roadmap.
+The protocol already transports workspace snapshots and session snapshots, which provides a migration seam. The core session schema and migration modules already support additive SQLite migrations. Static guards already prohibit new process-global cwd use in protected daemon execution modules, but there is no equivalent guard against path-derived project identity.
 
 ## 5. Target architecture
 
@@ -178,13 +178,11 @@ Deferred work: project catalog scanning and multi-project TUI.
 
 ### Milestone 4 — Closure and legacy-removal criteria
 
-Status: ready for handoff; see `plans/implementation/domain-identity/004-closure-and-legacy-removal-criteria.md`.
-
 Class: polish
 
 Objective: close migration correctness, document residual compatibility paths, and define when legacy fields can be removed.
 
-Dependencies: hard on Milestones 1–3; satisfied.
+Dependencies: hard on Milestones 1–3.
 
 Deliverable boundary: closure matrix, representative database migration evidence, restart/contention tests, architecture docs, and tracked removal criteria.
 
@@ -247,4 +245,4 @@ This roadmap closes when project identity is durable and path-independent across
 | 1 | closed | `plans/implementation/domain-identity/001-typed-identity-foundation.md` | `plans/closure/domain-identity/001-status.md` | — |
 | 2 | closed | `plans/implementation/domain-identity/002-project-repository-storage-migration.md` | `plans/closure/domain-identity/002-status.md` | — |
 | 3 | closed | `plans/implementation/domain-identity/003-corrective-daemon-protocol-adoption.md` | `plans/closure/domain-identity/003-corrective-status.md` | — |
-| 4 | ready | `plans/implementation/domain-identity/004-closure-and-legacy-removal-criteria.md` | — | Milestones 1–3 closure satisfied |
+| 4 | closed | `plans/implementation/domain-identity/004-closure-and-legacy-removal-criteria.md` | `plans/closure/domain-identity/004-status.md` | — |

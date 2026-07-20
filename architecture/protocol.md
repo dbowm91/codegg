@@ -176,6 +176,30 @@ provider/model selection.
 > `TurnSubmit`. See [`architecture/core.md`](core.md) and
 > [`architecture/session.md`](session.md) for the binding model.
 
+### Project Catalog Operations (Project Catalog Milestone 4)
+
+Project catalog requests are daemon-authoritative and explicitly scoped. The
+server does not supply a process-global project directory as identity.
+
+- `ProjectList { include_archived, limit }` — return bounded project summaries.
+- `ProjectGet { project_id }` — return one project with bounded workspace and
+  health summaries.
+- `ProjectRegister { workspace_id, display_name, description, tags }` — bind
+  an already-registered local workspace to a durable project using the catalog
+  registration service.
+- `ProjectArchive { project_id }` / `ProjectRestore { project_id }` — perform
+  logical, retry-safe lifecycle changes without deleting sessions or
+  workspaces.
+- `ProjectHealth { project_id, workspace_id }` — read the bounded aggregate
+  catalog/workspace/asset/service health without activating services.
+
+The matching responses contain only bounded DTOs and stable string-backed
+identities. Lifecycle and health changes are represented by project-scoped
+events. Clients and servers negotiate a project-catalog capability; legacy
+clients continue to receive workspace/session projections, while locator-only
+compatibility requests are resolved uniquely or fail with an actionable typed
+context error. Paths are locators and display data, never project IDs.
+
 ### Durable execution operations (Phase 5 cutover)
 
 - `JobSubmit { spec }` — validate and idempotently submit a durable job

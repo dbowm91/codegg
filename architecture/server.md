@@ -52,7 +52,7 @@ The server is started via `run_server()` in `http.rs`:
 pub async fn run_server(host: &str, port: u16) -> Result<(), ServerRuntimeError>
 ```
 
-**Phase 1 (singleton daemon)**: The server requires `--standalone-core` to construct its own daemon. Without it, the server exits with an actionable error rather than silently creating a second core that defeats the singleton invariant. Daemon-proxying server mode (where the server forwards to the user-scoped singleton daemon) lands in a later phase.
+**Phase 1 (singleton daemon)**: The server requires `--standalone-core` to construct its own daemon. Without it, the server exits with an actionable error rather than silently creating a second core that defeats the singleton invariant. The server's catalog and request scope are daemon-owned; standalone mode does not make the HTTP server's process cwd a project identity.
 
 This function:
 1. Initializes the SQLite database pool
@@ -126,6 +126,10 @@ Router::new()
     ├── GET  /api/project
     ├── POST /api/project
     ├── GET  /api/project/list
+    ├── GET  /api/projects                 # bounded catalog list
+    ├── GET  /api/projects/:id             # explicit project get
+    ├── POST /api/projects/:id/archive
+    ├── POST /api/projects/:id/restore
     ├── GET  /api/workspace
     ├── POST /api/workspace
     ├── GET  /api/workspace/list
@@ -238,13 +242,19 @@ const TUI_EVENT_BUFFER_MAX: usize = 1024;
 ```rust
 #[derive(Clone)]
 pub struct ServerState {
-    pub project_dir: String,              // Current project directory
     pub pool: SqlitePool,                 // SQLite connection pool
     pub mcp_service: Arc<RwLock<McpService>>, // MCP server connections
     pub config: Config,                   // Full configuration
     pub ws_rate_limiter: Arc<WsRateLimiter>,  // Shared WebSocket rate limiter
 }
 ```
+
+`ServerState` does not own a current project. Project and workspace IDs arrive
+in requests and are validated by the daemon's `ProjectContextResolver`.
+Directory fields retained for compatibility are locators only: they must map
+to one active resolved binding, and ambiguous or missing mappings return a
+typed context error. File and workspace mutation routes use the explicit
+resolved workspace root and cannot use process cwd as a fallback.
 
 **Shared Rate Limiter for WebSocket:**
 ```rust
@@ -412,6 +422,10 @@ pub fn sanitize_path(root: &str, requested: &str) -> Result<PathBuf, AppError>
 | GET | `/api/project` | Get current project info |
 | POST | `/api/project` | Create project |
 | GET | `/api/project/list` | List all projects |
+| GET | `/api/projects` | List bounded catalog summaries |
+| GET | `/api/projects/:id` | Get one explicit project |
+| POST | `/api/projects/:id/archive` | Archive one project logically |
+| POST | `/api/projects/:id/restore` | Restore one project |
 
 **Workspace (routes/workspace.rs):**
 | Method | Path | Description |
@@ -483,11 +497,13 @@ These timeouts are configured client-side.
 - [protocol.md](protocol.md) - CoreRequest/CoreResponse and TuiMessage protocol envelopes
 - [bus.md](bus.md) - GlobalEventBus, PermissionRegistry, QuestionRegistry
 - `architecture/server.md` - Implementation guide
-## Transitional project routes
+## Project-scoped compatibility
 
-Project routes now source IDs and session counts from `ProjectCatalog` and
-canonical binding tables. `ProjectInfo.id` is never populated from
-`ServerState.project_dir`; `path` is a compatibility locator for the current
-single-workspace surface. When the configured locator has no unique canonical
-binding, routes return an actionable context-required diagnostic. Full
-multi-project catalog protocol remains Project Catalog Milestone 004 scope.
+Project routes source IDs, workspace summaries, session counts, and health
+from `ProjectCatalog` and canonical binding tables. New requests carry
+explicit project/workspace scope. The old single-project routes remain only as
+compatibility adapters: a supplied locator is resolved uniquely through the
+context resolver, never interpreted as a project ID, and never allowed to
+silently switch to another project. Project list/get and lifecycle operations
+are also available through the native CoreFrame WebSocket protocol, with the
+project-catalog capability advertised during handshake.

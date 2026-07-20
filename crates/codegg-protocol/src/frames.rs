@@ -2,6 +2,18 @@ use serde::{Deserialize, Serialize};
 
 use crate::core::{CoreEvent, CoreRequest, CoreResponse, EventEnvelope, RequestEnvelope};
 
+/// Capability identifier advertised by the additive Project Catalog protocol
+/// family. Kept separate from the legacy hello struct fields so old callers
+/// that construct those structs remain source-compatible.
+pub const PROJECT_CATALOG_CAPABILITY: &str = "project_catalog.v1";
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProjectCatalogCapabilities {
+    pub supported: bool,
+    pub max_list_items: usize,
+    pub max_workspaces_per_project: usize,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClientHello {
     pub client_name: String,
@@ -46,6 +58,10 @@ pub struct ClientCapabilities {
     /// `WorkspaceList`/`WorkspaceSnapshot` response variants.
     #[serde(default)]
     pub workspace_registration: bool,
+    /// Project Catalog M004: client understands bounded project catalog
+    /// operations and project-scoped lifecycle/health events.
+    #[serde(default)]
+    pub project_catalog: bool,
 }
 
 impl ClientCapabilities {
@@ -102,6 +118,10 @@ pub struct ServerCapabilities {
     /// session bindings in addition to legacy string projections.
     #[serde(default)]
     pub identity_aware_context: bool,
+    /// Project Catalog M004: daemon supports the bounded project catalog
+    /// request/response/event family.
+    #[serde(default)]
+    pub project_catalog: bool,
 }
 
 #[cfg(test)]
@@ -133,6 +153,7 @@ mod tests {
             durable_jobs: false,
             durable_schedules: false,
             identity_aware_context: true,
+            project_catalog: true,
         };
 
         let json = serde_json::to_string(&capabilities).unwrap();

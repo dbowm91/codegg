@@ -1,6 +1,6 @@
 # Multi-Project TUI Milestone 001 — Project-Aware State Foundation
 
-Status: blocked
+Status: ready
 
 Repository baseline: `fbae374a2cd6172505204b1bc1bee1ef247afd5f` (production-code baseline; subsequent planning-only commits do not alter implementation state)
 
@@ -24,12 +24,12 @@ Primary class: infrastructure
 
 Refactor the TUI state model so it can represent a daemon-level project catalog and several independent project-tab/session contexts, while preserving current single-project behavior. Add asynchronous catalog loading and one compatibility initial tab, but do not yet implement the `Space f` picker or full tab navigation.
 
-## 2. Why this milestone is blocked
+## 2. Why this milestone is ready
 
 Hard dependencies:
 
-- Runtime Assets refresh interfaces must expose project/workspace asset generation and session-open refresh sequencing.
-- Project Catalog protocol/server milestone must expose stable project list/get and project/workspace summaries.
+- Runtime Assets refresh interfaces expose project/workspace asset generation and session-open refresh sequencing through the closed Runtime Assets milestone.
+- Project Catalog protocol/server migration is closed at `d1e5b70` and exposes stable project list/get and project/workspace summaries.
 
 The agent must not create TUI-local project discovery, direct database access, or path-keyed pseudo-projects to bypass these dependencies.
 
@@ -303,7 +303,7 @@ The agent must stop and report rather than improvise when:
 
 ## 16. Handoff notes
 
-- This plan remains blocked until runtime-asset and project-catalog interfaces close.
+- This plan is ready for handoff now that runtime-asset and project-catalog interfaces are closed.
 - Preserve modal priority, task lifecycle, and terminal cleanup behavior.
 - Use active-tab accessors as a migration seam, not as a permanent global-state disguise.
 - Inspect current `main` before implementation and record the actual production baseline in closure.
