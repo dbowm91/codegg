@@ -29,13 +29,13 @@ Canonical direction remains in:
 | Provider connections and Eggpool | closed | `plans/subsystems/provider-connections-roadmap.md` | Milestone 5 — corrective lifecycle, rotation, health, and closure (closed) | — |
 | Project catalog and lazy discovery | closed | `plans/subsystems/project-catalog-roadmap.md` | Milestone 4 — protocol, server migration, and closure (closed) | — |
 | Multi-project TUI and sessions | active | `plans/subsystems/tui-project-sessions-roadmap.md` | Milestone 2 — picker, tabs, and per-project session selection (not started) | Multi-Project TUI 001 is closed |
-| Frontend-neutral session projections | active | `plans/subsystems/session-projections-roadmap.md` | Milestone 1 — projection contracts and canonical reducer (ready) | Domain Identity 3, Project Catalog 4, and Multi-Project TUI 1 are closed |
+| Frontend-neutral session projections | active | `plans/subsystems/session-projections-roadmap.md` | Milestone 1 — projection contracts and canonical reducer (closed) | Milestone 2 may register a new implementation plan |
 
 ## Dependency-ready implementation plans
 
 | Subsystem | Milestone | Class | Plan | Baseline | Status |
 |---|---|---|---|---|---|
-| Frontend-neutral session projections | 001 — canonical projection contracts | infrastructure | `plans/implementation/session-projections/001-projection-contracts.md` | `fbae374` | ready |
+| — | — | — | — | — | — |
 
 ## Active closure work
 
@@ -52,6 +52,7 @@ Canonical direction remains in:
 
 | Subsystem | Milestone | Closure record | Closed at commit | Follow-up |
 |---|---|---|---|---|
+| Frontend-neutral session projections | 001 — projection contracts and canonical reducer | `plans/closure/session-projections/001-status.md` | `f6c8669` (implementation) | Session Projections 002 (scoped subscriptions and durable replay) becomes dependency-ready as soon as its implementation plan is registered |
 | Multi-project TUI and sessions | 001 — project-aware state and catalog client | `plans/closure/tui-project-sessions/001-status.md` | `62e26b1` (implementation) | Multi-Project TUI 002 becomes dependency-ready; Session Projections 001 blocker cleared and now listed as dependency-ready |
 | Project catalog and lazy discovery | 004 — protocol, server migration, and closure | `plans/closure/project-catalog/004-status.md` | `d1e5b70` (implementation) | Multi-Project TUI 001 was closed; Session Projections 001 remains to be registered |
 | Domain identity and compatibility | 004 — closure and legacy-removal criteria | `plans/closure/domain-identity/004-status.md` | `c4e9cf8` | Project Catalog 004 owns the remaining server locator removal criteria; no unrelated plan was unblocked |
