@@ -64,9 +64,9 @@ It consumes project-catalog protocol operations, session APIs, workspace-service
 
 The TUI already routes most high-latency session, history, task, memory, and worktree operations through `CoreClient`, with daemon-client mode as the default. This is the correct architectural base. Existing async command handlers use spawn-and-complete patterns, `AsyncUiRequestState`, stale-generation protection, and a tracked background-task registry.
 
-Current application state is organized into several domains but remains centered on one selected session/project context. Git sidebar state, dialogs, and event filtering are keyed primarily to the current session. Remote TUI snapshots represent one active view. There is no global project catalog state, project tab model, per-tab async generation, or restoration of multiple open projects.
+Milestone 1 added a bounded project catalog cache, stable frontend-local project tab IDs, an ordered tab collection, one compatibility startup tab, and active-tab accessors while preserving the existing single-project render path. Heavy active-session state remains singular and existing events/commands are still primarily current-session shaped.
 
-The project catalog and asset service are therefore hard prerequisites; this roadmap should not reimplement them inside the TUI.
+The project catalog and asset service remain daemon-owned prerequisites; this roadmap must not reimplement them inside the TUI.
 
 ## 5. Target architecture
 
@@ -144,6 +144,8 @@ Exit conditions:
 Deferred work: picker and tab keybindings.
 
 ### Milestone 2 — Project picker and tab navigation
+
+Status: ready for handoff; see `plans/implementation/tui-project-sessions/002-project-picker-tab-navigation.md`.
 
 Class: capability
 
@@ -250,6 +252,6 @@ This roadmap closes when one TUI can use several project tabs and several sessio
 | Milestone | Status | Implementation plan | Closure record | Blockers |
 |---|---|---|---|---|
 | 1 | closed | `plans/implementation/tui-project-sessions/001-project-aware-state.md` | `plans/closure/tui-project-sessions/001-status.md` | —; Project Catalog 004 and Runtime Assets refresh interfaces are closed |
-| 2 | not started | — | — | Milestone 1 closure |
+| 2 | ready | `plans/implementation/tui-project-sessions/002-project-picker-tab-navigation.md` | — | —; Milestone 1 closed |
 | 3 | not started | — | — | Milestones 1–2 closure |
 | 4 | not started | — | — | Milestones 2–3 closure |
