@@ -1,6 +1,6 @@
 # Session Projections Milestone 001 — Canonical Projection Contracts
 
-Status: blocked
+Status: ready
 
 Repository baseline: `fbae374a2cd6172505204b1bc1bee1ef247afd5f` (production-code baseline; subsequent planning-only commits do not alter implementation state)
 
@@ -338,7 +338,7 @@ The agent must stop and report rather than improvise when:
 
 ## 16. Handoff notes
 
-- This plan remains blocked until Multi-Project TUI 001 closes; the catalog dependency is satisfied.
+- This plan is now ready. Multi-Project TUI 001 is closed and the project-aware state seam is in place (`App::project_tabs`, `App::project_catalog`, active-tab accessors).
 - Keep the reducer I/O-free and frontend-neutral.
 - Do not label the existing in-memory remote TUI buffer as durable replay.
 - Avoid overfitting DTOs to Ratatui layout or current web/server route shapes.
