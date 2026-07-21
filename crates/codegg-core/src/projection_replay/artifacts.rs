@@ -235,8 +235,13 @@ impl HandleRegistrar {
             created_at: now,
             expires_at: ttl_ms.map(|t| now.saturating_add(t)),
             revision,
-            public_summary: public_summary
-                .map(|s| if s.len() > 512 { s[..512].to_string() } else { s }),
+            public_summary: public_summary.map(|s| {
+                if s.len() > 512 {
+                    s[..512].to_string()
+                } else {
+                    s
+                }
+            }),
         }
     }
 }
@@ -274,7 +279,9 @@ impl ArtifactReadRequest {
     pub const MAX_READ_BYTES: u64 = 64 * 1024;
 
     pub fn normalize(&self) -> (u64, u64) {
-        let end = self.end.unwrap_or(self.start.saturating_add(Self::MAX_READ_BYTES));
+        let end = self
+            .end
+            .unwrap_or(self.start.saturating_add(Self::MAX_READ_BYTES));
         let end = end.min(self.start.saturating_add(Self::MAX_READ_BYTES));
         (self.start, end)
     }

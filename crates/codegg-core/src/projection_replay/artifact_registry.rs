@@ -180,11 +180,10 @@ impl ProjectionArtifactRegistry for RunStoreProjectionArtifactRegistry {
         // maps to a known artifact. If it doesn't, the handle is
         // still valid for metadata-only use.
         let artifact_id = ArtifactId::new_unchecked(source_record_id.to_string());
-        let run_store_artifact_id =
-            match self.run_store.read_artifact(&artifact_id, None).await {
-                Ok(_) => Some(artifact_id),
-                Err(_) => None,
-            };
+        let run_store_artifact_id = match self.run_store.read_artifact(&artifact_id, None).await {
+            Ok(_) => Some(artifact_id),
+            Err(_) => None,
+        };
 
         let entry = HandleEntry {
             handle: handle.clone(),
@@ -367,7 +366,10 @@ mod tests {
         ) -> Result<RunManifest, RunStoreError> {
             unimplemented!()
         }
-        async fn get_run(&self, _id: &crate::run_store::RunId) -> Result<Option<RunManifest>, RunStoreError> {
+        async fn get_run(
+            &self,
+            _id: &crate::run_store::RunId,
+        ) -> Result<Option<RunManifest>, RunStoreError> {
             unimplemented!()
         }
         async fn read_artifact(
@@ -512,7 +514,13 @@ mod tests {
 
         let err = registry.read(&request, "p1").await.unwrap_err();
         assert!(
-            matches!(err, ArtifactRegistryError::RevisionMismatch { requested: 2, current: 1 }),
+            matches!(
+                err,
+                ArtifactRegistryError::RevisionMismatch {
+                    requested: 2,
+                    current: 1
+                }
+            ),
             "expected RevisionMismatch, got {:?}",
             err
         );

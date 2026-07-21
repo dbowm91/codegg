@@ -132,11 +132,7 @@ fn handle_registrar_mint_returns_unique_ids_across_10000_invocations() {
     let mut ids = std::collections::HashSet::new();
     for _ in 0..10_000 {
         let id = registrar.mint();
-        assert!(
-            ids.insert(id.clone()),
-            "duplicate handle ID minted: {}",
-            id
-        );
+        assert!(ids.insert(id.clone()), "duplicate handle ID minted: {}", id);
     }
     assert_eq!(ids.len(), 10_000);
 }
@@ -274,12 +270,12 @@ async fn artifact_registry_read_unknown_handle_returns_not_found() {
 // ── Mock RunStore for tests ──────────────────────────────────────────
 
 use async_trait::async_trait;
-use dashmap::DashMap;
 use codegg_core::error::RunStoreError;
 use codegg_core::run_store::{
     ArtifactChunk, ArtifactId, ArtifactInput, ByteRange, RunDraft, RunHandle, RunManifest,
-    RunQuery, RunSummary, RunStore,
+    RunQuery, RunStore, RunSummary,
 };
+use dashmap::DashMap;
 
 struct MockRunStore {
     #[allow(dead_code)]

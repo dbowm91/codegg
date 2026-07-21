@@ -153,11 +153,8 @@ async fn seam_denies_internal_events_through_disclosure() {
     let seam = Arc::new(ProjectionPublicationSeam::new(service));
 
     let metrics = Arc::new(ProjectionReplayMetrics::new());
-    let dc = ProjectionDisclosureContext::local(
-        Some("sess-1".into()),
-        Some("proj-1".into()),
-        metrics,
-    );
+    let dc =
+        ProjectionDisclosureContext::local(Some("sess-1".into()), Some("proj-1".into()), metrics);
 
     let envelope = EventEnvelope {
         protocol_version: PROTOCOL_VERSION,
@@ -179,9 +176,17 @@ async fn seam_denies_internal_events_through_disclosure() {
         binding_revision: 1,
     };
 
-    let outcome = seam.publish_with_disclosure(&envelope, binding, Some(&dc)).await.unwrap();
+    let outcome = seam
+        .publish_with_disclosure(&envelope, binding, Some(&dc))
+        .await
+        .unwrap();
     assert!(
-        matches!(outcome, PublishOutcome::Denied { reason: DisclosureReason::InternalNotSerializable }),
+        matches!(
+            outcome,
+            PublishOutcome::Denied {
+                reason: DisclosureReason::InternalNotSerializable
+            }
+        ),
         "internal event must be denied through disclosure; got {:?}",
         outcome
     );
@@ -195,11 +200,8 @@ async fn seam_allows_safe_events_through_disclosure() {
     let seam = Arc::new(ProjectionPublicationSeam::new(service));
 
     let metrics = Arc::new(ProjectionReplayMetrics::new());
-    let dc = ProjectionDisclosureContext::local(
-        Some("sess-1".into()),
-        Some("proj-1".into()),
-        metrics,
-    );
+    let dc =
+        ProjectionDisclosureContext::local(Some("sess-1".into()), Some("proj-1".into()), metrics);
 
     let envelope = EventEnvelope {
         protocol_version: PROTOCOL_VERSION,
@@ -220,7 +222,10 @@ async fn seam_allows_safe_events_through_disclosure() {
         binding_revision: 1,
     };
 
-    let outcome = seam.publish_with_disclosure(&envelope, binding, Some(&dc)).await.unwrap();
+    let outcome = seam
+        .publish_with_disclosure(&envelope, binding, Some(&dc))
+        .await
+        .unwrap();
     assert!(
         matches!(outcome, PublishOutcome::Published { .. }),
         "safe event must be published through disclosure; got {:?}",
@@ -236,11 +241,8 @@ async fn seam_allows_sensitive_events_through_disclosure() {
     let seam = Arc::new(ProjectionPublicationSeam::new(service));
 
     let metrics = Arc::new(ProjectionReplayMetrics::new());
-    let dc = ProjectionDisclosureContext::local(
-        Some("sess-1".into()),
-        Some("proj-1".into()),
-        metrics,
-    );
+    let dc =
+        ProjectionDisclosureContext::local(Some("sess-1".into()), Some("proj-1".into()), metrics);
 
     let envelope = EventEnvelope {
         protocol_version: PROTOCOL_VERSION,
@@ -263,12 +265,20 @@ async fn seam_allows_sensitive_events_through_disclosure() {
         binding_revision: 1,
     };
 
-    let outcome = seam.publish_with_disclosure(&envelope, binding, Some(&dc)).await.unwrap();
+    let outcome = seam
+        .publish_with_disclosure(&envelope, binding, Some(&dc))
+        .await
+        .unwrap();
     // Sensitive events pass disclosure (Allowed with SensitiveRedacted reason)
     // but may produce no projections and be Skipped as AdaptionEmpty.
     // The key invariant: they are NOT Denied with InternalNotSerializable.
     assert!(
-        !matches!(outcome, PublishOutcome::Denied { reason: DisclosureReason::InternalNotSerializable }),
+        !matches!(
+            outcome,
+            PublishOutcome::Denied {
+                reason: DisclosureReason::InternalNotSerializable
+            }
+        ),
         "sensitive event must NOT be denied as internal; got {:?}",
         outcome
     );

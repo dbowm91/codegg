@@ -5588,21 +5588,21 @@ impl CoreDaemon {
                 let metrics = std::sync::Arc::new(
                     codegg_core::projection_replay::ProjectionReplayMetrics::new(),
                 );
-                let disclosure =
-                    codegg_core::projection_replay::ProjectionDisclosureContext::local(
-                        None,
-                        Some(project_id.clone()),
-                        metrics,
-                    );
+                let disclosure = codegg_core::projection_replay::ProjectionDisclosureContext::local(
+                    None,
+                    Some(project_id.clone()),
+                    metrics,
+                );
 
                 if let Some(ref registry) = disclosure.artifact_registry {
                     // Convert wire DTO to core type
-                    let core_request = codegg_core::projection_replay::artifacts::ArtifactReadRequest {
-                        handle_id: request.handle_id.clone(),
-                        start: request.start,
-                        end: request.end,
-                        expected_revision: request.expected_revision,
-                    };
+                    let core_request =
+                        codegg_core::projection_replay::artifacts::ArtifactReadRequest {
+                            handle_id: request.handle_id.clone(),
+                            start: request.start,
+                            end: request.end,
+                            expected_revision: request.expected_revision,
+                        };
                     match registry.read(&core_request, &project_id).await {
                         Ok(response) => {
                             return Ok(CoreResponse::ProjectionArtifactRead {
@@ -5665,12 +5665,11 @@ impl CoreDaemon {
                 let metrics = std::sync::Arc::new(
                     codegg_core::projection_replay::ProjectionReplayMetrics::new(),
                 );
-                let disclosure =
-                    codegg_core::projection_replay::ProjectionDisclosureContext::local(
-                        None,
-                        Some(project_id.clone()),
-                        metrics,
-                    );
+                let disclosure = codegg_core::projection_replay::ProjectionDisclosureContext::local(
+                    None,
+                    Some(project_id.clone()),
+                    metrics,
+                );
 
                 if let Some(ref registry) = disclosure.artifact_registry {
                     if let Ok(handles) = registry.list(&project_id).await {
@@ -5712,9 +5711,7 @@ impl CoreDaemon {
                     }
                 }
 
-                Ok(CoreResponse::ProjectionArtifactList {
-                    handles: vec![],
-                })
+                Ok(CoreResponse::ProjectionArtifactList { handles: vec![] })
             }
             _ => {
                 tracing::warn!("Unhandled CoreRequest variant");

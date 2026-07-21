@@ -627,9 +627,7 @@ impl ProjectionReplayService {
             Err(_) => return (envelope, false),
         };
 
-        let (redacted_value, summary) =
-            dc.redactor
-                .redact_json(&payload_json, FieldName::Text);
+        let (redacted_value, summary) = dc.redactor.redact_json(&payload_json, FieldName::Text);
 
         if summary.is_clean() {
             return (envelope, false);
@@ -734,9 +732,7 @@ impl ProjectionReplayService {
             Err(_) => return (envelope, false),
         };
 
-        let (mut value, _) =
-            dc.redactor
-                .redact_json(&payload_json, FieldName::Text);
+        let (mut value, _) = dc.redactor.redact_json(&payload_json, FieldName::Text);
 
         // Check for oversized strings and replace with handles
         Self::replace_oversized_value(&mut value, dc, &mut changed);
@@ -764,11 +760,7 @@ impl ProjectionReplayService {
                 let handle_id = dc.handle_registrar.mint();
                 // Replace with a short marker string (the parent type
                 // expects a string, so we can't insert a JSON object).
-                *val = Value::String(format!(
-                    "[handle:{}:{}bytes]",
-                    handle_id,
-                    s.len()
-                ));
+                *val = Value::String(format!("[handle:{}:{}bytes]", handle_id, s.len()));
                 *changed = true;
             }
             Value::Object(map) => {

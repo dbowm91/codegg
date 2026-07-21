@@ -777,14 +777,196 @@ async fn handle_tui_message(
                 let _ = bus_tx.send(axum::extract::ws::Message::Text(json.into()));
             }
         }
+        TuiMessage::ProjectionCapabilities { capabilities } => {
+            handle_projection_capabilities(capabilities, bus_tx, _server_state).await;
+        }
+        TuiMessage::ProjectionSubscribe { request } => {
+            handle_projection_subscribe(request, state, bus_tx, _server_state).await;
+        }
+        TuiMessage::ProjectionAck { ack } => {
+            handle_projection_ack(ack, _server_state).await;
+        }
         _ => {}
     }
+}
+
+/// Handle `ProjectionCapabilities` from a remote TUI client. The
+/// server negotiates against its own capabilities and replies with a
+/// `ProjectionCapabilitiesAck` carrying the negotiated version (or a
+/// rejection reason).
+async fn handle_projection_capabilities(
+    client_caps: crate::protocol::projection::caps::ProjectionCapabilities,
+    bus_tx: &mpsc::UnboundedSender<axum::extract::ws::Message>,
+    server_state: &crate::server::state::ServerState,
+) {
+    use crate::protocol::projection::caps::{
+        ProjectionCapabilities, PROJECTION_PROTOCOL_VERSION, PROJECTION_PROTOCOL_VERSION_MIN,
+    };
+    let daemon_caps = if let Some(daemon) = &server_state.daemon {
+        ProjectionCapabilities {
+            min_version: PROJECTION_PROTOCOL_VERSION_MIN,
+            max_version: PROJECTION_PROTOCOL_VERSION,
+            supports_incremental_events: true,
+            supports_unknown_fields: true,
+        }
+    } else {
+        ProjectionCapabilities {
+            min_version: PROJECTION_PROTOCOL_VERSION,
+            max_version: PROJECTION_PROTOCOL_VERSION,
+            supports_incremental_events: false,
+            supports_unknown_fields: false,
+        }
+    };
+    let negotiated = ProjectionCapabilities::negotiate(&client_caps, &daemon_caps);
+    let accepted = negotiated.is_some();
+    let reason = if !accepted {
+        Some("no_overlapping_projection_version".to_string())
+    } else {
+        None
+    };
+    let ack = TuiMessage::ProjectionCapabilitiesAck {
+        accepted,
+        negotiated_version: negotiated,
+        reason,
+    };
+    if let Ok(json) = serde_json::to_string(&ack) {
+        let _ = bus_tx.send(axum::extract::ws::Message::Text(json.into()));
+    }
+}
+
+/// Handle `ProjectionSubscribe` from a remote TUI client. The server
+/// forwards the request to the daemon and pipes the initial snapshot
+/// plus any live projection envelopes back over the WebSocket.
+async fn handle_projection_subscribe(
+    request: crate::protocol::projection::replay::ProjectionSubscriptionRequest,
+    state: &Arc<tokio::sync::Mutex<TuiSessionState>>,
+    bus_tx: &mpsc::UnboundedSender<axum::extract::ws::Message>,
+    server_state: &crate::server::state::ServerState,
+) {
+    use crate::protocol::core::{CoreRequest, RequestEnvelope};
+    use crate::protocol::projection::replay::{
+        ProjectionSnapshotBundle, ProjectionStreamDescriptor, ProjectionSubscriptionId,
+    };
+    use crate::protocol::projection::snapshot::SessionProjectionSnapshot;
+
+    let _ = state.lock().await.session_id.clone();
+    let Some(daemon) = &server_state.daemon else {
+        let err = TuiMessage::Error {
+            message: "projection_unavailable_no_daemon".to_string(),
+        };
+        if let Ok(json) = serde_json::to_string(&err) {
+            let _ = bus_tx.send(axum::extract::ws::Message::Text(json.into()));
+        }
+        return;
+    };
+
+    let envelope = RequestEnvelope {
+        protocol_version: crate::protocol::core::PROTOCOL_VERSION,
+        request_id: format!("ws-projection-subscribe-{}", uuid::Uuid::new_v4()),
+        payload: CoreRequest::ProjectionSubscribe { request },
+    };
+    match daemon.handle_request(envelope).await {
+        Ok(crate::protocol::core::CoreResponse::ProjectionSubscribed {
+            subscription_id,
+            descriptor,
+            snapshot,
+            cursor: _,
+            retention_floor_seq: _,
+        }) => {
+            let snap = match snapshot {
+                ProjectionSnapshotBundle::One { snapshot } => *snapshot,
+                ProjectionSnapshotBundle::BoundedSessionList { sessions, .. } => {
+                    sessions.into_iter().next().unwrap_or_else(|| {
+                        SessionProjectionSnapshot::empty(
+                            descriptor.session_id.as_deref().unwrap_or(""),
+                            &descriptor.project_id,
+                            descriptor.workspace_id.as_deref().unwrap_or(""),
+                        )
+                    })
+                }
+            };
+            let descriptor_clone = descriptor.clone();
+            let msg = TuiMessage::ProjectionSnapshot {
+                subscription_id,
+                descriptor: descriptor_clone,
+                snapshot: Box::new(snap),
+            };
+            if let Ok(json) = serde_json::to_string(&msg) {
+                let _ = bus_tx.send(axum::extract::ws::Message::Text(json.into()));
+            }
+            // Suppress unused-variable warnings while keeping the
+            // signature symmetric with the daemon contract.
+            let _: ProjectionStreamDescriptor = descriptor;
+        }
+        Ok(crate::protocol::core::CoreResponse::ProjectionReplay { batch }) => {
+            let subscription_id =
+                ProjectionSubscriptionId::new(batch.descriptor.stream_id.0.clone());
+            let msg = TuiMessage::ProjectionReplay {
+                subscription_id,
+                batch,
+            };
+            if let Ok(json) = serde_json::to_string(&msg) {
+                let _ = bus_tx.send(axum::extract::ws::Message::Text(json.into()));
+            }
+        }
+        Ok(crate::protocol::core::CoreResponse::ProjectionResyncRequired { reason, .. }) => {
+            let msg = TuiMessage::Error {
+                message: format!("projection_resync:{reason:?}"),
+            };
+            if let Ok(json) = serde_json::to_string(&msg) {
+                let _ = bus_tx.send(axum::extract::ws::Message::Text(json.into()));
+            }
+        }
+        Ok(other) => {
+            let msg = TuiMessage::Error {
+                message: format!("projection_subscribe_failed:{other:?}"),
+            };
+            if let Ok(json) = serde_json::to_string(&msg) {
+                let _ = bus_tx.send(axum::extract::ws::Message::Text(json.into()));
+            }
+        }
+        Err(err) => {
+            let msg = TuiMessage::Error {
+                message: format!("projection_subscribe_error:{err}"),
+            };
+            if let Ok(json) = serde_json::to_string(&msg) {
+                let _ = bus_tx.send(axum::extract::ws::Message::Text(json.into()));
+            }
+        }
+    }
+}
+
+/// Handle `ProjectionAck` from a remote TUI client. The server
+/// forwards the acknowledgement to the daemon so the durable replay
+/// store can advance the subscription's last-acked cursor.
+async fn handle_projection_ack(
+    ack: crate::protocol::projection::replay::ProjectionAck,
+    server_state: &crate::server::state::ServerState,
+) {
+    use crate::protocol::core::{CoreRequest, RequestEnvelope};
+    let Some(daemon) = &server_state.daemon else {
+        return;
+    };
+    let envelope = RequestEnvelope {
+        protocol_version: crate::protocol::core::PROTOCOL_VERSION,
+        request_id: format!("ws-projection-ack-{}", uuid::Uuid::new_v4()),
+        payload: CoreRequest::ProjectionAck { ack },
+    };
+    let _ = daemon.handle_request(envelope).await;
 }
 
 /// Convert a CoreEvent back to a TuiMessage for legacy /tui clients replaying from EventLog.
 fn convert_core_event_to_tui(event: crate::protocol::core::CoreEvent) -> Option<TuiMessage> {
     use crate::protocol::core::CoreEvent;
     match event {
+        CoreEvent::ProjectionStreamEvent {
+            subscription_id,
+            envelope,
+            ..
+        } => Some(TuiMessage::ProjectionEvent {
+            subscription_id,
+            envelope,
+        }),
         CoreEvent::TurnTextDelta { delta, .. } => Some(TuiMessage::TextDelta { delta }),
         CoreEvent::ToolStarted {
             tool_name,

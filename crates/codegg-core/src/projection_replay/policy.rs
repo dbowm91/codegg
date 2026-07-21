@@ -108,14 +108,10 @@ pub enum DisclosureDecision {
     },
     /// The value is denied. No transformed payload is produced and
     /// the raw value is never returned to the caller.
-    Deny {
-        reason: DisclosureReason,
-    },
+    Deny { reason: DisclosureReason },
     /// The pipeline failed (serialization, redaction, etc.). The
     /// value fails closed; raw content is never returned.
-    ErrorFailClosed {
-        reason: DisclosureReason,
-    },
+    ErrorFailClosed { reason: DisclosureReason },
 }
 
 impl DisclosureDecision {
@@ -130,7 +126,9 @@ impl DisclosureDecision {
 
     pub fn reason_code(&self) -> DisclosureReason {
         match self {
-            DisclosureDecision::Allow { reason: Some(r), .. } => *r,
+            DisclosureDecision::Allow {
+                reason: Some(r), ..
+            } => *r,
             DisclosureDecision::Allow { reason: None, .. } => DisclosureReason::CapabilityDenied,
             DisclosureDecision::ClientLocal { .. } => DisclosureReason::ClientLocalRestricted,
             DisclosureDecision::Summarize { reason, .. } => *reason,

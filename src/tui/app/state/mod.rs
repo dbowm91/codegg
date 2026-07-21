@@ -8,6 +8,7 @@ pub mod persistence;
 pub mod plugin_ui;
 pub mod project_picker;
 pub mod project_tabs;
+pub mod projection_client;
 pub mod prompt;
 pub mod restore;
 pub mod routing;
@@ -27,6 +28,12 @@ pub use project_picker::{
     MAX_OPEN_PROJECT_TABS, MAX_PROJECT_LIST_ITEMS, MAX_TAB_LABEL_LEN,
 };
 pub use project_tabs::{ProjectCatalogState, ProjectTabId, ProjectTabState, ProjectTabs};
+pub use projection_client::{
+    ArtifactExcerptCacheEntry, ArtifactHandleCacheEntry, ProjectionClientState,
+    ProjectionCursorInfo, ProjectionTabSummary, MAX_ARTIFACT_EXCERPTS_PER_TAB,
+    MAX_ARTIFACT_EXCERPT_BYTES, MAX_ARTIFACT_HANDLES_PER_TAB, MAX_ARTIFACT_READS_PER_TAB,
+    MAX_TAB_PROJECTION_SUMMARIES,
+};
 pub use prompt::PromptState;
 pub use routing::{
     apply_inactive_summary, classify_event, event_project_id, event_session_id,

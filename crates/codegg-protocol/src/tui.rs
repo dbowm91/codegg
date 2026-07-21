@@ -2,11 +2,15 @@
 ///
 /// Bumped to 2 in Phase 10: added `PluginUiEffect` variant for
 /// frontend-neutral plugin UI transport. Bumped to 3 in Phase 15:
-/// `PluginUiEffect` now carries a [`UiEffectEnvelope`] (typed source)
+/// `PluginUiEffect` now carries a typed [`crate::ui::UiEffectEnvelope`] (typed source)
 /// and `RemotePanelView`/`RemoteStatusItemView` carry an optional body
-/// for durable reconnect fidelity. Old clients safely ignore unknown
-/// `#[serde(tag = "type")]` variants, so this is informational.
-pub const REMOTE_TUI_PROTOCOL_VERSION: u32 = 3;
+/// for durable reconnect fidelity. Bumped to 4 in Phase 5 of session
+/// projections: added the additive `ProjectionCapabilities`,
+/// `ProjectionSubscribe`, `ProjectionSnapshot`, `ProjectionReplay`,
+/// `ProjectionResync`, and `ProjectionAck` variants. Old clients
+/// safely ignore unknown `#[serde(tag = "type")]` variants, so this
+/// is informational.
+pub const REMOTE_TUI_PROTOCOL_VERSION: u32 = 4;
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
 #[serde(tag = "type")]
@@ -98,6 +102,52 @@ pub enum TuiMessage {
         reason: Option<String>,
         pending_permissions: Vec<String>,
         pending_questions: Vec<String>,
+    },
+    // ── Session projection transport (Phase 5 / M4) ──
+    /// Client → server: announce projection capabilities and request
+    /// projection-primary mode if compatible. Server replies with
+    /// [`TuiMessage::ProjectionCapabilitiesAck`].
+    ProjectionCapabilities {
+        capabilities: crate::projection::caps::ProjectionCapabilities,
+    },
+    /// Server → client: result of capability negotiation. When
+    /// `accepted=true` the server has installed the projection
+    /// subscription pipeline; when `false` the client MUST fall back
+    /// to raw-core messages.
+    ProjectionCapabilitiesAck {
+        accepted: bool,
+        negotiated_version: Option<u32>,
+        reason: Option<String>,
+    },
+    /// Client → server: subscribe to a projection stream.
+    ProjectionSubscribe {
+        request: crate::projection::replay::ProjectionSubscriptionRequest,
+    },
+    /// Server → client: subscription result with initial snapshot.
+    ProjectionSnapshot {
+        subscription_id: crate::projection::replay::ProjectionSubscriptionId,
+        descriptor: crate::projection::replay::ProjectionStreamDescriptor,
+        snapshot: Box<crate::projection::snapshot::SessionProjectionSnapshot>,
+    },
+    /// Server → client: replay batch of projection events.
+    ProjectionReplay {
+        subscription_id: crate::projection::replay::ProjectionSubscriptionId,
+        batch: crate::projection::replay::ProjectionReplayBatch,
+    },
+    /// Server → client: client should resubscribe (cursor expired,
+    /// version mismatch, etc.).
+    ProjectionResync {
+        subscription_id: crate::projection::replay::ProjectionSubscriptionId,
+        reason: crate::projection::replay::ProjectionResyncReason,
+    },
+    /// Client → server: acknowledge processed events.
+    ProjectionAck {
+        ack: crate::projection::replay::ProjectionAck,
+    },
+    /// Bidirectional: live projection envelope.
+    ProjectionEvent {
+        subscription_id: crate::projection::replay::ProjectionSubscriptionId,
+        envelope: crate::projection::event::ProjectionEnvelope,
     },
 }
 
@@ -358,8 +408,8 @@ mod tests {
     }
 
     #[test]
-    fn remote_tui_protocol_version_is_three() {
-        assert_eq!(REMOTE_TUI_PROTOCOL_VERSION, 3);
+    fn remote_tui_protocol_version_is_four() {
+        assert_eq!(REMOTE_TUI_PROTOCOL_VERSION, 4);
     }
 
     #[test]

@@ -63,7 +63,10 @@ impl std::fmt::Debug for ProjectionDisclosureContext {
             .field("handle_registrar", &"<HandleRegistrar>")
             .field(
                 "artifact_registry",
-                &self.artifact_registry.as_ref().map(|_| "<dyn ProjectionArtifactRegistry>"),
+                &self
+                    .artifact_registry
+                    .as_ref()
+                    .map(|_| "<dyn ProjectionArtifactRegistry>"),
             )
             .field("session_id", &self.session_id)
             .field("project_id", &self.project_id)
@@ -305,8 +308,12 @@ impl ProjectionPublicationSeam {
         source_record_id: &str,
         public_summary: Option<String>,
         revision: u64,
-    ) -> Option<Result<crate::projection_replay::artifacts::ProjectionArtifactHandle, crate::projection_replay::artifact_registry::ArtifactRegistryError>>
-    {
+    ) -> Option<
+        Result<
+            crate::projection_replay::artifacts::ProjectionArtifactHandle,
+            crate::projection_replay::artifact_registry::ArtifactRegistryError,
+        >,
+    > {
         let registry = disclosure.artifact_registry.as_ref()?;
         Some(
             registry
@@ -332,7 +339,9 @@ mod tests {
         AllowAllProjectResolver, BoundedProjectResolver, ProjectionCapabilitySet,
         ProjectionTransportClass,
     };
-    use crate::projection_replay::policy::{DefaultAccessPolicy, DisclosureDecision, DisclosureReason};
+    use crate::projection_replay::policy::{
+        DefaultAccessPolicy, DisclosureDecision, DisclosureReason,
+    };
     use crate::projection_replay::service::{ProjectionReplayService, SafePublicationReason};
     use crate::projection_replay::store::ProjectionReplayStore;
     use codegg_protocol::core::{CoreEvent, EventEnvelope};
@@ -417,9 +426,7 @@ mod tests {
             Arc::new(AllowAllProjectResolver),
             ProjectionTransportClass::Local,
         ));
-        let policy = Arc::new(PolicyRegistry::new(Arc::new(
-            DefaultAccessPolicy::new(),
-        )));
+        let policy = Arc::new(PolicyRegistry::new(Arc::new(DefaultAccessPolicy::new())));
         let dc = ProjectionDisclosureContext::new(
             access_ctx,
             policy,
@@ -443,7 +450,12 @@ mod tests {
             .unwrap();
 
         assert!(
-            matches!(result, PublishOutcome::Denied { reason: DisclosureReason::CapabilityDenied }),
+            matches!(
+                result,
+                PublishOutcome::Denied {
+                    reason: DisclosureReason::CapabilityDenied
+                }
+            ),
             "expected Denied with CapabilityDenied, got {:?}",
             result
         );
@@ -489,7 +501,12 @@ mod tests {
 
         // Internal events should be denied
         assert!(
-            matches!(result, PublishOutcome::Denied { reason: DisclosureReason::InternalNotSerializable }),
+            matches!(
+                result,
+                PublishOutcome::Denied {
+                    reason: DisclosureReason::InternalNotSerializable
+                }
+            ),
             "expected Denied, got {:?}",
             result
         );
@@ -537,11 +554,10 @@ mod tests {
         );
 
         // Verify the stored event payload has secrets redacted
-        let rows: Vec<(String,)> =
-            sqlx::query_as("SELECT payload_json FROM projection_event")
-                .fetch_all(&pool)
-                .await
-                .unwrap();
+        let rows: Vec<(String,)> = sqlx::query_as("SELECT payload_json FROM projection_event")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
         assert!(!rows.is_empty(), "at least one event should be stored");
         for (payload_json,) in &rows {
             assert!(
@@ -603,11 +619,10 @@ mod tests {
         );
 
         // The redactor downsizes oversized strings in the text delta
-        let rows: Vec<(String,)> =
-            sqlx::query_as("SELECT payload_json FROM projection_event")
-                .fetch_all(&pool)
-                .await
-                .unwrap();
+        let rows: Vec<(String,)> = sqlx::query_as("SELECT payload_json FROM projection_event")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
         assert!(!rows.is_empty());
         for (payload_json,) in &rows {
             // Oversized text should be replaced with a handle marker

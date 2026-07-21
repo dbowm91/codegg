@@ -58,6 +58,10 @@ use crate::error::AppError;
 use crate::memory::MemoryStore;
 use crate::permission::PermissionRequest;
 use crate::protocol::core::{CoreRequest, CoreResponse};
+use crate::protocol::projection::caps::ProjectionCapabilities;
+use crate::protocol::projection::controller::ControllerApplyOutcome;
+use crate::protocol::projection::event::ProjectionEnvelope;
+use crate::protocol::projection::replay::{ProjectionStreamId, ProjectionSubscriptionId};
 use crate::protocol::tui::TuiMessage as RemoteTuiMessage;
 use crate::provider::ChatEvent;
 use crate::session::message::ToolStatus;
@@ -991,6 +995,13 @@ pub struct App {
     /// was written by a different daemon instance. Diagnostic only;
     /// never authoritative.
     pub manifest_daemon_hint: Option<String>,
+    /// Frontend projection client state (Session Projections M4).
+    /// Owns the transport-neutral [`ProjectionClientController`], per-tab
+    /// inactive summaries, cursor metadata, and artifact read lifecycle.
+    /// The controller is negotiated against the daemon's
+    /// `ServerCapabilities::session_projection` flag and reverts to
+    /// the raw-core compatibility path when projection is unavailable.
+    pub projection_client: crate::tui::app::state::ProjectionClientState,
 }
 
 /// What to do at TUI startup with respect to session loading. The TUI
@@ -1349,6 +1360,7 @@ impl App {
                 default_tui_state_root(),
             ),
             manifest_daemon_hint: None,
+            projection_client: crate::tui::app::state::ProjectionClientState::new(),
         }
     }
 
@@ -1791,6 +1803,7 @@ impl App {
                 default_tui_state_root(),
             ),
             manifest_daemon_hint: None,
+            projection_client: crate::tui::app::state::ProjectionClientState::new(),
         }
     }
 
@@ -1822,6 +1835,44 @@ impl App {
 
     pub fn set_core_client(&mut self, client: Arc<dyn CoreClient>) {
         self.core_client = Some(client);
+    }
+
+    /// Switch the active tab and update projection client state to
+    /// match. Returns `true` when the switch succeeded.
+    pub fn switch_active_tab(&mut self, tab_id: &ProjectTabId) -> bool {
+        let switched = self.project_tabs.set_active(tab_id);
+        if switched {
+            self.projection_client
+                .set_active_tab(Some(tab_id.as_str().to_string()));
+        }
+        switched
+    }
+
+    /// Notify the projection client that the underlying transport
+    /// reconnect completed. Drops all subscription state and bumps
+    /// the reconnect epoch.
+    pub fn on_projection_reconnect(&mut self) {
+        self.projection_client.on_reconnect();
+    }
+
+    /// Apply a projection envelope to the projection client. The
+    /// caller is responsible for routing the envelope to the correct
+    /// tab; this method only updates the projection controller state.
+    pub fn apply_projection_envelope(
+        &mut self,
+        subscription_id: &ProjectionSubscriptionId,
+        tab_id: &str,
+        envelope: ProjectionEnvelope,
+    ) -> ControllerApplyOutcome {
+        self.projection_client
+            .apply_envelope(subscription_id, tab_id, envelope)
+    }
+
+    /// Enter raw compatibility mode. Called when the daemon does not
+    /// advertise projection capability or when the user explicitly
+    /// disables projection-primary mode.
+    pub fn enter_projection_raw_compatibility(&mut self, reason: impl Into<String>) {
+        self.projection_client.enter_raw_compatibility(reason);
     }
 
     /// Store the latest completed security review receipt. Subsequent
@@ -2319,6 +2370,70 @@ impl App {
                 // guard, validation, and ownership check are applied
                 // uniformly for both local and remote transports.
                 let _ = self.apply_plugin_ui_envelope(envelope);
+            }
+            Ok(RemoteTuiMessage::ProjectionCapabilitiesAck {
+                accepted,
+                negotiated_version,
+                reason,
+            }) => {
+                if accepted {
+                    self.projection_client
+                        .controller_mut()
+                        .negotiate(Some(&ProjectionCapabilities::default()));
+                } else {
+                    let reason_text = reason.unwrap_or_else(|| "unsupported".into());
+                    self.enter_projection_raw_compatibility(reason_text);
+                }
+                let _ = negotiated_version;
+            }
+            Ok(RemoteTuiMessage::ProjectionSnapshot {
+                subscription_id,
+                descriptor,
+                snapshot,
+            }) => {
+                let _ = self
+                    .projection_client
+                    .controller_mut()
+                    .install_subscription(subscription_id, descriptor, *snapshot);
+            }
+            Ok(RemoteTuiMessage::ProjectionReplay {
+                subscription_id,
+                batch,
+            }) => {
+                let descriptor = batch.descriptor.clone();
+                let events = batch.events.clone();
+                let initial =
+                    crate::protocol::projection::snapshot::SessionProjectionSnapshot::empty(
+                        descriptor.session_id.as_deref().unwrap_or(""),
+                        &descriptor.project_id,
+                        descriptor.workspace_id.as_deref().unwrap_or(""),
+                    );
+                let _ = self.projection_client.controller_mut().install_replay(
+                    subscription_id,
+                    descriptor,
+                    events,
+                    None,
+                    initial,
+                );
+            }
+            Ok(RemoteTuiMessage::ProjectionEvent {
+                subscription_id,
+                envelope,
+            }) => {
+                let tab_id = self
+                    .projection_client
+                    .active_tab_id()
+                    .unwrap_or("default")
+                    .to_string();
+                let _ = self.apply_projection_envelope(&subscription_id, &tab_id, envelope);
+            }
+            Ok(RemoteTuiMessage::ProjectionResync {
+                subscription_id,
+                reason,
+            }) => {
+                self.projection_client
+                    .controller_mut()
+                    .request_resync(&subscription_id, reason);
             }
             _ => {
                 debug_log!("handle_remote_event: unhandled type={}", _event_type);
@@ -14013,8 +14128,8 @@ mod remote_protocol_tests {
     }
 
     #[test]
-    fn protocol_version_constant_is_three() {
-        assert_eq!(REMOTE_TUI_PROTOCOL_VERSION, 3);
+    fn protocol_version_constant_is_four() {
+        assert_eq!(REMOTE_TUI_PROTOCOL_VERSION, 4);
     }
 
     #[test]
@@ -14953,5 +15068,142 @@ mod enqueue_tui_command_tests {
             after.len() > before.len(),
             "should surface a toast on closed channel"
         );
+    }
+}
+
+#[cfg(test)]
+mod projection_adoption_tests {
+    use super::*;
+    use crate::protocol::projection::caps::ProjectionCapabilities;
+    use crate::protocol::projection::controller::ProjectionMode;
+    use crate::protocol::projection::event::{
+        ProjectionEnvelope, ProjectionEvent, ProjectionStreamScope,
+    };
+    use crate::protocol::projection::replay::ProjectionSubscriptionId;
+
+    fn fixture_envelope(session_id: &str, seq: u64) -> ProjectionEnvelope {
+        ProjectionEnvelope {
+            protocol_version: 1,
+            event_seq: seq,
+            timestamp_ms: 0,
+            session_id: Some(session_id.into()),
+            turn_id: None,
+            scope: ProjectionStreamScope::Session,
+            payload: ProjectionEvent::Diagnostic {
+                code: "x".into(),
+                message: "y".into(),
+            },
+        }
+    }
+
+    #[test]
+    fn app_owns_projection_client_state() {
+        let app = App::new_for_testing("/tmp".into());
+        assert!(app.projection_client.is_projection_primary());
+        assert_eq!(app.projection_client.negotiated_version(), Some(1));
+    }
+
+    #[test]
+    fn switch_active_tab_updates_projection_state() {
+        let mut app = App::new_for_testing("/tmp".into());
+        let tab_id = app
+            .project_tabs
+            .active()
+            .map(|t| t.tab_id.clone())
+            .expect("compat tab present");
+        assert!(app.switch_active_tab(&tab_id));
+        assert_eq!(app.projection_client.active_tab_id(), Some(tab_id.as_str()));
+    }
+
+    #[test]
+    fn on_projection_reconnect_clears_state() {
+        let mut app = App::new_for_testing("/tmp".into());
+        let outcome = app.apply_projection_envelope(
+            &ProjectionSubscriptionId::new("missing"),
+            "tab-1",
+            fixture_envelope("s1", 1),
+        );
+        // Even an error envelope triggers a state update path.
+        let _ = outcome;
+        app.on_projection_reconnect();
+        assert!(app.projection_client.is_unsupported());
+        assert_eq!(app.projection_client.reconnect_epoch(), 1);
+    }
+
+    #[test]
+    fn enter_raw_compatibility_keeps_app_intact() {
+        let mut app = App::new_for_testing("/tmp".into());
+        app.enter_projection_raw_compatibility("test fallback");
+        assert!(app.projection_client.is_raw_compatibility());
+    }
+
+    #[test]
+    fn renegotiate_with_caps_switches_back_to_primary() {
+        let mut app = App::new_for_testing("/tmp".into());
+        app.enter_projection_raw_compatibility("forced fallback");
+        assert!(app.projection_client.is_raw_compatibility());
+        app.projection_client
+            .renegotiate(Some(&ProjectionCapabilities::default()));
+        assert_eq!(
+            app.projection_client.mode(),
+            ProjectionMode::ProjectionPrimary
+        );
+    }
+
+    #[test]
+    fn projection_capabilities_ack_accepted_switches_to_primary() {
+        let mut app = App::new_for_testing("/tmp".into());
+        app.enter_projection_raw_compatibility("pre-capabilities");
+        let json = serde_json::to_value(RemoteTuiMessage::ProjectionCapabilitiesAck {
+            accepted: true,
+            negotiated_version: Some(1),
+            reason: None,
+        })
+        .expect("serializable");
+        app.handle_remote_event(json);
+        assert_eq!(
+            app.projection_client.mode(),
+            ProjectionMode::ProjectionPrimary
+        );
+    }
+
+    #[test]
+    fn projection_capabilities_ack_rejected_keeps_compat() {
+        let mut app = App::new_for_testing("/tmp".into());
+        let json = serde_json::to_value(RemoteTuiMessage::ProjectionCapabilitiesAck {
+            accepted: false,
+            negotiated_version: None,
+            reason: Some("version_mismatch".to_string()),
+        })
+        .expect("serializable");
+        app.handle_remote_event(json);
+        assert!(app.projection_client.is_raw_compatibility());
+    }
+
+    #[test]
+    fn projection_snapshot_installs_subscription() {
+        let mut app = App::new_for_testing("/tmp".into());
+        let descriptor = crate::protocol::projection::replay::ProjectionStreamDescriptor {
+            stream_id: ProjectionStreamId::new("session-s1").expect("stream id"),
+            kind: crate::protocol::projection::replay::ProjectionStreamKind::Session,
+            project_id: "p1".into(),
+            workspace_id: None,
+            session_id: Some("s1".into()),
+            projection_version: 1,
+            retention_floor_seq: 0,
+            high_water_seq: 0,
+            latest_checkpoint_seq: None,
+        };
+        let snap = crate::protocol::projection::snapshot::SessionProjectionSnapshot::empty(
+            "s1", "p1", "w1",
+        );
+        let json = serde_json::to_value(RemoteTuiMessage::ProjectionSnapshot {
+            subscription_id: ProjectionSubscriptionId::new("sub-1"),
+            descriptor,
+            snapshot: Box::new(snap),
+        })
+        .expect("serializable");
+        app.handle_remote_event(json);
+        assert_eq!(app.projection_client.subscription_count(), 1);
     }
 }

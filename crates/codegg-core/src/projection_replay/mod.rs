@@ -49,8 +49,8 @@ pub use context::{
 };
 pub use metrics::{ProjectionReplayMetrics, ProjectionReplayMetricsSnapshot};
 pub use policy::{
-    ArtifactReadKind, DefaultAccessPolicy, DisclosureDecision, DisclosureReason,
-    PolicyRegistry, ProjectionAccessPolicy,
+    ArtifactReadKind, DefaultAccessPolicy, DisclosureDecision, DisclosureReason, PolicyRegistry,
+    ProjectionAccessPolicy,
 };
 pub use redactor::{ProjectionFieldRedactor, RedactionResult, RedactionSummary};
 pub use retention::RetentionPolicy;

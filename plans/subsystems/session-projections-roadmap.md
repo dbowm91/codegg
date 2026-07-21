@@ -1,6 +1,6 @@
 # Frontend-Neutral Session Projections and Replay Roadmap
 
-Status: active
+Status: closed (Milestones 1–4)
 
 Long-term references:
 
@@ -108,7 +108,8 @@ Milestone 4: frontend adoption, compatibility, and closure
 - Milestone 1 is closed.
 - Milestone 2 is strictly closed (library at `8dc4b85` + corrective daemon integration at this commit).
 - Milestone 3 is strictly closed (WP A–D implementation + WP E verification; see `plans/closure/session-projections/003-status.md`).
-- Milestone 4 has hard dependencies on Milestones 1–3 (all satisfied); it is dependency-ready.
+- Milestone 4 is closed (frontend adoption, compatibility, and closure; see `plans/closure/session-projections/004-status.md`).
+- Future plans (M5+) cover: deprecation surfacing of legacy `RenderFrame`/`StateSnapshot`/raw-core variants under bounded compatibility; cross-tab artifact hand-off UX; plugin emission fall-through semantics.
 
 ## 7. Milestones
 
@@ -198,13 +199,15 @@ Deferred work: final role policy and audit retention.
 
 ### Milestone 4 — Frontend adoption and closure
 
-Status: dependency-ready (Milestones 1–3 closed).
+Status: **closed**.
+
+Closure record: `plans/closure/session-projections/004-status.md`.
 
 Class: capability
 
 Objective: migrate local/remote TUI paths to the canonical projection and prove cross-frontend equivalence.
 
-Dependencies: Milestones 1–3 closed.
+Dependencies: Milestones 1–3 closed (satisfied at closure).
 
 Deliverable boundary: TUI adapter/reducer integration, remote TUI protocol migration, compatibility negotiation, a reference second client, performance bounds, documentation, and closure evidence.
 
@@ -214,6 +217,12 @@ Exit conditions:
 - remote reconnect no longer depends solely on an in-memory UI-specific buffer;
 - incompatible clients receive explicit capability/version behavior;
 - all Phase 5 exit criteria are evidenced.
+
+Deferred to future plans (M5+):
+
+- Deprecation surfacing & eventual removal of legacy `RenderFrame`/`StateSnapshot`/raw-core variants under bounded compatibility.
+- Cross-tab artifact hand-off UX with explicit policy.
+- Plugin emission fall-through semantics for `ProjectionEvent::PluginUi`.
 
 ## 8. Cross-cutting requirements
 

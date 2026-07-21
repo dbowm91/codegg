@@ -29,7 +29,7 @@ Canonical direction remains in:
 | Provider connections and Eggpool | closed | `plans/subsystems/provider-connections-roadmap.md` | Milestone 5 — corrective lifecycle, rotation, health, and closure (closed) | — |
 | Project catalog and lazy discovery | closed | `plans/subsystems/project-catalog-roadmap.md` | Milestone 4 — protocol, server migration, and closure (closed) | — |
 | Multi-project TUI and sessions | closed | `plans/subsystems/tui-project-sessions-roadmap.md` | All milestones closed (001–004) | — |
-| Frontend-neutral session projections | closed | `plans/subsystems/session-projections-roadmap.md` | Milestone 4 — frontend adoption and closure | Milestone 3 strictly closed; M4 is dependency-ready. |
+| Frontend-neutral session projections | closed | `plans/subsystems/session-projections-roadmap.md` | All milestones closed (001–004) | Future plans (M5+): deprecation surfacing of legacy `RenderFrame`/`StateSnapshot`/raw-core variants; cross-tab artifact hand-off UX; plugin emission fall-through semantics. |
 
 ## Dependency-ready implementation plans
 
@@ -51,6 +51,7 @@ Canonical direction remains in:
 
 | Subsystem | Milestone | Closure record | Closed at commit | Follow-up |
 |---|---|---|---|---|
+| Frontend-neutral session projections | 004 — frontend adoption and closure | `plans/closure/session-projections/004-status.md` | (this commit) | All M1–M4 milestones closed; legacy variants retained under bounded compatibility until a future M5+ deprecation plan |
 | Frontend-neutral session projections | 003 — visibility, redaction, and artifact handles | `plans/closure/session-projections/003-status.md` | WP A–D implementation + WP E verification | Milestone 004 (frontend adoption and closure) |
 | Frontend-neutral session projections | 002 — scoped subscriptions and durable replay | `plans/closure/session-projections/002-status.md` | this commit (corrective daemon integration + library at `8dc4b85`) | Milestone 003 (visibility/redaction/artifact handles) — now closed |
 | Frontend-neutral session projections | 001 — projection contracts and canonical reducer | `plans/closure/session-projections/001-status.md` | `f6c8669` (implementation) | `plans/implementation/session-projections/002-scoped-subscriptions-durable-replay.md` |

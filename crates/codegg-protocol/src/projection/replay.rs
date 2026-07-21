@@ -276,7 +276,9 @@ impl ProjectionArtifactReadRequest {
     pub const MAX_READ_BYTES: u64 = 64 * 1024;
 
     pub fn normalize(&self) -> (u64, u64) {
-        let end = self.end.unwrap_or(self.start.saturating_add(Self::MAX_READ_BYTES));
+        let end = self
+            .end
+            .unwrap_or(self.start.saturating_add(Self::MAX_READ_BYTES));
         let end = end.min(self.start.saturating_add(Self::MAX_READ_BYTES));
         (self.start, end)
     }

@@ -38,6 +38,7 @@
 
 pub mod adapters;
 pub mod caps;
+pub mod controller;
 pub mod dto;
 pub mod event;
 pub mod fixtures;
@@ -49,6 +50,12 @@ pub mod snapshot;
 pub use caps::{
     ProjectionCapabilities, PROJECTION_CAPABILITY, PROJECTION_PROTOCOL_VERSION,
     PROJECTION_PROTOCOL_VERSION_MIN,
+};
+pub use controller::{
+    ControllerApplyOutcome, ControllerDiagnostic, ControllerSubscribeFailure,
+    ControllerSubscribeOutcome, ProjectionClientController, ProjectionControllerInfo,
+    ProjectionMode, DEFAULT_ACK_CADENCE, MAX_CONTROLLER_DIAGNOSTICS, MAX_CONTROLLER_SUBSCRIPTIONS,
+    MAX_OUTSTANDING_LAG,
 };
 pub use dto::{
     AgentTreeNodeProjection, ArtifactHandleProjection, JobProjection, MessageProjection,
@@ -78,8 +85,8 @@ pub use replay::{
     ProjectionAck, ProjectionArtifactHandleDto, ProjectionArtifactReadOutcome,
     ProjectionArtifactReadRequest, ProjectionArtifactReadResponse, ProjectionCursor,
     ProjectionReplayBatch, ProjectionReplayLimits, ProjectionResyncReason,
-    ProjectionSnapshotBundle, ProjectionStreamDescriptor, ProjectionStreamId,
-    ProjectionStreamKind, ProjectionSubscriptionId, ProjectionSubscriptionRequest,
-    ProjectionSubscriptionState, ProjectionSubscriptionStatus, ReplaySubscriptionError,
+    ProjectionSnapshotBundle, ProjectionStreamDescriptor, ProjectionStreamId, ProjectionStreamKind,
+    ProjectionSubscriptionId, ProjectionSubscriptionRequest, ProjectionSubscriptionState,
+    ProjectionSubscriptionStatus, ReplaySubscriptionError,
 };
 pub use snapshot::SessionProjectionSnapshot;

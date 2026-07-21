@@ -216,13 +216,11 @@ const RULES_OUTPUT: &[RedactionRule] = &[
     },
 ];
 
-const RULES_ENVIRONMENT: &[RedactionRule] = &[
-    RedactionRule {
-        name: "env-secret",
-        pattern: r#"(?im)^([A-Z_]*(?:SECRET|TOKEN|API[_-]?KEY|PASSWORD|PRIVATE[_-]?KEY|AUTH|CREDENTIAL)[A-Z0-9_]*)\s*=\s*("[^"]*"|'[^']*'|[^\s,;}{]+)"#,
-        replacement: "$1=[REDACTED]",
-    },
-];
+const RULES_ENVIRONMENT: &[RedactionRule] = &[RedactionRule {
+    name: "env-secret",
+    pattern: r#"(?im)^([A-Z_]*(?:SECRET|TOKEN|API[_-]?KEY|PASSWORD|PRIVATE[_-]?KEY|AUTH|CREDENTIAL)[A-Z0-9_]*)\s*=\s*("[^"]*"|'[^']*'|[^\s,;}{]+)"#,
+    replacement: "$1=[REDACTED]",
+}];
 
 const RULES_TEXT: &[RedactionRule] = &[
     RedactionRule {
@@ -483,7 +481,11 @@ pub struct RedactionSummary {
 
 impl RedactionSummary {
     fn record_redaction(&mut self, field: FieldName, rule: &'static str) {
-        if let Some(entry) = self.redacted_counts.iter_mut().find(|(f, r, _)| *f == field && *r == rule) {
+        if let Some(entry) = self
+            .redacted_counts
+            .iter_mut()
+            .find(|(f, r, _)| *f == field && *r == rule)
+        {
             entry.2 += 1;
         } else {
             self.redacted_counts.push((field, rule, 1));
@@ -499,7 +501,11 @@ impl RedactionSummary {
     }
 
     fn record_failure(&mut self, field: FieldName, reason: &'static str) {
-        if !self.failures.iter().any(|(f, r)| *f == field && *r == reason) {
+        if !self
+            .failures
+            .iter()
+            .any(|(f, r)| *f == field && *r == reason)
+        {
             self.failures.push((field, reason));
         }
     }
@@ -568,7 +574,12 @@ fn is_secret_key(lower_key: &str) -> bool {
         "refresh_token",
         "id_token",
     ];
-    PATTERNS.iter().any(|p| lower_key == *p || lower_key.ends_with(&format!("_{p}")) || lower_key.starts_with(&format!("{p}_")) || lower_key.contains(p))
+    PATTERNS.iter().any(|p| {
+        lower_key == *p
+            || lower_key.ends_with(&format!("_{p}"))
+            || lower_key.starts_with(&format!("{p}_"))
+            || lower_key.contains(p)
+    })
 }
 
 #[cfg(test)]
