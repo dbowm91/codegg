@@ -11,7 +11,7 @@ Long-term references:
 
 Related ADRs:
 
-- None required for the initial projection boundary. Create an ADR if durable replay storage changes the authoritative event-log ownership model or requires a new database backend.
+- None required for the current projection/replay boundary. Create an ADR if replay work changes the authoritative event-log ownership model, replaces SQLite, promises deployment-global ordering, or turns projection replay into audit retention.
 
 ## 1. Purpose and ownership boundary
 
@@ -64,33 +64,29 @@ It consumes stable project/session identities, daemon events, turn/tool/run/job 
 
 ## 4. Current state
 
-Milestone 1 added `codegg_protocol::projection`: versioned bounded projection DTOs, projection capability negotiation, deterministic reducer semantics, snapshot builders, adapters from existing core snapshots/events, and independent-consumer equivalence fixtures.
+Milestone 1 added `codegg_protocol::projection`: versioned bounded projection DTOs, capability negotiation, deterministic reducer semantics, snapshot builders, adapters from existing core snapshots/events, and independent-consumer equivalence fixtures.
 
-The core protocol also has request/event envelopes, daemon-global event sequence fields, session/turn correlation, session and daemon snapshots, and raw subscribe/resume paths. The server/remote TUI path maintains bounded in-memory event buffers and selected raw core events are best-effort persisted in `core_event_log`.
+Milestone 2's library/crate layer landed at `8dc4b85`: replay DTOs and protocol variants, storage migration v32, stream/event/checkpoint stores, sequence allocation, retention/checkpoints, subscription registry, safe-publication classification, resume/resync logic, metrics, and focused tests.
 
-There is still no authoritative durable per-session/per-project projection stream, stable stream cursor, subscription/ack registry, retention/checkpoint policy, or restart-safe projection high-water ownership. Existing raw event persistence is intentionally not sufficient for canonical projection replay.
+The production daemon integration is not complete. The conditional closure record at `plans/closure/session-projections/002-status.md` identifies missing publication wiring, daemon request dispatch, live subscription routing, and binding-revision invalidation. Direct inspection also shows empty canonical IDs and placeholder stream IDs in the current service publication/delivery path. The corrective plan `plans/implementation/session-projections/002-corrective-daemon-integration-and-closure.md` is therefore the current dependency-ready handoff.
+
+Existing raw core-event subscribe/resume behavior remains the compatibility path and must not be removed by the corrective pass.
 
 ## 5. Target architecture
 
-Define versioned projection types:
+The target remains:
 
-- `SessionProjectionSnapshot`;
-- `SessionSummaryProjection`;
-- `TurnProjection`;
-- `MessageProjection`;
-- `ToolProjection`;
-- `RunProjection`;
-- `JobProjection`;
-- `PermissionProjection` and `QuestionProjection`;
-- `AgentTreeProjection` placeholder with stable run references;
-- `ArtifactHandleProjection`;
-- project/workspace/worktree summary references.
+- one versioned `SessionProjectionSnapshot` contract;
+- one deterministic `ProjectionReducer`;
+- daemon-owned project/session stream descriptors and per-stream cursors;
+- transactional persist-before-live-delivery publication;
+- bounded replay, checkpoints, retention, queues, acknowledgements, and resync;
+- canonical project/workspace/session binding and revision routing;
+- fail-closed publication and later principal-aware visibility filtering;
+- bounded artifact/log handles instead of inline large bodies;
+- additive compatibility for existing raw `CoreEvent` clients.
 
-A canonical projector consumes durable/session events and produces snapshots using deterministic reducer rules. Projection events carry stream scope, sequence, timestamp, causation/correlation references, visibility class, payload version, and bounded content.
-
-Replay storage uses append-only bounded database rows plus periodic snapshots/checkpoints. Retention is bounded by count/time/bytes. A client subscribes at project or session scope, acknowledges a sequence, resumes from a cursor, or receives `ResyncRequired` with a fresh snapshot when history is unavailable or capabilities differ.
-
-Redaction occurs before publication into shared replay storage. Raw tool/run artifacts stay in existing stores and are referenced through authorized bounded handles.
+Projection storage remains separate from chat/message storage and final audit retention.
 
 ## 6. Dependency graph
 
@@ -100,15 +96,18 @@ Milestone 1: projection DTOs, versioning, and canonical reducer
         v
 Milestone 2: scoped subscriptions and durable replay
         |
-        +--> Milestone 3: visibility, redaction, and artifact handles
-        |           |
-        |           v
-        `--> Milestone 4: frontend adoption, compatibility, and closure
+        +-- corrective daemon integration and strict closure
+        |
+        v
+Milestone 3: visibility, redaction, and artifact handles
+        |
+        v
+Milestone 4: frontend adoption, compatibility, and closure
 ```
 
-- Milestone 1 has hard dependencies on Domain Identity Milestone 3, Project Catalog Milestone 4, and the project-aware TUI/session state interfaces.
-- Milestone 2 has a hard dependency on Milestone 1.
-- Milestone 3 has hard dependencies on Milestones 1–2 and an interface dependency on future principal capability filtering.
+- Milestone 1 is closed.
+- Milestone 2 library work is conditionally closed; its corrective daemon-integration pass is ready.
+- Milestone 3 has hard dependencies on strict Milestone 2 closure and an interface dependency on principal capability filtering.
 - Milestone 4 has hard dependencies on Milestones 1–3.
 
 ## 7. Milestones
@@ -121,86 +120,92 @@ Class: infrastructure
 
 Objective: define bounded, versioned session projection types and one deterministic reducer shared by tests and frontend adapters.
 
-Dependencies: hard on stable project/session identities and project-aware session routing.
-
 Deliverable boundary: DTOs, projection capabilities, reducer state machine, snapshot builder, mapping from current core events, payload limits, unknown-version behavior, and equivalence fixtures.
-
-User or operator value: frontends can consume one logical session model rather than bespoke event interpretations.
 
 Exit conditions:
 
-- local and test frontends reconstruct byte/semantically equivalent snapshots from the same inputs;
-- current turn/tool/run/job/permission/question states are represented;
-- large output is replaced by bounded summaries/handles;
-- unknown optional variants do not crash older compatible reducers;
-- raw render frames are absent from the canonical contract.
-
-Deferred work: durable replay and final authorization filtering.
+- independent consumers reconstruct equivalent state from the same inputs;
+- turn/tool/run/job/permission/question states are represented;
+- large output is bounded or represented by handles;
+- unknown optional variants do not crash compatible reducers;
+- raw render frames are absent.
 
 ### Milestone 2 — Scoped subscriptions and durable replay
 
-Status: **conditionally closed**; see
-`plans/closure/session-projections/002-status.md`. The library/crate
-implementation is landed at `8dc4b85`; the daemon-side wiring of the
-new `ProjectionReplayHandle` and the `CoreRequest::Projection*`
-dispatch remains an open follow-up captured in the closure record.
+Status: **corrective pass ready**.
 
-Class: capability
+Library implementation: `8dc4b85`.
 
-Objective: support deterministic reconnect/resume across client and daemon restart.
+Conditional closure record: `plans/closure/session-projections/002-status.md`.
 
-Dependencies: hard on Milestone 1.
+Corrective implementation plan: `plans/implementation/session-projections/002-corrective-daemon-integration-and-closure.md`.
 
-Deliverable boundary: project/session subscription requests, stream IDs/cursors, durable event index, acknowledgement, retention/checkpoints, resume/resync, replay after restart, and lag handling.
+Class: capability / correctness closure
+
+Objective: support deterministic reconnect/resume across client and daemon restart through a fully wired daemon-owned replay authority.
+
+The landed library layer provides stream/cursor DTOs, protocol variants, schema/storage, sequence allocation, replay, retention, checkpoints, subscription state, safe-publication classification, metrics, and focused tests.
+
+The corrective pass owns:
+
+- one production event-publication seam;
+- canonical non-empty context resolution;
+- real persisted stream ID delivery;
+- daemon request dispatch;
+- client/subscription-isolated live routing;
+- binding-revision invalidation;
+- startup/shutdown/maintenance integration;
+- daemon-level restart/failpoint/compatibility evidence;
+- strict closure documentation.
 
 Exit conditions:
 
-- reconnect from an available cursor replays exactly the missing events;
-- daemon restart preserves accepted replay history within retention;
-- expired/gapped/ahead cursors return bounded `ResyncRequired` plus snapshot path;
-- project subscriptions do not deliver unrelated project events;
-- duplicate delivery is idempotent at the reducer.
+- every production source event reaches the centralized publisher;
+- accepted projection events persist before projection delivery;
+- project/session streams use canonical IDs and current binding revision;
+- all `Projection*` requests dispatch through `CoreDaemon`;
+- projection live events reach only the owning subscription/client;
+- reconnect from an available cursor replays exactly missing events;
+- restart preserves retained history without sequence reuse;
+- expired/gapped/ahead/mismatched cursors resync explicitly;
+- legacy raw core-event clients remain compatible;
+- closure status becomes strict `closed`.
 
-Closure evidence: implementation commit `8dc4b85`. The closure
-record (`plans/closure/session-projections/002-status.md`) reports
-the full requirement-to-evidence matrix, the unresolved findings
-(daemon publication wiring, request dispatch, live-event routing,
-session rebind revision threading), and the M3 handoff shape. All
-seven work packages have production code at the library layer; the
-remaining items are mechanical integration wiring that does not
-invalidate the M2 invariant set.
-
-Deferred work: distributed node event replication.
+Deferred work: distributed node event replication and final multi-user policy.
 
 ### Milestone 3 — Visibility, redaction, and artifact handles
+
+Status: blocked.
 
 Class: invariant
 
 Objective: ensure projection storage and transport are safe for later multi-user observation.
 
-Dependencies: hard on Milestones 1–2; interface dependency on principal capability seam.
+Dependencies: strict Milestone 2 closure plus a principal/capability filtering interface.
 
-Deliverable boundary: visibility enum, policy hook, redaction pipeline, secret-pattern and typed-field redaction, artifact/log handles, bounded read APIs, actor-only/admin placeholders, and negative tests.
+Deliverable boundary: visibility enum, policy hook, structural and heuristic redaction, secret-field handling, artifact/log handles, bounded reads, actor-only/admin placeholders, and negative tests.
 
 Exit conditions:
 
-- credentials/environment secrets never enter shared projection events;
-- tool arguments/outputs are redacted before durable replay publication;
-- large content is retrievable only through bounded handles and policy checks;
-- visibility filtering can be supplied a future principal/capability context;
+- credentials and environment secrets never enter shared projection events;
+- tool arguments/outputs are redacted before durable publication;
+- large content is accessible only through bounded handles and policy checks;
+- visibility filtering accepts a future principal/capability context;
 - redaction failures fail closed or downgrade to safe summaries.
 
 Deferred work: final role policy and audit retention.
 
 ### Milestone 4 — Frontend adoption and closure
 
+Status: blocked.
+
 Class: capability
 
 Objective: migrate local/remote TUI paths to the canonical projection and prove cross-frontend equivalence.
 
-Dependencies: hard on Milestones 1–3.
+Dependencies: Milestones 1–3 closed.
 
-Deliverable boundary: TUI adapter/reducer integration, remote TUI protocol migration, compatibility capability negotiation, reference second frontend/test client, performance bounds, documentation, and closure evidence.
+Deliverable boundary: TUI adapter/reducer integration, remote TUI protocol migration, compatibility negotiation, a reference second client, performance bounds, documentation, and closure evidence.
 
 Exit conditions:
 
@@ -217,7 +222,7 @@ Replay storage is separate from chat and final audit storage. Use additive schem
 
 ### Protocol and compatibility
 
-Negotiate projection version and capabilities during initialization. Preserve current event-envelope compatibility where possible. Old remote TUI clients receive a bounded snapshot compatibility path or explicit unsupported diagnostics.
+Negotiate projection version and capabilities during initialization. Preserve existing event-envelope compatibility. Older clients continue through the bounded raw snapshot/event path or receive explicit unsupported diagnostics.
 
 ### Security and authorization
 
@@ -225,40 +230,42 @@ Redaction is structural first and heuristic second. Never rely only on regex. Po
 
 ### Concurrency, cancellation, and recovery
 
-Sequence assignment has one authority per stream. Publishing and durable acknowledgement must avoid acknowledged-but-unpersisted gaps. Subscribers are bounded; lagging clients resync. Cancellation removes subscriptions without deleting replay history.
+Sequence assignment has one authority per stream. Persistence precedes projection delivery and acknowledgement. Subscribers are bounded; lagging clients resync. Cancellation removes transient subscriptions without deleting replay history. Session rebinds invalidate prior stream revisions.
 
 ### Observability and audit
 
-Expose replay depth, retention, checkpoint age, subscriber lag, resync reasons, redaction counters, dropped/oversized payloads, and reducer version. Projection events retain correlation seams for later audit.
+Expose replay depth, retention, checkpoint age, subscriber lag, resync reasons, publication outcomes, dropped/oversized payloads, and reducer version. Diagnostics contain IDs and counts, not payload bodies or secrets.
 
 ### Performance and resource use
 
-Cap event size, replay window, subscriber queues, snapshot size, and artifact reads. Build checkpoints incrementally where practical. Avoid rebuilding full message history on every event.
+Cap event size, replay windows, subscriber queues, snapshots, and artifact reads. Build checkpoints incrementally. Avoid rebuilding complete message history on each event.
 
 ### Documentation and operations
 
-Update protocol, server, TUI, session, run/artifact, and troubleshooting docs. Provide a projection-version compatibility matrix and test-client examples.
+Update protocol, daemon, server, client, TUI, session, run/artifact, and troubleshooting docs. Maintain a projection-version compatibility matrix and daemon-level test examples.
 
 ## 9. Verification strategy
 
-Use golden reducer fixtures, snapshot/event equivalence tests, property tests for idempotent replay, daemon restart fixtures, sequence-gap/duplicate/ahead cases, retention expiry, slow subscriber backpressure, redaction adversarial cases, large artifact handles, and two-client equivalence tests.
+Use golden reducer fixtures, daemon request/transport tests, restart fixtures, sequence-gap/duplicate/ahead cases, retention expiry, slow subscriber backpressure, session-rebind races, failpoints before/after commit, safe-publication adversarial cases, large artifact handles, and two-client isolation/equivalence tests.
 
 ## 10. Risks and decision points
 
-- Replay storage can become a second audit system. Keep retention and purpose explicitly frontend-oriented.
-- Global versus per-project/per-session sequence ownership affects scaling. Begin with clearly scoped monotonic streams and document ordering guarantees rather than promising total deployment order.
-- Redaction after event creation is too late. Require safe typed event construction before durable publication.
-- If SQLite write amplification is excessive, optimize/checkpoint before changing database architecture; a database-backend change requires an ADR.
+- A dual publication path can duplicate or reorder events. Keep one centralized publisher.
+- Empty or placeholder stream identity can create cross-project leakage. Resolve canonical bindings before stream creation.
+- Replay storage can become a second audit system. Keep retention and purpose frontend-oriented.
+- Redaction after durable publication is too late. Require safe typed publication.
+- If SQLite write amplification is excessive, optimize/checkpoint before changing backend; a backend change requires an ADR.
+- Final authorization policy must not be smuggled into the M2 corrective integration pass.
 
 ## 11. Completion definition
 
-This roadmap closes when CodeGG has one versioned, bounded, redacted session projection contract; deterministic scoped replay survives reconnect and daemon restart; lag produces explicit resync; and at least two frontend implementations consume equivalent state without raw render-frame dependence.
+This roadmap closes when CodeGG has one versioned, bounded, redacted session projection contract; deterministic scoped replay survives reconnect and daemon restart; production daemon events are published through one canonical replay seam; lag and binding changes produce explicit resync; and at least two frontend implementations consume equivalent state without raw render-frame dependence.
 
 ## 12. Milestone status
 
 | Milestone | Status | Implementation plan | Closure record | Blockers |
 |---|---|---|---|---|
 | 1 | closed | `plans/implementation/session-projections/001-projection-contracts.md` | `plans/closure/session-projections/001-status.md` | — |
-| 2 | conditionally closed | `plans/implementation/session-projections/002-scoped-subscriptions-durable-replay.md` | `plans/closure/session-projections/002-status.md` | Library layer landed at `8dc4b85`; daemon publication wiring, request dispatch, and live-event routing remain open follow-ups. Milestone 3 cannot proceed until those are resolved. |
-| 3 | not started | — | — | Milestones 1–2 closure plus M2 daemon-wiring follow-up plus authorization interface |
-| 4 | not started | — | — | Milestones 1–3 closure |
+| 2 | corrective pass ready | `plans/implementation/session-projections/002-corrective-daemon-integration-and-closure.md` | `plans/closure/session-projections/002-status.md` (conditional) | Library layer landed at `8dc4b85`; daemon publication, canonical stream identity, request dispatch, live routing, and binding-revision closure remain |
+| 3 | blocked | — | — | Strict Milestone 2 closure plus principal/capability filtering interface |
+| 4 | blocked | — | — | Milestones 1–3 closure |
