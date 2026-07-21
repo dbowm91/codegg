@@ -17,6 +17,7 @@ Canonical direction remains in:
 - **blocked** — a named dependency or evidence requirement prevents progress.
 - **closing** — implementation landed and closure evidence is being gathered.
 - **closed** — closure record accepted.
+- **conditionally closed** — substantial work landed, but a named correctness finding prevents strict closure.
 - **superseded** — replaced by another document.
 - **archived** — no longer active and retained for traceability.
 
@@ -24,57 +25,57 @@ Canonical direction remains in:
 
 | Subsystem | Status | Roadmap | Current milestone | Dependencies or blockers |
 |---|---|---|---|---|
-| Domain identity and compatibility | closed | `plans/subsystems/domain-identity-roadmap.md` | Milestone 4 — closure and legacy-removal criteria (closed) | — |
-| Runtime assets and harness interoperability | closed | `plans/subsystems/runtime-assets-roadmap.md` | Milestone 4 — immutable runtime pinning and closure (closed) | — |
-| Provider connections and Eggpool | closed | `plans/subsystems/provider-connections-roadmap.md` | Milestone 5 — corrective lifecycle, rotation, health, and closure (closed) | — |
-| Project catalog and lazy discovery | closed | `plans/subsystems/project-catalog-roadmap.md` | Milestone 4 — protocol, server migration, and closure (closed) | — |
-| Multi-project TUI and sessions | closed | `plans/subsystems/tui-project-sessions-roadmap.md` | All milestones closed (001–004) | — |
-| Frontend-neutral session projections | closed | `plans/subsystems/session-projections-roadmap.md` | All milestones closed (001–004) | Future plans (M5+): deprecation surfacing of legacy `RenderFrame`/`StateSnapshot`/raw-core variants; cross-tab artifact hand-off UX; plugin emission fall-through semantics. |
+| Domain identity and compatibility | closed | `plans/subsystems/domain-identity-roadmap.md` | Milestone 4 closed | — |
+| Runtime assets and harness interoperability | closed | `plans/subsystems/runtime-assets-roadmap.md` | Milestone 4 closed | — |
+| Provider connections and Eggpool | closed | `plans/subsystems/provider-connections-roadmap.md` | Milestone 5 closed | — |
+| Project catalog and lazy discovery | closed | `plans/subsystems/project-catalog-roadmap.md` | Milestone 4 closed | — |
+| Multi-project TUI and sessions | closed | `plans/subsystems/tui-project-sessions-roadmap.md` | Milestones 001–004 closed | — |
+| Frontend-neutral session projections | active | `plans/subsystems/session-projections-roadmap.md` | Milestone 005 — remote transport isolation, resume, and compatibility closure | Ready; post-M4 audit found WebSocket subscription ownership, live delivery, resume, stream identity, cleanup, and queue-bound defects |
 
 ## Dependency-ready implementation plans
 
 | Subsystem | Milestone | Class | Plan | Baseline | Status |
 |---|---|---|---|---|---|
-
+| Frontend-neutral session projections | 005 — remote transport isolation, resume, and compatibility closure | correctness / security / transport | `plans/implementation/session-projections/005-remote-transport-isolation-resume-closure.md` | `bdc2138` | ready |
 
 ## Active closure work
 
 | Subsystem | Milestone | Closure record | Status | Open findings |
 |---|---|---|---|---|
+| Frontend-neutral session projections | 004 — frontend adoption and compatibility | `plans/closure/session-projections/004-status.md` | conditionally closed at `bdc2138` | `/tui` and `/core` lack connection-local receiver ownership; remote cursor resume/unsubscribe/artifact lifecycle incomplete; typed resync degraded; stream/subscription IDs interchanged; Unix forwarder uses synthetic stream ID; WebSocket queues unbounded |
 
 ## Blocked work
 
 | Work item | Blocker | Required resolution | Owner document |
 |---|---|---|---|
+| Strict closure of Session Projections M004 and subsystem roadmap | M005 transport findings | Implement and strictly close M005 with two-client isolation, real stream identity, remote resume, bounded queues, and cleanup evidence | `plans/implementation/session-projections/005-remote-transport-isolation-resume-closure.md` |
+
+## Deferred unregistered product work
+
+These are not dependency-ready correctness plans and remain outside the active handoff:
+
+- cross-tab artifact hand-off UX;
+- numeric acknowledgement/resync hot-key UX;
+- plugin-specific `ProjectionEvent::PluginUi` semantics;
+- final removal of legacy remote variants after the compatibility window;
+- final team roles, presence, and chat.
 
 ## Recently closed work
 
 | Subsystem | Milestone | Closure record | Closed at commit | Follow-up |
 |---|---|---|---|---|
-| Frontend-neutral session projections | 004 — frontend adoption and closure | `plans/closure/session-projections/004-status.md` | (this commit) | All M1–M4 milestones closed; legacy variants retained under bounded compatibility until a future M5+ deprecation plan |
-| Frontend-neutral session projections | 003 — visibility, redaction, and artifact handles | `plans/closure/session-projections/003-status.md` | WP A–D implementation + WP E verification | Milestone 004 (frontend adoption and closure) |
-| Frontend-neutral session projections | 002 — scoped subscriptions and durable replay | `plans/closure/session-projections/002-status.md` | this commit (corrective daemon integration + library at `8dc4b85`) | Milestone 003 (visibility/redaction/artifact handles) — now closed |
-| Frontend-neutral session projections | 001 — projection contracts and canonical reducer | `plans/closure/session-projections/001-status.md` | `f6c8669` (implementation) | `plans/implementation/session-projections/002-scoped-subscriptions-durable-replay.md` |
-| Multi-project TUI and sessions | 004 — persistent restoration, resource bounds, and closure | `plans/closure/tui-project-sessions/004-status.md` | (this commit) | Subsystem roadmap closed; downstream plans are independent |
-| Multi-project TUI and sessions | 003 — event routing and lifecycle | `plans/closure/tui-project-sessions/003-status.md` | (this commit) | `plans/implementation/tui-project-sessions/004-persistent-restoration-resource-closure.md` |
-| Multi-project TUI and sessions | 002 — project picker and tab navigation | `plans/closure/tui-project-sessions/002-status.md` | (this commit) | `plans/implementation/tui-project-sessions/003-event-routing-lifecycle.md` |
-| Multi-project TUI and sessions | 001 — project-aware state and catalog client | `plans/closure/tui-project-sessions/001-status.md` | `62e26b1` (implementation) | `plans/implementation/tui-project-sessions/002-project-picker-tab-navigation.md` |
-| Project catalog and lazy discovery | 004 — protocol, server migration, and closure | `plans/closure/project-catalog/004-status.md` | `d1e5b70` (implementation) | TUI and projection consumers use the closed catalog protocol |
-| Domain identity and compatibility | 004 — closure and legacy-removal criteria | `plans/closure/domain-identity/004-status.md` | `c4e9cf8` | Project Catalog 004 closed the remaining server locator criteria |
-| Domain identity and compatibility | 003 — corrective daemon and protocol adoption | `plans/closure/domain-identity/003-corrective-status.md` | `ec42dce` | Milestone 4 — closure and legacy-removal criteria |
-| Runtime assets and harness interoperability | 004 — immutable runtime pinning and closure | `plans/closure/runtime-assets/004-status.md` | `2293a11` | Project Catalog and TUI consumers use the closed generation/pinning contract |
-| Runtime assets and harness interoperability | 003 — refresh lifecycle and operator surface | `plans/closure/runtime-assets/003-status.md` | `972c286` | Project Catalog activation and Multi-Project TUI consume the refresh contract |
-| Runtime assets and harness interoperability | 002 — explicit-context agent and instruction resolution | `plans/closure/runtime-assets/002-status.md` | `155f7f3` | Runtime Assets M003 |
-| Runtime assets and harness interoperability | 001 — project asset registry | `plans/closure/runtime-assets/001-status.md` | `f9db5c3` | Milestone 2 — explicit-context agent and instruction resolution |
-| Project catalog and lazy discovery | 003 — lazy activation and health | `plans/closure/project-catalog/003-status.md` | `27cbd43` (implementation) | Project Catalog 004 closed; Multi-Project TUI consumes the protocol |
-| Project catalog and lazy discovery | 002 — bounded discovery and reconciliation | `plans/closure/project-catalog/002-status.md` | `5974976` (implementation) | Project Catalog M003 |
-| Project catalog and lazy discovery | 001 — durable catalog foundation | `plans/closure/project-catalog/001-status.md` | `a2db5e4` | Milestone 2 — bounded discovery and reconciliation |
+| Frontend-neutral session projections | 004 — frontend adoption and compatibility | `plans/closure/session-projections/004-status.md` | `bdc2138` (now conditional after post-closure audit) | M005 corrective transport closure |
+| Frontend-neutral session projections | 003 — visibility, redaction, and artifact handles | `plans/closure/session-projections/003-status.md` | `bac73ce` | M004/M005 consume disclosure and artifact policy |
+| Frontend-neutral session projections | 002 — scoped subscriptions and durable replay | `plans/closure/session-projections/002-status.md` | `c1d910a` corrective integration; library at `8dc4b85` | M005 reuses owned receiver seam |
+| Frontend-neutral session projections | 001 — projection contracts and canonical reducer | `plans/closure/session-projections/001-status.md` | `f6c8669` | — |
+| Multi-project TUI and sessions | 004 — persistent restoration, resource bounds, and closure | `plans/closure/tui-project-sessions/004-status.md` | `0d98576` | — |
+| Multi-project TUI and sessions | 003 — event routing and lifecycle | `plans/closure/tui-project-sessions/003-status.md` | `6ad9952` closure completion; implementation at `248aa32` | — |
+| Multi-project TUI and sessions | 002 — project picker and tab navigation | `plans/closure/tui-project-sessions/002-status.md` | `f569386` | — |
+| Multi-project TUI and sessions | 001 — project-aware state and catalog client | `plans/closure/tui-project-sessions/001-status.md` | `62e26b1` | — |
+| Project catalog and lazy discovery | 004 — protocol, server migration, and closure | `plans/closure/project-catalog/004-status.md` | `d1e5b70` | — |
+| Domain identity and compatibility | 004 — closure and legacy-removal criteria | `plans/closure/domain-identity/004-status.md` | `c4e9cf8` | — |
+| Runtime assets and harness interoperability | 004 — immutable runtime pinning and closure | `plans/closure/runtime-assets/004-status.md` | `2293a11` | — |
 | Provider connections and Eggpool | 005 — corrective lifecycle, rotation, health, and closure | `plans/closure/provider-connections/005-status.md` | `0eadc85` | — |
-| Provider connections and Eggpool | 003 — session/model selection by connection | `plans/closure/provider-connections/003-status.md` | `efe1995` | Provider roadmap closed after Milestone 5 |
-| Domain identity and compatibility | 002 — project/repository storage migration | `plans/closure/domain-identity/002-status.md` | `84d92f0` | Runtime Assets 001 and Project Catalog 001 |
-| Domain identity and compatibility | 001 — typed identity foundation | `plans/closure/domain-identity/001-status.md` | `f203ed9` | Milestone 2 — project/repository storage migration |
-| Provider connections and Eggpool | 002 — Eggpool `/connect` workflow | `plans/closure/provider-connections/002-status.md` | `8c1675c` | Milestone 3 — session/model selection by connection |
-| Provider connections and Eggpool | 001 — durable connection foundation | `plans/closure/provider-connections/001-status.md` | `bccca00` | Milestone 2 — Eggpool connect workflow |
 
 ## Registry maintenance rules
 
@@ -83,8 +84,9 @@ Canonical direction remains in:
 3. Move a plan from ready to active when implementation begins.
 4. Move it to closing when production work lands and closure review starts.
 5. Mark it closed only when the linked closure record says closed.
-6. Record blockers precisely and link the document that owns their resolution.
-7. Remove closed rows from active sections after recording them under recently closed work.
-8. Periodically move old closed interim documents to `plans/archive/` while preserving links.
-9. Do not copy detailed milestone requirements into this registry.
-10. When one milestone closes, update the subsystem roadmap and create/register only the next dependency-ready handoff plan.
+6. Use conditionally closed when a post-closure correctness finding invalidates a strict claim.
+7. Record blockers precisely and link the document that owns their resolution.
+8. Remove closed rows from active sections after recording them under recently closed work.
+9. Periodically archive old closed interim documents while preserving links.
+10. Do not copy detailed milestone requirements into this registry.
+11. When one milestone closes, create/register only the next dependency-ready handoff.
