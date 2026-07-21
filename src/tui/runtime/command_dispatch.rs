@@ -938,12 +938,14 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
         }
         TuiCommand::WorkspaceRegistered {
             request_id,
+            picker_request_id,
             workspace_id,
             error,
         } => {
             super::super::commands::project_picker::apply_workspace_registered(
                 app,
                 request_id,
+                picker_request_id,
                 workspace_id,
                 error,
             );
@@ -964,11 +966,16 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
         }
         TuiCommand::ProjectRegistered {
             request_id,
+            picker_request_id,
             project_id,
             error,
         } => {
             super::super::commands::project_picker::apply_project_registered(
-                app, request_id, project_id, error,
+                app,
+                request_id,
+                picker_request_id,
+                project_id,
+                error,
             );
         }
         TuiCommand::NextProjectTab => {

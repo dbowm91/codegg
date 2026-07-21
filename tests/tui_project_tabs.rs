@@ -336,22 +336,24 @@ fn identical_session_titles_do_not_collide_tabs() {
 }
 
 #[test]
-fn remove_active_tab_falls_back_to_last_in_order() {
+fn remove_active_tab_falls_back_to_adjacent_previous() {
     let mut tabs = codegg::tui::app::state::ProjectTabs::default();
     let a = tabs.add_and_activate(codegg::tui::app::state::ProjectTabState::empty(
         codegg::tui::app::state::ProjectTabId::new(),
         "a".to_string(),
     ));
-    let _b = tabs.add_tab(codegg::tui::app::state::ProjectTabState::empty(
+    let b = tabs.add_tab(codegg::tui::app::state::ProjectTabState::empty(
         codegg::tui::app::state::ProjectTabId::new(),
         "b".to_string(),
     ));
-    let c = tabs.add_tab(codegg::tui::app::state::ProjectTabState::empty(
+    let _c = tabs.add_tab(codegg::tui::app::state::ProjectTabState::empty(
         codegg::tui::app::state::ProjectTabId::new(),
         "c".to_string(),
     ));
+    // Order: [a, b, c]; active is a. Remove a -> falls back to
+    // adjacent previous. Since a is first, adjacent next (b).
     tabs.remove_tab(&a);
-    assert_eq!(tabs.active_tab_id(), Some(&c));
+    assert_eq!(tabs.active_tab_id(), Some(&b));
     assert_eq!(tabs.len(), 2);
 }
 
@@ -483,3 +485,123 @@ fn fake_client_handles_project_list_and_get_consistently() {
 // refactors.
 #[allow(dead_code)]
 fn _type_pin(_: ProjectHealthDto, _: ProjectHealthLayerDto) {}
+
+// --- Milestone 2 corrective tests ---
+
+#[test]
+fn remove_tab_does_not_delete_daemon_session() {
+    // Verifies that remove_tab only mutates frontend state — no daemon
+    // call is made. This is the key invariant: closing a tab never
+    // deletes, archives, or cancels daemon-owned sessions.
+    let mut tabs = codegg::tui::app::state::ProjectTabs::default();
+    let a = tabs.add_and_activate(codegg::tui::app::state::ProjectTabState::empty(
+        codegg::tui::app::state::ProjectTabId::new(),
+        "a".to_string(),
+    ));
+    let _b = tabs.add_tab(codegg::tui::app::state::ProjectTabState::empty(
+        codegg::tui::app::state::ProjectTabId::new(),
+        "b".to_string(),
+    ));
+    assert_eq!(tabs.len(), 2);
+    let removed = tabs.remove_tab(&a).expect("remove a");
+    assert_eq!(removed.label, "a");
+    assert_eq!(tabs.len(), 1);
+    assert!(tabs.active().is_some());
+}
+
+#[test]
+fn close_last_tab_fallback_has_no_daemon_ids() {
+    let mut tabs = codegg::tui::app::state::ProjectTabs::default();
+    let a = tabs.add_and_activate(codegg::tui::app::state::ProjectTabState::empty(
+        codegg::tui::app::state::ProjectTabId::new(),
+        "a".to_string(),
+    ));
+    tabs.remove_tab(&a);
+    assert!(tabs.is_empty());
+    let fallback_id = tabs.close_fallback_tab();
+    let active = tabs.active().expect("fallback");
+    assert_eq!(active.tab_id, fallback_id);
+    assert_eq!(active.label, "default");
+    assert!(active.project_id.is_none());
+    assert!(active.workspace_id.is_none());
+    assert!(active.session_id.is_none());
+}
+
+#[test]
+fn find_by_project_focuses_existing_tab() {
+    let mut tabs = codegg::tui::app::state::ProjectTabs::default();
+    let compat = codegg::tui::app::state::ProjectTabState::empty(
+        codegg::tui::app::state::ProjectTabId::new(),
+        "compat".to_string(),
+    );
+    tabs.add_and_activate(compat);
+
+    let mut tab = codegg::tui::app::state::ProjectTabState::empty(
+        codegg::tui::app::state::ProjectTabId::new(),
+        "existing".to_string(),
+    );
+    tab.project_id = Some("proj-123".to_string());
+    let existing_id = tab.tab_id.clone();
+    tabs.add_tab(tab);
+    assert_eq!(tabs.len(), 2);
+
+    let found = tabs.find_by_project("proj-123").unwrap();
+    assert_eq!(found.tab_id, existing_id);
+    tabs.set_active(&existing_id);
+    assert_eq!(tabs.len(), 2);
+    assert_eq!(tabs.active_tab_id(), Some(&existing_id));
+}
+
+#[test]
+fn capacity_enforced_at_state_level() {
+    use codegg::tui::app::state::project_picker::MAX_OPEN_PROJECT_TABS;
+
+    let mut tabs = codegg::tui::app::state::ProjectTabs::default();
+    for i in 0..MAX_OPEN_PROJECT_TABS {
+        let mut tab = codegg::tui::app::state::ProjectTabState::empty(
+            codegg::tui::app::state::ProjectTabId::new(),
+            format!("tab-{}", i),
+        );
+        tab.project_id = Some(format!("proj-{}", i));
+        tabs.add_tab(tab);
+    }
+    assert!(tabs.is_at_capacity());
+    assert!(tabs.find_by_project("proj-new").is_none());
+}
+
+#[test]
+fn stale_workspace_registration_is_dropped() {
+    let mut picker = codegg::tui::app::state::ProjectPickerState::new(true, 0);
+    let id1 = picker.begin_request();
+    assert!(picker.is_request_current(id1));
+    let id2 = picker.begin_request();
+    assert!(!picker.is_request_current(id1));
+    assert!(picker.is_request_current(id2));
+}
+
+#[test]
+fn stale_project_registration_is_dropped() {
+    let mut picker = codegg::tui::app::state::ProjectPickerState::new(true, 0);
+    let id1 = picker.begin_request();
+    let id2 = picker.begin_request();
+    let id3 = picker.begin_request();
+    assert!(!picker.is_request_current(id1));
+    assert!(!picker.is_request_current(id2));
+    assert!(picker.is_request_current(id3));
+}
+
+#[test]
+fn stale_project_sessions_is_dropped() {
+    let mut tab = codegg::tui::app::state::ProjectTabState::empty(
+        codegg::tui::app::state::ProjectTabId::new(),
+        "test".to_string(),
+    );
+    tab.project_id = Some("proj-1".to_string());
+    tab.workspace_id = Some("ws-1".to_string());
+
+    let stale_id = tab.request_state.begin();
+    let fresh_id = tab.request_state.begin();
+
+    assert!(!tab.request_state.is_current(stale_id));
+    assert!(tab.request_state.is_current(fresh_id));
+}

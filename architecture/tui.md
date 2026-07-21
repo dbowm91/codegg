@@ -572,9 +572,149 @@ false }`, the TUI:
 - Records `capability_supported = false`.
 - Keeps the legacy single-project compat tab usable.
 - Renders an actionable diagnostic ("project catalog unsupported by
-  this daemon — upgrade or use --standalone") when a future picker
-  or `/projects` command is invoked. Until then the catalog state
-  remains invisible to the user.
+  this daemon — upgrade or use --standalone") when the picker
+  is opened. The catalog state remains otherwise invisible to the user.
+
+## Project Picker and Tab Navigation (Milestone 2)
+
+Milestone 2 adds a bounded, searchable project picker, a visible tab
+strip, next/previous/close navigation, per-tab session listing, and a
+controlled active-view switch transaction.
+
+### Project Picker (`Dialog::ProjectPicker`)
+
+The picker is a modal dialog opened by `Space f` (Insert), `\` (Vim
+Normal), or `Ctrl+\`. It searches the daemon-backed project catalog
+using fuzzy matching over display names, tags, and project IDs.
+
+Picker phases (`PickerPhase` enum in `src/tui/app/state/project_picker.rs`):
+
+| Phase | Description |
+|-------|-------------|
+| `Catalog` | Search and select from loaded project summaries |
+| `WorkspaceSelection` | Choose workspace when project has >1 workspaces |
+| `RegistrationInput` | Enter local directory path for registration |
+| `RegistrationConfirm` | Review and confirm registration draft |
+| `Error` | Show actionable error with retry hint |
+
+The picker state (`ProjectPickerState`) lives on
+`App::dialog_state.project_picker`. It carries the query text, filtered
+indices, selected row, cached project detail, registration draft, and a
+`picker_request: AsyncUiRequestState` generation guard.
+
+Filtering operates only on bounded daemon-returned summaries
+(`MAX_PROJECT_LIST_ITEMS = 128`). Results are capped at
+`MAX_PICKER_VISIBLE_ROWS = 16` for rendering.
+
+### Tab Strip
+
+A 1-row tab strip is rendered above the viewport on wide terminals
+(≥80 cols). Narrow terminals suppress the strip to preserve prompt
+space. The strip uses a bounded sliding window (max 7 visible tabs)
+centered on the active tab.
+
+Tab labels are truncated to `MAX_TAB_LABEL_LEN = 24` characters at
+Unicode-safe boundaries. Duplicate labels are disambiguated by
+appending a short stable suffix derived from the workspace ID or tab
+ID — never from a path.
+
+### Keybindings
+
+Default bindings (Insert mode):
+
+| Action | Key |
+|--------|-----|
+| Open project picker | `Space f` / `Ctrl+\` |
+| Next project tab | `Space Tab` / `Ctrl+Shift+]` |
+| Previous project tab | `Space Shift+Tab` / `Ctrl+Shift+[` |
+| Close active project tab | `Space Backspace` / `Alt+W` |
+
+Vim Normal mode: `\` (picker), `}` (next), `{` (prev), `Q` (close).
+
+All bindings go through the configurable `InputAction` / `ActionKey`
+system. The keybinding collision audit test verifies no two actions
+share a default key in the same mode.
+
+### Active-View Switch Transaction
+
+`ViewSwitchCoordinator` (`src/tui/app/state/view_switch.rs`) manages a
+controlled transition when switching tabs:
+
+1. Snapshot outgoing tab's lightweight selection (model, agent).
+2. Increment `active_view_epoch` before starting any incoming load.
+3. Mark incoming tab as pending, set it active for presentation.
+4. If the tab has a selected session, request session load/attach
+   through `CoreClient`. The returned canonical binding must match the
+   tab's project/workspace.
+5. Apply heavy `SessionState`, route, messages, and model/agent/provider
+   selection only when `(tab_id, project_id, workspace_id, session_id,
+   active_view_epoch)` still match.
+6. If no session, cancel the switch and clear active heavy state.
+7. On failure, keep tab selected with actionable error; do not restore
+   outgoing project's heavy state.
+
+This is a temporary compatibility bridge. Milestone 3 systematically
+routes remaining async/event paths; Session Projections Milestone 004
+replaces bespoke session reconstruction.
+
+### Close Semantics
+
+`close_active_project_tab` (dispatched via `TuiCommand::CloseProjectTab`):
+
+- Removes only frontend tab state.
+- Bumps `view_switch.active_view_epoch` to invalidate in-flight loads.
+- Cancels any in-flight switch targeting the closed tab.
+- Falls back to the adjacent previous tab in display order; if the
+  closed tab was first, falls back to the adjacent next tab.
+- If the last tab closes, creates a fallback "default" tab with no
+  daemon IDs.
+- Never issues daemon delete, archive, or cancel requests.
+
+### Project-Local Session List
+
+Per-tab bounded session summary cache (`session_summaries: Vec<SessionSummaryCacheEntry>`)
+on `ProjectTabState`. Session list requests use the tab's stable project
+ID and carry tab ID, project ID, workspace ID, and request generation.
+Results are filtered to sessions whose canonical binding matches the
+tab's project/workspace scope.
+
+### One-Off Registration
+
+The picker supports explicit local workspace registration via
+`WorkspaceRegister` then `ProjectRegister`. The flow is gated to
+`AppMode::Embedded` only — remote clients get an actionable toast.
+
+### Compatibility Mode
+
+When `project_catalog.v1` is unsupported:
+
+- `Space f` opens the picker, which displays an actionable notice:
+  "Project catalog unsupported by this daemon. Upgrade or use
+  --standalone."
+- The existing compat tab and session workflow continue.
+- Tab navigation actions remain harmless when only one tab exists.
+- No synthetic catalog is built from cwd or local session rows.
+
+### Stale Completion Rejection
+
+All picker async operations carry identity for stale rejection:
+
+| Operation | Guard |
+|-----------|-------|
+| `ProjectGetLoaded` | `picker.is_request_current(picker_request_id)` |
+| `ProjectSessionsLoaded` | `tab.request_state.is_current(request_id)` + project/workspace match |
+| `WorkspaceRegistered` | `picker.is_request_current(picker_request_id)` |
+| `ProjectRegistered` | `picker.is_request_current(picker_request_id)` |
+| `ViewSwitchCoordinator` | `(tab_id, project_id, workspace_id, session_id, epoch)` match |
+
+### Deferred to Milestone 003
+
+- Persistent tab restoration across process restart.
+- Full project-correct routing of every streaming event, dialog, Git
+  completion, and background task under rapid switching.
+- Per-tab session list projection into `SessionDialog`.
+- Systematic audit of all existing streaming events and legacy async
+  commands.
 
 ## Routes
 

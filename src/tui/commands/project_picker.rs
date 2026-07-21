@@ -669,6 +669,14 @@ pub(crate) fn start_register_workspace(app: &mut App, path: String) {
         return;
     }
 
+    // Capture picker request generation for stale-completion rejection.
+    let picker_request_id = app
+        .dialog_state
+        .project_picker
+        .as_ref()
+        .map(|p| p.picker_request.request_id())
+        .unwrap_or(0);
+
     let core_client = app.core_client.clone();
     let tx = app.tui_cmd_tx.clone();
 
@@ -683,6 +691,7 @@ pub(crate) fn start_register_workspace(app: &mut App, path: String) {
             let Some(core_client) = core_client else {
                 return Some(TuiCommand::WorkspaceRegistered {
                     request_id,
+                    picker_request_id,
                     workspace_id: None,
                     error: Some("Core unavailable".to_string()),
                 });
@@ -697,6 +706,7 @@ pub(crate) fn start_register_workspace(app: &mut App, path: String) {
                 Ok(CoreResponse::WorkspaceSnapshot { workspace }) => {
                     Some(TuiCommand::WorkspaceRegistered {
                         request_id,
+                        picker_request_id,
                         workspace_id: Some(workspace.workspace_id),
                         error: None,
                     })
@@ -704,17 +714,20 @@ pub(crate) fn start_register_workspace(app: &mut App, path: String) {
                 Ok(CoreResponse::Error { code, message }) => {
                     Some(TuiCommand::WorkspaceRegistered {
                         request_id,
+                        picker_request_id,
                         workspace_id: None,
                         error: Some(format!("{}: {}", code, message)),
                     })
                 }
                 Ok(_) => Some(TuiCommand::WorkspaceRegistered {
                     request_id,
+                    picker_request_id,
                     workspace_id: None,
                     error: Some("Unexpected response".to_string()),
                 }),
                 Err(e) => Some(TuiCommand::WorkspaceRegistered {
                     request_id,
+                    picker_request_id,
                     workspace_id: None,
                     error: Some(e.to_string()),
                 }),
@@ -727,16 +740,24 @@ pub(crate) fn start_register_workspace(app: &mut App, path: String) {
 pub(crate) fn apply_workspace_registered(
     app: &mut App,
     request_id: u64,
+    picker_request_id: u64,
     workspace_id: Option<String>,
     error: Option<String>,
 ) {
+    // Reject stale completion if the picker has moved on.
+    let picker = match &mut app.dialog_state.project_picker {
+        Some(p) => p,
+        None => return,
+    };
+    if !picker.is_request_current(picker_request_id) {
+        return;
+    }
     let _ = request_id;
+
     if let Some(err) = error {
         app.messages_state.toasts.error(&err);
-        if let Some(picker) = &mut app.dialog_state.project_picker {
-            picker.last_error = Some(err);
-            picker.phase = crate::tui::app::state::PickerPhase::Error;
-        }
+        picker.last_error = Some(err);
+        picker.phase = crate::tui::app::state::PickerPhase::Error;
         return;
     }
 
@@ -747,10 +768,8 @@ pub(crate) fn apply_workspace_registered(
 
     // Store the workspace id for the next step (project registration)
     // and transition to registration input phase
-    if let Some(picker) = &mut app.dialog_state.project_picker {
-        picker.phase = crate::tui::app::state::PickerPhase::RegistrationInput;
-        picker.last_error = None;
-    }
+    picker.phase = crate::tui::app::state::PickerPhase::RegistrationInput;
+    picker.last_error = None;
 }
 
 /// Start registering a project.
@@ -761,6 +780,14 @@ pub(crate) fn start_register_project(
     description: Option<String>,
     tags: Vec<String>,
 ) {
+    // Capture picker request generation for stale-completion rejection.
+    let picker_request_id = app
+        .dialog_state
+        .project_picker
+        .as_ref()
+        .map(|p| p.picker_request.request_id())
+        .unwrap_or(0);
+
     let core_client = app.core_client.clone();
     let tx = app.tui_cmd_tx.clone();
     let request_id = 0;
@@ -774,6 +801,7 @@ pub(crate) fn start_register_project(
             let Some(core_client) = core_client else {
                 return Some(TuiCommand::ProjectRegistered {
                     request_id,
+                    picker_request_id,
                     project_id: None,
                     error: Some("Core unavailable".to_string()),
                 });
@@ -797,22 +825,26 @@ pub(crate) fn start_register_project(
                 Ok(CoreResponse::ProjectRegistered { project }) => {
                     Some(TuiCommand::ProjectRegistered {
                         request_id,
+                        picker_request_id,
                         project_id: Some(project.project_id),
                         error: None,
                     })
                 }
                 Ok(CoreResponse::Error { code, message }) => Some(TuiCommand::ProjectRegistered {
                     request_id,
+                    picker_request_id,
                     project_id: None,
                     error: Some(format!("{}: {}", code, message)),
                 }),
                 Ok(_) => Some(TuiCommand::ProjectRegistered {
                     request_id,
+                    picker_request_id,
                     project_id: None,
                     error: Some("Unexpected response".to_string()),
                 }),
                 Err(e) => Some(TuiCommand::ProjectRegistered {
                     request_id,
+                    picker_request_id,
                     project_id: None,
                     error: Some(e.to_string()),
                 }),
@@ -825,17 +857,25 @@ pub(crate) fn start_register_project(
 pub(crate) fn apply_project_registered(
     app: &mut App,
     request_id: u64,
+    picker_request_id: u64,
     project_id: Option<String>,
     error: Option<String>,
 ) {
+    // Reject stale completion if the picker has moved on.
+    let picker = match &mut app.dialog_state.project_picker {
+        Some(p) => p,
+        None => return,
+    };
+    if !picker.is_request_current(picker_request_id) {
+        return;
+    }
     let _ = request_id;
     let _ = project_id;
+
     if let Some(err) = error {
         app.messages_state.toasts.error(&err);
-        if let Some(picker) = &mut app.dialog_state.project_picker {
-            picker.last_error = Some(err);
-            picker.phase = crate::tui::app::state::PickerPhase::Error;
-        }
+        picker.last_error = Some(err);
+        picker.phase = crate::tui::app::state::PickerPhase::Error;
         return;
     }
 

@@ -167,6 +167,7 @@ pub fn render_picker_body(
     picker: &ProjectPickerState,
     filtered_indices: &[usize],
     entries: &[crate::protocol::dto::ProjectSummaryDto],
+    capability_supported: bool,
     inner: Rect,
     theme: &Arc<Theme>,
 ) {
@@ -192,7 +193,9 @@ pub fn render_picker_body(
             let rows = picker_visible_rows(picker, filtered_indices, entries);
             let (start, _) = visible_window(filtered_indices.len(), picker.selected_row);
             if rows.is_empty() {
-                let msg = if picker.query.is_empty() {
+                let msg = if !capability_supported {
+                    "Project catalog unsupported by this daemon.\nUpgrade or use --standalone."
+                } else if picker.query.is_empty() {
                     "No projects registered yet."
                 } else {
                     "No matches."

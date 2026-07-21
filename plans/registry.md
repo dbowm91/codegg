@@ -28,7 +28,7 @@ Canonical direction remains in:
 | Runtime assets and harness interoperability | closed | `plans/subsystems/runtime-assets-roadmap.md` | Milestone 4 — immutable runtime pinning and closure (closed) | — |
 | Provider connections and Eggpool | closed | `plans/subsystems/provider-connections-roadmap.md` | Milestone 5 — corrective lifecycle, rotation, health, and closure (closed) | — |
 | Project catalog and lazy discovery | closed | `plans/subsystems/project-catalog-roadmap.md` | Milestone 4 — protocol, server migration, and closure (closed) | — |
-| Multi-project TUI and sessions | active | `plans/subsystems/tui-project-sessions-roadmap.md` | Milestone 3 — project-correct event routing and lifecycle | Plan pending; Milestone 2 closed |
+| Multi-project TUI and sessions | active | `plans/subsystems/tui-project-sessions-roadmap.md` | Milestone 3 — project-correct event routing and lifecycle | Milestone 2 closed; implementation plan registered |
 | Frontend-neutral session projections | active | `plans/subsystems/session-projections-roadmap.md` | Milestone 3 — visibility, redaction, and artifact handles | Milestone 2 strictly closed at this commit; the principal capability filtering seam is the remaining dependency for Milestone 3. |
 
 ## Dependency-ready implementation plans
@@ -46,7 +46,6 @@ Canonical direction remains in:
 
 | Work item | Blocker | Required resolution | Owner document |
 |---|---|---|---|
-| Multi-Project TUI 003 — project-correct event routing and lifecycle | Multi-Project TUI 002 is not closed | Implement and strictly close TUI 002; consume its picker/tab/session navigation ownership without creating a second tab model | `plans/subsystems/tui-project-sessions-roadmap.md` |
 | Session Projections 003 — visibility, redaction, and artifact handles | The principal capability filtering seam is required for visibility/redaction/artifact policy. Session Projections 002 is strictly closed (`plans/closure/session-projections/002-status.md`). | Define the fail-closed visibility/redaction and bounded artifact-read policy around the closed durable replay authority; land the principal capability filtering seam first | `plans/subsystems/session-projections-roadmap.md` |
 
 ## Recently closed work

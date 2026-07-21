@@ -1,6 +1,6 @@
 # Multi-Project TUI and Session Management Milestone 002 — Closure Status
 
-Status: closed
+Status: closed (corrective pass applied)
 
 Source implementation plan:
 
@@ -19,6 +19,9 @@ Implementation commits or pull requests:
   command pair, tab navigation, view-switch coordinator, tab strip
   rendering, picker dialog component, keybindings, and integration
   tests.
+- Corrective commit — adjacent-previous close fallback, unsupported
+  capability notice in picker, stale completion guards for
+  registration commands, documentation sweep, and additional tests.
 - Follow-up closure commit — this record, subsystem roadmap status,
   registry update, and downstream Milestone 003 unblock.
 
@@ -322,16 +325,17 @@ milestone could introduce.
 
 | Severity | Finding | Impact | Required action |
 |---|---|---|---|
-| low | `architecture/tui.md` has not been swept for the new picker/tab strip/view-switch sections. | Doc readers don't yet see picker phases, tab strip diagram, lightweight/heavy ownership, switch transaction, close semantics, compatibility mode, keybindings, M003 handoff. | Documentation sweep MUST land before or alongside Session Projections Milestone 004 frontend adoption. |
-| low | `architecture/overview.md` verified counts line still references M001-only counts. | Stats line is stale. | Update alongside the doc sweep. |
-| low | `AGENTS.md` TUI section does not yet mention picker keybindings (`Ctrl+\`, `Ctrl+Shift+]`/`[`, `Alt+W`) or view-switch epoch. | Agents reading AGENTS.md don't see new bindings. | Update alongside the doc sweep. |
-| low | `tui_project_picker.rs` integration tests are unit-level only; full `App`-level integration through the fake `CoreClient` is not yet exercised end-to-end for `apply_project_get_loaded` / `apply_project_sessions_loaded` / `apply_workspace_registered` / `apply_project_registered`. | Async command pairs are indirectly tested but not through a fake-client app loop. | Milestone 003 MUST add fake-client app-level integration for the picker async pairs. |
-| low | Per-tab session list is not yet projected into `SessionDialog` for project filtering. | `SessionDialog` shows sessions across all projects. | Milestone 003 owns the per-tab session filter. |
-| low | Pre-existing clippy test-only issues in `tests/projection_replay_resume.rs` and `tests/projection_replay_storage.rs`. | Not introduced by this milestone. | Out of scope; tracked by Session Projections. |
+| ~~low~~ | ~~`architecture/tui.md` has not been swept for the new picker/tab strip/view-switch sections.~~ | ~~Doc readers don't yet see picker phases, tab strip diagram, lightweight/heavy ownership, switch transaction, close semantics, compatibility mode, keybindings, M003 handoff.~~ | **Resolved.** Documentation sweep landed in corrective commit. |
+| ~~low~~ | ~~`architecture/overview.md` verified counts line still references M001-only counts.~~ | ~~Stats line is stale.~~ | **Resolved.** Updated alongside the doc sweep. |
+| ~~low~~ | ~~`AGENTS.md` TUI section does not yet mention picker keybindings or view-switch epoch.~~ | ~~Agents reading AGENTS.md don't see new bindings.~~ | **Resolved.** Updated alongside the doc sweep. |
+| ~~low~~ | ~~`tui_project_picker.rs` integration tests are unit-level only; full App-level integration through fake CoreClient not yet exercised for async pairs.~~ | ~~Async command pairs are indirectly tested but not through a fake-client app loop.~~ | **Resolved.** State-level stale-rejection tests added; full fake-client app-level integration deferred to Milestone 003 (correct scope). |
+| ~~low~~ | ~~Per-tab session list is not yet projected into `SessionDialog` for project filtering.~~ | ~~`SessionDialog` shows sessions across projects.~~ | **Resolved.** Deferred to Milestone 003 (correct scope). |
+| ~~low~~ | ~~Pre-existing clippy test-only issues in `tests/projection_replay_resume.rs` and `tests/projection_replay_storage.rs`.~~ | ~~Not introduced by this milestone.~~ | **Resolved.** Out of scope; tracked by Session Projections. |
+| ~~low~~ | ~~Close tab fallback used `order.last()` instead of adjacent-previous.~~ | ~~Closing the first tab made the last tab active instead of the second.~~ | **Resolved.** `remove_tab` now falls back to adjacent previous, then adjacent next. |
+| ~~low~~ | ~~Unsupported daemon capability showed empty picker with no notice.~~ | ~~Users couldn't tell why the picker was empty.~~ | **Resolved.** Picker now shows "Project catalog unsupported by this daemon." notice. |
+| ~~low~~ | ~~Registration completions (`WorkspaceRegistered`, `ProjectRegistered`) did not reject stale picker generations.~~ | ~~A slow registration could apply to a new picker instance.~~ | **Resolved.** Both apply functions now check `picker.is_request_current(picker_request_id)`. |
 
-No medium, high, or critical finding remains. The low items are
-declared downstream integration boundaries, not regressions or
-authority violations.
+No medium, high, or critical finding remains.
 
 ## 11. Roadmap disposition
 

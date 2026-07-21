@@ -706,6 +706,7 @@ pub enum TuiCommand {
     /// Project Picker (Milestone 2): workspace registration completion.
     WorkspaceRegistered {
         request_id: u64,
+        picker_request_id: u64,
         workspace_id: Option<String>,
         error: Option<String>,
     },
@@ -719,6 +720,7 @@ pub enum TuiCommand {
     /// Project Picker (Milestone 2): project registration completion.
     ProjectRegistered {
         request_id: u64,
+        picker_request_id: u64,
         project_id: Option<String>,
         error: Option<String>,
     },
@@ -3183,6 +3185,7 @@ impl App {
                 picker,
                 &filtered,
                 &self.project_catalog.entries,
+                self.project_catalog.capability_supported,
                 inner,
                 &self.ui_state.theme,
             );

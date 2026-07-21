@@ -290,8 +290,9 @@ impl ProjectTabs {
     }
 
     /// Remove a tab by id. If the removed tab was active, the active
-    /// id falls back to the previous tab in display order; if no tabs
-    /// remain, `active_tab_id` becomes `None`.
+    /// id falls back to the adjacent previous tab in display order;
+    /// if the removed tab was first, falls back to the adjacent next
+    /// tab; if no tabs remain, `active_tab_id` becomes `None`.
     ///
     /// Removal bumps the per-tab request generation so stale
     /// completions cannot mutate the removed tab. This method does NOT
@@ -299,9 +300,21 @@ impl ProjectTabs {
     pub fn remove_tab(&mut self, tab_id: &ProjectTabId) -> Option<ProjectTabState> {
         let removed = self.tabs.remove(tab_id);
         if removed.is_some() {
+            let prev_index = self.order.iter().position(|id| id == tab_id);
             self.order.retain(|id| id != tab_id);
             if self.active_tab_id.as_ref() == Some(tab_id) {
-                self.active_tab_id = self.order.last().cloned();
+                // Adjacent previous: the tab before the removed one in
+                // display order. If the removed tab was first, use the
+                // new first (adjacent next).
+                self.active_tab_id = prev_index
+                    .and_then(|idx| {
+                        if idx > 0 {
+                            self.order.get(idx - 1)
+                        } else {
+                            self.order.first()
+                        }
+                    })
+                    .cloned();
             }
         }
         removed
@@ -545,19 +558,34 @@ mod tests {
     }
 
     #[test]
-    fn remove_active_falls_back_to_last_in_order() {
+    fn remove_active_falls_back_to_adjacent_previous() {
         let mut tabs = ProjectTabs::new();
         let a = tabs.add_and_activate(empty_tab("a"));
         let b = tabs.add_tab(empty_tab("b"));
         let c = tabs.add_tab(empty_tab("c"));
         // Order: [a, b, c]; active is a. Remove a -> active falls back
-        // to the last in order, which is c.
+        // to adjacent previous. Since a is first, falls back to
+        // adjacent next (b).
         let removed = tabs.remove_tab(&a).expect("remove a");
         assert_eq!(removed.label, "a");
-        assert_eq!(tabs.active_tab_id(), Some(&c));
+        assert_eq!(tabs.active_tab_id(), Some(&b));
         assert_eq!(tabs.ordered().len(), 2);
         assert_eq!(tabs.ordered()[0].tab_id, b);
         assert_eq!(tabs.ordered()[1].tab_id, c);
+    }
+
+    #[test]
+    fn remove_middle_active_falls_back_to_previous() {
+        let mut tabs = ProjectTabs::new();
+        let a = tabs.add_and_activate(empty_tab("a"));
+        let b = tabs.add_tab(empty_tab("b"));
+        let c = tabs.add_tab(empty_tab("c"));
+        // Set active to b, then remove b -> falls back to a (previous).
+        tabs.set_active(&b);
+        let removed = tabs.remove_tab(&b).expect("remove b");
+        assert_eq!(removed.label, "b");
+        assert_eq!(tabs.active_tab_id(), Some(&a));
+        assert_eq!(tabs.ordered().len(), 2);
     }
 
     #[test]
