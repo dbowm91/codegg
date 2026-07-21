@@ -62,11 +62,13 @@ It consumes project-catalog protocol operations, session APIs, workspace-service
 
 ## 4. Current state
 
-The TUI already routes most high-latency session, history, task, memory, and worktree operations through `CoreClient`, with daemon-client mode as the default. This is the correct architectural base. Existing async command handlers use spawn-and-complete patterns, `AsyncUiRequestState`, stale-generation protection, and a tracked background-task registry.
+Milestone 1 added a bounded project catalog cache, stable frontend-local project tab IDs, an ordered tab collection, one compatibility startup tab, and active-tab accessors while preserving the existing single-project render path.
 
-Milestone 1 added a bounded project catalog cache, stable frontend-local project tab IDs, an ordered tab collection, one compatibility startup tab, and active-tab accessors while preserving the existing single-project render path. Heavy active-session state remains singular and existing events/commands are still primarily current-session shaped.
+Milestone 2 closed at `f569386`. The TUI now has a bounded project picker, explicit workspace selection, local-only one-off registration, configurable next/previous/close actions, a visible bounded tab strip, project-local session summaries, and a `ViewSwitchCoordinator` with an active-view epoch. Existing single-project compatibility remains intact.
 
-The project catalog and asset service remain daemon-owned prerequisites; this roadmap must not reimplement them inside the TUI.
+The remaining correctness boundary is that heavy active-session state and many command/event reducers are still global/current-session shaped. Milestone 3 must make all asynchronous completions, live events, dialogs, tasks, subscriptions, and resource lifecycles project/session correct. Milestone 4 then owns safe persistent restoration, long-running bounds, legacy frontend-authority cleanup, and subsystem closure.
+
+The project catalog, runtime assets, session storage, and execution services remain daemon-owned prerequisites; this roadmap must not reimplement them inside the TUI.
 
 ## 5. Target architecture
 
@@ -93,7 +95,7 @@ ProjectTabState
 `-- lightweight cached presentation state
 ```
 
-Heavy messages, artifacts, diff bodies, and services remain daemon-side or load on demand. Events route by project/session identity before touching tab state. Tab IDs remain stable across reorder and restoration.
+Heavy messages, artifacts, diff bodies, and services remain daemon-side or load on demand. Events route by project/session identity before touching tab state. Tab IDs remain stable across reorder during one process; persistent restoration revalidates canonical daemon IDs and does not treat frontend tab IDs as durable authority.
 
 `Space f` opens a searchable project picker backed by the catalog. Opening a project acquires only the minimal activation/session data needed. Session open/attach triggers asset refresh and waits for a valid generation before creating the next turn runtime.
 
@@ -112,16 +114,16 @@ Milestone 3: project-correct event routing and async lifecycle
 Milestone 4: restoration, inactive resource bounds, badges, and closure
 ```
 
-- Milestone 1 has hard dependencies on Project Catalog Milestone 4 and Runtime Assets Milestone 3 interfaces.
-- Milestone 2 has a hard dependency on Milestone 1.
-- Milestone 3 has a hard dependency on Milestones 1–2.
-- Milestone 4 has a hard dependency on Milestones 2–3.
+- Milestone 1 had hard dependencies on Project Catalog Milestone 4 and Runtime Assets Milestone 3 interfaces; both are closed.
+- Milestone 2 had a hard dependency on Milestone 1 and is closed.
+- Milestone 3 has a hard dependency on Milestones 1–2 and is ready for handoff.
+- Milestone 4 has a hard dependency on Milestone 3 and is authored but blocked.
 
 ## 7. Milestones
 
 ### Milestone 1 — Project-aware state and catalog client
 
-Status: closed; Project Catalog 004 and Runtime Assets refresh interfaces are closed. See `plans/closure/tui-project-sessions/001-status.md` for closure evidence.
+Status: closed; see `plans/closure/tui-project-sessions/001-status.md`.
 
 Class: infrastructure
 
@@ -141,11 +143,9 @@ Exit conditions:
 - identical session titles across projects remain distinguishable;
 - existing single-project workflows remain functional.
 
-Deferred work: picker and tab keybindings.
-
 ### Milestone 2 — Project picker and tab navigation
 
-Status: closed; see `plans/closure/tui-project-sessions/002-status.md` for closure evidence.
+Status: closed at `f569386`; see `plans/closure/tui-project-sessions/002-status.md`.
 
 Class: capability
 
@@ -153,7 +153,7 @@ Objective: implement `Space f`, open project tabs, switching, ordering, closure,
 
 Dependencies: hard on Milestone 1.
 
-Deliverable boundary: picker dialog, fuzzy/filter navigation, keybindings, tab bar, next/previous/close actions, project-local session picker, and explicit one-off registration path integration.
+Deliverable boundary: picker dialog, bounded filtering, keybindings, tab bar, next/previous/close actions, project-local session selection, explicit workspace selection, and local-safe one-off registration.
 
 Exit conditions:
 
@@ -163,85 +163,117 @@ Exit conditions:
 - switching causes no cwd mutation;
 - keyboard/focus semantics are covered by regression tests.
 
-Deferred work: persistent restoration and advanced badges.
+### Milestone 3 — Project-correct event routing and lifecycle
 
-### Milestone 3 — Event routing and lifecycle correctness
+Status: ready for handoff.
 
-Class: invariant
+Implementation plan: `plans/implementation/tui-project-sessions/003-project-correct-event-routing-lifecycle.md`.
 
-Objective: make asynchronous completions, streaming events, Git status, dialogs, and session mutations project/tab correct under rapid switching and multiple TUIs.
+Class: invariant / correctness
 
-Dependencies: hard on Milestones 1–2.
+Objective: make asynchronous completions, streaming events, Git status, dialogs, session mutations, tasks, subscriptions, and resource cleanup project/tab correct under rapid switching and multiple TUIs.
 
-Deliverable boundary: project/session-routed reducers, per-tab request generations, stale completion rejection, tab-aware task cancellation, session attach/asset refresh sequencing, and multi-client integration tests.
+Dependencies: hard on Milestones 1–2; both are closed.
+
+Deliverable boundary:
+
+- typed route tokens containing tab/project/workspace/session identity, active-view epoch, reconnect epoch, and request generation;
+- a central pure event-routing classifier;
+- canonical session-to-tab indexing;
+- explicit active heavy-view load/commit/suspend transitions;
+- bounded inactive-tab activity summaries;
+- ownership-safe permission/question foregrounding;
+- task/subscription/lease ownership and cleanup;
+- refresh/resync behavior for stale, rebound, archived, ambiguous, or unknown scope;
+- multi-client and rapid-switch race tests.
 
 Exit conditions:
 
+- every project/session-scoped completion validates explicit identity and epoch before mutation;
 - events update only the intended tab/session;
 - rapidly switching or closing tabs cannot apply stale completions elsewhere;
-- session-open refresh completes or fails actionably before the next turn;
+- inactive activity remains bounded and does not materialize full histories;
+- pending permissions/questions never steal focus across sessions;
+- closing/inactivating a tab releases frontend resources but does not cancel daemon execution;
 - several TUIs operating different projects remain isolated;
-- no tab owns daemon resources directly.
+- the routing boundary can later consume canonical projection events without a second tab model.
 
-Deferred work: canonical cross-frontend session projection.
+Deferred work: persistence/restoration and canonical projection-primary frontend adoption.
 
-### Milestone 4 — Restoration, bounds, badges, and closure
+### Milestone 4 — Persistent restoration, resource bounds, and closure
 
-Class: capability
+Status: blocked on strict Milestone 3 closure.
 
-Objective: complete practical multi-project UX and resource correctness.
+Implementation plan: `plans/implementation/tui-project-sessions/004-persistent-restoration-resource-closure.md`.
 
-Dependencies: hard on Milestones 2–3.
+Class: capability / polish / closure
 
-Deliverable boundary: restoration of open tabs/active tab, inactive-tab memory/lease policy, health/job/session/asset badges, empty/error states, performance tests, documentation, and closure evidence.
+Objective: complete practical multi-project UX, safe restoration, long-running resource correctness, legacy frontend-authority cleanup, and roadmap closure.
+
+Dependencies: hard on Milestone 3.
+
+Deliverable boundary:
+
+- a versioned bounded frontend manifest containing safe canonical ID intent only;
+- atomic, permission-safe, symlink-safe, debounced local persistence;
+- daemon-authoritative restore validation;
+- lazy reconstruction of lightweight tabs and exactly one heavy active view;
+- explicit recovery for missing, archived, rebound, unsupported, corrupt, and disconnected cases;
+- inactive-tab memory/task/subscription/lease caps and soak tests;
+- removal or narrowing of obsolete path/current-focus/single-project frontend authority;
+- documentation and closure evidence.
 
 Exit conditions:
 
 - restart restores valid tabs without eagerly activating every project;
 - stale/archived/unavailable projects restore with actionable state;
+- invalid or corrupt persisted state cannot prevent safe startup;
+- no secrets, histories, outputs, file bodies, logs, subscriptions, or leases are persisted;
 - inactive tabs remain within bounded memory and service leases;
+- long-running switching/open/close/reconnect behavior remains within documented caps;
 - all Phase 4 exit criteria are evidenced.
 
 ## 8. Cross-cutting requirements
 
 ### Storage and migration
 
-Persist only lightweight frontend preferences/tab identifiers in user configuration or TUI state storage. Durable project/session data remains daemon-owned. Invalid restored IDs are tolerated and diagnosed.
+Persist only lightweight frontend intent in user application state. Durable project/session data remains daemon-owned. Invalid restored IDs are tolerated, diagnosed, and revalidated; paths are not identity.
 
 ### Protocol and compatibility
 
-Consume native project/session APIs and capability negotiation. Do not create TUI-only authoritative project behavior. Older daemons should produce a clear unsupported-capability path or a bounded single-project compatibility mode.
+Consume native project/session APIs and capability negotiation. Do not create TUI-only authoritative project behavior. Older daemons produce a clear unsupported-capability path or a bounded single-project compatibility mode.
 
 ### Security and authorization
 
-Future authorization must be able to filter catalog/session lists; avoid caching unauthorized data beyond invalidation. TUI actions never bypass daemon checks.
+Future authorization must be able to filter catalog/session lists; avoid caching unauthorized data beyond invalidation. TUI actions never bypass daemon checks. Persistent manifests contain no secrets or content bodies.
 
 ### Concurrency, cancellation, and recovery
 
-Every asynchronous operation carries tab/project/session identity plus request generation. Closing a tab invalidates relevant UI completions but does not cancel daemon jobs unless explicitly requested. Reconnect rehydrates summaries.
+Every asynchronous operation carries tab/project/session identity plus request generation and view/reconnect epochs. Closing a tab invalidates frontend completions and releases frontend resources but does not cancel daemon jobs unless explicitly requested. Reconnect rehydrates summaries through daemon authority.
 
 ### Observability and audit
 
-Expose active tab count, catalog generation, per-tab task/request state, stale completion counters, and restoration diagnostics through TUI stats where useful.
+Expose active tab count, catalog generation, per-tab task/request state, stale completion counters, routing/resync diagnostics, restoration outcomes, and bounded resource counts where useful.
 
 ### Performance and resource use
 
-Use bounded summaries and lazy details. Do not load all session messages, Git status, diffs, LSP state, or artifacts for inactive tabs. Limit picker result rendering and background probes.
+Use bounded summaries and lazy details. Do not load all session messages, Git status, diffs, LSP state, or artifacts for inactive tabs. Limit picker rendering, restore concurrency, background probes, task/subscription counts, and manifest write frequency.
 
 ### Documentation and operations
 
-Update TUI architecture, keybindings, commands, remote TUI compatibility, session behavior, and troubleshooting docs.
+Update TUI architecture, keybindings, commands, remote compatibility, session behavior, persistence security, resource caps, and troubleshooting docs.
 
 ## 9. Verification strategy
 
-Use reducer/state unit tests, input/focus regression tests, fake `CoreClient` multi-project fixtures, rapid-switch stale completion tests, several-client daemon integration tests, tab restoration fixtures, archived/unavailable project behavior, and memory/lease bound assertions.
+Use reducer/state unit tests, input/focus regression tests, fake `CoreClient` multi-project fixtures, rapid-switch stale-completion tests, several-client daemon integration tests, tab restoration fixtures, archived/unavailable/rebound behavior, corruption/security tests, and memory/task/subscription/lease bound assertions.
 
 ## 10. Risks and decision points
 
-- Existing components may read global `App` session fields directly. Migrate through accessor seams instead of a broad unsafe rewrite.
-- Remote TUI snapshot shape may lag behind local state. Phase 5 owns canonical projection; Phase 4 should keep compatibility without embedding raw render frames.
-- Persistent tab state can accidentally become authoritative. Store only locators/IDs and always revalidate with the daemon.
+- Existing components may read global `App` session fields directly. Migrate through route-token/accessor seams instead of a broad unsafe rewrite.
+- Remote TUI snapshot shape may lag behind local state. Session Projections Milestone 4 owns canonical projection adoption; this roadmap must keep a reusable routing boundary without embedding raw render frames.
+- Persistent tab state can accidentally become authoritative. Persist canonical IDs as intent and always revalidate with the daemon.
 - If tab-local model/agent state conflicts with session-owned state, session/daemon authority wins.
+- Closing a frontend tab must not be conflated with cancelling daemon-owned execution.
 
 ## 11. Completion definition
 
@@ -251,7 +283,7 @@ This roadmap closes when one TUI can use several project tabs and several sessio
 
 | Milestone | Status | Implementation plan | Closure record | Blockers |
 |---|---|---|---|---|
-| 1 | closed | `plans/implementation/tui-project-sessions/001-project-aware-state.md` | `plans/closure/tui-project-sessions/001-status.md` | —; Project Catalog 004 and Runtime Assets refresh interfaces are closed |
-| 2 | closed | `plans/implementation/tui-project-sessions/002-project-picker-tab-navigation.md` | `plans/closure/tui-project-sessions/002-status.md` | —; Milestone 1 closed |
-| 3 | not started | — | — | Milestones 1–2 closure |
-| 4 | not started | — | — | Milestones 2–3 closure |
+| 1 | closed | `plans/implementation/tui-project-sessions/001-project-aware-state.md` | `plans/closure/tui-project-sessions/001-status.md` | — |
+| 2 | closed | `plans/implementation/tui-project-sessions/002-project-picker-tab-navigation.md` | `plans/closure/tui-project-sessions/002-status.md` | —; closed at `f569386` |
+| 3 | ready | `plans/implementation/tui-project-sessions/003-project-correct-event-routing-lifecycle.md` | — | Milestones 1–2 closed |
+| 4 | blocked | `plans/implementation/tui-project-sessions/004-persistent-restoration-resource-closure.md` | — | Strict Milestone 3 closure |
