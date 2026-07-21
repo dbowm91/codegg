@@ -436,6 +436,15 @@ pub enum CoreResponse {
     ProjectionSubscriptionStatusResponse {
         status: crate::projection::replay::ProjectionSubscriptionStatus,
     },
+    // ── Session Projections M3: Artifact Read Protocol ────────────────
+    /// Artifact read outcome.
+    ProjectionArtifactRead {
+        outcome: crate::projection::replay::ProjectionArtifactReadOutcome,
+    },
+    /// Artifact list for a project.
+    ProjectionArtifactList {
+        handles: Vec<crate::projection::replay::ProjectionArtifactHandleDto>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -952,6 +961,17 @@ pub enum CoreRequest {
     ProjectionSnapshotGet {
         scope: crate::projection::replay::ProjectionStreamKind,
         scope_id: String,
+    },
+    // ── Session Projections M3: Artifact Read Protocol ────────────────
+    /// Read artifact content through an authorized handle.
+    ProjectionArtifactRead {
+        request: crate::projection::replay::ProjectionArtifactReadRequest,
+        project_id: String,
+        context_correlation_id: Option<String>,
+    },
+    /// List artifact handles for a project.
+    ProjectionArtifactList {
+        project_id: String,
     },
 }
 

@@ -8,12 +8,16 @@ use codegg_protocol::projection::replay::{
     ProjectionCursor, ProjectionResyncReason, ProjectionSnapshotBundle, ProjectionStreamDescriptor,
     ProjectionStreamKind, ProjectionSubscriptionId, ProjectionSubscriptionRequest,
 };
+use serde_json::Value;
 
 use crate::error::StorageError;
 use crate::projection_replay::metrics::ProjectionReplayMetrics;
+use crate::projection_replay::policy::{DisclosureDecision, DisclosureReason};
 use crate::projection_replay::publication::projection_events_from_core;
+use crate::projection_replay::redactor::FieldName;
 use crate::projection_replay::retention::RetentionPolicy;
-use crate::projection_replay::seam::ProjectionPublicationContext;
+use crate::projection_replay::safe_publication::{self, SafePublicationClass};
+use crate::projection_replay::seam::ProjectionDisclosureContext;
 use crate::projection_replay::store::ProjectionReplayStore;
 use crate::projection_replay::subscription::{SubscriptionConfig, SubscriptionRegistry};
 
@@ -28,6 +32,9 @@ pub enum PublishOutcome {
     },
     Skipped {
         reason: SafePublicationReason,
+    },
+    Denied {
+        reason: DisclosureReason,
     },
     Failed {
         error: String,
@@ -127,17 +134,34 @@ impl ProjectionReplayService {
         &self,
         source_envelope: &EventEnvelope<CoreEvent>,
     ) -> Result<PublishOutcome, StorageError> {
-        self.publish_from_core_with_context(
+        self.publish_from_core_with_contexts(
             source_envelope,
-            &ProjectionPublicationContext::default(),
+            &crate::projection_replay::seam::ProjectionBindingContext::default(),
+            None,
         )
         .await
     }
 
+    /// Legacy entry point: publishes with binding context only.
+    /// Disclosure is skipped (events requiring redaction/downgrade
+    /// are denied by default for safety).
     pub async fn publish_from_core_with_context(
         &self,
         source_envelope: &EventEnvelope<CoreEvent>,
-        context: &ProjectionPublicationContext,
+        context: &crate::projection_replay::seam::ProjectionBindingContext,
+    ) -> Result<PublishOutcome, StorageError> {
+        self.publish_from_core_with_contexts(source_envelope, context, None)
+            .await
+    }
+
+    /// Full publication path with both binding context and optional
+    /// disclosure context. When `disclosure` is `None`, events that
+    /// would require redaction or downgrade are denied for safety.
+    pub async fn publish_from_core_with_contexts(
+        &self,
+        source_envelope: &EventEnvelope<CoreEvent>,
+        context: &crate::projection_replay::seam::ProjectionBindingContext,
+        disclosure: Option<&ProjectionDisclosureContext>,
     ) -> Result<PublishOutcome, StorageError> {
         // Reject unbound session
         let session_id = match context.session_id.as_deref() {
@@ -168,12 +192,83 @@ impl ProjectionReplayService {
         };
         let workspace_id = context.workspace_id.clone();
 
+        // M3 disclosure check: authorize BEFORE converting to projections
+        // so denied events are caught even when projection conversion
+        // would produce an empty list.
+        if let Some(dc) = disclosure {
+            let decision = Self::compute_disclosure(source_envelope, dc);
+            match decision {
+                DisclosureDecision::Deny { reason } => {
+                    dc.metrics.increment_denials_by_reason(reason);
+                    return Ok(PublishOutcome::Denied { reason });
+                }
+                DisclosureDecision::ClientLocal { .. } => {
+                    return Ok(PublishOutcome::Denied {
+                        reason: DisclosureReason::ClientLocalRestricted,
+                    });
+                }
+                DisclosureDecision::Summarize { reason, .. } => {
+                    dc.metrics.increment_denials_by_reason(reason);
+                    return Ok(PublishOutcome::Denied { reason });
+                }
+                DisclosureDecision::ErrorFailClosed { reason } => {
+                    dc.metrics.increment_denials_by_reason(reason);
+                    return Ok(PublishOutcome::Denied { reason });
+                }
+                // Allow and Handle proceed to projection conversion
+                DisclosureDecision::Allow { .. } | DisclosureDecision::Handle { .. } => {}
+            }
+        } else {
+            // No disclosure context: skip sensitive/internal events
+            let class = safe_publication::classify(&source_envelope.payload);
+            if matches!(
+                class,
+                SafePublicationClass::Sensitive | SafePublicationClass::Internal
+            ) {
+                return Ok(PublishOutcome::Skipped {
+                    reason: SafePublicationReason::SensitiveRedacted,
+                });
+            }
+        }
+
         let projections = projection_events_from_core(source_envelope);
         if projections.is_empty() {
             return Ok(PublishOutcome::Skipped {
                 reason: SafePublicationReason::AdaptionEmpty,
             });
         }
+
+        // Apply M3 disclosure transformations (redaction / downgrade)
+        let projections = if let Some(dc) = disclosure {
+            let decision = Self::compute_disclosure(source_envelope, dc);
+            match decision {
+                DisclosureDecision::Allow { .. } => {
+                    // Apply redaction pass to catch secrets, then
+                    // handle downgrade for oversized content
+                    let redacted = Self::apply_redaction(projections, dc);
+                    Self::apply_handle_downgrade_for_oversized(redacted, dc)
+                }
+                DisclosureDecision::Handle { reason, .. } => {
+                    // Downgrade: replace oversized values with handles
+                    Self::apply_handle_downgrade(projections, dc, reason)
+                }
+                // Deny/ClientLocal/Summarize/ErrorFailClosed already returned above
+                _ => projections,
+            }
+        } else {
+            // No disclosure context: skip events that require
+            // redaction (Sensitive class). Safe events pass through.
+            let class = safe_publication::classify(&source_envelope.payload);
+            if matches!(
+                class,
+                SafePublicationClass::Sensitive | SafePublicationClass::Internal
+            ) {
+                return Ok(PublishOutcome::Skipped {
+                    reason: SafePublicationReason::SensitiveRedacted,
+                });
+            }
+            projections
+        };
 
         // Resolve streams BEFORE opening the transaction to avoid
         // connection pool deadlock (stream creation uses pool directly).
@@ -503,5 +598,190 @@ impl ProjectionReplayService {
         self.retention_policy
             .maintenance_tick(&self.store, now_ms)
             .await
+    }
+
+    /// Apply redaction pass to projection envelopes. Serializes each
+    /// envelope to JSON, runs the redactor, and deserializes back
+    /// if any redaction was applied.
+    fn apply_redaction(
+        projections: Vec<(ProjectionStreamKind, ProjectionEnvelope)>,
+        dc: &ProjectionDisclosureContext,
+    ) -> Vec<(ProjectionStreamKind, ProjectionEnvelope)> {
+        projections
+            .into_iter()
+            .map(|(kind, envelope)| {
+                let (redacted, _changed) = Self::redact_envelope(envelope, dc);
+                (kind, redacted)
+            })
+            .collect()
+    }
+
+    /// Redact a single projection envelope. Returns the (possibly
+    /// modified) envelope and whether any redaction was applied.
+    fn redact_envelope(
+        envelope: ProjectionEnvelope,
+        dc: &ProjectionDisclosureContext,
+    ) -> (ProjectionEnvelope, bool) {
+        let payload_json = match serde_json::to_value(&envelope) {
+            Ok(v) => v,
+            Err(_) => return (envelope, false),
+        };
+
+        let (redacted_value, summary) =
+            dc.redactor
+                .redact_json(&payload_json, FieldName::Text);
+
+        if summary.is_clean() {
+            return (envelope, false);
+        }
+
+        match serde_json::from_value::<ProjectionEnvelope>(redacted_value) {
+            Ok(modified) => (modified, true),
+            Err(_) => (envelope, false),
+        }
+    }
+
+    /// Compute the disclosure decision for a core event given the
+    /// caller's disclosure context. The decision drives whether the
+    /// event is allowed, redacted, downgraded to a handle, or denied.
+    pub(crate) fn compute_disclosure(
+        source_envelope: &EventEnvelope<CoreEvent>,
+        dc: &ProjectionDisclosureContext,
+    ) -> DisclosureDecision {
+        // Authorize subscription at the policy level first.
+        let project_id = dc.project_id.as_deref().unwrap_or_default();
+        let session_id = dc.session_id.as_deref();
+        if !dc
+            .policy
+            .policy()
+            .authorize_subscribe(&dc.access_ctx, project_id, session_id)
+        {
+            return DisclosureDecision::Deny {
+                reason: DisclosureReason::CapabilityDenied,
+            };
+        }
+
+        // Classify via backward-compatible safe_publication classifier.
+        let class = safe_publication::classify(&source_envelope.payload);
+        match class {
+            SafePublicationClass::Safe => DisclosureDecision::Allow {
+                transformed: serde_json::Value::Null,
+                reason: None,
+            },
+            SafePublicationClass::Internal => DisclosureDecision::Deny {
+                reason: DisclosureReason::InternalNotSerializable,
+            },
+            SafePublicationClass::ClientLocal => DisclosureDecision::Deny {
+                reason: DisclosureReason::ClientLocalRestricted,
+            },
+            SafePublicationClass::Sensitive => DisclosureDecision::Allow {
+                transformed: serde_json::Value::Null,
+                reason: Some(DisclosureReason::SensitiveRedacted),
+            },
+        }
+    }
+
+    /// Apply handle downgrade to oversized projection envelopes.
+    /// Currently a pass-through; the infrastructure is in place for
+    /// WP D to wire in field-level size checks.
+    fn apply_handle_downgrade(
+        projections: Vec<(ProjectionStreamKind, ProjectionEnvelope)>,
+        dc: &ProjectionDisclosureContext,
+        reason: DisclosureReason,
+    ) -> Vec<(ProjectionStreamKind, ProjectionEnvelope)> {
+        // For each projection, check if any string field exceeds
+        // the downgrade threshold and replace with a handle.
+        projections
+            .into_iter()
+            .map(|(kind, envelope)| {
+                let (modified, _changed) = Self::downgrade_envelope_fields(envelope, dc, reason);
+                (kind, modified)
+            })
+            .collect()
+    }
+
+    /// Apply handle downgrade for oversized content on projections
+    /// that were already allowed. This runs after redaction to
+    /// catch strings that exceed the downgrade threshold.
+    fn apply_handle_downgrade_for_oversized(
+        projections: Vec<(ProjectionStreamKind, ProjectionEnvelope)>,
+        dc: &ProjectionDisclosureContext,
+    ) -> Vec<(ProjectionStreamKind, ProjectionEnvelope)> {
+        projections
+            .into_iter()
+            .map(|(kind, envelope)| {
+                let (modified, _changed) = Self::downgrade_envelope_fields(
+                    envelope,
+                    dc,
+                    DisclosureReason::OversizedDowngraded,
+                );
+                (kind, modified)
+            })
+            .collect()
+    }
+
+    /// Walk the serialized envelope JSON and replace oversized string
+    /// values with artifact handles. Returns the modified envelope
+    /// and whether any replacement was made.
+    fn downgrade_envelope_fields(
+        envelope: ProjectionEnvelope,
+        dc: &ProjectionDisclosureContext,
+        _reason: DisclosureReason,
+    ) -> (ProjectionEnvelope, bool) {
+        let mut changed = false;
+        let payload_json = match serde_json::to_value(&envelope) {
+            Ok(v) => v,
+            Err(_) => return (envelope, false),
+        };
+
+        let (mut value, _) =
+            dc.redactor
+                .redact_json(&payload_json, FieldName::Text);
+
+        // Check for oversized strings and replace with handles
+        Self::replace_oversized_value(&mut value, dc, &mut changed);
+
+        if !changed {
+            return (envelope, false);
+        }
+
+        match serde_json::from_value::<ProjectionEnvelope>(value) {
+            Ok(modified) => (modified, true),
+            Err(_) => (envelope, false),
+        }
+    }
+
+    /// Recursively replace oversized string values in a JSON value
+    /// with a short marker string containing a minted handle ID.
+    fn replace_oversized_value(
+        val: &mut Value,
+        dc: &ProjectionDisclosureContext,
+        changed: &mut bool,
+    ) {
+        const DOWNGRADE_THRESHOLD: usize = 8 * 1024; // 8KB
+        match val {
+            Value::String(s) if s.len() > DOWNGRADE_THRESHOLD => {
+                let handle_id = dc.handle_registrar.mint();
+                // Replace with a short marker string (the parent type
+                // expects a string, so we can't insert a JSON object).
+                *val = Value::String(format!(
+                    "[handle:{}:{}bytes]",
+                    handle_id,
+                    s.len()
+                ));
+                *changed = true;
+            }
+            Value::Object(map) => {
+                for (_key, child) in map.iter_mut() {
+                    Self::replace_oversized_value(child, dc, changed);
+                }
+            }
+            Value::Array(items) => {
+                for item in items.iter_mut() {
+                    Self::replace_oversized_value(item, dc, changed);
+                }
+            }
+            _ => {}
+        }
     }
 }

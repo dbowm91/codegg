@@ -250,6 +250,79 @@ pub enum ReplaySubscriptionError {
     VersionMismatch,
 }
 
+// ── M3 Artifact Read Protocol ─────────────────────────────────────────
+
+/// Opaque artifact kind carried on the handle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ArtifactHandleKind {
+    RunOutput,
+    ToolOutput,
+    DiffExcerpt,
+    LogTail,
+}
+
+/// Wire-format artifact read request.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProjectionArtifactReadRequest {
+    pub handle_id: String,
+    pub start: u64,
+    pub end: Option<u64>,
+    pub expected_revision: u64,
+}
+
+impl ProjectionArtifactReadRequest {
+    /// Maximum read window per request.
+    pub const MAX_READ_BYTES: u64 = 64 * 1024;
+
+    pub fn normalize(&self) -> (u64, u64) {
+        let end = self.end.unwrap_or(self.start.saturating_add(Self::MAX_READ_BYTES));
+        let end = end.min(self.start.saturating_add(Self::MAX_READ_BYTES));
+        (self.start, end)
+    }
+}
+
+/// Wire-format artifact read response.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProjectionArtifactReadResponse {
+    pub handle_id: String,
+    pub revision: u64,
+    pub start: u64,
+    pub end: u64,
+    pub content_type: String,
+    pub content: String,
+    pub redacted: bool,
+    pub truncated: bool,
+    pub note: Option<String>,
+}
+
+/// Outcome of an artifact read request.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ProjectionArtifactReadOutcome {
+    Ok(ProjectionArtifactReadResponse),
+    Denied { reason: String },
+    NotFound,
+    RevisionMismatch { current_revision: u64 },
+    InvalidRequest { reason: String },
+    Oversized,
+}
+
+/// Wire-format artifact handle descriptor.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProjectionArtifactHandleDto {
+    pub handle_id: String,
+    pub kind: ArtifactHandleKind,
+    pub project_id: String,
+    pub source_record_id: String,
+    pub content_type: String,
+    pub total_bytes: Option<u64>,
+    pub created_at: i64,
+    pub expires_at: Option<i64>,
+    pub revision: u64,
+    pub public_summary: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

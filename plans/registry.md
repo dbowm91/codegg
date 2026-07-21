@@ -29,7 +29,7 @@ Canonical direction remains in:
 | Provider connections and Eggpool | closed | `plans/subsystems/provider-connections-roadmap.md` | Milestone 5 — corrective lifecycle, rotation, health, and closure (closed) | — |
 | Project catalog and lazy discovery | closed | `plans/subsystems/project-catalog-roadmap.md` | Milestone 4 — protocol, server migration, and closure (closed) | — |
 | Multi-project TUI and sessions | closed | `plans/subsystems/tui-project-sessions-roadmap.md` | All milestones closed (001–004) | — |
-| Frontend-neutral session projections | active | `plans/subsystems/session-projections-roadmap.md` | Milestone 3 — visibility, redaction, and artifact handles | Milestone 2 strictly closed at this commit; the principal capability filtering seam is the remaining dependency for Milestone 3. |
+| Frontend-neutral session projections | closed | `plans/subsystems/session-projections-roadmap.md` | Milestone 4 — frontend adoption and closure | Milestone 3 strictly closed; M4 is dependency-ready. |
 
 ## Dependency-ready implementation plans
 
@@ -46,13 +46,13 @@ Canonical direction remains in:
 
 | Work item | Blocker | Required resolution | Owner document |
 |---|---|---|---|
-| Session Projections 003 — visibility, redaction, and artifact handles | The principal capability filtering seam is required for visibility/redaction/artifact policy. Session Projections 002 is strictly closed (`plans/closure/session-projections/002-status.md`). | Define the fail-closed visibility/redaction and bounded artifact-read policy around the closed durable replay authority; land the principal capability filtering seam first | `plans/subsystems/session-projections-roadmap.md` |
 
 ## Recently closed work
 
 | Subsystem | Milestone | Closure record | Closed at commit | Follow-up |
 |---|---|---|---|---|
-| Frontend-neutral session projections | 002 — scoped subscriptions and durable replay | `plans/closure/session-projections/002-status.md` | this commit (corrective daemon integration + library at `8dc4b85`) | Milestone 003 (visibility/redaction/artifact handles) once the principal capability filtering seam is ready |
+| Frontend-neutral session projections | 003 — visibility, redaction, and artifact handles | `plans/closure/session-projections/003-status.md` | WP A–D implementation + WP E verification | Milestone 004 (frontend adoption and closure) |
+| Frontend-neutral session projections | 002 — scoped subscriptions and durable replay | `plans/closure/session-projections/002-status.md` | this commit (corrective daemon integration + library at `8dc4b85`) | Milestone 003 (visibility/redaction/artifact handles) — now closed |
 | Frontend-neutral session projections | 001 — projection contracts and canonical reducer | `plans/closure/session-projections/001-status.md` | `f6c8669` (implementation) | `plans/implementation/session-projections/002-scoped-subscriptions-durable-replay.md` |
 | Multi-project TUI and sessions | 004 — persistent restoration, resource bounds, and closure | `plans/closure/tui-project-sessions/004-status.md` | (this commit) | Subsystem roadmap closed; downstream plans are independent |
 | Multi-project TUI and sessions | 003 — event routing and lifecycle | `plans/closure/tui-project-sessions/003-status.md` | (this commit) | `plans/implementation/tui-project-sessions/004-persistent-restoration-resource-closure.md` |

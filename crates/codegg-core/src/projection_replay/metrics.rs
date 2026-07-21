@@ -3,6 +3,8 @@ use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 
+use crate::projection_replay::policy::DisclosureReason;
+
 #[derive(Debug, Default)]
 pub struct ProjectionReplayMetrics {
     pub stream_count_total: AtomicU64,
@@ -24,6 +26,7 @@ pub struct ProjectionReplayMetrics {
     pub ack_rejections_total: AtomicU64,
     pub resync_count_by_reason: DashMap<String, u64>,
     pub corrupt_quarantined_streams: AtomicU64,
+    pub denials_by_reason: DashMap<String, u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -47,6 +50,7 @@ pub struct ProjectionReplayMetricsSnapshot {
     pub ack_rejections_total: u64,
     pub resync_count_by_reason: std::collections::HashMap<String, u64>,
     pub corrupt_quarantined_streams: u64,
+    pub denials_by_reason: std::collections::HashMap<String, u64>,
 }
 
 impl ProjectionReplayMetrics {
@@ -58,6 +62,13 @@ impl ProjectionReplayMetrics {
         *self
             .resync_count_by_reason
             .entry(reason.to_string())
+            .or_insert(0) += 1;
+    }
+
+    pub fn increment_denials_by_reason(&self, reason: DisclosureReason) {
+        *self
+            .denials_by_reason
+            .entry(reason.as_str().to_string())
             .or_insert(0) += 1;
     }
 
@@ -88,6 +99,11 @@ impl ProjectionReplayMetrics {
                 .map(|e| (e.key().clone(), *e.value()))
                 .collect(),
             corrupt_quarantined_streams: self.corrupt_quarantined_streams.load(Ordering::Relaxed),
+            denials_by_reason: self
+                .denials_by_reason
+                .iter()
+                .map(|e| (e.key().clone(), *e.value()))
+                .collect(),
         }
     }
 }

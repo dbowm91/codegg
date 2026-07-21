@@ -5545,6 +5545,177 @@ impl CoreDaemon {
                     },
                 })
             }
+            // ── Session Projections M3: Artifact Read Protocol ────────────────
+            CoreRequest::ProjectionArtifactRead {
+                request,
+                project_id,
+                context_correlation_id: _,
+            } => {
+                let Some(ref _seam) = self.projection_seam else {
+                    return Ok(CoreResponse::Error {
+                        code: "projection_unavailable".into(),
+                        message: "projection replay requires a SQLite-backed daemon".into(),
+                    });
+                };
+
+                // Build access context for the calling principal
+                let access_ctx = std::sync::Arc::new(
+                    codegg_core::projection_replay::context::ProjectionAccessContext::local(
+                        "daemon",
+                        "artifact-read",
+                    ),
+                );
+                let policy = std::sync::Arc::new(
+                    codegg_core::projection_replay::policy::PolicyRegistry::default(),
+                );
+
+                // Authorize the artifact read
+                let kind = codegg_core::projection_replay::policy::ArtifactReadKind::RunArtifact;
+
+                if !policy
+                    .policy()
+                    .authorize_artifact_read(&access_ctx, &project_id, kind)
+                {
+                    return Ok(CoreResponse::ProjectionArtifactRead {
+                        outcome:
+                            codegg_protocol::projection::replay::ProjectionArtifactReadOutcome::Denied {
+                                reason: "authorization failed".into(),
+                            },
+                    });
+                }
+
+                // Build a disclosure context to access the artifact registry
+                let metrics = std::sync::Arc::new(
+                    codegg_core::projection_replay::ProjectionReplayMetrics::new(),
+                );
+                let disclosure =
+                    codegg_core::projection_replay::ProjectionDisclosureContext::local(
+                        None,
+                        Some(project_id.clone()),
+                        metrics,
+                    );
+
+                if let Some(ref registry) = disclosure.artifact_registry {
+                    // Convert wire DTO to core type
+                    let core_request = codegg_core::projection_replay::artifacts::ArtifactReadRequest {
+                        handle_id: request.handle_id.clone(),
+                        start: request.start,
+                        end: request.end,
+                        expected_revision: request.expected_revision,
+                    };
+                    match registry.read(&core_request, &project_id).await {
+                        Ok(response) => {
+                            return Ok(CoreResponse::ProjectionArtifactRead {
+                                outcome:
+                                    codegg_protocol::projection::replay::ProjectionArtifactReadOutcome::Ok(
+                                        codegg_protocol::projection::replay::ProjectionArtifactReadResponse {
+                                            handle_id: response.handle_id,
+                                            revision: response.revision,
+                                            start: response.start,
+                                            end: response.end,
+                                            content_type: format!("{:?}", response.content_type)
+                                                .to_lowercase(),
+                                            content: response.content,
+                                            redacted: response.redacted,
+                                            truncated: response.truncated,
+                                            note: response.note,
+                                        },
+                                    ),
+                            });
+                        }
+                        Err(e) => {
+                            let outcome = match &e {
+                                codegg_core::projection_replay::artifact_registry::ArtifactRegistryError::NotFound => {
+                                    codegg_protocol::projection::replay::ProjectionArtifactReadOutcome::NotFound
+                                }
+                                codegg_core::projection_replay::artifact_registry::ArtifactRegistryError::RevisionMismatch { current, .. } => {
+                                    codegg_protocol::projection::replay::ProjectionArtifactReadOutcome::RevisionMismatch {
+                                        current_revision: *current,
+                                    }
+                                }
+                                codegg_core::projection_replay::artifact_registry::ArtifactRegistryError::InvalidRequest(msg) => {
+                                    codegg_protocol::projection::replay::ProjectionArtifactReadOutcome::InvalidRequest {
+                                        reason: msg.clone(),
+                                    }
+                                }
+                                _ => codegg_protocol::projection::replay::ProjectionArtifactReadOutcome::InvalidRequest {
+                                    reason: "internal error".into(),
+                                },
+                            };
+                            return Ok(CoreResponse::ProjectionArtifactRead { outcome });
+                        }
+                    }
+                }
+
+                Ok(CoreResponse::ProjectionArtifactRead {
+                    outcome:
+                        codegg_protocol::projection::replay::ProjectionArtifactReadOutcome::InvalidRequest {
+                            reason: "no artifact registry available".into(),
+                        },
+                })
+            }
+            CoreRequest::ProjectionArtifactList { project_id } => {
+                let Some(ref _seam) = self.projection_seam else {
+                    return Ok(CoreResponse::Error {
+                        code: "projection_unavailable".into(),
+                        message: "projection replay requires a SQLite-backed daemon".into(),
+                    });
+                };
+
+                let metrics = std::sync::Arc::new(
+                    codegg_core::projection_replay::ProjectionReplayMetrics::new(),
+                );
+                let disclosure =
+                    codegg_core::projection_replay::ProjectionDisclosureContext::local(
+                        None,
+                        Some(project_id.clone()),
+                        metrics,
+                    );
+
+                if let Some(ref registry) = disclosure.artifact_registry {
+                    if let Ok(handles) = registry.list(&project_id).await {
+                        let dto_handles: Vec<
+                            codegg_protocol::projection::replay::ProjectionArtifactHandleDto,
+                        > = handles
+                            .iter()
+                            .map(|h| {
+                                codegg_protocol::projection::replay::ProjectionArtifactHandleDto {
+                                    handle_id: h.handle_id.clone(),
+                                    kind: match h.kind {
+                                        codegg_core::projection_replay::artifacts::ArtifactKind::RunOutput => {
+                                            codegg_protocol::projection::replay::ArtifactHandleKind::RunOutput
+                                        }
+                                        codegg_core::projection_replay::artifacts::ArtifactKind::ToolOutput => {
+                                            codegg_protocol::projection::replay::ArtifactHandleKind::ToolOutput
+                                        }
+                                        codegg_core::projection_replay::artifacts::ArtifactKind::DiffExcerpt => {
+                                            codegg_protocol::projection::replay::ArtifactHandleKind::DiffExcerpt
+                                        }
+                                        codegg_core::projection_replay::artifacts::ArtifactKind::LogTail => {
+                                            codegg_protocol::projection::replay::ArtifactHandleKind::LogTail
+                                        }
+                                    },
+                                    project_id: h.project_id.clone(),
+                                    source_record_id: h.source_record_id.clone(),
+                                    content_type: format!("{:?}", h.content_type).to_lowercase(),
+                                    total_bytes: h.total_bytes,
+                                    created_at: h.created_at,
+                                    expires_at: h.expires_at,
+                                    revision: h.revision,
+                                    public_summary: h.public_summary.clone(),
+                                }
+                            })
+                            .collect();
+                        return Ok(CoreResponse::ProjectionArtifactList {
+                            handles: dto_handles,
+                        });
+                    }
+                }
+
+                Ok(CoreResponse::ProjectionArtifactList {
+                    handles: vec![],
+                })
+            }
             _ => {
                 tracing::warn!("Unhandled CoreRequest variant");
                 Ok(CoreResponse::Error {

@@ -107,8 +107,8 @@ Milestone 4: frontend adoption, compatibility, and closure
 
 - Milestone 1 is closed.
 - Milestone 2 is strictly closed (library at `8dc4b85` + corrective daemon integration at this commit).
-- Milestone 3 has a hard dependency on the principal capability filtering interface; Milestone 2 wiring is no longer a blocker.
-- Milestone 4 has hard dependencies on Milestones 1–3.
+- Milestone 3 is strictly closed (WP A–D implementation + WP E verification; see `plans/closure/session-projections/003-status.md`).
+- Milestone 4 has hard dependencies on Milestones 1–3 (all satisfied); it is dependency-ready.
 
 ## 7. Milestones
 
@@ -174,13 +174,15 @@ Deferred work: distributed node event replication and final multi-user policy.
 
 ### Milestone 3 — Visibility, redaction, and artifact handles
 
-Status: blocked (principal capability filtering seam still required).
+Status: **closed**.
+
+Closure record: `plans/closure/session-projections/003-status.md`.
 
 Class: invariant
 
 Objective: ensure projection storage and transport are safe for later multi-user observation.
 
-Dependencies: strict Milestone 2 closure (now satisfied) plus a principal/capability filtering interface. The Milestone 2 wiring is no longer a blocker.
+Dependencies: strict Milestone 2 closure (satisfied) plus a principal/capability filtering interface (implemented in WP A).
 
 Deliverable boundary: visibility enum, policy hook, structural and heuristic redaction, secret-field handling, artifact/log handles, bounded reads, actor-only/admin placeholders, and negative tests.
 
@@ -196,7 +198,7 @@ Deferred work: final role policy and audit retention.
 
 ### Milestone 4 — Frontend adoption and closure
 
-Status: blocked.
+Status: dependency-ready (Milestones 1–3 closed).
 
 Class: capability
 
@@ -266,5 +268,5 @@ This roadmap closes when CodeGG has one versioned, bounded, redacted session pro
 |---|---|---|---|---|
 | 1 | closed | `plans/implementation/session-projections/001-projection-contracts.md` | `plans/closure/session-projections/001-status.md` | — |
 | 2 | closed (strict) | `plans/implementation/session-projections/002-scoped-subscriptions-durable-replay.md` (library) and `plans/implementation/session-projections/002-corrective-daemon-integration-and-closure.md` (daemon integration) | `plans/closure/session-projections/002-status.md` | — |
-| 3 | blocked | — | — | Principal/capability filtering interface; Milestone 2 wiring is no longer a blocker |
-| 4 | blocked | — | — | Milestones 1–3 closure |
+| 3 | closed | `plans/implementation/session-projections/003-visibility-redaction-artifact-handles.md` | `plans/closure/session-projections/003-status.md` | — |
+| 4 | dependency-ready | — | — | Milestones 1–3 closed |

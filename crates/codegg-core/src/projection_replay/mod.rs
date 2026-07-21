@@ -18,6 +18,7 @@
 //! * [`metrics`] — bounded observability counters.
 //! * [`handle`] — daemon-level Arc-wrapped publication helper.
 
+pub mod artifact_registry;
 pub mod artifacts;
 pub mod context;
 pub mod handle;
@@ -32,6 +33,10 @@ pub mod service;
 pub mod store;
 pub mod subscription;
 
+pub use artifact_registry::{
+    ArtifactRegistryError, HandleEntry, HandleId, ProjectionArtifactRegistry,
+    RunStoreProjectionArtifactRegistry,
+};
 pub use artifacts::{
     ArtifactAccessDecision, ArtifactContentType, ArtifactKind, ArtifactReadOutcome,
     ArtifactReadRequest, ArtifactReadResponse, HandleLifecycle, HandleRegistrar, HandleRegistry,
@@ -49,7 +54,10 @@ pub use policy::{
 };
 pub use redactor::{ProjectionFieldRedactor, RedactionResult, RedactionSummary};
 pub use retention::RetentionPolicy;
-pub use seam::{ProjectionPublicationContext, ProjectionPublicationSeam};
+pub use seam::{
+    ProjectionBindingContext, ProjectionDisclosureContext, ProjectionPublicationContext,
+    ProjectionPublicationSeam,
+};
 pub use service::{ProjectionReplayService, PublishOutcome, ResumeOutcome};
 pub use store::ProjectionReplayStore;
 pub use subscription::SubscriptionRegistry;

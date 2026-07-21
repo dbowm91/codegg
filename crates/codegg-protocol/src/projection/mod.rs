@@ -75,10 +75,11 @@ pub use reducer::{
     ApplyOutcome, ProjectionReducer, ProjectionState, ReducerError, ReducerEventInput,
 };
 pub use replay::{
-    ProjectionAck, ProjectionCursor, ProjectionReplayBatch, ProjectionReplayLimits,
-    ProjectionResyncReason, ProjectionSnapshotBundle, ProjectionStreamDescriptor,
-    ProjectionStreamId, ProjectionStreamKind, ProjectionSubscriptionId,
-    ProjectionSubscriptionRequest, ProjectionSubscriptionState, ProjectionSubscriptionStatus,
-    ReplaySubscriptionError,
+    ProjectionAck, ProjectionArtifactHandleDto, ProjectionArtifactReadOutcome,
+    ProjectionArtifactReadRequest, ProjectionArtifactReadResponse, ProjectionCursor,
+    ProjectionReplayBatch, ProjectionReplayLimits, ProjectionResyncReason,
+    ProjectionSnapshotBundle, ProjectionStreamDescriptor, ProjectionStreamId,
+    ProjectionStreamKind, ProjectionSubscriptionId, ProjectionSubscriptionRequest,
+    ProjectionSubscriptionState, ProjectionSubscriptionStatus, ReplaySubscriptionError,
 };
 pub use snapshot::SessionProjectionSnapshot;

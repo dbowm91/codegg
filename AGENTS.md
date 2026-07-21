@@ -105,6 +105,7 @@ scripts/check_provider_connections_tombstone_compat.sh # additive tombstone/refe
 python3 scripts/check_builtin_agents.py             # verify TOML matches generated.rs
 python3 scripts/check-tokio-test-flavors.py         # regression guard for bare #[tokio::test]
 python3 scripts/generate_builtin_agents.py --check  # agent asset staleness + schema validation
+bash scripts/check_projection_disclosure.sh          # projection disclosure encapsulation guard (M3)
 ```
 
 ## Testing
@@ -194,6 +195,10 @@ cargo test --test command_routing_adversarial
 cargo test --test python_sandbox_adversarial
 cargo test --test context_projection_adversarial
 cargo test --test command_routing_execution_ownership
+
+# Projection disclosure and artifact handle tests (M3)
+cargo test --test projection_disclosure_invariants
+cargo test --test projection_artifact_handles
 
 # Phase 4–5 durable jobs + scheduler tests
 cargo test --test durable_jobs_phase4
