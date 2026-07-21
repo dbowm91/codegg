@@ -47,6 +47,11 @@ impl SandboxConfig {
         self
     }
 
+    pub fn with_mode(mut self, mode: SandboxMode) -> Self {
+        self.mode = mode;
+        self
+    }
+
     pub fn with_allowed_paths(mut self, paths: Vec<String>) -> Self {
         self.allowed_paths = paths;
         self

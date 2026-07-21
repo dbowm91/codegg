@@ -7,6 +7,7 @@ pub mod plugin_ui;
 pub mod project_picker;
 pub mod project_tabs;
 pub mod prompt;
+pub mod routing;
 pub mod session;
 pub mod ui;
 pub mod view_switch;
@@ -23,6 +24,11 @@ pub use project_picker::{
 };
 pub use project_tabs::{ProjectCatalogState, ProjectTabId, ProjectTabState, ProjectTabs};
 pub use prompt::PromptState;
+pub use routing::{
+    apply_inactive_summary, classify_event, event_project_id, event_session_id,
+    InactiveSummaryKind, RouteCheck, RouteDecision, RoutingRegistry, TabActivitySummary,
+    UiRouteToken, MAX_TAB_HEALTH_SUMMARY_LEN, MAX_TAB_LAST_ERROR_LEN, MAX_TAB_UNREAD_DISPLAY,
+};
 pub use session::SessionState;
 pub use ui::{AppMode, UiState};
 pub use view_switch::ViewSwitchCoordinator;

@@ -1,6 +1,6 @@
 # Multi-Project TUI Milestone 004 — Persistent Restoration, Resource Bounds, and Closure
 
-Status: blocked
+Status: ready
 
 Repository baseline: `f569386e4cb68d9752505c3b8d4205161a40c3c4` (`main`; planning-only commits after this baseline do not alter production behavior)
 
@@ -34,7 +34,7 @@ This plan assumes Milestones 001–003 are closed and provide:
 - explicit task/subscription/lease ownership;
 - safe tab close/reconnect/session-rebind lifecycle.
 
-At baseline `f569386`, TUI 002 is closed but TUI 003 is not yet implemented. The persisted format and restore coordinator must therefore be authored now but not implemented until TUI 003 fixes the ownership model it will restore into.
+At baseline `aa8ca21`, TUI 003 is closed. The persisted format and restore coordinator may now be implemented and tested against the project-correct routing model.
 
 ## 3. Invariants
 

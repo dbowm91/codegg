@@ -178,6 +178,76 @@ impl ViewSwitchCoordinator {
         self.pending_incoming_tab_id = None;
         self.active_view_epoch
     }
+
+    /// Begin a fully-scoped loading transaction with explicit epoch
+    /// capture. Records the canonical `(tab_id, project_id,
+    /// workspace_id, session_id)` tuple plus the active-view epoch at
+    /// the moment the load starts. The matching [`Self::commit_if_matches`]
+    /// (or [`Self::suspend_if_matches`]) must validate every populated
+    /// field before mutating heavy view state.
+    pub fn begin_loading(
+        &mut self,
+        to_tab: ProjectTabId,
+        session_id: String,
+        project_id: String,
+        workspace_id: String,
+        epoch: u64,
+    ) -> bool {
+        let current_epoch = match &self.switch_state {
+            SwitchState::Switching { epoch, .. } => *epoch,
+            SwitchState::Loading { epoch, .. } => *epoch,
+            SwitchState::Idle => self.active_view_epoch,
+            SwitchState::Failed { .. } => self.active_view_epoch,
+        };
+        if current_epoch != epoch {
+            return false;
+        }
+        self.switch_state = SwitchState::Loading {
+            to_tab,
+            session_id,
+            project_id,
+            workspace_id,
+            epoch,
+        };
+        true
+    }
+
+    /// Commit a previously-started load only if the identity tuple and
+    /// epoch still match. Records the active view as ready.
+    pub fn commit_if_matches(
+        &mut self,
+        to_tab: &ProjectTabId,
+        project_id: &str,
+        workspace_id: &str,
+        session_id: &str,
+        epoch: u64,
+    ) -> bool {
+        self.complete_load_if_matches(to_tab, project_id, workspace_id, session_id, epoch)
+    }
+
+    /// Suspend the in-progress switch without committing. Used when
+    /// the active tab changes underneath the load or the load fails
+    /// non-fatally. Returns the prior target, if any.
+    pub fn suspend_if_matches(&mut self, epoch: u64) -> Option<ProjectTabId> {
+        match &self.switch_state {
+            SwitchState::Switching { to_tab, epoch: e, .. }
+            | SwitchState::Loading { to_tab, epoch: e, .. }
+                if *e == epoch =>
+            {
+                let tab = to_tab.clone();
+                self.switch_state = SwitchState::Idle;
+                self.pending_incoming_tab_id = None;
+                Some(tab)
+            }
+            _ => None,
+        }
+    }
+
+    /// Mark a previously-started load as replaced by a new transaction.
+    /// Bumps the active-view epoch. Returns the new epoch.
+    pub fn replace_active(&mut self) -> u64 {
+        self.bump_epoch()
+    }
 }
 
 impl Default for ViewSwitchCoordinator {
@@ -343,5 +413,50 @@ mod tests {
         let e2 = coord.bump_epoch();
         assert_eq!(e1, 1);
         assert_eq!(e2, 2);
+    }
+
+    #[test]
+    fn begin_loading_rejects_stale_epoch() {
+        let mut coord = ViewSwitchCoordinator::new();
+        let from = ProjectTabId::new();
+        let to = ProjectTabId::new();
+        let epoch = coord.begin_switch(from, to.clone());
+        // Simulate a tab close that bumps the epoch.
+        coord.bump_epoch();
+        let ok = coord.begin_loading(to, "s".into(), "p".into(), "w".into(), epoch);
+        assert!(!ok);
+    }
+
+    #[test]
+    fn suspend_returns_prior_target_on_match() {
+        let mut coord = ViewSwitchCoordinator::new();
+        let from = ProjectTabId::new();
+        let to = ProjectTabId::new();
+        let epoch = coord.begin_switch(from, to.clone());
+        let prior = coord.suspend_if_matches(epoch);
+        assert_eq!(prior, Some(to));
+        assert_eq!(coord.switch_state, SwitchState::Idle);
+    }
+
+    #[test]
+    fn suspend_rejects_stale_epoch() {
+        let mut coord = ViewSwitchCoordinator::new();
+        let from = ProjectTabId::new();
+        let to = ProjectTabId::new();
+        let epoch = coord.begin_switch(from, to.clone());
+        coord.bump_epoch();
+        let prior = coord.suspend_if_matches(epoch);
+        assert!(prior.is_none());
+    }
+
+    #[test]
+    fn replace_active_bumps_epoch_to_next() {
+        let mut coord = ViewSwitchCoordinator::new();
+        let from = ProjectTabId::new();
+        let to = ProjectTabId::new();
+        let e1 = coord.begin_switch(from, to);
+        let next = coord.replace_active();
+        assert!(next > e1);
+        assert_eq!(coord.switch_state, SwitchState::Idle);
     }
 }

@@ -212,21 +212,24 @@ pub async fn execute_python_script(request: &PythonScriptRequest) -> PythonRunRe
     // Apply Landlock sandbox in child process (Linux only)
     #[cfg(target_os = "linux")]
     if policy.enforcement_backend == SandboxBackend::Landlock {
-        let allowed_paths = build_landlock_allowed_paths(&workspace_root, &tmp_dir);
-        let deny_paths = build_landlock_deny_paths();
-        cmd.pre_exec(move || {
-            let sandbox = crate::security::sandbox::SandboxConfig::new()
-                .with_enabled(true)
-                .with_mode(crate::security::sandbox::SandboxMode::ReadOnly)
-                .with_allowed_paths(allowed_paths)
-                .with_deny_paths(deny_paths);
-            sandbox.enforce().map_err(|e| {
-                std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    format!("landlock enforcement failed: {e}"),
-                )
-            })
-        });
+        let allowed_paths = std::sync::Arc::new(build_landlock_allowed_paths(&workspace_root, &tmp_dir));
+        let deny_paths = std::sync::Arc::new(build_landlock_deny_paths());
+        #[allow(unsafe_code)]
+        unsafe {
+            cmd.pre_exec(move || {
+                let sandbox = crate::security::sandbox::SandboxConfig::new()
+                    .with_enabled(true)
+                    .with_mode(crate::security::sandbox::SandboxMode::ReadOnly)
+                    .with_allowed_paths((*allowed_paths).clone())
+                    .with_deny_paths((*deny_paths).clone());
+                sandbox.enforce().map_err(|e| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        format!("landlock enforcement failed: {e}"),
+                    )
+                })
+            });
+        }
     }
 
     let run_result = match tokio::time::timeout(timeout, cmd.output()).await {

@@ -1,6 +1,9 @@
 //! Bus event handling: processes AppEvent variants from the global event bus.
 
 use super::super::app::{App, SessionStatus};
+use super::super::app::state::{
+    apply_inactive_summary, classify_event, InactiveSummaryKind, RouteDecision,
+};
 use super::super::components::toast::Toast;
 use crate::bus::events::AppEvent;
 use crate::permission::PermissionRequest;
@@ -11,12 +14,123 @@ use crate::util::truncate::truncate_prefix;
 pub(crate) fn handle_app_event_batch(app: &mut App, events: Vec<AppEvent>) -> bool {
     let mut needs_render = false;
     for event in events {
-        needs_render |= handle_single_event(app, event);
+        needs_render |= handle_routed_event(app, event);
     }
     needs_render
 }
 
-fn handle_single_event(app: &mut App, event: AppEvent) -> bool {
+/// Decide whether the event is allowed to mutate the heavy active view.
+/// Returns `true` only when routing classifies the event as
+/// `ActiveView` (or for genuine globals). All other routing outcomes
+/// receive bounded summary updates or are dropped.
+fn handle_routed_event(app: &mut App, event: AppEvent) -> bool {
+    let active_tab_id = app.project_tabs.active_tab_id().cloned();
+    let active_view_epoch = app.view_switch.active_view_epoch;
+    let decision = classify_event(
+        &event,
+        &app.routing_registry,
+        active_tab_id.as_ref(),
+        active_view_epoch,
+    );
+    match decision {
+        RouteDecision::ActiveView { .. } | RouteDecision::Global => {
+            handle_event_inner(app, event)
+        }
+        RouteDecision::InactiveSummary { tab_id } => {
+            let kind = inactive_kind_for(&event);
+            let detail = inactive_detail_for(&event);
+            apply_inactive_summary(&mut app.routing_registry, &tab_id, kind, detail.as_deref());
+            if matches!(kind, InactiveSummaryKind::PendingPermission) {
+                let active_id = app.project_tabs.active_tab_id().cloned();
+                if Some(&tab_id) != active_id.as_ref() {
+                    app.messages_state.toasts.info(
+                        "Permission request in inactive project; switch to that tab to respond.",
+                    );
+                }
+            }
+            if matches!(kind, InactiveSummaryKind::PendingQuestion) {
+                let active_id = app.project_tabs.active_tab_id().cloned();
+                if Some(&tab_id) != active_id.as_ref() {
+                    app.messages_state.toasts.info(
+                        "Question pending in inactive project; switch to that tab to answer.",
+                    );
+                }
+            }
+            true
+        }
+        RouteDecision::DropDiagnostic { reason } => {
+            tracing::debug!(
+                target: "codegg::tui::routing",
+                ?event,
+                reason,
+                "dropped event: ownership could not be resolved"
+            );
+            false
+        }
+        RouteDecision::RefreshRequired { reason } => {
+            for tab in app.project_tabs.ordered() {
+                app.routing_registry
+                    .activity_mut(&tab.tab_id)
+                    .mark_resync_required();
+            }
+            tracing::debug!(
+                target: "codegg::tui::routing",
+                ?event,
+                reason,
+                "refresh required: resync flag raised"
+            );
+            true
+        }
+    }
+}
+
+fn inactive_kind_for(event: &AppEvent) -> InactiveSummaryKind {
+    match event {
+        AppEvent::PermissionPending { .. } => InactiveSummaryKind::PendingPermission,
+        AppEvent::QuestionPending { .. } => InactiveSummaryKind::PendingQuestion,
+        AppEvent::AgentFinished { .. }
+        | AppEvent::TextDelta { .. }
+        | AppEvent::ReasoningDelta { .. }
+        | AppEvent::ToolCallStarted { .. }
+        | AppEvent::ToolResult { .. } => InactiveSummaryKind::UnreadActivity,
+        AppEvent::CompactionTriggered { .. }
+        | AppEvent::ContextUpdated { .. }
+        | AppEvent::TodoUpdated { .. }
+        | AppEvent::GoalUpdated { .. }
+        | AppEvent::GoalUsageUpdated { .. }
+        | AppEvent::GoalBudgetLimited { .. }
+        | AppEvent::GoalCompleted { .. }
+        | AppEvent::SubagentStarted { .. }
+        | AppEvent::SubagentProgress { .. }
+        | AppEvent::SubagentCompleted { .. }
+        | AppEvent::SubagentFailed { .. }
+        | AppEvent::TestRunStarted { .. }
+        | AppEvent::TestRunProgress { .. }
+        | AppEvent::TestRunCompleted { .. } => InactiveSummaryKind::StatusUpdate,
+        _ => InactiveSummaryKind::StatusUpdate,
+    }
+}
+
+fn inactive_detail_for(event: &AppEvent) -> Option<String> {
+    match event {
+        AppEvent::PermissionPending { tool, .. } => Some(format!("permission: {tool}")),
+        AppEvent::QuestionPending { .. } => Some("question pending".to_string()),
+        AppEvent::ToolResult { tool_name, success, .. } => Some(format!(
+            "tool {}: {}",
+            tool_name,
+            if *success { "ok" } else { "error" }
+        )),
+        AppEvent::SubagentCompleted { agent, .. } => Some(format!("subagent {agent} done")),
+        AppEvent::SubagentFailed { agent, error, .. } => {
+            Some(format!("subagent {agent} failed: {error}"))
+        }
+        AppEvent::CompactionTriggered { .. } => Some("compaction triggered".to_string()),
+        AppEvent::TestRunCompleted { status, .. } => Some(format!("test run {status}")),
+        _ => None,
+    }
+}
+
+fn handle_event_inner(app: &mut App, event: AppEvent) -> bool {
     match event {
         AppEvent::TextDelta {
             delta, session_id, ..
@@ -351,7 +465,7 @@ fn handle_single_event(app: &mut App, event: AppEvent) -> bool {
                 target: "codegg::tui::events",
                 model = %model,
                 complexity = %complexity,
-                "ModelChanged"
+                "ModelChanged received"
             );
             let short = model.split('/').next_back().unwrap_or(&model);
             app.messages_state
@@ -543,8 +657,6 @@ fn handle_single_event(app: &mut App, event: AppEvent) -> bool {
                 .map(|sid| sid == current_session)
                 .unwrap_or(true);
             if matches_session {
-                // EmitChat is now rendered visibly by the App-level
-                // effect handler. No deferred handling needed.
                 let _ = app.apply_plugin_ui_effect(effect, Some(&plugin_id));
             }
             true
@@ -552,6 +664,102 @@ fn handle_single_event(app: &mut App, event: AppEvent) -> bool {
         _ => {
             tracing::debug!(target: "codegg::tui::events", "unhandled bus event");
             false
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::bus::events::AppEvent;
+    use crate::tui::app::state::ProjectTabId;
+    use crate::tui::app::state::routing::{RouteDecision, RoutingRegistry};
+
+    fn make_app_with_two_tabs() -> App {
+        use crate::tui::app::state::project_tabs::ProjectTabState;
+        let mut app = App::new_for_testing(
+            std::path::PathBuf::from("/tmp/test")
+                .to_string_lossy()
+                .into_owned(),
+        );
+        let active_id = app
+            .project_tabs
+            .active_tab_id()
+            .cloned()
+            .expect("compat tab");
+        // Inject a second tab
+        let second_id = ProjectTabId::new();
+        let mut second = ProjectTabState::empty(second_id.clone(), "secondary".into());
+        second.project_id = Some("p-other".into());
+        second.workspace_id = Some("w-other".into());
+        second.session_id = Some("s-other".into());
+        app.project_tabs.add_and_activate(second);
+        // Restore primary as active and update its session id.
+        let _ = app.project_tabs.set_active(&active_id);
+        // Register both sessions with the routing registry.
+        app.routing_registry
+            .register_open_session(active_id.clone(), "s-primary".into());
+        app.routing_registry
+            .register_open_session(second_id, "s-other".into());
+        app
+    }
+
+    #[test]
+    fn inactive_text_delta_updates_summary_only() {
+        let app = make_app_with_two_tabs();
+        let active_id = app.project_tabs.active_tab_id().cloned().unwrap();
+        let other_tab = app
+            .project_tabs
+            .ordered()
+            .iter()
+            .find(|t| t.tab_id != active_id)
+            .map(|t| t.tab_id.clone())
+            .expect("at least one inactive tab");
+        let decision = classify_event(
+            &AppEvent::TextDelta {
+                session_id: "s-other".into(),
+                delta: "hi".into(),
+            },
+            &app.routing_registry,
+            Some(&active_id),
+            app.view_switch.active_view_epoch,
+        );
+        assert_eq!(
+            decision,
+            RouteDecision::InactiveSummary { tab_id: other_tab.clone() }
+        );
+    }
+
+    #[test]
+    fn stale_view_epoch_drops_per_session_events() {
+        let mut registry = RoutingRegistry::new();
+        let tid = ProjectTabId::new();
+        registry.register_open_session(tid.clone(), "s1".into());
+        let event = AppEvent::TextDelta {
+            session_id: "s1".into(),
+            delta: "hi".into(),
+        };
+        let good = classify_event(&event, &registry, Some(&tid), 7);
+        assert_eq!(
+            good,
+            RouteDecision::ActiveView {
+                tab_id: tid.clone()
+            }
+        );
+    }
+
+    #[test]
+    fn unknown_session_dropped() {
+        let registry = RoutingRegistry::new();
+        let tid = ProjectTabId::new();
+        let event = AppEvent::TextDelta {
+            session_id: "ghost".into(),
+            delta: "x".into(),
+        };
+        let decision = classify_event(&event, &registry, Some(&tid), 7);
+        match decision {
+            RouteDecision::DropDiagnostic { .. } => {}
+            other => panic!("expected drop diagnostic, got {other:?}"),
         }
     }
 }

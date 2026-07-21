@@ -618,6 +618,9 @@ pub(crate) fn previous_project_tab(app: &mut App) {
 
 /// Close the active project tab. If the last tab is closed, creates
 /// a fallback tab. Never sends daemon-side delete/archive requests.
+///
+/// Milestone 3: also drops the routing registry entries for the
+/// closed tab and cancels any tasks scoped to that tab.
 pub(crate) fn close_active_project_tab(app: &mut App) {
     let current_id = match app.project_tabs.active_tab_id().cloned() {
         Some(id) => id,
@@ -635,6 +638,13 @@ pub(crate) fn close_active_project_tab(app: &mut App) {
     // Remove the tab
     let was_last = app.project_tabs.len() == 1;
     app.project_tabs.remove_tab(&current_id);
+
+    // Drop routing-registry entries (session_index + activity summary)
+    // for the closed tab so future events do not mutate a stale tab.
+    app.routing_registry.drop_tab(&current_id);
+
+    // Cancel any tasks scoped to the closed tab.
+    let _ = app.task_registry.cancel_for_tab(current_id.as_str());
 
     // If it was the last tab, create a fallback
     if was_last {

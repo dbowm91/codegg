@@ -930,6 +930,12 @@ pub struct App {
     /// Active-view switch coordinator (Milestone 2). Manages the
     /// controlled switch transaction when switching between project tabs.
     pub view_switch: crate::tui::app::state::ViewSwitchCoordinator,
+    /// Routing registry (Milestone 3). Tracks the
+    /// `session_id -> tab_id` index, per-tab bounded activity
+    /// summaries, the reconnect epoch, and the last accepted event
+    /// sequence. Pure classifier logic in
+    /// `crate::tui::app::state::routing` consumes this registry.
+    pub routing_registry: crate::tui::app::state::RoutingRegistry,
 }
 
 /// What to do at TUI startup with respect to session loading. The TUI
@@ -1283,6 +1289,7 @@ impl App {
             project_tabs,
             project_catalog: crate::tui::app::state::ProjectCatalogState::new(),
             view_switch: crate::tui::app::state::ViewSwitchCoordinator::new(),
+            routing_registry: crate::tui::app::state::RoutingRegistry::new(),
         }
     }
 
@@ -1720,6 +1727,7 @@ impl App {
             project_tabs,
             project_catalog: crate::tui::app::state::ProjectCatalogState::new(),
             view_switch: crate::tui::app::state::ViewSwitchCoordinator::new(),
+            routing_registry: crate::tui::app::state::RoutingRegistry::new(),
         }
     }
 
@@ -10715,14 +10723,29 @@ impl App {
         // project surface so future picker/navigation code can rely
         // on `active_session_id()` / `active_project_id()` /
         // `active_workspace_id()` without rewriting the App surface.
+        let active_tab = self.project_tabs.active_tab_id().cloned();
         if let Some(tab) = self.project_tabs.active_mut() {
             tab.session_id = Some(sess_id.clone());
             if project_id.is_some() {
-                tab.project_id = project_id;
+                tab.project_id = project_id.clone();
             }
             if workspace_id.is_some() {
-                tab.workspace_id = workspace_id;
+                tab.workspace_id = workspace_id.clone();
             }
+        }
+        // Milestone 3: register the now-open session in the routing
+        // registry and invalidate any prior binding for the same id.
+        // This keeps the session_id -> tab_id index consistent with
+        // the heavy view so live events route to the right tab.
+        if let (Some(tab_id), Some(proj_id), Some(ws_id)) =
+            (active_tab.as_ref(), project_id.as_ref(), workspace_id.as_ref())
+        {
+            self.routing_registry
+                .register_open_session(tab_id.clone(), sess_id.clone());
+            let _ = (proj_id, ws_id); // canonical identity is captured via tab state.
+        } else if let Some(tab_id) = active_tab.as_ref() {
+            self.routing_registry
+                .register_open_session(tab_id.clone(), sess_id.clone());
         }
         if let Some(ref tx) = self.tui_cmd_tx {
             let _ = tx.try_send(TuiCommand::LoadSessionMessages {

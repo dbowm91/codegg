@@ -66,7 +66,9 @@ Milestone 1 added a bounded project catalog cache, stable frontend-local project
 
 Milestone 2 closed at `f569386`. The TUI now has a bounded project picker, explicit workspace selection, local-only one-off registration, configurable next/previous/close actions, a visible bounded tab strip, project-local session summaries, and a `ViewSwitchCoordinator` with an active-view epoch. Existing single-project compatibility remains intact.
 
-The remaining correctness boundary is that heavy active-session state and many command/event reducers are still global/current-session shaped. Milestone 3 must make all asynchronous completions, live events, dialogs, tasks, subscriptions, and resource lifecycles project/session correct. Milestone 4 then owns safe persistent restoration, long-running bounds, legacy frontend-authority cleanup, and subsystem closure.
+Milestone 3 closed at `aa8ca21`. The TUI now has a central event classifier, session→tab routing registry, scoped task lifecycle, epoch-checked completion guards, inactive-tab activity summaries, and tab close cleanup. Events update only the intended tab; stale completions are rejected; permissions/questions never steal focus across sessions.
+
+The remaining correctness boundary is that persistent restoration, long-running resource bounds, legacy frontend-authority cleanup, and subsystem closure are not yet complete. Milestone 4 owns these.
 
 The project catalog, runtime assets, session storage, and execution services remain daemon-owned prerequisites; this roadmap must not reimplement them inside the TUI.
 
@@ -116,8 +118,8 @@ Milestone 4: restoration, inactive resource bounds, badges, and closure
 
 - Milestone 1 had hard dependencies on Project Catalog Milestone 4 and Runtime Assets Milestone 3 interfaces; both are closed.
 - Milestone 2 had a hard dependency on Milestone 1 and is closed.
-- Milestone 3 has a hard dependency on Milestones 1–2 and is ready for handoff.
-- Milestone 4 has a hard dependency on Milestone 3 and is authored but blocked.
+- Milestone 3 had a hard dependency on Milestones 1–2 and is closed.
+- Milestone 4 has a hard dependency on Milestone 3 and is now dependency-ready.
 
 ## 7. Milestones
 
@@ -165,7 +167,7 @@ Exit conditions:
 
 ### Milestone 3 — Project-correct event routing and lifecycle
 
-Status: ready for handoff.
+Status: closed; see `plans/closure/tui-project-sessions/003-status.md`.
 
 Implementation plan: `plans/implementation/tui-project-sessions/003-project-correct-event-routing-lifecycle.md`.
 
@@ -202,7 +204,7 @@ Deferred work: persistence/restoration and canonical projection-primary frontend
 
 ### Milestone 4 — Persistent restoration, resource bounds, and closure
 
-Status: blocked on strict Milestone 3 closure.
+Status: ready.
 
 Implementation plan: `plans/implementation/tui-project-sessions/004-persistent-restoration-resource-closure.md`.
 
@@ -285,5 +287,5 @@ This roadmap closes when one TUI can use several project tabs and several sessio
 |---|---|---|---|---|
 | 1 | closed | `plans/implementation/tui-project-sessions/001-project-aware-state.md` | `plans/closure/tui-project-sessions/001-status.md` | — |
 | 2 | closed | `plans/implementation/tui-project-sessions/002-project-picker-tab-navigation.md` | `plans/closure/tui-project-sessions/002-status.md` | —; closed at `f569386` |
-| 3 | ready | `plans/implementation/tui-project-sessions/003-project-correct-event-routing-lifecycle.md` | — | Milestones 1–2 closed |
-| 4 | blocked | `plans/implementation/tui-project-sessions/004-persistent-restoration-resource-closure.md` | — | Strict Milestone 3 closure |
+| 3 | closed | `plans/implementation/tui-project-sessions/003-project-correct-event-routing-lifecycle.md` | `plans/closure/tui-project-sessions/003-status.md` | — |
+| 4 | ready | `plans/implementation/tui-project-sessions/004-persistent-restoration-resource-closure.md` | — | Milestone 3 closed |

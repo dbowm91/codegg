@@ -83,6 +83,15 @@ pub struct TuiTaskRecord {
     pub started_at: Instant,
     /// Abort handle used for registry-owned cancellation.
     abort_handle: tokio::task::AbortHandle,
+    /// Optional frontend-local tab id this task is scoped to.
+    /// `None` for genuinely global work.
+    pub scope_tab_id: Option<String>,
+    /// Optional daemon-typed session id this task is scoped to.
+    /// `None` for tab-only or global scope.
+    pub scope_session_id: Option<String>,
+    /// Optional active-view epoch captured at spawn time. Used to
+    /// identify tasks that became stale after a switch/close.
+    pub scope_active_view_epoch: Option<u64>,
 }
 
 impl TuiTaskRecord {
@@ -146,6 +155,26 @@ impl TuiTaskRegistry {
     where
         F: std::future::Future<Output = ()> + Send + 'static,
     {
+        self.spawn_with_scope(kind, name, None, None, None, fut)
+    }
+
+    /// Register a future as a tracked background task with explicit
+    /// scope. The scope fields are stored alongside the task so it can
+    /// later be cancelled by `cancel_for_tab`, `cancel_for_session`, or
+    /// `cancel_for_epoch`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn spawn_with_scope<F>(
+        &mut self,
+        kind: TuiTaskKind,
+        name: &'static str,
+        scope_tab_id: Option<String>,
+        scope_session_id: Option<String>,
+        scope_active_view_epoch: Option<u64>,
+        fut: F,
+    ) -> TuiTaskId
+    where
+        F: std::future::Future<Output = ()> + Send + 'static,
+    {
         let id = TuiTaskId(self.next_id);
         self.next_id += 1;
 
@@ -157,6 +186,9 @@ impl TuiTaskRegistry {
                 kind,
                 started_at: Instant::now(),
                 abort_handle: handle.abort_handle(),
+                scope_tab_id,
+                scope_session_id,
+                scope_active_view_epoch,
             },
         );
         id
@@ -189,6 +221,68 @@ impl TuiTaskRegistry {
                 self.cancelled_count += 1;
             }
         }
+    }
+
+    /// Cancel all tasks scoped to the given tab id. Used when a tab
+    /// closes or session rebinds. Returns the number of tasks cancelled.
+    pub fn cancel_for_tab(&mut self, tab_id: &str) -> usize {
+        let to_cancel: Vec<TuiTaskId> = self
+            .tasks
+            .iter()
+            .filter(|(_, r)| r.scope_tab_id.as_deref() == Some(tab_id))
+            .map(|(&id, _)| id)
+            .collect();
+        let count = to_cancel.len();
+        for id in to_cancel {
+            if let Some(record) = self.tasks.remove(&id) {
+                record.abort();
+                self.cancelled_count += 1;
+            }
+        }
+        count
+    }
+
+    /// Cancel all tasks scoped to the given session id. Used when a
+    /// session rebinds or closes. Returns the number of tasks cancelled.
+    pub fn cancel_for_session(&mut self, session_id: &str) -> usize {
+        let to_cancel: Vec<TuiTaskId> = self
+            .tasks
+            .iter()
+            .filter(|(_, r)| r.scope_session_id.as_deref() == Some(session_id))
+            .map(|(&id, _)| id)
+            .collect();
+        let count = to_cancel.len();
+        for id in to_cancel {
+            if let Some(record) = self.tasks.remove(&id) {
+                record.abort();
+                self.cancelled_count += 1;
+            }
+        }
+        count
+    }
+
+    /// Cancel all tasks whose captured active-view epoch is strictly
+    /// less than `current_epoch`. Used after a tab switch bumps the
+    /// epoch so in-flight loads and stale completions are aborted.
+    /// Returns the number of tasks cancelled.
+    pub fn cancel_for_stale_epoch(&mut self, current_epoch: u64) -> usize {
+        let to_cancel: Vec<TuiTaskId> = self
+            .tasks
+            .iter()
+            .filter(|(_, r)| match r.scope_active_view_epoch {
+                Some(captured) => captured < current_epoch,
+                None => false,
+            })
+            .map(|(&id, _)| id)
+            .collect();
+        let count = to_cancel.len();
+        for id in to_cancel {
+            if let Some(record) = self.tasks.remove(&id) {
+                record.abort();
+                self.cancelled_count += 1;
+            }
+        }
+        count
     }
 
     /// Cancel all registered tasks.
@@ -531,5 +625,101 @@ mod tests {
         assert_eq!(TuiTaskKind::SecurityReview.to_string(), "SecurityReview");
         assert_eq!(TuiTaskKind::Indexer.to_string(), "Indexer");
         assert_eq!(TuiTaskKind::Other.to_string(), "Other");
+    }
+
+    #[tokio::test]
+    async fn cancel_for_tab_only_aborts_scoped_tasks() {
+        let mut reg = TuiTaskRegistry::new();
+        let tab_a: Option<String> = Some("tab-a".into());
+        let none: Option<String> = None;
+        let _a = reg.spawn_with_scope(
+            TuiTaskKind::Command,
+            "a",
+            tab_a.clone(),
+            None,
+            None,
+            async { tokio::time::sleep(std::time::Duration::from_secs(60)).await; },
+        );
+        let _b = reg.spawn_with_scope(
+            TuiTaskKind::Command,
+            "b",
+            tab_a.clone(),
+            None,
+            None,
+            async { tokio::time::sleep(std::time::Duration::from_secs(60)).await; },
+        );
+        let _global = reg.spawn_with_scope(
+            TuiTaskKind::Command,
+            "global",
+            none,
+            None,
+            None,
+            async { tokio::time::sleep(std::time::Duration::from_secs(60)).await; },
+        );
+        assert_eq!(reg.active_count(), 3);
+        let cancelled = reg.cancel_for_tab("tab-a");
+        assert_eq!(cancelled, 2);
+        assert_eq!(reg.cancelled_count(), 2);
+        reg.reap_finished();
+        assert_eq!(reg.active_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn cancel_for_session_only_aborts_scoped_tasks() {
+        let mut reg = TuiTaskRegistry::new();
+        let _a = reg.spawn_with_scope(
+            TuiTaskKind::Command,
+            "a",
+            None,
+            Some("s-1".into()),
+            None,
+            async { tokio::time::sleep(std::time::Duration::from_secs(60)).await; },
+        );
+        let _b = reg.spawn_with_scope(
+            TuiTaskKind::Command,
+            "b",
+            None,
+            Some("s-2".into()),
+            None,
+            async { tokio::time::sleep(std::time::Duration::from_secs(60)).await; },
+        );
+        let cancelled = reg.cancel_for_session("s-1");
+        assert_eq!(cancelled, 1);
+    }
+
+    #[tokio::test]
+    async fn cancel_for_stale_epoch_aborts_only_older() {
+        let mut reg = TuiTaskRegistry::new();
+        let _a = reg.spawn_with_scope(
+            TuiTaskKind::Command,
+            "old",
+            None,
+            None,
+            Some(1),
+            async { tokio::time::sleep(std::time::Duration::from_secs(60)).await; },
+        );
+        let _b = reg.spawn_with_scope(
+            TuiTaskKind::Command,
+            "new",
+            None,
+            None,
+            Some(5),
+            async { tokio::time::sleep(std::time::Duration::from_secs(60)).await; },
+        );
+        let _global = reg.spawn_with_scope(
+            TuiTaskKind::Command,
+            "global",
+            None,
+            None,
+            None,
+            async { tokio::time::sleep(std::time::Duration::from_secs(60)).await; },
+        );
+        let cancelled = reg.cancel_for_stale_epoch(5);
+        // Only the "old" task (epoch 1) should be cancelled; "new" at
+        // epoch 5 is at the boundary and stays. Tasks with no epoch
+        // are never cancelled by this method.
+        assert_eq!(cancelled, 1);
+        reg.reap_finished();
+        assert_eq!(reg.active_count(), 2);
     }
 }

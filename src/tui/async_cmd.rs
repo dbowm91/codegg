@@ -80,6 +80,58 @@ where
     Some(id)
 }
 
+/// Spawn a tracked background task that performs async work and sends a
+/// completion [`TuiCommand`] back to the event loop, with explicit
+/// frontend scope (tab id, session id, active-view epoch).
+///
+/// Use this helper from project/session-scoped commands so the
+/// owning tab/session can later abort stale tasks when the user
+/// switches or closes. Returns `None` if no command sender is available.
+#[allow(clippy::too_many_arguments)]
+pub fn spawn_scoped_registered_tui_task<F>(
+    tx: Option<mpsc::Sender<TuiCommand>>,
+    registry: &mut TuiTaskRegistry,
+    kind: TuiTaskKind,
+    name: &'static str,
+    scope_tab_id: Option<String>,
+    scope_session_id: Option<String>,
+    scope_active_view_epoch: Option<u64>,
+    fut: F,
+) -> Option<super::task_lifecycle::TuiTaskId>
+where
+    F: std::future::Future<Output = Option<TuiCommand>> + Send + 'static,
+{
+    let Some(tx) = tx else {
+        tracing::warn!(task = name, "cannot spawn TUI task without command sender");
+        return None;
+    };
+    let id = registry.spawn_with_scope(
+        kind,
+        name,
+        scope_tab_id,
+        scope_session_id,
+        scope_active_view_epoch,
+        async move {
+            let started = std::time::Instant::now();
+            let result = fut.await;
+            tracing::debug!(
+                task = name,
+                elapsed_ms = started.elapsed().as_millis(),
+                "TUI scoped registered task finished"
+            );
+            if let Some(cmd) = result {
+                if tx.send(cmd).await.is_err() {
+                    tracing::debug!(
+                        task = name,
+                        "TUI scoped task completion dropped: receiver gone"
+                    );
+                }
+            }
+        },
+    );
+    Some(id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
