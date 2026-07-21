@@ -230,10 +230,12 @@ impl ViewSwitchCoordinator {
     /// non-fatally. Returns the prior target, if any.
     pub fn suspend_if_matches(&mut self, epoch: u64) -> Option<ProjectTabId> {
         match &self.switch_state {
-            SwitchState::Switching { to_tab, epoch: e, .. }
-            | SwitchState::Loading { to_tab, epoch: e, .. }
-                if *e == epoch =>
-            {
+            SwitchState::Switching {
+                to_tab, epoch: e, ..
+            }
+            | SwitchState::Loading {
+                to_tab, epoch: e, ..
+            } if *e == epoch => {
                 let tab = to_tab.clone();
                 self.switch_state = SwitchState::Idle;
                 self.pending_incoming_tab_id = None;

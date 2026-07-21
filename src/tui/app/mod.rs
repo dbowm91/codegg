@@ -10737,9 +10737,11 @@ impl App {
         // registry and invalidate any prior binding for the same id.
         // This keeps the session_id -> tab_id index consistent with
         // the heavy view so live events route to the right tab.
-        if let (Some(tab_id), Some(proj_id), Some(ws_id)) =
-            (active_tab.as_ref(), project_id.as_ref(), workspace_id.as_ref())
-        {
+        if let (Some(tab_id), Some(proj_id), Some(ws_id)) = (
+            active_tab.as_ref(),
+            project_id.as_ref(),
+            workspace_id.as_ref(),
+        ) {
             self.routing_registry
                 .register_open_session(tab_id.clone(), sess_id.clone());
             let _ = (proj_id, ws_id); // canonical identity is captured via tab state.

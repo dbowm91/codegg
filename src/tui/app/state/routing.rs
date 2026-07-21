@@ -107,15 +107,7 @@ impl UiRouteToken {
     /// refresh, keybinding dialogs, etc.) that have no canonical
     /// project/workspace/session binding.
     pub fn global(reconnect_epoch: u64) -> Self {
-        Self::new(
-            None,
-            None,
-            None,
-            None,
-            0,
-            reconnect_epoch,
-            0,
-        )
+        Self::new(None, None, None, None, 0, reconnect_epoch, 0)
     }
 
     /// Returns `true` when every populated field on `self` matches
@@ -150,9 +142,7 @@ impl UiRouteToken {
                 _ => return false,
             }
         }
-        if self.active_view_epoch != 0
-            && self.active_view_epoch != check.active_view_epoch
-        {
+        if self.active_view_epoch != 0 && self.active_view_epoch != check.active_view_epoch {
             return false;
         }
         true
@@ -336,20 +326,21 @@ impl RoutingRegistry {
     pub fn register_open_session(&mut self, tab_id: ProjectTabId, session_id: String) {
         // Remove any prior binding for this session_id if it was tied
         // to a different tab.
-        let prior_tab = self.session_index.insert(session_id.clone(), tab_id.clone());
+        let prior_tab = self
+            .session_index
+            .insert(session_id.clone(), tab_id.clone());
         if let Some(prior) = prior_tab {
             if prior != tab_id {
                 // Check if the prior tab still has any other sessions.
-                let prior_has_sessions = self
-                    .session_index
-                    .values()
-                    .any(|v| *v == prior);
+                let prior_has_sessions = self.session_index.values().any(|v| *v == prior);
                 if !prior_has_sessions {
                     self.activity.remove(&prior);
                 }
             }
         }
-        self.activity.entry(tab_id).or_insert_with(TabActivitySummary::new);
+        self.activity
+            .entry(tab_id)
+            .or_insert_with(TabActivitySummary::new);
     }
 
     /// Remove a session binding (on close, archive, or replacement).
@@ -507,7 +498,7 @@ pub fn classify_event(
             },
             None => RouteDecision::DropDiagnostic {
                 reason: "session_owned_no_active_tab_no_index",
-            }
+            },
         },
     }
 }

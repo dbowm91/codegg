@@ -638,7 +638,9 @@ mod tests {
             tab_a.clone(),
             None,
             None,
-            async { tokio::time::sleep(std::time::Duration::from_secs(60)).await; },
+            async {
+                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+            },
         );
         let _b = reg.spawn_with_scope(
             TuiTaskKind::Command,
@@ -646,16 +648,14 @@ mod tests {
             tab_a.clone(),
             None,
             None,
-            async { tokio::time::sleep(std::time::Duration::from_secs(60)).await; },
+            async {
+                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+            },
         );
-        let _global = reg.spawn_with_scope(
-            TuiTaskKind::Command,
-            "global",
-            none,
-            None,
-            None,
-            async { tokio::time::sleep(std::time::Duration::from_secs(60)).await; },
-        );
+        let _global =
+            reg.spawn_with_scope(TuiTaskKind::Command, "global", none, None, None, async {
+                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+            });
         assert_eq!(reg.active_count(), 3);
         let cancelled = reg.cancel_for_tab("tab-a");
         assert_eq!(cancelled, 2);
@@ -673,7 +673,9 @@ mod tests {
             None,
             Some("s-1".into()),
             None,
-            async { tokio::time::sleep(std::time::Duration::from_secs(60)).await; },
+            async {
+                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+            },
         );
         let _b = reg.spawn_with_scope(
             TuiTaskKind::Command,
@@ -681,7 +683,9 @@ mod tests {
             None,
             Some("s-2".into()),
             None,
-            async { tokio::time::sleep(std::time::Duration::from_secs(60)).await; },
+            async {
+                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+            },
         );
         let cancelled = reg.cancel_for_session("s-1");
         assert_eq!(cancelled, 1);
@@ -690,30 +694,16 @@ mod tests {
     #[tokio::test]
     async fn cancel_for_stale_epoch_aborts_only_older() {
         let mut reg = TuiTaskRegistry::new();
-        let _a = reg.spawn_with_scope(
-            TuiTaskKind::Command,
-            "old",
-            None,
-            None,
-            Some(1),
-            async { tokio::time::sleep(std::time::Duration::from_secs(60)).await; },
-        );
-        let _b = reg.spawn_with_scope(
-            TuiTaskKind::Command,
-            "new",
-            None,
-            None,
-            Some(5),
-            async { tokio::time::sleep(std::time::Duration::from_secs(60)).await; },
-        );
-        let _global = reg.spawn_with_scope(
-            TuiTaskKind::Command,
-            "global",
-            None,
-            None,
-            None,
-            async { tokio::time::sleep(std::time::Duration::from_secs(60)).await; },
-        );
+        let _a = reg.spawn_with_scope(TuiTaskKind::Command, "old", None, None, Some(1), async {
+            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+        });
+        let _b = reg.spawn_with_scope(TuiTaskKind::Command, "new", None, None, Some(5), async {
+            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+        });
+        let _global =
+            reg.spawn_with_scope(TuiTaskKind::Command, "global", None, None, None, async {
+                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+            });
         let cancelled = reg.cancel_for_stale_epoch(5);
         // Only the "old" task (epoch 1) should be cancelled; "new" at
         // epoch 5 is at the boundary and stays. Tasks with no epoch

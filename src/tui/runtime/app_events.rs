@@ -1,9 +1,9 @@
 //! Bus event handling: processes AppEvent variants from the global event bus.
 
-use super::super::app::{App, SessionStatus};
 use super::super::app::state::{
     apply_inactive_summary, classify_event, InactiveSummaryKind, RouteDecision,
 };
+use super::super::app::{App, SessionStatus};
 use super::super::components::toast::Toast;
 use crate::bus::events::AppEvent;
 use crate::permission::PermissionRequest;
@@ -33,9 +33,7 @@ fn handle_routed_event(app: &mut App, event: AppEvent) -> bool {
         active_view_epoch,
     );
     match decision {
-        RouteDecision::ActiveView { .. } | RouteDecision::Global => {
-            handle_event_inner(app, event)
-        }
+        RouteDecision::ActiveView { .. } | RouteDecision::Global => handle_event_inner(app, event),
         RouteDecision::InactiveSummary { tab_id } => {
             let kind = inactive_kind_for(&event);
             let detail = inactive_detail_for(&event);
@@ -115,7 +113,9 @@ fn inactive_detail_for(event: &AppEvent) -> Option<String> {
     match event {
         AppEvent::PermissionPending { tool, .. } => Some(format!("permission: {tool}")),
         AppEvent::QuestionPending { .. } => Some("question pending".to_string()),
-        AppEvent::ToolResult { tool_name, success, .. } => Some(format!(
+        AppEvent::ToolResult {
+            tool_name, success, ..
+        } => Some(format!(
             "tool {}: {}",
             tool_name,
             if *success { "ok" } else { "error" }
@@ -672,8 +672,8 @@ fn handle_event_inner(app: &mut App, event: AppEvent) -> bool {
 mod tests {
     use super::*;
     use crate::bus::events::AppEvent;
-    use crate::tui::app::state::ProjectTabId;
     use crate::tui::app::state::routing::{RouteDecision, RoutingRegistry};
+    use crate::tui::app::state::ProjectTabId;
 
     fn make_app_with_two_tabs() -> App {
         use crate::tui::app::state::project_tabs::ProjectTabState;
@@ -726,7 +726,9 @@ mod tests {
         );
         assert_eq!(
             decision,
-            RouteDecision::InactiveSummary { tab_id: other_tab.clone() }
+            RouteDecision::InactiveSummary {
+                tab_id: other_tab.clone()
+            }
         );
     }
 

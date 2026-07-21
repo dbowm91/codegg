@@ -212,7 +212,8 @@ pub async fn execute_python_script(request: &PythonScriptRequest) -> PythonRunRe
     // Apply Landlock sandbox in child process (Linux only)
     #[cfg(target_os = "linux")]
     if policy.enforcement_backend == SandboxBackend::Landlock {
-        let allowed_paths = std::sync::Arc::new(build_landlock_allowed_paths(&workspace_root, &tmp_dir));
+        let allowed_paths =
+            std::sync::Arc::new(build_landlock_allowed_paths(&workspace_root, &tmp_dir));
         let deny_paths = std::sync::Arc::new(build_landlock_deny_paths());
         #[allow(unsafe_code)]
         unsafe {
