@@ -2,13 +2,17 @@ pub mod agent;
 pub mod async_request;
 pub mod diagnostics;
 pub mod dialog;
+pub mod manifest;
 pub mod messages;
+pub mod persistence;
 pub mod plugin_ui;
 pub mod project_picker;
 pub mod project_tabs;
 pub mod prompt;
+pub mod restore;
 pub mod routing;
 pub mod session;
+pub mod snapshot;
 pub mod ui;
 pub mod view_switch;
 

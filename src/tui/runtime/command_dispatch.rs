@@ -987,5 +987,38 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
         TuiCommand::CloseProjectTab => {
             super::super::commands::project_picker::close_active_project_tab(app);
         }
+        TuiCommand::ManifestRestoreRequested => {
+            super::super::commands::manifest_restore::apply_manifest_restore(app);
+        }
+        TuiCommand::ManifestRestoreProjectGetLoaded {
+            request_id,
+            project_id,
+            result,
+            error,
+        } => {
+            super::super::commands::manifest_restore::apply_manifest_project_get_loaded(
+                app, request_id, project_id, result, error,
+            );
+        }
+        TuiCommand::ManifestRestoreFinished { .. } => {
+            // The restore pipeline is orchestrated from within the
+            // commands module itself; the dispatch arm here is a
+            // no-op marker so the enum can be matched.
+        }
+        TuiCommand::ManifestPersistenceDisable => {
+            app.disable_manifest_persistence();
+        }
+        TuiCommand::ManifestPersistenceEnable => {
+            app.enable_manifest_persistence();
+        }
+        TuiCommand::ManifestPersistenceReset => {
+            if let Err(e) = app.reset_manifest_persistence() {
+                tracing::warn!(
+                    target: "codegg::tui::manifest",
+                    error = %e,
+                    "manifest reset failed"
+                );
+            }
+        }
     }
 }

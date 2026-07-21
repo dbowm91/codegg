@@ -113,6 +113,19 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), crate::error::AppE
         // or toast, so timer-only reaping can retain completed task records
         // until the next active frame.
         app.task_registry.reap_finished();
+
+        // Flush the tab manifest if a pending snapshot is due.
+        // Best-effort: a flush failure is logged and retried on the
+        // next iteration rather than blocking the event loop.
+        if app.manifest_has_pending() {
+            if let Err(e) = app.manifest_persistence.flush() {
+                tracing::debug!(
+                    target: "codegg::tui::manifest",
+                    error = %e,
+                    "deferred manifest flush failed; will retry"
+                );
+            }
+        }
         let loop_start = std::time::Instant::now();
         let panic_count = app.ui_state.render_panic_count;
 

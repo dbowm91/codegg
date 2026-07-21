@@ -1,6 +1,6 @@
 # Multi-Project TUI and Session Management Roadmap
 
-Status: active
+Status: closed
 
 Long-term references:
 
@@ -68,9 +68,7 @@ Milestone 2 closed at `f569386`. The TUI now has a bounded project picker, expli
 
 Milestone 3 closed at `aa8ca21`. The TUI now has a central event classifier, session→tab routing registry, scoped task lifecycle, epoch-checked completion guards, inactive-tab activity summaries, and tab close cleanup. Events update only the intended tab; stale completions are rejected; permissions/questions never steal focus across sessions.
 
-The remaining correctness boundary is that persistent restoration, long-running resource bounds, legacy frontend-authority cleanup, and subsystem closure are not yet complete. Milestone 4 owns these.
-
-The project catalog, runtime assets, session storage, and execution services remain daemon-owned prerequisites; this roadmap must not reimplement them inside the TUI.
+Milestone 4 closed at the implementation commit for this milestone. The TUI now has a versioned bounded tab manifest, atomic debounced persistence, a `RestorePlan` coordinator with bounded per-entry classification, daemon-authoritative validation, at-most-one heavy session view on startup, and operator controls for disable/enable/reset. Static guard `scripts/check_tui_project_authority.py` blocks re-introduction of path/current-focus authority. All four milestones of the roadmap are now closed; the project catalog, runtime assets, session storage, and execution services remain daemon-owned prerequisites and have not been reimplemented inside the TUI.
 
 ## 5. Target architecture
 
@@ -204,7 +202,7 @@ Deferred work: persistence/restoration and canonical projection-primary frontend
 
 ### Milestone 4 — Persistent restoration, resource bounds, and closure
 
-Status: ready.
+Status: closed; see `plans/closure/tui-project-sessions/004-status.md`.
 
 Implementation plan: `plans/implementation/tui-project-sessions/004-persistent-restoration-resource-closure.md`.
 
@@ -288,4 +286,4 @@ This roadmap closes when one TUI can use several project tabs and several sessio
 | 1 | closed | `plans/implementation/tui-project-sessions/001-project-aware-state.md` | `plans/closure/tui-project-sessions/001-status.md` | — |
 | 2 | closed | `plans/implementation/tui-project-sessions/002-project-picker-tab-navigation.md` | `plans/closure/tui-project-sessions/002-status.md` | —; closed at `f569386` |
 | 3 | closed | `plans/implementation/tui-project-sessions/003-project-correct-event-routing-lifecycle.md` | `plans/closure/tui-project-sessions/003-status.md` | — |
-| 4 | ready | `plans/implementation/tui-project-sessions/004-persistent-restoration-resource-closure.md` | — | Milestone 3 closed |
+| 4 | closed | `plans/implementation/tui-project-sessions/004-persistent-restoration-resource-closure.md` | `plans/closure/tui-project-sessions/004-status.md` | — |

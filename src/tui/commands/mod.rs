@@ -3,6 +3,7 @@ pub(super) mod diagnostics;
 pub(super) mod git_sidebar;
 pub(super) mod goals;
 pub(super) mod import;
+pub(super) mod manifest_restore;
 pub(super) mod memory;
 pub(super) mod plugin_management;
 pub(super) mod plugins;

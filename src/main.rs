@@ -1842,6 +1842,16 @@ async fn launch_tui(cli: &Cli) -> Result<(), AppError> {
         app.refresh_project_catalog();
     }
 
+    // Milestone 4: kick off the manifest restore pipeline. This is
+    // a non-blocking enqueue; the actual restore happens on the
+    // TUI command channel.
+    if !cli.no_session {
+        let _ = app
+            .tui_cmd_tx
+            .as_ref()
+            .map(|tx| tx.try_send(crate::tui::TuiCommand::ManifestRestoreRequested));
+    }
+
     tui::run_event_loop(&mut app).await
 }
 

@@ -31,6 +31,9 @@ const MAX_SLOW_RENDER_RECORDS: usize = 4;
 /// Bounded ring-buffer capacity for component render panic records.
 const MAX_COMPONENT_RENDER_PANIC_RECORDS: usize = 8;
 
+/// Bounded ring-buffer capacity for restore diagnostics.
+const MAX_RESTORE_DIAGNOSTICS: usize = 16;
+
 /// Record of a single slow render frame.
 #[derive(Debug, Clone)]
 pub struct SlowRenderRecord {
@@ -74,6 +77,10 @@ pub struct TuiDiagnostics {
     pub component_render_panic_count: u64,
     /// Ring buffer of recent component render panic records.
     pub recent_component_render_panics: VecDeque<ComponentRenderPanicRecord>,
+    /// Ring buffer of recent restore diagnostics (Milestone 4).
+    /// Bounded so a long-running restore cannot allocate
+    /// unbounded text in the diagnostics surface.
+    pub recent_restore_diagnostics: VecDeque<String>,
 }
 
 impl TuiDiagnostics {
@@ -128,6 +135,25 @@ impl TuiDiagnostics {
                 component,
                 timestamp: std::time::Instant::now(),
             });
+    }
+
+    /// Record a bounded restore diagnostic (Milestone 4). Each
+    /// message is truncated to 200 chars so a corrupt manifest
+    /// cannot inject unbounded text into the diagnostics surface.
+    pub fn record_restore_diagnostic(&mut self, message: &str) {
+        let bounded = if message.len() <= 200 {
+            message.to_string()
+        } else {
+            let mut end = 200;
+            while !message.is_char_boundary(end) {
+                end -= 1;
+            }
+            message[..end].to_string()
+        };
+        if self.recent_restore_diagnostics.len() >= MAX_RESTORE_DIAGNOSTICS {
+            self.recent_restore_diagnostics.pop_front();
+        }
+        self.recent_restore_diagnostics.push_back(bounded);
     }
 
     /// Format a human-readable summary for the /tui-stats command.

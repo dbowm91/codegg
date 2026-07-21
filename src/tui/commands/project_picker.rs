@@ -47,6 +47,7 @@ pub(crate) fn open_or_focus_project(
 
     app.project_tabs.add_and_activate(tab);
     switch_active_tab(app, &tab_id);
+    app.schedule_manifest_save();
 }
 
 /// Switch the active tab, using the controlled switch coordinator.
@@ -185,6 +186,9 @@ pub(crate) fn switch_active_tab(
         // No session — mark idle and set the tab active
         app.view_switch.cancel();
     }
+
+    // Persist the new active-tab intent.
+    app.schedule_manifest_save();
 }
 
 /// Start loading project detail via ProjectGet.
@@ -650,6 +654,9 @@ pub(crate) fn close_active_project_tab(app: &mut App) {
     if was_last {
         app.project_tabs.close_fallback_tab();
     }
+
+    // Persist the new tab order/active intent.
+    app.schedule_manifest_save();
 
     // Bump the removed tab's request generation to invalidate stale completions
     // (already done by remove_tab which bumps via AsyncUiRequestState)

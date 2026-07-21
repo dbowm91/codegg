@@ -7,6 +7,20 @@ pub use types::{
     TuiMsg,
 };
 
+/// Resolve the default root directory for TUI-local persisted
+/// state (the manifest). Under the platform config directory,
+/// under `codegg/tui/`. Returns a fresh fallback path when the
+/// platform config dir cannot be resolved (no env, no home).
+pub fn default_tui_state_root() -> std::path::PathBuf {
+    if let Some(dir) = dirs::config_dir() {
+        return dir.join("codegg").join("tui");
+    }
+    if let Some(home) = dirs::home_dir() {
+        return home.join(".config").join("codegg").join("tui");
+    }
+    std::path::PathBuf::from(".codegg/tui")
+}
+
 pub mod state;
 pub use state::session::GitSidebarInfo;
 pub use state::*;
@@ -730,6 +744,38 @@ pub enum TuiCommand {
     PreviousProjectTab,
     /// Close the active project tab.
     CloseProjectTab,
+    /// Milestone 4: trigger a manifest restore attempt.
+    /// Dispatched at TUI startup after the manifest is loaded.
+    ManifestRestoreRequested,
+    /// Milestone 4: completion of a per-project ProjectGet fetch
+    /// during manifest restore. Carries the request_id, the project
+    /// id that was queried, and the result. Stale completions are
+    /// dropped at apply time.
+    ManifestRestoreProjectGetLoaded {
+        request_id: u64,
+        project_id: String,
+        result: Option<crate::protocol::dto::ProjectDetailsDto>,
+        error: Option<String>,
+    },
+    /// Milestone 4: completion of the manifest restore pipeline.
+    /// Carries the restored plan as a list of (project_id,
+    /// workspace_id, session_id) triples so the TUI can transition
+    /// into the restored state without a separate async step.
+    ManifestRestoreFinished {
+        plan: crate::tui::app::state::restore::RestorePlanWire,
+        pending_heavy_load: Option<String>,
+        diagnostics: Vec<crate::tui::app::state::restore::RestoreDiagnosticWire>,
+        daemon_capability_supported: bool,
+    },
+    /// Milestone 4: operator requested disabling manifest
+    /// persistence.
+    ManifestPersistenceDisable,
+    /// Milestone 4: operator requested enabling manifest
+    /// persistence.
+    ManifestPersistenceEnable,
+    /// Milestone 4: operator requested resetting manifest
+    /// persistence.
+    ManifestPersistenceReset,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -936,6 +982,15 @@ pub struct App {
     /// sequence. Pure classifier logic in
     /// `crate::tui::app::state::routing` consumes this registry.
     pub routing_registry: crate::tui::app::state::RoutingRegistry,
+    /// Manifest persistence service (Milestone 4). Owns atomic,
+    /// debounced local persistence of the TUI tab manifest. See
+    /// `crate::tui::app::state::persistence::ManifestPersistence`.
+    pub manifest_persistence: crate::tui::app::state::persistence::ManifestPersistence,
+    /// Last persisted daemon instance hint (Milestone 4). Used to
+    /// surface a non-blocking diagnostic when the loaded manifest
+    /// was written by a different daemon instance. Diagnostic only;
+    /// never authoritative.
+    pub manifest_daemon_hint: Option<String>,
 }
 
 /// What to do at TUI startup with respect to session loading. The TUI
@@ -1290,6 +1345,10 @@ impl App {
             project_catalog: crate::tui::app::state::ProjectCatalogState::new(),
             view_switch: crate::tui::app::state::ViewSwitchCoordinator::new(),
             routing_registry: crate::tui::app::state::RoutingRegistry::new(),
+            manifest_persistence: crate::tui::app::state::persistence::ManifestPersistence::new(
+                default_tui_state_root(),
+            ),
+            manifest_daemon_hint: None,
         }
     }
 
@@ -1728,6 +1787,10 @@ impl App {
             project_catalog: crate::tui::app::state::ProjectCatalogState::new(),
             view_switch: crate::tui::app::state::ViewSwitchCoordinator::new(),
             routing_registry: crate::tui::app::state::RoutingRegistry::new(),
+            manifest_persistence: crate::tui::app::state::persistence::ManifestPersistence::new(
+                default_tui_state_root(),
+            ),
+            manifest_daemon_hint: None,
         }
     }
 
@@ -2270,6 +2333,70 @@ impl App {
     /// the event loop to ensure clean shutdown.  The
     /// [`TerminalGuard`](super::terminal::TerminalGuard) still restores
     /// terminal state even if this method encounters errors.
+    /// Schedule a debounced save of the TUI tab manifest (Milestone 4).
+    ///
+    /// Callers should invoke this after every mutating operation on
+    /// `ProjectTabs` (open tab, switch tab, close tab, set session,
+    /// set model, set agent, etc.). The persistence service
+    /// debounces, deduplicates, and writes atomically.
+    pub fn schedule_manifest_save(&mut self) {
+        use crate::tui::app::state::snapshot::snapshot_from_tabs;
+        let snap = snapshot_from_tabs(&self.project_tabs);
+        self.manifest_persistence.schedule_save(snap);
+    }
+
+    /// Force-flush the manifest to disk (Milestone 4).
+    ///
+    /// Used during shutdown to ensure the latest state lands before
+    /// the TUI exits. Bounded by a tight deadline so shutdown
+    /// cannot hang on a slow disk.
+    pub fn flush_manifest(
+        &mut self,
+    ) -> Result<bool, crate::tui::app::state::persistence::PersistenceError> {
+        use crate::tui::app::state::snapshot::snapshot_from_tabs;
+        // Refresh the snapshot first so the on-disk file matches
+        // the in-memory state at flush time.
+        let snap = snapshot_from_tabs(&self.project_tabs);
+        self.manifest_persistence.schedule_force_save(snap);
+        self.manifest_persistence.flush()
+    }
+
+    /// Load the persisted manifest and return the outcome. The TUI
+    /// uses this at startup to attempt restoration. The caller is
+    /// responsible for turning the loaded manifest into a
+    /// `RestorePlan` after fetching the daemon snapshot.
+    pub fn load_manifest(&mut self) -> crate::tui::app::state::manifest::ManifestLoadOutcome {
+        self.manifest_persistence.load_manifest()
+    }
+
+    /// Disable persistence (operator control). Pending snapshots
+    /// are dropped.
+    pub fn disable_manifest_persistence(&mut self) {
+        self.manifest_persistence.disable();
+    }
+
+    /// Re-enable persistence after `disable`.
+    pub fn enable_manifest_persistence(&mut self) {
+        self.manifest_persistence.enable();
+    }
+
+    /// Reset persistence: delete the manifest file (best-effort)
+    /// and clear pending state.
+    pub fn reset_manifest_persistence(&mut self) -> std::io::Result<()> {
+        self.manifest_persistence.reset()
+    }
+
+    /// Take a metrics snapshot of the persistence service.
+    pub fn manifest_metrics(&self) -> crate::tui::app::state::persistence::PersistenceMetrics {
+        self.manifest_persistence.metrics()
+    }
+
+    /// Whether the manifest service has a pending snapshot awaiting
+    /// flush. Used by the event loop tick.
+    pub fn manifest_has_pending(&self) -> bool {
+        self.manifest_persistence.has_pending() && self.manifest_persistence.pending_is_due()
+    }
+
     pub fn prepare_shutdown(&mut self) {
         // Cancel all registered background tasks
         let active = self.task_registry.active_count();
@@ -2289,6 +2416,17 @@ impl App {
             let cmd_id = crate::shell::types::ShellCommandId(id);
             self.shell_store
                 .mark_killed(cmd_id, std::time::Duration::ZERO);
+        }
+
+        // Flush the TUI tab manifest so the next session can
+        // restore it. Best-effort: a flush failure must not block
+        // terminal restoration.
+        if let Err(e) = self.flush_manifest() {
+            tracing::warn!(
+                target: "codegg::tui::manifest",
+                error = %e,
+                "manifest flush failed during shutdown"
+            );
         }
     }
 
@@ -10760,6 +10898,9 @@ impl App {
         // Refresh sidebar git status for the new project so render
         // never blocks on git probing.
         crate::tui::commands::git_sidebar::start_refresh_git_sidebar(self);
+
+        // Milestone 4: persist the new session binding.
+        self.schedule_manifest_save();
     }
 
     // -----------------------------------------------------------------
