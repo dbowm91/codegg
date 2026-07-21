@@ -35,7 +35,7 @@ A post-closure production audit found that the remote transport evidence did not
 - Legacy `RenderFrame`, `StateSnapshot`, and raw-core messages remain available as a bounded compatibility path.
 - Static projection-disclosure, core-boundary, cwd, scheduler, and forbidden-pattern checks were reported green by the implementation pass.
 
-### Post-closure findings requiring M5
+### Historical post-closure findings corrected by M5
 
 1. **`/tui` has no connection-local projection ownership.** `TuiSessionState` stores session/model/rate-limit data only. It does not retain daemon-issued projection subscription IDs, stream descriptors, cursors, receiver tasks, or reconnect generations.
 2. **`/tui` uses the daemon-wide raw event broadcast for live delivery.** `upgrade_tui` calls `daemon.subscribe()`, and `convert_core_event_to_tui` accepts any `CoreEvent::ProjectionStreamEvent` without checking connection ownership.
@@ -59,15 +59,15 @@ These findings affect connection isolation, durable reconnect, and identity corr
 | Local TUI bounded projection state | `src/tui/app/state/projection_client.rs` | pass |
 | Remote protocol DTO additions | `crates/codegg-protocol/src/tui.rs` | pass |
 | Remote subscribe/ack request bridge | `src/server/ws.rs` | partial — request/response surface exists, ownership/live/resume lifecycle is incomplete |
-| Projection live delivery isolation | `/tui`, `/core`, Unix socket transports | fail pending M5 |
-| Durable remote cursor resume | client controller + remote server bridge | fail pending M5 |
-| Artifact cache bounds | `ProjectionClientState` | pass for local state; remote request lifecycle pending M5 |
+| Projection live delivery isolation | `/tui`, `/core`, Unix socket transports | corrected by M5 |
+| Durable remote cursor resume | client controller + remote server bridge | corrected by M5 |
+| Artifact cache bounds | `ProjectionClientState` | pass; remote request lifecycle corrected by M5 |
 | Raw compatibility path | legacy TUI messages retained | pass, removal deferred |
-| Strict subsystem closure | roadmap and registry | fail pending M5 |
+| Strict subsystem closure | roadmap and registry | corrected by M5 |
 
 ## 3. Compatibility and deprecation position
 
-`RenderFrame`, `StateSnapshot`, and raw-core event envelopes remain supported under bounded `RawCompatibility`. M5 must add explicit deprecation diagnostics and removal criteria, but must not remove these variants in the same corrective release.
+`RenderFrame`, `StateSnapshot`, and raw-core event envelopes remain supported under bounded `RawCompatibility`. M5 added explicit deprecation diagnostics and retained the legacy variants during the documented compatibility window.
 
 The compatibility sequence is:
 
@@ -87,7 +87,7 @@ The compatibility sequence is:
 | Artifact excerpts per tab | `MAX_ARTIFACT_EXCERPTS_PER_TAB = 8` | Bound excerpt cache. |
 | Artifact excerpt bytes | `MAX_ARTIFACT_EXCERPT_BYTES = 8KiB` | Reject oversized excerpts. |
 
-M5 must add explicit bounds for WebSocket outbound queues, receiver-forwarder tasks, replay batches in flight, subscriptions per connection, and remote artifact reads.
+M5 added explicit bounds for WebSocket outbound queues, receiver-forwarder tasks, replay batches in flight, subscriptions per connection, and remote artifact reads.
 
 ## 5. Deferred non-blocking product work
 
@@ -126,7 +126,7 @@ python3 scripts/check_git_forbidden_patterns.py
 python3 scripts/check_scheduler_bypass.py
 ```
 
-Those results do not include the two-connection WebSocket isolation, owned-receiver, remote projection-resume, unsubscribe/disconnect, real-stream-ID, or bounded-queue tests now required by M5.
+Those original M4 results did not include the two-connection WebSocket isolation, owned-receiver, remote projection-resume, unsubscribe/disconnect, real-stream-ID, or bounded-queue evidence later recorded by M5.
 
 Pre-existing unrelated issues recorded at the time were clippy findings in `crates/egglsp/src/edit.rs` and `python_script::executor::tests::execute_sets_os_filesystem_isolation`.
 
