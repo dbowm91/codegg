@@ -1,6 +1,6 @@
 # Session Projections Milestone 006 Closure
 
-Status: closed
+Status: conditionally closed — Milestone 007 corrective lifecycle and evidence closure required
 
 Implementation plan: `plans/implementation/session-projections/006-atomic-control-delivery-transport-verification-hardening.md`
 
@@ -12,32 +12,93 @@ Implementation commit: `8ca570fddc08eb9663b894f3190ae0ed0af2b98b`
 
 Closure record introduced in commit: `270cc5f`
 
+Corrective handoff:
+
+- `plans/implementation/session-projections/007-corrective-transport-lifecycle-and-evidence-closure.md`
+
 ## 1. Closure decision
 
-M006 is closed. Projection control delivery is now atomic at the transport
-boundary: a connection remains `Initializing` until its canonical response has
-passed the bounded critical writer path, and every failure path rolls back the
-connection-owned receiver and daemon subscription. The implementation does not
-change projection storage, sequence authority, reducer semantics, disclosure
-policy, replay authority, or the version-5 wire contract.
+The principal M006 production changes remain accepted. Projection control delivery is staged through a bounded critical writer path, `Initializing -> Live` is tied to successful response delivery, failed critical sends invoke rollback, raw compatibility is materially better scoped, and the legacy `/ws` outbound queue is bounded.
 
-## 2. Requirement and evidence matrix
+Strict closure was invalidated by post-closure source and test inspection. Milestone 007 must close the remaining connection-task lifecycle, TUI raw-session generation, deterministic adapter-failure, foreign-operation, reconnect/resume, and evidence-accuracy gaps before the subsystem returns to strict closed status.
 
-| Requirement | Implementation | Evidence |
+M007 does not reopen projection storage, sequence authority, reducer semantics, disclosure policy, replay authority, or the version-5 wire contract.
+
+## 2. Post-closure findings
+
+### 2.1 Unix raw forwarder is detached from connection teardown
+
+`handle_client` spawns the Unix raw `forward_events` task without retaining its `JoinHandle` or giving it a connection-scoped cancellation branch. Projection subscriptions are cleaned up when the client loop exits, but the raw forwarder can remain blocked on the event receiver while retaining the writer and filter state until another event arrives or the daemon event bus closes.
+
+Required correction:
+
+- retain the task handle;
+- add connection cancellation;
+- cancel and await the task on EOF, failure, shutdown, and normal teardown;
+- prove repeated connect/disconnect cycles return task/resource counts to baseline.
+
+### 2.2 `/tui` raw session switching lacks stale-queue invalidation
+
+The raw event task filters against the current `SessionInfo` value before queue insertion, but the queued item carries no route generation. An event accepted for session A may remain in the bounded raw queue and be written after the same connection has switched to session B.
+
+Required correction:
+
+- add a monotonically increasing raw-route generation;
+- attach the generation to raw outbound items;
+- reject stale generations at the final writer boundary;
+- test A -> B and A -> B -> A switching with intentionally blocked queues.
+
+### 2.3 Atomic failure evidence is mostly helper-level
+
+The critical-send helper has typed tests for cancellation, queue closure, writer failure, serialization failure, and timeout. The real transport tests, however, normally wait until the client has already consumed the canonical response before publishing a live event. They therefore do not exercise the response-blocked replay-to-live race that M006 was created to close.
+
+Required correction:
+
+- pause each production adapter after receiver installation and before response completion;
+- publish while the response is blocked;
+- prove no live event is emitted before the response;
+- inject queue, writer, timeout, cancellation, serialization, and disconnect failures against staged daemon subscriptions;
+- prove connection and daemon state return to baseline.
+
+### 2.4 Real foreign-operation and reconnect coverage is incomplete
+
+The real two-client tests cover isolation and foreign unsubscribe, but not the full planned matrix of foreign acknowledgement, resume, status, and artifact operations. They also do not prove disconnect/reconnect with exact missing-range replay followed by live delivery.
+
+Required correction:
+
+- add real fail-closed tests for all supported foreign operations;
+- prove A remains unaffected by B’s rejected operations;
+- reconnect with a new connection identity from a persisted cursor;
+- prove exactly-once missing-range replay and gap-free replay-to-live handoff.
+
+### 2.5 Closure evidence requires reconciliation
+
+The closure record reports test counts and response-before-live proof more strongly than the visible test structure supports. It also classifies a remote protocol-version expectation failure as unrelated even though the expected version may need updating after the additive protocol work.
+
+Required correction:
+
+- reconcile exact test names and counts;
+- correct the protocol-version expectation or document the intended compatibility assertion;
+- distinguish milestone-local failures from repository-wide unrelated failures;
+- require exact command output or CI evidence for final strict closure.
+
+## 3. Accepted M006 requirement matrix
+
+| Requirement | Accepted implementation | Remaining M007 evidence or lifecycle work |
 |---|---|---|
-| Bounded critical delivery | Shared timeout/cancellation helper and typed failures in `src/core/transport/projection.rs`; writer receipts in `src/server/ws.rs`; typed Unix writes in `src/core/transport/daemon_socket.rs` | Projection unit tests: 9 passed; server/ws unit tests: 2 passed; daemon socket tests: 13 passed |
-| Atomic `Initializing -> Live` | `activate_after_delivery` is the only ready transition; forwarders await the ready permit | `src/core/transport/projection.rs:265`; real `/core`, `/tui`, and Unix tests publish only after observing the initial response |
-| Rollback and unsubscribe | `rollback_subscription` / adapter cleanup cancel, remove, abort, and issue daemon unsubscribe | Timeout, cancellation, closed-writer, serialization, queue-full, and disconnect paths covered by focused tests and adapter cleanup code |
-| `/tui` critical projection controls | Snapshot, replay, resync, capability acknowledgement, acknowledgement, unsubscribe, status, and artifact outcomes use `critical_send` where delivery is required | `src/server/ws.rs:38`, `src/server/ws.rs:1189`; real TUI projection test passed |
-| `/core` response lifecycle | Response delivery is awaited before `activate_after_delivery`; foreign operations are checked against the daemon-issued connection owner | `src/core/transport/daemon_socket.rs:257`; real CoreFrame projection test passed |
-| Unix transport verification | Real newline-delimited Unix clients exercise projection response ordering, live delivery, isolation, and foreign unsubscribe rejection | `two_socket_projection_clients_are_ordered_and_isolated`: passed; daemon socket focused result: 13 passed |
-| Real WebSocket verification | SQLite-backed Axum `/core` and `/tui` clients exercise two-client projection isolation, response-before-live, and foreign unsubscribe rejection | `projection_transport_real`: 10 passed |
-| Raw `/tui` scope | SessionInfo is checked atomically with serialization/queueing; only the selected session and allowlisted globals pass; projection-primary suppresses raw mutation traffic | Real TUI raw isolation and primary suppression tests passed |
-| Raw `/core` scope | Shared `event_matches_filter` is used for replay/live filtering; projection-private events never use raw broadcast | Unix filter/replay tests and real CoreFrame raw isolation tests passed |
-| Legacy `/ws` bounds | Deprecated JSON-RPC endpoint uses a finite 256-message outbound queue and closes on overflow | `scripts/check_websocket_bounds.py`: passed; server documentation updated |
-| Static regression protection | Projection transport and WebSocket bounds guards are wired into CI and documented in AGENTS.md | Both guards passed; core boundary, cwd, execution ownership, git policy, scheduler bypass, and disclosure guards passed |
+| Bounded critical delivery | Shared timeout/cancellation helper, writer receipts, and typed Unix writes | Exercise failures through staged production subscriptions |
+| Atomic `Initializing -> Live` | `activate_after_delivery` and ready-gated forwarders | Publish while response delivery is blocked and prove ordering |
+| Rollback and unsubscribe | Adapter rollback paths remove transport ownership and request daemon unsubscribe | Prove queue/writer/cancellation/disconnect rollback end to end |
+| `/tui` critical controls | Snapshot, replay, resync, ack, unsubscribe, status, and artifact outcomes use critical delivery where required | Add deterministic saturation and disconnect tests |
+| `/core` response lifecycle | Response delivery is awaited before activation | Add blocked-response race and complete foreign-operation tests |
+| Unix projection delivery | Critical response precedes ready release | Own and terminate the separate raw forwarder; add failure races |
+| Real WebSocket isolation | Two-client `/core` and `/tui` projection isolation landed | Complete response-blocked, reconnect, and foreign-operation matrix |
+| Raw `/tui` scope | Current-session filtering and projection-primary suppression landed | Add final-boundary route-generation rejection for queued stale events |
+| Raw `/core` scope | Replay/live use shared filter semantics | Retain and regression-test |
+| Legacy `/ws` bounds | Finite queue and deprecation documentation landed | Retain and regression-test |
+| Static protection | Unbounded WebSocket and projection transport guards landed | Extend guards for detached Unix tasks and generation-free TUI raw routing |
 
-## 3. Critical delivery state machine
+## 4. Accepted critical delivery state machine
 
 ```text
 daemon subscription / receiver installed
@@ -50,58 +111,9 @@ daemon subscription / receiver installed
     -> projection forwarder may deliver live events
 ```
 
-The shared critical timeout is 500 ms (`CRITICAL_DELIVERY_TIMEOUT`). WebSocket
-critical messages carry a one-shot writer receipt. Unix-socket critical frames
-use typed serialization/write/flush errors under the same bounded delivery
-helper. A forwarder cannot pass its ready permit until activation succeeds.
+The shared critical timeout remains 500 ms. WebSocket critical messages carry a one-shot writer receipt. Unix critical frames use typed serialization/write/flush failures under the same bounded delivery helper. Milestone 007 must prove this state machine under blocked and failing production-adapter conditions.
 
-## 4. Failure-path matrix
-
-| Failure | Result | Cleanup |
-|---|---|---|
-| Serialization error | `Serialization` | No successful response; staged subscription is rolled back |
-| Bounded queue full | `Timeout` after the 500 ms critical wait | Connection operation fails; staged subscription is rolled back |
-| Queue closed | `QueueClosed` | Connection operation fails; staged subscription is rolled back |
-| Writer close/error | `WriterClosed` | Pending receipt fails; connection cleanup unsubscribes daemon state |
-| Connection cancellation | `Cancelled` | Critical wait ends immediately; owner and receiver are removed |
-| Critical timeout | `Timeout` | No activation; receiver/forwarder and daemon subscription are removed |
-| Disconnect during install | Writer/receipt failure or cancellation | Idempotent connection cleanup cancels forwarders and unsubscribes owned IDs |
-| Invalid or duplicate activation | Typed lifecycle error | No second ready transition; caller rolls back the staged owner |
-
-Best-effort raw and projection-live queue overflow remains bounded. Projection
-lag stops the forwarder and attempts a typed resync; it does not advance the
-acknowledged cursor silently.
-
-## 5. Real transport matrix
-
-| Transport | Real coverage | Result |
-|---|---|---|
-| Unix socket | Two projection clients on separate project streams; canonical response observed before publication; live event isolation; foreign unsubscribe rejected. Also session-filter, global-only, replay/live filter, and writer tests. | 13 focused tests passed |
-| `/core` | Two projection clients; canonical `ProjectionSubscribed` responses precede publication; live project isolation; foreign unsubscribe rejected. Separate raw session A/B isolation test. | 2 projection + 1 raw test passed |
-| `/tui` | Two projection clients; canonical snapshots precede publication; live project isolation; foreign unsubscribe rejected. Separate raw session A/B isolation and projection-primary suppression tests. | 2 projection + 2 raw tests passed |
-
-The real harness reads each initial snapshot/response from the socket before it
-publishes the test event. This is the byte/frame ordering proof: the live
-projection event is only made available after the canonical response has been
-observed by the client. The deterministic lifecycle tests additionally prove
-that a forwarder cannot run before the ready permit.
-
-## 6. Isolation and raw filter matrix
-
-| Surface | Allowed | Rejected or suppressed |
-|---|---|---|
-| Unix projection | Client A receives project A; client B receives project B | B cannot unsubscribe A and receives no A event |
-| `/core` projection | Client A/B receive only their owned project stream | Foreign unsubscribe returns `projection_subscription_not_owned`; foreign live event is absent |
-| `/tui` projection | Client A/B receive only their owned project stream | Foreign unsubscribe result is rejected; foreign live event is absent |
-| `/tui` raw | Session A receives A; session B receives B | Cross-session text/tool/session traffic is absent |
-| `/tui` projection-primary | Typed projection channel only | Raw session mutation event is suppressed after negotiation |
-| `/core` raw | Replay and live use the same connection-local filter | Session A/B cross-delivery is absent; global-only filters do not receive session events |
-
-`event_matches_filter` is shared by the in-memory event log replay path and the
-Unix/core live filtering paths. Projection-private `ProjectionStreamEvent`
-payloads are excluded from raw broadcasts.
-
-## 7. Bounds and compatibility
+## 5. Accepted bounds and compatibility
 
 - WebSocket outbound queues: 256 messages per channel/connection.
 - Projection subscriptions: 32 per connection; daemon maximum remains 256.
@@ -110,34 +122,34 @@ payloads are excluded from raw broadcasts.
 - Critical delivery: 500 ms timeout, cancellation-aware, with bounded writer receipts.
 - Legacy `/ws`: finite 256-message queue, deprecated, overflow closes the connection.
 - Projection protocol: remains version 5; version-4/raw compatibility remains present.
-- No storage migration, DTO shape, sequence, reducer, replay authority, or disclosure-policy change.
+- No storage migration, DTO-shape, sequence, reducer, replay-authority, or disclosure-policy change is required by M007.
 
-## 8. Verification record
+## 6. Historical verification record
 
-Passed focused commands:
+The following commands were recorded as passing during the original M006 closure pass. They are retained as historical implementation evidence, not as sufficient M007 closure evidence:
 
 ```text
 rtk proxy cargo fmt -- --check
 rtk proxy cargo check -p codegg --features server --lib
 rtk proxy cargo check --workspace --all-features
 rtk proxy cargo clippy -p codegg-protocol --all-targets -- -D warnings
-rtk proxy cargo test -p codegg-protocol --all-features -- --nocapture  # 157 passed
-rtk proxy cargo test -p codegg-core --all-features -- --nocapture      # 273 passed plus 26 integration tests
-rtk proxy cargo test -p codegg --lib core::transport::projection --all-features -- --nocapture  # 9 passed
-rtk proxy cargo test -p codegg --lib server::ws --all-features -- --nocapture                 # 2 passed
-rtk proxy cargo test -p codegg --lib core::transport::daemon_socket --all-features -- --nocapture # 13 passed
-rtk proxy cargo test --test projection_transport_real --features server -- --nocapture          # 10 passed
-rtk proxy cargo test --test projection_replay_daemon_protocol -- --nocapture                    # 13 passed
-rtk proxy cargo test --test projection_replay_subscription -- --nocapture                       # 13 passed
-rtk proxy cargo test --test projection_replay_resume -- --nocapture                              # 9 passed
-rtk proxy cargo test --test projection_replay_restart_recovery -- --nocapture                    # 8 passed
-rtk proxy cargo test --test projection_replay_transport_isolation -- --nocapture                 # 7 passed
-rtk proxy cargo test --test projection_disclosure_invariants -- --nocapture                      # 16 passed
-rtk proxy cargo test --test projection_artifact_handles -- --nocapture                           # 13 passed
+rtk proxy cargo test -p codegg-protocol --all-features -- --nocapture
+rtk proxy cargo test -p codegg-core --all-features -- --nocapture
+rtk proxy cargo test -p codegg --lib core::transport::projection --all-features -- --nocapture
+rtk proxy cargo test -p codegg --lib server::ws --all-features -- --nocapture
+rtk proxy cargo test -p codegg --lib core::transport::daemon_socket --all-features -- --nocapture
+rtk proxy cargo test --test projection_transport_real --features server -- --nocapture
+rtk proxy cargo test --test projection_replay_daemon_protocol -- --nocapture
+rtk proxy cargo test --test projection_replay_subscription -- --nocapture
+rtk proxy cargo test --test projection_replay_resume -- --nocapture
+rtk proxy cargo test --test projection_replay_restart_recovery -- --nocapture
+rtk proxy cargo test --test projection_replay_transport_isolation -- --nocapture
+rtk proxy cargo test --test projection_disclosure_invariants -- --nocapture
+rtk proxy cargo test --test projection_artifact_handles -- --nocapture
 rtk git diff --check
 ```
 
-Passed static guards:
+Historical static guards:
 
 ```text
 rtk python3 scripts/check_projection_transport_isolation.py
@@ -150,20 +162,13 @@ rtk python3 scripts/check_scheduler_bypass.py
 rtk bash scripts/check_projection_disclosure.sh
 ```
 
-The capped repository-wide command reached 4,009 library tests: 4,007 passed
-and two unrelated, unchanged assertions failed (`python_script` OS filesystem
-isolation and the remote protocol version expectation). Workspace clippy still
-reports only the three pre-existing `question_mark` suggestions in
-`crates/egglsp/src/edit.rs`. The Tokio flavor guard still reports its existing
-repository-wide baseline of 850 bare test annotations. None of these are an
-M006 transport finding; no high or medium M006 findings remain.
+The original capped repository-wide run recorded 4,007 passing library tests and two failing assertions, plus three pre-existing `egglsp` clippy suggestions and the existing Tokio annotation baseline. M007 must rerun the relevant matrix and classify each residual accurately.
 
-## 9. Planning disposition
+## 7. Planning disposition
 
-The implementation plan is marked `closed`. The M005 closure remains historical
-and now contains a post-closure follow-up note; its claims were not rewritten
-or reopened. The session-projections roadmap and registry are strict closed.
-No future implementation plan is waiting on M006, so no future plan required
-unblocking or a status change. Deferred UX, team/presence, plugin semantics,
-replication, and compatibility-window work remains explicitly deferred and
-unregistered.
+- M006 is conditionally closed.
+- Accepted M006 implementation remains the foundation for M007.
+- M007 is the sole dependency-ready projection handoff.
+- The session-projections roadmap is active until M007 closure is accepted.
+- Strict closure requires a dedicated `plans/closure/session-projections/007-status.md` with exact implementation commit, closure commit, commands, test names/counts, failure classification, and zero unresolved high or medium M007 findings.
+- Deferred UX, team/presence, plugin semantics, replication, and compatibility-window work remains deferred and unregistered.
