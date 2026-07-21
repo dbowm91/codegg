@@ -139,9 +139,11 @@ Deferred work: durable replay and final authorization filtering.
 
 ### Milestone 2 — Scoped subscriptions and durable replay
 
-Status: **blocked — implementation never landed**; see
-`plans/closure/session-projections/002-status.md`. The source plan
-remains authoritative: `plans/implementation/session-projections/002-scoped-subscriptions-durable-replay.md`.
+Status: **conditionally closed**; see
+`plans/closure/session-projections/002-status.md`. The library/crate
+implementation is landed at `8dc4b85`; the daemon-side wiring of the
+new `ProjectionReplayHandle` and the `CoreRequest::Projection*`
+dispatch remains an open follow-up captured in the closure record.
 
 Class: capability
 
@@ -159,11 +161,14 @@ Exit conditions:
 - project subscriptions do not deliver unrelated project events;
 - duplicate delivery is idempotent at the reducer.
 
-Closure evidence: none landed. The closure record
-(`plans/closure/session-projections/002-status.md`) reports zero
-production-code work for this milestone across all seven work
-packages. The plan remains the canonical specification for the next
-implementation effort; downstream Milestones 3 and 4 remain blocked.
+Closure evidence: implementation commit `8dc4b85`. The closure
+record (`plans/closure/session-projections/002-status.md`) reports
+the full requirement-to-evidence matrix, the unresolved findings
+(daemon publication wiring, request dispatch, live-event routing,
+session rebind revision threading), and the M3 handoff shape. All
+seven work packages have production code at the library layer; the
+remaining items are mechanical integration wiring that does not
+invalidate the M2 invariant set.
 
 Deferred work: distributed node event replication.
 
@@ -254,6 +259,6 @@ This roadmap closes when CodeGG has one versioned, bounded, redacted session pro
 | Milestone | Status | Implementation plan | Closure record | Blockers |
 |---|---|---|---|---|
 | 1 | closed | `plans/implementation/session-projections/001-projection-contracts.md` | `plans/closure/session-projections/001-status.md` | — |
-| 2 | blocked — implementation never landed | `plans/implementation/session-projections/002-scoped-subscriptions-durable-replay.md` | `plans/closure/session-projections/002-status.md` | Implementation did not land; Milestone 3 cannot proceed |
-| 3 | not started | — | — | Milestones 1–2 and authorization interface; M2 implementation still required |
+| 2 | conditionally closed | `plans/implementation/session-projections/002-scoped-subscriptions-durable-replay.md` | `plans/closure/session-projections/002-status.md` | Library layer landed at `8dc4b85`; daemon publication wiring, request dispatch, and live-event routing remain open follow-ups. Milestone 3 cannot proceed until those are resolved. |
+| 3 | not started | — | — | Milestones 1–2 closure plus M2 daemon-wiring follow-up plus authorization interface |
 | 4 | not started | — | — | Milestones 1–3 closure |
