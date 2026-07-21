@@ -58,7 +58,11 @@ async fn spawn_daemon(
 async fn handshake_and_subscribe(
     stream: UnixStream,
     session_id: Option<String>,
-) -> (BufReader<tokio::net::unix::OwnedReadHalf>, String) {
+) -> (
+    BufReader<tokio::net::unix::OwnedReadHalf>,
+    tokio::net::unix::OwnedWriteHalf,
+    String,
+) {
     let (read_half, mut write_half) = stream.into_split();
     let mut reader = BufReader::new(read_half);
 
@@ -112,13 +116,6 @@ async fn handshake_and_subscribe(
     write_half.write_all(b"\n").await.unwrap();
     write_half.flush().await.unwrap();
 
-    // Drop the writer to release the read half. The server's forwarder
-    // task does not need the writer to stay open after the handshake
-    // for live events to flow; the writer side stays open on the
-    // server because the server holds its own OwnedWriteHalf. We just
-    // need to drop our local copy so the BufReader can complete reads.
-    drop(write_half);
-
     // Drain any replayed events. The replay delivers events as a
     // burst; a short timeout is enough to surface the historical
     // events before live ones start flowing.
@@ -128,12 +125,232 @@ async fn handshake_and_subscribe(
     .await;
     let _ = drain;
 
-    (reader, client_id)
+    (reader, write_half, client_id)
+}
+
+/// Establish a projection-capable client and wait for the canonical
+/// `ProjectionSubscribed` response before returning the live reader. The
+/// caller can therefore publish an event only after observing the response on
+/// the actual Unix-socket byte stream.
+async fn projection_handshake_and_subscribe(
+    stream: UnixStream,
+    project_id: &str,
+) -> (
+    BufReader<tokio::net::unix::OwnedReadHalf>,
+    tokio::net::unix::OwnedWriteHalf,
+    String,
+    codegg_protocol::projection::replay::ProjectionSubscriptionId,
+) {
+    use crate::protocol::core::CoreRequest;
+    use crate::protocol::projection::replay::{
+        ProjectionStreamKind, ProjectionSubscriptionRequest,
+    };
+
+    let (read_half, mut write_half) = stream.into_split();
+    let mut reader = BufReader::new(read_half);
+    let hello = CoreFrame::ClientHello(ClientHello {
+        client_name: format!("projection-{project_id}"),
+        client_kind: ClientKind::Automation,
+        protocol_version: crate::protocol::core::PROTOCOL_VERSION,
+        capabilities: ClientCapabilities {
+            visual_notifications: false,
+            desktop_notifications: false,
+            audio: false,
+            tts: false,
+            multi_session_view: false,
+            plugin_ui_dialog: false,
+            plugin_ui_toast: false,
+            plugin_ui_panel: false,
+            plugin_ui_status_item: false,
+            plugin_ui_table: false,
+            plugin_ui_markdown: false,
+            plugin_ui_code: false,
+            plugin_ui_progress: false,
+            workspace_registration: false,
+            project_catalog: false,
+            session_projection: true,
+        },
+    });
+    write_half
+        .write_all(serde_json::to_string(&hello).unwrap().as_bytes())
+        .await
+        .unwrap();
+    write_half.write_all(b"\n").await.unwrap();
+    write_half.flush().await.unwrap();
+    let server_hello = match read_frame(&mut reader).await.unwrap() {
+        CoreFrame::ServerHello(hello) => hello,
+        other => panic!("expected ServerHello, got {:?}", other),
+    };
+
+    let request_id = format!("subscribe-{project_id}");
+    let request = CoreFrame::Request(crate::core::new_request(
+        request_id.clone(),
+        CoreRequest::ProjectionSubscribe {
+            request: ProjectionSubscriptionRequest {
+                scope: ProjectionStreamKind::Project,
+                scope_id: project_id.to_string(),
+                cursor: None,
+                projection_version: 1,
+            },
+        },
+    ));
+    write_half
+        .write_all(serde_json::to_string(&request).unwrap().as_bytes())
+        .await
+        .unwrap();
+    write_half.write_all(b"\n").await.unwrap();
+    write_half.flush().await.unwrap();
+    let subscription_id = match read_frame(&mut reader).await.unwrap() {
+        CoreFrame::Response {
+            request_id: response_id,
+            response,
+        } if response_id == request_id => match *response {
+            crate::protocol::core::CoreResponse::ProjectionSubscribed {
+                subscription_id, ..
+            } => subscription_id,
+            other => panic!("expected ProjectionSubscribed, got {:?}", other),
+        },
+        other => panic!("expected projection response, got {:?}", other),
+    };
+    (reader, write_half, server_hello.client_id, subscription_id)
 }
 
 async fn abort_server(handle: tokio::task::JoinHandle<()>) {
     handle.abort();
     let _ = tokio::time::timeout(Duration::from_millis(100), handle).await;
+}
+
+async fn projection_daemon() -> Arc<CoreDaemon> {
+    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+    use std::str::FromStr;
+
+    let db_name = format!("daemon_socket_projection_{}", uuid::Uuid::new_v4().simple());
+    let options =
+        SqliteConnectOptions::from_str(&format!("file:{db_name}?mode=memory&cache=shared"))
+            .expect("sqlite options")
+            .create_if_missing(true)
+            .foreign_keys(true);
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(options)
+        .await
+        .expect("projection test pool");
+    crate::session::schema::migrate(&pool)
+        .await
+        .expect("projection schema");
+    Arc::new(CoreDaemon::new(Some(pool), None, None, None))
+}
+
+async fn publish_projection_event(daemon: &CoreDaemon, project_id: &str, session_id: &str) {
+    let seam = daemon
+        .projection_seam
+        .as_ref()
+        .expect("SQLite-backed daemon has projection seam");
+    let envelope = crate::protocol::core::EventEnvelope {
+        protocol_version: crate::protocol::core::PROTOCOL_VERSION,
+        event_seq: 1,
+        timestamp_ms: 1,
+        session_id: Some(session_id.to_string()),
+        turn_id: Some("turn-socket".to_string()),
+        payload: CoreEvent::TurnStarted {
+            session_id: session_id.to_string(),
+            turn_id: "turn-socket".to_string(),
+        },
+    };
+    let context = codegg_core::projection_replay::seam::ProjectionBindingContext {
+        session_id: Some(session_id.to_string()),
+        project_id: Some(project_id.to_string()),
+        workspace_id: None,
+        binding_revision: 1,
+    };
+    let outcome = seam
+        .service()
+        .publish_from_core_with_context(&envelope, &context)
+        .await
+        .expect("publish socket projection event");
+    assert!(matches!(
+        outcome,
+        codegg_core::projection_replay::service::PublishOutcome::Published { .. }
+    ));
+}
+
+/// A real Unix-socket projection handoff must deliver each canonical response
+/// before its connection's live receiver is released, and foreign lifecycle
+/// operations must remain rejected by daemon ownership checks.
+#[tokio::test]
+async fn two_socket_projection_clients_are_ordered_and_isolated() {
+    use crate::protocol::core::CoreRequest;
+
+    let daemon = projection_daemon().await;
+    let (socket_path_str, _socket_dir, server_handle) = spawn_daemon(Arc::clone(&daemon)).await;
+    let stream_a = UnixStream::connect(&socket_path_str)
+        .await
+        .expect("connect projection client A");
+    let stream_b = UnixStream::connect(&socket_path_str)
+        .await
+        .expect("connect projection client B");
+    let (mut reader_a, _writer_a, _client_id_a, subscription_a) =
+        projection_handshake_and_subscribe(stream_a, "project-a").await;
+    let (mut reader_b, mut writer_b, _client_id_b, subscription_b) =
+        projection_handshake_and_subscribe(stream_b, "project-b").await;
+    assert_ne!(subscription_a, subscription_b);
+
+    let foreign_request = CoreFrame::Request(crate::core::new_request(
+        "foreign-unsubscribe".to_string(),
+        CoreRequest::ProjectionUnsubscribe {
+            subscription_id: subscription_a.clone(),
+        },
+    ));
+    writer_b
+        .write_all(serde_json::to_string(&foreign_request).unwrap().as_bytes())
+        .await
+        .unwrap();
+    writer_b.write_all(b"\n").await.unwrap();
+    writer_b.flush().await.unwrap();
+    match read_frame(&mut reader_b).await.unwrap() {
+        CoreFrame::Response { response, .. } => assert!(matches!(
+            *response,
+            crate::protocol::core::CoreResponse::Error {
+                code,
+                ..
+            } if code == "projection_subscription_not_owned"
+        )),
+        other => panic!("expected foreign-operation error, got {:?}", other),
+    }
+
+    publish_projection_event(&daemon, "project-a", "session-a").await;
+    let event_a = tokio::time::timeout(Duration::from_millis(400), async {
+        loop {
+            if let Some(CoreFrame::Event(envelope)) = read_frame(&mut reader_a).await {
+                if let CoreEvent::ProjectionStreamEvent {
+                    subscription_id, ..
+                } = envelope.payload
+                {
+                    return subscription_id;
+                }
+            }
+        }
+    })
+    .await
+    .expect("client A should receive projection event");
+    assert_eq!(event_a, subscription_a);
+
+    let foreign_event = tokio::time::timeout(Duration::from_millis(200), async {
+        loop {
+            if let Some(CoreFrame::Event(envelope)) = read_frame(&mut reader_b).await {
+                if let CoreEvent::ProjectionStreamEvent {
+                    subscription_id, ..
+                } = envelope.payload
+                {
+                    return subscription_id;
+                }
+            }
+        }
+    })
+    .await;
+    assert!(foreign_event.is_err(), "client B received project A event");
+
+    abort_server(server_handle).await;
 }
 
 /// Test for Pass I of the integration test matrix: two real Unix
@@ -153,9 +370,9 @@ async fn two_socket_session_filter_isolation() {
         .await
         .expect("connect client B");
 
-    let (mut reader_a, _client_id_a) =
+    let (mut reader_a, _writer_a, _client_id_a) =
         handshake_and_subscribe(stream_a, Some("s_A".to_string())).await;
-    let (mut reader_b, _client_id_b) =
+    let (mut reader_b, _writer_b, _client_id_b) =
         handshake_and_subscribe(stream_b, Some("s_B".to_string())).await;
 
     // Sanity: both clients were issued distinct ids.
@@ -239,7 +456,7 @@ async fn global_only_subscription_does_not_receive_session_events() {
     let stream = UnixStream::connect(&socket_path_str)
         .await
         .expect("connect client");
-    let (mut reader, _client_id) = handshake_and_subscribe(stream, None).await;
+    let (mut reader, _writer, _client_id) = handshake_and_subscribe(stream, None).await;
 
     // Publish a session event. The client should NOT see it.
     daemon
@@ -358,7 +575,8 @@ async fn resume_replay_uses_same_filter_as_live_forwarding() {
     let stream = UnixStream::connect(&socket_path_str)
         .await
         .expect("connect client");
-    let (reader, _client_id) = handshake_and_subscribe(stream, Some("s1".to_string())).await;
+    let (reader, _writer, _client_id) =
+        handshake_and_subscribe(stream, Some("s1".to_string())).await;
 
     // The replay burst was drained by `handshake_and_subscribe`. Now
     // confirm we received s1 + global but NOT s2. We have to inspect

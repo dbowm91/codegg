@@ -107,6 +107,7 @@ python3 scripts/check-tokio-test-flavors.py         # regression guard for bare 
 python3 scripts/generate_builtin_agents.py --check  # agent asset staleness + schema validation
 bash scripts/check_projection_disclosure.sh          # projection disclosure encapsulation guard (M3)
 python3 scripts/check_projection_transport_isolation.py # raw projection transport isolation guard (M5)
+python3 scripts/check_websocket_bounds.py             # reject unbounded server WebSocket channels (M6)
 ```
 
 ## Testing

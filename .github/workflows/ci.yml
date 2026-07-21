@@ -40,6 +40,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo check --workspace --all-features --all-targets
+      - name: Projection transport bounds and isolation guards
+        run: |
+          python3 scripts/check_projection_transport_isolation.py
+          python3 scripts/check_websocket_bounds.py
 
   clippy:
     runs-on: ubuntu-latest

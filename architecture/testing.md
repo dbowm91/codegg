@@ -246,8 +246,11 @@ projection regression surface:
 
 ```bash
 python3 scripts/check_projection_transport_isolation.py
+python3 scripts/check_websocket_bounds.py
 cargo test -p codegg-protocol
 cargo test -p codegg --lib core::transport::projection -- --nocapture
+cargo test -p codegg --lib server::ws -- --nocapture
+cargo test -p codegg --lib core::transport::daemon_socket -- --nocapture
 cargo test --test projection_replay_daemon_protocol
 cargo test --test projection_replay_subscription
 cargo test --test projection_replay_resume

@@ -5,6 +5,9 @@
 //! each receiver and bounds the transient work associated with that connection.
 
 use std::collections::{HashMap, VecDeque};
+use std::fmt;
+use std::future::Future;
+use std::time::Duration;
 
 use tokio::sync::Notify;
 use tokio::task::JoinHandle;
@@ -18,6 +21,54 @@ use crate::protocol::projection::replay::{
 pub const MAX_CONNECTION_PROJECTION_SUBSCRIPTIONS: usize = 32;
 pub const MAX_CONNECTION_ARTIFACT_READS: usize = 8;
 pub const MAX_CONNECTION_DIAGNOSTICS: usize = 32;
+pub const CRITICAL_DELIVERY_TIMEOUT: Duration = Duration::from_millis(500);
+
+/// Failure reasons for control frames whose delivery is part of the
+/// connection's state transition.  A control frame is never treated as
+/// delivered merely because it was serialized or queued: the owning writer
+/// must acknowledge the write.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CriticalDeliveryError {
+    Serialization,
+    QueueClosed,
+    QueueFull,
+    Timeout,
+    Cancelled,
+    WriterClosed,
+}
+
+impl fmt::Display for CriticalDeliveryError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let reason = match self {
+            Self::Serialization => "serialization",
+            Self::QueueClosed => "queue_closed",
+            Self::QueueFull => "queue_full",
+            Self::Timeout => "timeout",
+            Self::Cancelled => "cancelled",
+            Self::WriterClosed => "writer_closed",
+        };
+        f.write_str(reason)
+    }
+}
+
+/// Apply the common bounded timeout/cancellation contract to a transport
+/// specific send operation.  The operation itself is responsible for
+/// distinguishing queue and writer failures.
+pub async fn bounded_critical_delivery<F>(
+    cancellation: &CancellationToken,
+    send: F,
+) -> Result<(), CriticalDeliveryError>
+where
+    F: Future<Output = Result<(), CriticalDeliveryError>>,
+{
+    tokio::select! {
+        biased;
+        _ = cancellation.cancelled() => Err(CriticalDeliveryError::Cancelled),
+        result = tokio::time::timeout(CRITICAL_DELIVERY_TIMEOUT, send) => {
+            result.unwrap_or(Err(CriticalDeliveryError::Timeout))
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProjectionConnectionMode {
@@ -32,6 +83,15 @@ pub enum OwnedProjectionLifecycle {
     Live,
     ResyncRequired,
     Closed,
+}
+
+/// Result of trying to complete the connection-local half of projection
+/// activation. The transport must call this only after its critical initial
+/// response has been accepted by its writer path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProjectionActivationError {
+    MissingSubscription,
+    InvalidLifecycle(OwnedProjectionLifecycle),
 }
 
 impl From<OwnedProjectionLifecycle> for ProjectionSubscriptionState {
@@ -199,6 +259,44 @@ impl ProjectionConnectionState {
         self.subscriptions.get_mut(subscription_id)
     }
 
+    /// Complete activation after successful delivery of the canonical
+    /// snapshot/replay response. Keeping this transition here gives each
+    /// transport the same ordering and lifecycle contract.
+    pub fn activate_after_delivery(
+        &mut self,
+        subscription_id: &ProjectionSubscriptionId,
+    ) -> Result<(), ProjectionActivationError> {
+        let subscription = self
+            .subscriptions
+            .get_mut(subscription_id)
+            .ok_or(ProjectionActivationError::MissingSubscription)?;
+        if subscription.lifecycle != OwnedProjectionLifecycle::Initializing {
+            return Err(ProjectionActivationError::InvalidLifecycle(
+                subscription.lifecycle,
+            ));
+        }
+        subscription.mark_live();
+        Ok(())
+    }
+
+    /// Cancel and remove a subscription whose initial delivery failed. This
+    /// also stops its forwarder, so a failed activation cannot retain a live
+    /// task or receiver in the connection-local registry.
+    pub async fn rollback_subscription(
+        &mut self,
+        subscription_id: &ProjectionSubscriptionId,
+    ) -> bool {
+        let Some(mut subscription) = self.subscriptions.remove(subscription_id) else {
+            return false;
+        };
+        subscription.cancel();
+        if let Some(forwarder) = subscription.forwarder.take() {
+            forwarder.abort();
+            let _ = forwarder.await;
+        }
+        true
+    }
+
     pub fn remove_subscription(
         &mut self,
         subscription_id: &ProjectionSubscriptionId,
@@ -343,6 +441,44 @@ mod tests {
     }
 
     #[test]
+    fn activation_is_only_valid_from_initializing() {
+        let mut state = ProjectionConnectionState::new("connection-a");
+        let subscription_id = ProjectionSubscriptionId::new("sub-a");
+        state.insert_subscription(owned("sub-a")).unwrap();
+
+        state
+            .activate_after_delivery(&subscription_id)
+            .expect("initial delivery activates subscription");
+        assert_eq!(
+            state.subscription(&subscription_id).unwrap().lifecycle,
+            OwnedProjectionLifecycle::Live
+        );
+        assert_eq!(
+            state.activate_after_delivery(&subscription_id),
+            Err(ProjectionActivationError::InvalidLifecycle(
+                OwnedProjectionLifecycle::Live
+            ))
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn rollback_removes_and_cancels_initializing_subscription() {
+        let mut state = ProjectionConnectionState::new("connection-a");
+        let subscription_id = ProjectionSubscriptionId::new("sub-a");
+        let cancellation = {
+            let subscription = owned("sub-a");
+            let cancellation = subscription.cancellation.clone();
+            state.insert_subscription(subscription).unwrap();
+            cancellation
+        };
+
+        assert!(state.rollback_subscription(&subscription_id).await);
+        assert!(cancellation.is_cancelled());
+        assert!(!state.owns(&subscription_id));
+        assert!(!state.rollback_subscription(&subscription_id).await);
+    }
+
+    #[test]
     fn project_ownership_is_connection_local() {
         let mut a = ProjectionConnectionState::new("connection-a");
         let mut b = ProjectionConnectionState::new("connection-b");
@@ -350,5 +486,31 @@ mod tests {
         b.insert_subscription(owned("sub-b")).unwrap();
         assert!(a.owns_project("project"));
         assert!(!b.owns(&ProjectionSubscriptionId::new("sub-a")));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn critical_delivery_is_bounded() {
+        let cancellation = CancellationToken::new();
+        let result = bounded_critical_delivery(&cancellation, async {
+            tokio::time::sleep(CRITICAL_DELIVERY_TIMEOUT + Duration::from_millis(25)).await;
+            Ok(())
+        })
+        .await;
+        assert_eq!(result, Err(CriticalDeliveryError::Timeout));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn critical_delivery_observes_connection_cancellation() {
+        let cancellation = CancellationToken::new();
+        let cancel = cancellation.clone();
+        let task = tokio::spawn(async move {
+            bounded_critical_delivery(
+                &cancel,
+                std::future::pending::<Result<(), CriticalDeliveryError>>(),
+            )
+            .await
+        });
+        cancellation.cancel();
+        assert_eq!(task.await.unwrap(), Err(CriticalDeliveryError::Cancelled));
     }
 }

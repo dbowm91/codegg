@@ -22,7 +22,7 @@ The `server` module provides HTTP server functionality for remote TUI connection
 server/
 ├── mod.rs           # Module exports, re-exports run_server, MdnsService, ServerState
 ├── http.rs         # Main server setup, Axum router configuration, middleware stack
-├── ws.rs           # WebSocket handlers (/ws for JSON-RPC, /tui for TuiMessage protocol)
+├── ws.rs           # WebSocket handlers (/ws, /core, and /tui)
 ├── state.rs        # ServerState and WsRateLimiter shared state
 ├── rpc.rs          # JSON-RPC request/response types
 ├── mdns.rs         # mDNS service discovery implementation
@@ -133,15 +133,21 @@ Router::new()
     ├── GET  /api/workspace
     ├── POST /api/workspace
     ├── GET  /api/workspace/list
-    ├── GET  /ws                   # WebSocket for JSON-RPC
-    └── GET  /tui                 # WebSocket for TuiMessage protocol
+    ├── GET  /ws                   # Deprecated bounded JSON-RPC WebSocket
+    ├── GET  /core                 # CoreFrame WebSocket
+    └── GET  /tui                  # TuiMessage protocol WebSocket
 ```
 
 ## WebSocket Handling (ws.rs)
 
-### Two WebSocket Endpoints
+### WebSocket Endpoints
 
-#### `/ws` - JSON-RPC Interface
+#### `/ws` - Deprecated JSON-RPC Interface
+
+`/ws` is retained only for bounded legacy compatibility. Its outbound queue
+has a finite 256-message capacity; serialization or queue overflow closes the
+connection instead of silently accumulating responses. New clients should use
+`/core` or `/tui`.
 
 Used for lightweight RPC operations. Handles JSON-RPC 2.0 requests:
 
@@ -209,6 +215,14 @@ bound; transports must never synthesize an ID.
 
 **Important Implementation Detail**: The server uses `TuiMessage::ResyncRequired` variant directly when serializing (not raw JSON). See `ws.rs` WebSocket handler for the implementation.
 
+#### `/core` - CoreFrame Protocol
+
+`/core` is the remote core protocol used by non-TUI clients. It negotiates a
+`ClientHello`, returns a daemon-issued `ServerHello`, and carries typed request,
+response, event, projection, and subscription-filter frames. Projection
+responses use the same bounded critical writer path as `/tui`; a projection
+subscription is not activated until its initial response receipt succeeds.
+
 ### Auth Validation
 
 Both WebSocket endpoints share `validate_ws_auth()`:
@@ -239,6 +253,21 @@ projection control/live traffic. A full projection queue marks that
 subscription `SubscriberLagged`, sends typed resync when possible, stops the
 forwarder, and does not advance acknowledgements. Connections are capped at
 32 projection subscriptions, 8 concurrent artifact reads, and 32 diagnostics.
+
+Projection snapshot, replay, resync, acknowledgement, unsubscribe, status,
+and artifact responses use a critical writer path. The bounded queue send is
+followed by a one-shot writer receipt and a 500 ms timeout, with cancellation
+and writer-close failures reported to the operation. A receiver stays in
+`Initializing` until the receipt succeeds; every failed critical delivery
+rolls back the connection owner and issues a daemon unsubscribe. Live
+forwarders wait on the resulting ready permit, so a live projection event
+cannot precede its canonical initial response.
+
+Raw compatibility delivery is connection-local: `/tui` uses its selected
+`SessionInfo` session and `/core` applies the same filter to replay and live
+events. Projection-primary connections suppress raw session mutation events.
+Only an explicit allowlist of safe global events may cross a raw compatibility
+filter.
 
 Disconnect, unsubscribe, capability downgrade, and server shutdown cancel and
 await owned forwarders, then issue daemon-owned unsubscribe requests. Replay

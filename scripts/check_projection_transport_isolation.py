@@ -42,6 +42,26 @@ def main() -> int:
                 )
                 break
 
+        if path.name == "ws.rs":
+            if "async fn critical_send" not in content:
+                failures.append(f"{label}: critical projection delivery helper is missing")
+            if re.search(
+                r"queue_tui\(\s*bus_tx\s*,\s*&TuiMessage::Projection(?:Snapshot|Replay|Resync)",
+                content,
+            ):
+                failures.append(
+                    f"{label}: projection control frames must use the awaited critical path"
+                )
+            if "projection_response_id(response)" in content and re.search(
+                r"try_send[\s\S]{0,500}mark_live", content
+            ):
+                failures.append(
+                    f"{label}: projection activation is structurally coupled to a failed try_send path"
+                )
+
+        if path.name == "daemon_socket.rs" and "bounded_critical_delivery" not in content:
+            failures.append(f"{label}: Unix-socket control delivery is not bounded/acknowledged")
+
     if failures:
         for failure in failures:
             print(f"ERROR: {failure}")

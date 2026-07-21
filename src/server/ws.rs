@@ -8,10 +8,12 @@ use axum::{
 };
 use futures::{SinkExt, StreamExt};
 use subtle::ConstantTimeEq;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot, RwLock};
+use tokio_util::sync::CancellationToken;
 use tracing::info;
 
 use crate::core::transport::projection::{
+    bounded_critical_delivery, CriticalDeliveryError, OwnedProjectionLifecycle,
     OwnedProjectionSubscription, ProjectionConnectionMode, ProjectionConnectionState,
 };
 use crate::error::AxumServerRuntimeError;
@@ -22,6 +24,89 @@ use crate::server::rpc::{RpcError, RpcRequest, RpcResponse};
 use crate::server::scope::{resolve_context, ScopeQuery};
 
 const WS_OUTBOUND_QUEUE_CAPACITY: usize = 256;
+
+type WsMessage = axum::extract::ws::Message;
+type WsSender = mpsc::Sender<OutboundMessage>;
+
+type CriticalSendFailure = CriticalDeliveryError;
+
+struct OutboundMessage {
+    message: WsMessage,
+    receipt: Option<oneshot::Sender<Result<(), CriticalSendFailure>>>,
+}
+
+async fn critical_send<T: serde::Serialize>(
+    tx: &WsSender,
+    value: &T,
+    cancellation: &CancellationToken,
+) -> Result<(), CriticalSendFailure> {
+    let json = serde_json::to_string(value).map_err(|_| CriticalSendFailure::Serialization)?;
+    let (receipt_tx, receipt_rx) = oneshot::channel();
+    let outbound = OutboundMessage {
+        message: WsMessage::Text(json.into()),
+        receipt: Some(receipt_tx),
+    };
+
+    bounded_critical_delivery(cancellation, async move {
+        tx.send(outbound)
+            .await
+            .map_err(|_| CriticalSendFailure::QueueClosed)?;
+        receipt_rx
+            .await
+            .map_err(|_| CriticalSendFailure::WriterClosed)?
+    })
+    .await
+}
+
+fn queue_message(tx: &WsSender, message: WsMessage) -> bool {
+    tx.try_send(OutboundMessage {
+        message,
+        receipt: None,
+    })
+    .is_ok()
+}
+
+fn queue_json<T: serde::Serialize>(tx: &WsSender, value: &T) -> bool {
+    serde_json::to_string(value)
+        .ok()
+        .map(|json| queue_message(tx, WsMessage::Text(json.into())))
+        .unwrap_or(false)
+}
+
+async fn activate_after_critical_delivery(
+    projection: &Arc<tokio::sync::Mutex<ProjectionConnectionState>>,
+    subscription_id: &crate::protocol::projection::replay::ProjectionSubscriptionId,
+) -> Result<(), CriticalSendFailure> {
+    let mut projection = projection.lock().await;
+    if projection
+        .subscription(subscription_id)
+        .map(|subscription| subscription.lifecycle)
+        == Some(OwnedProjectionLifecycle::Live)
+    {
+        return Ok(());
+    }
+    projection
+        .activate_after_delivery(subscription_id)
+        .map_err(|_| CriticalSendFailure::QueueClosed)
+}
+
+fn event_matches_raw_filter(
+    event: &EventEnvelope<CoreEvent>,
+    filter: &crate::core::event_log::EventFilter,
+) -> bool {
+    crate::core::event_log::event_matches_filter(filter, event)
+        && match event.session_id.as_deref() {
+            Some(_) => true,
+            None => matches!(
+                &event.payload,
+                CoreEvent::SnapshotModels { .. }
+                    | CoreEvent::ProjectRegistered { .. }
+                    | CoreEvent::ProjectArchived { .. }
+                    | CoreEvent::ProjectRestored { .. }
+                    | CoreEvent::ProjectHealthChanged { .. }
+            ),
+        }
+}
 
 fn rpc_error(req: &RpcRequest, code: i64, message: impl Into<String>) -> RpcResponse {
     RpcResponse {
@@ -121,18 +206,33 @@ async fn upgrade_ws(
 ) {
     let (ws_tx, ws_rx) = socket.split();
 
-    let (out_tx, mut out_rx) = mpsc::unbounded_channel::<axum::extract::ws::Message>();
+    let (out_tx, mut out_rx) = mpsc::channel::<OutboundMessage>(WS_OUTBOUND_QUEUE_CAPACITY);
+    let writer_cancel = CancellationToken::new();
+    let writer_cancel_for_task = writer_cancel.clone();
 
     let state_clone = state.clone();
     let mut send_task = tokio::spawn(async move {
         let mut ws_tx = ws_tx;
-        while let Some(msg) = out_rx.recv().await {
-            let _ = ws_tx.send(msg).await;
+        while let Some(outbound) = out_rx.recv().await {
+            let result = ws_tx.send(outbound.message).await;
+            if let Some(receipt) = outbound.receipt {
+                let _ = receipt.send(
+                    result
+                        .as_ref()
+                        .map(|_| ())
+                        .map_err(|_| CriticalSendFailure::WriterClosed),
+                );
+            }
+            if result.is_err() {
+                break;
+            }
         }
+        writer_cancel_for_task.cancel();
         drop(state_clone);
     });
 
     let rate_limiter = state.ws_rate_limiter.clone();
+    let recv_cancel = writer_cancel.clone();
 
     let mut recv_task = tokio::spawn(async move {
         let mut ws_rx = ws_rx;
@@ -149,15 +249,15 @@ async fn upgrade_ws(
                             message: "Too Many Requests".to_string(),
                         }),
                     };
-                    if let Ok(msg) = serde_json::to_string(&resp) {
-                        let _ = out_tx.send(axum::extract::ws::Message::Text(msg.into()));
+                    if critical_send(&out_tx, &resp, &recv_cancel).await.is_err() {
+                        break;
                     }
                     break;
                 }
                 if let Ok(req) = serde_json::from_str::<RpcRequest>(&text) {
                     let resp = handle_rpc_request(&req, &state).await;
-                    if let Ok(msg) = serde_json::to_string(&resp) {
-                        let _ = out_tx.send(axum::extract::ws::Message::Text(msg.into()));
+                    if critical_send(&out_tx, &resp, &recv_cancel).await.is_err() {
+                        break;
                     }
                 }
             }
@@ -514,12 +614,10 @@ async fn upgrade_tui(
 ) {
     let (ws_tx, ws_rx) = socket.split();
 
-    let (out_tx, mut out_rx) =
-        mpsc::channel::<axum::extract::ws::Message>(WS_OUTBOUND_QUEUE_CAPACITY);
+    let (out_tx, mut out_rx) = mpsc::channel::<OutboundMessage>(WS_OUTBOUND_QUEUE_CAPACITY);
     let (projection_tx, mut projection_rx) =
-        mpsc::channel::<axum::extract::ws::Message>(WS_OUTBOUND_QUEUE_CAPACITY);
-    let (raw_tx, mut raw_rx) =
-        mpsc::channel::<axum::extract::ws::Message>(WS_OUTBOUND_QUEUE_CAPACITY);
+        mpsc::channel::<OutboundMessage>(WS_OUTBOUND_QUEUE_CAPACITY);
+    let (raw_tx, mut raw_rx) = mpsc::channel::<OutboundMessage>(WS_OUTBOUND_QUEUE_CAPACITY);
     let connection_id = format!("tui-{}", uuid::Uuid::new_v4());
     let projection = Arc::new(tokio::sync::Mutex::new(ProjectionConnectionState::new(
         connection_id.clone(),
@@ -528,6 +626,8 @@ async fn upgrade_tui(
         addr.to_string(),
         projection,
     )));
+    let connection_cancel = CancellationToken::new();
+    let connection_cancel_for_writer = connection_cancel.clone();
     let daemon_clone = state.daemon.clone();
 
     let mut send_task = tokio::spawn(async move {
@@ -535,20 +635,33 @@ async fn upgrade_tui(
         loop {
             tokio::select! {
                 biased;
-                msg = out_rx.recv() => {
-                    let Some(msg) = msg else { break };
-                    if ws_tx.send(msg).await.is_err() { break; }
+                outbound = out_rx.recv() => {
+                    let Some(outbound) = outbound else { break };
+                    let result = ws_tx.send(outbound.message).await;
+                    if let Some(receipt) = outbound.receipt {
+                        let _ = receipt.send(result.as_ref().map(|_| ()).map_err(|_| CriticalSendFailure::WriterClosed));
+                    }
+                    if result.is_err() { break; }
                 }
-                msg = projection_rx.recv() => {
-                    let Some(msg) = msg else { break };
-                    if ws_tx.send(msg).await.is_err() { break; }
+                outbound = projection_rx.recv() => {
+                    let Some(outbound) = outbound else { break };
+                    let result = ws_tx.send(outbound.message).await;
+                    if let Some(receipt) = outbound.receipt {
+                        let _ = receipt.send(result.as_ref().map(|_| ()).map_err(|_| CriticalSendFailure::WriterClosed));
+                    }
+                    if result.is_err() { break; }
                 }
-                msg = raw_rx.recv() => {
-                    let Some(msg) = msg else { break };
-                    if ws_tx.send(msg).await.is_err() { break; }
+                outbound = raw_rx.recv() => {
+                    let Some(outbound) = outbound else { break };
+                    let result = ws_tx.send(outbound.message).await;
+                    if let Some(receipt) = outbound.receipt {
+                        let _ = receipt.send(result.as_ref().map(|_| ()).map_err(|_| CriticalSendFailure::WriterClosed));
+                    }
+                    if result.is_err() { break; }
                 }
             }
         }
+        connection_cancel_for_writer.cancel();
     });
 
     let rate_limiter = state.ws_rate_limiter.clone();
@@ -556,6 +669,7 @@ async fn upgrade_tui(
     let projection_tx_for_recv = projection_tx.clone();
     let session_state_for_recv = Arc::clone(&session_state);
     let state_for_recv = state.clone();
+    let connection_cancel_for_recv = connection_cancel.clone();
 
     let session_state_for_recv_key = Arc::clone(&session_state);
     let mut recv_task = tokio::spawn(async move {
@@ -571,27 +685,33 @@ async fn upgrade_tui(
                         message: "Too Many Requests".to_string(),
                     };
                     if let Ok(msg) = serde_json::to_string(&err) {
-                        let _ =
-                            out_tx_for_recv.try_send(axum::extract::ws::Message::Text(msg.into()));
+                        let _ = queue_message(&out_tx_for_recv, WsMessage::Text(msg.into()));
                     }
                     break;
                 }
 
                 if let Ok(tui_msg) = serde_json::from_str::<TuiMessage>(&text) {
-                    handle_tui_message(
+                    if handle_tui_message(
                         tui_msg,
                         &session_state_for_recv,
                         &out_tx_for_recv,
                         &projection_tx_for_recv,
                         &state_for_recv,
+                        &connection_cancel_for_recv,
                     )
-                    .await;
+                    .await
+                    .is_err()
+                    {
+                        connection_cancel_for_recv.cancel();
+                        break;
+                    }
                 }
             }
         }
     });
 
     let raw_tx_events = raw_tx.clone();
+    let session_state_for_events = Arc::clone(&session_state);
     let mut event_task = tokio::spawn(async move {
         let Some(daemon) = daemon_clone else {
             tracing::warn!("No CoreDaemon available for /tui event task; live events disabled");
@@ -601,25 +721,28 @@ async fn upgrade_tui(
         loop {
             match event_rx.recv().await {
                 Ok(envelope) => {
-                    if matches!(
-                        envelope.payload,
-                        crate::protocol::core::CoreEvent::ProjectionStreamEvent { .. }
-                    ) {
-                        continue;
-                    }
-                    if let Some(tui_msg) = convert_core_event_to_tui(envelope.payload) {
-                        let wire = TuiMessage::EventEnvelope {
-                            event_seq: envelope.event_seq,
-                            payload: Box::new(tui_msg),
-                        };
-                        if let Ok(json) = serde_json::to_string(&wire) {
-                            if raw_tx_events
-                                .try_send(axum::extract::ws::Message::Text(json.into()))
-                                .is_err()
-                            {
-                                break;
-                            }
+                    let queue_result = {
+                        let session = session_state_for_events.lock().await;
+                        let projection = session.projection.clone();
+                        if projection.lock().await.mode()
+                            == ProjectionConnectionMode::ProjectionPrimary
+                            || !tui_raw_event_matches(&envelope, session.session_id.as_deref())
+                        {
+                            None
+                        } else if let Some(tui_msg) = convert_core_event_to_tui(envelope.payload) {
+                            let wire = TuiMessage::EventEnvelope {
+                                event_seq: envelope.event_seq,
+                                payload: Box::new(tui_msg),
+                            };
+                            serde_json::to_string(&wire).ok().map(|json| {
+                                queue_message(&raw_tx_events, WsMessage::Text(json.into()))
+                            })
+                        } else {
+                            None
                         }
+                    };
+                    if queue_result == Some(false) {
+                        break;
                     }
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
@@ -631,8 +754,7 @@ async fn upgrade_tui(
                         pending_questions: crate::bus::QuestionRegistry::pending_question_ids(),
                     };
                     if let Ok(json) = serde_json::to_string(&resync_msg) {
-                        let _ =
-                            raw_tx_events.try_send(axum::extract::ws::Message::Text(json.into()));
+                        let _ = queue_message(&raw_tx_events, WsMessage::Text(json.into()));
                     }
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => {
@@ -693,6 +815,20 @@ struct TuiSessionState {
     projection: Arc<tokio::sync::Mutex<ProjectionConnectionState>>,
 }
 
+fn tui_raw_event_matches(event: &EventEnvelope<CoreEvent>, session_id: Option<&str>) -> bool {
+    match event.session_id.as_deref() {
+        Some(event_session_id) => session_id == Some(event_session_id),
+        None => matches!(
+            &event.payload,
+            CoreEvent::SnapshotModels { .. }
+                | CoreEvent::ProjectRegistered { .. }
+                | CoreEvent::ProjectArchived { .. }
+                | CoreEvent::ProjectRestored { .. }
+                | CoreEvent::ProjectHealthChanged { .. }
+        ),
+    }
+}
+
 impl TuiSessionState {
     fn new(
         rate_limit_key: String,
@@ -710,10 +846,11 @@ impl TuiSessionState {
 async fn handle_tui_message(
     msg: TuiMessage,
     state: &Arc<tokio::sync::Mutex<TuiSessionState>>,
-    bus_tx: &mpsc::Sender<axum::extract::ws::Message>,
-    projection_tx: &mpsc::Sender<axum::extract::ws::Message>,
+    bus_tx: &WsSender,
+    projection_tx: &WsSender,
     _server_state: &crate::server::state::ServerState,
-) {
+    cancellation: &CancellationToken,
+) -> Result<(), CriticalSendFailure> {
     match msg {
         TuiMessage::Input { text } => {
             let sid = state.lock().await.clone();
@@ -753,16 +890,17 @@ async fn handle_tui_message(
                     message: "projection-primary connections resume with ProjectionCursor".into(),
                 };
                 if let Ok(json) = serde_json::to_string(&diagnostic) {
-                    let _ = bus_tx.try_send(axum::extract::ws::Message::Text(json.into()));
+                    let _ = queue_message(bus_tx, WsMessage::Text(json.into()));
                 }
-                return;
+                return Ok(());
             }
             tracing::debug!("TUI resume requested from event seq {}", from_event_seq);
             if let Some(ref daemon) = _server_state.daemon {
+                let session_id = state.lock().await.session_id.clone();
                 let filter = crate::core::event_log::EventFilter {
-                    session_id: None,
+                    session_id,
                     client_id: None,
-                    include_global: true,
+                    include_global: false,
                 };
                 let events = daemon.replay_from(from_event_seq, &filter).await;
                 for event in events {
@@ -772,7 +910,7 @@ async fn handle_tui_message(
                             payload: Box::new(tui_msg),
                         };
                         if let Ok(json) = serde_json::to_string(&envelope) {
-                            let _ = bus_tx.try_send(axum::extract::ws::Message::Text(json.into()));
+                            let _ = queue_message(bus_tx, WsMessage::Text(json.into()));
                         }
                     }
                 }
@@ -783,9 +921,9 @@ async fn handle_tui_message(
                     pending_questions: crate::bus::QuestionRegistry::pending_question_ids(),
                 };
                 if let Ok(json) = serde_json::to_string(&resync_msg) {
-                    let _ = bus_tx.try_send(axum::extract::ws::Message::Text(json.into()));
+                    let _ = queue_message(bus_tx, WsMessage::Text(json.into()));
                 }
-                return;
+                return Ok(());
             }
             let resync_msg = TuiMessage::ResyncRequired {
                 reason: Some("resume_requested".to_string()),
@@ -793,7 +931,7 @@ async fn handle_tui_message(
                 pending_questions: crate::bus::QuestionRegistry::pending_question_ids(),
             };
             if let Ok(json) = serde_json::to_string(&resync_msg) {
-                let _ = bus_tx.try_send(axum::extract::ws::Message::Text(json.into()));
+                let _ = queue_message(bus_tx, WsMessage::Text(json.into()));
             }
         }
         TuiMessage::PermissionResponse { id, choice } => {
@@ -836,13 +974,14 @@ async fn handle_tui_message(
             if state.lock().await.projection.lock().await.mode()
                 == ProjectionConnectionMode::ProjectionPrimary
             {
-                return;
+                return Ok(());
             }
             if let Some(ref daemon) = _server_state.daemon {
+                let session_id = state.lock().await.session_id.clone();
                 let filter = crate::core::event_log::EventFilter {
-                    session_id: None,
+                    session_id,
                     client_id: None,
-                    include_global: true,
+                    include_global: false,
                 };
                 let events = daemon.replay_from(0, &filter).await;
                 for event in events {
@@ -852,7 +991,7 @@ async fn handle_tui_message(
                             payload: Box::new(tui_msg),
                         };
                         if let Ok(json) = serde_json::to_string(&envelope) {
-                            let _ = bus_tx.try_send(axum::extract::ws::Message::Text(json.into()));
+                            let _ = queue_message(bus_tx, WsMessage::Text(json.into()));
                         }
                     }
                 }
@@ -863,17 +1002,32 @@ async fn handle_tui_message(
                 pending_questions: crate::bus::QuestionRegistry::pending_question_ids(),
             };
             if let Ok(json) = serde_json::to_string(&resync_msg) {
-                let _ = bus_tx.try_send(axum::extract::ws::Message::Text(json.into()));
+                let _ = queue_message(bus_tx, WsMessage::Text(json.into()));
             }
         }
         TuiMessage::ProjectionCapabilities { capabilities } => {
-            handle_projection_capabilities(capabilities, state, bus_tx, _server_state).await;
+            handle_projection_capabilities(
+                capabilities,
+                state,
+                bus_tx,
+                _server_state,
+                cancellation,
+            )
+            .await?;
         }
         TuiMessage::ProjectionSubscribe { request } => {
-            handle_projection_subscribe(request, state, bus_tx, projection_tx, _server_state).await;
+            handle_projection_subscribe(
+                request,
+                state,
+                bus_tx,
+                projection_tx,
+                _server_state,
+                cancellation,
+            )
+            .await?;
         }
         TuiMessage::ProjectionAck { ack } => {
-            handle_projection_ack(ack, state, bus_tx, _server_state).await;
+            handle_projection_ack(ack, state, bus_tx, _server_state, cancellation).await?;
         }
         TuiMessage::ProjectionResume {
             cursor,
@@ -886,21 +1040,36 @@ async fn handle_tui_message(
                 bus_tx,
                 projection_tx,
                 _server_state,
+                cancellation,
             )
-            .await;
+            .await?;
         }
         TuiMessage::ProjectionUnsubscribe { subscription_id } => {
-            handle_projection_unsubscribe(subscription_id, state, bus_tx, _server_state).await;
+            handle_projection_unsubscribe(
+                subscription_id,
+                state,
+                bus_tx,
+                _server_state,
+                cancellation,
+            )
+            .await?;
         }
         TuiMessage::ProjectionSubscriptionStatus { subscription_id } => {
-            handle_projection_status(subscription_id, state, bus_tx).await;
+            handle_projection_status(subscription_id, state, bus_tx, cancellation).await?;
         }
         TuiMessage::ProjectionArtifactListRequest {
             request_id,
             project_id,
         } => {
-            handle_projection_artifact_list(request_id, project_id, state, bus_tx, _server_state)
-                .await;
+            handle_projection_artifact_list(
+                request_id,
+                project_id,
+                state,
+                bus_tx,
+                _server_state,
+                cancellation,
+            )
+            .await?;
         }
         TuiMessage::ProjectionArtifactReadRequest {
             request_id,
@@ -914,11 +1083,13 @@ async fn handle_tui_message(
                 state,
                 bus_tx,
                 _server_state,
+                cancellation,
             )
-            .await;
+            .await?;
         }
         _ => {}
     }
+    Ok(())
 }
 
 /// Handle `ProjectionCapabilities` from a remote TUI client. The
@@ -928,9 +1099,10 @@ async fn handle_tui_message(
 async fn handle_projection_capabilities(
     client_caps: crate::protocol::projection::caps::ProjectionCapabilities,
     state: &Arc<tokio::sync::Mutex<TuiSessionState>>,
-    bus_tx: &mpsc::Sender<axum::extract::ws::Message>,
+    bus_tx: &WsSender,
     server_state: &crate::server::state::ServerState,
-) {
+    cancellation: &CancellationToken,
+) -> Result<(), CriticalSendFailure> {
     use crate::protocol::projection::caps::{
         ProjectionCapabilities, PROJECTION_PROTOCOL_VERSION, PROJECTION_PROTOCOL_VERSION_MIN,
     };
@@ -961,9 +1133,7 @@ async fn handle_projection_capabilities(
         negotiated_version: negotiated,
         reason,
     };
-    if let Ok(json) = serde_json::to_string(&ack) {
-        let _ = bus_tx.try_send(axum::extract::ws::Message::Text(json.into()));
-    }
+    critical_send(bus_tx, &ack, cancellation).await?;
     let projection = state.lock().await.projection.clone();
     let mode = if accepted {
         ProjectionConnectionMode::ProjectionPrimary
@@ -1005,10 +1175,9 @@ async fn handle_projection_capabilities(
             code: "raw_compatibility_deprecated".into(),
             message: "legacy raw session channels remain bounded for v4 compatibility and are not projection authority".into(),
         };
-        if let Ok(json) = serde_json::to_string(&diagnostic) {
-            let _ = bus_tx.try_send(axum::extract::ws::Message::Text(json.into()));
-        }
+        let _ = queue_json(bus_tx, &diagnostic);
     }
+    Ok(())
 }
 
 /// Handle `ProjectionSubscribe` from a remote TUI client. The server
@@ -1017,20 +1186,21 @@ async fn handle_projection_capabilities(
 async fn handle_projection_subscribe(
     request: crate::protocol::projection::replay::ProjectionSubscriptionRequest,
     state: &Arc<tokio::sync::Mutex<TuiSessionState>>,
-    bus_tx: &mpsc::Sender<axum::extract::ws::Message>,
-    projection_tx: &mpsc::Sender<axum::extract::ws::Message>,
+    bus_tx: &WsSender,
+    projection_tx: &WsSender,
     server_state: &crate::server::state::ServerState,
-) {
+    cancellation: &CancellationToken,
+) -> Result<(), CriticalSendFailure> {
     use crate::protocol::projection::replay::ProjectionSnapshotBundle;
     use crate::protocol::projection::snapshot::SessionProjectionSnapshot;
 
     if !require_projection_primary(state, bus_tx).await {
-        return;
+        return Ok(());
     }
 
     let Some(daemon) = &server_state.daemon else {
         queue_tui_error(bus_tx, "projection_unavailable_no_daemon");
-        return;
+        return Ok(());
     };
     let projection = state.lock().await.projection.clone();
     let client_id = projection.lock().await.connection_id().to_string();
@@ -1062,6 +1232,7 @@ async fn handle_projection_subscribe(
                 retention_floor_seq,
                 projection_tx,
                 bus_tx,
+                cancellation,
             )
             .await
             {
@@ -1077,7 +1248,7 @@ async fn handle_projection_subscribe(
                     )
                     .await;
                 queue_tui_error(bus_tx, "projection_receiver_install_failed");
-                return;
+                return Ok(());
             }
             let snapshot = match snapshot {
                 ProjectionSnapshotBundle::One { snapshot } => *snapshot,
@@ -1098,7 +1269,16 @@ async fn handle_projection_subscribe(
                 cursor: Some(cursor),
                 retention_floor_seq: Some(retention_floor_seq),
             };
-            queue_tui(bus_tx, &msg);
+            if let Err(error) = critical_send(bus_tx, &msg, cancellation).await {
+                rollback_tui_projection_subscription(
+                    daemon,
+                    &projection,
+                    &subscription_id,
+                    &client_id,
+                )
+                .await;
+                return Err(error);
+            }
             if let Some(cursor) = requested_cursor {
                 let resume = daemon
                     .handle_request_for_client(
@@ -1112,36 +1292,80 @@ async fn handle_projection_subscribe(
                         &client_id,
                     )
                     .await;
-                emit_tui_projection_response(
+                if let Err(error) = emit_tui_projection_response(
                     daemon,
                     &projection,
                     resume,
                     bus_tx,
                     projection_tx,
                     &client_id,
+                    cancellation,
+                )
+                .await
+                {
+                    rollback_tui_projection_subscription(
+                        daemon,
+                        &projection,
+                        &subscription_id,
+                        &client_id,
+                    )
+                    .await;
+                    return Err(error);
+                }
+            }
+            if let Err(error) =
+                activate_after_critical_delivery(&projection, &subscription_id).await
+            {
+                rollback_tui_projection_subscription(
+                    daemon,
+                    &projection,
+                    &subscription_id,
+                    &client_id,
                 )
                 .await;
-            }
-            if let Some(subscription) = projection.lock().await.subscription_mut(&subscription_id) {
-                subscription.mark_live();
+                return Err(error);
             }
         }
         Ok(crate::protocol::core::CoreResponse::ProjectionReplay {
             subscription_id: Some(subscription_id),
             batch,
         }) => {
-            emit_tui_projection_response(
+            let delivered = emit_tui_projection_response(
                 daemon,
                 &projection,
                 Ok(crate::protocol::core::CoreResponse::ProjectionReplay {
-                    subscription_id: Some(subscription_id),
+                    subscription_id: Some(subscription_id.clone()),
                     batch,
                 }),
                 bus_tx,
                 projection_tx,
                 &client_id,
+                cancellation,
             )
             .await;
+            if let Ok(()) = delivered {
+                if let Err(error) =
+                    activate_after_critical_delivery(&projection, &subscription_id).await
+                {
+                    rollback_tui_projection_subscription(
+                        daemon,
+                        &projection,
+                        &subscription_id,
+                        &client_id,
+                    )
+                    .await;
+                    return Err(error);
+                }
+            } else {
+                rollback_tui_projection_subscription(
+                    daemon,
+                    &projection,
+                    &subscription_id,
+                    &client_id,
+                )
+                .await;
+                return Err(delivered.unwrap_err());
+            }
         }
         Ok(crate::protocol::core::CoreResponse::ProjectionResyncRequired {
             subscription_id,
@@ -1157,7 +1381,7 @@ async fn handle_projection_subscribe(
                 requested_cursor,
                 snapshot,
             };
-            queue_tui(bus_tx, &msg);
+            critical_send(bus_tx, &msg, cancellation).await?;
         }
         Ok(other) => {
             queue_tui_error(bus_tx, &format!("projection_subscribe_failed:{other:?}"));
@@ -1166,19 +1390,14 @@ async fn handle_projection_subscribe(
             queue_tui_error(bus_tx, &format!("projection_subscribe_error:{err}"));
         }
     }
+    Ok(())
 }
 
-fn queue_tui(tx: &mpsc::Sender<axum::extract::ws::Message>, message: &TuiMessage) -> bool {
-    serde_json::to_string(message)
-        .ok()
-        .map(|json| {
-            tx.try_send(axum::extract::ws::Message::Text(json.into()))
-                .is_ok()
-        })
-        .unwrap_or(false)
+fn queue_tui(tx: &WsSender, message: &TuiMessage) -> bool {
+    queue_json(tx, message)
 }
 
-fn queue_tui_error(tx: &mpsc::Sender<axum::extract::ws::Message>, message: &str) {
+fn queue_tui_error(tx: &WsSender, message: &str) {
     let _ = queue_tui(
         tx,
         &TuiMessage::Error {
@@ -1189,7 +1408,7 @@ fn queue_tui_error(tx: &mpsc::Sender<axum::extract::ws::Message>, message: &str)
 
 async fn require_projection_primary(
     state: &Arc<tokio::sync::Mutex<TuiSessionState>>,
-    bus_tx: &mpsc::Sender<axum::extract::ws::Message>,
+    bus_tx: &WsSender,
 ) -> bool {
     let projection = state.lock().await.projection.clone();
     if projection.lock().await.mode() == ProjectionConnectionMode::ProjectionPrimary {
@@ -1207,8 +1426,9 @@ async fn install_tui_projection_receiver(
     descriptor: &crate::protocol::projection::replay::ProjectionStreamDescriptor,
     cursor: &crate::protocol::projection::replay::ProjectionCursor,
     retention_floor_seq: u64,
-    projection_tx: &mpsc::Sender<axum::extract::ws::Message>,
-    bus_tx: &mpsc::Sender<axum::extract::ws::Message>,
+    projection_tx: &WsSender,
+    bus_tx: &WsSender,
+    connection_cancellation: &CancellationToken,
 ) -> bool {
     if projection.lock().await.owns(subscription_id) {
         return true;
@@ -1279,6 +1499,7 @@ async fn install_tui_projection_receiver(
     let sub_id = subscription_id.clone();
     let stream_id = descriptor.stream_id.clone();
     let descriptor_for_lag = descriptor.clone();
+    let connection_cancellation = connection_cancellation.clone();
     let handle = tokio::spawn(async move {
         tokio::select! {
             _ = cancellation.cancelled() => return,
@@ -1301,7 +1522,7 @@ async fn install_tui_projection_receiver(
                 {
                     subscription.mark_resync_required();
                 }
-                let _ = queue_tui(
+                let _ = critical_send(
                     &control_output,
                     &TuiMessage::ProjectionResync {
                         subscription_id: Some(sub_id.clone()),
@@ -1310,7 +1531,9 @@ async fn install_tui_projection_receiver(
                         requested_cursor: None,
                         snapshot: None,
                     },
-                );
+                    &connection_cancellation,
+                )
+                .await;
                 break;
             }
             if let Some(subscription) = projection_for_task.lock().await.subscription_mut(&sub_id) {
@@ -1329,14 +1552,41 @@ async fn install_tui_projection_receiver(
     true
 }
 
+async fn rollback_tui_projection_subscription(
+    daemon: &Arc<crate::core::daemon::CoreDaemon>,
+    projection: &Arc<tokio::sync::Mutex<ProjectionConnectionState>>,
+    subscription_id: &crate::protocol::projection::replay::ProjectionSubscriptionId,
+    client_id: &str,
+) {
+    if let Some(mut subscription) = projection.lock().await.remove_subscription(subscription_id) {
+        subscription.cancel();
+        if let Some(forwarder) = subscription.forwarder.take() {
+            forwarder.abort();
+            let _ = forwarder.await;
+        }
+    }
+    let _ = daemon
+        .handle_request_for_client(
+            crate::core::new_request(
+                format!("tui-projection-rollback-{}", uuid::Uuid::new_v4()),
+                CoreRequest::ProjectionUnsubscribe {
+                    subscription_id: subscription_id.clone(),
+                },
+            ),
+            client_id,
+        )
+        .await;
+}
+
 async fn emit_tui_projection_response(
     daemon: &Arc<crate::core::daemon::CoreDaemon>,
     projection: &Arc<tokio::sync::Mutex<ProjectionConnectionState>>,
     response: Result<crate::protocol::core::CoreResponse, crate::error::AppError>,
-    bus_tx: &mpsc::Sender<axum::extract::ws::Message>,
-    projection_tx: &mpsc::Sender<axum::extract::ws::Message>,
+    bus_tx: &WsSender,
+    projection_tx: &WsSender,
     client_id: &str,
-) {
+    cancellation: &CancellationToken,
+) -> Result<(), CriticalSendFailure> {
     match response {
         Ok(crate::protocol::core::CoreResponse::ProjectionReplay {
             subscription_id: Some(subscription_id),
@@ -1358,19 +1608,22 @@ async fn emit_tui_projection_response(
                 batch.descriptor.retention_floor_seq,
                 projection_tx,
                 bus_tx,
+                cancellation,
             )
             .await
             {
                 queue_tui_error(bus_tx, "projection_receiver_install_failed");
-                return;
+                return Err(CriticalSendFailure::QueueClosed);
             }
-            queue_tui(
+            critical_send(
                 bus_tx,
                 &TuiMessage::ProjectionReplay {
                     subscription_id,
                     batch,
                 },
-            );
+                cancellation,
+            )
+            .await
         }
         Ok(crate::protocol::core::CoreResponse::ProjectionResyncRequired {
             subscription_id,
@@ -1401,7 +1654,7 @@ async fn emit_tui_projection_response(
                         .await;
                 }
             }
-            queue_tui(
+            critical_send(
                 bus_tx,
                 &TuiMessage::ProjectionResync {
                     subscription_id,
@@ -1410,10 +1663,18 @@ async fn emit_tui_projection_response(
                     requested_cursor,
                     snapshot,
                 },
-            );
+                cancellation,
+            )
+            .await
         }
-        Ok(other) => queue_tui_error(bus_tx, &format!("projection_operation_failed:{other:?}")),
-        Err(error) => queue_tui_error(bus_tx, &format!("projection_operation_error:{error}")),
+        Ok(other) => {
+            queue_tui_error(bus_tx, &format!("projection_operation_failed:{other:?}"));
+            Ok(())
+        }
+        Err(error) => {
+            queue_tui_error(bus_tx, &format!("projection_operation_error:{error}"));
+            Ok(())
+        }
     }
 }
 
@@ -1423,20 +1684,21 @@ async fn emit_tui_projection_response(
 async fn handle_projection_ack(
     ack: crate::protocol::projection::replay::ProjectionAck,
     state: &Arc<tokio::sync::Mutex<TuiSessionState>>,
-    bus_tx: &mpsc::Sender<axum::extract::ws::Message>,
+    bus_tx: &WsSender,
     server_state: &crate::server::state::ServerState,
-) {
+    cancellation: &CancellationToken,
+) -> Result<(), CriticalSendFailure> {
     if !require_projection_primary(state, bus_tx).await {
-        return;
+        return Ok(());
     }
     let Some(daemon) = &server_state.daemon else {
         queue_tui_error(bus_tx, "projection_unavailable_no_daemon");
-        return;
+        return Ok(());
     };
     let projection = state.lock().await.projection.clone();
     let client_id = projection.lock().await.connection_id().to_string();
     if !projection.lock().await.owns(&ack.subscription_id) {
-        queue_tui(
+        critical_send(
             bus_tx,
             &TuiMessage::ProjectionAckResult {
                 ack,
@@ -1445,8 +1707,10 @@ async fn handle_projection_ack(
                 lag_count: None,
                 error: Some("projection_subscription_not_owned".into()),
             },
-        );
-        return;
+            cancellation,
+        )
+        .await?;
+        return Ok(());
     }
     let ack_for_response = ack.clone();
     let response = daemon
@@ -1497,23 +1761,25 @@ async fn handle_projection_ack(
             error: Some(error.to_string()),
         },
     };
-    queue_tui(bus_tx, &message);
+    critical_send(bus_tx, &message, cancellation).await?;
+    Ok(())
 }
 
 async fn handle_projection_resume(
     cursor: crate::protocol::projection::replay::ProjectionCursor,
     include_snapshot_if_resync: bool,
     state: &Arc<tokio::sync::Mutex<TuiSessionState>>,
-    bus_tx: &mpsc::Sender<axum::extract::ws::Message>,
-    projection_tx: &mpsc::Sender<axum::extract::ws::Message>,
+    bus_tx: &WsSender,
+    projection_tx: &WsSender,
     server_state: &crate::server::state::ServerState,
-) {
+    cancellation: &CancellationToken,
+) -> Result<(), CriticalSendFailure> {
     if !require_projection_primary(state, bus_tx).await {
-        return;
+        return Ok(());
     }
     let Some(daemon) = &server_state.daemon else {
         queue_tui_error(bus_tx, "projection_unavailable_no_daemon");
-        return;
+        return Ok(());
     };
     let projection = state.lock().await.projection.clone();
     let client_id = projection.lock().await.connection_id().to_string();
@@ -1536,43 +1802,57 @@ async fn handle_projection_resume(
         }) => Some(subscription_id.clone()),
         _ => None,
     };
-    emit_tui_projection_response(
+    let delivered = emit_tui_projection_response(
         daemon,
         &projection,
         response,
         bus_tx,
         projection_tx,
         &client_id,
+        cancellation,
     )
     .await;
+    if let Err(error) = delivered {
+        if let Some(subscription_id) = live_id {
+            rollback_tui_projection_subscription(daemon, &projection, &subscription_id, &client_id)
+                .await;
+        }
+        return Err(error);
+    }
     if let Some(subscription_id) = live_id {
-        if let Some(subscription) = projection.lock().await.subscription_mut(&subscription_id) {
-            subscription.mark_live();
+        if let Err(error) = activate_after_critical_delivery(&projection, &subscription_id).await {
+            rollback_tui_projection_subscription(daemon, &projection, &subscription_id, &client_id)
+                .await;
+            return Err(error);
         }
     }
+    Ok(())
 }
 
 async fn handle_projection_unsubscribe(
     subscription_id: crate::protocol::projection::replay::ProjectionSubscriptionId,
     state: &Arc<tokio::sync::Mutex<TuiSessionState>>,
-    bus_tx: &mpsc::Sender<axum::extract::ws::Message>,
+    bus_tx: &WsSender,
     server_state: &crate::server::state::ServerState,
-) {
+    cancellation: &CancellationToken,
+) -> Result<(), CriticalSendFailure> {
     if !require_projection_primary(state, bus_tx).await {
-        return;
+        return Ok(());
     }
     let projection = state.lock().await.projection.clone();
     let client_id = projection.lock().await.connection_id().to_string();
     if !projection.lock().await.owns(&subscription_id) {
-        queue_tui(
+        critical_send(
             bus_tx,
             &TuiMessage::ProjectionUnsubscribeResult {
                 subscription_id,
                 accepted: false,
                 reason: Some("projection_subscription_not_owned".into()),
             },
-        );
-        return;
+            cancellation,
+        )
+        .await?;
+        return Ok(());
     }
     let accepted = if let Some(daemon) = &server_state.daemon {
         daemon
@@ -1607,7 +1887,7 @@ async fn handle_projection_unsubscribe(
             let _ = forwarder.await;
         }
     }
-    queue_tui(
+    critical_send(
         bus_tx,
         &TuiMessage::ProjectionUnsubscribeResult {
             subscription_id,
@@ -1618,24 +1898,28 @@ async fn handle_projection_unsubscribe(
                 Some("projection_unsubscribe_failed".into())
             },
         },
-    );
+        cancellation,
+    )
+    .await?;
+    Ok(())
 }
 
 async fn handle_projection_status(
     subscription_id: crate::protocol::projection::replay::ProjectionSubscriptionId,
     state: &Arc<tokio::sync::Mutex<TuiSessionState>>,
-    bus_tx: &mpsc::Sender<axum::extract::ws::Message>,
-) {
+    bus_tx: &WsSender,
+    cancellation: &CancellationToken,
+) -> Result<(), CriticalSendFailure> {
     if !require_projection_primary(state, bus_tx).await {
-        return;
+        return Ok(());
     }
     let projection = state.lock().await.projection.clone();
     let state = projection.lock().await;
     let Some(subscription) = state.subscription(&subscription_id) else {
         queue_tui_error(bus_tx, "projection_subscription_not_owned");
-        return;
+        return Ok(());
     };
-    queue_tui(
+    critical_send(
         bus_tx,
         &TuiMessage::ProjectionSubscriptionStatusResult {
             status: crate::protocol::projection::replay::ProjectionSubscriptionStatus {
@@ -1650,41 +1934,49 @@ async fn handle_projection_status(
                     .saturating_sub(subscription.latest_cursor.event_seq),
             },
         },
-    );
+        cancellation,
+    )
+    .await?;
+    Ok(())
 }
 
 async fn handle_projection_artifact_list(
     request_id: String,
     project_id: String,
     state: &Arc<tokio::sync::Mutex<TuiSessionState>>,
-    bus_tx: &mpsc::Sender<axum::extract::ws::Message>,
+    bus_tx: &WsSender,
     server_state: &crate::server::state::ServerState,
-) {
+    cancellation: &CancellationToken,
+) -> Result<(), CriticalSendFailure> {
     if !require_projection_primary(state, bus_tx).await {
-        return;
+        return Ok(());
     }
     let projection = state.lock().await.projection.clone();
     if !projection.lock().await.owns_project(&project_id) {
-        queue_tui(
+        critical_send(
             bus_tx,
             &TuiMessage::ProjectionArtifactListResult {
                 request_id,
                 handles: vec![],
                 error: Some("projection_scope_not_owned".into()),
             },
-        );
-        return;
+            cancellation,
+        )
+        .await?;
+        return Ok(());
     }
     if !projection.lock().await.try_begin_artifact_read() {
-        queue_tui(
+        critical_send(
             bus_tx,
             &TuiMessage::ProjectionArtifactListResult {
                 request_id,
                 handles: vec![],
                 error: Some("projection_artifact_read_limit".into()),
             },
-        );
-        return;
+            cancellation,
+        )
+        .await?;
+        return Ok(());
     }
     let client_id = projection.lock().await.connection_id().to_string();
     let response = if let Some(daemon) = &server_state.daemon {
@@ -1705,26 +1997,31 @@ async fn handle_projection_artifact_list(
     projection.lock().await.end_artifact_read();
     match response {
         Ok(crate::protocol::core::CoreResponse::ProjectionArtifactList { handles }) => {
-            queue_tui(
+            critical_send(
                 bus_tx,
                 &TuiMessage::ProjectionArtifactListResult {
                     request_id,
                     handles,
                     error: None,
                 },
-            );
+                cancellation,
+            )
+            .await?;
         }
         Ok(_) | Err(_) => {
-            queue_tui(
+            critical_send(
                 bus_tx,
                 &TuiMessage::ProjectionArtifactListResult {
                     request_id,
                     handles: vec![],
                     error: Some("projection_artifact_list_failed".into()),
                 },
-            );
+                cancellation,
+            )
+            .await?;
         }
     }
+    Ok(())
 }
 
 async fn handle_projection_artifact_read(
@@ -1732,17 +2029,18 @@ async fn handle_projection_artifact_read(
     request: crate::protocol::projection::replay::ProjectionArtifactReadRequest,
     project_id: String,
     state: &Arc<tokio::sync::Mutex<TuiSessionState>>,
-    bus_tx: &mpsc::Sender<axum::extract::ws::Message>,
+    bus_tx: &WsSender,
     server_state: &crate::server::state::ServerState,
-) {
+    cancellation: &CancellationToken,
+) -> Result<(), CriticalSendFailure> {
     if !require_projection_primary(state, bus_tx).await {
-        return;
+        return Ok(());
     }
     let projection = state.lock().await.projection.clone();
     if !projection.lock().await.owns_project(&project_id)
         || !projection.lock().await.try_begin_artifact_read()
     {
-        queue_tui(
+        critical_send(
             bus_tx,
             &TuiMessage::ProjectionArtifactReadResult {
                 request_id,
@@ -1751,8 +2049,10 @@ async fn handle_projection_artifact_read(
                         reason: "projection_scope_not_owned".into(),
                     },
             },
-        );
-        return;
+            cancellation,
+        )
+        .await?;
+        return Ok(());
     }
     let client_id = projection.lock().await.connection_id().to_string();
     let response = if let Some(daemon) = &server_state.daemon {
@@ -1783,13 +2083,26 @@ async fn handle_projection_artifact_read(
             }
         }
     };
-    queue_tui(
+    critical_send(
         bus_tx,
         &TuiMessage::ProjectionArtifactReadResult {
             request_id,
             outcome,
         },
-    );
+        cancellation,
+    )
+    .await?;
+    Ok(())
+}
+
+async fn event_matches_filters(
+    event: &EventEnvelope<CoreEvent>,
+    filters: &Arc<RwLock<Vec<crate::core::event_log::EventFilter>>>,
+) -> bool {
+    let filters = filters.read().await;
+    filters
+        .iter()
+        .any(|filter| event_matches_raw_filter(event, filter))
 }
 
 /// Convert a CoreEvent back to a TuiMessage for legacy /tui clients replaying from EventLog.
@@ -1864,40 +2177,57 @@ async fn upgrade_core_ws(
 
     let (ws_tx, mut ws_rx) = socket.split();
 
-    let (out_tx, mut out_rx) =
-        mpsc::channel::<axum::extract::ws::Message>(WS_OUTBOUND_QUEUE_CAPACITY);
+    let (out_tx, mut out_rx) = mpsc::channel::<OutboundMessage>(WS_OUTBOUND_QUEUE_CAPACITY);
     let (projection_tx, mut projection_rx) =
-        mpsc::channel::<axum::extract::ws::Message>(WS_OUTBOUND_QUEUE_CAPACITY);
-    let (raw_tx, mut raw_rx) =
-        mpsc::channel::<axum::extract::ws::Message>(WS_OUTBOUND_QUEUE_CAPACITY);
+        mpsc::channel::<OutboundMessage>(WS_OUTBOUND_QUEUE_CAPACITY);
+    let (raw_tx, mut raw_rx) = mpsc::channel::<OutboundMessage>(WS_OUTBOUND_QUEUE_CAPACITY);
     let connection_id = format!("core-ws-{}", uuid::Uuid::new_v4());
     let projection = Arc::new(tokio::sync::Mutex::new(ProjectionConnectionState::new(
         connection_id.clone(),
     )));
+    let connection_cancel = CancellationToken::new();
+    let connection_cancel_for_writer = connection_cancel.clone();
+    let filters: Arc<RwLock<Vec<crate::core::event_log::EventFilter>>> =
+        Arc::new(RwLock::new(Vec::new()));
 
     let mut send_task = tokio::spawn(async move {
         let mut ws_tx = ws_tx;
         loop {
             tokio::select! {
                 biased;
-                msg = out_rx.recv() => {
-                    let Some(msg) = msg else { break };
-                    if ws_tx.send(msg).await.is_err() { break; }
+                outbound = out_rx.recv() => {
+                    let Some(outbound) = outbound else { break };
+                    let result = ws_tx.send(outbound.message).await;
+                    if let Some(receipt) = outbound.receipt {
+                        let _ = receipt.send(result.as_ref().map(|_| ()).map_err(|_| CriticalSendFailure::WriterClosed));
+                    }
+                    if result.is_err() { break; }
                 }
-                msg = projection_rx.recv() => {
-                    let Some(msg) = msg else { break };
-                    if ws_tx.send(msg).await.is_err() { break; }
+                outbound = projection_rx.recv() => {
+                    let Some(outbound) = outbound else { break };
+                    let result = ws_tx.send(outbound.message).await;
+                    if let Some(receipt) = outbound.receipt {
+                        let _ = receipt.send(result.as_ref().map(|_| ()).map_err(|_| CriticalSendFailure::WriterClosed));
+                    }
+                    if result.is_err() { break; }
                 }
-                msg = raw_rx.recv() => {
-                    let Some(msg) = msg else { break };
-                    if ws_tx.send(msg).await.is_err() { break; }
+                outbound = raw_rx.recv() => {
+                    let Some(outbound) = outbound else { break };
+                    let result = ws_tx.send(outbound.message).await;
+                    if let Some(receipt) = outbound.receipt {
+                        let _ = receipt.send(result.as_ref().map(|_| ()).map_err(|_| CriticalSendFailure::WriterClosed));
+                    }
+                    if result.is_err() { break; }
                 }
             }
         }
+        connection_cancel_for_writer.cancel();
     });
 
     let mut event_rx = daemon.subscribe();
     let raw_tx_events = raw_tx.clone();
+    let filters_for_events = Arc::clone(&filters);
+    let projection_for_events = Arc::clone(&projection);
     let mut event_task = tokio::spawn(async move {
         while let Ok(event) = event_rx.recv().await {
             if matches!(
@@ -1906,12 +2236,15 @@ async fn upgrade_core_ws(
             ) {
                 continue;
             }
+            if projection_for_events.lock().await.mode()
+                == ProjectionConnectionMode::ProjectionPrimary
+                || !event_matches_filters(&event, &filters_for_events).await
+            {
+                continue;
+            }
             let frame = CoreFrame::Event(event);
             if let Ok(json) = serde_json::to_string(&frame) {
-                if raw_tx_events
-                    .try_send(axum::extract::ws::Message::Text(json.into()))
-                    .is_err()
-                {
+                if !queue_message(&raw_tx_events, WsMessage::Text(json.into())) {
                     break;
                 }
             }
@@ -1923,6 +2256,8 @@ async fn upgrade_core_ws(
     let projection_tx_for_recv = projection_tx.clone();
     let daemon_for_recv = Arc::clone(&daemon);
     let connection_id_for_recv = connection_id.clone();
+    let filters_for_recv = Arc::clone(&filters);
+    let connection_cancel_for_recv = connection_cancel.clone();
     let mut recv_task = tokio::spawn(async move {
         while let Some(msg) = ws_rx.next().await {
             let msg = match msg {
@@ -1944,31 +2279,59 @@ async fn upgrade_core_ws(
                                 &connection_id_for_recv,
                                 &out_tx_for_recv,
                                 &projection_tx_for_recv,
+                                &connection_cancel_for_recv,
+                                &filters_for_recv,
                             )
                             .await;
-                            for frame in &frames {
-                                if let Ok(json) = serde_json::to_string(&frame) {
-                                    if out_tx_for_recv
-                                        .try_send(axum::extract::ws::Message::Text(json.into()))
-                                        .is_err()
+                            let mut delivery_failed = false;
+                            for frame in frames {
+                                let projection_id = match &frame {
+                                    CoreFrame::Response { response, .. } => {
+                                        projection_response_id(response)
+                                    }
+                                    _ => None,
+                                };
+                                let delivery = critical_send(
+                                    &out_tx_for_recv,
+                                    &frame,
+                                    &connection_cancel_for_recv,
+                                )
+                                .await;
+                                if delivery.is_err() {
+                                    if let Some(subscription_id) = projection_id {
+                                        rollback_core_projection_subscription(
+                                            &daemon_for_recv,
+                                            &projection_for_recv,
+                                            &subscription_id,
+                                            &connection_id_for_recv,
+                                        )
+                                        .await;
+                                    }
+                                    delivery_failed = true;
+                                    break;
+                                }
+                                if let Some(subscription_id) = projection_id {
+                                    if activate_after_critical_delivery(
+                                        &projection_for_recv,
+                                        &subscription_id,
+                                    )
+                                    .await
+                                    .is_err()
                                     {
+                                        rollback_core_projection_subscription(
+                                            &daemon_for_recv,
+                                            &projection_for_recv,
+                                            &subscription_id,
+                                            &connection_id_for_recv,
+                                        )
+                                        .await;
+                                        delivery_failed = true;
                                         break;
                                     }
                                 }
                             }
-                            for frame in &frames {
-                                if let CoreFrame::Response { response, .. } = frame {
-                                    if let Some(subscription_id) = projection_response_id(response)
-                                    {
-                                        if let Some(subscription) = projection_for_recv
-                                            .lock()
-                                            .await
-                                            .subscription_mut(&subscription_id)
-                                        {
-                                            subscription.mark_live();
-                                        }
-                                    }
-                                }
+                            if delivery_failed {
+                                break;
                             }
                         }
                         Err(e) => {
@@ -2024,8 +2387,10 @@ async fn handle_core_frame(
     daemon: &Arc<crate::core::daemon::CoreDaemon>,
     projection: &Arc<tokio::sync::Mutex<ProjectionConnectionState>>,
     client_id: &str,
-    out_tx: &mpsc::Sender<axum::extract::ws::Message>,
-    projection_tx: &mpsc::Sender<axum::extract::ws::Message>,
+    out_tx: &WsSender,
+    projection_tx: &WsSender,
+    connection_cancellation: &CancellationToken,
+    filters: &Arc<RwLock<Vec<crate::core::event_log::EventFilter>>>,
 ) -> Vec<CoreFrame> {
     let mut responses = Vec::new();
     match frame {
@@ -2135,6 +2500,7 @@ async fn handle_core_frame(
                         &response,
                         out_tx,
                         projection_tx,
+                        connection_cancellation,
                         client_id,
                     )
                     .await
@@ -2219,10 +2585,11 @@ async fn handle_core_frame(
             ..
         } => {
             let filter = crate::core::event_log::EventFilter {
-                session_id,
+                session_id: session_id.clone(),
                 client_id: None,
                 include_global: true,
             };
+            filters.write().await.push(filter.clone());
             let from = from_event_seq.unwrap_or(1);
             let events = daemon.replay_from(from, &filter).await;
             for event in events {
@@ -2283,12 +2650,22 @@ async fn cleanup_core_projection_subscription(
         .await;
 }
 
+async fn rollback_core_projection_subscription(
+    daemon: &Arc<crate::core::daemon::CoreDaemon>,
+    projection: &Arc<tokio::sync::Mutex<ProjectionConnectionState>>,
+    subscription_id: &crate::protocol::projection::replay::ProjectionSubscriptionId,
+    client_id: &str,
+) {
+    cleanup_core_projection_subscription(daemon, projection, subscription_id, client_id).await;
+}
+
 async fn install_core_projection_response(
     daemon: &Arc<crate::core::daemon::CoreDaemon>,
     projection: &Arc<tokio::sync::Mutex<ProjectionConnectionState>>,
     response: &crate::protocol::core::CoreResponse,
-    control_tx: &mpsc::Sender<axum::extract::ws::Message>,
-    projection_tx: &mpsc::Sender<axum::extract::ws::Message>,
+    control_tx: &WsSender,
+    projection_tx: &WsSender,
+    connection_cancellation: &CancellationToken,
     client_id: &str,
 ) -> bool {
     let (subscription_id, descriptor, cursor, retention_floor_seq) = match response {
@@ -2387,6 +2764,7 @@ async fn install_core_projection_response(
     let sub_id = subscription_id.clone();
     let stream_id = descriptor.stream_id.clone();
     let lag_descriptor = descriptor.clone();
+    let connection_cancellation = connection_cancellation.clone();
     let handle = tokio::spawn(async move {
         tokio::select! {
             _ = cancellation.cancelled() => return,
@@ -2416,10 +2794,7 @@ async fn install_core_projection_response(
             let Ok(json) = serde_json::to_string(&frame) else {
                 break;
             };
-            if output
-                .try_send(axum::extract::ws::Message::Text(json.into()))
-                .is_err()
-            {
+            if !queue_message(&output, WsMessage::Text(json.into())) {
                 if let Some(subscription) =
                     projection_for_task.lock().await.subscription_mut(&sub_id)
                 {
@@ -2435,9 +2810,7 @@ async fn install_core_projection_response(
                         snapshot: None,
                     }),
                 };
-                if let Ok(json) = serde_json::to_string(&resync) {
-                    let _ = control_output.try_send(axum::extract::ws::Message::Text(json.into()));
-                }
+                let _ = critical_send(&control_output, &resync, &connection_cancellation).await;
                 break;
             }
             if let Some(subscription) = projection_for_task.lock().await.subscription_mut(&sub_id) {
@@ -2454,4 +2827,87 @@ async fn install_core_projection_response(
         subscription.forwarder = Some(handle);
     }
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde::ser::Error as _;
+
+    #[derive(Debug)]
+    struct FailingSerialize;
+
+    impl serde::Serialize for FailingSerialize {
+        fn serialize<S>(&self, _serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: serde::Serializer,
+        {
+            Err(S::Error::custom("intentional serialization failure"))
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn critical_send_reports_typed_failure_outcomes() {
+        let cancellation = CancellationToken::new();
+        let (tx, mut rx) = mpsc::channel::<OutboundMessage>(1);
+        cancellation.cancel();
+        assert_eq!(
+            critical_send(&tx, &serde_json::json!({"ok": true}), &cancellation).await,
+            Err(CriticalSendFailure::Cancelled)
+        );
+
+        let (closed_tx, closed_rx) = mpsc::channel::<OutboundMessage>(1);
+        drop(closed_rx);
+        let open_cancellation = CancellationToken::new();
+        assert_eq!(
+            critical_send(
+                &closed_tx,
+                &serde_json::json!({"ok": true}),
+                &open_cancellation
+            )
+            .await,
+            Err(CriticalSendFailure::QueueClosed)
+        );
+
+        let (writer_tx, writer_rx) = mpsc::channel::<OutboundMessage>(1);
+        let writer = tokio::spawn(async move {
+            let mut writer_rx = writer_rx;
+            let item = writer_rx.recv().await.expect("critical item");
+            let _ = item
+                .receipt
+                .expect("critical send has a receipt")
+                .send(Err(CriticalSendFailure::WriterClosed));
+        });
+        assert_eq!(
+            critical_send(
+                &writer_tx,
+                &serde_json::json!({"ok": true}),
+                &CancellationToken::new()
+            )
+            .await,
+            Err(CriticalSendFailure::WriterClosed)
+        );
+        let _ = writer.await;
+
+        assert_eq!(
+            critical_send(&tx, &FailingSerialize, &CancellationToken::new()).await,
+            Err(CriticalSendFailure::Serialization)
+        );
+        rx.close();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn critical_send_reports_queue_timeout_when_bounded_queue_is_full() {
+        let (tx, _rx) = mpsc::channel::<OutboundMessage>(1);
+        assert!(queue_message(&tx, WsMessage::Text("already queued".into())));
+        assert_eq!(
+            critical_send(
+                &tx,
+                &serde_json::json!({"ok": true}),
+                &CancellationToken::new()
+            )
+            .await,
+            Err(CriticalSendFailure::Timeout)
+        );
+    }
 }

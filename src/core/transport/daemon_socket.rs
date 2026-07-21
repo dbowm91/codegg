@@ -6,13 +6,16 @@ use tokio::sync::{broadcast, Mutex, RwLock};
 use tokio_util::sync::CancellationToken;
 
 use crate::core::daemon::CoreDaemon;
-use crate::core::event_log::EventFilter;
+use crate::core::event_log::{event_matches_filter, EventFilter};
 use crate::error::AppError;
 use crate::protocol::core::{CoreEvent, CoreResponse, EventEnvelope};
 use crate::protocol::frames::{CoreFrame, ServerCapabilities, ServerHello};
 use codegg_protocol::projection::replay::ProjectionSubscriptionId;
 
-use super::projection::{OwnedProjectionSubscription, ProjectionConnectionState};
+use super::projection::{
+    bounded_critical_delivery, CriticalDeliveryError, OwnedProjectionSubscription,
+    ProjectionConnectionState,
+};
 
 /// Bind a Unix-domain socket listener to `endpoint`. Returns the bound
 /// `UnixListener` plus the absolute path. Used by the singleton lifecycle
@@ -77,27 +80,6 @@ pub async fn run_core_socket(daemon: Arc<CoreDaemon>, endpoint: &str) -> Result<
         CancellationToken::new(),
     )
     .await
-}
-
-/// Match an event envelope against a single subscription filter.
-///
-/// Semantics (per the `include_global` interim contract):
-///
-/// - `session_id: Some(sid), include_global: true`  -> events for `sid` plus
-///   global/sessionless events.
-/// - `session_id: Some(sid), include_global: false` -> events for `sid` only.
-/// - `session_id: None`                            -> global/sessionless
-///   events only. `include_global` is ignored in this branch. A
-///   `session_id: None` filter does NOT match all sessions; an
-///   all-sessions subscription would require a distinct protocol field.
-fn event_matches_filter(event: &EventEnvelope<CoreEvent>, filter: &EventFilter) -> bool {
-    match (&filter.session_id, filter.include_global) {
-        (Some(sid), true) => {
-            event.session_id.as_deref() == Some(sid.as_str()) || event.session_id.is_none()
-        }
-        (Some(sid), false) => event.session_id.as_deref() == Some(sid.as_str()),
-        (None, _) => event.session_id.is_none(),
-    }
 }
 
 async fn handle_client(
@@ -271,14 +253,46 @@ async fn handle_client(
                                 request_id,
                                 response: Box::new(response),
                             };
-                            send_frame(&writer, &frame).await;
+                            let cancellation = projection_state.lock().await.cancellation();
+                            let delivery = bounded_critical_delivery(
+                                &cancellation,
+                                send_frame(&writer, &frame),
+                            )
+                            .await;
+                            if let Err(error) = delivery {
+                                if let Some(subscription_id) = &response_subscription_id {
+                                    cleanup_projection_subscription(
+                                        &daemon,
+                                        &projection_state,
+                                        subscription_id,
+                                        &client_id,
+                                    )
+                                    .await;
+                                }
+                                tracing::warn!(
+                                    "critical Unix-socket response delivery failed: {}",
+                                    error
+                                );
+                                break;
+                            }
                             if let Some(subscription_id) = response_subscription_id {
-                                if let Some(subscription) = projection_state
+                                let activation = projection_state
                                     .lock()
                                     .await
-                                    .subscription_mut(&subscription_id)
-                                {
-                                    subscription.mark_live();
+                                    .activate_after_delivery(&subscription_id);
+                                if let Err(error) = activation {
+                                    cleanup_projection_subscription(
+                                        &daemon,
+                                        &projection_state,
+                                        &subscription_id,
+                                        &client_id,
+                                    )
+                                    .await;
+                                    tracing::warn!(
+                                        "projection activation failed after critical response delivery: {:?}",
+                                        error
+                                    );
+                                    break;
                                 }
                             }
                         }
@@ -407,10 +421,25 @@ async fn handle_client(
                                 },
                                 client_id: client_id.clone(),
                             });
-                            send_frame(&writer, &server_hello).await;
+                            if let Err(error) = send_frame(&writer, &server_hello).await {
+                                tracing::warn!(
+                                    "critical Unix-socket ServerHello delivery failed: {}",
+                                    error
+                                );
+                                break;
+                            }
                         }
                         CoreFrame::Ping => {
-                            send_frame(&writer, &CoreFrame::Pong).await;
+                            let cancellation = projection_state.lock().await.cancellation();
+                            if let Err(error) = bounded_critical_delivery(
+                                &cancellation,
+                                send_frame(&writer, &CoreFrame::Pong),
+                            )
+                            .await
+                            {
+                                tracing::warn!("Unix-socket Pong delivery failed: {}", error);
+                                break;
+                            }
                         }
                         _ => {}
                     }
@@ -526,6 +555,30 @@ async fn install_projection_receiver(
     true
 }
 
+async fn cleanup_projection_subscription(
+    daemon: &Arc<CoreDaemon>,
+    projection_state: &Arc<Mutex<ProjectionConnectionState>>,
+    subscription_id: &ProjectionSubscriptionId,
+    client_id: &str,
+) {
+    let _ = projection_state
+        .lock()
+        .await
+        .rollback_subscription(subscription_id)
+        .await;
+    let _ = daemon
+        .handle_request_for_client(
+            crate::core::new_request(
+                format!("projection-critical-delivery-{}", uuid::Uuid::new_v4()),
+                crate::protocol::core::CoreRequest::ProjectionUnsubscribe {
+                    subscription_id: subscription_id.clone(),
+                },
+            ),
+            client_id,
+        )
+        .await;
+}
+
 /// Forward projection events from a subscription receiver to the client writer.
 /// Wraps each `ProjectionEnvelope` in a `CoreEvent::ProjectionStreamEvent` and
 /// sends it as a regular `CoreFrame::Event` to the client.
@@ -560,15 +613,11 @@ async fn projection_forwarder(
             turn_id: None,
             payload: core_event,
         });
-        if let Ok(json) = serde_json::to_string(&frame) {
-            let mut w = writer.lock().await;
-            if w.write_all(json.as_bytes()).await.is_err() {
-                break;
-            }
-            if w.write_all(b"\n").await.is_err() {
-                break;
-            }
-            let _ = w.flush().await;
+        if bounded_critical_delivery(&cancellation, send_frame(&writer, &frame))
+            .await
+            .is_err()
+        {
+            break;
         }
     }
 }
@@ -595,22 +644,15 @@ async fn forward_events(
                         // ClientHello/ServerHello handshake to opt in.
                         false
                     } else {
-                        guard.iter().any(|f| event_matches_filter(&event, f))
+                        guard.iter().any(|f| event_matches_filter(f, &event))
                     }
                 };
                 if !matches {
                     continue;
                 }
                 let frame = CoreFrame::Event(event);
-                if let Ok(json) = serde_json::to_string(&frame) {
-                    let mut w = writer.lock().await;
-                    if w.write_all(json.as_bytes()).await.is_err() {
-                        break;
-                    }
-                    if w.write_all(b"\n").await.is_err() {
-                        break;
-                    }
-                    let _ = w.flush().await;
+                if send_frame(&writer, &frame).await.is_err() {
+                    break;
                 }
             }
             Err(broadcast::error::RecvError::Lagged(n)) => {
@@ -624,13 +666,18 @@ async fn forward_events(
 async fn send_frame(
     writer: &Arc<tokio::sync::Mutex<tokio::net::unix::OwnedWriteHalf>>,
     frame: &CoreFrame,
-) {
-    if let Ok(json) = serde_json::to_string(frame) {
-        let mut w = writer.lock().await;
-        let _ = w.write_all(json.as_bytes()).await;
-        let _ = w.write_all(b"\n").await;
-        let _ = w.flush().await;
-    }
+) -> Result<(), CriticalDeliveryError> {
+    let json = serde_json::to_string(frame).map_err(|_| CriticalDeliveryError::Serialization)?;
+    let mut w = writer.lock().await;
+    w.write_all(json.as_bytes())
+        .await
+        .map_err(|_| CriticalDeliveryError::WriterClosed)?;
+    w.write_all(b"\n")
+        .await
+        .map_err(|_| CriticalDeliveryError::WriterClosed)?;
+    w.flush()
+        .await
+        .map_err(|_| CriticalDeliveryError::WriterClosed)
 }
 
 #[cfg(test)]
@@ -660,7 +707,7 @@ mod tests {
             client_id: None,
             include_global: true,
         };
-        assert!(event_matches_filter(&ev, &filter));
+        assert!(event_matches_filter(&filter, &ev));
     }
 
     #[test]
@@ -671,7 +718,7 @@ mod tests {
             client_id: None,
             include_global: true,
         };
-        assert!(!event_matches_filter(&ev, &filter));
+        assert!(!event_matches_filter(&filter, &ev));
     }
 
     #[test]
@@ -686,7 +733,7 @@ mod tests {
             include_global: true,
         };
         assert!(
-            !event_matches_filter(&ev, &filter),
+            !event_matches_filter(&filter, &ev),
             "global filter must not match session events"
         );
 
@@ -695,7 +742,7 @@ mod tests {
             client_id: None,
             include_global: false,
         };
-        assert!(!event_matches_filter(&ev, &filter_no_global));
+        assert!(!event_matches_filter(&filter_no_global, &ev));
     }
 
     #[test]
@@ -706,14 +753,14 @@ mod tests {
             client_id: None,
             include_global: true,
         };
-        assert!(event_matches_filter(&ev, &filter_with));
+        assert!(event_matches_filter(&filter_with, &ev));
 
         let filter_without = EventFilter {
             session_id: None,
             client_id: None,
             include_global: false,
         };
-        assert!(event_matches_filter(&ev, &filter_without));
+        assert!(event_matches_filter(&filter_without, &ev));
     }
 
     #[test]
@@ -727,7 +774,7 @@ mod tests {
             client_id: None,
             include_global: true,
         };
-        assert!(event_matches_filter(&ev_global, &filter));
+        assert!(event_matches_filter(&filter, &ev_global));
     }
 
     #[test]
@@ -738,7 +785,18 @@ mod tests {
             client_id: None,
             include_global: false,
         };
-        assert!(!event_matches_filter(&ev_global, &filter));
+        assert!(!event_matches_filter(&filter, &ev_global));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn send_frame_reports_closed_unix_writer() {
+        let (server, client) = tokio::net::UnixStream::pair().expect("UnixStream pair");
+        let (_read_half, write_half) = server.into_split();
+        let writer = Arc::new(Mutex::new(write_half));
+        drop(client);
+
+        let result = send_frame(&writer, &CoreFrame::Ping).await;
+        assert_eq!(result, Err(CriticalDeliveryError::WriterClosed));
     }
 
     #[tokio::test]
@@ -809,6 +867,24 @@ mod tests {
         let global_events = log.replay_from(0, &global_filter).await;
         assert_eq!(global_events.len(), 1);
         assert!(global_events[0].session_id.is_none());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn critical_socket_frame_is_readable_after_successful_write() {
+        let (writer_stream, reader_stream) = tokio::net::UnixStream::pair().unwrap();
+        let (_, writer_half) = writer_stream.into_split();
+        let writer = Arc::new(tokio::sync::Mutex::new(writer_half));
+        let frame = CoreFrame::Pong;
+        send_frame(&writer, &frame).await.unwrap();
+
+        let (reader_half, _) = reader_stream.into_split();
+        let mut reader = BufReader::new(reader_half);
+        let mut line = String::new();
+        reader.read_line(&mut line).await.unwrap();
+        assert!(matches!(
+            serde_json::from_str::<CoreFrame>(line.trim()).unwrap(),
+            CoreFrame::Pong
+        ));
     }
 }
 

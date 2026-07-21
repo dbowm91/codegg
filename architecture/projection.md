@@ -380,3 +380,21 @@ using resume, acknowledgement, unsubscribe, status, or bounded artifact
 operations. Version-4 clients retain the legacy raw event path; that path is
 bounded, isolated from projection state, and accompanied by a deprecation
 diagnostic for clients that can negotiate the projection contract.
+
+### Atomic control delivery (Milestone 006)
+
+Remote projection control responses are critical writer operations. The
+adapter serializes the frame, enqueues it on a bounded control channel, and
+waits for a bounded writer receipt (500 ms) with cancellation and writer-close
+failure outcomes. `Initializing -> Live` is completed only after that receipt;
+queue full, serialization, timeout, cancellation, and writer failures remove
+the transient receiver and issue a daemon unsubscribe. Projection forwarders
+are held behind the lifecycle ready permit, which proves response-before-live
+ordering at the transport boundary.
+
+The legacy `/ws` JSON-RPC adapter is deprecated and uses the same finite
+outbound bound; overflow terminates the connection. The
+`scripts/check_websocket_bounds.py` and
+`scripts/check_projection_transport_isolation.py` guards prevent reintroducing
+unbounded server WebSocket channels or activation-before-control-delivery
+drift.

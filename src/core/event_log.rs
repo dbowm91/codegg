@@ -16,11 +16,11 @@ pub trait ProjectionSink: Send + Sync {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'static>>;
 }
 
-/// Apply a `filter` to a single envelope. See `EventLog::replay_from` and
-/// `daemon_socket::event_matches_filter` for the semantic contract; this
-/// helper is the single source of truth for in-memory matching and is
-/// mirrored in `replay_from_db`.
-fn filter_matches(filter: &EventFilter, event: &EventEnvelope<CoreEvent>) -> bool {
+/// Apply the connection-local raw compatibility filter to one event.
+///
+/// This is shared by replay and live delivery so a connection cannot receive
+/// a session-scoped event live that it would not have received on resume.
+pub fn event_matches_filter(filter: &EventFilter, event: &EventEnvelope<CoreEvent>) -> bool {
     match (&filter.session_id, filter.include_global) {
         (Some(sid), true) => {
             event.session_id.as_deref() == Some(sid.as_str()) || event.session_id.is_none()
@@ -173,7 +173,8 @@ impl EventLog {
     /// replay from the very first event.
     /// Falls through to SQLite when the ring buffer doesn't cover the requested sequence.
     ///
-    /// Filter semantics (must match `daemon_socket::event_matches_filter`):
+    /// Filter semantics are defined by `event_matches_filter` and are shared
+    /// with live transport delivery:
     ///
     /// - `session_id: Some(sid), include_global: true`  -> events for `sid` plus
     ///   sessionless/global events.
@@ -189,7 +190,7 @@ impl EventLog {
             let ring = self.ring.lock().await;
             ring.iter()
                 .filter(|e| e.event_seq > from_event_seq)
-                .filter(|e| filter_matches(filter, e))
+                .filter(|e| event_matches_filter(filter, e))
                 .cloned()
                 .collect::<Vec<_>>()
         };
@@ -214,7 +215,8 @@ impl EventLog {
     /// the ring buffer doesn't have them. Returns events ordered by
     /// `event_seq` ASC.
     ///
-    /// Filter semantics (mirrors the in-memory `filter_matches`):
+    /// Filter semantics use the same `event_matches_filter` helper as the
+    /// in-memory replay and live transport path:
     ///
     /// - `session_id: Some(sid), include_global: true`  -> `session_id = sid`
     ///   OR `session_id IS NULL` (global events).
@@ -278,6 +280,7 @@ impl EventLog {
                     payload,
                 })
             })
+            .filter(|event| event_matches_filter(filter, event))
             .collect()
     }
 
