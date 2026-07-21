@@ -1,6 +1,6 @@
 # Session Projections Milestone 001 — Canonical Projection Contracts
 
-Status: ready
+Status: implemented (closed; see `plans/closure/session-projections/001-status.md`)
 
 Repository baseline: `fbae374a2cd6172505204b1bc1bee1ef247afd5f` (production-code baseline; subsequent planning-only commits do not alter implementation state)
 

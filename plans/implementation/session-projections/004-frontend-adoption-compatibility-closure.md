@@ -1,6 +1,6 @@
 # Session Projections Milestone 004 — Frontend Adoption, Compatibility, and Closure
 
-Status: blocked
+Status: implemented (closed after corrective M005; see `plans/closure/session-projections/004-status.md`)
 
 Repository baseline: `f569386e4cb68d9752505c3b8d4205161a40c3c4` (`main`; planning-only commits after this baseline do not alter production behavior)
 

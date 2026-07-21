@@ -1,6 +1,6 @@
 # Session Projections Milestone 005 — Remote Transport Isolation, Resume, and Compatibility Closure
 
-Status: ready for handoff
+Status: closed — see `plans/closure/session-projections/005-status.md`
 
 Repository baseline: `bdc2138b7923592d08057485341d4168d504eb14` (`main`; subsequent planning-only commits do not alter production behavior)
 

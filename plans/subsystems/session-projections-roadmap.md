@@ -1,6 +1,6 @@
 # Frontend-Neutral Session Projections and Replay Roadmap
 
-Status: active — Milestone 005 corrective transport closure
+Status: closed — Milestone 005 corrective transport closure completed at `4c751ff`
 
 Long-term references:
 
@@ -46,9 +46,11 @@ It consumes stable project/session identities, daemon events, turn/tool/run/job 
 - **M3** landed through `bac73ce`: capability context, fail-closed disclosure/redaction, artifact handles, bounded reads, and negative persistence tests.
 - **M4 implementation** landed at `bdc2138`: shared projection controller, local TUI projection state, remote protocol additions, independent controller/reducer equivalence, and bounded frontend artifact caches.
 
-### Post-M4 corrective finding
+### Post-M4 corrective finding (resolved)
 
-The M4 frontend/controller work remains valid, but strict subsystem closure was reopened after production transport inspection.
+The M4 frontend/controller work remains valid. Strict subsystem closure was
+temporarily reopened after production transport inspection and was restored by
+M005 at `4c751ff`.
 
 The `/tui` and `/core` WebSocket adapters do not own projection receivers per connection. `/tui` stores no subscription IDs/descriptors/cursors, both WebSocket paths depend on daemon-wide raw event broadcasts, remote projection resume is not wired through `ProjectionCursor`, typed resync is degraded to generic error in one path, subscription identity is synthesized from stream identity for replay, and the Unix-socket forwarder emits a synthetic stream ID.
 
@@ -56,9 +58,10 @@ The authoritative corrective handoff is:
 
 - `plans/implementation/session-projections/005-remote-transport-isolation-resume-closure.md`
 
-The M4 historical record is now conditional:
+The M4 historical record and corrective closure are:
 
 - `plans/closure/session-projections/004-status.md`
+- `plans/closure/session-projections/005-status.md`
 
 ## 4. Target architecture
 
@@ -102,10 +105,10 @@ M2 durable replay + daemon integration                   [closed]
 M3 visibility, redaction, artifact handles               [closed]
         |
         v
-M4 frontend adoption/controller                          [conditionally closed]
+M4 frontend adoption/controller                          [closed]
         |
         v
-M5 remote transport isolation, resume, compatibility     [ready]
+M5 remote transport isolation, resume, compatibility     [closed]
 ```
 
 Milestone 005 has no unmet design dependency. It consumes existing M2 receiver ownership, M3 policy, and M4 controller/protocol seams.
@@ -155,7 +158,7 @@ Accepted outcomes include transport-derived capability context, structural-first
 
 ### Milestone 4 — Frontend adoption and compatibility
 
-Status: conditionally closed.
+Status: closed.
 
 Implementation plan:
 
@@ -174,15 +177,19 @@ Accepted outcomes:
 - bounded raw compatibility mode;
 - frontend artifact caches.
 
-Corrective findings are owned by Milestone 005.
+Corrective findings were closed by Milestone 005.
 
 ### Milestone 5 — Remote transport isolation, resume, and compatibility closure
 
-Status: ready for handoff.
+Status: closed.
 
 Implementation plan:
 
 - `plans/implementation/session-projections/005-remote-transport-isolation-resume-closure.md`
+
+Closure:
+
+- `plans/closure/session-projections/005-status.md`
 
 Class: correctness / security / transport closure
 
@@ -211,7 +218,8 @@ Exit conditions:
 - all transient receivers/tasks are cleaned up deterministically;
 - raw compatibility remains functional but mode-isolated;
 - no unresolved high/medium transport findings remain;
-- M4 and M5 closure records return the subsystem to strict closed status.
+- M4 and M5 closure records return the subsystem to strict closed status; both
+  are now accepted.
 
 ## 7. Deferred product work
 
@@ -286,5 +294,5 @@ This roadmap returns to strict closed status when CodeGG has one bounded redacte
 | 1 | closed | `plans/implementation/session-projections/001-projection-contracts.md` | `plans/closure/session-projections/001-status.md` | — |
 | 2 | closed (strict) | library + corrective plans | `plans/closure/session-projections/002-status.md` | — |
 | 3 | closed | `plans/implementation/session-projections/003-visibility-redaction-artifact-handles.md` | `plans/closure/session-projections/003-status.md` | — |
-| 4 | conditionally closed | `plans/implementation/session-projections/004-frontend-adoption-compatibility-closure.md` | `plans/closure/session-projections/004-status.md` | M5 transport correction |
-| 5 | ready | `plans/implementation/session-projections/005-remote-transport-isolation-resume-closure.md` | — | — |
+| 4 | closed | `plans/implementation/session-projections/004-frontend-adoption-compatibility-closure.md` | `plans/closure/session-projections/004-status.md` | — |
+| 5 | closed | `plans/implementation/session-projections/005-remote-transport-isolation-resume-closure.md` | `plans/closure/session-projections/005-status.md` | — |

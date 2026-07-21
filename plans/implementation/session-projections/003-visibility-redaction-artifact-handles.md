@@ -1,6 +1,6 @@
 # Session Projections Milestone 003 — Visibility, Redaction, and Artifact Handles
 
-Status: blocked
+Status: implemented (closed; see `plans/closure/session-projections/003-status.md`)
 
 Repository baseline: `f569386e4cb68d9752505c3b8d4205161a40c3c4` (`main`; planning-only commits after this baseline do not alter production behavior)
 

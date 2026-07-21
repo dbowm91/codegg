@@ -30,25 +30,22 @@ Canonical direction remains in:
 | Provider connections and Eggpool | closed | `plans/subsystems/provider-connections-roadmap.md` | Milestone 5 closed | — |
 | Project catalog and lazy discovery | closed | `plans/subsystems/project-catalog-roadmap.md` | Milestone 4 closed | — |
 | Multi-project TUI and sessions | closed | `plans/subsystems/tui-project-sessions-roadmap.md` | Milestones 001–004 closed | — |
-| Frontend-neutral session projections | active | `plans/subsystems/session-projections-roadmap.md` | Milestone 005 — remote transport isolation, resume, and compatibility closure | Ready; post-M4 audit found WebSocket subscription ownership, live delivery, resume, stream identity, cleanup, and queue-bound defects |
+| Frontend-neutral session projections | closed | `plans/subsystems/session-projections-roadmap.md` | Milestone 005 — remote transport isolation, resume, and compatibility closure | — |
 
 ## Dependency-ready implementation plans
 
 | Subsystem | Milestone | Class | Plan | Baseline | Status |
 |---|---|---|---|---|---|
-| Frontend-neutral session projections | 005 — remote transport isolation, resume, and compatibility closure | correctness / security / transport | `plans/implementation/session-projections/005-remote-transport-isolation-resume-closure.md` | `bdc2138` | ready |
 
 ## Active closure work
 
 | Subsystem | Milestone | Closure record | Status | Open findings |
 |---|---|---|---|---|
-| Frontend-neutral session projections | 004 — frontend adoption and compatibility | `plans/closure/session-projections/004-status.md` | conditionally closed at `bdc2138` | `/tui` and `/core` lack connection-local receiver ownership; remote cursor resume/unsubscribe/artifact lifecycle incomplete; typed resync degraded; stream/subscription IDs interchanged; Unix forwarder uses synthetic stream ID; WebSocket queues unbounded |
 
 ## Blocked work
 
 | Work item | Blocker | Required resolution | Owner document |
 |---|---|---|---|
-| Strict closure of Session Projections M004 and subsystem roadmap | M005 transport findings | Implement and strictly close M005 with two-client isolation, real stream identity, remote resume, bounded queues, and cleanup evidence | `plans/implementation/session-projections/005-remote-transport-isolation-resume-closure.md` |
 
 ## Deferred unregistered product work
 
@@ -64,9 +61,10 @@ These are not dependency-ready correctness plans and remain outside the active h
 
 | Subsystem | Milestone | Closure record | Closed at commit | Follow-up |
 |---|---|---|---|---|
-| Frontend-neutral session projections | 004 — frontend adoption and compatibility | `plans/closure/session-projections/004-status.md` | `bdc2138` (now conditional after post-closure audit) | M005 corrective transport closure |
-| Frontend-neutral session projections | 003 — visibility, redaction, and artifact handles | `plans/closure/session-projections/003-status.md` | `bac73ce` | M004/M005 consume disclosure and artifact policy |
-| Frontend-neutral session projections | 002 — scoped subscriptions and durable replay | `plans/closure/session-projections/002-status.md` | `c1d910a` corrective integration; library at `8dc4b85` | M005 reuses owned receiver seam |
+| Frontend-neutral session projections | 005 — remote transport isolation, resume, and compatibility closure | `plans/closure/session-projections/005-status.md` | `4c751ff` | — |
+| Frontend-neutral session projections | 004 — frontend adoption and compatibility | `plans/closure/session-projections/004-status.md` | `4c751ff` (strictly closed after corrective transport closure) | — |
+| Frontend-neutral session projections | 003 — visibility, redaction, and artifact handles | `plans/closure/session-projections/003-status.md` | `bac73ce` | — |
+| Frontend-neutral session projections | 002 — scoped subscriptions and durable replay | `plans/closure/session-projections/002-status.md` | `c1d910a` corrective integration; library at `8dc4b85` | — |
 | Frontend-neutral session projections | 001 — projection contracts and canonical reducer | `plans/closure/session-projections/001-status.md` | `f6c8669` | — |
 | Multi-project TUI and sessions | 004 — persistent restoration, resource bounds, and closure | `plans/closure/tui-project-sessions/004-status.md` | `0d98576` | — |
 | Multi-project TUI and sessions | 003 — event routing and lifecycle | `plans/closure/tui-project-sessions/003-status.md` | `6ad9952` closure completion; implementation at `248aa32` | — |

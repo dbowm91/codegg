@@ -1,6 +1,6 @@
 # Session Projections Milestone 004 — Closure Status
 
-Status: conditionally closed — remote transport corrective Milestone 005 required
+Status: closed — corrective Milestone 005 completed at `4c751ff`
 
 Source implementation plan:
 
@@ -22,9 +22,9 @@ Corrective follow-up:
 
 ## 1. Executive finding
 
-The frontend-neutral controller, local TUI projection state, protocol additions, artifact caches, and independent reducer/controller equivalence work landed. Those portions remain accepted.
+The frontend-neutral controller, local TUI projection state, protocol additions, artifact caches, and independent reducer/controller equivalence work landed. The remote transport findings recorded below were corrected by Milestone 005 at `4c751ff`; Milestone 004 is now strictly closed.
 
-A post-closure production audit found that the remote transport evidence does not satisfy the isolation and resume claims required for strict closure. Milestone 004 is therefore **conditionally closed**, not strictly closed, until Milestone 005 corrects the WebSocket and Unix-socket transport findings below.
+A post-closure production audit found that the remote transport evidence did not satisfy the isolation and resume claims required for strict closure. Milestone 005 corrected those findings; the historical audit remains below for traceability.
 
 ### Accepted M4 work
 
@@ -130,9 +130,9 @@ Those results do not include the two-connection WebSocket isolation, owned-recei
 
 Pre-existing unrelated issues recorded at the time were clippy findings in `crates/egglsp/src/edit.rs` and `python_script::executor::tests::execute_sets_os_filesystem_isolation`.
 
-## 7. Strict closure criteria
+## 7. Strict closure criteria and corrective result
 
-Milestone 004 and the session-projections roadmap may return to strict `closed` only when the M5 closure record proves:
+Milestone 004 and the session-projections roadmap return to strict `closed` because the M5 closure record at `plans/closure/session-projections/005-status.md` proves:
 
 - connection-local projection ownership on Unix socket, `/core`, and `/tui`;
 - no projection-private event delivery through generic daemon-wide broadcasts;
@@ -143,3 +143,7 @@ Milestone 004 and the session-projections roadmap may return to strict `closed` 
 - foreign subscription and artifact-operation rejection;
 - version-4 compatibility behavior;
 - zero unresolved high or medium transport-isolation findings.
+
+The corrective implementation commit is `4c751ff`; its transport-specific
+evidence, bounded ownership tests, static guard, and verification commands are
+recorded in the M5 closure record.
