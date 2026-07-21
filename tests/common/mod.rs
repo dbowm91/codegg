@@ -8,4 +8,5 @@
 //! conventional name to avoid colliding with target names.
 
 pub mod pool;
+pub mod projection_replay;
 pub mod secret_scan;

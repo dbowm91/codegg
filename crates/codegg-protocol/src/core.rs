@@ -391,6 +391,51 @@ pub enum CoreResponse {
     JobRecoveryReport {
         report: RecoveryReportDto,
     },
+    // ── Session Projections M2: Replay Protocol ──────────────────────
+    /// Daemon projection replay capabilities and negotiated limits.
+    ProjectionCapabilitiesResponse {
+        supported: bool,
+        projection_version: u32,
+        max_events_per_batch: usize,
+        max_event_bytes: usize,
+        max_subscriptions_per_client: usize,
+        max_subscriptions_per_daemon: usize,
+        retention_session_max_events: usize,
+        retention_project_max_events: usize,
+    },
+    /// Subscription established with descriptor, snapshot, and cursor.
+    ProjectionSubscribed {
+        subscription_id: crate::projection::replay::ProjectionSubscriptionId,
+        descriptor: crate::projection::replay::ProjectionStreamDescriptor,
+        snapshot: crate::projection::replay::ProjectionSnapshotBundle,
+        cursor: crate::projection::replay::ProjectionCursor,
+        retention_floor_seq: u64,
+    },
+    /// Ordered replay batch returned on resume or subscribe catch-up.
+    ProjectionReplay {
+        batch: crate::projection::replay::ProjectionReplayBatch,
+    },
+    /// Resync required with reason and optional snapshot bundle.
+    ProjectionResyncRequired {
+        reason: crate::projection::replay::ProjectionResyncReason,
+        descriptor: Option<crate::projection::replay::ProjectionStreamDescriptor>,
+        requested_cursor: Option<crate::projection::replay::ProjectionCursor>,
+        snapshot: Option<crate::projection::replay::ProjectionSnapshotBundle>,
+    },
+    /// Acknowledgement accepted with current lag.
+    ProjectionAckAccepted {
+        subscription_id: crate::projection::replay::ProjectionSubscriptionId,
+        last_acked_seq: u64,
+        lag_count: u64,
+    },
+    /// Unsubscribe acknowledgement.
+    ProjectionUnsubscribed {
+        subscription_id: crate::projection::replay::ProjectionSubscriptionId,
+    },
+    /// Subscription status for diagnostics.
+    ProjectionSubscriptionStatusResponse {
+        status: crate::projection::replay::ProjectionSubscriptionStatus,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -882,6 +927,32 @@ pub enum CoreRequest {
     },
     /// Trigger a recovery pass and return the report.
     JobRecoveryReport,
+    // ── Session Projections M2: Replay Protocol ──────────────────────
+    /// Query daemon projection replay capabilities and limits.
+    ProjectionCapabilities,
+    /// Subscribe to a canonical projection stream.
+    ProjectionSubscribe {
+        request: crate::projection::replay::ProjectionSubscriptionRequest,
+    },
+    /// Resume from a cursor and optionally receive a snapshot on resync.
+    ProjectionResume {
+        cursor: crate::projection::replay::ProjectionCursor,
+        #[serde(default)]
+        include_snapshot_if_resync: bool,
+    },
+    /// Acknowledge processed projection events.
+    ProjectionAck {
+        ack: crate::projection::replay::ProjectionAck,
+    },
+    /// Unsubscribe from a projection stream.
+    ProjectionUnsubscribe {
+        subscription_id: crate::projection::replay::ProjectionSubscriptionId,
+    },
+    /// Fetch a snapshot bundle for a stream.
+    ProjectionSnapshotGet {
+        scope: crate::projection::replay::ProjectionStreamKind,
+        scope_id: String,
+    },
 }
 
 #[allow(clippy::large_enum_variant)]
@@ -1218,6 +1289,12 @@ pub enum CoreEvent {
     /// A schedule was deleted.
     ScheduleDeleted {
         schedule_id: String,
+    },
+    /// Live projection event delivered to a subscription.
+    ProjectionStreamEvent {
+        subscription_id: crate::projection::replay::ProjectionSubscriptionId,
+        stream_id: crate::projection::replay::ProjectionStreamId,
+        envelope: crate::projection::event::ProjectionEnvelope,
     },
     Error {
         code: String,

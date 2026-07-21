@@ -115,6 +115,9 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), StorageError> {
     if current_version < 31 {
         migrate_and_record(pool, 31).await?;
     }
+    if current_version < 32 {
+        migrate_and_record(pool, 32).await?;
+    }
 
     Ok(())
 }
@@ -158,6 +161,7 @@ async fn migrate_and_record(pool: &SqlitePool, version: i64) -> Result<(), Stora
             29 => migrate_v29(pool).await?,
             30 => migrate_v30(pool).await?,
             31 => migrate_v31(pool).await?,
+            32 => migrate_v32(pool).await?,
             _ => {
                 return Err(StorageError::Migration(format!(
                     "unknown migration version {}",
@@ -1574,6 +1578,71 @@ async fn migrate_v31(pool: &SqlitePool) -> Result<(), StorageError> {
         )
         "#,
         "CREATE INDEX IF NOT EXISTS idx_provider_connection_audit_connection ON provider_connection_audit_events(connection_id, time_created DESC)",
+    ] {
+        sqlx::query(statement)
+            .execute(pool)
+            .await
+            .map_err(|e| StorageError::Migration(e.to_string()))?;
+    }
+    Ok(())
+}
+
+/// Session Projections Milestone 2: durable projection stream,
+/// event, and checkpoint tables for scoped subscriptions and replay.
+async fn migrate_v32(pool: &SqlitePool) -> Result<(), StorageError> {
+    for statement in [
+        r#"
+        CREATE TABLE IF NOT EXISTS projection_stream (
+            id TEXT PRIMARY KEY,
+            kind TEXT NOT NULL CHECK(kind IN ('session','project')),
+            project_id TEXT NOT NULL,
+            workspace_id TEXT,
+            session_id TEXT,
+            binding_revision INTEGER NOT NULL DEFAULT 1,
+            projection_version INTEGER NOT NULL,
+            next_seq INTEGER NOT NULL,
+            retention_floor_seq INTEGER NOT NULL,
+            high_water_seq INTEGER NOT NULL,
+            latest_checkpoint_seq INTEGER,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            lifecycle TEXT NOT NULL DEFAULT 'active' CHECK(lifecycle IN ('active','invalidated','rebound')),
+            UNIQUE(kind, project_id, session_id, lifecycle)
+        )
+        "#,
+        r#"
+        CREATE TABLE IF NOT EXISTS projection_event (
+            stream_id TEXT NOT NULL,
+            event_seq INTEGER NOT NULL,
+            projection_version INTEGER NOT NULL,
+            timestamp_ms INTEGER NOT NULL,
+            session_id TEXT,
+            turn_id TEXT,
+            event_kind TEXT NOT NULL,
+            visibility_class TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            payload_bytes INTEGER NOT NULL,
+            source_core_seq INTEGER,
+            created_at INTEGER NOT NULL,
+            PRIMARY KEY(stream_id, event_seq),
+            FOREIGN KEY(stream_id) REFERENCES projection_stream(id) ON DELETE CASCADE
+        )
+        "#,
+        r#"
+        CREATE TABLE IF NOT EXISTS projection_checkpoint (
+            stream_id TEXT NOT NULL,
+            checkpoint_seq INTEGER NOT NULL,
+            projection_version INTEGER NOT NULL,
+            snapshot_json TEXT NOT NULL,
+            snapshot_bytes INTEGER NOT NULL,
+            created_at INTEGER NOT NULL,
+            PRIMARY KEY(stream_id, checkpoint_seq),
+            FOREIGN KEY(stream_id) REFERENCES projection_stream(id) ON DELETE CASCADE
+        )
+        "#,
+        "CREATE INDEX IF NOT EXISTS idx_projection_event_stream_seq ON projection_event(stream_id, event_seq)",
+        "CREATE INDEX IF NOT EXISTS idx_projection_event_created ON projection_event(created_at)",
+        "CREATE INDEX IF NOT EXISTS idx_projection_checkpoint_stream ON projection_checkpoint(stream_id, checkpoint_seq DESC)",
     ] {
         sqlx::query(statement)
             .execute(pool)

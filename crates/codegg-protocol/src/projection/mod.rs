@@ -43,6 +43,7 @@ pub mod event;
 pub mod fixtures;
 pub mod limits;
 pub mod reducer;
+pub mod replay;
 pub mod snapshot;
 
 pub use caps::{
@@ -72,5 +73,11 @@ pub use limits::{
 };
 pub use reducer::{
     ApplyOutcome, ProjectionReducer, ProjectionState, ReducerError, ReducerEventInput,
+};
+pub use replay::{
+    ProjectionAck, ProjectionCursor, ProjectionReplayBatch, ProjectionReplayLimits,
+    ProjectionResyncReason, ProjectionSnapshotBundle, ProjectionStreamDescriptor, ProjectionStreamId,
+    ProjectionStreamKind, ProjectionSubscriptionId, ProjectionSubscriptionRequest,
+    ProjectionSubscriptionState, ProjectionSubscriptionStatus, ReplaySubscriptionError,
 };
 pub use snapshot::SessionProjectionSnapshot;

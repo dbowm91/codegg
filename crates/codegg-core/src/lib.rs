@@ -13,6 +13,7 @@ pub mod project_catalog;
 pub mod project_discovery;
 pub mod project_discovery_service;
 pub mod project_storage;
+pub mod projection_replay;
 pub mod protocol_conversions;
 pub mod provider_connections;
 pub mod repository_lineage;
