@@ -142,6 +142,10 @@ pub enum InputAction {
     OpenDiff,
     GoToTop,
     GoToBottom,
+    OpenProjectPicker,
+    NextProjectTab,
+    PreviousProjectTab,
+    CloseProjectTab,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq, Hash)]
@@ -187,9 +191,22 @@ pub enum ActionKey {
     TogglePermissionMode,
     GoToTop,
     GoToBottom,
+    OpenProjectPicker,
+    NextProjectTab,
+    PreviousProjectTab,
+    CloseProjectTab,
 }
 
 macro_rules! map_action {
+    ($key:expr, $($variant:ident),+) => {
+        match $key {
+            $(ActionKey::$variant => InputAction::$variant),+
+        }
+    };
+}
+
+#[allow(unused_macros)]
+macro_rules! map_action_extended {
     ($key:expr, $($variant:ident),+) => {
         match $key {
             $(ActionKey::$variant => InputAction::$variant),+
@@ -341,6 +358,34 @@ fn default_bindings_internal() -> HashMap<(KeyModifiers, KeyCode), InputAction> 
         ),
         InputAction::ToggleFullscreen,
     );
+    // Ctrl+\ opens the project picker (both Insert and Normal modes).
+    // Space f was infeasible due to insert-mode text binding; Ctrl+\ is
+    // the final chosen binding.
+    map.insert(
+        (KeyModifiers::CONTROL, KeyCode::Char('\\')),
+        InputAction::OpenProjectPicker,
+    );
+    // Ctrl+Shift+] next project tab
+    map.insert(
+        (
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+            KeyCode::Char(']'),
+        ),
+        InputAction::NextProjectTab,
+    );
+    // Ctrl+Shift+[ previous project tab
+    map.insert(
+        (
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+            KeyCode::Char('['),
+        ),
+        InputAction::PreviousProjectTab,
+    );
+    // Alt+w close project tab
+    map.insert(
+        (KeyModifiers::ALT, KeyCode::Char('w')),
+        InputAction::CloseProjectTab,
+    );
     map
 }
 
@@ -447,6 +492,52 @@ fn vim_bindings_internal() -> HashMap<(KeyModifiers, KeyCode), InputAction> {
     map.insert(
         (KeyModifiers::NONE, KeyCode::Char('d')),
         InputAction::OpenDiff,
+    );
+
+    // Ctrl+\ opens the project picker (same as insert mode).
+    map.insert(
+        (KeyModifiers::CONTROL, KeyCode::Char('\\')),
+        InputAction::OpenProjectPicker,
+    );
+    // \ also opens the project picker in vim normal mode.
+    map.insert(
+        (KeyModifiers::NONE, KeyCode::Char('\\')),
+        InputAction::OpenProjectPicker,
+    );
+    // } next project tab (vim normal)
+    map.insert(
+        (KeyModifiers::NONE, KeyCode::Char('}')),
+        InputAction::NextProjectTab,
+    );
+    // { previous project tab (vim normal)
+    map.insert(
+        (KeyModifiers::NONE, KeyCode::Char('{')),
+        InputAction::PreviousProjectTab,
+    );
+    // Q close project tab (vim normal, uppercase to not conflict with q=quit)
+    map.insert(
+        (KeyModifiers::SHIFT, KeyCode::Char('Q')),
+        InputAction::CloseProjectTab,
+    );
+    // Ctrl+Shift+] / Ctrl+Shift+[ also in vim mode
+    map.insert(
+        (
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+            KeyCode::Char(']'),
+        ),
+        InputAction::NextProjectTab,
+    );
+    map.insert(
+        (
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+            KeyCode::Char('['),
+        ),
+        InputAction::PreviousProjectTab,
+    );
+    // Alt+w close project tab (same as insert mode)
+    map.insert(
+        (KeyModifiers::ALT, KeyCode::Char('w')),
+        InputAction::CloseProjectTab,
     );
 
     map
@@ -573,6 +664,30 @@ pub fn default_help_entries() -> Vec<HelpEntry> {
         },
         HelpEntry {
             mode: HelpMode::Insert,
+            key: "Ctrl+\\",
+            action: "Open project picker",
+            condition: None,
+        },
+        HelpEntry {
+            mode: HelpMode::Insert,
+            key: "Ctrl+Shift+]",
+            action: "Next project tab",
+            condition: None,
+        },
+        HelpEntry {
+            mode: HelpMode::Insert,
+            key: "Ctrl+Shift+[",
+            action: "Previous project tab",
+            condition: None,
+        },
+        HelpEntry {
+            mode: HelpMode::Insert,
+            key: "Alt+W",
+            action: "Close project tab",
+            condition: None,
+        },
+        HelpEntry {
+            mode: HelpMode::Insert,
             key: "PgUp/PgDn",
             action: "Scroll viewport",
             condition: None,
@@ -643,6 +758,54 @@ pub fn default_help_entries() -> Vec<HelpEntry> {
             key: "d",
             action: "Open diff",
             condition: Some("vim mode"),
+        },
+        HelpEntry {
+            mode: HelpMode::Normal,
+            key: "\\",
+            action: "Open project picker",
+            condition: None,
+        },
+        HelpEntry {
+            mode: HelpMode::Normal,
+            key: "}",
+            action: "Next project tab",
+            condition: None,
+        },
+        HelpEntry {
+            mode: HelpMode::Normal,
+            key: "{",
+            action: "Previous project tab",
+            condition: None,
+        },
+        HelpEntry {
+            mode: HelpMode::Normal,
+            key: "Q",
+            action: "Close project tab",
+            condition: None,
+        },
+        HelpEntry {
+            mode: HelpMode::Normal,
+            key: "Ctrl+\\",
+            action: "Open project picker",
+            condition: None,
+        },
+        HelpEntry {
+            mode: HelpMode::Normal,
+            key: "Ctrl+Shift+]",
+            action: "Next project tab",
+            condition: None,
+        },
+        HelpEntry {
+            mode: HelpMode::Normal,
+            key: "Ctrl+Shift+[",
+            action: "Previous project tab",
+            condition: None,
+        },
+        HelpEntry {
+            mode: HelpMode::Normal,
+            key: "Alt+W",
+            action: "Close project tab",
+            condition: None,
         },
         HelpEntry {
             mode: HelpMode::Normal,
@@ -960,7 +1123,11 @@ pub fn build_bindings(
                     ToggleFullscreen,
                     TogglePermissionMode,
                     GoToTop,
-                    GoToBottom
+                    GoToBottom,
+                    OpenProjectPicker,
+                    NextProjectTab,
+                    PreviousProjectTab,
+                    CloseProjectTab
                 );
                 bindings.insert((mods, code), action);
             }

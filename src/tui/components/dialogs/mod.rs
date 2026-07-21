@@ -14,6 +14,7 @@ pub mod model;
 pub mod permission;
 pub mod plan;
 pub mod plugin;
+pub mod project_picker;
 pub mod question;
 pub mod research;
 pub mod review;

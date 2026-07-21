@@ -36,6 +36,7 @@ pub enum Dialog {
     DoctorReport,
     Plugin,
     RunDetail,
+    ProjectPicker,
 }
 
 impl Dialog {
@@ -76,6 +77,7 @@ impl Dialog {
                 | Self::DoctorReport
                 | Self::Plugin
                 | Self::RunDetail
+                | Self::ProjectPicker
         )
     }
 }
@@ -293,6 +295,18 @@ pub enum TuiMsg {
         action: ConnectionLifecycleAction,
         connection_id: String,
         expected_revision: u64,
+    },
+    /// Open the project picker dialog.
+    OpenProjectPicker,
+    /// Switch to the next project tab.
+    NextProjectTab,
+    /// Switch to the previous project tab.
+    PreviousProjectTab,
+    /// Close the active project tab.
+    CloseProjectTab,
+    /// Select a project tab by visible index.
+    SelectProjectTabByIndex {
+        index: usize,
     },
 }
 

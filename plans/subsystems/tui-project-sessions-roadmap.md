@@ -145,7 +145,7 @@ Deferred work: picker and tab keybindings.
 
 ### Milestone 2 — Project picker and tab navigation
 
-Status: ready for handoff; see `plans/implementation/tui-project-sessions/002-project-picker-tab-navigation.md`.
+Status: closed; see `plans/closure/tui-project-sessions/002-status.md` for closure evidence.
 
 Class: capability
 
@@ -252,6 +252,6 @@ This roadmap closes when one TUI can use several project tabs and several sessio
 | Milestone | Status | Implementation plan | Closure record | Blockers |
 |---|---|---|---|---|
 | 1 | closed | `plans/implementation/tui-project-sessions/001-project-aware-state.md` | `plans/closure/tui-project-sessions/001-status.md` | —; Project Catalog 004 and Runtime Assets refresh interfaces are closed |
-| 2 | ready | `plans/implementation/tui-project-sessions/002-project-picker-tab-navigation.md` | — | —; Milestone 1 closed |
+| 2 | closed | `plans/implementation/tui-project-sessions/002-project-picker-tab-navigation.md` | `plans/closure/tui-project-sessions/002-status.md` | —; Milestone 1 closed |
 | 3 | not started | — | — | Milestones 1–2 closure |
 | 4 | not started | — | — | Milestones 2–3 closure |

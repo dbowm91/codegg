@@ -32,8 +32,11 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::protocol::dto::ProjectSummaryDto;
+use crate::protocol::dto::{ProjectDetailsDto, ProjectSummaryDto};
 use crate::tui::app::state::async_request::AsyncUiRequestState;
+use crate::tui::app::state::project_picker::{
+    SessionSummaryCacheEntry, MAX_OPEN_PROJECT_TABS,
+};
 
 /// A stable, frontend-local identifier for an open project tab.
 ///
@@ -195,6 +198,17 @@ pub struct ProjectTabState {
     /// is removed, callers MUST cancel pending requests and bump the
     /// generation so stale completions are dropped.
     pub request_state: AsyncUiRequestState,
+    /// Cached project detail for the active tab (from ProjectGet).
+    pub project_details: Option<ProjectDetailsDto>,
+    /// Mirrors `session_id` but kept separately to avoid confusion
+    /// during the switch transaction.
+    pub selected_session_id: Option<String>,
+    /// Whether a session load is in flight for this tab.
+    pub pending_session_load: bool,
+    /// Last error from a session load attempt.
+    pub last_session_load_error: Option<String>,
+    /// Bounded session summary cache (max 256 entries).
+    pub session_summaries: Vec<SessionSummaryCacheEntry>,
 }
 
 impl ProjectTabState {
@@ -211,6 +225,11 @@ impl ProjectTabState {
             model: String::new(),
             agent: String::new(),
             request_state: AsyncUiRequestState::new(),
+            project_details: None,
+            selected_session_id: None,
+            pending_session_load: false,
+            last_session_load_error: None,
+            session_summaries: Vec::new(),
         }
     }
 
@@ -409,11 +428,77 @@ impl ProjectTabs {
             model: model.to_string(),
             agent: agent.to_string(),
             request_state: AsyncUiRequestState::new(),
+            project_details: None,
+            selected_session_id: None,
+            pending_session_load: false,
+            last_session_load_error: None,
+            session_summaries: Vec::new(),
         };
         let mut tabs = Self::new();
         tabs.add_tab(tab);
         tabs.active_tab_id = Some(tab_id);
         tabs
+    }
+
+    /// Whether the tab container has reached its maximum capacity.
+    pub fn is_at_capacity(&self) -> bool {
+        self.tabs.len() >= MAX_OPEN_PROJECT_TABS
+    }
+
+    /// When the last real tab is removed, create a fresh empty compat
+    /// tab and return its id. Guarantees render paths always have at
+    /// least one tab.
+    pub fn close_fallback_tab(&mut self) -> ProjectTabId {
+        let tab_id = ProjectTabId::new();
+        let tab = ProjectTabState {
+            tab_id: tab_id.clone(),
+            label: "default".to_string(),
+            project_id: None,
+            workspace_id: None,
+            session_id: None,
+            model: String::new(),
+            agent: String::new(),
+            request_state: AsyncUiRequestState::new(),
+            project_details: None,
+            selected_session_id: None,
+            pending_session_load: false,
+            last_session_load_error: None,
+            session_summaries: Vec::new(),
+        };
+        self.add_and_activate(tab);
+        tab_id
+    }
+
+    /// Display labels with disambiguation for duplicates.
+    /// When two tabs have identical labels, appends a short stable
+    /// suffix derived from workspace_id or tab_id — never from a path.
+    pub fn display_labels(&self) -> Vec<(ProjectTabId, String)> {
+        use crate::tui::app::state::project_picker::disambiguate_label;
+
+        let ordered = self.ordered();
+        let mut result = Vec::with_capacity(ordered.len());
+
+        // Count label occurrences
+        let mut label_counts: HashMap<String, usize> = HashMap::new();
+        for tab in &ordered {
+            *label_counts.entry(tab.label.clone()).or_insert(0) += 1;
+        }
+
+        for tab in &ordered {
+            let needs_disambig = label_counts.get(&tab.label).copied().unwrap_or(0) > 1;
+            let label = if needs_disambig {
+                let suffix_src = tab
+                    .workspace_id
+                    .as_deref()
+                    .unwrap_or_else(|| tab.tab_id.as_str());
+                disambiguate_label(&tab.label, suffix_src)
+            } else {
+                crate::tui::app::state::project_picker::truncate_tab_label(&tab.label)
+            };
+            result.push((tab.tab_id.clone(), label));
+        }
+
+        result
     }
 }
 

@@ -668,6 +668,66 @@ pub enum TuiCommand {
         lines: Vec<String>,
         error: Option<String>,
     },
+    /// Project Picker (Milestone 2): load project detail via ProjectGet.
+    StartGetProject {
+        request_id: u64,
+        project_id: String,
+        picker_generation: u64,
+        picker_request_id: u64,
+    },
+    /// Project Picker (Milestone 2): ProjectGet completion.
+    ProjectGetLoaded {
+        request_id: u64,
+        target_project_id: String,
+        picker_generation: u64,
+        picker_request_id: u64,
+        result: Option<crate::protocol::dto::ProjectDetailsDto>,
+        error: Option<String>,
+    },
+    /// Project Picker (Milestone 2): load sessions for a project tab.
+    StartListProjectSessions {
+        tab_id: crate::tui::app::state::ProjectTabId,
+        project_id: String,
+        workspace_id: String,
+    },
+    /// Project Picker (Milestone 2): session list completion.
+    ProjectSessionsLoaded {
+        request_id: u64,
+        tab_id: crate::tui::app::state::ProjectTabId,
+        project_id: String,
+        workspace_id: String,
+        sessions: Vec<crate::protocol::dto::Session>,
+        error: Option<String>,
+    },
+    /// Project Picker (Milestone 2): register a workspace by path.
+    StartRegisterWorkspace {
+        path: String,
+    },
+    /// Project Picker (Milestone 2): workspace registration completion.
+    WorkspaceRegistered {
+        request_id: u64,
+        workspace_id: Option<String>,
+        error: Option<String>,
+    },
+    /// Project Picker (Milestone 2): register a project.
+    StartRegisterProject {
+        workspace_id: String,
+        display_name: String,
+        description: Option<String>,
+        tags: Vec<String>,
+    },
+    /// Project Picker (Milestone 2): project registration completion.
+    ProjectRegistered {
+        request_id: u64,
+        project_id: Option<String>,
+        error: Option<String>,
+    },
+    /// Switch to the next project tab.
+    NextProjectTab,
+    /// Switch to the previous project tab.
+    PreviousProjectTab,
+    /// Close the active project tab.
+    CloseProjectTab,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -865,6 +925,9 @@ pub struct App {
     /// state for the most recent list/get operation. See
     /// `tui::app::state::project_tabs::ProjectCatalogState`.
     pub project_catalog: crate::tui::app::state::ProjectCatalogState,
+    /// Active-view switch coordinator (Milestone 2). Manages the
+    /// controlled switch transaction when switching between project tabs.
+    pub view_switch: crate::tui::app::state::ViewSwitchCoordinator,
 }
 
 /// What to do at TUI startup with respect to session loading. The TUI
@@ -1147,6 +1210,7 @@ impl App {
                 session_mutation_request: crate::tui::app::state::AsyncUiRequestState::new(),
                 session_messages_request: crate::tui::app::state::AsyncUiRequestState::new(),
                 test_run_request: crate::tui::app::state::AsyncUiRequestState::new(),
+                project_picker: None,
             },
             agent_state: AgentState {
                 snapshot: None,
@@ -1216,6 +1280,7 @@ impl App {
             plugin_manager: None, // initialized lazily after construction
             project_tabs,
             project_catalog: crate::tui::app::state::ProjectCatalogState::new(),
+            view_switch: crate::tui::app::state::ViewSwitchCoordinator::new(),
         }
     }
 
@@ -1589,6 +1654,7 @@ impl App {
                 session_mutation_request: crate::tui::app::state::AsyncUiRequestState::new(),
                 session_messages_request: crate::tui::app::state::AsyncUiRequestState::new(),
                 test_run_request: crate::tui::app::state::AsyncUiRequestState::new(),
+                project_picker: None,
             },
             agent_state: AgentState {
                 snapshot: None,
@@ -1651,6 +1717,7 @@ impl App {
             plugin_manager: None, // initialized lazily after construction
             project_tabs,
             project_catalog: crate::tui::app::state::ProjectCatalogState::new(),
+            view_switch: crate::tui::app::state::ViewSwitchCoordinator::new(),
         }
     }
 
@@ -2478,6 +2545,25 @@ impl App {
     }
 
     fn render_header(&mut self, frame: &mut Frame, area: Rect) {
+        // Split the header into a 1-row tab strip (bottom) and the
+        // header content (top). On narrow terminals (<80 cols) the
+        // tab strip is hidden to preserve prompt + label.
+        if area.height >= 3 && area.width >= 80 {
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(area.height - 1),
+                    Constraint::Length(1),
+                ])
+                .split(area);
+            self.render_tab_strip(frame, chunks[1]);
+            self.render_header_content(frame, chunks[0]);
+        } else {
+            self.render_header_content(frame, area);
+        }
+    }
+
+    fn render_header_content(&mut self, frame: &mut Frame, area: Rect) {
         let agent_name = &self.agent_state.agents[self.agent_state.current_agent].name;
         let model_short = self
             .agent_state
@@ -2770,6 +2856,67 @@ impl App {
         }
     }
 
+    fn render_tab_strip(&mut self, frame: &mut Frame, area: Rect) {
+        use crate::tui::app::state::project_picker::disambiguate_label;
+
+        let labels = self.project_tabs.display_labels();
+        let active_id = self.project_tabs.active_tab_id().cloned();
+        let total = labels.len();
+        if total == 0 {
+            return;
+        }
+
+        // Sliding visible window around the active tab, max 7 tabs.
+        const MAX_VISIBLE: usize = 7;
+        let active_idx = active_id
+            .as_ref()
+            .and_then(|id| labels.iter().position(|(tid, _)| tid == id))
+            .unwrap_or(0);
+        let window_start = active_idx.saturating_sub(MAX_VISIBLE / 2);
+        let window_end = (window_start + MAX_VISIBLE).min(total);
+        let window_start = window_end.saturating_sub(MAX_VISIBLE);
+
+        let mut spans: Vec<Span> = Vec::new();
+        if window_start > 0 {
+            spans.push(Span::styled(
+                "‹ ",
+                Style::default().fg(self.ui_state.theme.muted),
+            ));
+        }
+        for (i, (tid, label)) in labels.iter().enumerate().take(window_end).skip(window_start) {
+            let is_active = active_id.as_ref() == Some(tid);
+            let suffix_source = tid.as_str();
+            let label_str: &str = label.as_str();
+            let display = if labels.iter().filter(|(_, l)| l.as_str() == label_str).count() > 1 {
+                disambiguate_label(label_str, suffix_source)
+            } else {
+                label.clone()
+            };
+            let display = crate::tui::app::state::project_picker::truncate_tab_label(&display);
+
+            let prefix = if is_active { "▸" } else { " " };
+            let (fg, bg) = if is_active {
+                (self.ui_state.theme.primary, self.ui_state.theme.selection)
+            } else {
+                (self.ui_state.theme.foreground, self.ui_state.theme.background)
+            };
+            spans.push(Span::styled(
+                format!("{} {} ", prefix, display),
+                Style::default().fg(fg).bg(bg),
+            ));
+        }
+        if window_end < total {
+            spans.push(Span::styled(
+                "›",
+                Style::default().fg(self.ui_state.theme.muted),
+            ));
+        }
+
+        let line = Line::from(spans);
+        let paragraph = Paragraph::new(line);
+        frame.render_widget(paragraph, area);
+    }
+
     fn render_footer(&mut self, frame: &mut Frame, area: Rect) {
         let mut summary = self.build_status_summary();
 
@@ -2987,12 +3134,49 @@ impl App {
             return;
         }
 
+        // The project picker renders directly from `App::dialog_state.project_picker`
+        // because the picker state is owned by the App, not the
+        // focus manager.
+        if self.ui_state.dialog == Dialog::ProjectPicker {
+            self.render_project_picker(frame, area);
+            return;
+        }
+
         let popup_area = centered_rect(60, 50, area);
         frame.render_widget(Clear, popup_area);
 
         if !self.focus_manager.is_empty() {
             self.focus_manager
                 .render(frame, popup_area, &self.ui_state.theme);
+        }
+    }
+
+    fn render_project_picker(&mut self, frame: &mut Frame, area: Rect) {
+        use crate::tui::components::dialogs::project_picker::{
+            render_picker_body, ProjectPickerDialog,
+        };
+
+        let dialog_area = ProjectPickerDialog::picker_area(area);
+        frame.render_widget(Clear, dialog_area);
+
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(self.ui_state.theme.border))
+            .title(" Project Picker ");
+        let inner = block.inner(dialog_area);
+        frame.render_widget(block, dialog_area);
+
+        if let Some(picker) = self.dialog_state.project_picker.as_ref() {
+            let filtered =
+                picker.filtered_indices(&self.project_catalog.entries);
+            render_picker_body(
+                frame,
+                picker,
+                &filtered,
+                &self.project_catalog.entries,
+                inner,
+                &self.ui_state.theme,
+            );
         }
     }
 
@@ -3631,6 +3815,25 @@ impl App {
             TuiMsg::CopyMessage => self.copy_message(),
             TuiMsg::Quit => self.quit(),
             TuiMsg::ExternalEditor => self.open_external_editor(),
+            TuiMsg::OpenProjectPicker => self.open_project_picker(),
+            TuiMsg::NextProjectTab => {
+                if let Some(tx) = self.tui_cmd_tx.clone() {
+                    let _ = tx.try_send(TuiCommand::NextProjectTab);
+                }
+            }
+            TuiMsg::PreviousProjectTab => {
+                if let Some(tx) = self.tui_cmd_tx.clone() {
+                    let _ = tx.try_send(TuiCommand::PreviousProjectTab);
+                }
+            }
+            TuiMsg::CloseProjectTab => {
+                if let Some(tx) = self.tui_cmd_tx.clone() {
+                    let _ = tx.try_send(TuiCommand::CloseProjectTab);
+                }
+            }
+            TuiMsg::SelectProjectTabByIndex { index } => {
+                self.select_project_tab_by_visible_index(index);
+            }
             TuiMsg::UndoDelete => {
                 if let Some(session_id) = self.undo_session_id.take() {
                     if let Some(ref tx) = self.tui_cmd_tx {
@@ -3965,6 +4168,18 @@ impl App {
             Some(InputAction::SearchNext) => self.process_msg(TuiMsg::SearchNext),
             Some(InputAction::SearchPrev) => self.process_msg(TuiMsg::SearchPrev),
             Some(InputAction::ClearSearch) => self.process_msg(TuiMsg::ClearSearch),
+            Some(InputAction::OpenProjectPicker) => {
+                self.process_msg(TuiMsg::OpenProjectPicker);
+            }
+            Some(InputAction::NextProjectTab) => {
+                self.process_msg(TuiMsg::NextProjectTab);
+            }
+            Some(InputAction::PreviousProjectTab) => {
+                self.process_msg(TuiMsg::PreviousProjectTab);
+            }
+            Some(InputAction::CloseProjectTab) => {
+                self.process_msg(TuiMsg::CloseProjectTab);
+            }
             Some(InputAction::Command) => {
                 self.ui_state.command_mode = true;
                 self.prompt_state.prompt.insert_char(':');
@@ -4009,6 +4224,11 @@ impl App {
             self.ui_state.dialog,
             key.code
         );
+
+        if let Dialog::ProjectPicker = &self.ui_state.dialog {
+            self.handle_project_picker_key(key);
+            return;
+        }
 
         if let Dialog::Keybind = &self.ui_state.dialog {
             self.handle_keybind_key(key);
@@ -7900,6 +8120,371 @@ impl App {
         } else {
             self.ui_state.dialog = Dialog::None;
         }
+
+        // Project picker teardown: clear the picker state so stale
+        // completions are dropped at apply time.
+        if self.dialog_state.project_picker.is_some() {
+            self.dialog_state.project_picker = None;
+        }
+    }
+
+    /// Handle key events while the project picker dialog is open.
+    /// The picker is a bounded, modal dialog driven by its own phase
+    /// machine. Commit actions (open, focus, register) go through the
+    /// normal `TuiCommand` path; navigation is local to the picker
+    /// state.
+    fn handle_project_picker_key(&mut self, key: KeyEvent) {
+        use crate::tui::app::state::PickerPhase;
+
+        // Extract the current phase so we can release the borrow
+        // before calling the per-phase handlers (which need &mut self).
+        let phase = match self.dialog_state.project_picker.as_ref() {
+            Some(p) => p.phase.clone(),
+            None => {
+                self.close_dialog();
+                return;
+            }
+        };
+
+        match phase {
+            PickerPhase::Catalog => self.handle_picker_catalog_key(key),
+            PickerPhase::WorkspaceSelection => {
+                self.handle_picker_workspace_selection_key(key)
+            }
+            PickerPhase::RegistrationInput => {
+                self.handle_picker_registration_input_key(key)
+            }
+            PickerPhase::RegistrationConfirm => {
+                self.handle_picker_registration_confirm_key(key)
+            }
+            PickerPhase::Error => {
+                let _ = key; // suppress unused
+                if let Some(picker) = self.dialog_state.project_picker.as_mut() {
+                    picker.last_error = None;
+                    picker.reset_to_catalog();
+                }
+            }
+        }
+    }
+
+    fn handle_picker_catalog_key(&mut self, key: KeyEvent) {
+        use crossterm::event::{KeyCode, KeyModifiers};
+
+        let Some(picker) = self.dialog_state.project_picker.as_mut() else {
+            self.close_dialog();
+            return;
+        };
+
+        let filtered_len = picker.filtered_indices(&self.project_catalog.entries).len();
+
+        match key.code {
+            KeyCode::Esc => {
+                self.close_dialog();
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                picker.select_up(filtered_len);
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                picker.select_down(filtered_len);
+            }
+            KeyCode::Backspace => {
+                picker.query.pop();
+            }
+            KeyCode::Char(c) => {
+                if key.modifiers == KeyModifiers::NONE || key.modifiers == KeyModifiers::SHIFT {
+                    picker.query.push(c);
+                    picker.selected_row = 0;
+                }
+            }
+            KeyCode::Enter => {
+                self.commit_picker_catalog_selection();
+            }
+            KeyCode::Tab => {
+                // Toggle show_archived on Tab.
+                picker.show_archived = !picker.show_archived;
+                picker.selected_row = 0;
+            }
+            _ => {
+                // Ctrl+R enters registration input mode.
+                if key.code == KeyCode::Char('r') && key.modifiers == KeyModifiers::CONTROL {
+                    if picker.transport_local {
+                        picker.phase =
+                            crate::tui::app::state::PickerPhase::RegistrationInput;
+                        picker.registration_input.clear();
+                    } else {
+                        picker.last_error = Some(
+                            "Raw path registration requires a local TUI context".to_string(),
+                        );
+                        picker.phase = crate::tui::app::state::PickerPhase::Error;
+                    }
+                }
+            }
+        }
+    }
+
+    fn handle_picker_workspace_selection_key(&mut self, key: KeyEvent) {
+        use crossterm::event::{KeyCode, KeyModifiers};
+
+        let Some(picker) = self.dialog_state.project_picker.as_mut() else {
+            self.close_dialog();
+            return;
+        };
+
+        let workspace_count = picker
+            .cached_detail
+            .as_ref()
+            .map(|d| d.workspaces.len())
+            .unwrap_or(0);
+
+        match key.code {
+            KeyCode::Esc => {
+                picker.phase = crate::tui::app::state::PickerPhase::Catalog;
+                picker.selected_row = 0;
+                picker.cached_detail = None;
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                if picker.selected_row > 0 {
+                    picker.selected_row -= 1;
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if picker.selected_row + 1 < workspace_count {
+                    picker.selected_row += 1;
+                }
+            }
+            KeyCode::Enter => {
+                self.commit_picker_workspace_selection();
+            }
+            _ => {
+                if key.code == KeyCode::Char('c') && key.modifiers == KeyModifiers::CONTROL {
+                    picker.phase = crate::tui::app::state::PickerPhase::Catalog;
+                    picker.selected_row = 0;
+                    picker.cached_detail = None;
+                }
+            }
+        }
+    }
+
+    fn handle_picker_registration_input_key(&mut self, key: KeyEvent) {
+        use crossterm::event::{KeyCode, KeyModifiers};
+
+        let Some(picker) = self.dialog_state.project_picker.as_mut() else {
+            self.close_dialog();
+            return;
+        };
+
+        if !picker.transport_local {
+            // Remote context: cannot register raw paths. Bounce back
+            // to catalog with an error.
+            picker.last_error =
+                Some("Raw path registration requires a local TUI context".to_string());
+            picker.phase = crate::tui::app::state::PickerPhase::Error;
+            return;
+        }
+
+        match key.code {
+            KeyCode::Esc => {
+                picker.phase = crate::tui::app::state::PickerPhase::Catalog;
+                picker.registration_input.clear();
+            }
+            KeyCode::Backspace => {
+                picker.registration_input.pop();
+            }
+            KeyCode::Enter => {
+                self.commit_picker_registration_input();
+            }
+            KeyCode::Char(c) => {
+                if key.modifiers == KeyModifiers::NONE || key.modifiers == KeyModifiers::SHIFT {
+                    picker.registration_input.push(c);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_picker_registration_confirm_key(&mut self, key: KeyEvent) {
+        use crossterm::event::KeyCode;
+        let Some(picker) = self.dialog_state.project_picker.as_mut() else {
+            self.close_dialog();
+            return;
+        };
+        match key.code {
+            KeyCode::Esc => {
+                picker.phase = crate::tui::app::state::PickerPhase::Catalog;
+                picker.registration_input.clear();
+                picker.registration = Default::default();
+            }
+            KeyCode::Enter => {
+                self.commit_picker_registration_confirm();
+            }
+            _ => {}
+        }
+    }
+
+    fn commit_picker_catalog_selection(&mut self) {
+        use crate::tui::app::state::PickerPhase;
+
+        if !self.project_catalog_supported() {
+            self.messages_state
+                .toasts
+                .error("Project catalog unavailable on this daemon");
+            self.close_dialog();
+            return;
+        }
+
+        // Collect the selection from the picker before mutating it.
+        let snapshot = match self.dialog_state.project_picker.as_ref() {
+            Some(p) => {
+                let filtered = p.filtered_indices(&self.project_catalog.entries);
+                let actual = filtered
+                    .get(p.selected_row.min(filtered.len().saturating_sub(1)))
+                    .copied();
+                let entry = actual.and_then(|i| self.project_catalog.entries.get(i));
+                (
+                    entry.map(|e| e.project_id.clone()),
+                    p.catalog_generation,
+                )
+            }
+            None => return,
+        };
+        let (project_id, picker_generation) = snapshot;
+        let project_id = match project_id {
+            Some(id) => id,
+            None => return,
+        };
+
+        // Now begin the request generation on the picker state.
+        let (request_id, picker_request_id) = match self
+            .dialog_state
+            .project_picker
+            .as_mut()
+        {
+            Some(p) => {
+                let rid = p.begin_request();
+                (rid, rid)
+            }
+            None => return,
+        };
+
+        if let Some(tx) = self.tui_cmd_tx.clone() {
+            let _ = tx.try_send(TuiCommand::StartGetProject {
+                request_id,
+                project_id: project_id.clone(),
+                picker_generation,
+                picker_request_id,
+            });
+        }
+
+        // Pin the project_id; phase will be advanced by the apply.
+        if let Some(picker) = self.dialog_state.project_picker.as_mut() {
+            picker.pinned_project_id = Some(project_id);
+            picker.phase = PickerPhase::Catalog;
+        }
+    }
+
+    fn commit_picker_workspace_selection(&mut self) {
+        // Collect everything we need from the picker before opening
+        // it mutably.
+        let snapshot = match self.dialog_state.project_picker.as_ref() {
+            Some(p) => {
+                let project_id = p.pinned_project_id.clone();
+                let workspace_id = p
+                    .cached_detail
+                    .as_ref()
+                    .and_then(|d| d.workspaces.get(p.selected_row))
+                    .map(|w| w.workspace_id.clone());
+                let display_name = p
+                    .cached_detail
+                    .as_ref()
+                    .map(|d| d.project.display_name.clone())
+                    .unwrap_or_default();
+                (project_id, workspace_id, display_name)
+            }
+            None => return,
+        };
+        let (project_id, workspace_id, display_name) = snapshot;
+        let workspace_id = match workspace_id {
+            Some(id) => id,
+            None => return,
+        };
+        let project_id = match project_id {
+            Some(id) => id,
+            None => return,
+        };
+
+        crate::tui::commands::project_picker::open_or_focus_project(
+            self,
+            project_id,
+            Some(workspace_id.clone()),
+            Some(display_name),
+        );
+
+        // Start session list for the active tab.
+        if let Some(tab_id) = self.project_tabs.active_tab_id().cloned() {
+            if let Some(tx) = self.tui_cmd_tx.clone() {
+                let _ = tx.try_send(TuiCommand::StartListProjectSessions {
+                    tab_id,
+                    project_id: self.active_project_id().unwrap_or("").to_string(),
+                    workspace_id,
+                });
+            }
+        }
+
+        // Close the picker.
+        self.close_dialog();
+    }
+
+    fn commit_picker_registration_input(&mut self) {
+        use crate::tui::app::state::PickerPhase;
+
+        let path = match self
+            .dialog_state
+            .project_picker
+            .as_ref()
+            .map(|p| p.registration_input.clone())
+        {
+            Some(s) if !s.is_empty() => s,
+            _ => {
+                if let Some(picker) = self.dialog_state.project_picker.as_mut() {
+                    picker.last_error = Some("Path cannot be empty".to_string());
+                    picker.phase = PickerPhase::Error;
+                }
+                return;
+            }
+        };
+
+        // Display-only existence check (no mkdir).
+        if !std::path::Path::new(&path).exists() {
+            if let Some(picker) = self.dialog_state.project_picker.as_mut() {
+                picker.last_error = Some("Directory does not exist".to_string());
+                picker.phase = PickerPhase::Error;
+            }
+            return;
+        }
+
+        if let Some(tx) = self.tui_cmd_tx.clone() {
+            let _ = tx.try_send(TuiCommand::StartRegisterWorkspace { path });
+        }
+
+        // Move to RegistrationConfirm placeholder; the apply will
+        // transition to RegistrationInput on success so the user can
+        // fill in display name / description / tags.
+        if let Some(picker) = self.dialog_state.project_picker.as_mut() {
+            picker.phase = PickerPhase::RegistrationConfirm;
+        }
+    }
+
+    fn commit_picker_registration_confirm(&mut self) {
+        use crate::tui::app::state::PickerPhase;
+
+        // We need the workspace_id captured from the WorkspaceRegistered
+        // completion. Stash it on the picker during the apply. Until
+        // then, we cannot proceed.
+        if let Some(picker) = self.dialog_state.project_picker.as_mut() {
+            picker.last_error =
+                Some("Workspace registration must complete first".to_string());
+            picker.phase = PickerPhase::Error;
+        }
     }
 
     /// Apply a protocol-level [`UiEffect`] from a plugin response to
@@ -8299,6 +8884,47 @@ impl App {
         }
     }
 
+    /// Open the project picker dialog. Creates a fresh picker state
+    /// scoped to the current catalog snapshot. Does not require the
+    /// catalog to be loaded — the picker shows an explicit loading or
+    /// unsupported state until the first refresh completes.
+    pub fn open_project_picker(&mut self) {
+        let transport_local =
+            matches!(self.ui_state.mode, crate::tui::app::state::AppMode::Embedded);
+        let catalog_generation = self.project_catalog.list_request.request_id();
+        let picker = crate::tui::app::state::ProjectPickerState::new(
+            transport_local,
+            catalog_generation,
+        );
+        self.dialog_state.project_picker = Some(picker);
+        self.ui_state.dialog = Dialog::ProjectPicker;
+
+        // Trigger a fresh catalog refresh so the picker has current data.
+        if self.core_client.is_some() {
+            self.refresh_project_catalog();
+        }
+    }
+
+    /// Switch the active project tab to the one at the given visible
+    /// index in the bounded tab strip. Indices wrap. No-op when the
+    /// visible tab count differs from the underlying tab count (only
+    /// possible during rapid switch transitions).
+    pub fn select_project_tab_by_visible_index(&mut self, visible_index: usize) {
+        let visible_count = self.project_tabs.ordered().len();
+        if visible_count == 0 || visible_index >= visible_count {
+            return;
+        }
+        let ordered = self.project_tabs.ordered();
+        let Some(target) = ordered.get(visible_index) else {
+            return;
+        };
+        let target_id = target.tab_id.clone();
+        // Use NextProjectTab/PreviousProjectTab for cycling, but
+        // also support direct jump via open_or_focus_project path.
+        // Simplest: invoke the existing switch helper directly.
+        crate::tui::commands::project_picker::switch_active_tab(self, &target_id);
+    }
+
     pub fn open_dialog(&mut self, dialog: Dialog) {
         match dialog {
             Dialog::Session => {
@@ -8445,6 +9071,9 @@ impl App {
                 if let Some(ref dialog) = self.dialog_state.share_dialog {
                     self.focus_manager.push(Box::new(dialog.clone()));
                 }
+            }
+            Dialog::ProjectPicker => {
+                self.open_project_picker();
             }
             Dialog::Import => {
                 if self.dialog_state.import_dialog.is_none() {

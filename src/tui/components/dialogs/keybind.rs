@@ -94,6 +94,12 @@ impl KeybindDialog {
             ActionKey::StopTts,
             ActionKey::ToggleFullscreen,
             ActionKey::TogglePermissionMode,
+            ActionKey::GoToTop,
+            ActionKey::GoToBottom,
+            ActionKey::OpenProjectPicker,
+            ActionKey::NextProjectTab,
+            ActionKey::PreviousProjectTab,
+            ActionKey::CloseProjectTab,
         ]
     }
 
@@ -139,6 +145,10 @@ impl KeybindDialog {
             ActionKey::TogglePermissionMode => "TogglePermissionMode",
             ActionKey::GoToTop => "GoToTop",
             ActionKey::GoToBottom => "GoToBottom",
+            ActionKey::OpenProjectPicker => "OpenProjectPicker",
+            ActionKey::NextProjectTab => "NextProjectTab",
+            ActionKey::PreviousProjectTab => "PreviousProjectTab",
+            ActionKey::CloseProjectTab => "CloseProjectTab",
         }
     }
 

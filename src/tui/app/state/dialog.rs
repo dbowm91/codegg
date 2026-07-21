@@ -90,4 +90,6 @@ pub struct DialogState {
     /// Async request state for test run operations. Stale completions
     /// with a mismatched id are silently ignored.
     pub test_run_request: crate::tui::app::state::AsyncUiRequestState,
+    /// Project picker dialog state (Milestone 2).
+    pub project_picker: Option<crate::tui::app::state::ProjectPickerState>,
 }
