@@ -28,36 +28,37 @@ Canonical direction remains in:
 | Runtime assets and harness interoperability | closed | `plans/subsystems/runtime-assets-roadmap.md` | Milestone 4 — immutable runtime pinning and closure (closed) | — |
 | Provider connections and Eggpool | closed | `plans/subsystems/provider-connections-roadmap.md` | Milestone 5 — corrective lifecycle, rotation, health, and closure (closed) | — |
 | Project catalog and lazy discovery | closed | `plans/subsystems/project-catalog-roadmap.md` | Milestone 4 — protocol, server migration, and closure (closed) | — |
-| Multi-project TUI and sessions | active | `plans/subsystems/tui-project-sessions-roadmap.md` | Milestone 2 — project picker and tab navigation | Plan registered; ready for handoff |
-| Frontend-neutral session projections | active | `plans/subsystems/session-projections-roadmap.md` | Milestone 2 — scoped subscriptions and durable replay (conditionally closed at `8dc4b85`) | Library/crate implementation landed; daemon publication wiring, request dispatch, and live-event routing remain open. See `plans/closure/session-projections/002-status.md`. Milestone 3 blocked until those wiring items resolve. |
+| Multi-project TUI and sessions | active | `plans/subsystems/tui-project-sessions-roadmap.md` | Milestone 2 — project picker and tab navigation | No production implementation/closure is present on `main`; existing M2 plan remains ready |
+| Frontend-neutral session projections | active | `plans/subsystems/session-projections-roadmap.md` | Milestone 2 — corrective daemon integration and strict closure | Library layer landed at `8dc4b85`; corrective plan registered for publication, canonical stream identity, dispatch, routing, and rebind closure |
 
 ## Dependency-ready implementation plans
 
 | Subsystem | Milestone | Class | Plan | Baseline | Status |
 |---|---|---|---|---|---|
 | Multi-project TUI and sessions | 002 — project picker and tab navigation | capability | `plans/implementation/tui-project-sessions/002-project-picker-tab-navigation.md` | `1c37787` | ready |
+| Frontend-neutral session projections | 002 corrective — daemon integration and closure | correctness / integration | `plans/implementation/session-projections/002-corrective-daemon-integration-and-closure.md` | `8c23269` | ready |
 
 ## Active closure work
 
 | Subsystem | Milestone | Closure record | Status | Open findings |
 |---|---|---|---|---|
-| Frontend-neutral session projections | 002 — scoped subscriptions and durable replay | `plans/closure/session-projections/002-status.md` | conditionally closed at `8dc4b85` (library layer) | Daemon publication wiring; `CoreRequest::Projection*` dispatch; `CoreEvent::ProjectionStreamEvent` transport routing; session rebind revision threading through `binding_revision`. |
+| Frontend-neutral session projections | 002 — scoped subscriptions and durable replay | `plans/closure/session-projections/002-status.md` | conditionally closed at `8dc4b85` (library layer) | Central daemon publication; canonical non-empty stream context; real stream IDs; request dispatch; subscription-isolated live routing; session binding-revision invalidation |
 
 ## Blocked work
 
 | Work item | Blocker | Required resolution | Owner document |
 |---|---|---|---|
-| Multi-Project TUI 003 — project-correct event routing and lifecycle | Multi-Project TUI 002 is not yet closed | Close TUI 002 and consume its picker/tab/session navigation ownership without creating a second tab model | `plans/subsystems/tui-project-sessions-roadmap.md` |
-| Session Projections 003 — visibility, redaction, and artifact handles | Session Projections 002 library layer is conditionally closed (`plans/closure/session-projections/002-status.md`); the daemon publication wiring, request dispatch, live-event routing, and rebind-revision threading remain open follow-ups against `8dc4b85`. The principal capability filtering seam is still required. | Land the M2 daemon wiring follow-ups against the existing `ProjectionReplayHandle` (no new design required), then define the fail-closed visibility/redaction and bounded artifact-read policy around the durable replay authority | `plans/subsystems/session-projections-roadmap.md` |
+| Multi-Project TUI 003 — project-correct event routing and lifecycle | Multi-Project TUI 002 is not closed | Implement and strictly close TUI 002; consume its picker/tab/session navigation ownership without creating a second tab model | `plans/subsystems/tui-project-sessions-roadmap.md` |
+| Session Projections 003 — visibility, redaction, and artifact handles | Session Projections 002 is only conditionally closed; the principal capability filtering seam is also required | Implement `plans/implementation/session-projections/002-corrective-daemon-integration-and-closure.md`, strictly close M2, then verify/create the principal capability seam before registering M3 | `plans/subsystems/session-projections-roadmap.md` |
 
 ## Recently closed work
 
 | Subsystem | Milestone | Closure record | Closed at commit | Follow-up |
 |---|---|---|---|---|
-| Frontend-neutral session projections | 002 — scoped subscriptions and durable replay | `plans/closure/session-projections/002-status.md` | `8dc4b85` (implementation, library layer) | M2 wiring follow-ups (daemon publication, request dispatch, live-event routing, rebind revision); then Milestone 003 (visibility/redaction/artifact handles) |
-| Frontend-neutral session projections | 001 — projection contracts and canonical reducer | `plans/closure/session-projections/001-status.md` | `f6c8669` (implementation) | `plans/implementation/session-projections/002-scoped-subscriptions-durable-replay.md` |
+| Frontend-neutral session projections | 002 — scoped subscriptions and durable replay | `plans/closure/session-projections/002-status.md` | `8dc4b85` (library layer; conditional) | `plans/implementation/session-projections/002-corrective-daemon-integration-and-closure.md` |
+| Frontend-neutral session projections | 001 — projection contracts and canonical reducer | `plans/closure/session-projections/001-status.md` | `f6c8669` (implementation) | Milestone 2 library and corrective integration |
 | Multi-project TUI and sessions | 001 — project-aware state and catalog client | `plans/closure/tui-project-sessions/001-status.md` | `62e26b1` (implementation) | `plans/implementation/tui-project-sessions/002-project-picker-tab-navigation.md` |
-| Project catalog and lazy discovery | 004 — protocol, server migration, and closure | `plans/closure/project-catalog/004-status.md` | `d1e5b70` (implementation) | TUI 001 and Session Projections 001 are closed; their Milestone 002 handoffs are now registered |
+| Project catalog and lazy discovery | 004 — protocol, server migration, and closure | `plans/closure/project-catalog/004-status.md` | `d1e5b70` (implementation) | TUI and projection consumers use the closed catalog protocol |
 | Domain identity and compatibility | 004 — closure and legacy-removal criteria | `plans/closure/domain-identity/004-status.md` | `c4e9cf8` | Project Catalog 004 closed the remaining server locator criteria |
 | Domain identity and compatibility | 003 — corrective daemon and protocol adoption | `plans/closure/domain-identity/003-corrective-status.md` | `ec42dce` | Milestone 4 — closure and legacy-removal criteria |
 | Runtime assets and harness interoperability | 004 — immutable runtime pinning and closure | `plans/closure/runtime-assets/004-status.md` | `2293a11` | Project Catalog and TUI consumers use the closed generation/pinning contract |
