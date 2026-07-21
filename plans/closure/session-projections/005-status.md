@@ -192,3 +192,15 @@ out of scope; they are not silently promoted to implementation plans.
 - Moved M004 to strict closed status and added M005 to recently closed work.
 - Corrected stale implementation-plan headers for M001, M003, and M004 so
   closed closure records no longer appear blocked or ready.
+
+## 13. Post-closure follow-up (M006)
+
+The post-M005 transport audit identified a narrower delivery-ordering risk:
+critical projection control frames could be dropped after receiver installation
+while the connection still became live. M006 resolved that risk with bounded
+critical writer receipts, activation-after-delivery state transitions,
+rollback/unsubscribe cleanup, real Unix/WebSocket transport coverage, raw
+compatibility scoping, and bounded legacy `/ws` output. M006 closed at
+`8ca570fddc08eb9663b894f3190ae0ed0af2b98b` with its dedicated record at
+`plans/closure/session-projections/006-status.md`. M005's historical evidence
+and claims remain unchanged; no M005 finding was reopened.

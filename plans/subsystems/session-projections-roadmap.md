@@ -1,6 +1,6 @@
 # Frontend-Neutral Session Projections and Replay Roadmap
 
-Status: active — Milestone 006 atomic control delivery and transport verification hardening
+Status: closed — Milestone 006 atomic control delivery and transport verification hardening
 
 Long-term references:
 
@@ -50,6 +50,7 @@ It consumes stable project/session identities, daemon events, turn/tool/run/job 
 - **M3** landed through `bac73ce`: capability context, fail-closed disclosure/redaction, artifact handles, bounded reads, and negative persistence tests.
 - **M4 implementation** landed at `bdc2138`: shared projection controller, local TUI projection state, remote protocol additions, independent controller/reducer equivalence, and bounded frontend artifact caches.
 - **M5 corrective transport closure** landed at `4c751ff`: connection-local receiver ownership, exact stream identity, cursor resume, typed lifecycle operations, bounded queues, raw projection filtering, and disconnect cleanup.
+- **M6 atomic control delivery and transport verification hardening** landed at `8ca570f`: critical writer receipts, activation-after-delivery state transitions, deterministic rollback, real Unix/WebSocket isolation tests, raw compatibility scoping, and bounded legacy `/ws` output. Closure: `plans/closure/session-projections/006-status.md`.
 
 ### Post-M5 hardening finding
 
@@ -116,7 +117,7 @@ M4 frontend adoption/controller                          [closed]
 M5 remote transport isolation, resume, compatibility     [closed]
         |
         v
-M6 atomic control delivery and real transport evidence   [ready]
+M6 atomic control delivery and real transport evidence   [closed]
 ```
 
 M006 has no unmet design dependency. It consumes the M2 receiver seam, M4 controller, and M5 connection-local transport owner.
@@ -165,13 +166,17 @@ Accepted outcomes include connection-local ownership, exact stream/subscription 
 
 ### Milestone 6 — Atomic control delivery, transport verification, and raw compatibility hardening
 
-Status: ready for handoff.
+Status: closed.
 
 Implementation plan:
 
 - `plans/implementation/session-projections/006-atomic-control-delivery-transport-verification-hardening.md`
 
 Class: correctness / transport hardening / verification
+
+Implementation: `8ca570fddc08eb9663b894f3190ae0ed0af2b98b`
+
+Closure: `plans/closure/session-projections/006-status.md`
 
 Objective: make projection subscription establishment atomic with critical response delivery, prove the production adapters with real multi-client socket tests, scope raw compatibility traffic, and eliminate the remaining unbounded WebSocket queue.
 

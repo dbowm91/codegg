@@ -30,13 +30,13 @@ Canonical direction remains in:
 | Provider connections and Eggpool | closed | `plans/subsystems/provider-connections-roadmap.md` | Milestone 5 closed | — |
 | Project catalog and lazy discovery | closed | `plans/subsystems/project-catalog-roadmap.md` | Milestone 4 closed | — |
 | Multi-project TUI and sessions | closed | `plans/subsystems/tui-project-sessions-roadmap.md` | Milestones 001–004 closed | — |
-| Frontend-neutral session projections | active | `plans/subsystems/session-projections-roadmap.md` | Milestone 006 — atomic control delivery, transport verification, and raw compatibility hardening | Ready; post-M5 audit found activation-after-dropped-control risk, insufficient real-socket evidence, broad raw live filtering, and unbounded legacy `/ws` queue |
+| Frontend-neutral session projections | closed | `plans/subsystems/session-projections-roadmap.md` | Milestone 006 — atomic control delivery, transport verification, and raw compatibility hardening (closed) | — |
 
 ## Dependency-ready implementation plans
 
 | Subsystem | Milestone | Class | Plan | Baseline | Status |
 |---|---|---|---|---|---|
-| Frontend-neutral session projections | 006 — atomic control delivery, transport verification, and raw compatibility hardening | correctness / transport hardening / verification | `plans/implementation/session-projections/006-atomic-control-delivery-transport-verification-hardening.md` | `0ee134e` | ready |
+| — | — | — | — | — | — |
 
 ## Active closure work
 
@@ -47,7 +47,7 @@ Canonical direction remains in:
 
 | Work item | Blocker | Required resolution | Owner document |
 |---|---|---|---|
-| Return Session Projections roadmap to strict closed status | M006 transport-control and evidence findings | Implement atomic critical delivery, real socket verification, raw compatibility scoping, and legacy `/ws` bounding; then accept an M006 closure record | `plans/implementation/session-projections/006-atomic-control-delivery-transport-verification-hardening.md` |
+| — | — | — | — |
 
 ## Deferred unregistered product work
 
@@ -63,6 +63,7 @@ These are not dependency-ready correctness plans and remain outside the active h
 
 | Subsystem | Milestone | Closure record | Closed at commit | Follow-up |
 |---|---|---|---|---|
+| Frontend-neutral session projections | 006 — atomic control delivery, transport verification, and raw compatibility hardening | `plans/closure/session-projections/006-status.md` | `8ca570fddc08eb9663b894f3190ae0ed0af2b98b` | — |
 | Frontend-neutral session projections | 005 — remote transport isolation, resume, and compatibility closure | `plans/closure/session-projections/005-status.md` | `4c751ff` | M006 hardens atomic control delivery and real transport evidence without reopening storage/replay semantics |
 | Frontend-neutral session projections | 004 — frontend adoption and compatibility | `plans/closure/session-projections/004-status.md` | `4c751ff` (strictly closed after corrective transport closure) | — |
 | Frontend-neutral session projections | 003 — visibility, redaction, and artifact handles | `plans/closure/session-projections/003-status.md` | `bac73ce` | — |
