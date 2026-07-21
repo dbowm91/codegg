@@ -42,11 +42,11 @@ pub async fn run_attach(url: &str, token: Option<&str>) -> Result<(), ClientErro
 
 3. **WebSocket Connection** - 30-second timeout per attempt, up to 3 retries with exponential backoff (1s, 2s, 4s) using `tokio_tungstenite::connect_async()`
 
-4. **Resume Handshake** - Immediately sends `TuiMessage::Resume { from_event_seq: 0 }` after connect so the server can replay buffered events when needed.
+4. **Capability Handshake** - Sends `TuiMessage::ProjectionCapabilities` first. The server may select projection-primary mode; the legacy `Resume { from_event_seq: 0 }` marker is still sent as a bounded raw-compatibility fallback. Once a projection subscription exists, reconnect callers use the persisted `ProjectionCursor` through `ProjectionResume` rather than the raw event sequence.
 
 5. **Channel Setup**:
    - `event_tx/rx` - Receives JSON events from server WebSocket → TUI
-   - `out_tx/rx` - Sends TuiMessage from TUI → server WebSocket
+   - `out_tx/rx` - Sends TuiMessage from TUI → server WebSocket (the server-side projection queues are bounded and ownership-aware)
    - Event handling uses `catch_unwind` to prevent panics in spawned tasks from crashing the connection
 
 6. **Two Background Tasks**:

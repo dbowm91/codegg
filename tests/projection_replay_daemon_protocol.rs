@@ -230,3 +230,63 @@ async fn unsubscribe_removes_subscription() {
     service.unsubscribe(&sub_id).await.unwrap();
     assert_eq!(service.subscriptions().active_count(), 0);
 }
+
+#[tokio::test]
+async fn resume_rejects_a_cursor_for_another_stream() {
+    let (_seam, service) = test_seam_and_service().await;
+    let request = ProjectionSubscriptionRequest {
+        scope: ProjectionStreamKind::Session,
+        scope_id: "sess-1".into(),
+        cursor: None,
+        projection_version: 1,
+    };
+    let subscription = service
+        .subscribe_session("sess-1", "proj-1", None, "client-1", &request)
+        .await
+        .unwrap();
+    let other = service
+        .store()
+        .get_or_create_project_stream("proj-2")
+        .await
+        .unwrap()
+        .0;
+    let outcome = service
+        .resume(
+            &subscription,
+            &ProjectionCursor {
+                stream_id: other.stream_id,
+                event_seq: 0,
+                projection_version: 1,
+            },
+            false,
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        outcome,
+        codegg_core::projection_replay::service::ResumeOutcome::Resync {
+            reason: codegg_protocol::projection::replay::ProjectionResyncReason::StreamMismatch,
+            ..
+        }
+    ));
+}
+
+#[tokio::test]
+async fn unsubscribe_drops_a_pending_receiver() {
+    let (_seam, service) = test_seam_and_service().await;
+    let request = ProjectionSubscriptionRequest {
+        scope: ProjectionStreamKind::Project,
+        scope_id: "proj-pending".into(),
+        cursor: None,
+        projection_version: 1,
+    };
+    let subscription = service
+        .subscribe_project("proj-pending", "client-1", &request)
+        .await
+        .unwrap();
+    service.unsubscribe(&subscription).await.unwrap();
+    assert!(service
+        .take_subscription_receiver(&subscription)
+        .await
+        .is_none());
+}

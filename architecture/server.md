@@ -181,6 +181,16 @@ The primary WebSocket for remote TUI communication. Handles bidirectional TuiMes
 | `QuestionResponse` | `id: String`, `answers: serde_json::Value` | Question answers |
 | `SessionInfo` | `id: String`, `model: String` | Session metadata announcement |
 
+Projection-primary `/tui` connections first send `ProjectionCapabilities` and
+then use the typed lifecycle surface: `ProjectionSubscribe`,
+`ProjectionResume` (with a `ProjectionCursor`), `ProjectionAck`,
+`ProjectionUnsubscribe`, `ProjectionSubscriptionStatus`, and bounded
+`ProjectionArtifactListRequest` / `ProjectionArtifactReadRequest` operations.
+The server replies with typed snapshot, replay, resync, acknowledgement,
+unsubscribe, status, artifact, and compatibility-diagnostic messages. A
+projection resync may have `subscription_id: null` when the cursor cannot be
+bound; transports must never synthesize an ID.
+
 **Server → Client Messages:**
 | Message | Fields | Purpose |
 |---------|--------|---------|
@@ -213,25 +223,28 @@ model operations after a local create completes.
 3. Compare against `CODEGG_SERVER_TOKEN` env var using constant-time comparison
 4. Return 401 Unauthorized if validation fails
 
-## Replay Buffer
+## Projection transport ownership and queueing
 
-The `/tui` WebSocket maintains a bounded in-memory event buffer for client reconnection:
+Projection live delivery is connection-local across the Unix socket, `/core`,
+and `/tui` WebSocket adapters. Each connection owns a bounded registry of
+daemon-issued `ProjectionSubscriptionId` values, the authoritative descriptor
+(including the persisted `ProjectionStreamId`), cursor, retention floor,
+forwarder task, reconnect generation, and cancellation token. The transport
+calls `take_subscription_receiver` exactly once; no daemon-wide event
+broadcast is allowed to carry `ProjectionStreamEvent`.
 
-```rust
-static TUI_EVENT_BUFFER: Lazy<StdMutex<VecDeque<(u64, TuiMessage)>>> =
-    Lazy::new(|| StdMutex::new(VecDeque::with_capacity(1024)));
-const TUI_EVENT_BUFFER_MAX: usize = 1024;
-```
+WebSocket control/live messages use a bounded queue of 256 entries. Raw
+compatibility traffic has its own bounded queue and is lower priority than
+projection control/live traffic. A full projection queue marks that
+subscription `SubscriberLagged`, sends typed resync when possible, stops the
+forwarder, and does not advance acknowledgements. Connections are capped at
+32 projection subscriptions, 8 concurrent artifact reads, and 32 diagnostics.
 
-**Event Sequence Numbers:**
-- Monotonically increasing 64-bit counter via `TUI_EVENT_SEQ`
-- Assigned when events are recorded: `record_tui_event(event_seq, msg)`
-
-**Replay Flow (Resume):**
-1. Client sends `Resume { from_event_seq }` after reconnection
-2. Server calls `replay_tui_events(from_event_seq)` to find buffered events where `seq > from_event_seq`
-3. Events are wrapped in `EventEnvelope` and sent to client
-4. Server then sends `ResyncRequired` with current pending permissions/questions
+Disconnect, unsubscribe, capability downgrade, and server shutdown cancel and
+await owned forwarders, then issue daemon-owned unsubscribe requests. Replay
+history remains durable. Legacy `Resume { from_event_seq }` remains available
+only for raw compatibility clients; projection-primary clients use the
+stream-scoped cursor operation.
 
 **Lagged Event Handling:**
 - If `GlobalEventBus` receiver lags, server sends `ResyncRequired` with `reason: Some("lagged".to_string())`

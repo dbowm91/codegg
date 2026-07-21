@@ -23,7 +23,7 @@ use codegg_core::workspace_services::{
     ProductionWorkspaceServicesFactory, WorkspaceServiceRegistry,
 };
 use codegg_protocol::projection::replay::{
-    ProjectionStreamDescriptor, ProjectionStreamId, ProjectionStreamKind,
+    ProjectionResyncReason, ProjectionStreamKind, ProjectionSubscriptionRequest,
 };
 
 pub struct CoreDaemon {
@@ -1508,6 +1508,30 @@ impl CoreDaemon {
         &self,
         request: RequestEnvelope<CoreRequest>,
     ) -> Result<CoreResponse, AppError> {
+        self.handle_request_with_client(request, None).await
+    }
+
+    /// Handle a request on behalf of one trusted transport connection.
+    ///
+    /// The connection identity is assigned by the transport after
+    /// authentication/handshake. It is deliberately not part of the
+    /// client-controlled projection DTOs, so projection ownership cannot be
+    /// forged by copying another subscription ID onto a request.
+    pub async fn handle_request_for_client(
+        &self,
+        request: RequestEnvelope<CoreRequest>,
+        client_id: &str,
+    ) -> Result<CoreResponse, AppError> {
+        self.handle_request_with_client(request, Some(client_id))
+            .await
+    }
+
+    async fn handle_request_with_client(
+        &self,
+        request: RequestEnvelope<CoreRequest>,
+        trusted_client_id: Option<&str>,
+    ) -> Result<CoreResponse, AppError> {
+        let trusted_client_id = trusted_client_id.unwrap_or("local-daemon");
         match request.payload {
             CoreRequest::AssetRefresh { request } => {
                 let Some(resolver) = self.context_resolver.as_ref() else {
@@ -5210,11 +5234,11 @@ impl CoreDaemon {
                     });
                 }
                 let service = seam.service();
-                let client_id = request.scope_id.clone();
+                let client_id = trusted_client_id;
 
                 // Resolve canonical binding for Session scope so the
                 // subscription lands on the same stream publications use.
-                let (resolved_project, resolved_workspace, resolved_revision) =
+                let (resolved_project, resolved_workspace, _resolved_revision) =
                     if matches!(request.scope, ProjectionStreamKind::Session) {
                         if let Some(storage) = seam.project_storage() {
                             match storage.session_binding(&request.scope_id).await {
@@ -5263,40 +5287,34 @@ impl CoreDaemon {
 
                 match sub_id {
                     Ok(sub_id) => {
-                        let descriptor = match request.scope {
+                        let descriptor_result = match request.scope {
                             ProjectionStreamKind::Session => service
                                 .store()
                                 .lookup_session_stream(&request.scope_id, &resolved_project)
                                 .await
-                                .ok()
-                                .flatten()
-                                .unwrap_or_else(|| ProjectionStreamDescriptor {
-                                    stream_id: ProjectionStreamId(request.scope_id.clone()),
-                                    kind: ProjectionStreamKind::Session,
-                                    project_id: resolved_project.clone(),
-                                    workspace_id: resolved_workspace.clone(),
-                                    session_id: Some(request.scope_id.clone()),
-                                    projection_version: 1,
-                                    retention_floor_seq: 0,
-                                    high_water_seq: 0,
-                                    latest_checkpoint_seq: None,
+                                .map_err(|e| e.to_string())
+                                .and_then(|descriptor| {
+                                    descriptor.ok_or_else(|| {
+                                        "projection stream descriptor missing after subscribe"
+                                            .to_string()
+                                    })
                                 }),
                             ProjectionStreamKind::Project => service
                                 .store()
                                 .get_or_create_project_stream(&request.scope_id)
                                 .await
-                                .map(|(d, _)| d)
-                                .unwrap_or_else(|_| ProjectionStreamDescriptor {
-                                    stream_id: ProjectionStreamId(request.scope_id.clone()),
-                                    kind: ProjectionStreamKind::Project,
-                                    project_id: request.scope_id.clone(),
-                                    workspace_id: None,
-                                    session_id: None,
-                                    projection_version: 1,
-                                    retention_floor_seq: 0,
-                                    high_water_seq: 0,
-                                    latest_checkpoint_seq: None,
-                                }),
+                                .map(|(descriptor, _)| descriptor)
+                                .map_err(|e| e.to_string()),
+                        };
+                        let descriptor = match descriptor_result {
+                            Ok(descriptor) => descriptor,
+                            Err(message) => {
+                                let _ = service.unsubscribe(&sub_id).await;
+                                return Ok(CoreResponse::Error {
+                                    code: "projection_descriptor_missing".into(),
+                                    message,
+                                });
+                            }
                         };
                         let snapshot = codegg_protocol::projection::replay::ProjectionSnapshotBundle::One {
                             snapshot: Box::new(
@@ -5338,20 +5356,107 @@ impl CoreDaemon {
                     });
                 };
                 let service = seam.service();
-                // Look up the subscription from the cursor's stream to find its sub_id.
-                // For now, iterate subscriptions to find one matching this stream.
-                let sub_id_opt = service
+                let descriptor = match service
+                    .store()
+                    .lookup_stream_by_id(cursor.stream_id.as_str())
+                    .await
+                {
+                    Ok(Some(descriptor)) => descriptor,
+                    Ok(None) => {
+                        return Ok(CoreResponse::ProjectionResyncRequired {
+                            subscription_id: None,
+                            reason: ProjectionResyncReason::StreamMismatch,
+                            descriptor: None,
+                            requested_cursor: Some(cursor),
+                            snapshot: None,
+                        });
+                    }
+                    Err(e) => {
+                        return Ok(CoreResponse::Error {
+                            code: "projection_resume_failed".into(),
+                            message: e.to_string(),
+                        });
+                    }
+                };
+
+                // Reuse only a subscription owned by this trusted connection.
+                // A reconnect has no active entry, so establish a fresh
+                // daemon-issued subscription for the persisted stream before
+                // replay is evaluated.
+                let sub_id = service
                     .subscriptions()
                     .by_id()
                     .iter()
-                    .find(|e| e.value().stream_id == cursor.stream_id)
-                    .map(|e| e.key().clone());
-
-                let Some(sub_id) = sub_id_opt else {
+                    .find(|entry| {
+                        entry.value().stream_id == cursor.stream_id
+                            && entry.value().client_id == trusted_client_id
+                    })
+                    .map(|entry| entry.key().clone());
+                if sub_id.is_none()
+                    && service.subscriptions().by_id().iter().any(|entry| {
+                        entry.value().stream_id == cursor.stream_id
+                            && entry.value().client_id != trusted_client_id
+                    })
+                {
                     return Ok(CoreResponse::Error {
-                        code: "subscription_not_found".into(),
-                        message: "no active subscription for this stream".into(),
+                        code: "projection_resume_not_owned".into(),
+                        message: "the projection stream is actively owned by another connection"
+                            .into(),
                     });
+                }
+                let sub_id = if let Some(sub_id) = sub_id {
+                    sub_id
+                } else {
+                    let scope_id = match descriptor.kind {
+                        ProjectionStreamKind::Session => descriptor.session_id.clone(),
+                        ProjectionStreamKind::Project => Some(descriptor.project_id.clone()),
+                    };
+                    let Some(scope_id) = scope_id else {
+                        return Ok(CoreResponse::ProjectionResyncRequired {
+                            subscription_id: None,
+                            reason: ProjectionResyncReason::ScopeMismatch,
+                            descriptor: Some(descriptor),
+                            requested_cursor: Some(cursor),
+                            snapshot: None,
+                        });
+                    };
+                    let request = ProjectionSubscriptionRequest {
+                        scope: descriptor.kind,
+                        scope_id,
+                        cursor: Some(cursor.clone()),
+                        projection_version: cursor.projection_version,
+                    };
+                    let result = match descriptor.kind {
+                        ProjectionStreamKind::Session => {
+                            service
+                                .subscribe_session(
+                                    descriptor.session_id.as_deref().unwrap_or_default(),
+                                    &descriptor.project_id,
+                                    descriptor.workspace_id.as_deref(),
+                                    trusted_client_id,
+                                    &request,
+                                )
+                                .await
+                        }
+                        ProjectionStreamKind::Project => {
+                            service
+                                .subscribe_project(
+                                    &descriptor.project_id,
+                                    trusted_client_id,
+                                    &request,
+                                )
+                                .await
+                        }
+                    };
+                    match result {
+                        Ok(sub_id) => sub_id,
+                        Err(e) => {
+                            return Ok(CoreResponse::Error {
+                                code: "projection_resume_subscribe_failed".into(),
+                                message: e.to_string(),
+                            });
+                        }
+                    }
                 };
 
                 match service
@@ -5362,57 +5467,30 @@ impl CoreDaemon {
                         events,
                         current_high_water,
                         next_cursor,
-                    }) => {
-                        let descriptor = service
-                            .store()
-                            .lookup_stream_by_id(cursor.stream_id.as_str())
-                            .await
-                            .ok()
-                            .flatten()
-                            .unwrap_or_else(|| ProjectionStreamDescriptor {
-                                stream_id: cursor.stream_id.clone(),
-                                kind: ProjectionStreamKind::Session,
-                                project_id: String::new(),
-                                workspace_id: None,
-                                session_id: None,
-                                projection_version: 1,
-                                retention_floor_seq: 0,
-                                high_water_seq: current_high_water,
-                                latest_checkpoint_seq: None,
-                            });
-                        Ok(CoreResponse::ProjectionReplay {
-                            batch: codegg_protocol::projection::replay::ProjectionReplayBatch {
-                                descriptor,
-                                events,
-                                snapshot: None,
-                                replay_start_seq: cursor.event_seq + 1,
-                                replay_end_seq: next_cursor.event_seq,
-                                current_high_water,
-                                truncation_flag: false,
-                                next_cursor: if next_cursor.event_seq < current_high_water {
-                                    Some(next_cursor)
-                                } else {
-                                    None
-                                },
+                    }) => Ok(CoreResponse::ProjectionReplay {
+                        subscription_id: Some(sub_id.clone()),
+                        batch: codegg_protocol::projection::replay::ProjectionReplayBatch {
+                            descriptor,
+                            events,
+                            snapshot: None,
+                            replay_start_seq: cursor.event_seq + 1,
+                            replay_end_seq: next_cursor.event_seq,
+                            current_high_water,
+                            truncation_flag: false,
+                            next_cursor: if next_cursor.event_seq < current_high_water {
+                                Some(next_cursor)
+                            } else {
+                                None
                             },
-                        })
-                    }
+                        },
+                    }),
                     Ok(codegg_core::projection_replay::service::ResumeOutcome::Empty {
                         current_high_water,
                         next_cursor,
                     }) => Ok(CoreResponse::ProjectionReplay {
+                        subscription_id: Some(sub_id.clone()),
                         batch: codegg_protocol::projection::replay::ProjectionReplayBatch {
-                            descriptor: ProjectionStreamDescriptor {
-                                stream_id: cursor.stream_id.clone(),
-                                kind: ProjectionStreamKind::Session,
-                                project_id: String::new(),
-                                workspace_id: None,
-                                session_id: None,
-                                projection_version: 1,
-                                retention_floor_seq: 0,
-                                high_water_seq: current_high_water,
-                                latest_checkpoint_seq: None,
-                            },
+                            descriptor,
                             events: vec![],
                             snapshot: None,
                             replay_start_seq: cursor.event_seq + 1,
@@ -5428,6 +5506,7 @@ impl CoreDaemon {
                         requested_cursor,
                         snapshot,
                     }) => Ok(CoreResponse::ProjectionResyncRequired {
+                        subscription_id: Some(sub_id),
                         reason,
                         descriptor,
                         requested_cursor,
@@ -5452,6 +5531,7 @@ impl CoreDaemon {
                     .subscriptions()
                     .by_id()
                     .get(&ack.subscription_id)
+                    .filter(|entry| entry.value().client_id == trusted_client_id)
                     .map(|e| e.key().clone());
 
                 let Some(sub_id) = sub_id_opt else {
@@ -5490,6 +5570,18 @@ impl CoreDaemon {
                     });
                 };
                 let service = seam.service();
+                let owned = service
+                    .subscriptions()
+                    .by_id()
+                    .get(&subscription_id)
+                    .map(|entry| entry.value().client_id == trusted_client_id)
+                    .unwrap_or(false);
+                if !owned {
+                    return Ok(CoreResponse::Error {
+                        code: "projection_subscription_not_owned".into(),
+                        message: "projection subscription is not owned by this connection".into(),
+                    });
+                }
                 match service.unsubscribe(&subscription_id).await {
                     Ok(()) => Ok(CoreResponse::ProjectionUnsubscribed { subscription_id }),
                     Err(e) => Ok(CoreResponse::Error {
@@ -5499,50 +5591,15 @@ impl CoreDaemon {
                 }
             }
             CoreRequest::ProjectionSnapshotGet { scope, scope_id } => {
-                let snapshot = match scope {
-                    ProjectionStreamKind::Session => {
-                        codegg_protocol::projection::replay::ProjectionSnapshotBundle::One {
-                            snapshot: Box::new(
-                                codegg_protocol::projection::snapshot::SessionProjectionSnapshot::empty(
-                                    &scope_id,
-                                    "",
-                                    "",
-                                ),
-                            ),
-                        }
-                    }
-                    ProjectionStreamKind::Project => {
-                        codegg_protocol::projection::replay::ProjectionSnapshotBundle::BoundedSessionList {
-                            sessions: vec![],
-                            truncated: false,
-                        }
-                    }
-                };
-                Ok(CoreResponse::ProjectionReplay {
-                    batch: codegg_protocol::projection::replay::ProjectionReplayBatch {
-                        descriptor: ProjectionStreamDescriptor {
-                            stream_id: ProjectionStreamId(scope_id.clone()),
-                            kind: scope,
-                            project_id: scope_id.clone(),
-                            workspace_id: None,
-                            session_id: if matches!(scope, ProjectionStreamKind::Session) {
-                                Some(scope_id.clone())
-                            } else {
-                                None
-                            },
-                            projection_version: 1,
-                            retention_floor_seq: 0,
-                            high_water_seq: 0,
-                            latest_checkpoint_seq: None,
-                        },
-                        events: vec![],
-                        snapshot: Some(snapshot),
-                        replay_start_seq: 0,
-                        replay_end_seq: 0,
-                        current_high_water: 0,
-                        truncation_flag: false,
-                        next_cursor: None,
-                    },
+                // This legacy request has no project/session binding context
+                // with which to resolve the canonical persisted stream. Do
+                // not manufacture a stream ID from the caller's scope ID;
+                // callers must use ProjectionSubscribe/ProjectionResume so
+                // the replay store remains the identity authority.
+                let _ = (scope, scope_id);
+                Ok(CoreResponse::Error {
+                    code: "projection_snapshot_requires_subscription".into(),
+                    message: "projection snapshots require an authoritative subscription".into(),
                 })
             }
             // ── Session Projections M3: Artifact Read Protocol ────────────────

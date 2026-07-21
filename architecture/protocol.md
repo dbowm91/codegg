@@ -85,7 +85,7 @@ and exercised by `cargo test -p codegg-protocol` and
 pub const PROTOCOL_VERSION: u32 = 2;
 
 // crates/codegg-protocol/src/tui.rs
-pub const REMOTE_TUI_PROTOCOL_VERSION: u32 = 3;
+pub const REMOTE_TUI_PROTOCOL_VERSION: u32 = 5;
 
 // crates/codegg-protocol/src/plugin.rs
 pub const PLUGIN_PROTOCOL_VERSION: u32 = 1;
@@ -98,7 +98,7 @@ pub const PROJECTION_CAPABILITY: &str = "session_projection.v1";
 
 **Version history:**
 - `PROTOCOL_VERSION`: bumped 1 → 2 in Phase 15 to accommodate `CoreEvent::PluginUiEffect { envelope: UiEffectEnvelope }`.
-- `REMOTE_TUI_PROTOCOL_VERSION`: bumped 2 → 3 in Phase 15 to accommodate `TuiMessage::PluginUiEffect { envelope: UiEffectEnvelope }`.
+- `REMOTE_TUI_PROTOCOL_VERSION`: bumped 2 → 3 in Phase 15 for typed plugin UI envelopes, 3 → 4 for the additive projection surface, and 4 → 5 for connection-owned projection resume, lifecycle, artifact, and compatibility diagnostics. Legacy raw variants remain available during the compatibility window.
 - `PLUGIN_PROTOCOL_VERSION`: stable at 1; plugin wire format is independent of core/TUI protocol versions.
 - `PROJECTION_PROTOCOL_VERSION`: initial value 1, introduced with the
   frontend-neutral session projection contract (Session Projections
@@ -474,7 +474,10 @@ Server (Axum)
 The protocol uses explicit versioning constants in `crates/codegg-protocol/src/`:
 
 - `PROTOCOL_VERSION = 2` in `core.rs` (core request/response/event envelopes)
-- `REMOTE_TUI_PROTOCOL_VERSION = 3` in `tui.rs` (remote TUI WebSocket protocol)
+- `REMOTE_TUI_PROTOCOL_VERSION = 5` in `tui.rs` (remote TUI WebSocket protocol;
+  v5 adds connection-owned projection resume, unsubscribe/status, bounded
+  artifact operations, typed acknowledgement outcomes, and compatibility
+  diagnostics)
 - `PLUGIN_PROTOCOL_VERSION = 1` in `plugin.rs` (plugin wire format)
 
 Envelopes (`RequestEnvelope`, `EventEnvelope`) include `protocol_version` to detect mismatches between client and server. See "Phase 15: Plugin UI Multi-Frontend" below for the rationale behind the version bumps.

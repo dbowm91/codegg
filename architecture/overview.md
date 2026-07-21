@@ -434,4 +434,5 @@ python3 scripts/check_git_forbidden_patterns.py  # git secret boundary + policy 
 python3 scripts/check_builtin_agents.py          # verify TOML matches generated.rs
 python3 scripts/check-tokio-test-flavors.py      # regression guard for bare #[tokio::test]
 python3 scripts/generate_builtin_agents.py --check  # agent asset staleness + schema validation
+python3 scripts/check_projection_transport_isolation.py # projection raw-broadcast/identity guard
 ```

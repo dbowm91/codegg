@@ -1,4 +1,5 @@
 pub mod daemon_socket;
+pub mod projection;
 pub mod socket;
 pub mod stdio;
 

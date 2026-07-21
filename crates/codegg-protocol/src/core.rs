@@ -413,10 +413,18 @@ pub enum CoreResponse {
     },
     /// Ordered replay batch returned on resume or subscribe catch-up.
     ProjectionReplay {
+        /// The daemon-issued subscription that owns the replay/live handoff.
+        /// This is optional for compatibility with older daemon responses.
+        #[serde(default)]
+        subscription_id: Option<crate::projection::replay::ProjectionSubscriptionId>,
         batch: crate::projection::replay::ProjectionReplayBatch,
     },
     /// Resync required with reason and optional snapshot bundle.
     ProjectionResyncRequired {
+        /// The daemon-issued subscription associated with this outcome, when
+        /// resume created a fresh live subscription.
+        #[serde(default)]
+        subscription_id: Option<crate::projection::replay::ProjectionSubscriptionId>,
         reason: crate::projection::replay::ProjectionResyncReason,
         descriptor: Option<crate::projection::replay::ProjectionStreamDescriptor>,
         requested_cursor: Option<crate::projection::replay::ProjectionCursor>,

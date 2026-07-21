@@ -1263,7 +1263,7 @@ The remote TUI uses an **event/state-driven** protocol. The daemon sends typed s
 
 ### Protocol Version
 
-The remote TUI protocol version is defined as `REMOTE_TUI_PROTOCOL_VERSION = 3` in `crates/codegg-protocol/src/tui.rs`. Handshakes should reject incompatible major versions.
+The remote TUI protocol version is defined as `REMOTE_TUI_PROTOCOL_VERSION = 5` in `crates/codegg-protocol/src/tui.rs`. Projection-capable clients negotiate the additive projection lifecycle before using stream-scoped operations; incompatible clients remain on bounded raw compatibility.
 
 ### State Snapshots
 
@@ -1288,6 +1288,24 @@ The following Phase 8 items are defined in the plan but deferred for future work
 - **Structured RemoteTuiError** — Plan specifies `{ code, message, recoverable }` fields. Current implementation uses `TuiMessage::Error { message: String }` with code embedded in the message string.
 - **Server-side input forwarding** — `Input`, `KeyDown`, `MouseClick`, `Resize` handlers in the server WebSocket are logging-only stubs. Remote user input should eventually convert into the same input/command paths as local input.
 - **State delta protocol** — `RemoteTuiStateDelta` is not implemented. Snapshot-only is acceptable per the plan.
+
+## Projection-primary remote state
+
+Projection-primary remote TUI connections are reducer-driven. The server
+retains connection-local ownership for each daemon-issued subscription and
+sends the canonical snapshot/cursor followed by live envelopes from that
+subscription's bounded receiver. `ProjectionEvent` carries the persisted
+stream ID separately from the subscription ID; v4 event fixtures without the
+additive stream field remain decodable.
+
+Reconnect uses `ProjectionResume { cursor, include_snapshot_if_resync }` and
+returns a replay batch or typed `ProjectionResync` (including
+`SubscriberLagged`, `HistoryExpired`, stream, scope, and version failures).
+Acknowledgement, unsubscribe, status, and artifact list/range reads are
+explicit typed operations and are rejected unless the connection owns the
+subscription/project scope. Legacy `Resume { from_event_seq }` and raw session
+messages remain available only as bounded compatibility traffic and cannot
+mutate projection-primary state.
 
 ## Testing
 

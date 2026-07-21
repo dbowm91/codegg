@@ -9,8 +9,9 @@
 /// `ProjectionSubscribe`, `ProjectionSnapshot`, `ProjectionReplay`,
 /// `ProjectionResync`, and `ProjectionAck` variants. Old clients
 /// safely ignore unknown `#[serde(tag = "type")]` variants, so this
-/// is informational.
-pub const REMOTE_TUI_PROTOCOL_VERSION: u32 = 4;
+/// is informational. Version 5 adds connection-owned projection resume,
+/// lifecycle, artifact, and compatibility-diagnostic messages.
+pub const REMOTE_TUI_PROTOCOL_VERSION: u32 = 5;
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
 #[serde(tag = "type")]
@@ -128,6 +129,10 @@ pub enum TuiMessage {
         subscription_id: crate::projection::replay::ProjectionSubscriptionId,
         descriptor: crate::projection::replay::ProjectionStreamDescriptor,
         snapshot: Box<crate::projection::snapshot::SessionProjectionSnapshot>,
+        #[serde(default)]
+        cursor: Option<crate::projection::replay::ProjectionCursor>,
+        #[serde(default)]
+        retention_floor_seq: Option<u64>,
     },
     /// Server → client: replay batch of projection events.
     ProjectionReplay {
@@ -137,17 +142,95 @@ pub enum TuiMessage {
     /// Server → client: client should resubscribe (cursor expired,
     /// version mismatch, etc.).
     ProjectionResync {
-        subscription_id: crate::projection::replay::ProjectionSubscriptionId,
+        /// `None` is used when the requested cursor did not bind to an
+        /// active daemon subscription; transports must not invent one.
+        #[serde(default)]
+        subscription_id: Option<crate::projection::replay::ProjectionSubscriptionId>,
         reason: crate::projection::replay::ProjectionResyncReason,
+        #[serde(default)]
+        descriptor: Option<crate::projection::replay::ProjectionStreamDescriptor>,
+        #[serde(default)]
+        requested_cursor: Option<crate::projection::replay::ProjectionCursor>,
+        #[serde(default)]
+        snapshot: Option<crate::projection::replay::ProjectionSnapshotBundle>,
     },
     /// Client → server: acknowledge processed events.
     ProjectionAck {
         ack: crate::projection::replay::ProjectionAck,
     },
+    /// Server → client: typed acknowledgement outcome.
+    ProjectionAckResult {
+        ack: crate::projection::replay::ProjectionAck,
+        accepted: bool,
+        #[serde(default)]
+        last_acked_seq: Option<u64>,
+        #[serde(default)]
+        lag_count: Option<u64>,
+        #[serde(default)]
+        error: Option<String>,
+    },
     /// Bidirectional: live projection envelope.
     ProjectionEvent {
         subscription_id: crate::projection::replay::ProjectionSubscriptionId,
+        /// Required for v5 projection-primary delivery. Optional on decode so
+        /// v4 fixtures without the additive stream identity remain readable.
+        #[serde(default)]
+        stream_id: Option<crate::projection::replay::ProjectionStreamId>,
         envelope: crate::projection::event::ProjectionEnvelope,
+    },
+    /// Client → server: resume a projection from its stream-scoped cursor.
+    ProjectionResume {
+        cursor: crate::projection::replay::ProjectionCursor,
+        #[serde(default)]
+        include_snapshot_if_resync: bool,
+    },
+    /// Client → server: release one connection-owned projection subscription.
+    ProjectionUnsubscribe {
+        subscription_id: crate::projection::replay::ProjectionSubscriptionId,
+    },
+    /// Server → client: result of an unsubscribe operation.
+    ProjectionUnsubscribeResult {
+        subscription_id: crate::projection::replay::ProjectionSubscriptionId,
+        accepted: bool,
+        #[serde(default)]
+        reason: Option<String>,
+    },
+    /// Client → server: request status for one owned subscription.
+    ProjectionSubscriptionStatus {
+        subscription_id: crate::projection::replay::ProjectionSubscriptionId,
+    },
+    /// Server → client: bounded status for one owned subscription.
+    ProjectionSubscriptionStatusResult {
+        status: crate::projection::replay::ProjectionSubscriptionStatus,
+    },
+    /// Client → server: request the bounded artifact handle list for a project.
+    ProjectionArtifactListRequest {
+        request_id: String,
+        project_id: String,
+    },
+    /// Server → client: bounded artifact handle list result.
+    ProjectionArtifactListResult {
+        request_id: String,
+        handles: Vec<crate::projection::replay::ProjectionArtifactHandleDto>,
+        #[serde(default)]
+        error: Option<String>,
+    },
+    /// Client → server: read a bounded artifact range by opaque handle.
+    ProjectionArtifactReadRequest {
+        request_id: String,
+        request: crate::projection::replay::ProjectionArtifactReadRequest,
+        project_id: String,
+    },
+    /// Server → client: artifact read outcome.
+    ProjectionArtifactReadResult {
+        request_id: String,
+        outcome: crate::projection::replay::ProjectionArtifactReadOutcome,
+    },
+    /// Projection-primary clients receive this when legacy raw channels are
+    /// still available but are not authoritative for projection state.
+    ProjectionCompatibilityDiagnostic {
+        code: String,
+        message: String,
     },
 }
 
@@ -408,8 +491,67 @@ mod tests {
     }
 
     #[test]
-    fn remote_tui_protocol_version_is_four() {
-        assert_eq!(REMOTE_TUI_PROTOCOL_VERSION, 4);
+    fn remote_tui_protocol_version_is_five() {
+        assert_eq!(REMOTE_TUI_PROTOCOL_VERSION, 5);
+    }
+
+    #[test]
+    fn projection_protocol_preserves_distinct_wire_identities() {
+        let stream_id = crate::projection::replay::ProjectionStreamId::new("stream-1").unwrap();
+        let subscription_id = crate::projection::replay::ProjectionSubscriptionId::new("sub-1");
+        let envelope = crate::projection::event::ProjectionEnvelope::session_event(
+            7,
+            0,
+            "session-1",
+            None,
+            crate::projection::event::ProjectionEvent::Diagnostic {
+                code: "test".into(),
+                message: "bounded".into(),
+            },
+        );
+        let message = TuiMessage::ProjectionEvent {
+            subscription_id: subscription_id.clone(),
+            stream_id: Some(stream_id.clone()),
+            envelope,
+        };
+        let json = serde_json::to_string(&message).unwrap();
+        let decoded: TuiMessage = serde_json::from_str(&json).unwrap();
+        match decoded {
+            TuiMessage::ProjectionEvent {
+                subscription_id: decoded_subscription,
+                stream_id: decoded_stream,
+                ..
+            } => {
+                assert_eq!(decoded_subscription, subscription_id);
+                assert_eq!(decoded_stream, Some(stream_id));
+                assert_ne!(decoded_subscription.0, decoded_stream.unwrap().0);
+            }
+            other => panic!("expected projection event, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn v4_resync_fixture_and_unbound_v5_resync_are_accepted() {
+        let legacy: TuiMessage = serde_json::from_value(serde_json::json!({
+            "type": "Resume",
+            "from_event_seq": 9
+        }))
+        .unwrap();
+        assert!(matches!(legacy, TuiMessage::Resume { from_event_seq: 9 }));
+
+        let resync: TuiMessage = serde_json::from_value(serde_json::json!({
+            "type": "ProjectionResync",
+            "reason": "history_expired"
+        }))
+        .unwrap();
+        assert!(matches!(
+            resync,
+            TuiMessage::ProjectionResync {
+                subscription_id: None,
+                reason: crate::projection::replay::ProjectionResyncReason::HistoryExpired,
+                ..
+            }
+        ));
     }
 
     #[test]

@@ -300,6 +300,13 @@ compatibility boundary.
 ### Implementation Notes
 
 - The core protocol version is currently `2` (`PROTOCOL_VERSION` in `crates/codegg-protocol/src/core.rs`).
+- Projection transport ownership is connection-local in
+  `src/core/transport/projection.rs`. The Unix socket and `/core` WebSocket
+  retain daemon-issued subscription IDs, persisted stream descriptors, cursors,
+  forwarder tasks, and cancellation state in the same bounded owner model.
+  Generic raw event forwarding explicitly excludes
+  `CoreEvent::ProjectionStreamEvent`; projection envelopes are delivered only
+  from the receiver installed for the owning connection.
 - Local TUI flows should prefer `CoreClient` over direct store access when a request already exists in `CoreRequest`.
 - The in-process client subscribes to the GlobalEventBus and forwards events to the channel receiver. Actual event publishing happens inside `tokio::spawn` within turn execution handlers.
 - `CoreDaemon` uses `CoreRuntimeDeps` to bundle runtime dependencies. The legacy `new(pool, subagent_pool, memory_store, bg_scheduler)` constructor is retained for backward compatibility. Prefer `from_parts(pool, memory_store, legacy_agent, turn_runtime)` for new code, or `with_turn_runtime()` to override the default turn runtime.

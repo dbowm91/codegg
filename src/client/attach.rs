@@ -73,7 +73,16 @@ pub async fn run_attach(url: &str, token: Option<&str>) -> Result<(), ClientErro
 
     let (mut ws_tx, mut ws_rx) = ws_stream.split();
 
-    // Request a resumable stream from sequence 0 (full resync fallback).
+    // Negotiate the projection-primary transport before sending the legacy
+    // resume marker. The server keeps the marker bounded for older clients,
+    // while v5 clients use ProjectionCursor resume once a stream is bound.
+    if let Ok(capabilities) = serde_json::to_string(&TuiMessage::ProjectionCapabilities {
+        capabilities: crate::protocol::projection::caps::ProjectionCapabilities::current(),
+    }) {
+        let _ = ws_tx.send(Message::Text(capabilities.into())).await;
+    }
+    // Request a resumable raw stream from sequence 0 for compatibility until
+    // the app has a stream-scoped cursor to resume.
     if let Ok(resume) = serde_json::to_string(&TuiMessage::Resume { from_event_seq: 0 }) {
         let _ = ws_tx.send(Message::Text(resume.into())).await;
     }

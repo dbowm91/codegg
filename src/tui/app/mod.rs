@@ -61,7 +61,7 @@ use crate::protocol::core::{CoreRequest, CoreResponse};
 use crate::protocol::projection::caps::ProjectionCapabilities;
 use crate::protocol::projection::controller::ControllerApplyOutcome;
 use crate::protocol::projection::event::ProjectionEnvelope;
-use crate::protocol::projection::replay::{ProjectionStreamId, ProjectionSubscriptionId};
+use crate::protocol::projection::replay::ProjectionSubscriptionId;
 use crate::protocol::tui::TuiMessage as RemoteTuiMessage;
 use crate::provider::ChatEvent;
 use crate::session::message::ToolStatus;
@@ -2390,6 +2390,8 @@ impl App {
                 subscription_id,
                 descriptor,
                 snapshot,
+                cursor: _,
+                retention_floor_seq: _,
             }) => {
                 let _ = self
                     .projection_client
@@ -2418,6 +2420,7 @@ impl App {
             }
             Ok(RemoteTuiMessage::ProjectionEvent {
                 subscription_id,
+                stream_id: _,
                 envelope,
             }) => {
                 let tab_id = self
@@ -2430,10 +2433,15 @@ impl App {
             Ok(RemoteTuiMessage::ProjectionResync {
                 subscription_id,
                 reason,
+                descriptor: _,
+                requested_cursor: _,
+                snapshot: _,
             }) => {
-                self.projection_client
-                    .controller_mut()
-                    .request_resync(&subscription_id, reason);
+                if let Some(subscription_id) = subscription_id {
+                    self.projection_client
+                        .controller_mut()
+                        .request_resync(&subscription_id, reason);
+                }
             }
             _ => {
                 debug_log!("handle_remote_event: unhandled type={}", _event_type);
@@ -15184,7 +15192,8 @@ mod projection_adoption_tests {
     fn projection_snapshot_installs_subscription() {
         let mut app = App::new_for_testing("/tmp".into());
         let descriptor = crate::protocol::projection::replay::ProjectionStreamDescriptor {
-            stream_id: ProjectionStreamId::new("session-s1").expect("stream id"),
+            stream_id: crate::protocol::projection::replay::ProjectionStreamId::new("session-s1")
+                .expect("stream id"),
             kind: crate::protocol::projection::replay::ProjectionStreamKind::Session,
             project_id: "p1".into(),
             workspace_id: None,
@@ -15201,6 +15210,8 @@ mod projection_adoption_tests {
             subscription_id: ProjectionSubscriptionId::new("sub-1"),
             descriptor,
             snapshot: Box::new(snap),
+            cursor: None,
+            retention_floor_seq: None,
         })
         .expect("serializable");
         app.handle_remote_event(json);

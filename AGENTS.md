@@ -106,6 +106,7 @@ python3 scripts/check_builtin_agents.py             # verify TOML matches genera
 python3 scripts/check-tokio-test-flavors.py         # regression guard for bare #[tokio::test]
 python3 scripts/generate_builtin_agents.py --check  # agent asset staleness + schema validation
 bash scripts/check_projection_disclosure.sh          # projection disclosure encapsulation guard (M3)
+python3 scripts/check_projection_transport_isolation.py # raw projection transport isolation guard (M5)
 ```
 
 ## Testing

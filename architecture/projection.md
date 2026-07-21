@@ -351,3 +351,32 @@ plumbing for the M2 replay subsystem while preserving M1 invariants:
   guard that fails CI if any non-test production source calls
   `ProjectionReplayHandle::publish_core_event` outside the
   centralized `EventLog` sink.
+
+## 15. Remote transport isolation (Milestone 005)
+
+Remote projection transport is connection-owned rather than broadcast-owned.
+`ProjectionConnectionState` is a transport-neutral transient owner shared by
+the Unix socket, `/core`, and `/tui` adapters. It bounds subscriptions,
+artifact reads, diagnostics, and reconnect generations. Each
+`OwnedProjectionSubscription` retains the daemon-issued subscription ID, the
+persisted descriptor and stream ID, latest cursor, forwarder task, lifecycle,
+and cancellation token.
+
+The subscribe/replay handoff installs the service receiver before its response
+is released. Resume uses the client-held `ProjectionCursor`; the daemon either
+returns a canonical replay batch, a typed `ProjectionResyncRequired`, or an
+error. A newly established replay subscription is identified only by the
+daemon-issued subscription ID. The transport never derives a stream ID from a
+subscription ID, and an unbound resync carries a null subscription ID.
+
+Raw event forwarders explicitly discard `CoreEvent::ProjectionStreamEvent`.
+Projection-private envelopes can therefore originate only from the receiver
+owned by the matching authenticated connection. A static guard,
+`scripts/check_projection_transport_isolation.py`, protects both WebSocket
+adapters and the Unix-socket identity path.
+
+The `/tui` protocol is version 5. Projection-primary clients negotiate before
+using resume, acknowledgement, unsubscribe, status, or bounded artifact
+operations. Version-4 clients retain the legacy raw event path; that path is
+bounded, isolated from projection state, and accompanied by a deprecation
+diagnostic for clients that can negotiate the projection contract.

@@ -454,6 +454,16 @@ impl ProjectionReplayService {
             .ok_or_else(|| StorageError::Database("subscription not found".into()))?
             .clone();
 
+        if sub.stream_id != cursor.stream_id {
+            self.metrics.increment_resync_reason("stream_mismatch");
+            return Ok(ResumeOutcome::Resync {
+                reason: ProjectionResyncReason::StreamMismatch,
+                descriptor: None,
+                requested_cursor: Some(cursor.clone()),
+                snapshot: None,
+            });
+        }
+
         let desc = match self
             .store
             .lookup_stream_by_id(cursor.stream_id.as_str())
@@ -586,6 +596,14 @@ impl ProjectionReplayService {
         &self,
         subscription_id: &ProjectionSubscriptionId,
     ) -> Result<(), StorageError> {
+        // A receiver may still be pending when a transport rejects an
+        // install or disconnects during the subscribe/replay handoff. Drop
+        // it together with the durable subscription so a later transport
+        // cannot claim the stale live stream.
+        self.pending_receivers
+            .lock()
+            .await
+            .remove(&subscription_id.0);
         self.subscriptions
             .unsubscribe(subscription_id)
             .map_err(|e| StorageError::Database(e.to_string()))

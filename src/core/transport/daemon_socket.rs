@@ -1,10 +1,8 @@
-use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixListener;
-use tokio::sync::{broadcast, RwLock};
-use tokio::task::JoinHandle;
+use tokio::sync::{broadcast, Mutex, RwLock};
 use tokio_util::sync::CancellationToken;
 
 use crate::core::daemon::CoreDaemon;
@@ -13,6 +11,8 @@ use crate::error::AppError;
 use crate::protocol::core::{CoreEvent, CoreResponse, EventEnvelope};
 use crate::protocol::frames::{CoreFrame, ServerCapabilities, ServerHello};
 use codegg_protocol::projection::replay::ProjectionSubscriptionId;
+
+use super::projection::{OwnedProjectionSubscription, ProjectionConnectionState};
 
 /// Bind a Unix-domain socket listener to `endpoint`. Returns the bound
 /// `UnixListener` plus the absolute path. Used by the singleton lifecycle
@@ -114,8 +114,9 @@ async fn handle_client(
     // event forwarder.
     let client_id = format!("client-{}", uuid::Uuid::new_v4());
     let filters: Arc<RwLock<Vec<EventFilter>>> = Arc::new(RwLock::new(Vec::new()));
-    let projection_subs: Arc<RwLock<HashMap<ProjectionSubscriptionId, JoinHandle<()>>>> =
-        Arc::new(RwLock::new(HashMap::new()));
+    let projection_state = Arc::new(Mutex::new(ProjectionConnectionState::new(
+        client_id.clone(),
+    )));
 
     let event_rx = daemon.event_log.subscribe();
     let writer_for_forwarder = Arc::clone(&writer);
@@ -138,42 +139,148 @@ async fn handle_client(
                     match frame {
                         CoreFrame::Request(envelope) => {
                             let request_id = envelope.request_id.clone();
-                            let response = match daemon.handle_request(envelope).await {
-                                Ok(resp) => resp,
-                                Err(e) => crate::protocol::core::CoreResponse::Error {
-                                    code: "handler_error".to_string(),
-                                    message: e.to_string(),
-                                },
-                            };
-                            // If this is a ProjectionSubscribed response, take the
-                            // pending receiver and spawn a per-subscription forwarder.
-                            if let CoreResponse::ProjectionSubscribed {
-                                subscription_id, ..
-                            } = &response
-                            {
-                                if let Some(ref seam) = daemon.projection_seam {
-                                    if let Some(rx) = seam
-                                        .service()
-                                        .take_subscription_receiver(subscription_id)
-                                        .await
-                                    {
-                                        let writer_clone = Arc::clone(&writer);
-                                        let sub_id = subscription_id.clone();
-                                        let handle = tokio::spawn(async move {
-                                            projection_forwarder(sub_id, rx, writer_clone).await;
-                                        });
-                                        projection_subs
-                                            .write()
-                                            .await
-                                            .insert(subscription_id.clone(), handle);
-                                    }
+                            let projection_request = matches!(
+                                &envelope.payload,
+                                crate::protocol::core::CoreRequest::ProjectionSubscribe { .. }
+                                    | crate::protocol::core::CoreRequest::ProjectionResume { .. }
+                                    | crate::protocol::core::CoreRequest::ProjectionAck { .. }
+                                    | crate::protocol::core::CoreRequest::ProjectionUnsubscribe { .. }
+                                    | crate::protocol::core::CoreRequest::ProjectionSnapshotGet { .. }
+                                    | crate::protocol::core::CoreRequest::ProjectionArtifactRead { .. }
+                                    | crate::protocol::core::CoreRequest::ProjectionArtifactList { .. }
+                            );
+                            let projection_allowed = projection_state.lock().await.mode()
+                                == super::projection::ProjectionConnectionMode::ProjectionPrimary;
+                            let artifact_scope_owned = match &envelope.payload {
+                                crate::protocol::core::CoreRequest::ProjectionArtifactRead {
+                                    project_id,
+                                    ..
                                 }
+                                | crate::protocol::core::CoreRequest::ProjectionArtifactList {
+                                    project_id,
+                                } => Some(projection_state.lock().await.owns_project(project_id)),
+                                _ => None,
+                            };
+                            let mut artifact_read_started = if artifact_scope_owned == Some(true) {
+                                projection_state.lock().await.try_begin_artifact_read()
+                            } else {
+                                false
+                            };
+                            let mut response = if projection_request && !projection_allowed {
+                                if artifact_read_started {
+                                    projection_state.lock().await.end_artifact_read();
+                                    artifact_read_started = false;
+                                }
+                                crate::protocol::core::CoreResponse::Error {
+                                    code: "projection_capabilities_required".into(),
+                                    message: "send a projection-capable ClientHello before projection operations".into(),
+                                }
+                            } else if artifact_scope_owned == Some(false) {
+                                crate::protocol::core::CoreResponse::Error {
+                                    code: "projection_scope_not_owned".into(),
+                                    message:
+                                        "projection artifact scope is not owned by this connection"
+                                            .into(),
+                                }
+                            } else if artifact_scope_owned == Some(true) && !artifact_read_started {
+                                crate::protocol::core::CoreResponse::Error {
+                                    code: "projection_artifact_read_limit".into(),
+                                    message: "projection artifact read limit exceeded".into(),
+                                }
+                            } else {
+                                match daemon.handle_request_for_client(envelope, &client_id).await {
+                                    Ok(resp) => resp,
+                                    Err(e) => crate::protocol::core::CoreResponse::Error {
+                                        code: "handler_error".to_string(),
+                                        message: e.to_string(),
+                                    },
+                                }
+                            };
+                            if artifact_read_started {
+                                projection_state.lock().await.end_artifact_read();
                             }
+                            // Install the daemon-issued receiver before the
+                            // response is released. This closes the replay /
+                            // live handoff window and makes the receiver the
+                            // only source of projection-private events.
+                            let install_result = match &response {
+                                CoreResponse::ProjectionSubscribed {
+                                    subscription_id,
+                                    descriptor,
+                                    cursor,
+                                    retention_floor_seq,
+                                    ..
+                                } => Some(
+                                    install_projection_receiver(
+                                        &daemon,
+                                        &writer,
+                                        &projection_state,
+                                        subscription_id,
+                                        descriptor,
+                                        cursor,
+                                        *retention_floor_seq,
+                                        &client_id,
+                                    )
+                                    .await,
+                                ),
+                                CoreResponse::ProjectionReplay {
+                                    subscription_id: Some(subscription_id),
+                                    batch,
+                                } => {
+                                    let cursor = batch.next_cursor.clone().unwrap_or_else(|| {
+                                        crate::protocol::projection::replay::ProjectionCursor {
+                                            stream_id: batch.descriptor.stream_id.clone(),
+                                            event_seq: batch.current_high_water,
+                                            projection_version: batch.descriptor.projection_version,
+                                        }
+                                    });
+                                    Some(
+                                        install_projection_receiver(
+                                            &daemon,
+                                            &writer,
+                                            &projection_state,
+                                            subscription_id,
+                                            &batch.descriptor,
+                                            &cursor,
+                                            batch.descriptor.retention_floor_seq,
+                                            &client_id,
+                                        )
+                                        .await,
+                                    )
+                                }
+                                _ => None,
+                            };
+                            if install_result == Some(false) {
+                                response = CoreResponse::Error {
+                                    code: "projection_receiver_install_failed".into(),
+                                    message: "projection live receiver could not be installed"
+                                        .into(),
+                                };
+                            }
+                            let response_subscription_id = match &response {
+                                CoreResponse::ProjectionSubscribed {
+                                    subscription_id, ..
+                                }
+                                | CoreResponse::ProjectionReplay {
+                                    subscription_id: Some(subscription_id),
+                                    ..
+                                } => Some(subscription_id.clone()),
+                                _ => None,
+                            };
                             let frame = CoreFrame::Response {
                                 request_id,
                                 response: Box::new(response),
                             };
                             send_frame(&writer, &frame).await;
+                            if let Some(subscription_id) = response_subscription_id {
+                                if let Some(subscription) = projection_state
+                                    .lock()
+                                    .await
+                                    .subscription_mut(&subscription_id)
+                                {
+                                    subscription.mark_live();
+                                }
+                            }
                         }
                         CoreFrame::Subscribe {
                             client_id: _sub_client_id,
@@ -233,6 +340,40 @@ async fn handle_client(
                             // it actually trusts.
                         }
                         CoreFrame::ClientHello(hello) => {
+                            let projection_supported = hello.capabilities.session_projection;
+                            projection_state.lock().await.set_mode(
+                                if projection_supported {
+                                    super::projection::ProjectionConnectionMode::ProjectionPrimary
+                                } else {
+                                    super::projection::ProjectionConnectionMode::RawCompatibility
+                                },
+                                projection_supported.then_some(1),
+                            );
+                            if !projection_supported {
+                                let subscription_ids: Vec<_> = projection_state
+                                    .lock()
+                                    .await
+                                    .subscriptions()
+                                    .map(|subscription| subscription.subscription_id.clone())
+                                    .collect();
+                                projection_state.lock().await.cleanup().await;
+                                for subscription_id in subscription_ids {
+                                    let _ = daemon
+                                        .handle_request_for_client(
+                                            crate::core::new_request(
+                                                format!(
+                                                    "projection-downgrade-{}",
+                                                    uuid::Uuid::new_v4()
+                                                ),
+                                                crate::protocol::core::CoreRequest::ProjectionUnsubscribe {
+                                                    subscription_id,
+                                                },
+                                            ),
+                                            &client_id,
+                                        )
+                                        .await;
+                                }
+                            }
                             tracing::info!(
                                 "Client connected: {} (kind: {:?}, id={})",
                                 hello.client_name,
@@ -281,13 +422,108 @@ async fn handle_client(
 
     daemon.clients.unregister(&client_id);
 
-    // Abort all projection subscription forwarders for this client
-    let mut subs = projection_subs.write().await;
-    for (_, handle) in subs.drain() {
-        handle.abort();
+    let subscription_ids: Vec<_> = projection_state
+        .lock()
+        .await
+        .subscriptions()
+        .map(|subscription| subscription.subscription_id.clone())
+        .collect();
+    projection_state.lock().await.cleanup().await;
+    for subscription_id in subscription_ids {
+        let _ = daemon
+            .handle_request_for_client(
+                crate::core::new_request(
+                    format!("projection-disconnect-{}", uuid::Uuid::new_v4()),
+                    crate::protocol::core::CoreRequest::ProjectionUnsubscribe { subscription_id },
+                ),
+                &client_id,
+            )
+            .await;
     }
 
     Ok(())
+}
+
+async fn install_projection_receiver(
+    daemon: &Arc<CoreDaemon>,
+    writer: &Arc<tokio::sync::Mutex<tokio::net::unix::OwnedWriteHalf>>,
+    projection_state: &Arc<Mutex<ProjectionConnectionState>>,
+    subscription_id: &ProjectionSubscriptionId,
+    descriptor: &codegg_protocol::projection::replay::ProjectionStreamDescriptor,
+    cursor: &crate::protocol::projection::replay::ProjectionCursor,
+    retention_floor_seq: u64,
+    client_id: &str,
+) -> bool {
+    if projection_state.lock().await.owns(subscription_id) {
+        return true;
+    }
+    let Some(seam) = daemon.projection_seam.as_ref() else {
+        let _ = daemon
+            .handle_request_for_client(
+                crate::core::new_request(
+                    format!("projection-unsubscribe-{}", uuid::Uuid::new_v4()),
+                    crate::protocol::core::CoreRequest::ProjectionUnsubscribe {
+                        subscription_id: subscription_id.clone(),
+                    },
+                ),
+                client_id,
+            )
+            .await;
+        return false;
+    };
+    let Some(rx) = seam
+        .service()
+        .take_subscription_receiver(subscription_id)
+        .await
+    else {
+        let _ = daemon
+            .handle_request_for_client(
+                crate::core::new_request(
+                    format!("projection-unsubscribe-{}", uuid::Uuid::new_v4()),
+                    crate::protocol::core::CoreRequest::ProjectionUnsubscribe {
+                        subscription_id: subscription_id.clone(),
+                    },
+                ),
+                client_id,
+            )
+            .await;
+        return false;
+    };
+    let mut projection = projection_state.lock().await;
+    let owned = OwnedProjectionSubscription::new(
+        subscription_id.clone(),
+        descriptor.clone(),
+        cursor.clone(),
+        retention_floor_seq,
+        projection.reconnect_generation(),
+    );
+    let ready = owned.ready.clone();
+    let cancellation = owned.cancellation.clone();
+    if projection.insert_subscription(owned).is_err() {
+        drop(projection);
+        let _ = daemon
+            .handle_request_for_client(
+                crate::core::new_request(
+                    format!("projection-unsubscribe-{}", uuid::Uuid::new_v4()),
+                    crate::protocol::core::CoreRequest::ProjectionUnsubscribe {
+                        subscription_id: subscription_id.clone(),
+                    },
+                ),
+                client_id,
+            )
+            .await;
+        return false;
+    }
+    let sub_id = subscription_id.clone();
+    let stream_id = descriptor.stream_id.clone();
+    let writer = Arc::clone(writer);
+    let handle = tokio::spawn(async move {
+        projection_forwarder(sub_id, stream_id, rx, writer, ready, cancellation).await;
+    });
+    if let Some(subscription) = projection.subscription_mut(subscription_id) {
+        subscription.forwarder = Some(handle);
+    }
+    true
 }
 
 /// Forward projection events from a subscription receiver to the client writer.
@@ -295,19 +531,25 @@ async fn handle_client(
 /// sends it as a regular `CoreFrame::Event` to the client.
 async fn projection_forwarder(
     sub_id: ProjectionSubscriptionId,
+    stream_id: codegg_protocol::projection::replay::ProjectionStreamId,
     mut rx: tokio::sync::mpsc::Receiver<codegg_protocol::projection::event::ProjectionEnvelope>,
     writer: Arc<tokio::sync::Mutex<tokio::net::unix::OwnedWriteHalf>>,
+    ready: Arc<tokio::sync::Notify>,
+    cancellation: tokio_util::sync::CancellationToken,
 ) {
-    use codegg_protocol::projection::replay::ProjectionStreamId;
-
-    while let Some(envelope) = rx.recv().await {
-        // The stream_id is embedded in the subscription entry, but for the
-        // forwarder we use the sub_id to identify the stream. The actual
-        // stream_id is reconstructed from the envelope's context.
-        let stream_id = ProjectionStreamId(sub_id.0.clone());
+    tokio::select! {
+        _ = cancellation.cancelled() => return,
+        _ = ready.notified() => {}
+    }
+    loop {
+        let envelope = tokio::select! {
+            _ = cancellation.cancelled() => break,
+            envelope = rx.recv() => envelope,
+        };
+        let Some(envelope) = envelope else { break };
         let core_event = CoreEvent::ProjectionStreamEvent {
             subscription_id: sub_id.clone(),
-            stream_id,
+            stream_id: stream_id.clone(),
             envelope,
         };
         let frame = CoreFrame::Event(EventEnvelope {
@@ -339,6 +581,9 @@ async fn forward_events(
     loop {
         match event_rx.recv().await {
             Ok(event) => {
+                if matches!(event.payload, CoreEvent::ProjectionStreamEvent { .. }) {
+                    continue;
+                }
                 // Snapshot the filter list under the read lock, then drop the
                 // lock before serializing/writing the frame. This keeps the
                 // write path from blocking on Subscribe frame processing.

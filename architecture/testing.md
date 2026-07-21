@@ -239,6 +239,27 @@ Real-server compatibility tests live in a separate workflow (`lsp-real-server.ym
 
 Real-server tests must not be pulled into routine PR validation. They verify compatibility with actual language server binaries (rust-analyzer, basedpyright, gopls, typescript-language-server, clangd) and require installed server binaries.
 
+### Session projection transport closure
+
+The transport isolation guard and focused ownership tests are part of the
+projection regression surface:
+
+```bash
+python3 scripts/check_projection_transport_isolation.py
+cargo test -p codegg-protocol
+cargo test -p codegg --lib core::transport::projection -- --nocapture
+cargo test --test projection_replay_daemon_protocol
+cargo test --test projection_replay_subscription
+cargo test --test projection_replay_resume
+cargo test --test projection_disclosure_invariants
+cargo test --test projection_artifact_handles
+```
+
+The guard requires raw daemon broadcast forwarders to reject
+`ProjectionStreamEvent` and rejects stream IDs derived from subscription IDs.
+Transport adapters use bounded WebSocket queues; overflow is tested as typed
+subscriber lag/resync rather than silent acknowledgement advancement.
+
 ### `--all-features` and real-server tests
 
 The root `--all-features` flag enables the `lsp-real-server-tests` feature, which compiles `crates/egglsp/tests/real_server_smoke.rs`. This is safe because:
