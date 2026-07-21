@@ -10,6 +10,8 @@ Repository baseline: `0ee134e9ddabf808a7a46310436b3c1342900fb2`
 
 Implementation commit: `8ca570fddc08eb9663b894f3190ae0ed0af2b98b`
 
+Closure record introduced in commit: `270cc5f`
+
 ## 1. Closure decision
 
 M006 is closed. Projection control delivery is now atomic at the transport
