@@ -154,16 +154,14 @@ impl ProjectPickerState {
             .enumerate()
             .filter(|(_, e)| self.show_archived || e.archived_at.is_none())
             .map(|(i, e)| {
-                let name_score =
-                    crate::util::fuzzy::fuzzy_score(query, &e.display_name);
+                let name_score = crate::util::fuzzy::fuzzy_score(query, &e.display_name);
                 let tag_score: usize = e
                     .tags
                     .iter()
                     .map(|t| crate::util::fuzzy::fuzzy_score(query, t))
                     .max()
                     .unwrap_or(0);
-                let id_score =
-                    crate::util::fuzzy::fuzzy_score(query, &e.project_id);
+                let id_score = crate::util::fuzzy::fuzzy_score(query, &e.project_id);
                 let best = name_score.max(tag_score).max(id_score);
                 (i, best, e.project_id.as_str())
             })
@@ -243,10 +241,7 @@ pub fn truncate_tab_label(label: &str) -> String {
 /// Disambiguate duplicate labels by appending a short stable suffix.
 /// The suffix is derived from the last 6 chars of the workspace_id or
 /// tab_id — never from a path.
-pub fn disambiguate_label(
-    label: &str,
-    suffix_source: &str,
-) -> String {
+pub fn disambiguate_label(label: &str, suffix_source: &str) -> String {
     let suffix = if suffix_source.len() >= 6 {
         suffix_source[suffix_source.len() - 6..].to_string()
     } else {
@@ -322,10 +317,7 @@ mod tests {
     #[test]
     fn filtered_indices_archived_filtered_by_default() {
         let picker = ProjectPickerState::new(true, 0);
-        let mut entries = vec![
-            make_summary("a", "Alpha"),
-            make_summary("b", "Beta"),
-        ];
+        let mut entries = vec![make_summary("a", "Alpha"), make_summary("b", "Beta")];
         entries[1].archived_at = Some(1000);
         let indices = picker.filtered_indices(&entries);
         assert_eq!(indices.len(), 1);
@@ -336,10 +328,7 @@ mod tests {
     fn filtered_indices_show_archived_includes_archived() {
         let mut picker = ProjectPickerState::new(true, 0);
         picker.show_archived = true;
-        let mut entries = vec![
-            make_summary("a", "Alpha"),
-            make_summary("b", "Beta"),
-        ];
+        let mut entries = vec![make_summary("a", "Alpha"), make_summary("b", "Beta")];
         entries[1].archived_at = Some(1000);
         let indices = picker.filtered_indices(&entries);
         assert_eq!(indices.len(), 2);

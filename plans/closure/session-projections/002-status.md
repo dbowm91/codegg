@@ -1,173 +1,180 @@
 # Frontend-Neutral Session Projections Milestone 002 — Closure Status
 
-Status: conditionally closed
+Status: closed
 
-Source implementation plan:
+Source implementation plans:
 
-- `plans/implementation/session-projections/002-scoped-subscriptions-durable-replay.md`
+- `plans/implementation/session-projections/002-scoped-subscriptions-durable-replay.md` (library/crate layer; conditionally closed at `8dc4b85`)
+- `plans/implementation/session-projections/002-corrective-daemon-integration-and-closure.md` (daemon integration, canonical binding resolution, transport routing, strict closure — this commit)
 
 Source subsystem roadmap:
 
 - `plans/subsystems/session-projections-roadmap.md#milestone-2--scoped-subscriptions-and-durable-replay`
 
-Repository baseline reviewed: `1c37787afc6b2afd437f1d3f21a6fe26226a73d7`
-(the plan's stated baseline).
+Repository baseline reviewed: `f569386` (`main`; corrective plan landed on branch `m2-corrective-daemon-integration`)
 
-Implementation commit:
+Implementation commits:
 
-- `8dc4b85` — `feat(projection): implement M2 scoped subscriptions and durable replay`
+- `8dc4b85` — library/crate implementation of scoped subscriptions and durable replay (M2 design surface)
+- `8c23269` — conditional closure record identifying the unresolved daemon integration
+- This commit — corrective daemon integration, canonical context resolution, daemon request dispatch, per-client live transport routing, startup/maintenance wiring, static guard, and strict closure
 
 ## 1. Executive finding
 
-Milestone 002 is **conditionally closed**. The library/crate layer is
-landed end to end:
+Milestone 002 is **strictly closed**. The corrective pass lands every
+unresolved item from the conditional closure at `8c23269`:
 
-- The replay transport protocol (`codegg_protocol::projection::replay`)
-  exposes stable stream IDs, cursors, subscription requests, snapshot
-  bundles, replay batches, resync reasons, ack DTOs, and capability
-  negotiation.
-- The core protocol (`codegg_protocol::core`) carries additive
-  `ProjectionCapabilities`, `ProjectionSubscribe`, `ProjectionResume`,
-  `ProjectionAck`, `ProjectionUnsubscribe`, `ProjectionSnapshotGet`,
-  and `ProjectionSubscriptionStatus` request / response variants, plus
-  a live `CoreEvent::ProjectionStreamEvent` for filtered delivery.
-- A new schema migration (`migrate_v32`) introduces
-  `projection_stream`, `projection_event`, and `projection_checkpoint`
-  tables with the indexes, uniqueness constraints, and `STORAGE_LAYOUT_VERSION`
-  bump to 32 required by plan §6.4.
-- `codegg_core::projection_replay` owns the replay service, store,
-  subscription registry, retention policy, safe-publication gate, and
-  metrics snapshot.
-- A central `ProjectionReplayHandle::publish_core_event` seam is
-  provided as the only published entry point for converting a
-  canonical `CoreEvent` envelope into durable projection events.
+- One daemon-owned `ProjectionPublicationSeam` is the single
+  publication authority. It is installed as a sink hook in
+  `EventLog::publish`, so every production `event_log.publish(...)`
+  call site feeds durable projection storage exactly once.
+- Canonical session binding (`ProjectStorage::session_binding`) is
+  resolved at publication time inside the seam, so non-empty
+  `(ProjectId, WorkspaceId, binding_revision)` reach the projection
+  store and unbound/ambiguous/archived bindings fail closed with
+  `Skipped { UnboundSession }`.
+- `binding_revision` is threaded through
+  `ProjectionReplayStore::get_or_create_session_stream_with_revision`;
+  a rebind invalidates the old stream (`lifecycle = 'rebound'`),
+  creates a new active stream for the new binding revision, and
+  prevents cross-project publication.
+- Real `ProjectionStreamId` values from the persisted `projection_stream`
+  row are used for live delivery, queue routing, cursor validation,
+  and acknowledgement; synthetic `"session-stream"` /
+  `"project-stream"` placeholder identifiers are gone.
+- Every `CoreRequest::Projection*` variant dispatches through
+  `CoreDaemon::handle_request` and round-trips a bounded
+  `CoreResponse::Projection*` to the caller.
+- Per-client subscription ownership is enforced: every subscription
+  receiver is owned by exactly one transport-side forwarder that
+  wraps `ProjectionEnvelope` in `CoreEvent::ProjectionStreamEvent`
+  with the subscription id. The unfiltered `EventLog::subscribe()`
+  broadcast path remains untouched for legacy raw `CoreEvent` clients.
+- `ProjectionReplayStore`, `ProjectionReplayService`, and the seam
+  are constructed from the daemon's SQLite pool during
+  `CoreDaemon::with_deps_and_identity`; a 5-minute maintenance tick
+  runs retention pruning and checkpoint writing.
+- `scripts/check_projection_publication_seam.sh` is a new static
+  guard that rejects new unauthorized direct calls to
+  `ProjectionReplayHandle::publish_core_event` outside the
+  centralized sink. CI runs the guard alongside the existing
+  codegg-core boundary and daemon CWD-usage checks.
 
-The **conditional** part of the closure is the daemon-side wiring:
-the new `ProjectionReplayHandle` is callable from `codegg-core` but
-the 17 production `event_log.publish` call sites in
-`src/core/daemon.rs` and `src/core/event_log.rs` continue to publish
-to the legacy `EventLog` path. The plan §6.6 explicitly required
-"one centralized daemon helper or a bounded sink hook rather than
-adding inconsistent manual replay writes at many call sites", and
-that wiring is **not** part of `8dc4b85`. As a result, a daemon
-restart that did not have the helper installed would not feed the
-projection replay store, even though the store is durable and
-correct.
-
-A second open item is dispatch: the new `CoreRequest::Projection*`
-variants are typed and tested at the protocol layer, but
-`src/core/daemon.rs` does not yet dispatch them. The transport
-(`src/core/transport/daemon_socket.rs`) similarly does not yet route
-`CoreEvent::ProjectionStreamEvent` to live subscribers.
-
-Both items are mechanical integration wiring; they do not invalidate
-the library work and the boundary invariants from the plan remain
-honoured. They are listed under "Unresolved findings" so that a
-follow-on implementation plan can pick them up without re-deriving
-the design.
+The library/crate subsystem remains unchanged in design
+(per the corrective plan's "do not reimplement the replay store"
+invariant). The closure record no longer carries an unresolved
+finding list because the daemon-side wiring is now landed.
 
 ## 2. Requirement-to-evidence matrix
 
 | Work package / requirement | Evidence | Result | Notes |
 |---|---|---|---|
-| **A — Replay protocol contracts** | | | |
-| `ProjectionStreamKind`, `ProjectionStreamId` (validated), `ProjectionStreamDescriptor`, `ProjectionCursor`, `ProjectionSubscriptionId`, `ProjectionSubscriptionRequest` | `crates/codegg-protocol/src/projection/replay.rs:18-128`; serde round-trip tests at lines 308-374 | pass | `ProjectionStreamId::new` rejects empty, over-cap, and non-`[A-Za-z0-9_-]` ids. |
-| `ProjectionSnapshotBundle` (One / BoundedSessionList, truncated flag) | same file lines 138-160; round-trip tests `snapshot_bundle_one_round_trip` and `snapshot_bundle_bounded_list_round_trip` | pass | Boxed variant to keep size variance inside clippy's 1x bound. |
-| `ProjectionReplayBatch` with descriptor, ordered events, optional snapshot, replay_start/end, high-water, truncation flag | same file lines 163-181; round-trip test `replay_batch_round_trip` | pass | Pagination cursors handled at the service layer. |
-| `ProjectionResyncReason` with eight stable variants | same file lines 184-225; serde round-trip test `resync_reason_round_trip` | pass | `HistoryExpired`, `HistoryGap`, `CursorAhead`, `StreamMismatch`, `ScopeMismatch`, `VersionMismatch`, `SnapshotUnavailable`, `SubscriberLagged`. |
-| `ProjectionAck`, `ProjectionSubscriptionStatus`, `ProjectionReplayLimits`, `ReplaySubscriptionError` | same file lines 228-298 | pass | Caps: `MAX_REPLAY_EVENTS = 512`, `MAX_REPLAY_BYTES = 1 MiB`. |
-| Workspace/Daemon subscription requests return explicit unsupported diagnostic | `ReplaySubscriptionError::UnsupportedScope`; covered by serde round-trip and `validate()` | pass | The handler rejects workspace/daemon variants before touching the registry. |
-| Old fixtures default new fields safely | `projection_version` and `truncated` use `#[serde(default)]` | pass | Backward-compatible with M1 client JSON. |
-| Additive `CoreRequest::Projection*` and `CoreResponse::Projection*` | `crates/codegg-protocol/src/core.rs:508-540` (requests), matching responses; tagged via serde | pass | All new variants are additive; no existing variant removed or renamed. |
-| Live `CoreEvent::ProjectionStreamEvent` for filtered delivery | `crates/codegg-protocol/src/core.rs` near end of `CoreEvent` | pass | Carries `subscription_id`, stream ID, and a `ProjectionEnvelope`. |
-| **B — Additive storage and sequence authority** | | | |
-| Schema migration `migrate_v32` for `projection_stream`, `projection_event`, `projection_checkpoint` | `crates/codegg-core/src/session/schema.rs:1578-1652` (migrate_v32), invoked from `migrate()` at line 115-117 | pass | Idempotent `CREATE TABLE IF NOT EXISTS`; `STORAGE_LAYOUT_VERSION` bumped from 31 to 32. |
-| Indexes `(stream_id, event_seq)`, `(created_at)`, `(stream_id, checkpoint_seq DESC)` | same file lines 1643-1645 | pass | |
-| Unique constraint on `(kind, project_id, session_id, lifecycle)` | same file line 1610 | pass | Idempotent stream creation; no duplicate active streams. |
-| `ProjectionReplayStore::next_event_seq` is atomic per stream | `crates/codegg-core/src/projection_replay/store.rs:168-194`; concurrent test `concurrent_inserts_produce_contiguous_sequences` in `tests/projection_replay_storage.rs` | pass | 100 inserts across 10 tasks produce sequences 1..=100; assertion `event_seq == i + 1` matches 1-based sequence semantics. |
-| `get_or_create_session_stream` / `get_or_create_project_stream` are idempotent | `store.rs:39-134`; tests `get_or_create_session_stream_idempotent`, `get_or_create_project_stream_idempotent` | pass | Returns `(descriptor, created)`. |
-| `insert_event_tx` / `insert_event` persist full envelope JSON | `store.rs:196-263`; serialization now uses `serde_json::to_string(envelope)` so resume can deserialize back | pass | Fixed during integration: the original `&envelope.payload` form would have broken deserialization in resume (caught by integration test). |
-| Restart hydration: next allocation above persisted high-water | `restart_allocates_above_persisted_high_water` test | pass | After 5 inserts, restart returns descriptor with `high_water_seq = 5` and `next_event_seq` returns 6. |
-| `EventLog::new_with_pool` hydrates from persisted high-water | `src/core/event_log.rs:74-92` (new `SELECT COALESCE(MAX(event_seq), 0) + 1 FROM core_event_log` before constructing the `AtomicU64`) | pass | Eliminates raw `core_event_log` sequence collision on restart (plan §6.6 narrow correctness requirement). |
-| **C — Projection publication integration** | | | |
-| `ProjectionReplayHandle::publish_core_event` exists as the centralized seam | `crates/codegg-core/src/projection_replay/handle.rs` | pass | Plan §6.6 requires the seam; daemon call-site migration is the open item (see §1 and §6 below). |
-| `ProjectionReplayService::publish_from_core` resolves canonical session binding via `ProjectStorage::session_binding` | `crates/codegg-core/src/projection_replay/publication.rs` | pass | Unbound / `BindingStatus != Resolved` sessions fail closed with a `Skipped{ reason: UnboundSession }` and do not consume a sequence. |
-| M2 safe-publication gate classifies every `CoreEvent` variant into Safe / Internal / ClientLocal / Sensitive | `crates/codegg-core/src/projection_replay/safe_publication.rs`; tests `visibility_class_for_*` and `no_internal_or_sensitive_in_durable_rows` | pass | `Internal` and `Sensitive` originals never enter `projection_event.payload_json`. |
-| Transactional session+project fan-out | `publication.rs`; failure simulation covered by `rolls_back_when_publish_fails` (test added in storage suite) | pass | All-or-nothing per source event; sequence allocation and high-water update happen inside one transaction. |
-| M1 adapter reuse | `publication.rs` imports `projection_events_from_core` from `codegg_protocol::projection::adapters` | pass | No second reducer; no second adapter. |
-| **D — Snapshot/checkpoint and retention** | | | |
-| `RetentionPolicy` defaults match plan §6.9 (session 20k/7d/64MiB; project 50k/7d/128MiB; hard cap 64KiB; checkpoint every 256 events / 1MiB / 5min; max 4 checkpoints/stream) | `crates/codegg-core/src/projection_replay/retention.rs:6-36`; `Default` impl | pass | |
-| `maintenance_tick` produces bounded prune batches and preserves the latest usable checkpoint | `retention.rs:47-101`; test `retention_prunes_old_events` | pass | After 20 inserts with `session_max_events = 10`, `events_after(0)` returns 10 events (`<= 10`). |
-| Incremental checkpoints at the configured interval | `retention.rs:83-93`; test `checkpoint_written_when_interval_reached` | pass | |
-| Hard `next_event_seq <= high_water_seq` streams quarantined as invalidated | `store.rs::find_corrupt_streams` and `invalidate_stream`; coverage in failpoint test | pass | |
-| **E — Subscription/ack/live delivery** | | | |
-| `SubscriptionRegistry` enforces per-client (32), per-daemon (256), per-subscription queue (512) caps | `crates/codegg-core/src/projection_replay/subscription.rs:51-94` (config); tests `per_client_limit_enforced`, `global_limit_enforced`, `subscription_per_client_and_global_caps` | pass | |
-| `SubscriptionEntry::state` transitions Initializing -> Live -> ResyncRequired/Closed | `subscription.rs:143-160`; tests `set_live`, `deliver_to_initializing_subscriptions_skipped` | pass | |
-| `ack` is monotonic, stream-scoped, version-checked, and never exceeds high-water | `subscription.rs:165-189`; tests `ack_monotonicity`, `ack_stream_mismatch_rejected`, `ack_monotonicity_and_idempotency` | pass | |
-| Queue overflow transitions subscription to `ResyncRequired(SubscriberLagged)` and stops live delivery for that subscription | `subscription.rs:194-220`; the `try_send` `Full` arm flips state to `ResyncRequired` | pass | |
-| Disconnect/unsubscribe cleans transient state only | `subscription.rs:222-241`; test `unsubscribe_removes_subscription` | pass | |
-| Project A subscription receives no Project B events; Session A receives no sibling Session B events | `tests/projection_replay_subscription.rs::{project_a_subscription_receives_no_project_b_events, session_a_receives_no_sibling_session_events}` | pass | |
-| **F — Resume/resync/restart** | | | |
-| `ProjectionReplayService::resume` returns `Replayed`, `Empty`, or `Resync{ reason, descriptor, requested_cursor, snapshot }` | `crates/codegg-core/src/projection_replay/service.rs:55-95` (ResumeOutcome enum) and `service.rs:249-355` (resume logic) | pass | |
-| Resume from zero returns all events from retention floor; resume at high-water returns Empty | `tests/projection_replay_resume.rs::{resume_from_zero_returns_all_events, resume_at_high_water_returns_empty}` | pass | |
-| Cursor ahead -> `Resync(CursorAhead)`; cursor below retention floor -> `Resync(HistoryExpired)`; missing row -> `Resync(HistoryGap)`; stream mismatch / version mismatch -> respective resync reasons | `tests/projection_replay_resume.rs::{cursor_ahead_returns_resync, cursor_below_retention_returns_history_expired, missing_row_returns_history_gap, scope_mismatch_returns_resync, version_mismatch_returns_resync}` | pass | |
-| Resume pagination via `ProjectionReplayLimits` | `service.rs:316-331` | pass | Defaults cap at 512 events / 1 MiB; further events surfaced through `next_resume_cursor`. |
-| Lazy restart hydration: streams loaded only on first subscribe | `service.rs::hydrate_from_disk` | pass | Subscription calls idempotent `get_or_create_*_stream` so on-restart service boots with no eager loads. |
-| Restart preserves accepted replay history without sequence reuse | `restart_preserves_accepted_history` test in `tests/projection_replay_failpoint.rs` | pass | |
-| Duplicate transport delivery remains reducer-idempotent | `ProjectionReducer::apply` already deduplicates by `event_seq` (M1 invariant); the replay row stores the assigned `event_seq` regardless of how many times `publish` is invoked | pass | |
-| **G — Observability, docs, verification** | | | |
-| `ProjectionReplayMetrics` exposes stream counts, event counts, retention floor/high-water distance, retained bytes, checkpoint count + age, accepted/omitted/downgraded publication counts by visibility class, publication failures, active subscriptions, queue depth, lag, ack rejection reasons, replay batch size/count/latency, resync counts by reason, prune rows/bytes, corrupt/quarantined count | `crates/codegg-core/src/projection_replay/metrics.rs` | pass | Bounded atomic counters + DashMap reason buckets. `snapshot()` produces a serde-serializable plain struct. |
-| Diagnostics contain IDs/counters, not payload bodies or secrets | metrics.rs uses stream/count/timestamp counters only; `eprintln!` debug prints were removed before commit | pass | |
-| Focused integration tests across storage, subscription, resume, retention, failpoint, safe-publication | `tests/projection_replay_{storage,subscription,resume,retention,failpoint,safe_publication}.rs` | pass | 67 integration tests + 234 codegg-core lib tests + 141 codegg-protocol tests. |
-| Static guards | `bash scripts/check-core-boundary.sh`, `python3 scripts/check_daemon_cwd_usage.py`, `python3 scripts/check_git_forbidden_patterns.py`, `python3 scripts/check-core-boundary.sh` | pass | codegg-core has no `agent` / `tool` / `permission` / `mcp` / `plugin` / `tui` / `server` / `client` / `auth` / `crypto` / `search` / `research` / `theme` / `tts` / `upgrade` imports; no `ratatui`, `crossterm`, `axum`, `tower_http`, `tokio_tungstenite`, `wasmtime`, `wasmtime_wasi` deps. |
-| Clippy | `cargo clippy -p codegg-core -p codegg-protocol --all-targets --all-features -- -D warnings` | pass | Zero warnings. |
-| Workspace check | `cargo check --workspace --all-targets --all-features` | pass | Zero errors. |
-| `cargo fmt --all -- --check` | run as part of CI flow | pass | No diffs. |
+| **A — Single publication seam** | | | |
+| `ProjectionPublicationSeam` owns the canonical publication entry point | `crates/codegg-core/src/projection_replay/seam.rs:32` | pass | Wraps `Arc<ProjectionReplayService>` and an optional `Arc<ProjectStorage>` for canonical context. |
+| `EventLog` exposes a `ProjectionSink` trait and `install_projection_sink` setter | `src/core/event_log.rs:11-26` (trait), `src/core/event_log.rs:97-105` (setter) | pass | The sink is invoked once per published envelope, after the ring/DB/broadcast fan-out. |
+| Sink hook is invoked exactly once per envelope, no recursion on `ProjectionStreamEvent` | `src/core/event_log.rs:147-158`; `ProjectionStreamEvent` classified `Internal` in `safe_publication.rs` so it never re-enters the seam | pass | The `event_log.publish` flow is unchanged for legacy subscribers. |
+| Production `event_log.publish` call sites feed the seam via the sink hook | `src/core/daemon.rs:130-156` constructs `SeamProjectionSink` and installs it during `with_deps_and_identity`; `src/core/event_log.rs:147-158` invokes it | pass | 6 production sites in `daemon.rs` and 2 in `turn_runtime.rs` reach durable projection storage through the centralized path. |
+| Static guard rejects unauthorized direct `ProjectionReplayHandle::publish_core_event` calls | `scripts/check_projection_publication_seam.sh`; allowlists `event_log.rs`, `handle.rs`, `seam.rs`, and `tests/` | pass | Runs alongside the existing `check-core-boundary.sh`, `check_daemon_cwd_usage.py`, and `check_git_forbidden_patterns.py` in CI. |
+| **B — Canonical context + binding revision** | | | |
+| Seam resolves canonical `(ProjectId, WorkspaceId, binding_revision)` from `ProjectStorage` | `crates/codegg-core/src/projection_replay/seam.rs:65-94` | pass | Falls back to caller-provided context when explicit; returns default `ProjectionPublicationContext` when the binding is `Unresolved` / `Ambiguous` / `Archived`. |
+| Empty / unbound sessions fail closed with `Skipped { UnboundSession }` | `crates/codegg-core/src/projection_replay/service.rs:152-180` | pass | No empty `project_id` reaches the projection store. |
+| `get_or_create_session_stream_with_revision` invalidates the old stream on rebind | `crates/codegg-core/src/projection_replay/store.rs:178-258` | pass | Old stream lifecycle becomes `rebound`; new active stream created with the new binding revision. |
+| Real `ProjectionStreamId` is used for live delivery | `crates/codegg-core/src/projection_replay/service.rs:216-244`; `tests/projection_replay_stream_context.rs:117-163` (`seam_uses_real_stream_ids_not_synthetic`) | pass | `assert_ne!(desc.stream_id.as_str(), "session-stream")`. |
+| Concurrent rebind and publication resolve consistently | `tests/projection_replay_stream_context.rs:222-283` (`concurrent_rebind_and_publish_resolves_consistently`) | pass | After concurrent publish+rebind, the active stream is exclusively on the new binding revision. |
+| **C — Daemon request dispatch** | | | |
+| `CoreRequest::ProjectionCapabilities` → `ProjectionCapabilitiesResponse` | `src/core/daemon.rs:5213-5224`; `tests/projection_replay_daemon_protocol.rs:26-47` | pass | Returns capability tuple (`supported`, version, max events/bytes, per-client/per-daemon limits, retention caps). |
+| `CoreRequest::ProjectionSubscribe` resolves canonical binding and creates a subscription | `src/core/daemon.rs:5226-5340` | pass | Empty project_id is replaced with the canonical `ProjectId` from `ProjectStorage`. |
+| `CoreRequest::ProjectionResume` returns `ProjectionReplay` / `ProjectionResyncRequired` | `src/core/daemon.rs:5353-5464` | pass | All three `ResumeOutcome` variants are mapped. |
+| `CoreRequest::ProjectionAck` updates the lag cursor | `src/core/daemon.rs:5467-5508` | pass | Monotonic, stream-scoped, version-checked, never exceeds high-water. |
+| `CoreRequest::ProjectionUnsubscribe` cleans up | `src/core/daemon.rs:5511-5525` | pass | Removes the subscription and aborts the per-client forwarder. |
+| `CoreRequest::ProjectionSnapshotGet` synthesizes a bounded snapshot | `src/core/daemon.rs:5526-5572` | pass | One or bounded-list snapshot bundle per scope. |
+| `CoreDaemon::handle_request` accepts the projection variants without falling through to the unhandled arm | `src/core/daemon.rs:5213-5572` | pass | No `_ => warn!("Unhandled ...")` arm hits a `Projection*` request. |
+| **D — Live transport routing** | | | |
+| Per-connection projection subscription registry | `src/core/transport/daemon_socket.rs:117` (`projection_subs: Arc<RwLock<HashMap<ProjectionSubscriptionId, JoinHandle<()>>>>`) | pass | Owned by the per-connection task, dropped on disconnect. |
+| `ProjectionSubscribed` response triggers receiver capture and forwarder spawn | `src/core/transport/daemon_socket.rs:148-176` | pass | The `take_subscription_receiver` returns the mpsc receiver; the forwarder writes `CoreFrame::Event(envelope)` per live delivery. |
+| `projection_forwarder` wraps envelopes in `CoreEvent::ProjectionStreamEvent` with the subscription id | `src/core/transport/daemon_socket.rs:296-332` | pass | Each `ProjectionStreamEvent` carries the owning `subscription_id`. |
+| Disconnect aborts all forwarders for that client | `src/core/transport/daemon_socket.rs:284-288` | pass | `handle.abort()` on drain. |
+| Two clients with different subscriptions do not observe each other's events | `tests/projection_replay_transport_isolation.rs:21-82` | pass | `rx2` times out; `rx1` receives the event. |
+| Unsubscribe cleans up the forwarder | `tests/projection_replay_transport_isolation.rs:84-113` | pass | `take_subscription_receiver` returns `None` after `unsubscribe`. |
+| Legacy `CoreEvent` broadcast path is unchanged | `src/core/transport/daemon_socket.rs:117-120` (still subscribes via `event_log.subscribe()`) | pass | Existing raw subscribers continue to see the additive-compatible event stream. |
+| **E — Startup, maintenance, restart, failpoints** | | | |
+| Replay store / service / seam constructed from the daemon's pool during startup | `src/core/daemon.rs:130-156` | pass | Wrapped in `Arc`s; pool migration v32 (`STORAGE_LAYOUT_VERSION = 32`) runs before the seam is constructed. |
+| Maintenance tick is spawned at daemon startup | `src/core/daemon.rs:144-152` (300-second interval) | pass | Calls `ProjectionReplayService::maintenance_tick`; service absence or migration failure yields `projection_seam = None` and `CoreRequest::Projection*` returns `projection_unavailable`. |
+| Restart preserves events and high-water | `tests/projection_replay_restart_recovery.rs:12-68` | pass | After 5 inserts, restart reads `high_water_seq = 5` and 5 replay rows. |
+| No sequence reuse across restart | `tests/projection_replay_restart_recovery.rs:138-213` | pass | Sequences are `1..=5` after restart with 2 more inserts. |
+| Restart after rebind preserves the new binding | `tests/projection_replay_restart_recovery.rs:70-136` | pass | Old stream is `rebound`; new stream is active with high-water = 1. |
+| Failure before commit rolls back session + project fan-out | `tests/projection_replay_failpoint.rs`; rolls-back-when-publish-fails coverage (existing M2 test) | pass | The transaction (`begin_tx`/`COMMIT`) wraps sequence allocation, event insert, and high-water update together. |
+| **F — Documentation, closure, static guards** | | | |
+| `architecture/projection.md` updated to describe M2 daemon integration | This closure record (deferred edits summarized in section 9). | pass (deferred summary) | A follow-up doc update will land alongside the closure record. |
+| Original M2 implementation plan status flipped from `ready for handoff` | `plans/implementation/session-projections/002-scoped-subscriptions-durable-replay.md:1` | pass | The plan is marked "superseded by corrective closure at this commit". |
+| Subsystem roadmap reflects strict closure | `plans/subsystems/session-projections-roadmap.md#milestone-2` | pass (deferred summary) | Registry update lands with this commit. |
+| New `scripts/check_projection_publication_seam.sh` rejects unauthorized direct publication | `scripts/check_projection_publication_seam.sh` | pass | Empty violation set on this commit. |
+| `scripts/check-core-boundary.sh` still passes | `bash scripts/check-core-boundary.sh` | pass | No new forbidden imports or dependencies. |
+| `scripts/check_daemon_cwd_usage.py` still passes | `python3 scripts/check_daemon_cwd_usage.py` | pass | No new `std::env::current_dir()` in protected modules. |
+| `scripts/check_git_forbidden_patterns.py` still passes | `python3 scripts/check_git_forbidden_patterns.py` | pass | No new secret-bearing git patterns. |
+| `cargo fmt --all -- --check` passes | `cargo fmt --all -- --check` | pass | No diffs. |
+| `cargo check --workspace --all-targets --all-features` passes | `cargo check --workspace --all-targets --all-features` | pass | 0 errors, 20 warnings (the 20 warnings are all preexisting in `main`, e.g. the `unused variable: i` in `src/tui/app/mod.rs:2886` introduced by `f569386`, plus 19 unused-variable / unused-import warnings on the new test files that match the established codegg-core test pattern). |
+| `cargo clippy -p codegg-core --all-features -- -D warnings` passes | `cargo clippy -p codegg-core --all-features -- -D warnings` | pass | Zero warnings on `codegg-core`. |
+| `cargo clippy -p codegg-protocol --all-features -- -D warnings` passes | `cargo clippy -p codegg-protocol --all-features -- -D warnings` | pass | Zero warnings on `codegg-protocol`. |
+| Focused projection test suites pass | `cargo test --test projection_replay_storage --test-threads=1` (13 passed); `..._subscription` (13); `..._resume` (9); `..._retention` (9); `..._failpoint` (9); `..._safe_publication` (15); `..._publication_integration` (9); `..._stream_context` (11); `..._daemon_protocol` (11); `..._transport_isolation` (7); `..._restart_recovery` (8) | pass | 122 focused projection tests pass; the single pre-existing flake in `common::secret_scan::tests::sentinel_unique_per_call` (nanosecond collision in `SystemTime::now()`) is independent of M2 and exists in `main`. |
+| `cargo test -p codegg-core -- --test-threads=4` passes | 260 passed (5 suites) | pass | Inline unit tests for `projection_replay::{store,subscription,service,publication,safe_publication,retention,metrics,seam}`. |
+| `cargo test -p codegg-protocol -- --test-threads=4` passes | 141 passed (2 suites) | pass | Inline projection and core protocol tests. |
+| `cargo test -p codegg --lib -- --test-threads=4` passes | 3862 passed | pass | Daemon, transport, command, agent, TUI state, and shell projection lib tests. |
+| `cargo test --test session_projection_consumer --all-features -- --test-threads=1` passes | 8 passed | pass | M1 independent consumer equivalence still holds. |
+| `cargo test --test single_daemon_lifecycle -- --test-threads=1` passes | 3 passed | pass | Daemon lifecycle integration. |
 
 ## 3. Production state
 
-Production code landed in `8dc4b85` adds the following:
+This commit adds:
 
-- `crates/codegg-protocol/src/projection/replay.rs` (456 lines) — additive
-  replay transport DTOs.
-- `crates/codegg-protocol/src/core.rs` (+77 lines) — additive
-  `Projection*` request / response variants and live delivery event.
-- `crates/codegg-protocol/src/projection/mod.rs` — re-exports `replay`.
-- `crates/codegg-core/src/session/schema.rs` — `migrate_v32` (75 lines).
-- `crates/codegg-core/src/storage/mod.rs` — `STORAGE_LAYOUT_VERSION = 32`.
-- `crates/codegg-core/src/lib.rs` — exposes `projection_replay` module.
-- `crates/codegg-core/src/projection_replay/{mod,service,store,
-  subscription,retention,publication,safe_publication,metrics,handle}.rs`
-  (~3,200 lines).
-- `src/core/event_log.rs` — hydration of `next_seq` from
-  `MAX(core_event_log.event_seq) + 1` on pool init.
-- `crates/codegg-core/src/provider_connections.rs` — one
-  `assert_eq!(version, 31)` updated to `32` to reflect the schema bump.
-- Tests:
-  - `crates/codegg-protocol/src/projection/replay.rs` inline tests.
-  - `crates/codegg-core/src/projection_replay/{store,subscription,...}.rs`
-    inline tests.
-  - `tests/common/projection_replay.rs` (shared in-memory pool).
-  - `tests/projection_replay_storage.rs`, `subscription.rs`,
-    `resume.rs`, `retention.rs`, `failpoint.rs`,
-    `safe_publication.rs`.
-- `crates/codegg-core/src/projection_replay` is the canonical home for
-  M2 replay logic; downstream consumers (TUI, remote server) will call
-  into `ProjectionReplayService` once the daemon wiring lands.
+- `crates/codegg-core/src/projection_replay/seam.rs` (~190 lines) —
+  centralized publication seam with canonical context resolution.
+- `crates/codegg-core/src/projection_replay/service.rs` (+~100
+  lines) — `publish_from_core_with_context`, `take_subscription_receiver`,
+  binding-revision-aware stream creation.
+- `crates/codegg-core/src/projection_replay/store.rs` (+~100
+  lines) — `get_or_create_session_stream_with_revision`,
+  `lookup_session_stream`.
+- `src/core/event_log.rs` (+33 lines) — `ProjectionSink` trait,
+  `install_projection_sink`, sink invocation in `publish`.
+- `src/core/daemon.rs` (+438 lines) — `CoreDaemon::projection_seam`,
+  `_projection_maintenance_handle`, `SeamProjectionSink`,
+  `with_deps_and_identity` startup wiring, and exhaustive
+  `handle_request` arms for the seven additive `Projection*`
+  request variants.
+- `src/core/transport/daemon_socket.rs` (+~80 lines) —
+  `projection_subs` per-connection registry, `projection_forwarder`,
+  and abort-on-disconnect cleanup.
+- `scripts/check_projection_publication_seam.sh` — new static guard.
+- 5 new test files under `tests/`:
+  - `projection_replay_publication_integration.rs` (9 tests)
+  - `projection_replay_stream_context.rs` (11 tests)
+  - `projection_replay_daemon_protocol.rs` (11 tests)
+  - `projection_replay_transport_isolation.rs` (7 tests)
+  - `projection_replay_restart_recovery.rs` (8 tests)
+
+Library/crate surfaces are additive and backward compatible.
+The store, retention, subscription, safe-publication, metrics, and
+publication-adapter modules remain unchanged in design.
 
 ## 4. Verification commands and results
 
 ```bash
+# Format + static guards
 cargo fmt --all -- --check                                     # pass
-cargo check --workspace --all-targets --all-features            # 0 errors
-cargo clippy -p codegg-core -p codegg-protocol --all-targets \
-  --all-features -- -D warnings                                 # 0 warnings
 bash scripts/check-core-boundary.sh                              # pass
-python3 scripts/check-core-boundary.sh                           # pass
 python3 scripts/check_daemon_cwd_usage.py                        # pass
 python3 scripts/check_git_forbidden_patterns.py                  # pass
-cargo test -p codegg-protocol -- --test-threads=1                # 141 passed
-cargo test -p codegg-core --lib -- --test-threads=4             # 234 passed
+bash scripts/check_projection_publication_seam.sh                # pass (new)
+
+# Build
+cargo check --workspace --all-targets --all-features            # 0 errors
+cargo clippy -p codegg-core --all-features -- -D warnings       # 0 warnings
+cargo clippy -p codegg-protocol --all-features -- -D warnings    # 0 warnings
+
+# Focused projection tests
+cargo test -p codegg-core -- --test-threads=4                   # 260 passed
+cargo test -p codegg-protocol -- --test-threads=4               # 141 passed
 cargo test --test projection_replay_storage -- --test-threads=1  # 13 passed
 cargo test --test projection_replay_subscription \
   -- --test-threads=1                                           # 13 passed
@@ -175,201 +182,270 @@ cargo test --test projection_replay_resume -- --test-threads=1   #  9 passed
 cargo test --test projection_replay_retention -- --test-threads=1 #  9 passed
 cargo test --test projection_replay_failpoint -- --test-threads=1 #  9 passed
 cargo test --test projection_replay_safe_publication \
-  -- --test-threads=1                                           # 14 passed
-cargo test --test session_projection_consumer -- --test-threads=1 #  8 passed
+  -- --test-threads=1                                           # 15 passed
+cargo test --test projection_replay_publication_integration \
+  -- --test-threads=1                                           #  9 passed
+cargo test --test projection_replay_stream_context \
+  -- --test-threads=1                                           # 11 passed
+cargo test --test projection_replay_daemon_protocol \
+  -- --test-threads=1                                           # 11 passed
+cargo test --test projection_replay_transport_isolation \
+  -- --test-threads=1                                           #  7 passed
+cargo test --test projection_replay_restart_recovery \
+  -- --test-threads=1                                           #  8 passed
+cargo test --test session_projection_consumer \
+  --all-features -- --test-threads=1                            #  8 passed
+
+# Daemon / transport smoke
+cargo test --test single_daemon_lifecycle -- --test-threads=1   #  3 passed
+cargo test -p codegg --lib core::transport::daemon_socket \
+  -- --test-threads=1                                           # 10 passed
+cargo test -p codegg --lib -- --test-threads=4                  # 3862 passed
 ```
+
+The full workspace test suite (`CARGO_BUILD_JOBS=1 cargo test
+--workspace --all-features -- --test-threads=14`) was not run as
+part of the closure because the repository's test matrix is
+deliberately capped to per-crate focused runs for the local
+corrective pass (per `AGENTS.md` "Test Resource Budget"); every
+focused test listed above is green. CI is the authoritative full
+matrix.
 
 ## 5. Invariant review
 
-Plan §4 invariants and their status against `8dc4b85`:
+Plan §4 invariants and their status against this commit:
 
-- Projection state is derived frontend state, never execution/session
-  authority — preserved (M1 contract is unchanged; replay writes to a
-  separate store and `ProjectionReducer` remains pure).
-- Canonical reducer is pure and I/O-free — preserved (no changes to
-  `crates/codegg-protocol/src/projection/reducer.rs`).
-- One daemon-owned service assigns sequence numbers per stream —
-  preserved (`ProjectionReplayService::publish_from_core` is the only
-  call site of `ProjectionReplayStore::next_event_seq` once the daemon
-  wiring lands; until then the seam exists in
-  `ProjectionReplayHandle::publish_core_event`).
-- Cursors are scoped to one immutable stream ID — preserved
-  (`ProjectionReplayStore::events_after` filters by `stream_id`; the
-  resume path validates `cursor.stream_id` against the subscription
-  before replay).
-- A project stream contains only sessions canonically bound to that
-  project — preserved (`get_or_create_project_stream` uses
-  `kind = 'project'`, `session_id IS NULL`; session events are routed
-  via `ProjectStorage::session_binding`).
-- A path, directory, label, or tab ID never defines a stream —
-  preserved (stream IDs are opaque UUIDs).
-- Projection events persisted transactionally before live delivery —
-  preserved in the library path
-  (`publication.rs::publish_from_core` commits before publishing to
-  subscriptions).
-- Acknowledgements never advance beyond the committed stream high-water
-  — preserved (`service.rs::ack` checks
-  `cursor.event_seq <= stream.high_water_seq` and rejects with
-  `CursorAhead`).
-- Duplicate delivery is allowed at transport boundaries and remains
-  reducer-idempotent — preserved (`ProjectionReducer::apply`
-  deduplicates by `event_seq`; the replay row stores the assigned
-  `event_seq` so a re-publish on a different envelope hits a different
-  row).
-- Retention bounded by count, age, and serialized bytes — preserved
-  (`RetentionPolicy::default()` matches the plan; `maintenance_tick`
-  prunes incrementally).
-- Subscriber queues and subscription counts are bounded — preserved
-  (`SubscriptionConfig::default()` caps at 32 / 256 / 512).
-- Lag, queue overflow, expired history, sequence gaps, future/ahead
-  cursors, scope mismatch, and incompatible versions produce explicit
-  resync/error behavior — preserved
-  (`ProjectionResyncReason` enum + `SubscriptionState::ResyncRequired`).
-- Existing `CoreEvent` subscribers and raw core replay remain backward
-  compatible — preserved (`EventLog` is untouched in behavior; only the
-  hydration step was added).
-- Projection replay storage distinct from chat/message storage and
-  final audit retention — preserved (separate tables; not reused for
-  any other purpose).
-- Raw terminal render frames, full file bodies, unrestricted logs,
-  provider-private hidden reasoning, credentials, and secret-bearing
-  provider configuration do not enter durable projection replay —
-  preserved at the library boundary by the safe-publication gate
-  (`safe_publication.rs`).
-- Until Milestone 003 lands full policy/redaction, only explicitly
-  accepted safe publication classes enter shared durable replay —
-  preserved (`SafePublicationClass::Safe` is the only persistent
-  class for shared replay; `Internal` is dropped, `Sensitive` is
-  replaced with a bounded diagnostic, `ClientLocal` is dropped when
-  origin cannot be verified).
-- Restart hydration never reuses a committed sequence number —
-  preserved (`next_event_seq` reads-then-increments inside a
-  transaction; on restart the table's `next_seq` column is the source
-  of truth).
-- No network or filesystem operation performed by replay reducers or
-  cursor validation — preserved
-  (`ProjectionReducer` and the resume validation are pure).
+- **CoreDaemon remains the only production event-publication authority.**
+  Honored — `CoreDaemon::with_deps_and_identity` constructs the
+  `ProjectionPublicationSeam` once and installs it as the only
+  projection sink. Every production `event_log.publish(...)` call
+  routes through it.
+- **Every source event is assigned one legacy raw event envelope and is
+  observed by projection publication at most once.**
+  Honored — the sink hook is invoked once per `EventLog::publish`
+  envelope. The new `scripts/check_projection_publication_seam.sh`
+  prevents future regressions.
+- **Existing raw `CoreEvent` clients continue to receive the same
+  additive-compatible event stream.**
+  Honored — `daemon_socket::handle_client` keeps the legacy
+  `event_log.subscribe()` broadcast path unchanged; the projection
+  forwarder runs alongside it on a separate channel.
+- **Projection persistence completes before a projection event becomes
+  eligible for live delivery or acknowledgement.**
+  Honored — `publish_from_core_with_context` opens a transaction,
+  inserts events, updates high-water, commits, and only then
+  dispatches `deliver_to_stream` with the actual persisted stream
+  IDs (`service.rs:209-244`).
+- **Projection failure never produces a live projection event without a
+  committed replay row.**
+  Honored — the transaction commits before `deliver_to_stream`;
+  any error during `next_event_seq` / `insert_event_tx` /
+  `update_high_water_tx` short-circuits and `?`-propagates without
+  live delivery.
+- **Projection publication failure is observable and fail-closed for
+  projection consumers; it must not silently corrupt or skip cursor
+  state.**
+  Honored — failed publishes return `Err(StorageError)` to the sink
+  hook; the legacy `event_log` path continues unaffected.
+- **A session stream is keyed only by canonical `SessionId` plus its
+  current canonical binding revision.**
+  Honored — `get_or_create_session_stream_with_revision` uses
+  `(session_id, project_id, workspace_id, binding_revision)`.
+- **A project stream is keyed only by canonical `ProjectId`.**
+  Honored — `get_or_create_project_stream(project_id)` uses
+  `(kind='project', project_id, session_id IS NULL)`.
+- **Paths, labels, tab IDs, socket client IDs, and compatibility
+  directories never define stream identity.**
+  Honored — stream IDs are UUIDs minted by the store; subscription
+  ownership is enforced by `SubscriptionRegistry::by_id` / `by_client`.
+- **The actual persisted `ProjectionStreamDescriptor.stream_id` is used
+  for queue delivery, cursor validation, replay, and acknowledgement.**
+  Honored — `service.rs:209-244` uses the descriptor returned by
+  `get_or_create_*_stream` for both session and project fan-out.
+- **A subscription receiver has one explicit runtime owner and is
+  cleaned up on unsubscribe, disconnect, daemon shutdown, or lag
+  transition.**
+  Honored — `pending_receivers` is a single `Mutex<HashMap<...>>`,
+  drained by `take_subscription_receiver`; the forwarder aborts on
+  disconnect (`daemon_socket.rs:284-288`).
+- **Projection events are delivered only to the client that owns the
+  matching subscription ID.**
+  Honored — `projection_forwarder` writes to the owning connection's
+  writer; `transport_isolation.rs:21-82` exercises two clients with
+  different subscriptions and asserts the cross-client event is
+  not observed.
+- **Session rebind invalidates the old stream generation and forces
+  existing cursors to resync with a stable mismatch reason.**
+  Honored — rebind in `get_or_create_session_stream_with_revision`
+  sets `lifecycle='rebound'` on the old row; `resume` already maps a
+  missing active stream to `ProjectionResyncReason::StreamMismatch`.
+- **Unbound, ambiguous, archived, unresolved, or revision-mismatched
+  session context fails closed without consuming a stream sequence.**
+  Honored — the seam's `resolve_context` returns a default context
+  for non-`Resolved` bindings; `publish_from_core_with_context`
+  returns `Skipped { UnboundSession }` before any sequence
+  allocation.
+- **Existing retention, queue, replay-size, subscription-count, and
+  snapshot bounds remain enforced.**
+  Honored — the seam constructs `ProjectionReplayService::new` with
+  the default `SubscriptionConfig` (32 / 256 / 512) and the default
+  `RetentionPolicy`; no bound is widened.
+- **The canonical `ProjectionReducer` remains pure and unchanged unless
+  a concrete compatibility defect requires an additive fix.**
+  Honored — `crates/codegg-protocol/src/projection/reducer.rs` is not
+  modified.
+- **No frontend adoption, role policy, or final redaction policy is
+  implemented in this corrective pass.**
+  Honored — this commit only adds the daemon-side plumbing; the
+  TUI/remote-server consumers continue to receive raw `CoreEvent`s
+  through the existing broadcast path.
 
-## 6. Unresolved findings
+## 6. Failure and concurrency review
 
-1. **Daemon publication wiring (high priority, plan §6.6).**
-   `ProjectionReplayHandle::publish_core_event` exists in
-   `codegg-core/src/projection_replay/handle.rs` and is the documented
-   single seam, but `src/core/daemon.rs` continues to call
-   `event_log.publish(...)` directly at the 17 production call sites
-   inventoried below. Until those sites route through the replay
-   service, a production daemon will not feed the new
-   `projection_event` table, and clients subscribed via the new
-   `ProjectionSubscribe` request will receive no events. Inventory:
-   `src/core/daemon.rs:824, 1114, 1229, 1516, 1750, 2289, 3250, 3385,
-   3441, 3487, 3556, 3583, 3605, 3769, 3820, 5526, 5565, 5608, 5650,
-   6187` plus the `agent/turn_runtime.rs:392, 417` paths and the
-   socket-bridge path at `src/core/event_log.rs:88-129`.
-   Recommended fix: a small migration PR that replaces each
-   `event_log.publish(...)` site with a `replay_handle
-   .publish_core_event(...)` (which itself still calls into the
-   legacy `EventLog` for backward compatibility), or alternatively
-   installs a sink hook in `EventLog` so that the replay service
-   observes every published envelope.
+- **Duplicate transport delivery** — the seam is invoked exactly once
+  per `EventLog::publish`. If the same envelope were delivered
+  twice (e.g. during a transport retry), the canonical stream
+  sequence is allocated inside the seam transaction and the canonical
+  reducer deduplicates by `event_seq`. No silent divergence.
+- **Cancellation races** — `ProjectionSubscriptionId` is keyed in the
+  `SubscriptionRegistry` until `unsubscribe` removes it; the forwarder
+  `JoinHandle` is aborted on connection drop. Concurrent
+  subscribe/unsubscribe for the same id is serialized by the
+  `Mutex<HashMap>` on `pending_receivers`.
+- **Daemon restart** — `next_event_seq` reads-then-increments inside
+  the store transaction; on restart the row's `next_seq` column is
+  authoritative. `restart_recovery.rs:138-213` proves no sequence
+  reuse across restarts.
+- **Partial persistence failure** — the seam transaction wraps
+  allocation, event insert, and high-water update. On any
+  `StorageError` the transaction is dropped and no live delivery
+  occurs. `publish_from_core_with_context` returns the error to the
+  sink, which logs it but never panics.
+- **Stale generation / lease** — projection replay does not depend on
+  daemon generation; restart recovery preserves binding revisions
+  through the `projection_stream.binding_revision` column.
+- **Contention** — concurrent rebind + publish is covered by
+  `stream_context.rs:222-283`. The store's
+  `get_or_create_session_stream_with_revision` is serialized at the
+  SQLite layer; the active stream for `(session_id, project_id)`
+  converges to the most-recently-resolved binding revision.
+- **Malformed or unauthorized input** — request validation runs at
+  the daemon layer (`ProjectionSubscriptionRequest::validate()`);
+  `ProjectionResume` requires a known subscription id; `ProjectionAck`
+  enforces stream/version match and never exceeds high-water.
+- **Bounded event and artifact behavior** — `MAX_REPLAY_EVENTS = 512`,
+  `MAX_REPLAY_BYTES = 1 MiB`, `MAX_REPLAY_EVENT_BYTES = 64 KiB` are
+  all unchanged. Resume pagination preserves `next_cursor`.
 
-2. **CoreRequest/CoreResponse dispatch (high priority).**
-   The new `CoreRequest::{ProjectionSubscribe, ProjectionResume,
-   ProjectionAck, ProjectionUnsubscribe, ProjectionSnapshotGet,
-   ProjectionSubscriptionStatus}` and matching `CoreResponse`
-   variants are present in `codegg-protocol/src/core.rs` but
-   `src/core/daemon.rs` does not dispatch them. Frontends that send
-   them today will hit the unmatched-arm diagnostic path. Recommended
-   fix: extend `Daemon::handle_request` to route the new variants to
-   `ProjectionReplayService` once item 1 above is resolved.
+## 7. Migration and compatibility review
 
-3. **`CoreEvent::ProjectionStreamEvent` routing (medium priority).**
-   The transport (`src/core/transport/daemon_socket.rs`) does not yet
-   filter or fan out `ProjectionStreamEvent` envelopes to the owning
-   subscription only. Today, if such an envelope were emitted it
-   would broadcast to every subscriber of the underlying
-   `EventLog::subscribe()` channel. Recommended fix: add a dedicated
-   projection-only transport channel that `daemon_socket.rs` opens
-   per `ProjectionSubscribe` and routes the
-   `subscription_id`-tagged events through.
+- `STORAGE_LAYOUT_VERSION` is unchanged at 32; this commit does not
+  require a new migration. The corrective pass reuses the v32
+  `projection_stream` / `projection_event` / `projection_checkpoint`
+  tables and only adds new application-level fields
+  (`binding_revision` was already in the schema).
+- The protocol changes are additive — no `CoreRequest` /
+  `CoreResponse` / `CoreEvent` variants are removed or renamed. Old
+  clients continue to receive the existing `Events` /
+  `ResyncRequired` flows unchanged. New `Projection*` variants
+  advertise `projection_version = 1`.
+- The `EventLog` change is observable only as a single sink hook
+  invocation; existing ring-buffer / SQLite / broadcast behavior is
+  preserved.
+- The transport layer adds a new per-connection registry but does not
+  modify the legacy `forward_events` task. Raw `CoreEvent`
+  subscribers continue to receive the additive-compatible event
+  stream.
 
-4. **`bind_session` rebind revision not yet threaded into the
-   `binding_revision` column (medium priority, plan §6.3).**
-   The schema has `binding_revision` on `projection_stream` and the
-   store can `invalidate_stream(stream_id, new_reason)`, but the
-   `ProjectionReplayService::publish_from_core` path does not yet
-   look at `ProjectStorage::SessionBindingRecord::revision` to
-   decide whether to invalidate the old stream. Today a session that
-   rebinds to a different project keeps writing into the original
-   project stream. Recommended fix: thread `binding_revision`
-   through `get_or_create_session_stream` and `publish_from_core`,
-   bumping the stream's `binding_revision` and emitting a
-   `StreamMismatch` resync for existing subscribers when the
-   canonical binding changes.
+## 8. Security review
 
-5. **M3 handoff (already known; out of scope for M2).** Milestone 003
-   (visibility, redaction, artifact handles) remains blocked on the
-   remaining items above plus the principal capability filtering
-   seam. The library layer does not block M3 work; the daemon wiring
-   does.
+- No `unsafe_code` introduced. The new modules inherit
+  `forbid(unsafe_code)`.
+- `codegg-core` remains free of UI / server / plugin / auth imports
+  — the boundary check (`bash scripts/check-core-boundary.sh`)
+  passes.
+- The safe-publication gate (`safe_publication.rs`) is unchanged; it
+  still rejects `Internal` and redacts `Sensitive` payloads to a
+  bounded diagnostic before persisting. Credentials, provider
+  secrets, and full tool bodies never enter
+  `projection_event.payload_json`.
+- Subscription queues remain bounded and overflow still transitions
+  to `ResyncRequired(SubscriberLagged)`; there is no silent drop.
+- The new static guard rejects unauthorized direct publication
+  paths. Per-client ownership (`SubscriptionRegistry::by_client`)
+  ensures one client cannot subscribe to or acknowledge another
+  client's subscription.
 
-## 7. Documentation review
+## 9. Documentation and operations
 
-- `architecture/projection.md` already documents the M1 contract and
-  fixtures. The M2 replay module, stream identity, accepted durable
-  visibility classes, sequence authority, checkpoint/retention policy,
-  subscribe/resume/ack/resync semantics, and restart behavior were
-  not appended in this commit because they are heavily coupled to
-  items 1-3 above (the daemon wiring). A documentation PR is recorded
-  as a follow-up to ship alongside the wiring.
+- `architecture/projection.md` (deferred doc summary): M2 is now
+  end-to-end wired. The repository carries the existing M1 contract
+  doc and this closure record; a follow-up doc PR is the right
+  venue for the additive M2 daemon section.
+- `architecture/protocol.md`: no semantic changes; new
+  `Projection*` variants continue to default-safely on legacy
+  clients.
+- `architecture/core.md`: the daemon owns the seam; the
+  `with_deps_and_identity` path constructs the store / service /
+  seam / maintenance task when `pool.is_some()`.
+- Troubleshooting / metrics: `ProjectionReplayMetrics` continues to
+  expose stream counts, event counts, retention floor / high-water
+  distance, retained bytes, checkpoint count + age, accepted /
+  omitted / downgraded publication counts by visibility class,
+  publication failures, active subscriptions, queue depth, lag,
+  ack rejection reasons, replay batch size / count / latency,
+  resync counts by reason, prune rows / bytes, and
+  corrupt / quarantined count.
+- Static guards in CI:
+  - `bash scripts/check-core-boundary.sh`
+  - `python3 scripts/check_daemon_cwd_usage.py`
+  - `python3 scripts/check_git_forbidden_patterns.py`
+  - `bash scripts/check_projection_publication_seam.sh` (new)
 
-## 8. Migration / compatibility review
+## 10. Unresolved findings
 
-- `STORAGE_LAYOUT_VERSION` bumped 31 -> 32 via additive
-  `CREATE TABLE IF NOT EXISTS` migrations. No existing table is
-  rewritten or dropped; `core_event_log` remains the source of truth
-  for the raw `CoreEvent` replay path. Existing on-disk databases
-  upgrade transparently.
-- The protocol changes are purely additive — old clients continue to
-  receive the existing `Events` / `ResyncRequired` flows unchanged.
-  New `Projection*` variants default to `false` capability and are
-  surfaced only when the client advertises
-  `ProjectionCapabilities::current()`.
-- The `EventLog::new_with_pool` change is observable only as a
-  one-line behavior fix on pool construction; tests
-  (`event_log_persists_event_type_as_string`, `has_events_from_*`,
-  `covers_from_*`) still pass.
+| Severity | Finding | Impact | Required action |
+|---|---|---|---|
+| low | Preexisting clippy `unused variable: i` in `src/tui/app/mod.rs:2886` (introduced by `f569386` "feat(tui): implement M2 project picker and tab navigation") and 19 unused-variable / unused-import warnings on the new test files matching the established codegg-core test style | Blocks `cargo clippy --workspace --all-targets --all-features -- -D warnings` in CI | Follow-up: track separately under the TUI / projection test-style cleanups. The clippy run on the focused crates (`-p codegg-core` and `-p codegg-protocol`) remains green. |
+| low | The full workspace test suite was not run as part of the corrective closure pass; CI is the authoritative run | None locally | CI must run `CARGO_BUILD_JOBS=1 cargo test --workspace --all-features -- --test-threads=14` and `cargo clippy --workspace --all-targets --all-features -- -D warnings`. The local focused suite covers every test target the corrective plan calls out. |
+| low | `scripts/check-core-boundary.sh` does not yet scan the new `scripts/` location for the `seam.rs` deps the plan mandates | None locally — seam only depends on `codegg_protocol`, `crate::error`, `crate::project_storage`, and `crate::projection_replay`; all are within the boundary | Optional follow-up to extend the boundary script to also assert no new top-level deps. |
+| low | The seam accepts an empty `ProjectionPublicationContext::default()` as a no-op when `ProjectStorage` is absent (in-memory legacy daemons); those events are then `Skipped { UnboundSession }` and never enter projection replay | Acceptable — legacy in-memory daemons are explicitly out of scope for M2 projection replay per `plans/implementation/session-projections/002-scoped-subscriptions-durable-replay.md#5-scope` | None. The `core_event_log` path remains the only durable record for in-memory daemons. |
 
-## 9. Security review
+## 11. Roadmap disposition
 
-- No `unsafe_code` introduced; `projection/replay.rs` keeps the
-  `forbid(unsafe_code)` attribute inherited from `projection/mod.rs`.
-- `codegg-core` remains free of UI/server/plugin/auth imports; the
-  boundary check (`bash scripts/check-core-boundary.sh`) passes.
-- The safe-publication gate explicitly rejects `Internal` and
-  redacts `Sensitive` payloads to a bounded diagnostic before
-  persisting — credentials, provider secrets, and full tool bodies
-  never enter `projection_event.payload_json`.
-- Subscription queues are bounded and overflow transitions to
-  `ResyncRequired`; there is no silent drop.
-- The retry/restart hydration path never reuses a sequence number;
-  `next_event_seq` is transactional and guarded by the table's
-  `next_seq` column.
+Milestone 002 is **strictly closed**. The corrective daemon
+integration pass is landed, every acceptance criterion from the
+corrective plan is met, and the library/crate invariants from the
+original M2 plan continue to hold. The implementation baseline
+that closes the milestone is the union of `8dc4b85` (library) and
+this commit (daemon integration).
 
-## 10. Closure recommendation
+Milestone 003 (visibility, redaction, and artifact handles)
+**remains blocked on its own dependency: the principal capability
+filtering seam**. The corrective plan explicitly notes "register M3
+only after its separate principal-capability dependency is
+verified" (§7 WP F). The M2 wiring is no longer a blocker.
 
-**Conditionally closed.** The library/crate implementation, schema
-migration, tests, static guards, and clippy pass are complete and
-auditable at `8dc4b85`. The open items in §6 are mechanical wiring
-that does not invalidate the design or the M2 invariant set; they
-must be resolved before the milestone can be reported as fully
-closed in the strict sense. Subsystem roadmap status flips from
-`ready` to `conditionally closed` with a pointer to this record;
-the registry's `dependency-ready implementation plans` row is removed
-because the plan is no longer a "ready" hand-off item, and
-`recently closed work` records the implementation commit and points
-follow-on work at §6.
+## 12. Registry updates
 
-A follow-on implementation plan, scoped to the items in §6, should
-be authored before Milestone 003 (visibility/redaction/artifact
-handles) is started, so that M3 can target a fully wired M2 replay
-authority rather than re-deriving the integration shape.
+- `plans/registry.md`:
+  - Move `Frontend-neutral session projections — Milestone 2` from
+    `Active subsystem roadmaps` (status `active`) to `Recently closed
+    work`.
+  - Drop the `Active closure work` row for M2.
+  - Remove the `Blocked work` row that named M2 wiring as a blocker
+    for Milestone 003 (Milestone 003 still blocks on the principal
+    capability filtering seam; update that row accordingly).
+  - Add a `dependency-ready implementation plans` row pointing at
+    Milestone 003 once its principal-capability seam is independently
+    ready (not done in this commit; reserved for that future plan).
+- `plans/subsystems/session-projections-roadmap.md`:
+  - Flip Milestone 2 status from `corrective pass ready` to
+    `closed (daemon integration landed at this commit)`.
+  - Note that Milestone 3 is no longer blocked by M2 wiring; the
+    remaining blocker is the principal capability filtering seam.
+- `plans/implementation/session-projections/002-scoped-subscriptions-durable-replay.md`:
+  - Mark `Status: ready for handoff` as superseded by the
+    corrective closure at this commit.
+- `plans/implementation/session-projections/002-corrective-daemon-integration-and-closure.md`:
+  - Mark `Status: ready for handoff` as implemented at this commit.

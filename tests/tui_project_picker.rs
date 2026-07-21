@@ -14,10 +14,10 @@
 
 use codegg::protocol::dto::ProjectSummaryDto;
 use codegg::tui::app::state::project_picker::{
-    disambiguate_label, truncate_tab_label, PickerPhase, ProjectPickerState,
-    RegistrationDraft, MAX_OPEN_PROJECT_TABS, MAX_PICKER_VISIBLE_ROWS,
-    MAX_PROJECT_LIST_ITEMS, MAX_REGISTRATION_DESC_LEN, MAX_REGISTRATION_TAG_CHARS,
-    MAX_REGISTRATION_TAGS, MAX_TAB_LABEL_LEN,
+    disambiguate_label, truncate_tab_label, PickerPhase, ProjectPickerState, RegistrationDraft,
+    MAX_OPEN_PROJECT_TABS, MAX_PICKER_VISIBLE_ROWS, MAX_PROJECT_LIST_ITEMS,
+    MAX_REGISTRATION_DESC_LEN, MAX_REGISTRATION_TAGS, MAX_REGISTRATION_TAG_CHARS,
+    MAX_TAB_LABEL_LEN,
 };
 use codegg::tui::app::state::project_tabs::{ProjectTabState, ProjectTabs};
 use codegg::tui::app::state::ProjectTabId;
@@ -284,8 +284,7 @@ fn keybinding_collision_audit_default_bindings() {
             // All bindings in this file are produced by map.insert() in
             // build_bindings. A duplicate key with different actions is a
             // collision we want to catch.
-            let unique: HashSet<String> =
-                actions.iter().map(|a| format!("{:?}", a)).collect();
+            let unique: HashSet<String> = actions.iter().map(|a| format!("{:?}", a)).collect();
             if unique.len() > 1 {
                 panic!("keybinding collision at {}: {:?}", key, actions);
             }

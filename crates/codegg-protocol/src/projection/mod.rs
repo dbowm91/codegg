@@ -76,8 +76,9 @@ pub use reducer::{
 };
 pub use replay::{
     ProjectionAck, ProjectionCursor, ProjectionReplayBatch, ProjectionReplayLimits,
-    ProjectionResyncReason, ProjectionSnapshotBundle, ProjectionStreamDescriptor, ProjectionStreamId,
-    ProjectionStreamKind, ProjectionSubscriptionId, ProjectionSubscriptionRequest,
-    ProjectionSubscriptionState, ProjectionSubscriptionStatus, ReplaySubscriptionError,
+    ProjectionResyncReason, ProjectionSnapshotBundle, ProjectionStreamDescriptor,
+    ProjectionStreamId, ProjectionStreamKind, ProjectionSubscriptionId,
+    ProjectionSubscriptionRequest, ProjectionSubscriptionState, ProjectionSubscriptionStatus,
+    ReplaySubscriptionError,
 };
 pub use snapshot::SessionProjectionSnapshot;

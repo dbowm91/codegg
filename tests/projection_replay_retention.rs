@@ -37,10 +37,7 @@ async fn retention_prunes_old_events() {
         ..Default::default()
     };
 
-    let report = policy
-        .maintenance_tick(&store, 0)
-        .await
-        .unwrap();
+    let report = policy.maintenance_tick(&store, 0).await.unwrap();
 
     assert!(report.events_pruned > 0);
     let events = store.events_after(sid, 0, 100, u64::MAX).await.unwrap();
@@ -78,10 +75,7 @@ async fn checkpoint_written_when_interval_reached() {
         ..Default::default()
     };
 
-    let report = policy
-        .maintenance_tick(&store, 0)
-        .await
-        .unwrap();
+    let report = policy.maintenance_tick(&store, 0).await.unwrap();
 
     assert!(report.checkpoints_written > 0);
 }

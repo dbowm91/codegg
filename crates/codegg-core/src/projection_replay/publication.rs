@@ -30,11 +30,7 @@ pub fn projection_events_from_core(
                     output_tokens: None,
                 },
             };
-            Some((
-                session_id.clone(),
-                None,
-                event,
-            ))
+            Some((session_id.clone(), None, event))
         }
         CoreEvent::TurnTextDelta {
             session_id,
@@ -53,11 +49,7 @@ pub fn projection_events_from_core(
                     truncated: false,
                 },
             };
-            Some((
-                session_id.clone(),
-                None,
-                event,
-            ))
+            Some((session_id.clone(), None, event))
         }
         CoreEvent::ToolStarted {
             session_id,
@@ -82,11 +74,7 @@ pub fn projection_events_from_core(
                     duration_ms: None,
                 },
             };
-            Some((
-                session_id.clone(),
-                turn_id.clone(),
-                event,
-            ))
+            Some((session_id.clone(), turn_id.clone(), event))
         }
         CoreEvent::ToolCompleted {
             session_id,
@@ -105,11 +93,7 @@ pub fn projection_events_from_core(
                 duration_ms: 0,
                 completed_at: envelope.timestamp_ms,
             };
-            Some((
-                session_id.clone(),
-                turn_id.clone(),
-                event,
-            ))
+            Some((session_id.clone(), turn_id.clone(), event))
         }
         CoreEvent::PermissionPending {
             id,
@@ -128,11 +112,7 @@ pub fn projection_events_from_core(
                     resolved_at: None,
                 },
             };
-            Some((
-                session_id.clone(),
-                turn_id.clone(),
-                event,
-            ))
+            Some((session_id.clone(), turn_id.clone(), event))
         }
         CoreEvent::TurnCompleted {
             session_id,
@@ -145,11 +125,7 @@ pub fn projection_events_from_core(
                 stop_reason: stop_reason.clone(),
                 completed_at: envelope.timestamp_ms,
             };
-            Some((
-                session_id.clone(),
-                None,
-                event,
-            ))
+            Some((session_id.clone(), None, event))
         }
         CoreEvent::TurnFailed {
             session_id,
@@ -162,11 +138,7 @@ pub fn projection_events_from_core(
                 message: message.clone(),
                 failed_at: envelope.timestamp_ms,
             };
-            Some((
-                session_id.clone(),
-                turn_id.clone(),
-                event,
-            ))
+            Some((session_id.clone(), turn_id.clone(), event))
         }
         CoreEvent::SubagentStarted {
             session_id,
@@ -186,11 +158,7 @@ pub fn projection_events_from_core(
                     result_summary: None,
                 },
             };
-            Some((
-                session_id.clone(),
-                None,
-                event,
-            ))
+            Some((session_id.clone(), None, event))
         }
         CoreEvent::SubagentCompleted {
             session_id,
@@ -203,11 +171,7 @@ pub fn projection_events_from_core(
                 result_summary: result_summary.clone(),
                 completed_at: envelope.timestamp_ms,
             };
-            Some((
-                session_id.clone(),
-                None,
-                event,
-            ))
+            Some((session_id.clone(), None, event))
         }
         CoreEvent::SubagentFailed {
             session_id,
@@ -220,11 +184,7 @@ pub fn projection_events_from_core(
                 error: error.clone(),
                 failed_at: envelope.timestamp_ms,
             };
-            Some((
-                session_id.clone(),
-                None,
-                event,
-            ))
+            Some((session_id.clone(), None, event))
         }
         CoreEvent::FileChanged { path, action } => {
             let change = match action.as_str() {
@@ -246,11 +206,7 @@ pub fn projection_events_from_core(
                 change,
                 at: envelope.timestamp_ms,
             };
-            Some((
-                envelope.session_id.clone().unwrap_or_default(),
-                None,
-                event,
-            ))
+            Some((envelope.session_id.clone().unwrap_or_default(), None, event))
         }
         CoreEvent::RunStarted {
             session_id,
@@ -273,11 +229,7 @@ pub fn projection_events_from_core(
                     pinned: false,
                 },
             };
-            Some((
-                session_id.clone(),
-                None,
-                event,
-            ))
+            Some((session_id.clone(), None, event))
         }
         CoreEvent::RunCompleted {
             session_id,
@@ -292,11 +244,7 @@ pub fn projection_events_from_core(
                 summary: summary.clone(),
                 completed_at: envelope.timestamp_ms,
             };
-            Some((
-                session_id.clone(),
-                None,
-                event,
-            ))
+            Some((session_id.clone(), None, event))
         }
         CoreEvent::RunDenied {
             session_id,
@@ -309,11 +257,7 @@ pub fn projection_events_from_core(
                 reason: reason.clone(),
                 at: envelope.timestamp_ms,
             };
-            Some((
-                session_id.clone(),
-                None,
-                event,
-            ))
+            Some((session_id.clone(), None, event))
         }
         CoreEvent::SessionUpdated { session_id } => {
             let event = ProjectionEvent::SessionActivated {
@@ -336,11 +280,7 @@ pub fn projection_events_from_core(
                     recent_summary: None,
                 },
             };
-            Some((
-                session_id.clone(),
-                None,
-                event,
-            ))
+            Some((session_id.clone(), None, event))
         }
         CoreEvent::JobCreated {
             session_id,
@@ -363,16 +303,10 @@ pub fn projection_events_from_core(
                     updated_at: envelope.timestamp_ms,
                 },
             };
-            Some((
-                session_id.clone().unwrap_or_default(),
-                None,
-                event,
-            ))
+            Some((session_id.clone().unwrap_or_default(), None, event))
         }
         CoreEvent::JobStarted {
-            job_id,
-            attempt_id,
-            ..
+            job_id, attempt_id, ..
         } => {
             let event = ProjectionEvent::JobUpserted {
                 job: codegg_protocol::projection::dto::JobProjection {
@@ -388,16 +322,10 @@ pub fn projection_events_from_core(
                     updated_at: envelope.timestamp_ms,
                 },
             };
-            Some((
-                String::new(),
-                None,
-                event,
-            ))
+            Some((String::new(), None, event))
         }
         CoreEvent::JobCompleted {
-            job_id,
-            attempt_id,
-            ..
+            job_id, attempt_id, ..
         } => {
             let event = ProjectionEvent::JobUpserted {
                 job: codegg_protocol::projection::dto::JobProjection {
@@ -413,11 +341,7 @@ pub fn projection_events_from_core(
                     updated_at: envelope.timestamp_ms,
                 },
             };
-            Some((
-                String::new(),
-                None,
-                event,
-            ))
+            Some((String::new(), None, event))
         }
         CoreEvent::JobFailed {
             job_id,
@@ -439,18 +363,17 @@ pub fn projection_events_from_core(
                     updated_at: envelope.timestamp_ms,
                 },
             };
-            Some((
-                String::new(),
-                None,
-                event,
-            ))
+            Some((String::new(), None, event))
         }
         _ => None,
     };
 
     if let Some((session_id, turn_id, event)) = base {
         let vis = event.visibility();
-        if !matches!(vis, codegg_protocol::projection::dto::VisibilityClass::Internal) {
+        if !matches!(
+            vis,
+            codegg_protocol::projection::dto::VisibilityClass::Internal
+        ) {
             let env = ProjectionEnvelope {
                 protocol_version: 1,
                 event_seq: envelope.event_seq,

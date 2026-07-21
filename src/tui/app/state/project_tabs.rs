@@ -34,9 +34,7 @@ use uuid::Uuid;
 
 use crate::protocol::dto::{ProjectDetailsDto, ProjectSummaryDto};
 use crate::tui::app::state::async_request::AsyncUiRequestState;
-use crate::tui::app::state::project_picker::{
-    SessionSummaryCacheEntry, MAX_OPEN_PROJECT_TABS,
-};
+use crate::tui::app::state::project_picker::{SessionSummaryCacheEntry, MAX_OPEN_PROJECT_TABS};
 
 /// A stable, frontend-local identifier for an open project tab.
 ///

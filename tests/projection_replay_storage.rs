@@ -61,10 +61,7 @@ async fn concurrent_inserts_produce_contiguous_sequences() {
                     },
                 );
                 let seq = store.next_event_seq(sid.as_str()).await.unwrap();
-                store
-                    .insert_event(sid.as_str(), seq, &env)
-                    .await
-                    .unwrap();
+                store.insert_event(sid.as_str(), seq, &env).await.unwrap();
             }
         }));
     }

@@ -1,6 +1,6 @@
 # Session Projection Contract
 
-Status: implemented (Milestone 1 — projection contracts and canonical reducer).
+Status: implemented (Milestone 1 — projection contracts and canonical reducer; Milestone 2 — scoped subscriptions and durable replay strictly closed at the corrective daemon-integration commit).
 
 Long-term references:
 
@@ -305,3 +305,49 @@ cargo fmt -- --check
 - **Milestone 4** owns frontend adoption (local / remote TUI and
   ACP), migration of `TuiMessage::StateSnapshot` to the new
   contract, and reference second-frontend compatibility tests.
+
+## 14. M2 daemon integration summary
+
+The corrective daemon-integration commit lands the full production
+plumbing for the M2 replay subsystem while preserving M1 invariants:
+
+- `EventLog` carries one optional `ProjectionSink` hook. The
+  default `CoreDaemon` installs `SeamProjectionSink` so every
+  production `event_log.publish(...)` call site reaches the
+  durable `projection_event` store exactly once. Legacy raw
+  `CoreEvent` clients continue to receive the additive-compatible
+  broadcast on the unfiltered channel.
+- `ProjectionPublicationSeam` resolves canonical
+  `(ProjectId, WorkspaceId, binding_revision)` from
+  `ProjectStorage::session_binding(session_id)` before publication.
+  Unbound, ambiguous, archived, or unresolved bindings fail closed
+  with `PublishOutcome::Skipped { UnboundSession }` before any
+  sequence allocation.
+- `ProjectionReplayStore::get_or_create_session_stream_with_revision`
+  invalidates the old stream when the canonical binding revision
+  advances. The new active stream carries the new revision; the old
+  row is marked `lifecycle = 'rebound'`.
+- Real `ProjectionStreamId` values minted by the store are used
+  for queue delivery, cursor validation, replay, and acknowledgement.
+  The previous synthetic `"session-stream"` / `"project-stream"`
+  placeholders are gone.
+- `CoreRequest::Projection*` requests dispatch through
+  `CoreDaemon::handle_request`. Each variant maps to a bounded
+  `CoreResponse::Projection*`. Capability, version, scope, and
+  client ownership are enforced.
+- `daemon_socket` opens one bounded receiver per
+  `ProjectionSubscribe` and spawns a per-connection forwarder that
+  writes `CoreEvent::ProjectionStreamEvent { subscription_id, ... }`
+  to the owning client. Disconnect / unsubscribe / lag /
+  generation change drop the receiver and abort the forwarder.
+  Two clients with different subscriptions never observe each
+  other's projection events.
+- The replay store, service, and seam are constructed from the
+  daemon's SQLite pool during `CoreDaemon::with_deps_and_identity`.
+  A background task runs `ProjectionReplayService::maintenance_tick`
+  on a 300-second interval to drive retention pruning and
+  checkpoint writing.
+- `scripts/check_projection_publication_seam.sh` is a new static
+  guard that fails CI if any non-test production source calls
+  `ProjectionReplayHandle::publish_core_event` outside the
+  centralized `EventLog` sink.

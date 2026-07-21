@@ -23,12 +23,14 @@ pub mod metrics;
 pub mod publication;
 pub mod retention;
 pub mod safe_publication;
+pub mod seam;
 pub mod service;
 pub mod store;
 pub mod subscription;
 
 pub use metrics::{ProjectionReplayMetrics, ProjectionReplayMetricsSnapshot};
 pub use retention::RetentionPolicy;
+pub use seam::{ProjectionPublicationContext, ProjectionPublicationSeam};
 pub use service::{ProjectionReplayService, PublishOutcome, ResumeOutcome};
 pub use store::ProjectionReplayStore;
 pub use subscription::SubscriptionRegistry;

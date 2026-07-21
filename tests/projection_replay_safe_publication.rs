@@ -2,7 +2,9 @@ mod common;
 
 use std::sync::Arc;
 
-use codegg_core::projection_replay::safe_publication::{classify, has_safe_origin, is_persistent, SafePublicationClass};
+use codegg_core::projection_replay::safe_publication::{
+    classify, has_safe_origin, is_persistent, SafePublicationClass,
+};
 use codegg_core::projection_replay::store::ProjectionReplayStore;
 use codegg_protocol::core::CoreEvent;
 use codegg_protocol::projection::event::{ProjectionEnvelope, ProjectionEvent};

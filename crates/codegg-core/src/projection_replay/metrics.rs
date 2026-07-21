@@ -55,7 +55,10 @@ impl ProjectionReplayMetrics {
     }
 
     pub fn increment_resync_reason(&self, reason: &str) {
-        *self.resync_count_by_reason.entry(reason.to_string()).or_insert(0) += 1;
+        *self
+            .resync_count_by_reason
+            .entry(reason.to_string())
+            .or_insert(0) += 1;
     }
 
     pub fn snapshot(&self) -> ProjectionReplayMetricsSnapshot {
@@ -64,13 +67,9 @@ impl ProjectionReplayMetrics {
             stream_count_session: self.stream_count_session.load(Ordering::Relaxed),
             stream_count_project: self.stream_count_project.load(Ordering::Relaxed),
             events_persisted_total: self.events_persisted_total.load(Ordering::Relaxed),
-            events_persisted_bytes_total: self
-                .events_persisted_bytes_total
-                .load(Ordering::Relaxed),
+            events_persisted_bytes_total: self.events_persisted_bytes_total.load(Ordering::Relaxed),
             events_skipped_internal: self.events_skipped_internal.load(Ordering::Relaxed),
-            events_skipped_client_local: self
-                .events_skipped_client_local
-                .load(Ordering::Relaxed),
+            events_skipped_client_local: self.events_skipped_client_local.load(Ordering::Relaxed),
             events_skipped_sensitive_redacted: self
                 .events_skipped_sensitive_redacted
                 .load(Ordering::Relaxed),
@@ -88,9 +87,7 @@ impl ProjectionReplayMetrics {
                 .iter()
                 .map(|e| (e.key().clone(), *e.value()))
                 .collect(),
-            corrupt_quarantined_streams: self
-                .corrupt_quarantined_streams
-                .load(Ordering::Relaxed),
+            corrupt_quarantined_streams: self.corrupt_quarantined_streams.load(Ordering::Relaxed),
         }
     }
 }

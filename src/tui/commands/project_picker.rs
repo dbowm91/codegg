@@ -39,8 +39,7 @@ pub(crate) fn open_or_focus_project(
 
     // Create a new tab
     let label = display_name.unwrap_or_else(|| "Loading...".to_string());
-    let label =
-        crate::tui::app::state::project_picker::truncate_tab_label(&label);
+    let label = crate::tui::app::state::project_picker::truncate_tab_label(&label);
     let tab_id = crate::tui::app::state::ProjectTabId::new();
     let mut tab = ProjectTabState::empty(tab_id.clone(), label);
     tab.project_id = Some(project_id.clone());
@@ -51,11 +50,11 @@ pub(crate) fn open_or_focus_project(
 }
 
 /// Switch the active tab, using the controlled switch coordinator.
-pub(crate) fn switch_active_tab(app: &mut App, target_tab_id: &crate::tui::app::state::ProjectTabId) {
-    let current_tab_id = app
-        .project_tabs
-        .active_tab_id()
-        .cloned();
+pub(crate) fn switch_active_tab(
+    app: &mut App,
+    target_tab_id: &crate::tui::app::state::ProjectTabId,
+) {
+    let current_tab_id = app.project_tabs.active_tab_id().cloned();
 
     // If already the active tab, nothing to do
     if current_tab_id.as_ref() == Some(target_tab_id) {
@@ -80,7 +79,9 @@ pub(crate) fn switch_active_tab(app: &mut App, target_tab_id: &crate::tui::app::
 
     // Begin the switch transaction
     let from_tab = current_tab_id.unwrap_or_else(crate::tui::app::state::ProjectTabId::new);
-    let _epoch = app.view_switch.begin_switch(from_tab, target_tab_id.clone());
+    let _epoch = app
+        .view_switch
+        .begin_switch(from_tab, target_tab_id.clone());
 
     // Set the tab active
     app.project_tabs.set_active(target_tab_id);
@@ -161,26 +162,22 @@ pub(crate) fn switch_active_tab(app: &mut App, target_tab_id: &crate::tui::app::
                             error: Some(format!("{}: {}", code, message)),
                         })
                     }
-                    Ok(_) => {
-                        Some(TuiCommand::ProjectGetLoaded {
-                            request_id,
-                            target_project_id: project_id,
-                            picker_generation: 0,
-                            picker_request_id: 0,
-                            result: None,
-                            error: Some("Unexpected response".to_string()),
-                        })
-                    }
-                    Err(e) => {
-                        Some(TuiCommand::ProjectGetLoaded {
-                            request_id,
-                            target_project_id: project_id,
-                            picker_generation: 0,
-                            picker_request_id: 0,
-                            result: None,
-                            error: Some(e.to_string()),
-                        })
-                    }
+                    Ok(_) => Some(TuiCommand::ProjectGetLoaded {
+                        request_id,
+                        target_project_id: project_id,
+                        picker_generation: 0,
+                        picker_request_id: 0,
+                        result: None,
+                        error: Some("Unexpected response".to_string()),
+                    }),
+                    Err(e) => Some(TuiCommand::ProjectGetLoaded {
+                        request_id,
+                        target_project_id: project_id,
+                        picker_generation: 0,
+                        picker_request_id: 0,
+                        result: None,
+                        error: Some(e.to_string()),
+                    }),
                 }
             },
         );
@@ -234,46 +231,38 @@ pub(crate) fn start_get_project(
             );
 
             match core_client.request(req).await {
-                Ok(CoreResponse::ProjectGet { project }) => {
-                    Some(TuiCommand::ProjectGetLoaded {
-                        request_id,
-                        target_project_id: project_id,
-                        picker_generation,
-                        picker_request_id,
-                        result: Some(project),
-                        error: None,
-                    })
-                }
-                Ok(CoreResponse::Error { code, message }) => {
-                    Some(TuiCommand::ProjectGetLoaded {
-                        request_id,
-                        target_project_id: project_id,
-                        picker_generation,
-                        picker_request_id,
-                        result: None,
-                        error: Some(format!("{}: {}", code, message)),
-                    })
-                }
-                Ok(_) => {
-                    Some(TuiCommand::ProjectGetLoaded {
-                        request_id,
-                        target_project_id: project_id,
-                        picker_generation,
-                        picker_request_id,
-                        result: None,
-                        error: Some("Unexpected response".to_string()),
-                    })
-                }
-                Err(e) => {
-                    Some(TuiCommand::ProjectGetLoaded {
-                        request_id,
-                        target_project_id: project_id,
-                        picker_generation,
-                        picker_request_id,
-                        result: None,
-                        error: Some(e.to_string()),
-                    })
-                }
+                Ok(CoreResponse::ProjectGet { project }) => Some(TuiCommand::ProjectGetLoaded {
+                    request_id,
+                    target_project_id: project_id,
+                    picker_generation,
+                    picker_request_id,
+                    result: Some(project),
+                    error: None,
+                }),
+                Ok(CoreResponse::Error { code, message }) => Some(TuiCommand::ProjectGetLoaded {
+                    request_id,
+                    target_project_id: project_id,
+                    picker_generation,
+                    picker_request_id,
+                    result: None,
+                    error: Some(format!("{}: {}", code, message)),
+                }),
+                Ok(_) => Some(TuiCommand::ProjectGetLoaded {
+                    request_id,
+                    target_project_id: project_id,
+                    picker_generation,
+                    picker_request_id,
+                    result: None,
+                    error: Some("Unexpected response".to_string()),
+                }),
+                Err(e) => Some(TuiCommand::ProjectGetLoaded {
+                    request_id,
+                    target_project_id: project_id,
+                    picker_generation,
+                    picker_request_id,
+                    result: None,
+                    error: Some(e.to_string()),
+                }),
             }
         },
     );
@@ -390,14 +379,16 @@ pub(crate) fn apply_project_get_loaded(
                         );
 
                         match core_client.request(req).await {
-                            Ok(CoreResponse::SessionList { sessions, .. }) => Some(TuiCommand::ProjectSessionsLoaded {
-                                request_id: req_id,
-                                tab_id,
-                                project_id: target_project_id,
-                                workspace_id: ws_id,
-                                sessions,
-                                error: None,
-                            }),
+                            Ok(CoreResponse::SessionList { sessions, .. }) => {
+                                Some(TuiCommand::ProjectSessionsLoaded {
+                                    request_id: req_id,
+                                    tab_id,
+                                    project_id: target_project_id,
+                                    workspace_id: ws_id,
+                                    sessions,
+                                    error: None,
+                                })
+                            }
                             Ok(CoreResponse::Error { code, message }) => {
                                 Some(TuiCommand::ProjectSessionsLoaded {
                                     request_id: req_id,
@@ -480,8 +471,7 @@ pub(crate) fn apply_project_sessions_loaded(
         .into_iter()
         .filter(|s| {
             if let Some(ref binding) = s.binding {
-                binding.project_id == project_id
-                    && binding.workspace_id == workspace_id
+                binding.project_id == project_id && binding.workspace_id == workspace_id
             } else {
                 // Legacy sessions: accept if project_id matches
                 s.project_id == project_id
@@ -492,12 +482,14 @@ pub(crate) fn apply_project_sessions_loaded(
     tab.session_summaries = filtered
         .into_iter()
         .take(256)
-        .map(|s| crate::tui::app::state::project_picker::SessionSummaryCacheEntry {
-            session_id: s.id.clone(),
-            title: s.title.clone(),
-            time_updated: 0,
-            archived: false,
-        })
+        .map(
+            |s| crate::tui::app::state::project_picker::SessionSummaryCacheEntry {
+                session_id: s.id.clone(),
+                title: s.title.clone(),
+                time_updated: 0,
+                archived: false,
+            },
+        )
         .collect();
     tab.pending_session_load = false;
 }
@@ -667,17 +659,13 @@ pub(crate) fn start_register_workspace(app: &mut App, path: String) {
     }
 
     if path.is_empty() {
-        app.messages_state
-            .toasts
-            .error("Path cannot be empty");
+        app.messages_state.toasts.error("Path cannot be empty");
         return;
     }
 
     // Check directory exists (display-only, no mkdir)
     if !std::path::Path::new(&path).exists() {
-        app.messages_state
-            .toasts
-            .error("Directory does not exist");
+        app.messages_state.toasts.error("Directory does not exist");
         return;
     }
 
@@ -813,13 +801,11 @@ pub(crate) fn start_register_project(
                         error: None,
                     })
                 }
-                Ok(CoreResponse::Error { code, message }) => {
-                    Some(TuiCommand::ProjectRegistered {
-                        request_id,
-                        project_id: None,
-                        error: Some(format!("{}: {}", code, message)),
-                    })
-                }
+                Ok(CoreResponse::Error { code, message }) => Some(TuiCommand::ProjectRegistered {
+                    request_id,
+                    project_id: None,
+                    error: Some(format!("{}: {}", code, message)),
+                }),
                 Ok(_) => Some(TuiCommand::ProjectRegistered {
                     request_id,
                     project_id: None,

@@ -59,7 +59,12 @@ impl RetentionPolicy {
             let high_water = desc.high_water_seq;
             let retention_floor = desc.retention_floor_seq;
             let events = store
-                .events_after(desc.stream_id.as_str(), retention_floor, usize::MAX, u64::MAX)
+                .events_after(
+                    desc.stream_id.as_str(),
+                    retention_floor,
+                    usize::MAX,
+                    u64::MAX,
+                )
                 .await?;
             let event_count = events.len();
             let _event_bytes: u64 = events.iter().map(|e| e.payload_bytes as u64).sum();
@@ -75,9 +80,13 @@ impl RetentionPolicy {
 
             if event_count > max_events {
                 let excess = event_count - max_events;
-                let new_floor = high_water.saturating_sub(max_events as u64).saturating_add(1);
+                let new_floor = high_water
+                    .saturating_sub(max_events as u64)
+                    .saturating_add(1);
                 let _ = new_floor.max(retention_floor + excess as u64);
-                let pruned = store.prune_before(desc.stream_id.as_str(), new_floor).await?;
+                let pruned = store
+                    .prune_before(desc.stream_id.as_str(), new_floor)
+                    .await?;
                 report.events_pruned += pruned;
             }
 

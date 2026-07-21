@@ -1,17 +1,19 @@
+use std::collections::HashMap;
 use std::sync::Arc;
+use tokio::sync::Mutex;
 
 use codegg_protocol::core::{CoreEvent, EventEnvelope};
 use codegg_protocol::projection::event::ProjectionEnvelope;
 use codegg_protocol::projection::replay::{
-    ProjectionCursor, ProjectionResyncReason,
-    ProjectionSnapshotBundle, ProjectionStreamDescriptor, ProjectionStreamId, ProjectionStreamKind,
-    ProjectionSubscriptionId, ProjectionSubscriptionRequest,
+    ProjectionCursor, ProjectionResyncReason, ProjectionSnapshotBundle, ProjectionStreamDescriptor,
+    ProjectionStreamKind, ProjectionSubscriptionId, ProjectionSubscriptionRequest,
 };
 
 use crate::error::StorageError;
 use crate::projection_replay::metrics::ProjectionReplayMetrics;
 use crate::projection_replay::publication::projection_events_from_core;
 use crate::projection_replay::retention::RetentionPolicy;
+use crate::projection_replay::seam::ProjectionPublicationContext;
 use crate::projection_replay::store::ProjectionReplayStore;
 use crate::projection_replay::subscription::{SubscriptionConfig, SubscriptionRegistry};
 
@@ -62,13 +64,8 @@ pub enum ResumeOutcome {
 
 #[derive(Debug, Clone)]
 pub enum AckResult {
-    Accepted {
-        last_acked_seq: u64,
-        lag_count: u64,
-    },
-    Rejected {
-        reason: String,
-    },
+    Accepted { last_acked_seq: u64, lag_count: u64 },
+    Rejected { reason: String },
 }
 
 pub struct ProjectionReplayService {
@@ -77,6 +74,10 @@ pub struct ProjectionReplayService {
     #[allow(dead_code)]
     retention_policy: RetentionPolicy,
     metrics: Arc<ProjectionReplayMetrics>,
+    /// Pending receivers keyed by subscription ID. The transport layer
+    /// takes the receiver once via `take_subscription_receiver` after
+    /// subscribe returns; only one caller may take it.
+    pending_receivers: Mutex<HashMap<String, tokio::sync::mpsc::Receiver<ProjectionEnvelope>>>,
 }
 
 impl ProjectionReplayService {
@@ -86,6 +87,7 @@ impl ProjectionReplayService {
             subscriptions: Arc::new(SubscriptionRegistry::new(SubscriptionConfig::default())),
             retention_policy: RetentionPolicy::default(),
             metrics: Arc::new(ProjectionReplayMetrics::new()),
+            pending_receivers: Mutex::new(HashMap::new()),
         }
     }
 
@@ -99,6 +101,7 @@ impl ProjectionReplayService {
             subscriptions: Arc::new(SubscriptionRegistry::new(subscription_config)),
             retention_policy,
             metrics: Arc::new(ProjectionReplayMetrics::new()),
+            pending_receivers: Mutex::new(HashMap::new()),
         }
     }
 
@@ -114,7 +117,9 @@ impl ProjectionReplayService {
         &self.metrics
     }
 
-    pub fn metrics_snapshot(&self) -> crate::projection_replay::metrics::ProjectionReplayMetricsSnapshot {
+    pub fn metrics_snapshot(
+        &self,
+    ) -> crate::projection_replay::metrics::ProjectionReplayMetricsSnapshot {
         self.metrics.snapshot()
     }
 
@@ -122,59 +127,115 @@ impl ProjectionReplayService {
         &self,
         source_envelope: &EventEnvelope<CoreEvent>,
     ) -> Result<PublishOutcome, StorageError> {
-        let projections = projection_events_from_core(source_envelope);
+        self.publish_from_core_with_context(
+            source_envelope,
+            &ProjectionPublicationContext::default(),
+        )
+        .await
+    }
 
+    pub async fn publish_from_core_with_context(
+        &self,
+        source_envelope: &EventEnvelope<CoreEvent>,
+        context: &ProjectionPublicationContext,
+    ) -> Result<PublishOutcome, StorageError> {
+        // Reject unbound session
+        let session_id = match context.session_id.as_deref() {
+            Some(s) if !s.is_empty() => s.to_string(),
+            _ => {
+                // Fall back to envelope session_id for backward compat
+                let env_sid = source_envelope
+                    .session_id
+                    .as_deref()
+                    .unwrap_or_default()
+                    .to_string();
+                if env_sid.is_empty() {
+                    return Ok(PublishOutcome::Skipped {
+                        reason: SafePublicationReason::UnboundSession,
+                    });
+                }
+                env_sid
+            }
+        };
+
+        let project_id = match context.project_id.as_deref() {
+            Some(p) if !p.is_empty() => p.to_string(),
+            _ => {
+                return Ok(PublishOutcome::Skipped {
+                    reason: SafePublicationReason::UnboundSession,
+                });
+            }
+        };
+        let workspace_id = context.workspace_id.clone();
+
+        let projections = projection_events_from_core(source_envelope);
         if projections.is_empty() {
             return Ok(PublishOutcome::Skipped {
                 reason: SafePublicationReason::AdaptionEmpty,
             });
         }
 
-        let session_id = source_envelope
-            .session_id
-            .as_deref()
-            .unwrap_or_default();
+        // Resolve streams BEFORE opening the transaction to avoid
+        // connection pool deadlock (stream creation uses pool directly).
+        let mut session_stream_id: Option<String> = None;
+        let mut project_stream_id: Option<String> = None;
 
-        if session_id.is_empty() {
-            return Ok(PublishOutcome::Skipped {
-                reason: SafePublicationReason::UnboundSession,
-            });
+        for (stream_kind, _) in &projections {
+            match stream_kind {
+                ProjectionStreamKind::Session => {
+                    if session_stream_id.is_none() {
+                        let (desc, _created) = self
+                            .store
+                            .get_or_create_session_stream_with_revision(
+                                &session_id,
+                                &project_id,
+                                workspace_id.as_deref(),
+                                context.binding_revision.max(1),
+                            )
+                            .await?;
+                        session_stream_id = Some(desc.stream_id.0.clone());
+                    }
+                }
+                ProjectionStreamKind::Project => {
+                    if project_stream_id.is_none() {
+                        let (desc, _created) =
+                            self.store.get_or_create_project_stream(&project_id).await?;
+                        project_stream_id = Some(desc.stream_id.0.clone());
+                    }
+                }
+            }
         }
 
+        // Now open a transaction for seq allocation + event insert + high water
         let mut session_seq = 0u64;
         let mut project_seq = 0u64;
 
         let mut tx = self.store.begin_tx().await?;
 
         for (stream_kind, proj_envelope) in &projections {
-            let stream_id = match stream_kind {
-                ProjectionStreamKind::Session => {
-                    let (desc, _) = self
-                        .store
-                        .get_or_create_session_stream(session_id, "", None)
-                        .await?;
-                    desc.stream_id
-                }
-                ProjectionStreamKind::Project => {
-                    let (desc, _) = self.store.get_or_create_project_stream("").await?;
-                    desc.stream_id
-                }
+            let stream_id_str = match stream_kind {
+                ProjectionStreamKind::Session => session_stream_id.as_deref(),
+                ProjectionStreamKind::Project => project_stream_id.as_deref(),
+            };
+            let sid = match stream_id_str {
+                Some(s) => s,
+                None => continue,
             };
 
-            let seq = self.store.next_event_seq(stream_id.as_str()).await?;
+            let seq = self.store.next_event_seq_tx(&mut tx, sid).await?;
             self.store
-                .insert_event_tx(&mut tx, stream_id.as_str(), seq, proj_envelope)
+                .insert_event_tx(&mut tx, sid, seq, proj_envelope)
                 .await?;
-            self.store
-                .update_high_water_tx(&mut tx, stream_id.as_str(), seq)
-                .await?;
+            self.store.update_high_water_tx(&mut tx, sid, seq).await?;
 
             match stream_kind {
                 ProjectionStreamKind::Session => session_seq = seq,
                 ProjectionStreamKind::Project => project_seq = seq,
             }
 
-            self.metrics.events_persisted_total.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.metrics
+                .events_persisted_total
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
 
         sqlx::query("COMMIT")
@@ -182,14 +243,17 @@ impl ProjectionReplayService {
             .await
             .map_err(|e| StorageError::Database(e.to_string()))?;
 
+        // Live delivery uses the ACTUAL persisted stream IDs, not synthetic ones
         for (stream_kind, proj_envelope) in &projections {
-            let stream_id = match stream_kind {
-                ProjectionStreamKind::Session => ProjectionStreamId("session-stream".into()),
-                ProjectionStreamKind::Project => ProjectionStreamId("project-stream".into()),
+            let stream_id_str = match stream_kind {
+                ProjectionStreamKind::Session => session_stream_id.as_deref(),
+                ProjectionStreamKind::Project => project_stream_id.as_deref(),
             };
-            let _ = self
-                .subscriptions
-                .deliver_to_stream(stream_id.as_str(), proj_envelope.clone());
+            if let Some(sid) = stream_id_str {
+                let _ = self
+                    .subscriptions
+                    .deliver_to_stream(sid, proj_envelope.clone());
+            }
         }
 
         Ok(PublishOutcome::Published {
@@ -211,14 +275,29 @@ impl ProjectionReplayService {
             .get_or_create_session_stream(session_id, project_id, workspace_id)
             .await?;
 
-        let (sub_id, _receiver) = self
+        let (sub_id, receiver) = self
             .subscriptions
-            .register(client_id, &desc.stream_id, ProjectionStreamKind::Session, request.projection_version)
+            .register(
+                client_id,
+                &desc.stream_id,
+                ProjectionStreamKind::Session,
+                request.projection_version,
+            )
             .map_err(|e| StorageError::Database(e.to_string()))?;
 
-        self.subscriptions.set_live(&sub_id).map_err(|e| StorageError::Database(e.to_string()))?;
+        self.subscriptions
+            .set_live(&sub_id)
+            .map_err(|e| StorageError::Database(e.to_string()))?;
 
-        self.metrics.active_subscriptions.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        // Store the receiver so the transport layer can take it later
+        self.pending_receivers
+            .lock()
+            .await
+            .insert(sub_id.0.clone(), receiver);
+
+        self.metrics
+            .active_subscriptions
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
         Ok(sub_id)
     }
@@ -229,21 +308,42 @@ impl ProjectionReplayService {
         client_id: &str,
         request: &ProjectionSubscriptionRequest,
     ) -> Result<ProjectionSubscriptionId, StorageError> {
-        let (desc, _created) = self
-            .store
-            .get_or_create_project_stream(project_id)
-            .await?;
+        let (desc, _created) = self.store.get_or_create_project_stream(project_id).await?;
 
-        let (sub_id, _receiver) = self
+        let (sub_id, receiver) = self
             .subscriptions
-            .register(client_id, &desc.stream_id, ProjectionStreamKind::Project, request.projection_version)
+            .register(
+                client_id,
+                &desc.stream_id,
+                ProjectionStreamKind::Project,
+                request.projection_version,
+            )
             .map_err(|e| StorageError::Database(e.to_string()))?;
 
-        self.subscriptions.set_live(&sub_id).map_err(|e| StorageError::Database(e.to_string()))?;
+        self.subscriptions
+            .set_live(&sub_id)
+            .map_err(|e| StorageError::Database(e.to_string()))?;
 
-        self.metrics.active_subscriptions.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        // Store the receiver so the transport layer can take it later
+        self.pending_receivers
+            .lock()
+            .await
+            .insert(sub_id.0.clone(), receiver);
+
+        self.metrics
+            .active_subscriptions
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
         Ok(sub_id)
+    }
+
+    /// Take the pending receiver for a subscription. Returns `None` if the
+    /// receiver was already taken or the subscription does not exist.
+    pub async fn take_subscription_receiver(
+        &self,
+        sub_id: &ProjectionSubscriptionId,
+    ) -> Option<tokio::sync::mpsc::Receiver<ProjectionEnvelope>> {
+        self.pending_receivers.lock().await.remove(&sub_id.0)
     }
 
     pub async fn resume(
@@ -259,7 +359,11 @@ impl ProjectionReplayService {
             .ok_or_else(|| StorageError::Database("subscription not found".into()))?
             .clone();
 
-        let desc = match self.store.lookup_stream_by_id(cursor.stream_id.as_str()).await? {
+        let desc = match self
+            .store
+            .lookup_stream_by_id(cursor.stream_id.as_str())
+            .await?
+        {
             Some(d) => d,
             None => {
                 self.metrics.increment_resync_reason("stream_mismatch");
@@ -323,7 +427,10 @@ impl ProjectionReplayService {
             )
             .await?;
 
-        let last_seq = events.last().map(|e| e.event_seq).unwrap_or(cursor.event_seq);
+        let last_seq = events
+            .last()
+            .map(|e| e.event_seq)
+            .unwrap_or(cursor.event_seq);
         let next_cursor = ProjectionCursor {
             stream_id: cursor.stream_id.clone(),
             event_seq: last_seq,
@@ -332,9 +439,7 @@ impl ProjectionReplayService {
 
         let envelopes: Vec<ProjectionEnvelope> = events
             .iter()
-            .filter_map(|row| {
-                serde_json::from_str(&row.payload_json).ok()
-            })
+            .filter_map(|row| serde_json::from_str(&row.payload_json).ok())
             .collect();
 
         if envelopes.is_empty() && cursor.event_seq < desc.high_water_seq {
@@ -391,7 +496,12 @@ impl ProjectionReplayService {
             .map_err(|e| StorageError::Database(e.to_string()))
     }
 
-    pub async fn maintenance_tick(&self, now_ms: i64) -> Result<crate::projection_replay::retention::MaintenanceReport, StorageError> {
-        self.retention_policy.maintenance_tick(&self.store, now_ms).await
+    pub async fn maintenance_tick(
+        &self,
+        now_ms: i64,
+    ) -> Result<crate::projection_replay::retention::MaintenanceReport, StorageError> {
+        self.retention_policy
+            .maintenance_tick(&self.store, now_ms)
+            .await
     }
 }

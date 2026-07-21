@@ -1,15 +1,18 @@
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixListener;
 use tokio::sync::{broadcast, RwLock};
+use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use crate::core::daemon::CoreDaemon;
 use crate::core::event_log::EventFilter;
 use crate::error::AppError;
-use crate::protocol::core::{CoreEvent, EventEnvelope};
+use crate::protocol::core::{CoreEvent, CoreResponse, EventEnvelope};
 use crate::protocol::frames::{CoreFrame, ServerCapabilities, ServerHello};
+use codegg_protocol::projection::replay::ProjectionSubscriptionId;
 
 /// Bind a Unix-domain socket listener to `endpoint`. Returns the bound
 /// `UnixListener` plus the absolute path. Used by the singleton lifecycle
@@ -111,6 +114,8 @@ async fn handle_client(
     // event forwarder.
     let client_id = format!("client-{}", uuid::Uuid::new_v4());
     let filters: Arc<RwLock<Vec<EventFilter>>> = Arc::new(RwLock::new(Vec::new()));
+    let projection_subs: Arc<RwLock<HashMap<ProjectionSubscriptionId, JoinHandle<()>>>> =
+        Arc::new(RwLock::new(HashMap::new()));
 
     let event_rx = daemon.event_log.subscribe();
     let writer_for_forwarder = Arc::clone(&writer);
@@ -140,6 +145,30 @@ async fn handle_client(
                                     message: e.to_string(),
                                 },
                             };
+                            // If this is a ProjectionSubscribed response, take the
+                            // pending receiver and spawn a per-subscription forwarder.
+                            if let CoreResponse::ProjectionSubscribed {
+                                subscription_id, ..
+                            } = &response
+                            {
+                                if let Some(ref seam) = daemon.projection_seam {
+                                    if let Some(rx) = seam
+                                        .service()
+                                        .take_subscription_receiver(subscription_id)
+                                        .await
+                                    {
+                                        let writer_clone = Arc::clone(&writer);
+                                        let sub_id = subscription_id.clone();
+                                        let handle = tokio::spawn(async move {
+                                            projection_forwarder(sub_id, rx, writer_clone).await;
+                                        });
+                                        projection_subs
+                                            .write()
+                                            .await
+                                            .insert(subscription_id.clone(), handle);
+                                    }
+                                }
+                            }
                             let frame = CoreFrame::Response {
                                 request_id,
                                 response: Box::new(response),
@@ -252,7 +281,54 @@ async fn handle_client(
 
     daemon.clients.unregister(&client_id);
 
+    // Abort all projection subscription forwarders for this client
+    let mut subs = projection_subs.write().await;
+    for (_, handle) in subs.drain() {
+        handle.abort();
+    }
+
     Ok(())
+}
+
+/// Forward projection events from a subscription receiver to the client writer.
+/// Wraps each `ProjectionEnvelope` in a `CoreEvent::ProjectionStreamEvent` and
+/// sends it as a regular `CoreFrame::Event` to the client.
+async fn projection_forwarder(
+    sub_id: ProjectionSubscriptionId,
+    mut rx: tokio::sync::mpsc::Receiver<codegg_protocol::projection::event::ProjectionEnvelope>,
+    writer: Arc<tokio::sync::Mutex<tokio::net::unix::OwnedWriteHalf>>,
+) {
+    use codegg_protocol::projection::replay::ProjectionStreamId;
+
+    while let Some(envelope) = rx.recv().await {
+        // The stream_id is embedded in the subscription entry, but for the
+        // forwarder we use the sub_id to identify the stream. The actual
+        // stream_id is reconstructed from the envelope's context.
+        let stream_id = ProjectionStreamId(sub_id.0.clone());
+        let core_event = CoreEvent::ProjectionStreamEvent {
+            subscription_id: sub_id.clone(),
+            stream_id,
+            envelope,
+        };
+        let frame = CoreFrame::Event(EventEnvelope {
+            protocol_version: crate::protocol::core::PROTOCOL_VERSION,
+            event_seq: 0, // projection events don't use core event_seq
+            timestamp_ms: chrono::Utc::now().timestamp_millis(),
+            session_id: None,
+            turn_id: None,
+            payload: core_event,
+        });
+        if let Ok(json) = serde_json::to_string(&frame) {
+            let mut w = writer.lock().await;
+            if w.write_all(json.as_bytes()).await.is_err() {
+                break;
+            }
+            if w.write_all(b"\n").await.is_err() {
+                break;
+            }
+            let _ = w.flush().await;
+        }
+    }
 }
 
 async fn forward_events(

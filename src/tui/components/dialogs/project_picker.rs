@@ -72,12 +72,7 @@ impl Component for ProjectPickerDialog {
         None
     }
 
-    fn render(
-        &mut self,
-        frame: &mut ratatui::Frame,
-        area: Rect,
-        theme: &Arc<Theme>,
-    ) {
+    fn render(&mut self, frame: &mut ratatui::Frame, area: Rect, theme: &Arc<Theme>) {
         // This component renders a placeholder when invoked directly;
         // the App calls `render_picker_body` with the live picker
         // state when `Dialog::ProjectPicker` is open.
@@ -239,11 +234,7 @@ pub fn render_picker_body(
         PickerPhase::WorkspaceSelection => {
             if let Some(detail) = &picker.cached_detail {
                 for (i, ws) in detail.workspaces.iter().enumerate() {
-                    let prefix = if i == picker.selected_row {
-                        "> "
-                    } else {
-                        "  "
-                    };
+                    let prefix = if i == picker.selected_row { "> " } else { "  " };
                     let line_text = format!("{}{}", prefix, ws.display_name);
                     let style = if i == picker.selected_row {
                         Style::default().fg(theme.primary)
@@ -284,10 +275,7 @@ pub fn render_picker_body(
             }
         }
         PickerPhase::Error => {
-            let err = picker
-                .last_error
-                .as_deref()
-                .unwrap_or("Unknown error");
+            let err = picker.last_error.as_deref().unwrap_or("Unknown error");
             lines.push(Line::from(Span::styled(
                 err.to_string(),
                 Style::default().fg(theme.error),
@@ -320,9 +308,7 @@ pub fn picker_key_to_msg(key: KeyEvent) -> Option<TuiMsg> {
 /// Compute the deterministic tab display labels for the tab strip.
 /// Returns one entry per tab in display order. Thin wrapper around
 /// `ProjectTabs::display_labels`.
-pub fn tab_strip_labels(
-    tabs: &crate::tui::app::state::ProjectTabs,
-) -> Vec<(ProjectTabId, String)> {
+pub fn tab_strip_labels(tabs: &crate::tui::app::state::ProjectTabs) -> Vec<(ProjectTabId, String)> {
     tabs.display_labels()
 }
 

@@ -28,10 +28,7 @@ async fn duplicate_publish_returns_existing_event() {
         },
     );
 
-    let seq1 = store
-        .next_event_seq(desc.stream_id.as_str())
-        .await
-        .unwrap();
+    let seq1 = store.next_event_seq(desc.stream_id.as_str()).await.unwrap();
     store
         .insert_event(desc.stream_id.as_str(), seq1, &env)
         .await
@@ -64,10 +61,7 @@ async fn insert_then_delete_leaves_no_trace() {
         },
     );
 
-    let seq = store
-        .next_event_seq(desc.stream_id.as_str())
-        .await
-        .unwrap();
+    let seq = store.next_event_seq(desc.stream_id.as_str()).await.unwrap();
     store
         .insert_event(desc.stream_id.as_str(), seq, &env)
         .await

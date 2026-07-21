@@ -35,10 +35,7 @@ pub enum SwitchState {
     },
     /// The switch failed. The tab remains selected but the error
     /// is surfaced.
-    Failed {
-        to_tab: ProjectTabId,
-        error: String,
-    },
+    Failed { to_tab: ProjectTabId, error: String },
 }
 
 /// Coordinator for the active-view switch transaction.
@@ -63,11 +60,7 @@ impl ViewSwitchCoordinator {
     }
 
     /// Begin a switch transaction. Returns the new epoch.
-    pub fn begin_switch(
-        &mut self,
-        from_tab: ProjectTabId,
-        to_tab: ProjectTabId,
-    ) -> u64 {
+    pub fn begin_switch(&mut self, from_tab: ProjectTabId, to_tab: ProjectTabId) -> u64 {
         self.active_view_epoch += 1;
         self.switch_state = SwitchState::Switching {
             from_tab,
@@ -282,13 +275,7 @@ mod tests {
             "ws".to_string(),
             epoch,
         );
-        let ok = coord.complete_load_if_matches(
-            &to,
-            "proj",
-            "ws",
-            "sess",
-            epoch,
-        );
+        let ok = coord.complete_load_if_matches(&to, "proj", "ws", "sess", epoch);
         assert!(ok);
         assert_eq!(coord.switch_state, SwitchState::Idle);
         assert!(coord.pending_incoming_tab_id.is_none());
@@ -307,13 +294,7 @@ mod tests {
             "ws".to_string(),
             epoch,
         );
-        let ok = coord.complete_load_if_matches(
-            &to,
-            "wrong-proj",
-            "ws",
-            "sess",
-            epoch,
-        );
+        let ok = coord.complete_load_if_matches(&to, "wrong-proj", "ws", "sess", epoch);
         assert!(!ok);
         assert!(matches!(coord.switch_state, SwitchState::Loading { .. }));
     }

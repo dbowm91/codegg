@@ -99,14 +99,9 @@ impl SubscriptionRegistry {
         stream_id: &ProjectionStreamId,
         scope: ProjectionStreamKind,
         projection_version: u32,
-    ) -> Result<
-        (ProjectionSubscriptionId, mpsc::Receiver<ProjectionEnvelope>),
-        SubscriptionError,
-    > {
-        let mut client_subs = self
-            .by_client
-            .entry(client_id.to_string())
-            .or_default();
+    ) -> Result<(ProjectionSubscriptionId, mpsc::Receiver<ProjectionEnvelope>), SubscriptionError>
+    {
+        let mut client_subs = self.by_client.entry(client_id.to_string()).or_default();
         if client_subs.len() >= self.config.max_per_client {
             return Err(SubscriptionError::PerClientLimit);
         }
@@ -144,19 +139,16 @@ impl SubscriptionRegistry {
     }
 
     pub fn set_live(&self, id: &ProjectionSubscriptionId) -> Result<(), SubscriptionError> {
-        let mut entry = self
-            .by_id
-            .get_mut(id)
-            .ok_or(SubscriptionError::NotFound)?;
+        let mut entry = self.by_id.get_mut(id).ok_or(SubscriptionError::NotFound)?;
         entry.state = SubscriptionState::Live;
         Ok(())
     }
 
-    pub fn set_resync_required(&self, id: &ProjectionSubscriptionId) -> Result<(), SubscriptionError> {
-        let mut entry = self
-            .by_id
-            .get_mut(id)
-            .ok_or(SubscriptionError::NotFound)?;
+    pub fn set_resync_required(
+        &self,
+        id: &ProjectionSubscriptionId,
+    ) -> Result<(), SubscriptionError> {
+        let mut entry = self.by_id.get_mut(id).ok_or(SubscriptionError::NotFound)?;
         entry.state = SubscriptionState::ResyncRequired;
         Ok(())
     }
@@ -169,10 +161,7 @@ impl SubscriptionRegistry {
         projection_version: u32,
         high_water_seq: u64,
     ) -> Result<u64, SubscriptionError> {
-        let mut entry = self
-            .by_id
-            .get_mut(id)
-            .ok_or(SubscriptionError::NotFound)?;
+        let mut entry = self.by_id.get_mut(id).ok_or(SubscriptionError::NotFound)?;
 
         if entry.stream_id != *stream_id {
             return Err(SubscriptionError::StreamMismatch);
@@ -203,13 +192,18 @@ impl SubscriptionRegistry {
         if let Some(subs) = self.by_stream.get(stream_id) {
             let sub_ids: Vec<String> = subs.iter().cloned().collect();
             for sub_id_str in sub_ids {
-                if let Some(entry) = self.by_id.get(&ProjectionSubscriptionId(sub_id_str.clone())) {
+                if let Some(entry) = self
+                    .by_id
+                    .get(&ProjectionSubscriptionId(sub_id_str.clone()))
+                {
                     if entry.state == SubscriptionState::Live {
                         match entry.sender.try_send(envelope.clone()) {
                             Ok(()) => delivered += 1,
                             Err(mpsc::error::TrySendError::Full(_)) => {
                                 drop(entry);
-                                if let Some(mut e) = self.by_id.get_mut(&ProjectionSubscriptionId(sub_id_str)) {
+                                if let Some(mut e) =
+                                    self.by_id.get_mut(&ProjectionSubscriptionId(sub_id_str))
+                                {
                                     e.state = SubscriptionState::ResyncRequired;
                                 }
                             }
@@ -223,11 +217,7 @@ impl SubscriptionRegistry {
     }
 
     pub fn unsubscribe(&self, id: &ProjectionSubscriptionId) -> Result<(), SubscriptionError> {
-        let entry = self
-            .by_id
-            .remove(id)
-            .ok_or(SubscriptionError::NotFound)?
-            .1;
+        let entry = self.by_id.remove(id).ok_or(SubscriptionError::NotFound)?.1;
 
         if let Some(mut client_subs) = self.by_client.get_mut(&entry.client_id) {
             client_subs.remove(&entry.id.0);

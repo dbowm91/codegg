@@ -1,8 +1,20 @@
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use tokio::sync::{broadcast, Mutex};
 
 use crate::protocol::core::{CoreEvent, EventEnvelope, PROTOCOL_VERSION};
+
+/// Trait for receiving projection events from the centralized EventLog sink.
+///
+/// Implementations must be `Send + Sync` and handle the envelope asynchronously.
+/// The projection replay seam is the canonical production implementation.
+pub trait ProjectionSink: Send + Sync {
+    fn publish(
+        &self,
+        envelope: EventEnvelope<CoreEvent>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'static>>;
+}
 
 /// Apply a `filter` to a single envelope. See `EventLog::replay_from` and
 /// `daemon_socket::event_matches_filter` for the semantic contract; this
@@ -46,6 +58,7 @@ pub struct EventLog {
     tx: broadcast::Sender<EventEnvelope<CoreEvent>>,
     capacity: usize,
     pool: Option<sqlx::SqlitePool>,
+    projection_sink: Option<Arc<dyn ProjectionSink>>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -64,6 +77,7 @@ impl EventLog {
             tx,
             capacity,
             pool: None,
+            projection_sink: None,
         }
     }
 
@@ -75,7 +89,14 @@ impl EventLog {
             tx,
             capacity,
             pool: Some(pool),
+            projection_sink: None,
         }
+    }
+
+    /// Install a projection replay sink. The sink receives every envelope
+    /// published through this log, exactly once per envelope.
+    pub fn install_projection_sink(&mut self, sink: Arc<dyn ProjectionSink>) {
+        self.projection_sink = Some(sink);
     }
 
     /// Publish an event. Returns the assigned sequence number.
@@ -122,6 +143,18 @@ impl EventLog {
                     .await;
                 }
             }
+        }
+
+        // Projection replay sink: invoked exactly once per published envelope.
+        // The sink observes the canonical envelope and routes accepted events
+        // into `projection_event` storage. `ProjectionStreamEvent` itself is
+        // classified `Internal` by the safe-publication gate and never recurses.
+        if let Some(ref sink) = self.projection_sink {
+            let sink_env = envelope.clone();
+            let sink = Arc::clone(sink);
+            tokio::spawn(async move {
+                sink.publish(sink_env).await;
+            });
         }
 
         let _ = self.tx.send(envelope);

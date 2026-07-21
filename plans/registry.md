@@ -29,7 +29,7 @@ Canonical direction remains in:
 | Provider connections and Eggpool | closed | `plans/subsystems/provider-connections-roadmap.md` | Milestone 5 — corrective lifecycle, rotation, health, and closure (closed) | — |
 | Project catalog and lazy discovery | closed | `plans/subsystems/project-catalog-roadmap.md` | Milestone 4 — protocol, server migration, and closure (closed) | — |
 | Multi-project TUI and sessions | active | `plans/subsystems/tui-project-sessions-roadmap.md` | Milestone 3 — project-correct event routing and lifecycle | Plan pending; Milestone 2 closed |
-| Frontend-neutral session projections | active | `plans/subsystems/session-projections-roadmap.md` | Milestone 2 — scoped subscriptions and durable replay (conditionally closed at `8dc4b85`) | Library/crate implementation landed; daemon publication wiring, request dispatch, and live-event routing remain open. See `plans/closure/session-projections/002-status.md`. Milestone 3 blocked until those wiring items resolve. |
+| Frontend-neutral session projections | active | `plans/subsystems/session-projections-roadmap.md` | Milestone 3 — visibility, redaction, and artifact handles | Milestone 2 strictly closed at this commit; the principal capability filtering seam is the remaining dependency for Milestone 3. |
 
 ## Dependency-ready implementation plans
 
@@ -41,20 +41,19 @@ Canonical direction remains in:
 
 | Subsystem | Milestone | Closure record | Status | Open findings |
 |---|---|---|---|---|
-| Frontend-neutral session projections | 002 — scoped subscriptions and durable replay | `plans/closure/session-projections/002-status.md` | conditionally closed at `8dc4b85` (library layer) | Central daemon publication; canonical non-empty stream context; real stream IDs; request dispatch; subscription-isolated live routing; session binding-revision invalidation |
 
 ## Blocked work
 
 | Work item | Blocker | Required resolution | Owner document |
 |---|---|---|---|
 | Multi-Project TUI 003 — project-correct event routing and lifecycle | Multi-Project TUI 002 is not closed | Implement and strictly close TUI 002; consume its picker/tab/session navigation ownership without creating a second tab model | `plans/subsystems/tui-project-sessions-roadmap.md` |
-| Session Projections 003 — visibility, redaction, and artifact handles | Session Projections 002 library layer is conditionally closed (`plans/closure/session-projections/002-status.md`); the daemon publication wiring, request dispatch, live-event routing, and rebind-revision threading remain open follow-ups against `8dc4b85`. The principal capability filtering seam is still required. | Land the M2 daemon wiring follow-ups against the existing `ProjectionReplayHandle` (no new design required), then define the fail-closed visibility/redaction and bounded artifact-read policy around the durable replay authority | `plans/subsystems/session-projections-roadmap.md` |
+| Session Projections 003 — visibility, redaction, and artifact handles | The principal capability filtering seam is required for visibility/redaction/artifact policy. Session Projections 002 is strictly closed (`plans/closure/session-projections/002-status.md`). | Define the fail-closed visibility/redaction and bounded artifact-read policy around the closed durable replay authority; land the principal capability filtering seam first | `plans/subsystems/session-projections-roadmap.md` |
 
 ## Recently closed work
 
 | Subsystem | Milestone | Closure record | Closed at commit | Follow-up |
 |---|---|---|---|---|
-| Frontend-neutral session projections | 002 — scoped subscriptions and durable replay | `plans/closure/session-projections/002-status.md` | `8dc4b85` (implementation, library layer) | M2 wiring follow-ups (daemon publication, request dispatch, live-event routing, rebind revision); then Milestone 003 (visibility/redaction/artifact handles) |
+| Frontend-neutral session projections | 002 — scoped subscriptions and durable replay | `plans/closure/session-projections/002-status.md` | this commit (corrective daemon integration + library at `8dc4b85`) | Milestone 003 (visibility/redaction/artifact handles) once the principal capability filtering seam is ready |
 | Frontend-neutral session projections | 001 — projection contracts and canonical reducer | `plans/closure/session-projections/001-status.md` | `f6c8669` (implementation) | `plans/implementation/session-projections/002-scoped-subscriptions-durable-replay.md` |
 | Multi-project TUI and sessions | 002 — project picker and tab navigation | `plans/closure/tui-project-sessions/002-status.md` | (this commit) | `plans/implementation/tui-project-sessions/003-event-routing-lifecycle.md` (pending) |
 | Multi-project TUI and sessions | 001 — project-aware state and catalog client | `plans/closure/tui-project-sessions/001-status.md` | `62e26b1` (implementation) | `plans/implementation/tui-project-sessions/002-project-picker-tab-navigation.md` |

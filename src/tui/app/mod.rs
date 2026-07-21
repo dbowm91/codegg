@@ -2551,10 +2551,7 @@ impl App {
         if area.height >= 3 && area.width >= 80 {
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
-                .constraints([
-                    Constraint::Length(area.height - 1),
-                    Constraint::Length(1),
-                ])
+                .constraints([Constraint::Length(area.height - 1), Constraint::Length(1)])
                 .split(area);
             self.render_tab_strip(frame, chunks[1]);
             self.render_header_content(frame, chunks[0]);
@@ -2883,11 +2880,21 @@ impl App {
                 Style::default().fg(self.ui_state.theme.muted),
             ));
         }
-        for (i, (tid, label)) in labels.iter().enumerate().take(window_end).skip(window_start) {
+        for (i, (tid, label)) in labels
+            .iter()
+            .enumerate()
+            .take(window_end)
+            .skip(window_start)
+        {
             let is_active = active_id.as_ref() == Some(tid);
             let suffix_source = tid.as_str();
             let label_str: &str = label.as_str();
-            let display = if labels.iter().filter(|(_, l)| l.as_str() == label_str).count() > 1 {
+            let display = if labels
+                .iter()
+                .filter(|(_, l)| l.as_str() == label_str)
+                .count()
+                > 1
+            {
                 disambiguate_label(label_str, suffix_source)
             } else {
                 label.clone()
@@ -2898,7 +2905,10 @@ impl App {
             let (fg, bg) = if is_active {
                 (self.ui_state.theme.primary, self.ui_state.theme.selection)
             } else {
-                (self.ui_state.theme.foreground, self.ui_state.theme.background)
+                (
+                    self.ui_state.theme.foreground,
+                    self.ui_state.theme.background,
+                )
             };
             spans.push(Span::styled(
                 format!("{} {} ", prefix, display),
@@ -3167,8 +3177,7 @@ impl App {
         frame.render_widget(block, dialog_area);
 
         if let Some(picker) = self.dialog_state.project_picker.as_ref() {
-            let filtered =
-                picker.filtered_indices(&self.project_catalog.entries);
+            let filtered = picker.filtered_indices(&self.project_catalog.entries);
             render_picker_body(
                 frame,
                 picker,
@@ -8148,15 +8157,9 @@ impl App {
 
         match phase {
             PickerPhase::Catalog => self.handle_picker_catalog_key(key),
-            PickerPhase::WorkspaceSelection => {
-                self.handle_picker_workspace_selection_key(key)
-            }
-            PickerPhase::RegistrationInput => {
-                self.handle_picker_registration_input_key(key)
-            }
-            PickerPhase::RegistrationConfirm => {
-                self.handle_picker_registration_confirm_key(key)
-            }
+            PickerPhase::WorkspaceSelection => self.handle_picker_workspace_selection_key(key),
+            PickerPhase::RegistrationInput => self.handle_picker_registration_input_key(key),
+            PickerPhase::RegistrationConfirm => self.handle_picker_registration_confirm_key(key),
             PickerPhase::Error => {
                 let _ = key; // suppress unused
                 if let Some(picker) = self.dialog_state.project_picker.as_mut() {
@@ -8208,13 +8211,11 @@ impl App {
                 // Ctrl+R enters registration input mode.
                 if key.code == KeyCode::Char('r') && key.modifiers == KeyModifiers::CONTROL {
                     if picker.transport_local {
-                        picker.phase =
-                            crate::tui::app::state::PickerPhase::RegistrationInput;
+                        picker.phase = crate::tui::app::state::PickerPhase::RegistrationInput;
                         picker.registration_input.clear();
                     } else {
-                        picker.last_error = Some(
-                            "Raw path registration requires a local TUI context".to_string(),
-                        );
+                        picker.last_error =
+                            Some("Raw path registration requires a local TUI context".to_string());
                         picker.phase = crate::tui::app::state::PickerPhase::Error;
                     }
                 }
@@ -8340,10 +8341,7 @@ impl App {
                     .get(p.selected_row.min(filtered.len().saturating_sub(1)))
                     .copied();
                 let entry = actual.and_then(|i| self.project_catalog.entries.get(i));
-                (
-                    entry.map(|e| e.project_id.clone()),
-                    p.catalog_generation,
-                )
+                (entry.map(|e| e.project_id.clone()), p.catalog_generation)
             }
             None => return,
         };
@@ -8354,11 +8352,7 @@ impl App {
         };
 
         // Now begin the request generation on the picker state.
-        let (request_id, picker_request_id) = match self
-            .dialog_state
-            .project_picker
-            .as_mut()
-        {
+        let (request_id, picker_request_id) = match self.dialog_state.project_picker.as_mut() {
             Some(p) => {
                 let rid = p.begin_request();
                 (rid, rid)
@@ -8481,8 +8475,7 @@ impl App {
         // completion. Stash it on the picker during the apply. Until
         // then, we cannot proceed.
         if let Some(picker) = self.dialog_state.project_picker.as_mut() {
-            picker.last_error =
-                Some("Workspace registration must complete first".to_string());
+            picker.last_error = Some("Workspace registration must complete first".to_string());
             picker.phase = PickerPhase::Error;
         }
     }
@@ -8889,13 +8882,13 @@ impl App {
     /// catalog to be loaded — the picker shows an explicit loading or
     /// unsupported state until the first refresh completes.
     pub fn open_project_picker(&mut self) {
-        let transport_local =
-            matches!(self.ui_state.mode, crate::tui::app::state::AppMode::Embedded);
-        let catalog_generation = self.project_catalog.list_request.request_id();
-        let picker = crate::tui::app::state::ProjectPickerState::new(
-            transport_local,
-            catalog_generation,
+        let transport_local = matches!(
+            self.ui_state.mode,
+            crate::tui::app::state::AppMode::Embedded
         );
+        let catalog_generation = self.project_catalog.list_request.request_id();
+        let picker =
+            crate::tui::app::state::ProjectPickerState::new(transport_local, catalog_generation);
         self.dialog_state.project_picker = Some(picker);
         self.ui_state.dialog = Dialog::ProjectPicker;
 

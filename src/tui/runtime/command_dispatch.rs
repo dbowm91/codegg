@@ -878,7 +878,11 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
             picker_request_id,
         } => {
             super::super::commands::project_picker::start_get_project(
-                app, request_id, project_id, picker_generation, picker_request_id,
+                app,
+                request_id,
+                project_id,
+                picker_generation,
+                picker_request_id,
             );
         }
         TuiCommand::ProjectGetLoaded {
@@ -890,7 +894,13 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
             error,
         } => {
             super::super::commands::project_picker::apply_project_get_loaded(
-                app, request_id, target_project_id, picker_generation, picker_request_id, result, error,
+                app,
+                request_id,
+                target_project_id,
+                picker_generation,
+                picker_request_id,
+                result,
+                error,
             );
         }
         TuiCommand::StartListProjectSessions {
@@ -899,7 +909,10 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
             workspace_id,
         } => {
             super::super::commands::project_picker::start_list_project_sessions(
-                app, tab_id, project_id, workspace_id,
+                app,
+                tab_id,
+                project_id,
+                workspace_id,
             );
         }
         TuiCommand::ProjectSessionsLoaded {
@@ -911,7 +924,13 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
             error,
         } => {
             super::super::commands::project_picker::apply_project_sessions_loaded(
-                app, request_id, tab_id, project_id, workspace_id, sessions, error,
+                app,
+                request_id,
+                tab_id,
+                project_id,
+                workspace_id,
+                sessions,
+                error,
             );
         }
         TuiCommand::StartRegisterWorkspace { path } => {
@@ -923,7 +942,10 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
             error,
         } => {
             super::super::commands::project_picker::apply_workspace_registered(
-                app, request_id, workspace_id, error,
+                app,
+                request_id,
+                workspace_id,
+                error,
             );
         }
         TuiCommand::StartRegisterProject {
@@ -933,7 +955,11 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
             tags,
         } => {
             super::super::commands::project_picker::start_register_project(
-                app, workspace_id, display_name, description, tags,
+                app,
+                workspace_id,
+                display_name,
+                description,
+                tags,
             );
         }
         TuiCommand::ProjectRegistered {

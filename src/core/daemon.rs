@@ -22,6 +22,9 @@ use codegg_core::workspace::{WorkspaceRecord, WorkspaceRegistry};
 use codegg_core::workspace_services::{
     ProductionWorkspaceServicesFactory, WorkspaceServiceRegistry,
 };
+use codegg_protocol::projection::replay::{
+    ProjectionStreamDescriptor, ProjectionStreamId, ProjectionStreamKind,
+};
 
 pub struct CoreDaemon {
     pub daemon_id: String,
@@ -66,6 +69,33 @@ pub struct CoreDaemon {
     pub asset_refresh: Arc<crate::agent::asset_refresh::AssetRefreshCoordinator>,
     /// Project Catalog Milestone 3: explicit owner-scoped activation leases.
     pub project_activation: Arc<ProjectActivationRegistry>,
+    /// Projection replay publication seam. Present only for SQLite-backed
+    /// daemons; legacy in-memory daemons retain `None`.
+    pub projection_seam:
+        Option<Arc<codegg_core::projection_replay::seam::ProjectionPublicationSeam>>,
+    /// Handle for the background projection replay maintenance task.
+    /// `None` when no pool is available. Held to keep the task alive.
+    _projection_maintenance_handle: Option<tokio::task::JoinHandle<()>>,
+}
+
+/// Adapter bridging `EventLog`'s `ProjectionSink` trait to the
+/// centralized `ProjectionPublicationSeam`. Spawned by the daemon
+/// construction path when a SQLite pool is available.
+struct SeamProjectionSink {
+    inner: Arc<codegg_core::projection_replay::seam::ProjectionPublicationSeam>,
+}
+
+impl super::event_log::ProjectionSink for SeamProjectionSink {
+    fn publish(
+        &self,
+        envelope: crate::protocol::core::EventEnvelope<CoreEvent>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'static>> {
+        let seam = self.inner.clone();
+        Box::pin(async move {
+            let ctx = codegg_core::projection_replay::seam::ProjectionPublicationContext::default();
+            let _ = seam.publish(&envelope, ctx).await;
+        })
+    }
 }
 
 impl CoreDaemon {
@@ -89,13 +119,49 @@ impl CoreDaemon {
             .as_ref()
             .and_then(|d| d.event_log_capacity)
             .unwrap_or(4096);
-        let event_log = match deps.pool {
-            Some(ref p) => Arc::new(super::event_log::EventLog::new_with_pool(
-                capacity,
-                p.clone(),
-            )),
-            None => Arc::new(super::event_log::EventLog::new(capacity)),
+        let mut event_log = match deps.pool {
+            Some(ref p) => super::event_log::EventLog::new_with_pool(capacity, p.clone()),
+            None => super::event_log::EventLog::new(capacity),
         };
+
+        // Install the projection replay publication seam when a SQLite pool
+        // is available. The seam owns the replay store/service and routes
+        // every published envelope into durable projection storage exactly once.
+        let (projection_seam, projection_maintenance_handle) = if let Some(ref pool) = deps.pool {
+            use codegg_core::project_storage::ProjectStorage;
+            use codegg_core::projection_replay::seam::ProjectionPublicationSeam;
+            use codegg_core::projection_replay::service::ProjectionReplayService;
+            use codegg_core::projection_replay::store::ProjectionReplayStore;
+
+            let replay_store = Arc::new(ProjectionReplayStore::new(pool.clone()));
+            let replay_service = Arc::new(ProjectionReplayService::new(replay_store));
+            let project_storage = Arc::new(ProjectStorage::new(pool.clone()));
+            let seam = Arc::new(ProjectionPublicationSeam::with_project_storage(
+                replay_service,
+                project_storage,
+            ));
+            let sink = Arc::new(SeamProjectionSink {
+                inner: seam.clone(),
+            });
+            event_log.install_projection_sink(sink);
+
+            // Spawn a background maintenance task for retention/checkpointing
+            let maintenance_seam = Arc::clone(&seam);
+            let handle = tokio::spawn(async move {
+                let mut interval = tokio::time::interval(std::time::Duration::from_secs(300));
+                loop {
+                    interval.tick().await;
+                    let now = chrono::Utc::now().timestamp_millis();
+                    let _ = maintenance_seam.service().maintenance_tick(now).await;
+                }
+            });
+
+            (Some(seam), Some(handle))
+        } else {
+            (None, None)
+        };
+
+        let event_log = Arc::new(event_log);
         let notification_router = Arc::new(super::notification::NotificationRouter::new(
             super::notification::NotificationPolicy::from_config(&config),
         ));
@@ -241,6 +307,8 @@ impl CoreDaemon {
             selection_service,
             asset_refresh,
             project_activation,
+            projection_seam,
+            _projection_maintenance_handle: projection_maintenance_handle,
         }
     }
 
@@ -5114,6 +5182,368 @@ impl CoreDaemon {
                     arbiter.request_interrupt();
                 }
                 Ok(CoreResponse::Ack)
+            }
+            // ── Session Projections M2: Replay Protocol ──────────────────────
+            CoreRequest::ProjectionCapabilities => {
+                Ok(CoreResponse::ProjectionCapabilitiesResponse {
+                    supported: self.projection_seam.is_some(),
+                    projection_version: 1,
+                    max_events_per_batch: 512,
+                    max_event_bytes: 64 * 1024,
+                    max_subscriptions_per_client: 32,
+                    max_subscriptions_per_daemon: 256,
+                    retention_session_max_events: 20_000,
+                    retention_project_max_events: 50_000,
+                })
+            }
+            CoreRequest::ProjectionSubscribe { request } => {
+                let Some(ref seam) = self.projection_seam else {
+                    return Ok(CoreResponse::Error {
+                        code: "projection_unavailable".into(),
+                        message: "projection replay requires a SQLite-backed daemon".into(),
+                    });
+                };
+                if let Err(e) = request.validate() {
+                    return Ok(CoreResponse::Error {
+                        code: "invalid_projection_subscribe".into(),
+                        message: e.to_string(),
+                    });
+                }
+                let service = seam.service();
+                let client_id = request.scope_id.clone();
+
+                // Resolve canonical binding for Session scope so the
+                // subscription lands on the same stream publications use.
+                let (resolved_project, resolved_workspace, resolved_revision) =
+                    if matches!(request.scope, ProjectionStreamKind::Session) {
+                        if let Some(storage) = seam.project_storage() {
+                            match storage.session_binding(&request.scope_id).await {
+                                Ok(Some(record))
+                                    if matches!(
+                                        record.status,
+                                        codegg_core::project_storage::BindingStatus::Resolved
+                                    ) =>
+                                {
+                                    (
+                                        record
+                                            .project_id
+                                            .map(|p| p.as_str().to_string())
+                                            .unwrap_or_default(),
+                                        record.workspace_id.map(|w| w.as_str().to_string()),
+                                        record.revision,
+                                    )
+                                }
+                                _ => (String::new(), None, 1),
+                            }
+                        } else {
+                            (String::new(), None, 1)
+                        }
+                    } else {
+                        (request.scope_id.clone(), None, 1)
+                    };
+
+                let sub_id = match request.scope {
+                    ProjectionStreamKind::Session => {
+                        service
+                            .subscribe_session(
+                                &request.scope_id,
+                                &resolved_project,
+                                resolved_workspace.as_deref(),
+                                &client_id,
+                                &request,
+                            )
+                            .await
+                    }
+                    ProjectionStreamKind::Project => {
+                        service
+                            .subscribe_project(&request.scope_id, &client_id, &request)
+                            .await
+                    }
+                };
+
+                match sub_id {
+                    Ok(sub_id) => {
+                        let descriptor = match request.scope {
+                            ProjectionStreamKind::Session => service
+                                .store()
+                                .lookup_session_stream(&request.scope_id, &resolved_project)
+                                .await
+                                .ok()
+                                .flatten()
+                                .unwrap_or_else(|| ProjectionStreamDescriptor {
+                                    stream_id: ProjectionStreamId(request.scope_id.clone()),
+                                    kind: ProjectionStreamKind::Session,
+                                    project_id: resolved_project.clone(),
+                                    workspace_id: resolved_workspace.clone(),
+                                    session_id: Some(request.scope_id.clone()),
+                                    projection_version: 1,
+                                    retention_floor_seq: 0,
+                                    high_water_seq: 0,
+                                    latest_checkpoint_seq: None,
+                                }),
+                            ProjectionStreamKind::Project => service
+                                .store()
+                                .get_or_create_project_stream(&request.scope_id)
+                                .await
+                                .map(|(d, _)| d)
+                                .unwrap_or_else(|_| ProjectionStreamDescriptor {
+                                    stream_id: ProjectionStreamId(request.scope_id.clone()),
+                                    kind: ProjectionStreamKind::Project,
+                                    project_id: request.scope_id.clone(),
+                                    workspace_id: None,
+                                    session_id: None,
+                                    projection_version: 1,
+                                    retention_floor_seq: 0,
+                                    high_water_seq: 0,
+                                    latest_checkpoint_seq: None,
+                                }),
+                        };
+                        let snapshot = codegg_protocol::projection::replay::ProjectionSnapshotBundle::One {
+                            snapshot: Box::new(
+                                codegg_protocol::projection::snapshot::SessionProjectionSnapshot::empty(
+                                    &request.scope_id,
+                                    &descriptor.project_id,
+                                    descriptor.workspace_id.as_deref().unwrap_or(""),
+                                ),
+                            ),
+                        };
+                        let cursor = codegg_protocol::projection::replay::ProjectionCursor {
+                            stream_id: descriptor.stream_id.clone(),
+                            event_seq: descriptor.high_water_seq,
+                            projection_version: descriptor.projection_version,
+                        };
+                        let retention_floor_seq = descriptor.retention_floor_seq;
+                        Ok(CoreResponse::ProjectionSubscribed {
+                            subscription_id: sub_id,
+                            descriptor,
+                            snapshot,
+                            cursor: cursor.clone(),
+                            retention_floor_seq,
+                        })
+                    }
+                    Err(e) => Ok(CoreResponse::Error {
+                        code: "projection_subscribe_failed".into(),
+                        message: e.to_string(),
+                    }),
+                }
+            }
+            CoreRequest::ProjectionResume {
+                cursor,
+                include_snapshot_if_resync,
+            } => {
+                let Some(ref seam) = self.projection_seam else {
+                    return Ok(CoreResponse::Error {
+                        code: "projection_unavailable".into(),
+                        message: "projection replay requires a SQLite-backed daemon".into(),
+                    });
+                };
+                let service = seam.service();
+                // Look up the subscription from the cursor's stream to find its sub_id.
+                // For now, iterate subscriptions to find one matching this stream.
+                let sub_id_opt = service
+                    .subscriptions()
+                    .by_id()
+                    .iter()
+                    .find(|e| e.value().stream_id == cursor.stream_id)
+                    .map(|e| e.key().clone());
+
+                let Some(sub_id) = sub_id_opt else {
+                    return Ok(CoreResponse::Error {
+                        code: "subscription_not_found".into(),
+                        message: "no active subscription for this stream".into(),
+                    });
+                };
+
+                match service
+                    .resume(&sub_id, &cursor, include_snapshot_if_resync)
+                    .await
+                {
+                    Ok(codegg_core::projection_replay::service::ResumeOutcome::Replayed {
+                        events,
+                        current_high_water,
+                        next_cursor,
+                    }) => {
+                        let descriptor = service
+                            .store()
+                            .lookup_stream_by_id(cursor.stream_id.as_str())
+                            .await
+                            .ok()
+                            .flatten()
+                            .unwrap_or_else(|| ProjectionStreamDescriptor {
+                                stream_id: cursor.stream_id.clone(),
+                                kind: ProjectionStreamKind::Session,
+                                project_id: String::new(),
+                                workspace_id: None,
+                                session_id: None,
+                                projection_version: 1,
+                                retention_floor_seq: 0,
+                                high_water_seq: current_high_water,
+                                latest_checkpoint_seq: None,
+                            });
+                        Ok(CoreResponse::ProjectionReplay {
+                            batch: codegg_protocol::projection::replay::ProjectionReplayBatch {
+                                descriptor,
+                                events,
+                                snapshot: None,
+                                replay_start_seq: cursor.event_seq + 1,
+                                replay_end_seq: next_cursor.event_seq,
+                                current_high_water,
+                                truncation_flag: false,
+                                next_cursor: if next_cursor.event_seq < current_high_water {
+                                    Some(next_cursor)
+                                } else {
+                                    None
+                                },
+                            },
+                        })
+                    }
+                    Ok(codegg_core::projection_replay::service::ResumeOutcome::Empty {
+                        current_high_water,
+                        next_cursor,
+                    }) => Ok(CoreResponse::ProjectionReplay {
+                        batch: codegg_protocol::projection::replay::ProjectionReplayBatch {
+                            descriptor: ProjectionStreamDescriptor {
+                                stream_id: cursor.stream_id.clone(),
+                                kind: ProjectionStreamKind::Session,
+                                project_id: String::new(),
+                                workspace_id: None,
+                                session_id: None,
+                                projection_version: 1,
+                                retention_floor_seq: 0,
+                                high_water_seq: current_high_water,
+                                latest_checkpoint_seq: None,
+                            },
+                            events: vec![],
+                            snapshot: None,
+                            replay_start_seq: cursor.event_seq + 1,
+                            replay_end_seq: next_cursor.event_seq,
+                            current_high_water,
+                            truncation_flag: false,
+                            next_cursor: None,
+                        },
+                    }),
+                    Ok(codegg_core::projection_replay::service::ResumeOutcome::Resync {
+                        reason,
+                        descriptor,
+                        requested_cursor,
+                        snapshot,
+                    }) => Ok(CoreResponse::ProjectionResyncRequired {
+                        reason,
+                        descriptor,
+                        requested_cursor,
+                        snapshot,
+                    }),
+                    Err(e) => Ok(CoreResponse::Error {
+                        code: "projection_resume_failed".into(),
+                        message: e.to_string(),
+                    }),
+                }
+            }
+            CoreRequest::ProjectionAck { ack } => {
+                let Some(ref seam) = self.projection_seam else {
+                    return Ok(CoreResponse::Error {
+                        code: "projection_unavailable".into(),
+                        message: "projection replay requires a SQLite-backed daemon".into(),
+                    });
+                };
+                let service = seam.service();
+                // Find the subscription that owns this ack
+                let sub_id_opt = service
+                    .subscriptions()
+                    .by_id()
+                    .get(&ack.subscription_id)
+                    .map(|e| e.key().clone());
+
+                let Some(sub_id) = sub_id_opt else {
+                    return Ok(CoreResponse::Error {
+                        code: "subscription_not_found".into(),
+                        message: "no active subscription with this ID".into(),
+                    });
+                };
+
+                match service.ack(&sub_id, &ack.cursor).await {
+                    Ok(codegg_core::projection_replay::service::AckResult::Accepted {
+                        last_acked_seq,
+                        lag_count,
+                    }) => Ok(CoreResponse::ProjectionAckAccepted {
+                        subscription_id: sub_id,
+                        last_acked_seq,
+                        lag_count,
+                    }),
+                    Ok(codegg_core::projection_replay::service::AckResult::Rejected { reason }) => {
+                        Ok(CoreResponse::Error {
+                            code: "projection_ack_rejected".into(),
+                            message: reason,
+                        })
+                    }
+                    Err(e) => Ok(CoreResponse::Error {
+                        code: "projection_ack_failed".into(),
+                        message: e.to_string(),
+                    }),
+                }
+            }
+            CoreRequest::ProjectionUnsubscribe { subscription_id } => {
+                let Some(ref seam) = self.projection_seam else {
+                    return Ok(CoreResponse::Error {
+                        code: "projection_unavailable".into(),
+                        message: "projection replay requires a SQLite-backed daemon".into(),
+                    });
+                };
+                let service = seam.service();
+                match service.unsubscribe(&subscription_id).await {
+                    Ok(()) => Ok(CoreResponse::ProjectionUnsubscribed { subscription_id }),
+                    Err(e) => Ok(CoreResponse::Error {
+                        code: "projection_unsubscribe_failed".into(),
+                        message: e.to_string(),
+                    }),
+                }
+            }
+            CoreRequest::ProjectionSnapshotGet { scope, scope_id } => {
+                let snapshot = match scope {
+                    ProjectionStreamKind::Session => {
+                        codegg_protocol::projection::replay::ProjectionSnapshotBundle::One {
+                            snapshot: Box::new(
+                                codegg_protocol::projection::snapshot::SessionProjectionSnapshot::empty(
+                                    &scope_id,
+                                    "",
+                                    "",
+                                ),
+                            ),
+                        }
+                    }
+                    ProjectionStreamKind::Project => {
+                        codegg_protocol::projection::replay::ProjectionSnapshotBundle::BoundedSessionList {
+                            sessions: vec![],
+                            truncated: false,
+                        }
+                    }
+                };
+                Ok(CoreResponse::ProjectionReplay {
+                    batch: codegg_protocol::projection::replay::ProjectionReplayBatch {
+                        descriptor: ProjectionStreamDescriptor {
+                            stream_id: ProjectionStreamId(scope_id.clone()),
+                            kind: scope,
+                            project_id: scope_id.clone(),
+                            workspace_id: None,
+                            session_id: if matches!(scope, ProjectionStreamKind::Session) {
+                                Some(scope_id.clone())
+                            } else {
+                                None
+                            },
+                            projection_version: 1,
+                            retention_floor_seq: 0,
+                            high_water_seq: 0,
+                            latest_checkpoint_seq: None,
+                        },
+                        events: vec![],
+                        snapshot: Some(snapshot),
+                        replay_start_seq: 0,
+                        replay_end_seq: 0,
+                        current_high_water: 0,
+                        truncation_flag: false,
+                        next_cursor: None,
+                    },
+                })
             }
             _ => {
                 tracing::warn!("Unhandled CoreRequest variant");

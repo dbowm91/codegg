@@ -68,9 +68,9 @@ Milestone 1 added `codegg_protocol::projection`: versioned bounded projection DT
 
 Milestone 2's library/crate layer landed at `8dc4b85`: replay DTOs and protocol variants, storage migration v32, stream/event/checkpoint stores, sequence allocation, retention/checkpoints, subscription registry, safe-publication classification, resume/resync logic, metrics, and focused tests.
 
-The production daemon integration is not complete. The conditional closure record at `plans/closure/session-projections/002-status.md` identifies missing publication wiring, daemon request dispatch, live subscription routing, and binding-revision invalidation. Direct inspection also shows empty canonical IDs and placeholder stream IDs in the current service publication/delivery path. The corrective plan `plans/implementation/session-projections/002-corrective-daemon-integration-and-closure.md` is therefore the current dependency-ready handoff.
+Milestone 2's corrective daemon integration landed at this commit: one `ProjectionPublicationSeam` is installed as an `EventLog` sink hook so every production event reaches durable projection storage; canonical session binding resolves `ProjectId` / `WorkspaceId` / `binding_revision` from `ProjectStorage`; rebind invalidates the old stream; real `ProjectionStreamId` is used for live delivery; `CoreRequest::Projection*` dispatches through `CoreDaemon`; per-client subscription receivers own their forwarders; a 5-minute maintenance tick drives retention/checkpoints; a new static guard rejects unauthorized direct publication paths. Strict closure evidence is recorded at `plans/closure/session-projections/002-status.md`.
 
-Existing raw core-event subscribe/resume behavior remains the compatibility path and must not be removed by the corrective pass.
+Existing raw core-event subscribe/resume behavior remains the compatibility path and was preserved by the corrective pass.
 
 ## 5. Target architecture
 
@@ -106,8 +106,8 @@ Milestone 4: frontend adoption, compatibility, and closure
 ```
 
 - Milestone 1 is closed.
-- Milestone 2 library work is conditionally closed; its corrective daemon-integration pass is ready.
-- Milestone 3 has hard dependencies on strict Milestone 2 closure and an interface dependency on principal capability filtering.
+- Milestone 2 is strictly closed (library at `8dc4b85` + corrective daemon integration at this commit).
+- Milestone 3 has a hard dependency on the principal capability filtering interface; Milestone 2 wiring is no longer a blocker.
 - Milestone 4 has hard dependencies on Milestones 1–3.
 
 ## 7. Milestones
@@ -132,13 +132,12 @@ Exit conditions:
 
 ### Milestone 2 — Scoped subscriptions and durable replay
 
-Status: **corrective pass ready**.
+Status: **closed (strict)**.
 
 Library implementation: `8dc4b85`.
 
-Conditional closure record: `plans/closure/session-projections/002-status.md`.
-
-Corrective implementation plan: `plans/implementation/session-projections/002-corrective-daemon-integration-and-closure.md`.
+Corrective daemon integration and strict closure: this commit (see
+`plans/closure/session-projections/002-status.md`).
 
 Class: capability / correctness closure
 
@@ -175,13 +174,13 @@ Deferred work: distributed node event replication and final multi-user policy.
 
 ### Milestone 3 — Visibility, redaction, and artifact handles
 
-Status: blocked.
+Status: blocked (principal capability filtering seam still required).
 
 Class: invariant
 
 Objective: ensure projection storage and transport are safe for later multi-user observation.
 
-Dependencies: strict Milestone 2 closure plus a principal/capability filtering interface.
+Dependencies: strict Milestone 2 closure (now satisfied) plus a principal/capability filtering interface. The Milestone 2 wiring is no longer a blocker.
 
 Deliverable boundary: visibility enum, policy hook, structural and heuristic redaction, secret-field handling, artifact/log handles, bounded reads, actor-only/admin placeholders, and negative tests.
 
@@ -266,6 +265,6 @@ This roadmap closes when CodeGG has one versioned, bounded, redacted session pro
 | Milestone | Status | Implementation plan | Closure record | Blockers |
 |---|---|---|---|---|
 | 1 | closed | `plans/implementation/session-projections/001-projection-contracts.md` | `plans/closure/session-projections/001-status.md` | — |
-| 2 | corrective pass ready | `plans/implementation/session-projections/002-corrective-daemon-integration-and-closure.md` | `plans/closure/session-projections/002-status.md` (conditional) | Library layer landed at `8dc4b85`; daemon publication, canonical stream identity, request dispatch, live routing, and binding-revision closure remain |
-| 3 | blocked | — | — | Strict Milestone 2 closure plus principal/capability filtering interface |
+| 2 | closed (strict) | `plans/implementation/session-projections/002-scoped-subscriptions-durable-replay.md` (library) and `plans/implementation/session-projections/002-corrective-daemon-integration-and-closure.md` (daemon integration) | `plans/closure/session-projections/002-status.md` | — |
+| 3 | blocked | — | — | Principal/capability filtering interface; Milestone 2 wiring is no longer a blocker |
 | 4 | blocked | — | — | Milestones 1–3 closure |

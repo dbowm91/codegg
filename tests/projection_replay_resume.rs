@@ -71,7 +71,11 @@ async fn resume_from_zero_returns_all_events() {
     let store = service.store();
     let stream_id = {
         let subs = service.subscriptions();
-        let entries: Vec<_> = subs.by_id().iter().map(|e| e.value().stream_id.clone()).collect();
+        let entries: Vec<_> = subs
+            .by_id()
+            .iter()
+            .map(|e| e.value().stream_id.clone())
+            .collect();
         entries.into_iter().next().unwrap()
     };
     let _ = store.lookup_stream_by_id(stream_id.as_str()).await.unwrap();
@@ -82,10 +86,7 @@ async fn resume_from_zero_returns_all_events() {
         projection_version: 1,
     };
 
-    let outcome = service
-        .resume(&sub_id, &cursor, false)
-        .await
-        .unwrap();
+    let outcome = service.resume(&sub_id, &cursor, false).await.unwrap();
 
     match outcome {
         ResumeOutcome::Replayed {
@@ -105,10 +106,7 @@ async fn resume_at_high_water_returns_empty() {
     let service = setup_service_with_events(5).await;
 
     let store = service.store();
-    let desc = store
-        .lookup_stream_by_id("stream-not-used")
-        .await
-        .unwrap();
+    let desc = store.lookup_stream_by_id("stream-not-used").await.unwrap();
 
     let sid_str = "session-stream";
     let (desc_real, _) = store
@@ -128,10 +126,7 @@ async fn resume_at_high_water_returns_empty() {
         projection_version: 1,
     };
 
-    let outcome = service
-        .resume(&sub_id, &cursor, false)
-        .await
-        .unwrap();
+    let outcome = service.resume(&sub_id, &cursor, false).await.unwrap();
 
     match outcome {
         ResumeOutcome::Empty {
@@ -165,10 +160,7 @@ async fn cursor_ahead_returns_resync() {
         projection_version: 1,
     };
 
-    let outcome = service
-        .resume(&sub_id, &cursor, false)
-        .await
-        .unwrap();
+    let outcome = service.resume(&sub_id, &cursor, false).await.unwrap();
 
     matches!(outcome, ResumeOutcome::Resync { .. });
 }
@@ -189,14 +181,14 @@ async fn stream_mismatch_returns_resync() {
         projection_version: 1,
     };
 
-    let outcome = service
-        .resume(&sub_id, &cursor, false)
-        .await
-        .unwrap();
+    let outcome = service.resume(&sub_id, &cursor, false).await.unwrap();
 
     match outcome {
         ResumeOutcome::Resync { reason, .. } => {
-            assert_eq!(reason, codegg_protocol::projection::replay::ProjectionResyncReason::StreamMismatch);
+            assert_eq!(
+                reason,
+                codegg_protocol::projection::replay::ProjectionResyncReason::StreamMismatch
+            );
         }
         other => panic!("expected Resync(StreamMismatch), got {:?}", other),
     }

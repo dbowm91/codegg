@@ -1,6 +1,6 @@
 # Session Projections Milestone 002 — Scoped Subscriptions and Durable Replay
 
-Status: ready for handoff
+Status: superseded by corrective closure at this commit (see `plans/closure/session-projections/002-status.md` and `plans/implementation/session-projections/002-corrective-daemon-integration-and-closure.md`)
 
 Repository baseline: `1c37787afc6b2afd437f1d3f21a6fe26226a73d7` (`main`; planning-only commits after this baseline do not alter production behavior)
 

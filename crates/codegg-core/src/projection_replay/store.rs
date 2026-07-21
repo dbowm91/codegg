@@ -54,18 +54,71 @@ impl ProjectionReplayStore {
         project_id: &str,
         workspace_id: Option<&str>,
     ) -> Result<(ProjectionStreamDescriptor, bool), StorageError> {
-        let now = Utc::now().timestamp_millis();
-        let id = Uuid::new_v4().to_string();
+        self.get_or_create_session_stream_with_revision(session_id, project_id, workspace_id, 1)
+            .await
+    }
 
+    /// Get or create a session stream with binding-revision awareness.
+    ///
+    /// When an active stream already exists for the given `(session, project)`
+    /// pair and the stored `binding_revision` matches the supplied one, the
+    /// existing descriptor is returned (idempotent).
+    ///
+    /// When the stored revision differs (i.e. the session has rebound to a
+    /// different project/workspace), the old stream is marked `rebound` and a
+    /// fresh active stream is created with the new binding revision.
+    ///
+    /// When no active stream exists, a new one is inserted with the supplied
+    /// binding revision.
+    pub async fn get_or_create_session_stream_with_revision(
+        &self,
+        session_id: &str,
+        project_id: &str,
+        workspace_id: Option<&str>,
+        binding_revision: i64,
+    ) -> Result<(ProjectionStreamDescriptor, bool), StorageError> {
+        let now = Utc::now().timestamp_millis();
+
+        // Step 1: Check if an active stream already exists for this session
+        // (looked up by session_id only, since rebinding changes project_id)
+        if let Some(existing) = sqlx::query(
+            r#"SELECT id, kind, project_id, workspace_id, session_id, binding_revision, projection_version, retention_floor_seq, high_water_seq, latest_checkpoint_seq
+            FROM projection_stream
+            WHERE kind = 'session' AND session_id = ? AND lifecycle = 'active'"#,
+        )
+        .bind(session_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| StorageError::Database(e.to_string()))?
+        {
+            let existing_revision: i64 = existing.get("binding_revision");
+            if existing_revision == binding_revision {
+                // Same binding: idempotent return existing
+                return Ok((Self::row_to_descriptor(&existing)?, false));
+            }
+            // Binding rebind: invalidate the old stream, create a new one
+            sqlx::query(
+                "UPDATE projection_stream SET lifecycle = 'rebound', updated_at = ? WHERE id = ?",
+            )
+            .bind(now)
+            .bind(existing.get::<String, _>("id"))
+            .execute(&self.pool)
+            .await
+            .map_err(|e| StorageError::Database(e.to_string()))?;
+        }
+
+        // Step 2: Insert a fresh active row
+        let id = Uuid::new_v4().to_string();
         sqlx::query(
             r#"INSERT INTO projection_stream (id, kind, project_id, workspace_id, session_id, binding_revision, projection_version, next_seq, retention_floor_seq, high_water_seq, latest_checkpoint_seq, created_at, updated_at, lifecycle)
-            VALUES (?, 'session', ?, ?, ?, 1, 1, 1, 0, 0, NULL, ?, ?, 'active')
+            VALUES (?, 'session', ?, ?, ?, ?, 1, 1, 0, 0, NULL, ?, ?, 'active')
             ON CONFLICT(kind, project_id, session_id, lifecycle) DO NOTHING"#,
         )
         .bind(&id)
         .bind(project_id)
         .bind(workspace_id)
         .bind(session_id)
+        .bind(binding_revision)
         .bind(now)
         .bind(now)
         .execute(&self.pool)
@@ -73,7 +126,7 @@ impl ProjectionReplayStore {
         .map_err(|e| StorageError::Database(e.to_string()))?;
 
         let row = sqlx::query(
-            r#"SELECT id, kind, project_id, workspace_id, session_id, projection_version, retention_floor_seq, high_water_seq, latest_checkpoint_seq
+            r#"SELECT id, kind, project_id, workspace_id, session_id, binding_revision, projection_version, retention_floor_seq, high_water_seq, latest_checkpoint_seq
             FROM projection_stream WHERE kind = 'session' AND project_id = ? AND session_id = ? AND lifecycle = 'active'"#,
         )
         .bind(project_id)
@@ -87,9 +140,7 @@ impl ProjectionReplayStore {
                 let created = r.get::<String, _>("id") != id;
                 Ok((Self::row_to_descriptor(&r)?, !created))
             }
-            None => Err(StorageError::Database(
-                "stream creation failed unexpectedly".into(),
-            )),
+            None => Err(StorageError::Database("stream creation failed".into())),
         }
     }
 
@@ -149,10 +200,27 @@ impl ProjectionReplayStore {
         row.map(|r| Self::row_to_descriptor(&r)).transpose()
     }
 
-    pub async fn invalidate_stream(
+    /// Look up the active session stream for a given `(session_id, project_id)`.
+    /// Returns `None` when no active stream exists.
+    pub async fn lookup_session_stream(
         &self,
-        stream_id: &str,
-    ) -> Result<(), StorageError> {
+        session_id: &str,
+        project_id: &str,
+    ) -> Result<Option<ProjectionStreamDescriptor>, StorageError> {
+        let row = sqlx::query(
+            r#"SELECT id, kind, project_id, workspace_id, session_id, projection_version, retention_floor_seq, high_water_seq, latest_checkpoint_seq
+            FROM projection_stream WHERE kind = 'session' AND project_id = ? AND session_id = ? AND lifecycle = 'active'"#,
+        )
+        .bind(project_id)
+        .bind(session_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| StorageError::Database(e.to_string()))?;
+
+        row.map(|r| Self::row_to_descriptor(&r)).transpose()
+    }
+
+    pub async fn invalidate_stream(&self, stream_id: &str) -> Result<(), StorageError> {
         let now = Utc::now().timestamp_millis();
         sqlx::query(
             r#"UPDATE projection_stream SET lifecycle = 'invalidated', updated_at = ? WHERE id = ?"#,
@@ -165,19 +233,18 @@ impl ProjectionReplayStore {
         Ok(())
     }
 
-    pub async fn next_event_seq(
-        &self,
-        stream_id: &str,
-    ) -> Result<u64, StorageError> {
-        let mut tx = self.pool.begin().await.map_err(|e| StorageError::Database(e.to_string()))?;
+    pub async fn next_event_seq(&self, stream_id: &str) -> Result<u64, StorageError> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| StorageError::Database(e.to_string()))?;
 
-        let row = sqlx::query(
-            "SELECT next_seq FROM projection_stream WHERE id = ?",
-        )
-        .bind(stream_id)
-        .fetch_one(&mut *tx)
-        .await
-        .map_err(|e| StorageError::Database(e.to_string()))?;
+        let row = sqlx::query("SELECT next_seq FROM projection_stream WHERE id = ?")
+            .bind(stream_id)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|e| StorageError::Database(e.to_string()))?;
 
         let seq: i64 = row.get("next_seq");
         let new_seq = seq + 1;
@@ -189,7 +256,35 @@ impl ProjectionReplayStore {
             .await
             .map_err(|e| StorageError::Database(e.to_string()))?;
 
-        tx.commit().await.map_err(|e| StorageError::Database(e.to_string()))?;
+        tx.commit()
+            .await
+            .map_err(|e| StorageError::Database(e.to_string()))?;
+        Ok(seq as u64)
+    }
+
+    /// Transactional variant of `next_event_seq` that uses an existing transaction.
+    /// Avoids deadlock when called inside a broader transaction.
+    pub async fn next_event_seq_tx(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        stream_id: &str,
+    ) -> Result<u64, StorageError> {
+        let row = sqlx::query("SELECT next_seq FROM projection_stream WHERE id = ?")
+            .bind(stream_id)
+            .fetch_one(&mut **tx)
+            .await
+            .map_err(|e| StorageError::Database(e.to_string()))?;
+
+        let seq: i64 = row.get("next_seq");
+        let new_seq = seq + 1;
+
+        sqlx::query("UPDATE projection_stream SET next_seq = ? WHERE id = ?")
+            .bind(new_seq)
+            .bind(stream_id)
+            .execute(&mut **tx)
+            .await
+            .map_err(|e| StorageError::Database(e.to_string()))?;
+
         Ok(seq as u64)
     }
 
@@ -267,14 +362,12 @@ impl ProjectionReplayStore {
         stream_id: &str,
         event_seq: u64,
     ) -> Result<(), StorageError> {
-        sqlx::query(
-            "UPDATE projection_stream SET high_water_seq = ? WHERE id = ?",
-        )
-        .bind(event_seq as i64)
-        .bind(stream_id)
-        .execute(&self.pool)
-        .await
-        .map_err(|e| StorageError::Database(e.to_string()))?;
+        sqlx::query("UPDATE projection_stream SET high_water_seq = ? WHERE id = ?")
+            .bind(event_seq as i64)
+            .bind(stream_id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| StorageError::Database(e.to_string()))?;
         Ok(())
     }
 
@@ -284,14 +377,12 @@ impl ProjectionReplayStore {
         stream_id: &str,
         event_seq: u64,
     ) -> Result<(), StorageError> {
-        sqlx::query(
-            "UPDATE projection_stream SET high_water_seq = ? WHERE id = ?",
-        )
-        .bind(event_seq as i64)
-        .bind(stream_id)
-        .execute(&mut **tx)
-        .await
-        .map_err(|e| StorageError::Database(e.to_string()))?;
+        sqlx::query("UPDATE projection_stream SET high_water_seq = ? WHERE id = ?")
+            .bind(event_seq as i64)
+            .bind(stream_id)
+            .execute(&mut **tx)
+            .await
+            .map_err(|e| StorageError::Database(e.to_string()))?;
         Ok(())
     }
 
@@ -338,11 +429,7 @@ impl ProjectionReplayStore {
         Ok(result)
     }
 
-    pub async fn event_exists(
-        &self,
-        stream_id: &str,
-        seq: u64,
-    ) -> Result<bool, StorageError> {
+    pub async fn event_exists(&self, stream_id: &str, seq: u64) -> Result<bool, StorageError> {
         let row = sqlx::query_scalar(
             "SELECT EXISTS(SELECT 1 FROM projection_event WHERE stream_id = ? AND event_seq = ?)",
         )
@@ -377,14 +464,12 @@ impl ProjectionReplayStore {
         .await
         .map_err(|e| StorageError::Database(e.to_string()))?;
 
-        sqlx::query(
-            "UPDATE projection_stream SET latest_checkpoint_seq = ? WHERE id = ?",
-        )
-        .bind(checkpoint_seq as i64)
-        .bind(stream_id)
-        .execute(&self.pool)
-        .await
-        .map_err(|e| StorageError::Database(e.to_string()))?;
+        sqlx::query("UPDATE projection_stream SET latest_checkpoint_seq = ? WHERE id = ?")
+            .bind(checkpoint_seq as i64)
+            .bind(stream_id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| StorageError::Database(e.to_string()))?;
         Ok(())
     }
 
@@ -418,23 +503,20 @@ impl ProjectionReplayStore {
         stream_id: &str,
         retention_floor_seq: u64,
     ) -> Result<usize, StorageError> {
-        let result = sqlx::query(
-            "DELETE FROM projection_event WHERE stream_id = ? AND event_seq < ?",
-        )
-        .bind(stream_id)
-        .bind(retention_floor_seq as i64)
-        .execute(&self.pool)
-        .await
-        .map_err(|e| StorageError::Database(e.to_string()))?;
+        let result =
+            sqlx::query("DELETE FROM projection_event WHERE stream_id = ? AND event_seq < ?")
+                .bind(stream_id)
+                .bind(retention_floor_seq as i64)
+                .execute(&self.pool)
+                .await
+                .map_err(|e| StorageError::Database(e.to_string()))?;
 
-        sqlx::query(
-            "UPDATE projection_stream SET retention_floor_seq = ? WHERE id = ?",
-        )
-        .bind(retention_floor_seq as i64)
-        .bind(stream_id)
-        .execute(&self.pool)
-        .await
-        .map_err(|e| StorageError::Database(e.to_string()))?;
+        sqlx::query("UPDATE projection_stream SET retention_floor_seq = ? WHERE id = ?")
+            .bind(retention_floor_seq as i64)
+            .bind(stream_id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| StorageError::Database(e.to_string()))?;
 
         Ok(result.rows_affected() as usize)
     }
@@ -455,30 +537,34 @@ impl ProjectionReplayStore {
 
         let mut deleted = 0;
         for (sid, seq) in &ids_to_delete {
-            sqlx::query("DELETE FROM projection_checkpoint WHERE stream_id = ? AND checkpoint_seq = ?")
-                .bind(sid)
-                .bind(seq)
-                .execute(&self.pool)
-                .await
-                .map_err(|e| StorageError::Database(e.to_string()))?;
+            sqlx::query(
+                "DELETE FROM projection_checkpoint WHERE stream_id = ? AND checkpoint_seq = ?",
+            )
+            .bind(sid)
+            .bind(seq)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| StorageError::Database(e.to_string()))?;
             deleted += 1;
         }
         Ok(deleted)
     }
 
     pub async fn stream_count(&self) -> Result<u64, StorageError> {
-        let row: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM projection_stream WHERE lifecycle = 'active'")
-            .fetch_one(&self.pool)
-            .await
-            .map_err(|e| StorageError::Database(e.to_string()))?;
+        let row: (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM projection_stream WHERE lifecycle = 'active'")
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| StorageError::Database(e.to_string()))?;
         Ok(row.0 as u64)
     }
 
     pub async fn total_event_bytes(&self) -> Result<u64, StorageError> {
-        let row: (i64,) = sqlx::query_as("SELECT COALESCE(SUM(payload_bytes), 0) FROM projection_event")
-            .fetch_one(&self.pool)
-            .await
-            .map_err(|e| StorageError::Database(e.to_string()))?;
+        let row: (i64,) =
+            sqlx::query_as("SELECT COALESCE(SUM(payload_bytes), 0) FROM projection_event")
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| StorageError::Database(e.to_string()))?;
         Ok(row.0 as u64)
     }
 
@@ -498,9 +584,7 @@ impl ProjectionReplayStore {
             .collect::<Result<Vec<_>, _>>()
     }
 
-    pub async fn begin_tx(
-        &self,
-    ) -> Result<sqlx::Transaction<'static, sqlx::Sqlite>, StorageError> {
+    pub async fn begin_tx(&self) -> Result<sqlx::Transaction<'static, sqlx::Sqlite>, StorageError> {
         self.pool
             .begin()
             .await
@@ -514,7 +598,11 @@ impl ProjectionReplayStore {
         let kind = match kind_str.as_str() {
             "session" => ProjectionStreamKind::Session,
             "project" => ProjectionStreamKind::Project,
-            _ => return Err(StorageError::Database(format!("unknown stream kind: {kind_str}"))),
+            _ => {
+                return Err(StorageError::Database(format!(
+                    "unknown stream kind: {kind_str}"
+                )))
+            }
         };
         Ok(ProjectionStreamDescriptor {
             stream_id: ProjectionStreamId(row.get("id")),
@@ -525,7 +613,8 @@ impl ProjectionReplayStore {
             projection_version: row.get::<i64, _>("projection_version") as u32,
             retention_floor_seq: row.get::<i64, _>("retention_floor_seq") as u64,
             high_water_seq: row.get::<i64, _>("high_water_seq") as u64,
-            latest_checkpoint_seq: row.get::<Option<i64>, _>("latest_checkpoint_seq")
+            latest_checkpoint_seq: row
+                .get::<Option<i64>, _>("latest_checkpoint_seq")
                 .map(|v| v as u64),
         })
     }

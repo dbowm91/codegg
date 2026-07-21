@@ -335,7 +335,9 @@ mod tests {
         let json = serde_json::to_string(&bundle).unwrap();
         let back: ProjectionSnapshotBundle = serde_json::from_str(&json).unwrap();
         match back {
-            ProjectionSnapshotBundle::One { snapshot } => assert_eq!(snapshot.primary_session_id, "s"),
+            ProjectionSnapshotBundle::One { snapshot } => {
+                assert_eq!(snapshot.primary_session_id, "s")
+            }
             _ => panic!("expected One"),
         }
     }
