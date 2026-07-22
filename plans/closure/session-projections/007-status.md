@@ -1,6 +1,6 @@
 # Session Projections Milestone 007 — Closure Status
 
-Status: closed
+Status: conditionally closed — Milestone 008 final transport lifecycle and replay evidence polish required
 
 Source implementation plan:
 
@@ -12,65 +12,130 @@ Source subsystem roadmap:
 
 Repository baseline reviewed: `dbbaabdde51db09f0c5beb704234ce1d94d01c9a`
 
-Implementation commits:
+Implementation commit:
 
 - `9887c2d581a3d01280485523161695d08469c34f` — corrective transport lifecycle implementation, adapter seams, focused regression tests, and lifecycle static guard.
 
-Closure record commit:
+Original closure record commit:
 
-- `922333b5787944d033c004cbc184a9de06778a88` — introduced this closure record and the strict M007 planning transition.
+- `922333b5787944d033c004cbc184a9de06778a88`
 
-## 1. Executive finding
+Corrective handoff:
 
-Milestone 007 is strictly closed. The production Unix, `/core`, and `/tui` transport paths now own connection-scoped tasks, cancel and join them during teardown, reject stale raw traffic at the final writer boundary, and keep a subscription initializing until its canonical response is delivered. Production-adapter tests cover blocked-response ordering, rollback, foreign operations, reconnect replay, and cross-client isolation. No unresolved high or medium M007 finding remains.
+- `plans/implementation/session-projections/008-final-transport-lifecycle-and-replay-evidence-polish.md`
 
-M007 changes transport lifecycle and evidence only. It does not change projection storage, replay authority, reducer semantics, disclosure policy, artifact bounds, protocol DTO meaning, or the version-5 wire contract. Version-4 raw compatibility remains available where required.
+## 1. Closure decision
 
-## 2. Requirement-to-evidence matrix
+The principal M007 production changes remain accepted. M007 fixed the detached Unix raw-forwarder lifecycle, added connection-local lifecycle fault seams, introduced epoch-safe `/tui` raw routing with final-writer stale rejection, added real blocked-response ordering tests, expanded foreign-operation coverage, added reconnect fixtures, and reconciled the prior transport test count and protocol-version expectation.
 
-| Requirement | Evidence | Result | Notes |
-|---|---|---|---|
-| Unix raw forwarding is connection-owned, cancellation-aware, and joined | `src/core/transport/daemon_socket.rs`; `core::transport::daemon_socket` tests; `check_projection_transport_lifecycle.py` | pass | Accepted-client handlers are owned by a `JoinSet`; raw forwarding has an owned handle and explicit cancel/await cleanup. |
-| Repeated Unix disconnects release transport state | `projection_transport_real::unix_*` tests and daemon socket teardown tests | pass | EOF, shutdown, writer failure, and reconnect paths exercise cleanup and leave no active owned subscription. |
-| `/tui` session switching invalidates stale raw events | `server::ws` route-generation unit tests; `real_tui_clients_keep_raw_sessions_isolated`; `real_tui_projection_primary_suppresses_raw_session_events` | pass | Route generation is attached to raw outbound items and checked again immediately before writer delivery. |
-| Critical canonical response precedes live publication | `socket_projection_response_precedes_live_event_when_writer_is_blocked`; `real_core_projection_response_precedes_live_event_when_writer_is_blocked`; `real_tui_projection_response_precedes_live_event_when_writer_is_blocked` | pass | Each production adapter publishes while the response is deliberately blocked; no live event is observed before the response. |
-| Critical delivery failure rolls back transport and daemon state | `socket_projection_failed_critical_delivery_rolls_back_daemon_subscription`; `real_core_failed_critical_delivery_rolls_back_daemon_subscription`; `real_tui_failed_critical_delivery_rolls_back_daemon_subscription`; lifecycle seam tests | pass | Receiver-install and writer failure seams are connection-local and verify active subscription cleanup. |
-| Queue/full, writer-close, cancellation, serialization, timeout, and disconnect failure behavior remains bounded | `core::transport::projection` critical-send tests; `server::ws` writer tests; real adapter fault tests | pass | Existing helper coverage is retained and M007 adds production-adapter seam coverage for the lifecycle boundaries. |
-| Foreign operations fail closed without disturbing the owner | `projection_transport_real::{core,tui,unix}_foreign_operations_*` | pass | Ack, resume, unsubscribe, status where supported, and artifact operations reject the foreign identity; owner A remains live. |
-| Reconnect resumes exactly the missing range and transitions gap-free to live | `socket_reconnect_replays_exact_missing_range_then_live`; `real_core_reconnect_replays_exact_missing_range_then_live`; `real_tui_reconnect_replays_exact_missing_range_then_live` plus replay suites | pass | New identity receives the two missing committed events with replay range metadata, then receives the next live event. |
-| Cross-client isolation is preserved | `projection_transport_real` two-client isolation and foreign-operation tests | pass | Projection-private events do not cross clients; raw compatibility remains scoped to the current route/session. |
-| Protocol-version expectation is truthful | `src/tui/app/mod.rs` protocol test | pass | The assertion now expects the repository's protocol version 5; no protocol version was changed by M007. |
-| Static lifecycle and transport invariants are enforced | `scripts/check_projection_transport_lifecycle.py`, existing projection isolation, WebSocket-bound, boundary, ownership, cwd, git, scheduler, and disclosure guards | pass | All listed guards passed. |
-| Closure evidence matches executable tests and repository state | This record, updated plan/roadmap/registry, exact command results below | pass | The real transport integration test count is 18; replay and TUI counts are recorded from the executed binaries. |
+Strict closure was invalidated by post-closure source and test inspection. M008 must close three remaining polish findings before the session-projections subsystem returns to strict closed status:
 
-## 3. Production implementation evidence
+1. `/core` and `/tui` abort sibling connection tasks but do not await the aborted handles before connection cleanup completes;
+2. production-adapter staged-subscription failure coverage does not yet exercise the complete approved queue/cancellation/serialization/disconnect matrix;
+3. reconnect tests verify replay range metadata and a subsequent live subscription ID, but do not directly prove exact envelope identity, monotonic sequence continuity, and absence of duplication.
 
-### Unix socket transport
+M008 does not reopen projection storage, replay authority, sequence semantics, reducer behavior, disclosure policy, artifact bounds, protocol DTO meaning, or the version-5 wire contract.
 
-Accepted client handlers are owned by the connection-serving `JoinSet` and are cancelled and joined during server shutdown. Each client owns a connection cancellation token and its raw forwarder handle. EOF, writer failure, cancellation, and shutdown all run idempotent cleanup that cancels the forwarder, awaits it, unsubscribes projection state, and releases writer/filter/receiver references.
+## 2. Accepted M007 outcomes
 
-The staged projection response path has connection-local lifecycle checkpoints around daemon subscription creation, receiver installation, control enqueue, writer receipt, and activation. A subscription cannot become live until the canonical response is successfully delivered.
+### 2.1 Unix connection lifecycle
 
-### `/core` and `/tui` transports
+Accepted-client handlers are owned by the daemon socket serving `JoinSet`. Each Unix client owns a cancellation token and retains its raw-forwarder handle. Peer EOF, writer failure, cancellation, and listener shutdown cancel and await the raw forwarder before the connection handler returns.
 
-The server state carries a deterministic, connection-local lifecycle seam. `/core` and `/tui` use it to pause or fail staged delivery in tests without production-global mutable state. Their writer paths use bounded, cancellation-aware delivery and cleanly roll back subscriptions on critical failure.
+### 2.2 Epoch-safe TUI raw routing
 
-TUI raw outbound items carry a route generation. Session changes advance the generation and update the route atomically; the writer performs a final generation check under the writer gate, preventing a queued session-A item from crossing a committed switch to session B. Projection-private events remain suppressed from the raw compatibility path.
+Raw `/tui` outbound messages carry a monotonically increasing route generation. `SessionInfo` route changes advance the generation, and the final writer boundary drops messages whose generation is stale. Identical normalized routes preserve their generation, and projection-primary mode continues to suppress raw session mutations.
 
-### Tests and guard
+### 2.3 Atomic response-before-live behavior
 
-M007 added production-shaped Unix, `/core`, and `/tui` race, failure, foreign-operation, reconnect, raw-generation, and isolation fixtures in `tests/projection_transport_real.rs`, lifecycle seams in the transport/projection modules, and `scripts/check_projection_transport_lifecycle.py`. The static guard rejects detached connection tasks, unowned raw forwarders, unbounded WebSocket queues, direct activation bypasses, and missing final raw-generation checks.
+Unix, `/core`, and `/tui` have deterministic connection-local lifecycle gates. Real transport tests pause subscription establishment after receiver installation, publish while the canonical response is blocked, prove no live event escapes, then prove the canonical response precedes buffered live delivery.
 
-## 4. Verification executed
+### 2.4 Foreign operations and reconnect foundations
 
-### Commands run
+Real transport fixtures cover fail-closed foreign acknowledgement, resume, unsubscribe, artifact operations, and TUI subscription status where supported. Owner connections remain live after rejected foreign operations.
 
-```bash
+Reconnect fixtures use a fresh connection identity, preserve stream identity, receive replay metadata for the missing committed range, install a new subscription, and receive a subsequent live event.
+
+### 2.5 Verification and evidence corrections
+
+M007 corrected the remote protocol-version assertion to version 5 and recorded the real transport integration executable count as 18. Focused protocol, core, transport, replay, disclosure, TUI, and static-guard commands were recorded as passing. Workspace-wide clippy continued to report only the pre-existing EggLSP `question_mark` findings.
+
+## 3. Post-closure findings
+
+### 3.1 WebSocket sibling tasks are aborted but not joined
+
+`upgrade_core_ws` and `upgrade_tui` retain send, receive, and raw-event task handles. When one task exits, the handlers call `abort()` on the siblings, then proceed to projection cleanup without awaiting the aborted handles.
+
+Impact:
+
+- task-owned writer/channel/state references may remain alive until the runtime schedules and drops the aborted future;
+- the closure claim that `/core` and `/tui` deterministically cancel and join all connection-scoped tasks is too broad;
+- repeated connection churn lacks a direct task/drop-baseline proof.
+
+Required correction:
+
+- cancel the connection token first;
+- abort remaining sibling tasks where necessary;
+- await every retained task handle;
+- treat expected cancellation joins separately from abnormal panic/error termination;
+- prove repeated teardown returns task/drop probes to baseline and does not perturb another connection.
+
+### 3.2 Adapter-level critical failure matrix is incomplete
+
+The lifecycle seam supports boundaries after daemon subscription creation, after receiver installation, before control enqueue, after enqueue/before writer receipt, during writer write, and before activation. Real adapter tests exercise blocked response ordering and selected writer/receiver failures, while helper tests retain queue timeout, serialization, and cancellation coverage.
+
+The approved M007 plan required queue saturation/timeout, writer close, cancellation, serialization-equivalent failure, disconnect during installation, pre-activation failure, and duplicate rollback to be demonstrated against installed staged daemon subscriptions where applicable.
+
+Required correction:
+
+- complete the production-adapter matrix for `/core`, `/tui`, and Unix;
+- assert no successful response or live event;
+- assert connection ownership and daemon subscription count return to baseline;
+- assert the receiver cannot be retaken and forwarder/task probes terminate;
+- assert cleanup remains idempotent and unrelated clients remain live.
+
+### 3.3 Reconnect assertions do not prove exact gap-free handoff
+
+The reconnect tests assert two replay events and range metadata `(1, 2)`, then assert that a later live event uses the new subscription ID. The live helper returns only the subscription ID, not the full envelope sequence or event identity.
+
+Impact:
+
+- a duplicate replay event arriving on the live path could satisfy the current final assertion;
+- the tests do not directly prove that the first live sequence is `replay_end_seq + 1`;
+- exact event identity, ordering, and bounded post-handoff quietness are not asserted.
+
+Required correction:
+
+- inspect complete replay and live envelopes;
+- assert exact sequence vectors and unique event identities;
+- assert stable stream identity and changed connection/subscription identities;
+- assert the first live sequence is the next sequence after replay;
+- assert no duplicate replay or live event follows during a bounded quiet period;
+- add at least one replay-response pause race and one disconnect-during-replay cleanup fixture.
+
+## 4. Requirement disposition
+
+| Requirement | M007 disposition | M008 requirement |
+|---|---|---|
+| Owned/joined Unix raw forwarding | accepted | retain regression coverage |
+| Epoch-safe TUI raw routing | accepted | retain regression coverage |
+| Response-before-live race proof | accepted | retain and integrate with final failure matrix |
+| Foreign operations fail closed | accepted | retain owner-state and cursor side-effect checks |
+| `/core` and `/tui` connection tasks joined | incomplete | cancel, abort where needed, and await every retained task |
+| Complete staged adapter failure matrix | incomplete | add queue/cancellation/serialization/disconnect/pre-activation fixtures |
+| Exact replay-to-live continuity | incomplete | assert full envelopes, sequences, identities, and no duplicates |
+| Truthful strict closure | blocked | write M008 closure only after exact evidence passes |
+
+## 5. Verification record retained from M007
+
+Recorded focused commands included:
+
+```text
 cargo fmt -- --check
 CARGO_BUILD_JOBS=1 cargo check --workspace --all-features
 CARGO_BUILD_JOBS=1 cargo clippy -p codegg-protocol --all-targets -- -D warnings
-CARGO_BUILD_JOBS=1 cargo test -p codegg-protocol --all-features -- --nocapture
-CARGO_BUILD_JOBS=1 cargo test -p codegg-core --all-features -- --nocapture
+cargo test -p codegg-protocol --all-features -- --nocapture
+cargo test -p codegg-core --all-features -- --nocapture
 cargo test -p codegg --lib core::transport::projection --all-features -- --nocapture
 cargo test -p codegg --lib server::ws --all-features -- --nocapture
 cargo test -p codegg --lib core::transport::daemon_socket --all-features -- --nocapture
@@ -99,75 +164,32 @@ bash scripts/check_projection_disclosure.sh
 git diff --check
 ```
 
-### Results
+M008 must rerun the relevant matrix after its production and test changes. The M007 result counts remain historical evidence, not the final M008 counts.
 
-- Formatting, workspace all-feature checking, the protocol clippy gate, all static guards, and the disclosure/boundary checks passed.
-- `codegg-protocol`: 157 tests passed.
-- `codegg-core`: 299 tests passed across its unit and integration binaries.
-- Focused transport modules: projection 13, WebSocket 7, Unix daemon socket 20 tests passed.
-- `projection_transport_real`: 18 tests passed with one test thread; this is the corrected executable count.
-- Replay suites passed: daemon protocol 13, subscription 13, resume 9, restart recovery 8, transport isolation 7, disclosure invariants 16, and artifact handles 13.
-- TUI suites passed: `tui` 164, `tui_render` 99, `tui_project_routing` 27, `tui_project_tabs` 20, and `single_daemon_lifecycle` 3.
-- The repository-wide `CARGO_BUILD_JOBS=1 cargo clippy --all-features -- -D warnings` command was also attempted and failed only on pre-existing `clippy::question_mark` findings in `crates/egglsp/src/edit.rs:71`, `:103`, and `:134`. These are outside M007's changed scope and do not occur in the focused protocol or transport gates.
-- The workspace check emitted existing warnings in TUI persistence/app code; they did not fail the check and were not introduced by M007.
+## 6. Unresolved findings
 
-## 5. Invariant review
+| Severity | Finding | Required action |
+|---|---|---|
+| medium | `/core` and `/tui` connection task cleanup is abort-only for sibling tasks | implement cancel/abort-and-await or structured joined teardown |
+| medium | adapter-level staged failure coverage is incomplete relative to the approved plan | complete production-adapter queue/cancellation/serialization/disconnect/pre-activation tests |
+| low-to-medium | reconnect tests do not assert full envelope sequence continuity and absence of duplication | strengthen Unix, `/core`, and `/tui` replay-to-live fixtures |
+| repository baseline | workspace-wide clippy reports pre-existing EggLSP `question_mark` findings | track separately; M008 must not introduce new warnings |
 
-- One canonical projection/replay authority remains in use; M007 adds no storage or sequence authority.
-- Subscription, stream, project, session, client, and connection identities remain distinct.
-- Projection-private events remain connection-owned and are not sent through generic raw broadcasts.
-- Response delivery precedes activation and live publication on all three production adapters.
-- Cleanup is bounded, cancellation-aware, idempotent, and awaited; no state lock is held across socket I/O or task joins.
-- TUI route generations prevent stale queued raw traffic from crossing a committed session switch.
-- Foreign lifecycle and artifact operations are rejected without changing the owner's state.
-- Reconnect uses the persisted stream cursor and reports the exact replay range before live delivery.
-- Bounded queues and artifact handles remain in force; no unbounded WebSocket channel was added.
+## 7. Roadmap disposition
 
-## 6. Failure and recovery review
+M007 is conditionally closed. The frontend-neutral session-projections roadmap is active for one final dependency-ready milestone:
 
-The tests cover peer EOF, connection shutdown, writer close/failure, cancellation, queue closure/full behavior, serialization failure, timeout, receiver-install failure, response-blocking, and disconnect during staged setup. Cleanup cancels and awaits owned tasks and removes both transport and daemon subscription state. Reconnect tests prove missing-range replay followed by a live event, while cross-client tests prove another owner's subscription remains live.
+- `plans/implementation/session-projections/008-final-transport-lifecycle-and-replay-evidence-polish.md`
 
-Malformed, foreign, and out-of-scope lifecycle/artifact requests fail closed. Stale raw generations are dropped at the final delivery boundary rather than relying only on pre-queue filtering.
+M008 is a final correctness/evidence polish pass. It must not expand into storage, replay authority, protocol, frontend product, or team-collaboration work.
 
-## 7. Migration and compatibility review
+## 8. Final closure rule
 
-No schema migration, replay-authority change, or protocol version increment was made. The repository remains on projection protocol version 5 and retains the version-4 compatibility path. The deprecated `/ws` path remains bounded. No rollback limitation was introduced beyond the existing requirement that a failed staged delivery removes the connection-local subscription.
+The subsystem returns to strict closed status only when M008 records:
 
-## 8. Security review
-
-No new security finding remains. Connection identity is not treated as subscription ownership; every foreign operation is checked against the owned subscription. Projection disclosure/redaction and bounded artifact reads remain covered by their existing suites. Route generation only reduces stale visibility. The new lifecycle seam is test-only/connection-local and does not expose payloads, secrets, or global mutable test state.
-
-## 9. Documentation and operations
-
-Updated:
-
-- this closure record;
-- the M007 implementation plan status and verification matrix;
-- the M006 implementation-plan status to reflect its historical conditional record;
-- the session-projections roadmap milestone and dependency state;
-- `plans/registry.md` active, ready, blocked, and recently-closed sections.
-
-Operationally relevant checks are now represented by `scripts/check_projection_transport_lifecycle.py` in addition to the existing projection isolation, WebSocket bound, ownership, cwd, boundary, scheduler, git-policy, and disclosure guards.
-
-## 10. Unresolved findings
-
-| Severity | Finding | Impact | Required action |
-|---|---|---|---|
-| — | No unresolved high, medium, or low M007 finding | None | None |
-| repository baseline | Workspace-wide clippy fails on unrelated `egglsp` question-mark lints | Does not affect M007 focused gates; repository-wide lint is not fully green | Track/fix separately in the EggLSP lint backlog; do not reopen M007 |
-
-## 11. Roadmap disposition
-
-Milestone 007 is closed and the frontend-neutral session-projections subsystem roadmap returns to strict `closed` status. The M006 conditional record remains historical and explicitly names the findings that M007 resolved; it is not an active blocker. No future implementation plan is dependency-blocked on M007, so no additional plan status was unblocked. Deferred product work remains intentionally unregistered and outside this correctness closure.
-
-## 12. Registry updates
-
-`plans/registry.md` now:
-
-- marks the session-projections roadmap `closed`;
-- removes M007 from dependency-ready plans;
-- removes the obsolete M006 active-closure and M007 blocked-work entries;
-- records M007 under recently closed work;
-- records that no dependency-ready session-projections plan remains.
-
-The source roadmap now points M007 to this closure record and records the strict subsystem closure. The implementation plan is marked closed.
+- joined `/core` and `/tui` connection-task teardown;
+- complete staged adapter failure evidence or narrowly justified impossible cases;
+- exact replay and live envelope sequences with no gaps or duplicates;
+- passing focused transport/replay/disclosure/TUI/static-guard results;
+- exact implementation and closure commits;
+- no unresolved high or medium M008 finding.
