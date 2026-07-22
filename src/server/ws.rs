@@ -176,6 +176,12 @@ pub struct ProjectionTransportTestConfig {
     /// a response queued while they fill the channel from the same
     /// sender clone.
     pub writer_gate: Option<Arc<WriterGate>>,
+    /// If `true`, the writer pauses before each `recv()` call as well as
+    /// after. This lets tests fill the bounded mpsc queue while the writer
+    /// is blocked, so a subsequent `try_send` observes `Full`
+    /// deterministically. Defaults to `false` to preserve the existing
+    /// post-recv gate behavior.
+    pub gate_before_recv: bool,
     /// Cancel a single connection task by kind, simulating raw-source
     /// termination while peer and writer remain open. Tests acquire the
     /// raw-source cancellation token via this control.
@@ -222,7 +228,8 @@ impl WriterGate {
     }
 
     pub fn release(&self) {
-        self.released.store(true, std::sync::atomic::Ordering::Release);
+        self.released
+            .store(true, std::sync::atomic::Ordering::Release);
         self.released_notify.notify_one();
     }
 
@@ -232,8 +239,10 @@ impl WriterGate {
         observer: Option<&Arc<TransportLifecycleObserver>>,
     ) {
         // Reset `entered` so `wait_until_entered` re-waits on the next call.
-        self.entered.store(false, std::sync::atomic::Ordering::Release);
-        self.entered.store(true, std::sync::atomic::Ordering::Release);
+        self.entered
+            .store(false, std::sync::atomic::Ordering::Release);
+        self.entered
+            .store(true, std::sync::atomic::Ordering::Release);
         self.entered_notify.notify_one();
         if let Some(observer) = observer {
             observer
@@ -243,12 +252,55 @@ impl WriterGate {
         loop {
             if self.released.load(std::sync::atomic::Ordering::Acquire) {
                 // Reset for the next item so the gate can pause again.
-                self.released.store(false, std::sync::atomic::Ordering::Release);
+                self.released
+                    .store(false, std::sync::atomic::Ordering::Release);
                 return;
             }
             let notified = self.released_notify.notified();
             if self.released.load(std::sync::atomic::Ordering::Acquire) {
-                self.released.store(false, std::sync::atomic::Ordering::Release);
+                self.released
+                    .store(false, std::sync::atomic::Ordering::Release);
+                return;
+            }
+            tokio::select! {
+                biased;
+                _ = cancellation.cancelled() => return,
+                _ = notified => {}
+            }
+        }
+    }
+
+    /// Pre-recv gate: pause the writer before it attempts to receive from
+    /// any outbound channel. This lets a test fill the bounded mpsc queue
+    /// while the writer is blocked, so a subsequent `try_send` observes
+    /// `Full` deterministically. The gate uses the same `entered`/`released`
+    /// flags as the post-recv gate; a single `WriterGate` can serve both
+    /// purposes if the test calls `wait_until_entered` to synchronize.
+    pub(crate) async fn wait_pre_recv(
+        &self,
+        cancellation: &CancellationToken,
+        observer: Option<&Arc<TransportLifecycleObserver>>,
+    ) {
+        self.entered
+            .store(false, std::sync::atomic::Ordering::Release);
+        self.entered
+            .store(true, std::sync::atomic::Ordering::Release);
+        self.entered_notify.notify_one();
+        if let Some(observer) = observer {
+            observer
+                .writer_gates_reached
+                .fetch_add(1, std::sync::atomic::Ordering::Release);
+        }
+        loop {
+            if self.released.load(std::sync::atomic::Ordering::Acquire) {
+                self.released
+                    .store(false, std::sync::atomic::Ordering::Release);
+                return;
+            }
+            let notified = self.released_notify.notified();
+            if self.released.load(std::sync::atomic::Ordering::Acquire) {
+                self.released
+                    .store(false, std::sync::atomic::Ordering::Release);
                 return;
             }
             tokio::select! {
@@ -268,14 +320,12 @@ pub struct TransportLifecycleObserver {
     pub queue_capacity: std::sync::atomic::AtomicUsize,
     pub filler_enqueued: std::sync::atomic::AtomicUsize,
     pub fill_full_observed: std::sync::atomic::AtomicBool,
-    pub final_send_result:
-        std::sync::Mutex<Option<Result<(), CriticalSendFailure>>>,
+    pub final_send_result: std::sync::Mutex<Option<Result<(), CriticalSendFailure>>>,
     /// Every recorded `critical_send` / `staged_critical_send` final
     /// result. Saturation tests inspect this vector to assert that the
     /// saturated path returned `Err(Timeout)` somewhere in the
     /// connection's lifetime.
-    pub send_result_history:
-        std::sync::Mutex<Vec<Result<(), CriticalSendFailure>>>,
+    pub send_result_history: std::sync::Mutex<Vec<Result<(), CriticalSendFailure>>>,
     pub writer_gates_reached: std::sync::atomic::AtomicUsize,
     /// A clone of the connection's outbound mpsc sender. The upgrade
     /// function stores this when an observer is configured so saturation
@@ -363,10 +413,7 @@ pub(crate) async fn fill_outbound_queue_to_capacity(
     observer.record_queue_capacity(capacity.max(tx.max_capacity()));
     let mut enqueued = 0usize;
     while enqueued < capacity.max(tx.max_capacity()) {
-        let ok = queue_message(
-            tx,
-            WsMessage::Text(format!("filler-{enqueued}").into()),
-        );
+        let ok = queue_message(tx, WsMessage::Text(format!("filler-{enqueued}").into()));
         if !ok {
             observer.mark_fill_full();
             break;
@@ -435,9 +482,7 @@ impl ConnectionTaskSet {
     /// `_for_test` suffix marks this as a test-only public API surface
     /// not used by production code paths.
     pub fn with_panic_first_for_test(panicking: ConnectionTaskKind) -> Self {
-        let panic_task = tokio::spawn(async {
-            panic!("intentional panic for first-exit test")
-        });
+        let panic_task = tokio::spawn(async { panic!("intentional panic for first-exit test") });
         let pending = || tokio::spawn(async { std::future::pending::<()>().await });
         let (send, receive, raw_event) = match panicking {
             ConnectionTaskKind::Send => (panic_task, pending(), pending()),
@@ -469,11 +514,7 @@ impl ConnectionTaskSet {
             first_result,
             Err(ref error) if !error.is_cancelled()
         );
-        for handle in [
-            self.send.take(),
-            self.receive.take(),
-            self.raw_event.take(),
-        ] {
+        for handle in [self.send.take(), self.receive.take(), self.raw_event.take()] {
             if let Some(h) = handle {
                 h.abort();
             }
@@ -1295,12 +1336,12 @@ async fn upgrade_tui(
         .outbound_queue_capacity
         .unwrap_or(WS_OUTBOUND_QUEUE_CAPACITY);
     let (out_tx, mut out_rx) = mpsc::channel::<OutboundMessage>(queue_capacity);
-    let (projection_tx, mut projection_rx) =
-        mpsc::channel::<OutboundMessage>(queue_capacity);
+    let (projection_tx, mut projection_rx) = mpsc::channel::<OutboundMessage>(queue_capacity);
     let (raw_tx, mut raw_rx) = mpsc::channel::<OutboundMessage>(queue_capacity);
     let writer_gate = test_config.writer_gate.clone();
     let raw_source_cancel = test_config.raw_source_cancel.clone();
     let transport_observer = test_config.observer.clone();
+    let gate_before_recv = test_config.gate_before_recv;
     if let Some(observer) = &transport_observer {
         *observer.outbound_sender.lock().await = Some(out_tx.clone());
         observer.record_queue_capacity(queue_capacity);
@@ -1325,6 +1366,15 @@ async fn upgrade_tui(
     let send_task = tokio::spawn(async move {
         let mut ws_tx = ws_tx;
         loop {
+            if gate_before_recv {
+                if let Some(gate) = writer_gate.as_ref() {
+                    gate.wait_pre_recv(
+                        &connection_cancel_for_writer,
+                        transport_observer_for_writer.as_ref(),
+                    )
+                    .await;
+                }
+            }
             tokio::select! {
                 biased;
                 outbound = out_rx.recv() => {
@@ -1448,8 +1498,7 @@ async fn upgrade_tui(
             let queue_result = {
                 let session = session_state_for_events.lock().await;
                 let projection = session.projection.clone();
-                if projection.lock().await.mode()
-                    == ProjectionConnectionMode::ProjectionPrimary
+                if projection.lock().await.mode() == ProjectionConnectionMode::ProjectionPrimary
                     || !tui_raw_event_matches(&envelope, session.session_id.as_deref())
                 {
                     None
@@ -3119,12 +3168,12 @@ async fn upgrade_core_ws(
         .outbound_queue_capacity
         .unwrap_or(WS_OUTBOUND_QUEUE_CAPACITY);
     let (out_tx, mut out_rx) = mpsc::channel::<OutboundMessage>(queue_capacity);
-    let (projection_tx, mut projection_rx) =
-        mpsc::channel::<OutboundMessage>(queue_capacity);
+    let (projection_tx, mut projection_rx) = mpsc::channel::<OutboundMessage>(queue_capacity);
     let (raw_tx, mut raw_rx) = mpsc::channel::<OutboundMessage>(queue_capacity);
     let writer_gate = test_config.writer_gate.clone();
     let raw_source_cancel = test_config.raw_source_cancel.clone();
     let transport_observer = test_config.observer.clone();
+    let gate_before_recv = test_config.gate_before_recv;
     if let Some(observer) = &transport_observer {
         *observer.outbound_sender.lock().await = Some(out_tx.clone());
         observer.record_queue_capacity(queue_capacity);
@@ -3146,6 +3195,15 @@ async fn upgrade_core_ws(
     let send_task = tokio::spawn(async move {
         let mut ws_tx = ws_tx;
         loop {
+            if gate_before_recv {
+                if let Some(gate) = writer_gate.as_ref() {
+                    gate.wait_pre_recv(
+                        &connection_cancel_for_writer,
+                        transport_observer_for_writer.as_ref(),
+                    )
+                    .await;
+                }
+            }
             tokio::select! {
                 biased;
                 outbound = out_rx.recv() => {

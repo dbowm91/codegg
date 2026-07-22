@@ -627,6 +627,28 @@ async fn spawn_server_with_transport_instrumentation(
     Arc<codegg::server::ws::TransportLifecycleObserver>,
     tokio::task::JoinHandle<()>,
 ) {
+    spawn_server_with_transport_instrumentation_and_gate(
+        seam,
+        outbound_queue_capacity,
+        raw_source_cancel,
+        false,
+    )
+    .await
+}
+
+async fn spawn_server_with_transport_instrumentation_and_gate(
+    seam: ProjectionLifecycleSeam,
+    outbound_queue_capacity: usize,
+    raw_source_cancel: Option<tokio_util::sync::CancellationToken>,
+    gate_before_recv: bool,
+) -> (
+    SocketAddr,
+    Arc<CoreDaemon>,
+    Arc<ConnectionTaskProbe>,
+    Arc<codegg::server::ws::WriterGate>,
+    Arc<codegg::server::ws::TransportLifecycleObserver>,
+    tokio::task::JoinHandle<()>,
+) {
     std::env::set_var("CODEGG_SERVER_AUTH_DISABLED", "1");
 
     let pool = common::projection_replay::test_pool().await;
@@ -639,6 +661,7 @@ async fn spawn_server_with_transport_instrumentation(
         writer_gate: Some(Arc::clone(&writer_gate)),
         raw_source_cancel,
         observer: Some(Arc::clone(&observer)),
+        gate_before_recv,
     };
     let state = ServerState {
         pool,
@@ -677,7 +700,9 @@ async fn wait_until_writer_gates_reached(
 ) {
     timeout(Duration::from_millis(1500), async {
         loop {
-            if observer.writer_gates_reached.load(std::sync::atomic::Ordering::Acquire)
+            if observer
+                .writer_gates_reached
+                .load(std::sync::atomic::Ordering::Acquire)
                 >= target_gates
             {
                 return;
@@ -1620,10 +1645,7 @@ async fn real_tui_paused_snapshot_setup_cancellation_impl() {
     gate.wait_until_entered().await;
 
     // Close the client while paused
-    client
-        .close(None)
-        .await
-        .expect("close TUI client");
+    client.close(None).await.expect("close TUI client");
     gate.release();
 
     wait_projection_subscription_count(&daemon, 0).await;
@@ -3303,9 +3325,7 @@ async fn real_core_queue_saturation_observer_records_timeout() {
         &CoreFrame::Request(new_request(
             "queue-sat-observed-sub-1".to_string(),
             CoreRequest::ProjectionSubscribe {
-                request: project_subscription_request(
-                    "project-queue-sat-observed-second",
-                ),
+                request: project_subscription_request("project-queue-sat-observed-second"),
             },
         )),
     )
@@ -3343,8 +3363,7 @@ async fn real_core_queue_saturation_observer_records_timeout() {
     let elapsed = start.elapsed();
     writer_gate.release();
 
-    let recorded = observer
-        .send_result_history();
+    let recorded = observer.send_result_history();
     assert!(
         observer.any_timeout(),
         "expected at least one Err(Timeout) from saturated staged_critical_send, got history {recorded:?}"
@@ -3360,9 +3379,7 @@ async fn real_core_queue_saturation_observer_records_timeout() {
     // Wait for the writer to finish tearing down after cancellation.
     timeout(Duration::from_millis(500), async {
         loop {
-            if probe.send_count() >= 1
-                && probe.receive_count() >= 1
-                && probe.raw_event_count() >= 1
+            if probe.send_count() >= 1 && probe.receive_count() >= 1 && probe.raw_event_count() >= 1
             {
                 return;
             }
@@ -3390,7 +3407,10 @@ async fn real_core_connection_task_owner_first_exit_classifies_panic_per_kind() 
     ] {
         let mut set = codegg::server::ws::ConnectionTaskSet::with_panic_first_for_test(kind);
         let (classification, panicked) = set.first_exit_classification_for_test().await;
-        assert_eq!(classification, kind, "first-task-kind for panic in {kind:?}");
+        assert_eq!(
+            classification, kind,
+            "first-task-kind for panic in {kind:?}"
+        );
         assert!(
             panicked,
             "{kind:?} task classified as clean exit instead of panic"
@@ -3406,14 +3426,18 @@ async fn real_core_connection_task_owner_first_exit_classifies_panic_per_kind() 
 async fn real_core_outbound_queue_capacity_is_one_when_configured() {
     let seam = ProjectionLifecycleSeam::default();
     let (address, _daemon, probe, writer_gate, observer, server) =
-        spawn_server_with_transport_instrumentation(seam.clone(), 1, None).await;
+        spawn_server_with_transport_instrumentation_and_gate(seam.clone(), 1, None, true).await;
 
     let _client = connect(address, "/core").await;
     let outbound_sender = wait_for_outbound_sender(&observer).await;
 
+    // Wait for the writer to enter the pre-recv gate. The writer is
+    // blocked before `recv()` so the channel is still empty at this point.
+    wait_until_writer_gates_reached(&observer, 1).await;
+
     // The first item fills the capacity-1 channel; the writer is paused at
-    // the gate before draining it, so the channel stays full. A second
-    // `try_send` observes `Full` and must not block.
+    // the pre-recv gate and cannot consume it. A second `try_send` observes
+    // `Full` and must not block.
     assert!(codegg::server::ws::queue_message(
         &outbound_sender,
         axum::extract::ws::Message::Text("item-1".to_string().into())
@@ -3433,9 +3457,7 @@ async fn real_core_outbound_queue_capacity_is_one_when_configured() {
     drop(_client);
     timeout(Duration::from_millis(500), async {
         loop {
-            if probe.send_count() >= 1
-                && probe.receive_count() >= 1
-                && probe.raw_event_count() >= 1
+            if probe.send_count() >= 1 && probe.receive_count() >= 1 && probe.raw_event_count() >= 1
             {
                 return;
             }
@@ -3488,8 +3510,7 @@ async fn real_core_raw_source_first_exit_via_cancellation_token() {
     // re-arming the next item (Subscribe response) would block.
     writer_gate.release();
 
-    let subscription_id =
-        core_subscribe(&mut client, "raw-cancel-sub", "project-raw-cancel").await;
+    let subscription_id = core_subscribe(&mut client, "raw-cancel-sub", "project-raw-cancel").await;
 
     // Trigger raw-source cancellation WHILE the peer is still healthy.
     // The raw task selects on `cancel.cancelled()` and exits immediately,
@@ -3514,14 +3535,8 @@ async fn real_core_raw_source_first_exit_via_cancellation_token() {
 
     drop(client);
     writer_gate.release();
-    assert_real_transport_rollback_complete(
-        &daemon,
-        0,
-        &probe,
-        &subscription_id,
-        "raw-cancel",
-    )
-    .await;
+    assert_real_transport_rollback_complete(&daemon, 0, &probe, &subscription_id, "raw-cancel")
+        .await;
     server.abort();
 }
 
@@ -3542,20 +3557,15 @@ fn real_tui_pending_snapshot_interruption_via_writer_barrier() {
 
 async fn real_tui_pending_snapshot_interruption_via_writer_barrier_impl() {
     let (_address, daemon, probe, writer_gate, observer, server) =
-        spawn_server_with_transport_instrumentation(
-            ProjectionLifecycleSeam::default(),
-            1,
-            None,
-        )
-        .await;
+        spawn_server_with_transport_instrumentation(ProjectionLifecycleSeam::default(), 1, None)
+            .await;
     let mut client = connect(_address, "/tui").await;
     // TUI projection capability ack is held at the writer gate first; release
     // it so the client can complete the handshake before subscribing.
     send_json(
         &mut client,
         &TuiMessage::ProjectionCapabilities {
-            capabilities:
-                codegg::protocol::projection::caps::ProjectionCapabilities::default(),
+            capabilities: codegg::protocol::projection::caps::ProjectionCapabilities::default(),
         },
     )
     .await;
@@ -3584,9 +3594,7 @@ async fn real_tui_pending_snapshot_interruption_via_writer_barrier_impl() {
     wait_projection_subscription_count(&daemon, 0).await;
     timeout(Duration::from_millis(500), async {
         loop {
-            if probe.send_count() >= 1
-                && probe.receive_count() >= 1
-                && probe.raw_event_count() >= 1
+            if probe.send_count() >= 1 && probe.receive_count() >= 1 && probe.raw_event_count() >= 1
             {
                 return;
             }
@@ -3616,12 +3624,8 @@ fn real_tui_pending_replay_interruption_then_retry() {
 
 async fn real_tui_pending_replay_interruption_then_retry_impl() {
     let (address, daemon, probe, writer_gate, observer, server) =
-        spawn_server_with_transport_instrumentation(
-            ProjectionLifecycleSeam::default(),
-            1,
-            None,
-        )
-        .await;
+        spawn_server_with_transport_instrumentation(ProjectionLifecycleSeam::default(), 1, None)
+            .await;
 
     // Helper: do a TUI handshake with a writer barrier on the first item
     // (ProjectionCapabilitiesAck) so the test owns the gate afterwards.
@@ -3633,8 +3637,7 @@ async fn real_tui_pending_replay_interruption_then_retry_impl() {
         send_json(
             client,
             &TuiMessage::ProjectionCapabilities {
-                capabilities:
-                    codegg::protocol::projection::caps::ProjectionCapabilities::default(),
+                capabilities: codegg::protocol::projection::caps::ProjectionCapabilities::default(),
             },
         )
         .await;
@@ -3668,7 +3671,10 @@ async fn real_tui_pending_replay_interruption_then_retry_impl() {
             }
         }
         assert!(saw_ack, "did not see ProjectionCapabilitiesAck");
-        assert!(saw_diagnostic, "did not see ProjectionCompatibilityDiagnostic");
+        assert!(
+            saw_diagnostic,
+            "did not see ProjectionCompatibilityDiagnostic"
+        );
         // Pre-arm the gate so the next outbound item (Subscribe snapshot
         // or Resume replay) bypasses the barrier.
         writer_gate.release();

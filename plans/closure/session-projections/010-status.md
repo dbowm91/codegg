@@ -15,6 +15,8 @@ Repository baseline reviewed: `426dfffec05c9d694f54a816213a6cca514e91b4`
 Implementation and evidence commits (post-baseline, on `main`):
 
 - `a3ab136` — M010 production change: observer-driven transport instrumentation (`ProjectionTransportTestConfig`, `WriterGate`, `TransportLifecycleObserver`), `ConnectionTaskProbe::first_task_kind`, `ConnectionTaskSet::first_exit_classification`, raw-source cancellation control, six M010 fixtures in `tests/projection_transport_real.rs`, five M010 fixtures in `src/core/transport/daemon_socket_integration_tests.rs`, expanded `scripts/check_projection_transport_lifecycle.py` semantic guards, M010 closure record, registry and roadmap updates.
+- `7e31d57` — M010: record exact implementation commit in closure and registry (reconcile commit hashes).
+- (next commit) — M010: pre-recv gate for deterministic capacity-1 `try_send` observation, M009 plan status superseded, full verification matrix executed.
 - `4b3adab` — plans: register projection M010 final verification (registry + roadmap update).
 - `86e54c8` — plans: reopen projections for M010 final verification (conditional reactivation).
 - `6a822ed` — docs: condition M009 closure on mechanism-faithful verification.
@@ -39,8 +41,9 @@ M010 does not change the production projection protocol, storage, reducer, or tr
 
 Production-side additions in `src/server/ws.rs`:
 
-- `ProjectionTransportTestConfig { outbound_queue_capacity, writer_gate, raw_source_cancel, observer }` is wired into both `upgrade_core_ws` and `upgrade_tui`.
+- `ProjectionTransportTestConfig { outbound_queue_capacity, writer_gate, raw_source_cancel, observer, gate_before_recv }` is wired into both `upgrade_core_ws` and `upgrade_tui`.
 - `WriterGate::wait(cancellation, observer)` now pauses the writer at every item-by-item boundary, increments `observer.writer_gates_reached`, and resets its `entered`/`released` flags so subsequent items can re-pause deterministically.
+- `WriterGate::wait_pre_recv(cancellation, observer)` pauses the writer before it attempts to receive from any outbound channel. This is a second gate point that lets a test fill the bounded mpsc queue while the writer is blocked, so a subsequent `try_send` observes `Full` deterministically. Only active when `gate_before_recv` is `true`; production callers leave it `false`.
 - `TransportLifecycleObserver` records the outbound sender (cloned from the writer task), the queue capacity observed at upgrade time, every writer-gate visit, and a `send_result_history: Vec<Result<(), CriticalSendFailure>>` of every recorded critical-send outcome. `send_result_history()` and `any_timeout()` accessors are `pub`.
 - `critical_send_observed` and `staged_critical_send_observed` push their final result onto the observer's history before returning.
 - `ConnectionTaskProbe` extended with `first_task_kind: AtomicI64` and `first_task_panicked: AtomicBool`. New getters `first_task_kind()`, `first_task_panicked()`, and `assert_first_task_kind()` are `pub`.
@@ -55,7 +58,7 @@ The production default is `transport_test_config: None`; the seam is dormant unl
 `tests/projection_transport_real.rs` adds six M010 fixtures, all passing under `--test-threads=1`:
 
 - `real_core_queue_saturation_observer_records_timeout` — capacity=1, recv Subscribe #1, drain ServerHello, fill queue via `fill_outbound_queue_to_capacity` from the observer's cloned outbound sender, Subscribe #2 saturates → `observer.any_timeout()` proves real `Err(Timeout)` from the production sender.
-- `real_core_outbound_queue_capacity_is_one_when_configured` — `try_send` observes `Full` on a capacity-1 channel.
+- `real_core_outbound_queue_capacity_is_one_when_configured` — uses `gate_before_recv` to pause the writer before `recv()`, then `try_send` observes `Full` on a capacity-1 channel deterministically.
 - `real_core_connection_task_owner_first_exit_classifies_panic_per_kind` — three-case matrix (`Send`/`Receive`/`RawEvent`) via `ConnectionTaskSet::with_panic_first_for_test` and `first_exit_classification_for_test`.
 - `real_core_raw_source_first_exit_via_cancellation_token` — cancel `raw_source_cancel` while peer is healthy → `first_task_kind() == ConnectionTaskKind::RawEvent`, then complete rollback via `assert_real_transport_rollback_complete`.
 - `real_tui_pending_snapshot_interruption_via_writer_barrier` — pause writer with snapshot response, drop client, release, verify rollback (handles the two-item TUI capability handshake: `ProjectionCapabilitiesAck` then `ProjectionCompatibilityDiagnostic`).
@@ -102,14 +105,37 @@ The guard runs as part of the session-projections CI gate. The full record is `s
 
 Local execution (host: Linux, Rust 1.81+):
 
-- `CARGO_BUILD_JOBS=1 cargo test --test projection_transport_real --features server -- --test-threads=1` — 48 passed in ~19s (previously 42; +6 M010 fixtures).
-- `CARGO_BUILD_JOBS=1 cargo test --lib --features server daemon_socket -- --test-threads=1` — 26 passed (previously 21; +5 M010 fixtures).
-- `cargo check --tests --features server --test projection_transport_real` — 0 errors, no new warnings introduced by M010 changes (the existing `drain_core_messages`, `core_subscribe_and_drain`, and `assert_complete_rollback_invariants` dead-code warnings were removed by deleting the helpers; one unused-import warning for `ProjectionTransportTestConfig` was removed by relying on the fully qualified path at the call site).
-- `python3 scripts/check_projection_transport_lifecycle.py` — passes.
-- `bash scripts/check-core-boundary.sh` — passes.
-- `python3 scripts/check_projection_transport_isolation.py` — passes.
+Full M010 verification matrix (from `plans/implementation/session-projections/010-mechanism-faithful-transport-verification-and-final-closure.md` section 12):
 
-The full workspace test matrix was not re-executed as part of M010 closure; M010 is a strict-supersession of M009, and no production protocol/storage/reducer change is introduced. The accepted subset covers the touched surfaces.
+- `cargo fmt -- --check` — passes.
+- `CARGO_BUILD_JOBS=1 cargo check --workspace --all-features` — 0 errors, 4 pre-existing warnings.
+- `CARGO_BUILD_JOBS=1 cargo clippy -p codegg-protocol --all-targets -- -D warnings` — passes.
+- `CARGO_BUILD_JOBS=1 cargo test -p codegg --lib core::transport::projection --all-features -- --nocapture` — 13 passed.
+- `CARGO_BUILD_JOBS=1 cargo test -p codegg --lib server::ws --all-features -- --nocapture` — 8 passed.
+- `CARGO_BUILD_JOBS=1 cargo test -p codegg --lib core::transport::daemon_socket -- --test-threads=1` — 26 passed (previously 21; +5 M010 fixtures).
+- `CARGO_BUILD_JOBS=1 cargo test --test projection_transport_real --features server -- --test-threads=1 --nocapture` — 48 passed in ~18s (previously 42; +6 M010 fixtures).
+- `cargo test --test projection_replay_daemon_protocol -- --nocapture` — 13 passed.
+- `cargo test --test projection_replay_subscription -- --nocapture` — 13 passed.
+- `cargo test --test projection_replay_resume -- --nocapture` — 9 passed.
+- `cargo test --test projection_replay_restart_recovery -- --nocapture` — 8 passed.
+- `cargo test --test projection_replay_transport_isolation -- --nocapture` — 7 passed.
+- `cargo test --test projection_disclosure_invariants -- --nocapture` — 16 passed.
+- `cargo test --test projection_artifact_handles -- --nocapture` — 13 passed.
+- `cargo test --test tui -- --nocapture` — 164 passed.
+- `cargo test --test tui_render -- --nocapture` — 99 passed.
+- `cargo test --test tui_project_routing -- --nocapture` — 27 passed.
+- `cargo test --test tui_project_tabs -- --nocapture` — 20 passed.
+- `cargo test --test single_daemon_lifecycle -- --test-threads=1` — 3 passed (1 pre-existing test-ordering flake when run without `--test-threads=1`; passes with `--test-threads=1`; unrelated to M010).
+- `python3 scripts/check_projection_transport_isolation.py` — passes.
+- `python3 scripts/check_projection_transport_lifecycle.py` — passes.
+- `python3 scripts/check_websocket_bounds.py` — passes.
+- `bash scripts/check-core-boundary.sh` — passes.
+- `python3 scripts/check_daemon_cwd_usage.py` — passes.
+- `python3 scripts/check_execution_ownership.py` — passes.
+- `python3 scripts/check_git_forbidden_patterns.py` — passes.
+- `python3 scripts/check_scheduler_bypass.py` — passes.
+- `bash scripts/check_projection_disclosure.sh` — passes.
+- `git diff --check` — passes.
 
 ## 4. Resolved findings
 

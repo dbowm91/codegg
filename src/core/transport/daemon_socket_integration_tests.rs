@@ -1541,21 +1541,17 @@ async fn socket_peer_close_during_writer_delivery_removes_subscription_and_eofs(
 async fn socket_writer_failure_during_flush_closes_stream_and_rolls_back() {
     let daemon = projection_daemon().await;
     let lifecycle_seam = ProjectionLifecycleSeam::default();
-    lifecycle_seam
-        .fail_next(
-            ProjectionLifecycleBoundary::DuringWriterWrite,
-            crate::core::transport::projection::CriticalDeliveryError::WriterClosed,
-        );
+    lifecycle_seam.fail_next(
+        ProjectionLifecycleBoundary::DuringWriterWrite,
+        crate::core::transport::projection::CriticalDeliveryError::WriterClosed,
+    );
     let (socket_path, _socket_dir, server_handle, _shutdown) =
         spawn_daemon_with_shutdown_and_seam(Arc::clone(&daemon), lifecycle_seam).await;
     let stream = UnixStream::connect(&socket_path)
         .await
         .expect("connect writer-flush-failure client");
-    let (mut reader, _writer, _client_id) = projection_handshake_with_blocked_response(
-        stream,
-        "project-writer-flush-failure",
-    )
-    .await;
+    let (mut reader, _writer, _client_id) =
+        projection_handshake_with_blocked_response(stream, "project-writer-flush-failure").await;
     let eof = tokio::time::timeout(Duration::from_millis(500), async {
         loop {
             if read_frame(&mut reader).await.is_none() {
@@ -1819,4 +1815,3 @@ async fn socket_consecutive_subscriptions_yield_distinct_identities_and_isolatio
 
     abort_server(server_handle).await;
 }
-

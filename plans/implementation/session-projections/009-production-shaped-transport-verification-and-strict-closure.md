@@ -1,6 +1,6 @@
 # Session Projections Milestone 009 — Production-Shaped Transport Verification and Strict Closure
 
-Status: ready for handoff
+Status: superseded — M010 owns mechanism-faithful transport verification and final closure
 
 Repository baseline: `33c7cc4a9515263015d644f5bf713178bf5fbcb9` (`main`)
 
