@@ -183,6 +183,12 @@ def main() -> int:
             "projection_transport_real.rs: missing disconnect_during_replay test"
         )
 
+    # ── M009 check 6b: replay mid-delivery interruption ────────────────
+    if "disconnect_during_replay_delivery" not in real_tests:
+        failures.append(
+            "projection_transport_real.rs: missing disconnect_during_replay_delivery test"
+        )
+
     # ── M009 check 7: 100-cycle churn ──────────────────────────────────
     if "100_cycle_churn" not in real_tests:
         failures.append(
@@ -197,6 +203,26 @@ def main() -> int:
     if "real_tui_two_client_continuity" not in real_tests:
         failures.append(
             "projection_transport_real.rs: missing real_tui_two_client_continuity test"
+        )
+
+    # ── M009 check 8b: cancellation-wins pending setup (/core + /tui) ──
+    if "real_core_cancellation_wins_pending_setup" not in real_tests:
+        failures.append(
+            "projection_transport_real.rs: missing real_core_cancellation_wins_pending_setup test"
+        )
+    if "real_tui_cancellation_wins_pending_setup" not in real_tests:
+        failures.append(
+            "projection_transport_real.rs: missing real_tui_cancellation_wins_pending_setup test"
+        )
+
+    # ── M009 check 8c: paused-setup cancellation (/core + /tui) ────────
+    if "real_core_paused_snapshot_setup_cancellation" not in real_tests:
+        failures.append(
+            "projection_transport_real.rs: missing real_core_paused_snapshot_setup_cancellation test"
+        )
+    if "real_tui_paused_snapshot_setup_cancellation" not in real_tests:
+        failures.append(
+            "projection_transport_real.rs: missing real_tui_paused_snapshot_setup_cancellation test"
         )
 
     # ── M009 check 9: ConnectionTaskProbe present in ws.rs ──────────────
