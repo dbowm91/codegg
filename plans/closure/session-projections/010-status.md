@@ -1,6 +1,6 @@
 # Session Projections Milestone 010 — Closure Status
 
-Status: closed
+Status: conditionally closed — Milestone 011 evidence correctness and mechanism verification required
 
 Source implementation plan:
 
@@ -10,146 +10,183 @@ Source subsystem roadmap:
 
 - `plans/subsystems/session-projections-roadmap.md`
 
-Repository baseline reviewed: `426dfffec05c9d694f54a816213a6cca514e91b4`
+Repository baseline reviewed: `8bd59b22662a289f3124c9b3113e545faa9446d7`
 
-Implementation and evidence commits (post-baseline, on `main`):
+Implementation and evidence commits:
 
-- `a3ab136` — M010 production change: observer-driven transport instrumentation (`ProjectionTransportTestConfig`, `WriterGate`, `TransportLifecycleObserver`), `ConnectionTaskProbe::first_task_kind`, `ConnectionTaskSet::first_exit_classification`, raw-source cancellation control, six M010 fixtures in `tests/projection_transport_real.rs`, five M010 fixtures in `src/core/transport/daemon_socket_integration_tests.rs`, expanded `scripts/check_projection_transport_lifecycle.py` semantic guards, M010 closure record, registry and roadmap updates.
-- `7e31d57` — M010: record exact implementation commit in closure and registry (reconcile commit hashes).
-- (next commit) — M010: pre-recv gate for deterministic capacity-1 `try_send` observation, M009 plan status superseded, full verification matrix executed.
-- `4b3adab` — plans: register projection M010 final verification (registry + roadmap update).
-- `86e54c8` — plans: reopen projections for M010 final verification (conditional reactivation).
-- `6a822ed` — docs: condition M009 closure on mechanism-faithful verification.
-- `3b341c8` — plans: add projection M010 mechanism-faithful closure plan.
+- `a3ab136868236ff56ec221813c3da9f299993967` — main M010 instrumentation, WebSocket/Unix fixtures, guards, closure, roadmap, and registry changes.
+- `7e31d573e4b02334751ce0fcb2ebf3c2c7614acf` — implementation-commit reconciliation.
+- `0d68dca516ba1df7a59c3d55d5863381b2d6788b` — deterministic pre-`recv()` capacity-one `Full` observation and full local verification matrix.
+- `e729c3abbfc45c862e6636d29a3ea9d64e5c28a9` — closure record of an observed projection transport timing flake.
+- `131adaac6941f9276d7dd9c96cb2e086dee1f4d8` — probe-completion scheduling-flake correction.
+- `8bd59b22662a289f3124c9b3113e545faa9446d7` — closure evidence updated after repeated clean runs.
+
+Strict-verification follow-up:
+
+- `plans/implementation/session-projections/011-evidence-correctness-and-mechanism-verification-closure.md`
 
 ## 1. Closure decision
 
-M010 closes every unresolved finding recorded in the M009 closure record:
+M010 materially improved the projection transport verification surface and did not reveal a new protocol, storage, reducer, disclosure, or production transport architecture defect.
 
-- The `/core` queue-saturation test now fills the actual production channel to capacity, observes `mpsc::error::TrySendError::Full`, invokes the real production sender through `TransportLifecycleObserver::send_result_history`, and asserts the recorded final result is `Err(CriticalDeliveryError::Timeout)`.
-- The `/tui` pending-delivery interruption now uses a real `WriterGate` to block the canonical snapshot response and replay batch, then drops the client before the response is released. Setup never becomes live, and complete rollback converges.
-- The Unix production-shaped verification matrix is now complete: peer-close, write/flush-failure, listener-shutdown race, interrupted-replay retry, and fresh-identity proof.
-- The first-exit and raw-source tests now record and assert `ConnectionTaskKind::Send`, `Receive`, and `RawEvent` via `ConnectionTaskProbe::first_task_kind`, and a panic-classification matrix covers all three task kinds.
-- The complete rollback harness `assert_real_transport_rollback_complete` is now applied to every M010 real failure fixture: daemon subscription count baseline, `ConnectionTaskProbe::assert_all_at_baseline`, non-reacquirable receiver, idempotent cleanup, and final subscription count stability.
-- Static guard `scripts/check_projection_transport_lifecycle.py` now requires stable mechanism markers (capacity fill via `any_timeout`, raw-source cancellation token, panic-kind coverage, `WriterGate` usage, and all five Unix mechanism fixtures) and a strict `Status: closed` M010 closure record.
+The production-safe test controls and useful fixtures remain accepted. Strict closure is invalidated because several tests and guards do not establish the exact causal mechanism claimed, the rollback evidence is incomplete and sometimes aggregate, and documentation overstates resolution.
 
-M010 does not change the production projection protocol, storage, reducer, or transport architecture. It adds deterministic, connection-local instrumentation seams and replaces nominal/indirect fixtures with mechanism-faithful ones.
+M011 must close these evidence defects before the session-projections subsystem returns to strict closed status.
 
 ## 2. Accepted M010 outcomes
 
-### 2.1 Connection-local transport instrumentation
+### 2.1 Connection-local controls
 
-Production-side additions in `src/server/ws.rs`:
+Accepted additions include:
 
-- `ProjectionTransportTestConfig { outbound_queue_capacity, writer_gate, raw_source_cancel, observer, gate_before_recv }` is wired into both `upgrade_core_ws` and `upgrade_tui`.
-- `WriterGate::wait(cancellation, observer)` now pauses the writer at every item-by-item boundary, increments `observer.writer_gates_reached`, and resets its `entered`/`released` flags so subsequent items can re-pause deterministically.
-- `WriterGate::wait_pre_recv(cancellation, observer)` pauses the writer before it attempts to receive from any outbound channel. This is a second gate point that lets a test fill the bounded mpsc queue while the writer is blocked, so a subsequent `try_send` observes `Full` deterministically. Only active when `gate_before_recv` is `true`; production callers leave it `false`.
-- `TransportLifecycleObserver` records the outbound sender (cloned from the writer task), the queue capacity observed at upgrade time, every writer-gate visit, and a `send_result_history: Vec<Result<(), CriticalSendFailure>>` of every recorded critical-send outcome. `send_result_history()` and `any_timeout()` accessors are `pub`.
-- `critical_send_observed` and `staged_critical_send_observed` push their final result onto the observer's history before returning.
-- `ConnectionTaskProbe` extended with `first_task_kind: AtomicI64` and `first_task_panicked: AtomicBool`. New getters `first_task_kind()`, `first_task_panicked()`, and `assert_first_task_kind()` are `pub`.
-- `ConnectionTaskSet::join_after_first_exit` records the first task kind via `compare_exchange` and classifies the first-task exit as `Ok`, `Err`, or `Panicked` via `first_exit_classification`.
-- `ConnectionTaskKind { Send, Receive, RawEvent }` is `pub` and derives `PartialEq, Eq`.
-- `WsSender`, `OutboundMessage`, `OutboundRoute`, and `WsSender::queue_message` are `pub` so integration tests can fill the outbound queue from outside the writer task.
+- configurable bounded outbound queue capacity;
+- writer gates before receive and before item delivery;
+- transport lifecycle observer and outbound sender access;
+- first terminal task-kind and panic classification recording;
+- raw-source cancellation control;
+- dormant production default with no test configuration installed.
 
-The production default is `transport_test_config: None`; the seam is dormant unless a test installs one.
+### 2.2 Capacity-one observation
 
-### 2.2 Real WebSocket mechanism-faithful fixtures
+`real_core_outbound_queue_capacity_is_one_when_configured` validly proves that a capacity-one outbound channel can be held before `recv()`, filled once, and observed as `Full` by a second nonblocking send.
 
-`tests/projection_transport_real.rs` adds six M010 fixtures, all passing under `--test-threads=1`:
+This is retained as a queue-boundary primitive. It is not by itself proof that a lifecycle response's production `tx.send()` timed out while the queue was full.
 
-- `real_core_queue_saturation_observer_records_timeout` — capacity=1, recv Subscribe #1, drain ServerHello, fill queue via `fill_outbound_queue_to_capacity` from the observer's cloned outbound sender, Subscribe #2 saturates → `observer.any_timeout()` proves real `Err(Timeout)` from the production sender.
-- `real_core_outbound_queue_capacity_is_one_when_configured` — uses `gate_before_recv` to pause the writer before `recv()`, then `try_send` observes `Full` on a capacity-1 channel deterministically.
-- `real_core_connection_task_owner_first_exit_classifies_panic_per_kind` — three-case matrix (`Send`/`Receive`/`RawEvent`) via `ConnectionTaskSet::with_panic_first_for_test` and `first_exit_classification_for_test`.
-- `real_core_raw_source_first_exit_via_cancellation_token` — cancel `raw_source_cancel` while peer is healthy → `first_task_kind() == ConnectionTaskKind::RawEvent`, then complete rollback via `assert_real_transport_rollback_complete`.
-- `real_tui_pending_snapshot_interruption_via_writer_barrier` — pause writer with snapshot response, drop client, release, verify rollback (handles the two-item TUI capability handshake: `ProjectionCapabilitiesAck` then `ProjectionCompatibilityDiagnostic`).
-- `real_tui_pending_replay_interruption_then_retry` — subscribe, drop, publish event, resume with barrier, drop, third client resumes from the same cursor → fresh `subscription_id` and exact `event_seq=1`.
+### 2.3 TUI pending-delivery interruption
 
-The M009 fixtures `real_core_writer_failure_terminates_all_tasks` and `real_tui_rollback_invariants_on_writer_closed` are retained. Their final assertions are re-pointed at `wait_projection_subscription_count` + `probe.assert_all_at_baseline` since the M010-specific `assert_core_rollback_invariants` helper was subsumed by the unified `assert_real_transport_rollback_complete` harness.
+The TUI snapshot and replay writer-barrier fixtures validly improve evidence that a real peer can disconnect before canonical response delivery completes and that replay remains durable for a later connection.
 
-### 2.3 Real Unix production-shaped fixtures
+These tests remain cancellation/interruption evidence. They are not substitutes for a TUI full-queue timeout fixture.
 
-`src/core/transport/daemon_socket_integration_tests.rs` adds five M010 fixtures, all passing under `--test-threads=1`:
+### 2.4 Raw-source and task observations
 
-- `socket_peer_close_during_writer_delivery_removes_subscription_and_eofs` — drop write half mid-delivery, expect EOF on reader and active-count drop to zero; a fresh connection then installs a new subscription.
-- `socket_writer_failure_during_flush_closes_stream_and_rolls_back` — `fail_next(DuringWriterWrite, WriterClosed)` produces byte-stream EOF, active-count drop, and recovery via a fresh subscription with non-empty id.
-- `socket_listener_shutdown_completes_active_writer_and_cleans_subscriptions` — cancel the listener-side `shutdown` token while a client is connected, expect client EOF and active-count drop.
-- `socket_interrupted_replay_retry_resumes_with_fresh_identity` — drop first connection after subscribe, publish event, reconnect with `ProjectionResume` and the previous cursor → fresh `subscription_id`, exact `(replay_start_seq, replay_end_seq) == (1, 1)`, and live event after replay.
-- `socket_consecutive_subscriptions_yield_distinct_identities_and_isolation` — two consecutive clients on the same project get distinct `subscription_id` and `client_id`, observe a live event tagged with their own subscription id, and both subscriptions are removed when both writers drop.
+The `/core` raw-source cancellation fixture validly triggers a connection-local raw task and observes `ConnectionTaskKind::RawEvent` before normal peer close.
 
-### 2.4 Complete rollback harness
+First-task-kind recording in the production task owner remains accepted. Panic classification coverage is useful but does not yet constitute the required six-case production cancel/abort-and-await matrix.
 
-`assert_real_transport_rollback_complete(daemon, pre_baseline, probe, subscription_id, client_id)` is applied to every real M010 failure fixture. It enforces:
+### 2.5 Unix coverage
 
-1. daemon active subscription count returned to baseline;
-2. `ConnectionTaskProbe::assert_all_at_baseline` (send, receive, raw-event, cleanup);
-3. `take_subscription_receiver` returns `None` (single-take guarantee);
-4. a second `ProjectionUnsubscribe` is harmless;
-5. final subscription count still at baseline after the idempotent cleanup.
+The M010 Unix tests validly add:
 
-### 2.5 Static guard expansion
+- disconnect cleanup after an active subscription;
+- lifecycle-seam writer-failure recovery;
+- listener-shutdown cleanup;
+- normal retry replay after a prior disconnect;
+- distinct Unix client and subscription identities.
 
-`scripts/check_projection_transport_lifecycle.py` is extended with semantic M010 checks:
+These are retained as regression coverage but are not mechanism-faithful proof of every M010 Unix acceptance criterion.
 
-- `ProjectionTransportTestConfig`, `WriterGate`, `TransportLifecycleObserver`, `ConnectionTaskKind`, `first_task_kind`, `first_task_panicked`, `assert_first_task_kind`, and `fill_outbound_queue_to_capacity` markers must appear in `ws.rs`.
-- The capacity-fill observer test must not use `fail_next(Timeout)` injection and must observe `any_timeout`/`Timeout` from the observer.
-- The panic-classification matrix must reference all three kinds (`Send`, `Receive`, `RawEvent`).
-- The raw-source test must exercise the cancellation token and classify first-task-kind as `RawEvent`.
-- The TUI writer-barrier tests must exercise `WriterGate`.
-- The five Unix M010 fixtures must exist in `daemon_socket_integration_tests.rs`.
-- The M010 closure record (`plans/closure/session-projections/010-status.md`) must exist, must be `Status: closed`, must reference `ConnectionTaskSet`, `ConnectionTaskProbe`, `WriterGate`, `TransportLifecycleObserver`, all three M010 test categories (queue saturation, panic matrix, fresh identity), and must reference the static guard by name (substring `checked by`).
-- The M009 closure record must remain `Status: conditionally closed` and point to the M010 follow-up plan.
+### 2.6 Verification and flake correction
 
-The guard runs as part of the session-projections CI gate. The full record is `scripts/check_projection_transport_lifecycle.py` (line ~258 prints `OK: … M010 mechanism-faithful instrumentation are present.`).
+The recorded focused local matrix and static guards remain historical evidence. The later scheduling fix replaced tight `yield_now()` loops with bounded sleeps and reportedly produced ten consecutive passing projection transport runs.
 
-## 3. Verification evidence
+No GitHub workflow runs or combined status checks were attached to the reviewed final head. Local execution must remain labeled local evidence.
 
-Local execution (host: Linux, Rust 1.81+):
+## 3. Post-closure findings
 
-Full M010 verification matrix (from `plans/implementation/session-projections/010-mechanism-faithful-transport-verification-and-final-closure.md` section 12):
+### 3.1 `/core` timeout is not operation-correlated
 
-- `cargo fmt -- --check` — passes.
-- `CARGO_BUILD_JOBS=1 cargo check --workspace --all-features` — 0 errors, 4 pre-existing warnings.
-- `CARGO_BUILD_JOBS=1 cargo clippy -p codegg-protocol --all-targets -- -D warnings` — passes.
-- `CARGO_BUILD_JOBS=1 cargo test -p codegg --lib core::transport::projection --all-features -- --nocapture` — 13 passed.
-- `CARGO_BUILD_JOBS=1 cargo test -p codegg --lib server::ws --all-features -- --nocapture` — 8 passed.
-- `CARGO_BUILD_JOBS=1 cargo test -p codegg --lib core::transport::daemon_socket -- --test-threads=1` — 26 passed (previously 21; +5 M010 fixtures).
-- `CARGO_BUILD_JOBS=1 cargo test --test projection_transport_real --features server -- --test-threads=1 --nocapture` — 48 passed in ~18s (previously 42; +6 M010 fixtures).
-- `cargo test --test projection_replay_daemon_protocol -- --nocapture` — 13 passed.
-- `cargo test --test projection_replay_subscription -- --nocapture` — 13 passed.
-- `cargo test --test projection_replay_resume -- --nocapture` — 9 passed.
-- `cargo test --test projection_replay_restart_recovery -- --nocapture` — 8 passed.
-- `cargo test --test projection_replay_transport_isolation -- --nocapture` — 7 passed.
-- `cargo test --test projection_disclosure_invariants -- --nocapture` — 16 passed.
-- `cargo test --test projection_artifact_handles -- --nocapture` — 13 passed.
-- `cargo test --test tui -- --nocapture` — 164 passed.
-- `cargo test --test tui_render -- --nocapture` — 99 passed.
-- `cargo test --test tui_project_routing -- --nocapture` — 27 passed.
-- `cargo test --test tui_project_tabs -- --nocapture` — 20 passed.
-- `cargo test --test single_daemon_lifecycle -- --test-threads=1` — 3 passed (1 pre-existing test-ordering flake when run without `--test-threads=1`; passes with `--test-threads=1`; unrelated to M010).
-- `cargo test --test projection_transport_real --features server -- --test-threads=1` — 48 passed (10/10 consecutive runs). The three tight 500ms probe-completion loops were fixed to use `sleep(5ms)` instead of `yield_now()` and a 2000ms timeout, eliminating the pre-existing scheduling flake.
-- `python3 scripts/check_projection_transport_isolation.py` — passes.
-- `python3 scripts/check_projection_transport_lifecycle.py` — passes.
-- `python3 scripts/check_websocket_bounds.py` — passes.
-- `bash scripts/check-core-boundary.sh` — passes.
-- `python3 scripts/check_daemon_cwd_usage.py` — passes.
-- `python3 scripts/check_execution_ownership.py` — passes.
-- `python3 scripts/check_git_forbidden_patterns.py` — passes.
-- `python3 scripts/check_scheduler_bypass.py` — passes.
-- `bash scripts/check_projection_disclosure.sh` — passes.
-- `git diff --check` — passes.
+The queue-timeout fixture sends the target request before inserting its filler. The writer may already have received the target response, leaving the production operation waiting for writer receipt rather than waiting for channel capacity.
 
-## 4. Resolved findings
+The fixture then accepts any timeout found in connection-wide send-result history. It does not prove:
 
-| Severity | M009 finding | M010 resolution |
-|---|---|---|
-| medium | `/core` queue test does not fill the actual queue or assert production timeout | `real_core_queue_saturation_observer_records_timeout` fills capacity=1 from the cloned outbound sender and asserts `observer.any_timeout()` reflects `Err(CriticalDeliveryError::Timeout)` |
-| medium | `/tui` actual queue saturation test is absent | `real_tui_pending_snapshot_interruption_via_writer_barrier` and `real_tui_pending_replay_interruption_then_retry` use a real `WriterGate` to block canonical snapshot and replay responses |
-| medium | Unix peer-close/write/flush/race/interrupted-replay fixtures absent | `socket_peer_close_during_writer_delivery_removes_subscription_and_eofs`, `socket_writer_failure_during_flush_closes_stream_and_rolls_back`, `socket_listener_shutdown_completes_active_writer_and_cleans_subscriptions`, `socket_interrupted_replay_retry_resumes_with_fresh_identity`, `socket_consecutive_subscriptions_yield_distinct_identities_and_isolation` |
-| medium | First-exit and raw-source tests do not control or observe named first task | `real_core_connection_task_owner_first_exit_classifies_panic_per_kind` + `real_core_raw_source_first_exit_via_cancellation_token`; `ConnectionTaskProbe::first_task_kind`/`assert_first_task_kind` |
-| medium | TUI pending setup/replay is not interrupted before response delivery | `WriterGate::wait` pauses at every item; both TUI fixtures prove setup never becomes live and complete rollback converges |
-| medium | Complete rollback harness is incomplete and not applied | `assert_real_transport_rollback_complete` enforces baseline, forwarder completion, single-take receiver, idempotent cleanup, and final baseline; applied to every M010 real failure fixture |
-| low | Static guards and closure evidence are name/count/commit inconsistent | `scripts/check_projection_transport_lifecycle.py` semantic checks for capacity fill, panic kind coverage, raw-source control, and Unix mechanism presence; this closure record reconciles plan, registry, and roadmap |
+- the queue was full before the target `tx.send()` began;
+- the target enqueue never completed;
+- timeout occurred during reservation rather than receipt wait;
+- the timeout belongs to the intended request rather than another send.
+
+M011 must establish fullness first, then start the target request, and assert an operation-correlated enqueue-stage timeout.
+
+### 3.2 `/tui` full-queue timeout is absent
+
+M010 added TUI writer-barrier interruption, not actual queue saturation. No TUI fixture observes `TrySendError::Full` before a real lifecycle request and then directly attributes `CriticalDeliveryError::Timeout` to that request's blocked enqueue.
+
+M011 must add the symmetric TUI full-queue fixture.
+
+### 3.3 Six-case task-owner teardown is incomplete
+
+The new matrix covers three panic classifications through a helper that mirrors selection, aborts siblings, and returns without awaiting their terminal results. It does not prove production cancellation, sibling joins, handle clearing, or cleanup for:
+
+- send completes first;
+- receive completes first;
+- raw-event completes first;
+- send panics first;
+- receive panics first;
+- raw-event panics first.
+
+M011 must run all six through the actual production teardown path or an unchanged private wrapper around it.
+
+### 3.4 `/tui` raw-source-first is not implemented
+
+The retained TUI test publishes an event and then closes the client. It proves peer-close teardown, not raw-source termination as first exit.
+
+M011 must trigger the same connection-local raw-source control for TUI while the peer remains healthy and assert `RawEvent` first.
+
+### 3.5 Unix mechanism matrix remains incomplete
+
+The M010 Unix fixtures do not prove all named mechanisms:
+
+- peer close occurs after the subscription is already active, not before canonical response completion;
+- writer failure uses `fail_next(DuringWriterWrite, WriterClosed)` rather than a real peer-induced I/O failure;
+- listener shutdown is not a barrier-controlled response-completion race with both terminal orders;
+- replay retry does not interrupt the second resumed connection during replay response delivery;
+- repeated race/churn convergence is absent.
+
+M011 must add actual pre-write peer failure, real I/O error observation, forced completion-first/cancellation-first outcomes, second-connection replay interruption, and repeated convergence.
+
+### 3.6 Rollback evidence is incomplete and aggregate
+
+The helper currently checks daemon subscription baseline, aggregate task counters, receiver non-reuse, duplicate unsubscribe, and final active count.
+
+It does not prove:
+
+- failed connection ownership removal;
+- projection-forwarder joins;
+- handler completion;
+- no canonical/live leakage;
+- unrelated-client continuity;
+- bounded queue/retry/resource counters;
+- per-connection exact task counts when one probe is reused by multiple connections.
+
+Some M010 fixtures use bespoke cleanup assertions instead of the helper.
+
+M011 must provide per-connection probes and one complete rollback/non-interference harness used by every closure-relevant real failure fixture.
+
+### 3.7 Static guards remain weakly semantic
+
+Current guards mostly require function names and selected substrings. They do not reject:
+
+- request-before-full queue ordering;
+- connection-wide `any_timeout()` attribution;
+- missing TUI saturation;
+- abort-without-await test helpers;
+- injected Unix writer failure;
+- normal replay retry mislabeled as interrupted replay;
+- incomplete rollback assertions.
+
+M011 must add ordering and mechanism checks for these exact false-positive patterns.
+
+### 3.8 Planning and evidence were inconsistent
+
+M010 plan remained marked ready, closure contained a placeholder commit, registry omitted the final reviewed head, and strict closure was reported without GitHub checks.
+
+This record corrects M010 to conditional status. M011 owns final exact reconciliation.
+
+## 4. Unresolved findings
+
+| Severity | Finding | Impact | Required M011 action |
+|---|---|---|---|
+| medium | `/core` timeout can be writer-receipt timeout rather than full-queue enqueue timeout | Queue mechanism attribution remains unproven | Establish fullness before request and record target operation stage/result |
+| medium | `/tui` full-queue timeout is absent | One WebSocket adapter lacks required queue evidence | Add symmetric operation-correlated TUI saturation fixture |
+| medium | Six-case task-owner matrix does not execute production joins | Panic/first-exit cleanup guarantee remains incomplete | Run six deterministic cases through production teardown and assert joins |
+| medium | TUI raw-source-first remains peer-close coverage | Adapter symmetry is incomplete | Add controlled TUI raw-source termination and first-kind assertion |
+| medium | Unix pre-response I/O, race, and replay-interruption mechanisms remain unproven | Unix strict lifecycle/replay closure is unsupported | Add real peer-induced I/O and forced race/replay fixtures |
+| medium | Rollback harness omits required per-connection invariants | Cleanup and non-interference evidence remains fragmented | Add per-connection probes and complete harness used everywhere |
+| low | Static guards permit M010 false-positive patterns | Regression protection is insufficient | Add causal-order and mechanism assertions |
+| low | Closure/registry/CI evidence was inconsistent | Auditability is reduced | Reconcile exact commits, counts, commands, and absence of CI |
 
 ## 5. Roadmap disposition
 
-The session-projections subsystem is **strictly closed**. The subsystem roadmap (`plans/subsystems/session-projections-roadmap.md`) and registry (`plans/registry.md`) are updated to reflect closed status. Downstream plans that reference the subsystem as dependency-ready may now proceed.
+M010 remains conditionally closed. M011 is the sole dependency-ready session-projections plan and owns final evidence correctness and strict closure.
+
+The subsystem roadmap and registry may return to strict closed status only through an accepted `plans/closure/session-projections/011-status.md` record.
