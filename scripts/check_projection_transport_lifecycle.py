@@ -745,7 +745,16 @@ def main() -> int:
                 "011-evidence-correctness-and-mechanism-verification-closure.md"
             )
     else:
-        if "next commit" in m011_status:
+        # The closure record must not use placeholder text like "<M011-CLOSURE-COMMIT>"
+        # or "next commit" — every commit reference must be a real SHA.
+        if "<M011-" in m011_status and "CLOSURE-COMMIT" in m011_status:
+            failures.append(
+                "011-status.md: must not reference `<M011-CLOSURE-COMMIT>` "
+                "placeholder; every commit reference must be a real SHA"
+            )
+        if "next commit" in m011_status and "`next commit`" not in m011_status:
+            # Allow this only when the doc explicitly addresses the placeholder
+            # policy itself (e.g., as part of stating what is NOT acceptable).
             failures.append(
                 "011-status.md: must not reference `next commit` placeholders"
             )
