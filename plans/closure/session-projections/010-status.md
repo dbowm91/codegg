@@ -14,11 +14,11 @@ Repository baseline reviewed: `426dfffec05c9d694f54a816213a6cca514e91b4`
 
 Implementation and evidence commits (post-baseline, on `main`):
 
+- `a3ab136` — M010 production change: observer-driven transport instrumentation (`ProjectionTransportTestConfig`, `WriterGate`, `TransportLifecycleObserver`), `ConnectionTaskProbe::first_task_kind`, `ConnectionTaskSet::first_exit_classification`, raw-source cancellation control, six M010 fixtures in `tests/projection_transport_real.rs`, five M010 fixtures in `src/core/transport/daemon_socket_integration_tests.rs`, expanded `scripts/check_projection_transport_lifecycle.py` semantic guards, M010 closure record, registry and roadmap updates.
 - `4b3adab` — plans: register projection M010 final verification (registry + roadmap update).
 - `86e54c8` — plans: reopen projections for M010 final verification (conditional reactivation).
 - `6a822ed` — docs: condition M009 closure on mechanism-faithful verification.
 - `3b341c8` — plans: add projection M010 mechanism-faithful closure plan.
-- M010 production change (single combined commit at implementation time) — observer-driven transport instrumentation (`ProjectionTransportTestConfig`, `WriterGate`, `TransportLifecycleObserver`), `ConnectionTaskProbe::first_task_kind`, `ConnectionTaskSet::first_exit_classification`, raw-source cancellation control, M010 fixtures in `tests/projection_transport_real.rs`, M010 fixtures in `src/core/transport/daemon_socket_integration_tests.rs`, and `scripts/check_projection_transport_lifecycle.py` semantic-guard expansion.
 
 ## 1. Closure decision
 
