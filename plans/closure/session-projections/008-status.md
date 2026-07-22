@@ -1,6 +1,6 @@
 # Session Projections Milestone 008 — Closure Status
 
-Status: closed
+Status: conditionally closed — Milestone 009 production-shaped transport verification and strict closure required
 
 Source implementation plan:
 
@@ -8,182 +8,132 @@ Source implementation plan:
 
 Source subsystem roadmap:
 
-- `plans/subsystems/session-projections-roadmap.md#milestone-8--final-transport-lifecycle-and-replay-evidence-polish`
+- `plans/subsystems/session-projections-roadmap.md`
 
 Repository baseline reviewed: `8b547a3d02e571a480a826f5dea9c81d79d95cc4`
 
 Implementation commit:
 
-- `6975050af530eb5bd7a640c1f7ac9a31859dfda3` — shared joined WebSocket
-  teardown, staged production-adapter failure fixtures, exact Unix/
-  `/core`/`/tui` replay-to-live assertions, and lifecycle guard extension.
+- `6975050af530eb5bd7a640c1f7ac9a31859dfda3` — shared joined WebSocket teardown, lifecycle seam matrices, exact replay-to-live assertions, and lifecycle guard extension.
 
-Closure evidence commit:
+Original closure evidence commit:
 
-- `ea6e38d5182f42ae70c5f379415dd8ee1eb470e2` — this closure record,
-  roadmap strict-closed transition, M007 reconciliation, and registry update.
+- `ea6e38d5182f42ae70c5f379415dd8ee1eb470e2`
 
-## 1. Executive finding
+Strict-verification follow-up:
 
-M008 is complete. `/core` and `/tui` now retain one structured owner for their
-send, receive, and raw-event tasks. The first task to terminate cancels the
-connection, aborts remaining siblings, awaits every retained handle, and only
-then allows projection and daemon subscription cleanup to run. Expected
-cancellation joins are quiet; abnormal task termination is logged with the
-connection and task identity.
+- `plans/implementation/session-projections/009-production-shaped-transport-verification-and-strict-closure.md`
 
-Unix, `/core`, and `/tui` staged-subscription fixtures now exercise the
-material queue, writer, cancellation, serialization-equivalent, disconnect,
-and pre-activation failure boundaries against real daemon subscriptions.
-Reconnect fixtures inspect complete replay/live envelopes and prove stable
-stream identity, changed subscription identity, exact replay sequence and
-turn identity, first-live sequence `replay_end_seq + 1`, and bounded absence of
-duplicates. The `/core` fixture also publishes while replay response delivery
-is paused.
+## 1. Closure decision
 
-No M008 high or medium finding remains. The session-projections roadmap and
-planning registry therefore return to strict closed status.
+The principal M008 production changes remain accepted. M008 fixed the WebSocket abort-without-await lifecycle defect and strengthened replay continuity substantially. It is not reverted or classified as a failed implementation.
 
-## 2. Requirement-to-evidence matrix
+Strict closure was invalidated by post-closure source and test inspection. The current tests use lifecycle-seam error classification for several scenarios that the approved plan described as real queue saturation, peer disconnect, or connection-cancellation races. The matrices also do not apply the complete lifecycle baseline assertion set to every production-shaped failure case.
 
-| Requirement | Evidence | Result | Notes |
-|---|---|---|---|
-| `/core` connection tasks are owned and joined | `ConnectionTaskSet` in `src/server/ws.rs`; `connection_task_set_cancels_aborts_and_joins_all_tasks`; lifecycle guard | pass | Cancellation precedes sibling abort and every retained handle is awaited. |
-| `/tui` uses the same teardown model | `upgrade_tui` uses `ConnectionTaskSet`; real TUI lifecycle/failure fixtures | pass | No divergent abort-only cleanup remains in either projection adapter. |
-| Cleanup is safe when any sibling exits first | shared first-exit selection and idempotent projection cleanup; `server::ws` focused suite | pass | The selected handle is consumed once; remaining handles are abort-and-await joined. |
-| Connection cancellation wakes pending setup work | connection token passed through staged sends, lifecycle checkpoints, writer gates, and forwarders | pass | Connection cleanup runs after task termination and before daemon unsubscribe. |
-| Production-adapter critical failure matrix | `real_core_staged_failure_matrix_rolls_back_every_material_class`, `real_tui_staged_failure_matrix_rolls_back_every_material_class`, `socket_staged_failure_matrix_rolls_back_every_material_class` | pass | Seven connection-local scenarios per adapter; daemon active count returns to baseline and no live event escapes. |
-| Post-enqueue and pre-activation rollback is truthful | matrix tests plus `real_*_failed_critical_delivery_rolls_back_daemon_subscription` | pass | A response may already be on the wire after the post-enqueue/pre-activation boundary; those cases assert rollback, no live traffic, and cleanup instead of claiming response absence. |
-| Receiver ownership is single-take and cleanup is idempotent | transport install/rollback paths; `projection_replay_transport_isolation`; Unix cleanup and failed-install tests | pass | Failed receiver installation cannot be recovered as a second transport-owned receiver. |
-| Unix reconnect is exact | `socket_reconnect_replays_exact_missing_range_then_live` | pass | Exact `[1, 2]` sequence and turn identities; new subscription, same stream; live sequence 3; no duplicate. |
-| `/core` reconnect is exact and race-safe | `real_core_reconnect_replays_exact_missing_range_then_live` | pass | Replay response is paused while a live event is published; handoff remains gap-free. |
-| `/tui` reconnect is exact | `real_tui_reconnect_replays_exact_missing_range_then_live` | pass | Exact replay payload identities and sequence continuity are asserted on typed envelopes. |
-| Raw compatibility and protocol meaning remain stable | no protocol/schema files changed; existing foreign-operation and raw-isolation tests | pass | Version-4/raw compatibility and projection protocol version are unchanged. |
-| Abort-without-await regression is guarded | `scripts/check_projection_transport_lifecycle.py` | pass | The guard checks the shared owner, cancellation-before-join path, awaited handles, and adapter bodies. |
-| Planning closure is reconciled | M007 conditional note, this record, roadmap, and registry | pass | M008 is the strict closure authority; no projection plan remains ready or blocked. |
+M009 must close the remaining evidence gaps before the session-projections subsystem returns to strict closed status.
 
-## 3. Production implementation evidence
+## 2. Accepted M008 outcomes
 
-- `ConnectionTaskSet` in `src/server/ws.rs` owns the `/core` and `/tui`
-  send, receive, and raw-event `JoinHandle`s. It selects the first terminal
-  task once, cancels the connection, aborts remaining siblings, and awaits
-  each handle before projection state is drained or daemon subscriptions are
-  removed.
-- The existing bounded control, projection, and raw queues remain unchanged.
-  Writer receipts and the final TUI raw-generation check remain in the writer
-  boundary.
-- The real adapter fixtures use the existing connection-local
-  `ProjectionLifecycleSeam`. Serialization-equivalent failure is injected at
-  the staged pre-enqueue boundary so production DTOs remain naturally
-  serializable and the wire contract is not distorted.
-- Replay helpers now publish explicit source sequence values for the missing
-  range and live successor. Assertions inspect `ProjectionEnvelope` payload
-  identities rather than relying on outer optional metadata that is not
-  retained by the canonical projection publication transform.
+### 2.1 Structured WebSocket teardown
 
-## 4. Verification executed
+`/core` and `/tui` use one shared connection-task owner. The owner retains send, receive, and raw-event handles; consumes the first completed handle once; cancels the connection; aborts remaining siblings; awaits every retained handle; and only then permits projection and daemon cleanup.
 
-### Commands run
+### 2.2 Existing bounded and atomic setup semantics
 
-```bash
-rtk cargo fmt -- --check
-rtk cargo check -p codegg --all-features
-rtk python3 scripts/check_projection_transport_lifecycle.py
-rtk cargo test -p codegg --lib server::ws --all-features -- --nocapture
-rtk cargo test -p codegg --lib socket_staged_failure_matrix_rolls_back_every_material_class --all-features -- --nocapture
-rtk cargo test --test projection_transport_real --features server -- --test-threads=1 --nocapture
-rtk cargo test --test projection_transport_real --features server -- --test-threads=1 --nocapture real_core_staged_failure_matrix_rolls_back_every_material_class
-rtk cargo test --test projection_transport_real --features server -- --test-threads=1 --nocapture real_tui_staged_failure_matrix_rolls_back_every_material_class
-rtk cargo test -p codegg --lib core::transport::daemon_socket --all-features -- --nocapture
-rtk git diff --check
-```
+Bounded queues, critical-send timeout/cancellation, writer receipts, `Initializing -> Live` after canonical response delivery, rollback, connection-local lifecycle seams, and projection-forwarder cleanup remain accepted.
 
-### Results
+### 2.3 Exact replay-to-live evidence
 
-- `projection_transport_real`: 20 listed and 20 passed; 15 transport cases
-  and 5 shared secret-scan tests. The full suite includes both new staged
-  failure-matrix tests and the exact core/TUI reconnect tests.
-- `server::ws`: 8 focused tests passed, including the task-owner drop probe.
-- `daemon_socket` focused suite: 21 tests passed, including exact Unix replay
-  and the seven-scenario staged failure matrix.
-- Replay protocol/subscription/resume/restart/isolation suites passed with
-  13/13/9/8/7 tests; disclosure and artifact suites passed with 16/13 tests.
-- TUI, render, project-routing, project-tabs, and daemon-lifecycle suites
-  passed with 164/99/27/20/3 tests.
-- The focused lifecycle guard and formatting/diff checks passed.
-- The initial workspace check passed with four pre-existing warnings in TUI
-  persistence/app code; M008 did not introduce warnings in its changed
-  production files.
+Unix, `/core`, and `/tui` reconnect fixtures now assert:
 
-The broader repository verification commands retained by M007 remain
-historical evidence. M008's changed-surface gates above are the executable
-closure gates for this polish milestone; unrelated workspace-wide clippy
-findings remain outside M008 scope.
+- stable stream identity;
+- changed subscription identity;
+- replay sequences `[1, 2]`;
+- distinct replay turn identities;
+- first live sequence `3` / `replay_end_seq + 1`;
+- bounded absence of duplicate replay/live traffic.
 
-## 5. Invariant review
+The `/core` fixture also publishes while replay response delivery is paused.
 
-- Every `/core` and `/tui` connection task is retained by one owner and joined
-  before connection cleanup returns.
-- Cancellation occurs before sibling teardown, and no projection state lock is
-  held while a task handle is awaited.
-- Critical staged delivery still precedes activation; rollback and daemon
-  unsubscribe converge safely when cleanup is repeated.
-- Reconnect preserves stream identity while issuing fresh subscription and
-  connection identities, and the replay-to-live boundary is exact and
-  duplicate-free in all three production transports.
-- Outbound queues remain bounded and raw TUI route generations remain checked
-  at the final writer boundary.
+### 2.4 Static lifecycle guard
 
-## 6. Failure and recovery review
+The lifecycle guard rejects adapter-local abort-only cleanup and requires the shared joined owner, connection cancellation, awaited handles, bounded WebSocket queues, private activation, and TUI route-generation checks.
 
-- Queue, writer, cancellation, serialization-equivalent, disconnect, and
-  pre-activation failures are injected through connection-local seams against
-  installed daemon subscriptions.
-- Post-enqueue and pre-activation tests explicitly distinguish an already
-  delivered canonical response from a failed live activation and require
-  daemon ownership removal and no live projection traffic.
-- A forwarder is cancelled and joined by projection cleanup; the existing
-  single-take receiver tests prevent a failed receiver from being recovered a
-  second time.
-- Exact replay tests include a paused response/live-publication race and a
-  bounded quiet period after the first live envelope.
+## 3. Post-closure findings
 
-## 7. Migration and compatibility review
+### 3.1 Real queue saturation is not yet demonstrated
 
-No storage schema, replay authority, cursor, sequence authority, projection
-DTO, or protocol version changed. Version-4/raw compatibility remains
-available. The changes are limited to task lifecycle ownership, test seams,
-replay evidence, and static/documentation guards.
+The adapter matrices inject `CriticalDeliveryError::Timeout` at `BeforeControlEnqueue`. This proves rollback for a timeout-classified lifecycle boundary, but it does not fill the actual bounded adapter queue and wait for the production critical-send timeout.
 
-## 8. Security and contention review
+Required M009 correction:
 
-Subscription ownership remains daemon-issued and connection-scoped; foreign
-operations remain fail-closed. The failure fixtures use no process-global
-mutable state. Existing bounded queue, artifact, disclosure, and raw-filter
-guards remain in the focused transport suites.
+- pause the actual writer;
+- fill the real bounded queue;
+- initiate staged subscribe/resume response delivery;
+- observe the actual timeout;
+- prove complete lifecycle cleanup.
 
-## 9. Documentation and operations
+### 3.2 Real peer disconnect and connection cancellation are not yet demonstrated completely
 
-- Corrected `plans/closure/session-projections/007-status.md` to preserve its
-  conditional historical status while linking M008 as the strict authority.
-- Updated `plans/subsystems/session-projections-roadmap.md` to strict closed
-  status and linked this record.
-- Updated `plans/registry.md` to remove the ready/active/blocked M008 rows and
-  record the closed milestone.
-- Extended `scripts/check_projection_transport_lifecycle.py` to reject
-  adapter-local abort-only cleanup and require the shared joined owner.
+The matrices inject `Cancelled` at lifecycle checkpoints. This does not prove that closing the real WebSocket or Unix peer wakes and terminates pending staged setup through the production cancellation path.
 
-## 10. Unresolved findings
+Required M009 correction:
+
+- close/drop real peers during paused setup;
+- cover writer/socket failure and Unix response-completion races;
+- prove connection-task, projection-forwarder, receiver, and daemon-subscription baselines.
+
+### 3.3 Per-scenario rollback assertions are incomplete
+
+Current matrices principally prove daemon active subscription count returns to zero and no live projection event leaks. M009 must add, per applicable real failure scenario:
+
+- connection-local ownership removal;
+- receiver non-reuse;
+- projection-forwarder termination;
+- send/receive/raw task termination;
+- task/drop baseline;
+- idempotent second cleanup;
+- unrelated-client continuity.
+
+### 3.4 WebSocket first-exit and churn coverage is incomplete
+
+The shared task-owner drop-probe test exercises one first-exit shape. M009 must cover send-first, receive-first, and raw-event-first, plus real adapter peer-close, writer-failure, raw-source, paused-setup cancellation, repeated churn, and two-client continuity paths.
+
+### 3.5 Replay interruption and connection identity remain incomplete
+
+M008 proves exact successful replay. M009 must additionally:
+
+- assert fresh daemon-issued connection identity where exposed;
+- disconnect during a paused replay response;
+- prove transient cleanup;
+- reconnect from the same durable cursor;
+- prove the same missing range is still replayable and transitions live exactly once.
+
+## 4. Verification evidence retained
+
+The following recorded M008 results remain historical evidence:
+
+- formatting and changed-surface workspace check;
+- focused `server::ws` and daemon-socket suites;
+- `projection_transport_real` exact replay and lifecycle matrix tests;
+- replay, disclosure, artifact, TUI, and lifecycle guard suites.
+
+These results support the accepted M008 implementation. They do not substitute for the production-shaped queue/disconnect verification now owned by M009.
+
+No GitHub workflow/status check was present for the reviewed head; do not describe the recorded local commands as independently confirmed CI.
+
+## 5. Unresolved findings
 
 | Severity | Finding | Impact | Required action |
 |---|---|---|---|
-| — | None | — | No high or medium M008 finding remains. |
-| repository baseline | Existing unrelated warnings/clippy findings outside changed files | Does not affect M008 transport correctness | Track in the existing repository baseline; do not fold into this milestone. |
+| medium | Queue timeout is represented by an injected timeout classification rather than actual bounded queue saturation | Strict claim about production timeout mechanism is unproven | Implement real queue saturation tests for `/core` and `/tui` under M009 |
+| medium | Disconnect/cancellation cases are represented primarily by injected cancellation classifications | Real peer-close and pending-operation cancellation cleanup is incompletely proven | Add real WebSocket and Unix disconnect/cancellation race fixtures |
+| medium | Complete per-scenario lifecycle baseline assertions are absent | Task, receiver, forwarder, idempotence, and unrelated-client guarantees are broader than evidence | Add reusable complete rollback assertions and connection-local probes |
+| low | Fresh connection identity and disconnect-during-replay cleanup are not fully asserted | Replay success is exact, but interruption durability evidence is incomplete | Add identity and interrupted replay retry fixtures |
+| repository baseline | Existing unrelated warnings/clippy findings outside the changed transport surface | Does not affect accepted M008 production behavior | Track separately; do not fold into M009 unless touched |
 
-## 11. Roadmap disposition
+## 6. Roadmap disposition
 
-Milestone 008 is closed. The frontend-neutral session-projections roadmap and
-registry are strictly closed, with no dependency-ready projection plan and no
-blocked projection closure work remaining.
+M008 remains conditionally closed. M009 is the sole dependency-ready session-projections plan and owns final production-shaped verification and strict closure.
 
-The exact implementation and closure evidence commits are recorded above.
+The subsystem roadmap and registry may return to strict closed status only through an accepted `plans/closure/session-projections/009-status.md` record.
