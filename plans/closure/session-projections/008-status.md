@@ -1,6 +1,8 @@
 # Session Projections Milestone 008 — Closure Status
 
-Status: conditionally closed — Milestone 009 production-shaped transport verification and strict closure required
+Status: conditionally closed — principal findings addressed by M009
+
+M009 has been strictly closed. See `plans/closure/session-projections/009-status.md`.
 
 Source implementation plan:
 

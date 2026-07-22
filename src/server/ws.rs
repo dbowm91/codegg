@@ -27,6 +27,73 @@ use crate::server::scope::{resolve_context, ScopeQuery};
 
 const WS_OUTBOUND_QUEUE_CAPACITY: usize = 256;
 
+/// Connection-local task completion probe. Each counter tracks how many
+/// tasks of the given kind have completed within this connection. Tests
+/// read the counters after handler exit to verify lifecycle invariants.
+/// The probe is connection-scoped and never shared across connections.
+#[derive(Debug, Default)]
+pub struct ConnectionTaskProbe {
+    pub send_completed: std::sync::atomic::AtomicUsize,
+    pub receive_completed: std::sync::atomic::AtomicUsize,
+    pub raw_event_completed: std::sync::atomic::AtomicUsize,
+    pub projection_forwarders_joined: std::sync::atomic::AtomicUsize,
+    pub cleanup_calls: std::sync::atomic::AtomicUsize,
+}
+
+impl ConnectionTaskProbe {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn send_count(&self) -> usize {
+        self.send_completed
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    pub fn receive_count(&self) -> usize {
+        self.receive_completed
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    pub fn raw_event_count(&self) -> usize {
+        self.raw_event_completed
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    pub fn forwarder_count(&self) -> usize {
+        self.projection_forwarders_joined
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    pub fn cleanup_count(&self) -> usize {
+        self.cleanup_calls
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    pub fn assert_all_tasks_completed(&self) {
+        assert_eq!(
+            self.send_count(),
+            1,
+            "expected exactly one send task completion"
+        );
+        assert_eq!(
+            self.receive_count(),
+            1,
+            "expected exactly one receive task completion"
+        );
+        assert_eq!(
+            self.raw_event_count(),
+            1,
+            "expected exactly one raw-event task completion"
+        );
+    }
+
+    pub fn assert_all_at_baseline(&self) {
+        self.assert_all_tasks_completed();
+        assert_eq!(self.cleanup_count(), 1, "expected exactly one cleanup pass");
+    }
+}
+
 type WsMessage = axum::extract::ws::Message;
 type WsSender = mpsc::Sender<OutboundMessage>;
 
@@ -69,6 +136,7 @@ struct ConnectionTaskSet {
     send: Option<JoinHandle<()>>,
     receive: Option<JoinHandle<()>>,
     raw_event: Option<JoinHandle<()>>,
+    probe: Option<Arc<ConnectionTaskProbe>>,
 }
 
 impl ConnectionTaskSet {
@@ -77,6 +145,21 @@ impl ConnectionTaskSet {
             send: Some(send),
             receive: Some(receive),
             raw_event: Some(raw_event),
+            probe: None,
+        }
+    }
+
+    fn with_probe(
+        send: JoinHandle<()>,
+        receive: JoinHandle<()>,
+        raw_event: JoinHandle<()>,
+        probe: Arc<ConnectionTaskProbe>,
+    ) -> Self {
+        Self {
+            send: Some(send),
+            receive: Some(receive),
+            raw_event: Some(raw_event),
+            probe: Some(probe),
         }
     }
 
@@ -100,9 +183,27 @@ impl ConnectionTaskSet {
         // The selected JoinHandle has already been awaited by the select. Drop
         // the completed handle without polling it a second time.
         match first_kind {
-            ConnectionTaskKind::Send => drop(self.send.take()),
-            ConnectionTaskKind::Receive => drop(self.receive.take()),
-            ConnectionTaskKind::RawEvent => drop(self.raw_event.take()),
+            ConnectionTaskKind::Send => {
+                drop(self.send.take());
+                if let Some(p) = &self.probe {
+                    p.send_completed
+                        .fetch_add(1, std::sync::atomic::Ordering::Release);
+                }
+            }
+            ConnectionTaskKind::Receive => {
+                drop(self.receive.take());
+                if let Some(p) = &self.probe {
+                    p.receive_completed
+                        .fetch_add(1, std::sync::atomic::Ordering::Release);
+                }
+            }
+            ConnectionTaskKind::RawEvent => {
+                drop(self.raw_event.take());
+                if let Some(p) = &self.probe {
+                    p.raw_event_completed
+                        .fetch_add(1, std::sync::atomic::Ordering::Release);
+                }
+            }
         }
         log_connection_task_result(first_kind, first_result, connection_id);
 
@@ -131,6 +232,19 @@ impl ConnectionTaskSet {
             return;
         };
         let result = handle.await;
+        if let Some(p) = &self.probe {
+            match kind {
+                ConnectionTaskKind::Send => p
+                    .send_completed
+                    .fetch_add(1, std::sync::atomic::Ordering::Release),
+                ConnectionTaskKind::Receive => p
+                    .receive_completed
+                    .fetch_add(1, std::sync::atomic::Ordering::Release),
+                ConnectionTaskKind::RawEvent => p
+                    .raw_event_completed
+                    .fetch_add(1, std::sync::atomic::Ordering::Release),
+            };
+        }
         log_connection_task_result(kind, result, connection_id);
     }
 }
@@ -970,10 +1084,20 @@ async fn upgrade_tui(
         }
     });
 
-    let mut connection_tasks = ConnectionTaskSet::new(send_task, recv_task, raw_event_task);
+    let mut connection_tasks = if let Some(probe) = &state.connection_task_probe {
+        ConnectionTaskSet::with_probe(send_task, recv_task, raw_event_task, Arc::clone(probe))
+    } else {
+        ConnectionTaskSet::new(send_task, recv_task, raw_event_task)
+    };
     connection_tasks
         .join_after_first_exit(&connection_cancel, &connection_id)
         .await;
+
+    if let Some(probe) = &state.connection_task_probe {
+        probe
+            .cleanup_calls
+            .fetch_add(1, std::sync::atomic::Ordering::Release);
+    }
 
     let subscription_ids: Vec<_> = session_state
         .lock()
@@ -2809,10 +2933,20 @@ async fn upgrade_core_ws(
         }
     });
 
-    let mut connection_tasks = ConnectionTaskSet::new(send_task, recv_task, raw_event_task);
+    let mut connection_tasks = if let Some(probe) = &state.connection_task_probe {
+        ConnectionTaskSet::with_probe(send_task, recv_task, raw_event_task, Arc::clone(probe))
+    } else {
+        ConnectionTaskSet::new(send_task, recv_task, raw_event_task)
+    };
     connection_tasks
         .join_after_first_exit(&connection_cancel, &connection_id)
         .await;
+
+    if let Some(probe) = &state.connection_task_probe {
+        probe
+            .cleanup_calls
+            .fetch_add(1, std::sync::atomic::Ordering::Release);
+    }
 
     let subscription_ids: Vec<_> = projection
         .lock()

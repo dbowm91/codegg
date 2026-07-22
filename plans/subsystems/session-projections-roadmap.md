@@ -1,6 +1,6 @@
 # Frontend-Neutral Session Projections and Replay Roadmap
 
-Status: active — Milestone 009 production-shaped transport verification and strict closure
+Status: closed
 
 Long-term references:
 
@@ -153,7 +153,7 @@ M7 lifecycle ownership, route epochs, race evidence         [conditionally close
 M8 joined WebSocket teardown and exact replay evidence       [conditionally closed; production-shaped verification required]
         |
         v
-M9 real transport mechanisms and strict verification         [ready]
+M9 real transport mechanisms and strict verification         [closed]
 ```
 
 M9 has no unmet design dependency. It consumes the M8 production task owner, lifecycle seam, exact replay fixtures, and static guard.
@@ -317,4 +317,4 @@ This roadmap returns to strict closed status when all three production transport
 | 6 | conditionally closed | `plans/implementation/session-projections/006-atomic-control-delivery-transport-verification-hardening.md` | `plans/closure/session-projections/006-status.md` | principal findings addressed by later milestones |
 | 7 | conditionally closed | `plans/implementation/session-projections/007-corrective-transport-lifecycle-and-evidence-closure.md` | `plans/closure/session-projections/007-status.md` | principal findings addressed by M8 |
 | 8 | conditionally closed | `plans/implementation/session-projections/008-final-transport-lifecycle-and-replay-evidence-polish.md` | `plans/closure/session-projections/008-status.md` | M9 production-shaped verification and strict closure |
-| 9 | ready | `plans/implementation/session-projections/009-production-shaped-transport-verification-and-strict-closure.md` | — | — |
+| 9 | closed | `plans/implementation/session-projections/009-production-shaped-transport-verification-and-strict-closure.md` | `plans/closure/session-projections/009-status.md` | — |

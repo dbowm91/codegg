@@ -9,6 +9,7 @@ use tokio::sync::{Mutex, RwLock};
 use crate::config::schema::Config;
 use crate::core::transport::projection::ProjectionLifecycleSeam;
 use crate::mcp::McpService;
+use crate::server::ws::ConnectionTaskProbe;
 
 #[derive(Clone)]
 pub struct ServerState {
@@ -20,6 +21,10 @@ pub struct ServerState {
     /// Connection-adapter lifecycle seam. The default is a no-op; tests may
     /// supply a connection-local pause/fault policy without global state.
     pub projection_lifecycle_seam: ProjectionLifecycleSeam,
+    /// Connection-local task completion probe. Each WebSocket connection
+    /// receives its own clone of this Arc; tests read the counters after
+    /// handler exit to verify lifecycle invariants.
+    pub connection_task_probe: Option<Arc<ConnectionTaskProbe>>,
 }
 
 #[derive(Clone)]
