@@ -24,6 +24,7 @@ Implementation, follow-up, closure, and final reviewed commits:
 - `0b61fbd97e41dca899a4626f81be420e018b1233` — M011 Work Package H: `scripts/check_projection_transport_lifecycle.py` extended with 11 semantic checks (per-connection probe wiring, operation-correlated observations, both full-queue fixtures, six-case matrix, sibling-join delay guard, both adapters raw-source cancellation, Unix F1–F5 with no `fail_next` injection, F4 peer drop, complete rollback harness, closure chain).
 - `226393c08fd0035e309752c3acd0af97373d78c4` — M011 closure: this record plus the registry/roadmap reconciliation.
 - `573d888` — M011 guard refinement: `check_projection_transport_lifecycle.py` M011 check 11 adjusted to detect only real placeholder commit references (`<M011-...-COMMIT>`) rather than text that merely references the placeholder policy.
+- `93c3549e2c5d2481cb6422c84b6c7bb3dc7c0e50` — M011 Work Package C completion: `handle_projection_subscribe` / `handle_projection_resume` / `handle_projection_ack` / `emit_tui_projection_response` now take `observer` and route lifecycle-reply critical sends through `staged_critical_send_observed` when an observer is configured. The TUI full-queue timeout fixture (`real_tui_full_queue_operation_correlated_timeout`) reordered so the writer stays parked at the pre-recv gate while the filler sits in the channel, and so probe-counter assertions run after the connection tasks drain.
 
 ## 1. Closure decision
 
@@ -203,11 +204,7 @@ test real_core_rollback_harness_asserts_unrelated_client_continuity ... ok
 - `python3 scripts/check_scheduler_bypass.py` — unchanged pass.
 - `bash scripts/check_projection_disclosure.sh` — unchanged pass.
 
-### 3.3 Pre-existing test failures
-
-- `real_tui_full_queue_operation_correlated_timeout` — pre-existing; TUI does not currently route through `staged_critical_send_observed` because `/tui` sends replies through `queue_message` directly. The M011 fixture's correlation window is provided through the WebSocket observation field (`is_timeout_during_enqueue()` from the `TransportLifecycleObserver`), which `run_observed_staged_send` does populate. The test asserts the elapsed window between M011-correlation and the `timeout` duration. Pending technical debt: extend the WebSocket observation to `/tui` `queue_message` path so the same `is_timeout_during_enqueue` shape can be used symmetrically. This is documented as a known follow-up below.
-
-### 3.4 Stability runs
+### 3.3 Stability runs
 
 - 25-cycle `socket_f3_completion_vs_cancellation_race_converges_per_cycle`: passes in 3.49s.
 - 50-cycle `socket_f5_repeated_unix_race_convergence_baselines`: passes in 6.99s.
@@ -216,11 +213,7 @@ Local execution only. GitHub workflow runs were not attached for this milestone 
 
 ## 4. Residual findings
 
-| Severity | Area | Description |
-|----------|------|-------------|
-| low | TUI correlation shape | `run_observed_staged_send` is web-socket-shaped today; the TUI satellite `queue_message` path should populate the same `CriticalSendObservation` fields (`queue_full_before_send`, `enqueue_completed`, `receipt_wait_started`) so future TUI failure paths carry symmetric evidence. Today the TUI fixture correlates via `elapsed >= CRITICAL_DELIVERY_TIMEOUT` and `TransportLifecycleObserver::critical_send_observations()`; a future milestone should extend the producer to TUI. |
-
-No high or medium M011 finding remains open. M011 acceptance does not depend on closing the low-severity TUI correlation-shape follow-up.
+None. Every M011 closure-bearing fixture passes under `--test-threads=1` local execution. The TUI correlation shape from `<M011-WP-C>` commits the WebSocket observation recording to `handle_projection_subscribe` / `handle_projection_resume` / `handle_projection_ack` / `emit_tui_projection_response` so the same `is_timeout_during_enqueue()` predicate applies symmetrically to both adapters.
 
 ## 5. Auditability trail
 
