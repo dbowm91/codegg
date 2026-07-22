@@ -1,6 +1,6 @@
 # Frontend-Neutral Session Projections and Replay Roadmap
 
-Status: active — Milestone 011 evidence correctness and mechanism verification closure
+Status: closed
 
 Long-term references:
 
@@ -341,4 +341,4 @@ This roadmap returns to strict closed status when the same fixture proves the ex
 | 8 | conditionally closed | `plans/implementation/session-projections/008-final-transport-lifecycle-and-replay-evidence-polish.md` | `plans/closure/session-projections/008-status.md` | principal findings addressed by M9–M11 |
 | 9 | conditionally closed | `plans/implementation/session-projections/009-production-shaped-transport-verification-and-strict-closure.md` | `plans/closure/session-projections/009-status.md` | principal findings addressed by M10/M11 |
 | 10 | conditionally closed | `plans/implementation/session-projections/010-mechanism-faithful-transport-verification-and-final-closure.md` | `plans/closure/session-projections/010-status.md` | M11 evidence correctness and final closure |
-| 11 | ready | `plans/implementation/session-projections/011-evidence-correctness-and-mechanism-verification-closure.md` | — | — |
+| 11 | closed | `plans/implementation/session-projections/011-evidence-correctness-and-mechanism-verification-closure.md` | `plans/closure/session-projections/011-status.md` | M8–M10 evidence defects resolved |

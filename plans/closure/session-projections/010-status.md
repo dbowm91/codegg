@@ -1,6 +1,6 @@
 # Session Projections Milestone 010 — Closure Status
 
-Status: conditionally closed — Milestone 011 evidence correctness and mechanism verification required
+Status: closed (strictly superseded by `plans/closure/session-projections/011-status.md`)
 
 Source implementation plan:
 
@@ -187,6 +187,17 @@ This record corrects M010 to conditional status. M011 owns final exact reconcili
 
 ## 5. Roadmap disposition
 
-M010 remains conditionally closed. M011 is the sole dependency-ready session-projections plan and owns final evidence correctness and strict closure.
+M010 is strictly superseded by `plans/closure/session-projections/011-status.md`. The accepted M010 instrumentation (`ConnectionTaskSet`, `ConnectionTaskProbe`, `WriterGate`, `TransportLifecycleObserver`), TUI interruption, `/core` raw-source, capacity-one, test-matrix, and flake-fix outcomes are retained and incorporated into M011 closure evidence. No session-projection plan may be marked dependency-ready except through a future milestone that reopens the M011 evidence correctness or mechanism verification chain.
 
-The subsystem roadmap and registry may return to strict closed status only through an accepted `plans/closure/session-projections/011-status.md` record.
+The M010 closure evidence is checked by the M011-extended `scripts/check_projection_transport_lifecycle.py` static guard (`check_projection_transport_lifecycle.py`).
+
+## 6. M010 fixtures preserved for closure audit
+
+- `real_core_queue_saturation_observer_records_timeout` — capacity-one `Full` observation via real seam pause.
+- `real_core_connection_task_owner_first_exit_classifies_panic_per_kind` — three-kind panic classification matrix (later superseded by M011 six-case matrix).
+- `real_core_outbound_queue_capacity_is_one_when_configured` — outbound queue capacity set to one and observed full by the second `tx.send()`.
+- `socket_peer_close_during_writer_delivery_removes_subscription_and_eofs` — Unix peer close during writer delivery with rolled-back subscription.
+- `socket_interrupted_replay_retry_resumes_with_fresh_identity` — Unix interrupted replay retry with fresh identity.
+- `socket_consecutive_subscriptions_yield_distinct_identities_and_isolation` — Unix fresh-identity proof and isolation.
+
+These remain auditable evidence; M011 added F1–F5 to satisfy the M011 mechanism-faithful acceptance criteria.
