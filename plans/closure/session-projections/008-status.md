@@ -20,7 +20,8 @@ Implementation commit:
 
 Closure evidence commit:
 
-- pending hash reconciliation for this closure record
+- `ea6e38d5182f42ae70c5f379415dd8ee1eb470e2` — this closure record,
+  roadmap strict-closed transition, M007 reconciliation, and registry update.
 
 ## 1. Executive finding
 
@@ -103,8 +104,12 @@ rtk git diff --check
   and 5 shared secret-scan tests. The full suite includes both new staged
   failure-matrix tests and the exact core/TUI reconnect tests.
 - `server::ws`: 8 focused tests passed, including the task-owner drop probe.
-- `daemon_socket` focused suite: 20 tests passed, including exact Unix replay
+- `daemon_socket` focused suite: 21 tests passed, including exact Unix replay
   and the seven-scenario staged failure matrix.
+- Replay protocol/subscription/resume/restart/isolation suites passed with
+  13/13/9/8/7 tests; disclosure and artifact suites passed with 16/13 tests.
+- TUI, render, project-routing, project-tabs, and daemon-lifecycle suites
+  passed with 164/99/27/20/3 tests.
 - The focused lifecycle guard and formatting/diff checks passed.
 - The initial workspace check passed with four pre-existing warnings in TUI
   persistence/app code; M008 did not introduce warnings in its changed
@@ -181,5 +186,4 @@ Milestone 008 is closed. The frontend-neutral session-projections roadmap and
 registry are strictly closed, with no dependency-ready projection plan and no
 blocked projection closure work remaining.
 
-The exact closure evidence commit hash is recorded in the follow-up
-hash-reconciliation commit for this record.
+The exact implementation and closure evidence commits are recorded above.

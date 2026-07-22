@@ -14,6 +14,8 @@ def main() -> int:
     unix = (ROOT / "src/core/transport/daemon_socket.rs").read_text()
     ws = (ROOT / "src/server/ws.rs").read_text()
     projection = (ROOT / "src/core/transport/projection.rs").read_text()
+    closure_path = ROOT / "plans/closure/session-projections/008-status.md"
+    closure = closure_path.read_text() if closure_path.exists() else ""
     unix_production = unix.split("#[cfg(test)]", 1)[0]
 
     required_unix = (
@@ -71,6 +73,19 @@ def main() -> int:
             failures.append(f"ws.rs: {adapter} contains abort-only sibling cleanup")
         if "ConnectionTaskSet::new" not in body or "join_after_first_exit" not in body:
             failures.append(f"ws.rs: {adapter} does not use joined connection-task teardown")
+
+    required_closure = (
+        ("Status: closed", "M008 closure record is not strictly closed"),
+        ("6975050af530eb5bd7a640c1f7ac9a31859dfda3", "M008 implementation commit is missing"),
+        ("ea6e38d5182f42ae70c5f379415dd8ee1eb470e2", "M008 closure commit is missing"),
+        (
+            "projection_transport_real`: 20 listed and 20 passed",
+            "M008 closure record lacks the exact real transport count",
+        ),
+    )
+    for needle, message in required_closure:
+        if needle not in closure:
+            failures.append(f"008-status.md: {message}")
     if re.search(r"(?:tokio::sync::)?mpsc::unbounded_channel", ws):
         failures.append("ws.rs: unbounded outbound channel is forbidden")
     if re.search(r"pub\s+fn\s+mark_live", projection):
