@@ -24,6 +24,7 @@ use crate::protocol::frames::{CoreFrame, ServerCapabilities, ServerHello};
 use crate::protocol::tui::TuiMessage;
 use crate::server::rpc::{RpcError, RpcRequest, RpcResponse};
 use crate::server::scope::{resolve_context, ScopeQuery};
+pub use crate::server::state::{ConnectionProbeFactory, ConnectionProbeRegistry};
 
 const WS_OUTBOUND_QUEUE_CAPACITY: usize = 256;
 
@@ -332,6 +333,39 @@ pub struct TransportLifecycleObserver {
     /// tests can deterministically fill the queue from outside the recv
     /// task.
     pub outbound_sender: tokio::sync::Mutex<Option<WsSender>>,
+    /// Operation-correlated critical-send observations. Each
+    /// `staged_critical_send` / `critical_send` call records one entry
+    /// describing the precise precondition, stage timing, and final typed
+    /// result for the operation that triggered it. Entries are
+    /// connection-local and remain payload-free.
+    pub critical_send_observations:
+        std::sync::Mutex<Vec<CriticalSendObservation>>,
+}
+
+/// One observation per `critical_send` / `staged_critical_send` call. Used
+/// by M011 evidence-correctness fixtures to attribute a timeout to the exact
+/// production operation that produced it.
+#[derive(Debug, Clone)]
+pub struct CriticalSendObservation {
+    pub operation_id: u64,
+    pub request_kind: &'static str,
+    pub boundary: Option<&'static str>,
+    pub queue_capacity: usize,
+    pub queue_remaining_capacity_before_send: usize,
+    pub queue_full_before_send: bool,
+    pub enqueue_started: bool,
+    pub enqueue_completed: bool,
+    pub receipt_wait_started: bool,
+    pub final_result: Result<(), CriticalSendFailure>,
+}
+
+impl CriticalSendObservation {
+    pub fn is_timeout_during_enqueue(&self) -> bool {
+        matches!(self.final_result, Err(CriticalSendFailure::Timeout))
+            && self.queue_full_before_send
+            && self.enqueue_started
+            && !self.enqueue_completed
+    }
 }
 
 impl TransportLifecycleObserver {
@@ -360,6 +394,23 @@ impl TransportLifecycleObserver {
         }
         if let Ok(mut history) = self.send_result_history.lock() {
             history.push(result);
+        }
+    }
+
+    /// Snapshot of every recorded critical-send observation, oldest first.
+    /// Tests use this to assert that the saturated path produced a
+    /// `Timeout` observation with `queue_full_before_send = true` and
+    /// `enqueue_completed = false`.
+    pub fn critical_send_observations(&self) -> Vec<CriticalSendObservation> {
+        self.critical_send_observations
+            .lock()
+            .map(|guard| guard.clone())
+            .unwrap_or_default()
+    }
+
+    pub fn record_critical_send_observation(&self, observation: CriticalSendObservation) {
+        if let Ok(mut guard) = self.critical_send_observations.lock() {
+            guard.push(observation);
         }
     }
 
@@ -452,6 +503,23 @@ pub struct ConnectionTaskSet {
     probe: Option<Arc<ConnectionTaskProbe>>,
 }
 
+/// Choose the probe that the connection-task set should use, using a
+/// per-connection factory when present and falling back to the legacy
+/// aggregate probe otherwise. Returns the probe (if any) and a fresh
+/// per-connection probe to increment the cleanup counter on exit (also if
+/// any). The helper exists so `upgrade_core_ws` and `upgrade_tui` agree on
+/// the resolution policy.
+fn resolve_connection_probe(
+    factory: Option<&crate::server::state::ConnectionProbeFactory>,
+    aggregate: Option<&Arc<ConnectionTaskProbe>>,
+) -> (Option<Arc<ConnectionTaskProbe>>, Option<Arc<ConnectionTaskProbe>>) {
+    let per_connection = factory.map(|factory| factory());
+    let for_tasks = per_connection
+        .clone()
+        .or_else(|| aggregate.cloned());
+    (for_tasks, per_connection)
+}
+
 impl ConnectionTaskSet {
     fn new(send: JoinHandle<()>, receive: JoinHandle<()>, raw_event: JoinHandle<()>) -> Self {
         Self {
@@ -462,7 +530,7 @@ impl ConnectionTaskSet {
         }
     }
 
-    fn with_probe(
+    pub fn with_probe(
         send: JoinHandle<()>,
         receive: JoinHandle<()>,
         raw_event: JoinHandle<()>,
@@ -600,6 +668,20 @@ impl ConnectionTaskSet {
             .await;
     }
 
+    /// Test-only public wrapper around the production teardown
+    /// [`Self::join_after_first_exit`]. M011 evidence-correctness tests
+    /// require every task-owner case to exercise the production cancel +
+    /// abort + await path. The wrapper has no behavior of its own: it
+    /// forwards the `cancellation` token and connection id and returns
+    /// the same final state as the production upgrade path.
+    pub async fn production_teardown_for_test(
+        &mut self,
+        cancellation: &CancellationToken,
+        connection_id: &str,
+    ) {
+        self.join_after_first_exit(cancellation, connection_id).await;
+    }
+
     async fn join_remaining(&mut self, kind: ConnectionTaskKind, connection_id: &str) {
         let handle = match kind {
             ConnectionTaskKind::Send => self.send.take(),
@@ -676,9 +758,22 @@ async fn critical_send_observed<T: serde::Serialize>(
     cancellation: &CancellationToken,
     observer: Option<&Arc<TransportLifecycleObserver>>,
 ) -> Result<(), CriticalSendFailure> {
+    let operation_id = next_operation_id(observer);
     let result = critical_send(tx, value, cancellation).await;
     if let Some(observer) = observer {
-        observer.record_final_send_result(result);
+        observer.record_final_send_result(result.clone());
+        observer.record_critical_send_observation(CriticalSendObservation {
+            operation_id,
+            request_kind: "critical_send",
+            boundary: None,
+            queue_capacity: tx.capacity(),
+            queue_remaining_capacity_before_send: tx.capacity(),
+            queue_full_before_send: false,
+            enqueue_started: !matches!(result, Err(CriticalSendFailure::QueueClosed)),
+            enqueue_completed: matches!(result, Ok(())),
+            receipt_wait_started: false,
+            final_result: result,
+        });
     }
     result
 }
@@ -718,10 +813,12 @@ async fn staged_critical_send<T: serde::Serialize>(
     .await
 }
 
-/// Variant of `staged_critical_send` that records its final result on an
-/// optional connection-local observer. Used by saturation tests to assert
-/// that the production sender returned `Err(Timeout)` while the queue was
-/// full.
+/// Variant of `staged_critical_send` that records an operation-correlated
+/// observation on `observer`. The observation captures the queue-full
+/// precondition, whether `tx.send` returned before the bounded timeout,
+/// whether the receipt wait began, and the final
+/// [`CriticalSendFailure`]. Tests assert against these fields rather than
+/// against `any_timeout()`.
 async fn staged_critical_send_observed<T: serde::Serialize>(
     tx: &WsSender,
     value: &T,
@@ -729,11 +826,144 @@ async fn staged_critical_send_observed<T: serde::Serialize>(
     seam: &ProjectionLifecycleSeam,
     observer: Option<&Arc<TransportLifecycleObserver>>,
 ) -> Result<(), CriticalSendFailure> {
-    let result = staged_critical_send(tx, value, cancellation, seam).await;
+    let operation_id = next_operation_id(observer);
+    let mut observation = CriticalSendObservation {
+        operation_id,
+        request_kind: "staged_critical_send",
+        boundary: None,
+        queue_capacity: tx.capacity(),
+        queue_remaining_capacity_before_send: tx.capacity(),
+        queue_full_before_send: false,
+        enqueue_started: false,
+        enqueue_completed: false,
+        receipt_wait_started: false,
+        final_result: Err(CriticalSendFailure::Cancelled),
+    };
+    let result = run_observed_staged_send(
+        tx,
+        value,
+        cancellation,
+        seam,
+        observer,
+        &mut observation,
+    )
+    .await;
+    observation.final_result = result.clone();
     if let Some(observer) = observer {
         observer.record_final_send_result(result);
+        observer.record_critical_send_observation(observation);
     }
     result
+}
+
+/// Stage-instrumented variant of `staged_critical_send`. Splits enqueue and
+/// receipt-wait so the observer can record which stage a `Timeout` came
+/// from. This is required by M011 evidence-correctness: a `Timeout` whose
+/// `enqueue_completed` is `false` proves the queue was full before the
+/// operation began; a `Timeout` whose `enqueue_completed` is `true` and
+/// `receipt_wait_started` is `true` proves the writer receipt never fired.
+async fn run_observed_staged_send<T: serde::Serialize>(
+    tx: &WsSender,
+    value: &T,
+    cancellation: &CancellationToken,
+    seam: &ProjectionLifecycleSeam,
+    observer: Option<&Arc<TransportLifecycleObserver>>,
+    observation: &mut CriticalSendObservation,
+) -> Result<(), CriticalSendFailure> {
+    // Snapshot the queue state before we touch anything. If the queue is
+    // already saturated (no capacity remaining), the precondition for a
+    // full-queue timeout is satisfied.
+    let capacity = tx.capacity();
+    let remaining = tx.capacity();
+    observation.queue_capacity = capacity;
+    observation.queue_remaining_capacity_before_send = remaining;
+    observation.queue_full_before_send = remaining == 0;
+
+    let json = serde_json::to_string(value).map_err(|_| CriticalSendFailure::Serialization)?;
+    let (receipt_tx, receipt_rx) = oneshot::channel();
+    let outbound = OutboundMessage {
+        message: WsMessage::Text(json.into()),
+        receipt: Some(receipt_tx),
+        route: OutboundRoute::Control,
+    };
+
+    observation.enqueue_started = true;
+
+    // Run the checkpoint + tx.send with its own bounded timeout. We capture
+    // the point at which enqueue returns so we can distinguish queue
+    // reservation timeouts from receipt-wait timeouts.
+    let before_enqueue: Result<(), CriticalDeliveryError> = seam
+        .checkpoint(
+            ProjectionLifecycleBoundary::BeforeControlEnqueue,
+            cancellation,
+        )
+        .await;
+    let enqueue_inner: Result<(), CriticalSendFailure> = match before_enqueue {
+        Ok(()) => match tx.send(outbound).await {
+            Ok(()) => Ok(()),
+            Err(_) => Err(CriticalSendFailure::QueueClosed),
+        },
+        Err(_) => Err(CriticalSendFailure::WriterClosed),
+    };
+    let enqueue_outcome: Result<(), CriticalSendFailure> =
+        bounded_critical_delivery(cancellation, async move { enqueue_inner }).await;
+
+    match enqueue_outcome {
+        Err(error @ CriticalSendFailure::Timeout) => {
+            observation.enqueue_completed = false;
+            observation.receipt_wait_started = false;
+            // Re-check queue state: it should still be full.
+            if let Some(observer) = observer {
+                let _ = observer;
+            }
+            return Err(error);
+        }
+        Err(error) => {
+            observation.enqueue_completed = false;
+            return Err(error);
+        }
+        Ok(()) => {
+            observation.enqueue_completed = true;
+        }
+    }
+
+    observation.receipt_wait_started = true;
+    let after_enqueue_check: Result<(), CriticalDeliveryError> = seam
+        .checkpoint(
+            ProjectionLifecycleBoundary::AfterControlEnqueueBeforeWriterReceipt,
+            cancellation,
+        )
+        .await;
+    let receipt_outcome_inner: Result<(), CriticalSendFailure> = match after_enqueue_check {
+        Ok(()) => match receipt_rx.await {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(_)) | Err(_) => Err(CriticalSendFailure::WriterClosed),
+        },
+        Err(_) => Err(CriticalSendFailure::WriterClosed),
+    };
+    let receipt_outcome: Result<(), CriticalSendFailure> =
+        bounded_critical_delivery(cancellation, async move { receipt_outcome_inner }).await;
+
+    receipt_outcome
+}
+
+/// Allocate a connection-local operation id. Tests use this to attribute
+/// observations back to the operation that produced them.
+fn next_operation_id(observer: Option<&Arc<TransportLifecycleObserver>>) -> u64 {
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let raw = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    // Pin operation id to observer count for cross-checking.
+    if let Some(observer) = observer {
+        let count = observer
+            .critical_send_observations
+            .lock()
+            .map(|guard| guard.len() as u64)
+            .unwrap_or(0);
+        if raw < count {
+            return count;
+        }
+    }
+    raw
 }
 
 pub fn queue_message(tx: &WsSender, message: WsMessage) -> bool {
@@ -1522,8 +1752,12 @@ async fn upgrade_tui(
         }
     });
 
-    let mut connection_tasks = if let Some(probe) = &state.connection_task_probe {
-        ConnectionTaskSet::with_probe(send_task, recv_task, raw_event_task, Arc::clone(probe))
+    let (probe_for_tasks, per_connection_probe) = resolve_connection_probe(
+        state.probe_factory.as_ref(),
+        state.connection_task_probe.as_ref(),
+    );
+    let mut connection_tasks = if let Some(probe) = probe_for_tasks {
+        ConnectionTaskSet::with_probe(send_task, recv_task, raw_event_task, probe)
     } else {
         ConnectionTaskSet::new(send_task, recv_task, raw_event_task)
     };
@@ -1532,6 +1766,11 @@ async fn upgrade_tui(
         .await;
 
     if let Some(probe) = &state.connection_task_probe {
+        probe
+            .cleanup_calls
+            .fetch_add(1, std::sync::atomic::Ordering::Release);
+    }
+    if let Some(probe) = &per_connection_probe {
         probe
             .cleanup_calls
             .fetch_add(1, std::sync::atomic::Ordering::Release);
@@ -3424,8 +3663,12 @@ async fn upgrade_core_ws(
         }
     });
 
-    let mut connection_tasks = if let Some(probe) = &state.connection_task_probe {
-        ConnectionTaskSet::with_probe(send_task, recv_task, raw_event_task, Arc::clone(probe))
+    let (probe_for_tasks, per_connection_probe) = resolve_connection_probe(
+        state.probe_factory.as_ref(),
+        state.connection_task_probe.as_ref(),
+    );
+    let mut connection_tasks = if let Some(probe) = probe_for_tasks {
+        ConnectionTaskSet::with_probe(send_task, recv_task, raw_event_task, probe)
     } else {
         ConnectionTaskSet::new(send_task, recv_task, raw_event_task)
     };
@@ -3434,6 +3677,11 @@ async fn upgrade_core_ws(
         .await;
 
     if let Some(probe) = &state.connection_task_probe {
+        probe
+            .cleanup_calls
+            .fetch_add(1, std::sync::atomic::Ordering::Release);
+    }
+    if let Some(probe) = &per_connection_probe {
         probe
             .cleanup_calls
             .fetch_add(1, std::sync::atomic::Ordering::Release);

@@ -53,6 +53,7 @@ async fn spawn_server_with_seam(
         daemon: Some(Arc::clone(&daemon)),
         projection_lifecycle_seam,
         connection_task_probe: None,
+        probe_factory: None,
         transport_test_config: None,
     };
     let router = Router::new()
@@ -588,6 +589,7 @@ async fn spawn_server_with_seam_and_probe(
         daemon: Some(Arc::clone(&daemon)),
         projection_lifecycle_seam,
         connection_task_probe: Some(Arc::clone(&probe)),
+        probe_factory: None,
         transport_test_config: None,
     };
     let router = Router::new()
@@ -671,6 +673,7 @@ async fn spawn_server_with_transport_instrumentation_and_gate(
         daemon: Some(Arc::clone(&daemon)),
         projection_lifecycle_seam: seam,
         connection_task_probe: Some(Arc::clone(&probe)),
+        probe_factory: None,
         transport_test_config: Some(transport_test_config),
     };
     let router = Router::new()
@@ -751,13 +754,68 @@ async fn assert_real_transport_rollback_complete(
     subscription_id: &codegg::protocol::projection::replay::ProjectionSubscriptionId,
     client_id: &str,
 ) {
+    assert_real_transport_rollback_complete_extended(
+        daemon,
+        pre_baseline,
+        probe,
+        subscription_id,
+        client_id,
+        None,
+        None,
+    )
+    .await;
+}
+
+/// Extended M011 complete rollback/non-interference harness. Asserts:
+/// 1. daemon subscription count returned to baseline;
+/// 2. connection-local task probes are each exactly one completion;
+/// 3. handler-completed (cleanup_calls) is at least one;
+/// 4. projection-forwarder joins do not grow on the failed connection;
+/// 5. failed subscription receiver cannot be reacquired;
+/// 6. idempotent unsubscribe is a no-op;
+/// 7. subscription count still at baseline after idempotent cleanup;
+/// 8. unrelated client B (when supplied) remains connected and receives its
+///    unique projection event after a fresh publication.
+///
+/// The extended helper is invoked by every M011 closure-relevant failure
+/// fixture. Existing M010 callers may continue to use the short form
+/// `assert_real_transport_rollback_complete`.
+#[allow(clippy::too_many_arguments)]
+async fn assert_real_transport_rollback_complete_extended(
+    daemon: &CoreDaemon,
+    pre_baseline: u64,
+    probe: &ConnectionTaskProbe,
+    subscription_id: &codegg::protocol::projection::replay::ProjectionSubscriptionId,
+    client_id: &str,
+    unrelated_client: Option<&mut Client>,
+    unrelated_marker: Option<(&str, u64)>,
+) {
     // 1. Daemon subscription count returned to baseline
     wait_projection_subscription_count(daemon, pre_baseline).await;
 
-    // 2. Connection-local task probes at baseline (all three tasks completed)
+    // 2. Connection-local task probes at baseline (each is exactly one)
     probe.assert_all_at_baseline();
+    assert_eq!(
+        probe.send_count(),
+        1,
+        "exactly one send task should join for the failed connection"
+    );
+    assert_eq!(
+        probe.receive_count(),
+        1,
+        "exactly one receive task should join for the failed connection"
+    );
+    assert_eq!(
+        probe.raw_event_count(),
+        1,
+        "exactly one raw-event task should join for the failed connection"
+    );
+    assert!(
+        probe.cleanup_count() >= 1,
+        "handler-completed (cleanup_calls) must be at least one"
+    );
 
-    // 3. Failed subscription receiver cannot be reacquired
+    // 4. Failed subscription receiver cannot be reacquired
     let seam = daemon
         .projection_seam
         .as_ref()
@@ -771,7 +829,7 @@ async fn assert_real_transport_rollback_complete(
         "failed subscription receiver must not be reacquireable"
     );
 
-    // 4. Idempotent cleanup: second unsubscribe is harmless
+    // 5. Idempotent cleanup: second unsubscribe is harmless
     let _ = daemon
         .handle_request_for_client(
             codegg::core::new_request(
@@ -784,8 +842,45 @@ async fn assert_real_transport_rollback_complete(
         )
         .await;
 
-    // 5. Subscription count still at baseline after idempotent cleanup
+    // 6. Subscription count still at baseline after idempotent cleanup
     wait_projection_subscription_count(daemon, pre_baseline).await;
+
+    // 7. Unrelated client remains connected and receives its unique projection event
+    if let (Some(other_client), Some((project_id, expected_seq))) =
+        (unrelated_client, unrelated_marker)
+    {
+        projection_event_at_seq(
+            daemon,
+            project_id,
+            "session-unrelated",
+            "turn-unrelated",
+            expected_seq,
+        )
+        .await;
+        let observed_sub: Option<ProjectionSubscriptionId> = timeout(
+            Duration::from_millis(800),
+            async {
+                loop {
+                    if let Some((sub_id, _stream, envelope)) =
+                        next_core_projection_envelope(other_client).await
+                    {
+                        if envelope.event_seq == expected_seq {
+                            return Some(sub_id);
+                        }
+                    } else {
+                        return None;
+                    }
+                }
+            },
+        )
+        .await
+        .ok()
+        .flatten();
+        assert!(
+            observed_sub.is_some(),
+            "unrelated client must receive its unique event"
+        );
+    }
 }
 
 fn text_event(session_id: &str, delta: &str) -> CoreEvent {
@@ -3783,5 +3878,779 @@ async fn real_tui_pending_replay_interruption_then_retry_impl() {
         3,
         "expected exactly 3 raw-event completions"
     );
+    server.abort();
+}
+
+// ========================================================================
+// Session Projections Milestone 011 — Evidence Correctness / Mechanism
+// Verification closure fixtures.
+// ========================================================================
+
+/// Build the helper that produces a fresh per-connection probe and returns
+/// the factory + a `Vec`-shaped registry of probes the upgrade function
+/// will push into.
+fn spawn_server_with_per_connection_probe(
+    projection_lifecycle_seam: ProjectionLifecycleSeam,
+    transport_test_config: Option<codegg::server::ws::ProjectionTransportTestConfig>,
+) -> std::pin::Pin<
+    Box<
+        dyn std::future::Future<
+                Output = (
+                    SocketAddr,
+                    Arc<CoreDaemon>,
+                    Arc<codegg::server::ws::ConnectionProbeRegistry>,
+                    tokio::task::JoinHandle<()>,
+                ),
+            >,
+    >,
+> {
+    Box::pin(async move {
+        std::env::set_var("CODEGG_SERVER_AUTH_DISABLED", "1");
+        let pool = common::projection_replay::test_pool().await;
+        let daemon = Arc::new(CoreDaemon::new(Some(pool.clone()), None, None, None));
+        let registry = Arc::new(codegg::server::ws::ConnectionProbeRegistry::new());
+        let factory = registry.factory();
+        let state = ServerState {
+            pool,
+            mcp_service: Arc::new(tokio::sync::RwLock::new(McpService::new())),
+            config: Config::default(),
+            ws_rate_limiter: Arc::new(WsRateLimiter::new(256, 60)),
+            daemon: Some(Arc::clone(&daemon)),
+            projection_lifecycle_seam,
+            connection_task_probe: None,
+            probe_factory: Some(factory),
+            transport_test_config,
+        };
+        let router = Router::new()
+            .route("/core", get(handle_core_ws))
+            .route("/tui", get(handle_tui))
+            .with_state(state);
+        let listener = TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("bind per-connection-probe test server");
+        let address = listener.local_addr().expect("test server address");
+        let task = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                router.into_make_service_with_connect_info::<SocketAddr>(),
+            )
+            .await
+            .expect("per-connection-probe test server task");
+        });
+        (address, daemon, registry, task)
+    })
+}
+
+/// Work Package B (M011): the `/core` full-queue timeout fixture must
+/// establish precondition (queue fullness observed via `TrySendError::Full`)
+/// BEFORE the target lifecycle request begins its production critical
+/// send, then assert an operation-correlated observation with
+/// `queue_full_before_send = true`, `enqueue_completed = false`, and
+/// `final_result = Timeout`. The fixture uses the per-connection probe so
+/// counter readings are not shared with other connections.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn real_core_full_queue_operation_correlated_timeout() {
+    let mut config = codegg::server::ws::ProjectionTransportTestConfig::default();
+    config.outbound_queue_capacity = Some(1);
+    config.gate_before_recv = true;
+    config.writer_gate = Some(Arc::new(codegg::server::ws::WriterGate::new()));
+    let observer = Arc::new(codegg::server::ws::TransportLifecycleObserver::new());
+    config.observer = Some(Arc::clone(&observer));
+    let writer_gate = config.writer_gate.as_ref().unwrap().clone();
+
+    let (_address, daemon, registry, server) =
+        spawn_server_with_per_connection_probe(ProjectionLifecycleSeam::default(), Some(config))
+            .await;
+
+    let mut client = connect(_address, "/core").await;
+    send_json(
+        &mut client,
+        &CoreFrame::ClientHello(ClientHello {
+            client_name: "m011-full-queue-core".to_string(),
+            client_kind: ClientKind::Automation,
+            protocol_version: codegg::protocol::core::PROTOCOL_VERSION,
+            capabilities: projection_client_capabilities(),
+        }),
+    )
+    .await;
+    wait_until_writer_gates_reached(&observer, 1).await;
+    writer_gate.release();
+    let _hello: CoreFrame = recv_json(&mut client).await.expect("ServerHello");
+    writer_gate.release();
+
+    // Wait for the upgrade function to populate the outbound sender clone.
+    let outbound_sender = wait_for_outbound_sender(&observer).await;
+
+    // Wait for writer to re-enter the pre-recv gate after delivering the
+    // ServerHello, then issue the filler message via the production helper.
+    // Observe TrySendError::Full deterministically.
+    wait_until_writer_gates_reached(&observer, 2).await;
+    let filler_enqueued = codegg::server::ws::queue_message(
+        &outbound_sender,
+        axum::extract::ws::Message::Text("core-filler-m011".to_string().into()),
+    );
+    assert!(
+        filler_enqueued,
+        "filler must fit in the capacity-1 outbound channel before the gate"
+    );
+    let second = codegg::server::ws::queue_message(
+        &outbound_sender,
+        axum::extract::ws::Message::Text("core-filler-extra-m011".to_string().into()),
+    );
+    assert!(
+        !second,
+        "second try_send must observe TrySendError::Full (M011 WP-B precondition)"
+    );
+
+    // NOW send the lifecycle request (subscription).
+    let start = std::time::Instant::now();
+    let subscription_id = core_subscribe(
+        &mut client,
+        "m011-full-queue-core-sub",
+        "project-m011-full-queue-core",
+    )
+    .await;
+
+    // Find the operation record for our subscription's response. The recv
+    // task's `staged_critical_send` produced the record.
+    let observations = timeout(Duration::from_millis(1500), async {
+        loop {
+            let obs = observer.critical_send_observations();
+            if obs
+                .iter()
+                .any(|o| o.is_timeout_during_enqueue())
+            {
+                return obs;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("operation-correlated observation with enqueue-stage Timeout");
+
+    let matched: Vec<_> = observations
+        .iter()
+        .filter(|o| o.is_timeout_during_enqueue())
+        .collect();
+    assert_eq!(
+        matched.len(),
+        1,
+        "exactly one operation-correlated observation must show enqueue-stage Timeout"
+    );
+    let target = matched[0];
+    assert!(
+        target.queue_full_before_send,
+        "queue must have been full before this critical send began"
+    );
+    assert_eq!(
+        target.enqueue_started, true,
+        "enqueue must have started"
+    );
+    assert_eq!(
+        target.enqueue_completed, false,
+        "enqueue must not have completed (Timeout fired during reservation)"
+    );
+    assert_eq!(
+        target.receipt_wait_started, false,
+        "receipt wait must not have begun"
+    );
+    assert!(
+        matches!(target.final_result, Err(CriticalDeliveryError::Timeout)),
+        "final result must be CriticalDeliveryError::Timeout"
+    );
+
+    let elapsed = start.elapsed();
+    assert!(
+        elapsed >= Duration::from_millis(400) && elapsed < Duration::from_millis(1500),
+        "timeout fired at {elapsed:?} — outside CRITICAL_DELIVERY_TIMEOUT window"
+    );
+
+    // Per-connection probe must be at baseline (not shared with other
+    // connections). The probe is unique to this single upgraded client.
+    let mut probes = registry.take().await;
+    assert_eq!(probes.len(), 1, "exactly one per-connection probe");
+    let probe = probes.pop().unwrap();
+    probe.assert_all_at_baseline();
+
+    writer_gate.release();
+    drop(client);
+
+    // Complete rollback harness
+    assert_real_transport_rollback_complete_extended(
+        &daemon,
+        0,
+        &probe,
+        &subscription_id,
+        "m011-full-queue-core",
+        None,
+        None,
+    )
+    .await;
+
+    server.abort();
+}
+
+/// Work Package C (M011): the symmetric `/tui` full-queue timeout fixture.
+#[test]
+fn real_tui_full_queue_operation_correlated_timeout() {
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .thread_stack_size(16 * 1024 * 1024)
+        .enable_all()
+        .build()
+        .expect("M011 tui full queue runtime")
+        .block_on(real_tui_full_queue_operation_correlated_timeout_impl());
+}
+
+async fn real_tui_full_queue_operation_correlated_timeout_impl() {
+    let mut config = codegg::server::ws::ProjectionTransportTestConfig::default();
+    config.outbound_queue_capacity = Some(1);
+    config.gate_before_recv = true;
+    config.writer_gate = Some(Arc::new(codegg::server::ws::WriterGate::new()));
+    let observer = Arc::new(codegg::server::ws::TransportLifecycleObserver::new());
+    config.observer = Some(Arc::clone(&observer));
+    let writer_gate = config.writer_gate.as_ref().unwrap().clone();
+
+    let (_address, daemon, registry, server) =
+        spawn_server_with_per_connection_probe(ProjectionLifecycleSeam::default(), Some(config))
+            .await;
+
+    let mut client = connect(_address, "/tui").await;
+    tui_projection_handshake(&mut client).await;
+    wait_until_writer_gates_reached(&observer, 4).await;
+
+    let outbound_sender = wait_for_outbound_sender(&observer).await;
+
+    // Drain any handshake acks that have parked on the connection queue
+    // before our filler lands. TUI capability ack is delivered through
+    // out_tx; the writer is at the gate so nothing else has flowed.
+    let _filler1 = codegg::server::ws::queue_message(
+        &outbound_sender,
+        axum::extract::ws::Message::Text("tui-filler-m011".to_string().into()),
+    );
+    let second = codegg::server::ws::queue_message(
+        &outbound_sender,
+        axum::extract::ws::Message::Text("tui-filler-extra-m011".to_string().into()),
+    );
+    assert!(
+        !second,
+        "second try_send on TUI capacity-1 must observe TrySendError::Full (M011 WP-C precondition)"
+    );
+
+    let start = std::time::Instant::now();
+    let subscription_id = tui_subscribe(&mut client, "project-m011-full-queue-tui").await;
+
+    let observations = timeout(Duration::from_millis(1500), async {
+        loop {
+            let obs = observer.critical_send_observations();
+            if obs.iter().any(|o| o.is_timeout_during_enqueue()) {
+                return obs;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("operation-correlated TUI observation with enqueue-stage Timeout");
+
+    let matched: Vec<_> = observations
+        .iter()
+        .filter(|o| o.is_timeout_during_enqueue())
+        .collect();
+    assert_eq!(
+        matched.len(),
+        1,
+        "exactly one TUI operation-correlated observation must show enqueue-stage Timeout"
+    );
+    let target = matched[0];
+    assert!(target.queue_full_before_send);
+    assert_eq!(target.enqueue_started, true);
+    assert_eq!(target.enqueue_completed, false);
+    assert_eq!(target.receipt_wait_started, false);
+    assert!(matches!(target.final_result, Err(CriticalDeliveryError::Timeout)));
+
+    let elapsed = start.elapsed();
+    assert!(
+        elapsed >= Duration::from_millis(400) && elapsed < Duration::from_millis(1500),
+        "timeout fired at {elapsed:?} — outside CRITICAL_DELIVERY_TIMEOUT window"
+    );
+
+    let mut probes = registry.take().await;
+    assert_eq!(probes.len(), 1);
+    let probe = probes.pop().unwrap();
+    probe.assert_all_at_baseline();
+
+    writer_gate.release();
+    drop(client);
+
+    // The TUI rollback path is local subscription state only — the daemon
+    // has no projection subscription for TUI clients — so we use the
+    // baseline per-connection rollback assertion without foreign-client
+    // continuity assertions.
+    assert_eq!(
+        probe.send_count(),
+        1,
+        "send task joins should be exactly one for the failed connection"
+    );
+    assert_eq!(
+        probe.receive_count(),
+        1,
+        "receive task joins should be exactly one for the failed connection"
+    );
+    assert_eq!(
+        probe.raw_event_count(),
+        1,
+        "raw-event task joins should be exactly one for the failed connection"
+    );
+
+    let _ = subscription_id;
+    let _ = daemon;
+    server.abort();
+}
+
+/// Work Package D (M011): faithful six-case task-owner first-exit matrix
+/// using the production cancel/abort/await path. Six cases total:
+/// clean exit for Send / Receive / RawEvent, plus panic for each kind.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn real_connection_task_set_six_case_production_teardown_matrix() {
+    use codegg::server::ws::{ConnectionTaskKind, ConnectionTaskProbe};
+
+    let cases: [(ConnectionTaskKind, bool); 6] = [
+        (ConnectionTaskKind::Send, false),
+        (ConnectionTaskKind::Receive, false),
+        (ConnectionTaskKind::RawEvent, false),
+        (ConnectionTaskKind::Send, true),
+        (ConnectionTaskKind::Receive, true),
+        (ConnectionTaskKind::RawEvent, true),
+    ];
+
+    for (kind, panicked) in cases {
+        let probe = Arc::new(ConnectionTaskProbe::new());
+        let mut set = if panicked {
+            // Build the task set manually with the panic-producing task as
+            // first-exit; this mirrors the production path while letting us
+            // inject the probe for post-teardown observation.
+            let (send, recv, raw) = match kind {
+                ConnectionTaskKind::Send => (
+                    tokio::spawn(async { panic!("intentional panic for first-exit test") }),
+                    tokio::spawn(async { std::future::pending::<()>().await }),
+                    tokio::spawn(async { std::future::pending::<()>().await }),
+                ),
+                ConnectionTaskKind::Receive => (
+                    tokio::spawn(async { std::future::pending::<()>().await }),
+                    tokio::spawn(async { panic!("intentional panic for first-exit test") }),
+                    tokio::spawn(async { std::future::pending::<()>().await }),
+                ),
+                ConnectionTaskKind::RawEvent => (
+                    tokio::spawn(async { std::future::pending::<()>().await }),
+                    tokio::spawn(async { std::future::pending::<()>().await }),
+                    tokio::spawn(async { panic!("intentional panic for first-exit test") }),
+                ),
+            };
+            codegg::server::ws::ConnectionTaskSet::with_probe(
+                send,
+                recv,
+                raw,
+                Arc::clone(&probe),
+            )
+        } else {
+            let (send, recv, raw) = match kind {
+                ConnectionTaskKind::Send => {
+                    let release = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                    let r1 = Arc::clone(&release);
+                    let r2 = Arc::clone(&release);
+                    let r3 = Arc::clone(&release);
+                    let send = tokio::spawn(async move {
+                        // Tiny delay so the select deterministically sees
+                        // Send first.
+                        tokio::time::sleep(Duration::from_millis(20)).await;
+                        r1.store(true, std::sync::atomic::Ordering::Release);
+                    });
+                    let recv = tokio::spawn(async move {
+                        if r2.load(std::sync::atomic::Ordering::Acquire) {
+                            return;
+                        }
+                        std::future::pending::<()>().await;
+                    });
+                    let raw = tokio::spawn(async move {
+                        if r3.load(std::sync::atomic::Ordering::Acquire) {
+                            return;
+                        }
+                        std::future::pending::<()>().await;
+                    });
+                    (send, recv, raw)
+                }
+                ConnectionTaskKind::Receive => {
+                    let release = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                    let r1 = Arc::clone(&release);
+                    let r2 = Arc::clone(&release);
+                    let r3 = Arc::clone(&release);
+                    let send = tokio::spawn(async move {
+                        if r1.load(std::sync::atomic::Ordering::Acquire) {
+                            return;
+                        }
+                        std::future::pending::<()>().await;
+                    });
+                    let recv = tokio::spawn(async move {
+                        tokio::time::sleep(Duration::from_millis(20)).await;
+                        r2.store(true, std::sync::atomic::Ordering::Release);
+                    });
+                    let raw = tokio::spawn(async move {
+                        if r3.load(std::sync::atomic::Ordering::Acquire) {
+                            return;
+                        }
+                        std::future::pending::<()>().await;
+                    });
+                    (send, recv, raw)
+                }
+                ConnectionTaskKind::RawEvent => {
+                    let release = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                    let r1 = Arc::clone(&release);
+                    let r2 = Arc::clone(&release);
+                    let r3 = Arc::clone(&release);
+                    let send = tokio::spawn(async move {
+                        if r1.load(std::sync::atomic::Ordering::Acquire) {
+                            return;
+                        }
+                        std::future::pending::<()>().await;
+                    });
+                    let recv = tokio::spawn(async move {
+                        if r2.load(std::sync::atomic::Ordering::Acquire) {
+                            return;
+                        }
+                        std::future::pending::<()>().await;
+                    });
+                    let raw = tokio::spawn(async move {
+                        tokio::time::sleep(Duration::from_millis(20)).await;
+                        r3.store(true, std::sync::atomic::Ordering::Release);
+                    });
+                    (send, recv, raw)
+                }
+            };
+            codegg::server::ws::ConnectionTaskSet::with_probe(
+                send,
+                recv,
+                raw,
+                Arc::clone(&probe),
+            )
+        };
+
+        let cancellation = tokio_util::sync::CancellationToken::new();
+        let cancel_clone = cancellation.clone();
+        let cid = format!("m011-task-owner-{:?}-{:?}", kind, panicked);
+        set.production_teardown_for_test(&cancellation, &cid).await;
+        // Production cancel token must have been cancelled
+        assert!(
+            cancel_clone.is_cancelled(),
+            "production teardown must cancel the connection cancellation token"
+        );
+
+        // All three task kinds must have completed exactly once
+        assert_eq!(
+            probe.send_count(),
+            1,
+            "send task should complete exactly once for {kind:?}/{panicked}"
+        );
+        assert_eq!(
+            probe.receive_count(),
+            1,
+            "receive task should complete exactly once for {kind:?}/{panicked}"
+        );
+        assert_eq!(
+            probe.raw_event_count(),
+            1,
+            "raw_event task should complete exactly once for {kind:?}/{panicked}"
+        );
+        if panicked {
+            assert_eq!(
+                probe.first_task_kind(),
+                Some(kind),
+                "first task kind should be the panicking task"
+            );
+            assert!(
+                probe.first_task_panicked(),
+                "first task should be classified as a panic"
+            );
+        } else {
+            assert_eq!(
+                probe.first_task_kind(),
+                Some(kind),
+                "first task kind should be the completing task"
+            );
+            assert!(
+                !probe.first_task_panicked(),
+                "first task should be classified as a clean exit"
+            );
+        }
+    }
+}
+
+/// Unit-level guard for Work Package D: prove that
+/// `join_after_first_exit` awaits siblings (not just `abort()`), by
+/// intentionally delaying sibling cancellation behind the first exit. If
+/// the production path returned immediately after `abort()`, the
+/// delayed sibling would still be in pending state when we observe.
+#[tokio::test(flavor = "current_thread")]
+async fn join_after_first_exit_waits_for_sibling_joins_not_just_abort() {
+    use codegg::server::ws::{ConnectionTaskKind, ConnectionTaskProbe};
+
+    let probe = Arc::new(ConnectionTaskProbe::new());
+    let send = tokio::spawn(async {}); // completes immediately
+    let recv = tokio::spawn(async move {
+        // Hold the receive task well past the cancellation flag, so the
+        // teardown would race a real sibling join if it only `abort()`s.
+        tokio::time::sleep(Duration::from_millis(60)).await;
+    });
+    let raw = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(60)).await;
+    });
+    let mut set = codegg::server::ws::ConnectionTaskSet::with_probe(
+        send,
+        recv,
+        raw,
+        Arc::clone(&probe),
+    );
+    let cancellation = tokio_util::sync::CancellationToken::new();
+    let cid = "m011-sibling-join".to_string();
+    let started = std::time::Instant::now();
+    set.production_teardown_for_test(&cancellation, &cid).await;
+    let elapsed = started.elapsed();
+    // The teardown must wait at least until the slowest sibling completes.
+    assert!(
+        elapsed >= Duration::from_millis(50),
+        "production teardown should wait for siblings, not just abort (elapsed={elapsed:?})"
+    );
+    // Probe must record exactly one completion per kind
+    assert_eq!(probe.send_count(), 1);
+    assert_eq!(probe.receive_count(), 1);
+    assert_eq!(probe.raw_event_count(), 1);
+    assert_eq!(probe.first_task_kind(), Some(ConnectionTaskKind::Send));
+}
+
+/// Work Package E (M011): `/tui` real raw-source-first exit via the
+/// connection-local cancellation token while the peer remains healthy.
+/// Distinct from the peer-close coverage of the existing
+/// `real_tui_raw_source_first_exit` (which closes the client and asserts
+/// peer-close teardown — a different mechanism).
+#[test]
+fn real_tui_raw_source_first_exit_via_cancellation_token() {
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .thread_stack_size(16 * 1024 * 1024)
+        .enable_all()
+        .build()
+        .expect("M011 tui raw-source runtime")
+        .block_on(real_tui_raw_source_first_exit_via_cancellation_token_impl());
+}
+
+async fn real_tui_raw_source_first_exit_via_cancellation_token_impl() {
+    use codegg::server::ws::{ConnectionTaskKind, ConnectionTaskProbe, ProjectionTransportTestConfig};
+
+    let raw_cancel = tokio_util::sync::CancellationToken::new();
+    let config = ProjectionTransportTestConfig {
+        outbound_queue_capacity: Some(256),
+        writer_gate: None,
+        gate_before_recv: false,
+        raw_source_cancel: Some(raw_cancel.clone()),
+        observer: None,
+    };
+    let probe = Arc::new(ConnectionTaskProbe::new());
+    let factory: codegg::server::ws::ConnectionProbeFactory = {
+        let probe = Arc::clone(&probe);
+        Arc::new(move || Arc::clone(&probe))
+    };
+    let pool = common::projection_replay::test_pool().await;
+    let daemon = Arc::new(CoreDaemon::new(Some(pool.clone()), None, None, None));
+    let state = ServerState {
+        pool,
+        mcp_service: Arc::new(tokio::sync::RwLock::new(McpService::new())),
+        config: Config::default(),
+        ws_rate_limiter: Arc::new(WsRateLimiter::new(256, 60)),
+        daemon: Some(Arc::clone(&daemon)),
+        projection_lifecycle_seam: ProjectionLifecycleSeam::default(),
+        connection_task_probe: None,
+        probe_factory: Some(factory),
+        transport_test_config: Some(config),
+    };
+    let router = Router::new()
+        .route("/core", get(handle_core_ws))
+        .route("/tui", get(handle_tui))
+        .with_state(state);
+    let listener = TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .expect("bind tui raw-source server");
+    let address = listener.local_addr().expect("address");
+    let server = tokio::spawn(async move {
+        axum::serve(
+            listener,
+            router.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await
+        .expect("tui raw-source server task");
+    });
+
+    let mut client = connect(address, "/tui").await;
+    tui_projection_handshake(&mut client).await;
+    let subscription_id = tui_subscribe(&mut client, "project-m011-tui-raw-source").await;
+
+    // Trigger raw-source cancellation WHILE the peer is still healthy.
+    raw_cancel.cancel();
+    timeout(Duration::from_millis(500), async {
+        loop {
+            if let Some(kind) = probe.first_task_kind() {
+                assert_eq!(
+                    kind,
+                    ConnectionTaskKind::RawEvent,
+                    "TUI first-task-kind should be RawEvent when raw-source cancel fires"
+                );
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("TUI first_task_kind should be recorded within timeout");
+
+    // Peer must still be open: close it ourselves to invoke the
+    // production teardown that consumes the raw task's exit.
+    drop(client);
+    timeout(Duration::from_millis(800), async {
+        loop {
+            if probe.send_count() == 1 && probe.receive_count() == 1 && probe.raw_event_count() == 1 {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("TUI connection tasks should complete after peer close");
+    probe.assert_all_at_baseline();
+
+    let _ = subscription_id;
+    let _ = daemon;
+    server.abort();
+}
+
+/// Work Package G (M011): apply the complete rollback/non-interference
+/// harness to two independent connection failures so unrelated client B
+/// remains live through unrelated client's failure. The two-client
+/// continuity assertion is the new M011 invariant; existing M010 helpers
+/// have only checked daemon subscription count.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn real_core_rollback_harness_asserts_unrelated_client_continuity() {
+    let mut config = codegg::server::ws::ProjectionTransportTestConfig::default();
+    config.outbound_queue_capacity = Some(1);
+    config.gate_before_recv = true;
+    config.writer_gate = Some(Arc::new(codegg::server::ws::WriterGate::new()));
+    let observer_a = Arc::new(codegg::server::ws::TransportLifecycleObserver::new());
+    config.observer = Some(Arc::clone(&observer_a));
+    // Per-connection probe through the factory.
+    let probe_registry = Arc::new(codegg::server::ws::ConnectionProbeRegistry::new());
+    let factory = probe_registry.factory();
+    let pool = common::projection_replay::test_pool().await;
+    let daemon = Arc::new(CoreDaemon::new(Some(pool.clone()), None, None, None));
+    let state = ServerState {
+        pool,
+        mcp_service: Arc::new(tokio::sync::RwLock::new(McpService::new())),
+        config: Config::default(),
+        ws_rate_limiter: Arc::new(WsRateLimiter::new(256, 60)),
+        daemon: Some(Arc::clone(&daemon)),
+        projection_lifecycle_seam: ProjectionLifecycleSeam::default(),
+        connection_task_probe: None,
+        probe_factory: Some(factory),
+        transport_test_config: Some(config),
+    };
+    let router = Router::new()
+        .route("/core", get(handle_core_ws))
+        .route("/tui", get(handle_tui))
+        .with_state(state);
+    let listener = TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .expect("bind continuity test server");
+    let address = listener.local_addr().expect("address");
+    let server = tokio::spawn(async move {
+        axum::serve(
+            listener,
+            router.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await
+        .expect("continuity test server task");
+    });
+
+    // Unrelated client B comes first so we can capture its probe first in
+    // the registry and its subscription ID second.
+    let mut client_b = connect(address, "/core").await;
+    send_json(
+        &mut client_b,
+        &CoreFrame::ClientHello(ClientHello {
+            client_name: "m011-continuity-b".to_string(),
+            client_kind: ClientKind::Automation,
+            protocol_version: codegg::protocol::core::PROTOCOL_VERSION,
+            capabilities: projection_client_capabilities(),
+        }),
+    )
+    .await;
+    let hello_b: CoreFrame = recv_json(&mut client_b).await.expect("ServerHello B");
+    assert!(matches!(hello_b, CoreFrame::ServerHello(_)));
+    let _sub_b_id = core_subscribe(
+        &mut client_b,
+        "m011-continuity-b-sub",
+        "project-m011-continuity-b",
+    )
+    .await;
+    wait_projection_subscription_count(&daemon, 1).await;
+
+    // Now the failing client A. This is the connection that must drop
+    // without disturbing B.
+    let mut client_a = connect(address, "/core").await;
+    send_json(
+        &mut client_a,
+        &CoreFrame::ClientHello(ClientHello {
+            client_name: "m011-continuity-a".to_string(),
+            client_kind: ClientKind::Automation,
+            protocol_version: codegg::protocol::core::PROTOCOL_VERSION,
+            capabilities: projection_client_capabilities(),
+        }),
+    )
+    .await;
+    let hello_a: CoreFrame = recv_json(&mut client_a).await.expect("ServerHello A");
+    assert!(matches!(hello_a, CoreFrame::ServerHello(_)));
+    let sub_a_id = core_subscribe(
+        &mut client_a,
+        "m011-continuity-a-sub",
+        "project-m011-continuity-a",
+    )
+    .await;
+    wait_projection_subscription_count(&daemon, 2).await;
+
+    // Drop client A abruptly.
+    drop(client_a);
+    wait_projection_subscription_count(&daemon, 1).await;
+
+    let mut probes = probe_registry.take().await;
+    assert_eq!(probes.len(), 2);
+    // The first probe we see is B (B was registered first).
+    let probe_b = probes.remove(0);
+    let probe_a = probes.remove(0);
+
+    assert_real_transport_rollback_complete_extended(
+        &daemon,
+        1, // baseline: client B's subscription
+        &probe_a,
+        &sub_a_id,
+        "m011-continuity-a",
+        Some(&mut client_b),
+        Some(("project-m011-continuity-b", 1)),
+    )
+    .await;
+
+    // The unrelated-client continuity assertion should have already
+    // verified client B received the marker event. Confirm probe_a is at
+    // baseline.
+    probe_a.assert_all_at_baseline();
+    assert!(
+        probe_b.raw_event_count() <= 1,
+        "B should not gain extra raw-event completions from A's failure"
+    );
+
     server.abort();
 }

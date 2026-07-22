@@ -11,6 +11,58 @@ use crate::core::transport::projection::ProjectionLifecycleSeam;
 use crate::mcp::McpService;
 use crate::server::ws::{ConnectionTaskProbe, ProjectionTransportTestConfig};
 
+/// Returns a fresh per-connection [`Arc<ConnectionTaskProbe>`]. Each upgraded
+/// WebSocket connection consults the factory during `upgrade_core_ws` /
+/// `upgrade_tui` so that probe counters are connection-local. The factory
+/// returns the probe for the connection being upgraded and (optionally)
+/// registers it with the calling test for later retrieval.
+pub type ConnectionProbeFactory =
+    Arc<dyn Fn() -> Arc<ConnectionTaskProbe> + Send + Sync>;
+
+/// Test-side registry that allocates a fresh [`Arc<ConnectionTaskProbe>`] per
+/// upgrade and records the produced probes in a `Vec`. Tests pass the
+/// returned factory to `ServerState::probe_factory` and call
+/// [`ConnectionProbeRegistry::take`] to retrieve probes in connection order.
+#[derive(Clone, Default)]
+pub struct ConnectionProbeRegistry {
+    inner: Arc<tokio::sync::Mutex<Vec<Arc<ConnectionTaskProbe>>>>,
+}
+
+impl ConnectionProbeRegistry {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Build a factory closure that allocates a fresh probe and pushes it
+    /// into this registry. The factory may be installed in
+    /// [`ServerState::probe_factory`].
+    pub fn factory(&self) -> ConnectionProbeFactory {
+        let inner = Arc::clone(&self.inner);
+        Arc::new(move || {
+            let probe = Arc::new(ConnectionTaskProbe::new());
+            // Synchronous registry push; safe because `inner` is a Tokio
+            // `Mutex` and we only ever call this inside the upgrade
+            // functions on a single thread.
+            if let Ok(mut guard) = inner.try_lock() {
+                guard.push(Arc::clone(&probe));
+            }
+            probe
+        })
+    }
+
+    /// Drain and return every probe currently registered. The Vec may be
+    /// empty if the test called this before the upgrade function installed
+    /// the probe.
+    pub async fn take(&self) -> Vec<Arc<ConnectionTaskProbe>> {
+        std::mem::take(&mut *self.inner.lock().await)
+    }
+
+    /// Read the current probes without draining.
+    pub async fn snapshot(&self) -> Vec<Arc<ConnectionTaskProbe>> {
+        self.inner.lock().await.clone()
+    }
+}
+
 #[derive(Clone)]
 pub struct ServerState {
     pub pool: SqlitePool,
@@ -21,10 +73,21 @@ pub struct ServerState {
     /// Connection-adapter lifecycle seam. The default is a no-op; tests may
     /// supply a connection-local pause/fault policy without global state.
     pub projection_lifecycle_seam: ProjectionLifecycleSeam,
-    /// Connection-local task completion probe. Each WebSocket connection
-    /// receives its own clone of this Arc; tests read the counters after
-    /// handler exit to verify lifecycle invariants.
+    /// Aggregate (server-wide) connection probe retained by older tests that
+    /// need to count exactly how many send/receive/raw_event completions
+    /// happened across all connections during a multi-connection scenario
+    /// (e.g. the 100-cycle churn fixture). Each upgraded connection receives
+    /// a clone of this Arc, so probe counters accumulate across connections.
+    /// New per-connection fixtures SHOULD prefer [`ServerState::probe_factory`]
+    /// for exact per-connection assertions.
     pub connection_task_probe: Option<Arc<ConnectionTaskProbe>>,
+    /// Per-connection probe factory. When set, every upgraded WebSocket
+    /// connection invokes the factory to obtain a fresh
+    /// [`Arc<ConnectionTaskProbe>`] that is local to that connection. This
+    /// is the preferred wiring for evidence correctness: per-connection
+    /// counters never bleed across connections, and a test can capture the
+    /// factory's output to assert against a specific connection only.
+    pub probe_factory: Option<ConnectionProbeFactory>,
     /// Connection-local test configuration. Production callers leave this
     /// at `None`; tests may opt into a smaller outbound queue capacity,
     /// a writer gate, a raw-source cancellation token, and a lifecycle
