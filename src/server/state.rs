@@ -7,6 +7,7 @@ use sqlx::SqlitePool;
 use tokio::sync::{Mutex, RwLock};
 
 use crate::config::schema::Config;
+use crate::core::transport::projection::ProjectionLifecycleSeam;
 use crate::mcp::McpService;
 
 #[derive(Clone)]
@@ -16,6 +17,9 @@ pub struct ServerState {
     pub config: Config,
     pub ws_rate_limiter: Arc<WsRateLimiter>,
     pub daemon: Option<Arc<crate::core::daemon::CoreDaemon>>,
+    /// Connection-adapter lifecycle seam. The default is a no-op; tests may
+    /// supply a connection-local pause/fault policy without global state.
+    pub projection_lifecycle_seam: ProjectionLifecycleSeam,
 }
 
 #[derive(Clone)]

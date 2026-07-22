@@ -207,6 +207,7 @@ pub async fn run_server(
         config: config.unwrap_or_default(),
         ws_rate_limiter: Arc::new(WsRateLimiter::new(100, 60)),
         daemon,
+        projection_lifecycle_seam: Default::default(),
     };
 
     let cors = build_cors(&server_config);

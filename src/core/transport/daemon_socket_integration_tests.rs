@@ -3,8 +3,10 @@ use std::time::Duration;
 
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
+use tokio_util::sync::CancellationToken;
 
 use crate::core::daemon::CoreDaemon;
+use crate::core::transport::projection::{ProjectionLifecycleBoundary, ProjectionLifecycleSeam};
 use crate::protocol::core::CoreEvent;
 use crate::protocol::frames::{ClientCapabilities, ClientHello, ClientKind, CoreFrame};
 
@@ -49,6 +51,49 @@ async fn spawn_daemon(
     // test starts connecting.
     tokio::time::sleep(Duration::from_millis(100)).await;
     (socket_path_str, dir, handle)
+}
+
+/// Bind before spawning so lifecycle tests can use a real listener shutdown
+/// token without relying on a startup sleep.
+async fn spawn_daemon_with_shutdown(
+    daemon: Arc<CoreDaemon>,
+) -> (
+    String,
+    tempfile::TempDir,
+    tokio::task::JoinHandle<()>,
+    CancellationToken,
+) {
+    spawn_daemon_with_shutdown_and_seam(daemon, ProjectionLifecycleSeam::default()).await
+}
+
+async fn spawn_daemon_with_shutdown_and_seam(
+    daemon: Arc<CoreDaemon>,
+    lifecycle_seam: ProjectionLifecycleSeam,
+) -> (
+    String,
+    tempfile::TempDir,
+    tokio::task::JoinHandle<()>,
+    CancellationToken,
+) {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let socket_path = dir.path().join("daemon.sock");
+    let socket_path_str = socket_path.to_string_lossy().to_string();
+    let listener = crate::core::transport::daemon_socket::bind_listener(&socket_path)
+        .expect("bind test listener");
+    let shutdown = CancellationToken::new();
+    let shutdown_for_server = shutdown.clone();
+    let endpoint = socket_path.clone();
+    let handle = tokio::spawn(async move {
+        let _ = crate::core::transport::daemon_socket::run_core_socket_with_listener_and_seam(
+            daemon,
+            listener,
+            &endpoint,
+            shutdown_for_server,
+            lifecycle_seam,
+        )
+        .await;
+    });
+    (socket_path_str, dir, handle, shutdown)
 }
 
 /// Drive a complete `ClientHello` + `Subscribe` handshake against the
@@ -141,6 +186,21 @@ async fn projection_handshake_and_subscribe(
     String,
     codegg_protocol::projection::replay::ProjectionSubscriptionId,
 ) {
+    let (reader, writer, client_id, subscription_id, _cursor) =
+        projection_handshake_and_subscribe_with_cursor(stream, project_id).await;
+    (reader, writer, client_id, subscription_id)
+}
+
+async fn projection_handshake_and_subscribe_with_cursor(
+    stream: UnixStream,
+    project_id: &str,
+) -> (
+    BufReader<tokio::net::unix::OwnedReadHalf>,
+    tokio::net::unix::OwnedWriteHalf,
+    String,
+    codegg_protocol::projection::replay::ProjectionSubscriptionId,
+    codegg_protocol::projection::replay::ProjectionCursor,
+) {
     use crate::protocol::core::CoreRequest;
     use crate::protocol::projection::replay::{
         ProjectionStreamKind, ProjectionSubscriptionRequest,
@@ -206,18 +266,241 @@ async fn projection_handshake_and_subscribe(
             response,
         } if response_id == request_id => match *response {
             crate::protocol::core::CoreResponse::ProjectionSubscribed {
-                subscription_id, ..
-            } => subscription_id,
+                subscription_id,
+                cursor,
+                ..
+            } => (subscription_id, cursor),
             other => panic!("expected ProjectionSubscribed, got {:?}", other),
         },
         other => panic!("expected projection response, got {:?}", other),
     };
-    (reader, write_half, server_hello.client_id, subscription_id)
+    let (subscription_id, cursor) = subscription_id;
+    (
+        reader,
+        write_half,
+        server_hello.client_id,
+        subscription_id,
+        cursor,
+    )
+}
+
+/// Establish the projection-capable handshake and send the subscription
+/// request, but do not read its response. Lifecycle-seam tests use this to
+/// publish while the receiver is installed and the canonical response is
+/// intentionally blocked.
+async fn projection_handshake_with_blocked_response(
+    stream: UnixStream,
+    project_id: &str,
+) -> (
+    BufReader<tokio::net::unix::OwnedReadHalf>,
+    tokio::net::unix::OwnedWriteHalf,
+    String,
+) {
+    use crate::protocol::core::CoreRequest;
+    use crate::protocol::projection::replay::{
+        ProjectionStreamKind, ProjectionSubscriptionRequest,
+    };
+
+    let (read_half, mut write_half) = stream.into_split();
+    let mut reader = BufReader::new(read_half);
+    let hello = CoreFrame::ClientHello(ClientHello {
+        client_name: format!("projection-race-{project_id}"),
+        client_kind: ClientKind::Automation,
+        protocol_version: crate::protocol::core::PROTOCOL_VERSION,
+        capabilities: ClientCapabilities {
+            visual_notifications: false,
+            desktop_notifications: false,
+            audio: false,
+            tts: false,
+            multi_session_view: false,
+            plugin_ui_dialog: false,
+            plugin_ui_toast: false,
+            plugin_ui_panel: false,
+            plugin_ui_status_item: false,
+            plugin_ui_table: false,
+            plugin_ui_markdown: false,
+            plugin_ui_code: false,
+            plugin_ui_progress: false,
+            workspace_registration: false,
+            project_catalog: false,
+            session_projection: true,
+        },
+    });
+    write_half
+        .write_all(serde_json::to_string(&hello).unwrap().as_bytes())
+        .await
+        .unwrap();
+    write_half.write_all(b"\n").await.unwrap();
+    write_half.flush().await.unwrap();
+    let server_hello = match read_frame(&mut reader).await.unwrap() {
+        CoreFrame::ServerHello(hello) => hello,
+        other => panic!("expected ServerHello, got {:?}", other),
+    };
+
+    let request = CoreFrame::Request(crate::core::new_request(
+        format!("projection-race-{project_id}"),
+        CoreRequest::ProjectionSubscribe {
+            request: ProjectionSubscriptionRequest {
+                scope: ProjectionStreamKind::Project,
+                scope_id: project_id.to_string(),
+                cursor: None,
+                projection_version: 1,
+            },
+        },
+    ));
+    write_half
+        .write_all(serde_json::to_string(&request).unwrap().as_bytes())
+        .await
+        .unwrap();
+    write_half.write_all(b"\n").await.unwrap();
+    write_half.flush().await.unwrap();
+    (reader, write_half, server_hello.client_id)
+}
+
+async fn projection_handshake_prefix(
+    stream: UnixStream,
+    client_name: &str,
+) -> (
+    BufReader<tokio::net::unix::OwnedReadHalf>,
+    tokio::net::unix::OwnedWriteHalf,
+    String,
+) {
+    let (read_half, mut write_half) = stream.into_split();
+    let mut reader = BufReader::new(read_half);
+    let hello = CoreFrame::ClientHello(ClientHello {
+        client_name: client_name.to_string(),
+        client_kind: ClientKind::Automation,
+        protocol_version: crate::protocol::core::PROTOCOL_VERSION,
+        capabilities: ClientCapabilities {
+            visual_notifications: false,
+            desktop_notifications: false,
+            audio: false,
+            tts: false,
+            multi_session_view: false,
+            plugin_ui_dialog: false,
+            plugin_ui_toast: false,
+            plugin_ui_panel: false,
+            plugin_ui_status_item: false,
+            plugin_ui_table: false,
+            plugin_ui_markdown: false,
+            plugin_ui_code: false,
+            plugin_ui_progress: false,
+            workspace_registration: false,
+            project_catalog: false,
+            session_projection: true,
+        },
+    });
+    write_half
+        .write_all(serde_json::to_string(&hello).unwrap().as_bytes())
+        .await
+        .unwrap();
+    write_half.write_all(b"\n").await.unwrap();
+    write_half.flush().await.unwrap();
+    let client_id = match read_frame(&mut reader).await.unwrap() {
+        CoreFrame::ServerHello(hello) => hello.client_id,
+        other => panic!("expected ServerHello, got {:?}", other),
+    };
+    (reader, write_half, client_id)
+}
+
+async fn projection_handshake_and_resume(
+    stream: UnixStream,
+    project_id: &str,
+    cursor: codegg_protocol::projection::replay::ProjectionCursor,
+) -> (
+    BufReader<tokio::net::unix::OwnedReadHalf>,
+    tokio::net::unix::OwnedWriteHalf,
+    String,
+    codegg_protocol::projection::replay::ProjectionSubscriptionId,
+    codegg_protocol::projection::replay::ProjectionReplayBatch,
+) {
+    use crate::protocol::core::CoreRequest;
+    let (mut reader, mut writer, client_id) =
+        projection_handshake_prefix(stream, &format!("projection-resume-{project_id}")).await;
+    let request_id = format!("resume-{project_id}");
+    let request = CoreFrame::Request(crate::core::new_request(
+        request_id.clone(),
+        CoreRequest::ProjectionResume {
+            cursor,
+            include_snapshot_if_resync: true,
+        },
+    ));
+    writer
+        .write_all(serde_json::to_string(&request).unwrap().as_bytes())
+        .await
+        .unwrap();
+    writer.write_all(b"\n").await.unwrap();
+    writer.flush().await.unwrap();
+    let (subscription_id, batch) = match read_frame(&mut reader).await.unwrap() {
+        CoreFrame::Response {
+            request_id: response_id,
+            response,
+        } if response_id == request_id => match *response {
+            crate::protocol::core::CoreResponse::ProjectionReplay {
+                subscription_id: Some(subscription_id),
+                batch,
+            } => (subscription_id, batch),
+            other => panic!("expected ProjectionReplay, got {other:?}"),
+        },
+        other => panic!("expected resume response, got {other:?}"),
+    };
+    (reader, writer, client_id, subscription_id, batch)
 }
 
 async fn abort_server(handle: tokio::task::JoinHandle<()>) {
     handle.abort();
     let _ = tokio::time::timeout(Duration::from_millis(100), handle).await;
+}
+
+async fn shutdown_server(handle: tokio::task::JoinHandle<()>, shutdown: CancellationToken) {
+    shutdown.cancel();
+    tokio::time::timeout(Duration::from_millis(500), handle)
+        .await
+        .expect("server and connection handlers should shut down")
+        .expect("server task should not panic");
+}
+
+async fn wait_for_client_count(daemon: &CoreDaemon, expected: usize) {
+    tokio::time::timeout(Duration::from_millis(500), async {
+        loop {
+            if daemon.clients.count() == expected {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("client registry should reach the expected lifecycle state");
+}
+
+/// EOF and listener shutdown must both release connection-owned state. The
+/// first connection exercises EOF cleanup; the second stays open until the
+/// listener cancellation path joins its handler.
+#[tokio::test]
+async fn socket_connection_cleanup_is_idempotent_across_eof_and_shutdown() {
+    let daemon = Arc::new(CoreDaemon::new(None, None, None, None));
+    let (socket_path, _socket_dir, server_handle, shutdown) =
+        spawn_daemon_with_shutdown(Arc::clone(&daemon)).await;
+
+    let stream = UnixStream::connect(&socket_path)
+        .await
+        .expect("connect EOF lifecycle client");
+    let (reader, writer, _client_id) = handshake_and_subscribe(stream, None).await;
+    wait_for_client_count(&daemon, 1).await;
+    drop(reader);
+    drop(writer);
+    wait_for_client_count(&daemon, 0).await;
+
+    let stream = UnixStream::connect(&socket_path)
+        .await
+        .expect("connect shutdown lifecycle client");
+    let (reader, writer, _client_id) = handshake_and_subscribe(stream, None).await;
+    wait_for_client_count(&daemon, 1).await;
+
+    shutdown_server(server_handle, shutdown).await;
+    wait_for_client_count(&daemon, 0).await;
+    drop(reader);
+    drop(writer);
 }
 
 async fn projection_daemon() -> Arc<CoreDaemon> {
@@ -242,6 +525,15 @@ async fn projection_daemon() -> Arc<CoreDaemon> {
 }
 
 async fn publish_projection_event(daemon: &CoreDaemon, project_id: &str, session_id: &str) {
+    publish_projection_event_with_turn(daemon, project_id, session_id, "turn-socket").await;
+}
+
+async fn publish_projection_event_with_turn(
+    daemon: &CoreDaemon,
+    project_id: &str,
+    session_id: &str,
+    turn_id: &str,
+) {
     let seam = daemon
         .projection_seam
         .as_ref()
@@ -251,10 +543,10 @@ async fn publish_projection_event(daemon: &CoreDaemon, project_id: &str, session
         event_seq: 1,
         timestamp_ms: 1,
         session_id: Some(session_id.to_string()),
-        turn_id: Some("turn-socket".to_string()),
+        turn_id: Some(turn_id.to_string()),
         payload: CoreEvent::TurnStarted {
             session_id: session_id.to_string(),
-            turn_id: "turn-socket".to_string(),
+            turn_id: turn_id.to_string(),
         },
     };
     let context = codegg_core::projection_replay::seam::ProjectionBindingContext {
@@ -350,6 +642,300 @@ async fn two_socket_projection_clients_are_ordered_and_isolated() {
     .await;
     assert!(foreign_event.is_err(), "client B received project A event");
 
+    abort_server(server_handle).await;
+}
+
+/// All projection lifecycle operations exposed by the Unix CoreFrame adapter
+/// must remain scoped to the daemon-issued connection identity. The test also
+/// proves a rejected operation on B does not disturb A's live receiver.
+#[tokio::test]
+async fn socket_foreign_projection_operations_fail_closed() {
+    use crate::protocol::core::CoreRequest;
+    use crate::protocol::projection::replay::{ProjectionAck, ProjectionArtifactReadRequest};
+
+    let daemon = projection_daemon().await;
+    let (socket_path, _socket_dir, server_handle) = spawn_daemon(Arc::clone(&daemon)).await;
+    let stream_a = UnixStream::connect(&socket_path)
+        .await
+        .expect("connect Unix client A");
+    let stream_b = UnixStream::connect(&socket_path)
+        .await
+        .expect("connect Unix client B");
+    let (mut reader_a, _writer_a, _client_a, sub_a, cursor_a) =
+        projection_handshake_and_subscribe_with_cursor(stream_a, "project-unix-a").await;
+    let (mut reader_b, mut writer_b, _client_b, _sub_b, _cursor_b) =
+        projection_handshake_and_subscribe_with_cursor(stream_b, "project-unix-b").await;
+
+    let ack = CoreFrame::Request(crate::core::new_request(
+        "unix-foreign-ack".to_string(),
+        CoreRequest::ProjectionAck {
+            ack: ProjectionAck {
+                subscription_id: sub_a.clone(),
+                cursor: cursor_a.clone(),
+            },
+        },
+    ));
+    writer_b
+        .write_all(serde_json::to_string(&ack).unwrap().as_bytes())
+        .await
+        .unwrap();
+    writer_b.write_all(b"\n").await.unwrap();
+    writer_b.flush().await.unwrap();
+    match read_frame(&mut reader_b).await.unwrap() {
+        CoreFrame::Response { response, .. } => assert!(matches!(
+            *response,
+            crate::protocol::core::CoreResponse::Error { code, .. }
+                if code == "subscription_not_found"
+        )),
+        other => panic!("expected foreign ack rejection, got {other:?}"),
+    }
+
+    let resume = CoreFrame::Request(crate::core::new_request(
+        "unix-foreign-resume".to_string(),
+        CoreRequest::ProjectionResume {
+            cursor: cursor_a,
+            include_snapshot_if_resync: true,
+        },
+    ));
+    writer_b
+        .write_all(serde_json::to_string(&resume).unwrap().as_bytes())
+        .await
+        .unwrap();
+    writer_b.write_all(b"\n").await.unwrap();
+    writer_b.flush().await.unwrap();
+    match read_frame(&mut reader_b).await.unwrap() {
+        CoreFrame::Response { response, .. } => assert!(matches!(
+            *response,
+            crate::protocol::core::CoreResponse::Error { code, .. }
+                if code == "projection_resume_not_owned"
+        )),
+        other => panic!("expected foreign resume rejection, got {other:?}"),
+    }
+
+    let unsubscribe = CoreFrame::Request(crate::core::new_request(
+        "unix-foreign-unsubscribe".to_string(),
+        CoreRequest::ProjectionUnsubscribe {
+            subscription_id: sub_a.clone(),
+        },
+    ));
+    writer_b
+        .write_all(serde_json::to_string(&unsubscribe).unwrap().as_bytes())
+        .await
+        .unwrap();
+    writer_b.write_all(b"\n").await.unwrap();
+    writer_b.flush().await.unwrap();
+    match read_frame(&mut reader_b).await.unwrap() {
+        CoreFrame::Response { response, .. } => assert!(matches!(
+            *response,
+            crate::protocol::core::CoreResponse::Error { code, .. }
+                if code == "projection_subscription_not_owned"
+        )),
+        other => panic!("expected foreign unsubscribe rejection, got {other:?}"),
+    }
+
+    for (request_id, request) in [
+        (
+            "unix-foreign-artifact-list",
+            CoreRequest::ProjectionArtifactList {
+                project_id: "project-unix-a".to_string(),
+            },
+        ),
+        (
+            "unix-foreign-artifact-read",
+            CoreRequest::ProjectionArtifactRead {
+                request: ProjectionArtifactReadRequest {
+                    handle_id: "foreign-handle".to_string(),
+                    start: 0,
+                    end: Some(1),
+                    expected_revision: 1,
+                },
+                project_id: "project-unix-a".to_string(),
+                context_correlation_id: None,
+            },
+        ),
+    ] {
+        let frame = CoreFrame::Request(crate::core::new_request(request_id.to_string(), request));
+        writer_b
+            .write_all(serde_json::to_string(&frame).unwrap().as_bytes())
+            .await
+            .unwrap();
+        writer_b.write_all(b"\n").await.unwrap();
+        writer_b.flush().await.unwrap();
+        match read_frame(&mut reader_b).await.unwrap() {
+            CoreFrame::Response { response, .. } => assert!(matches!(
+                *response,
+                crate::protocol::core::CoreResponse::Error { code, .. }
+                    if code == "projection_scope_not_owned"
+            )),
+            other => panic!("expected foreign artifact rejection, got {other:?}"),
+        }
+    }
+
+    publish_projection_event(&daemon, "project-unix-a", "session-unix-a").await;
+    let event = tokio::time::timeout(Duration::from_millis(400), async {
+        loop {
+            if let Some(CoreFrame::Event(envelope)) = read_frame(&mut reader_a).await {
+                if let CoreEvent::ProjectionStreamEvent {
+                    subscription_id, ..
+                } = envelope.payload
+                {
+                    return subscription_id;
+                }
+            }
+        }
+    })
+    .await
+    .expect("A remains live after B's rejected operations");
+    assert_eq!(event, sub_a);
+    abort_server(server_handle).await;
+}
+
+/// A fresh Unix connection resumes from the persisted cursor, receives only
+/// the missing committed range, and then receives one subsequent live event
+/// through the newly installed receiver.
+#[tokio::test]
+async fn socket_reconnect_replays_exact_missing_range_then_live() {
+    let daemon = projection_daemon().await;
+    let (socket_path, _socket_dir, server_handle) = spawn_daemon(Arc::clone(&daemon)).await;
+    let first_stream = UnixStream::connect(&socket_path)
+        .await
+        .expect("connect first reconnect client");
+    let (reader, writer, _client_id, _sub_id, cursor) =
+        projection_handshake_and_subscribe_with_cursor(first_stream, "project-reconnect").await;
+    drop(reader);
+    drop(writer);
+
+    publish_projection_event_with_turn(
+        &daemon,
+        "project-reconnect",
+        "session-reconnect",
+        "turn-missing-1",
+    )
+    .await;
+    publish_projection_event_with_turn(
+        &daemon,
+        "project-reconnect",
+        "session-reconnect",
+        "turn-missing-2",
+    )
+    .await;
+
+    let resumed_stream = UnixStream::connect(&socket_path)
+        .await
+        .expect("connect resumed reconnect client");
+    let (mut reader, _writer, _client_id, new_sub_id, batch) =
+        projection_handshake_and_resume(resumed_stream, "project-reconnect", cursor).await;
+    assert_eq!(batch.events.len(), 2);
+    assert_eq!((batch.replay_start_seq, batch.replay_end_seq), (1, 2));
+
+    publish_projection_event(&daemon, "project-reconnect", "session-reconnect").await;
+    let event_sub_id = tokio::time::timeout(Duration::from_millis(400), async {
+        loop {
+            if let Some(CoreFrame::Event(envelope)) = read_frame(&mut reader).await {
+                if let CoreEvent::ProjectionStreamEvent {
+                    subscription_id, ..
+                } = envelope.payload
+                {
+                    return subscription_id;
+                }
+            }
+        }
+    })
+    .await
+    .expect("live event after Unix replay");
+    assert_eq!(event_sub_id, new_sub_id);
+    abort_server(server_handle).await;
+}
+
+/// The Unix adapter must keep its projection forwarder blocked until the
+/// canonical response has completed. This publishes through the real daemon
+/// seam while receiver installation is complete but response delivery is
+/// paused, then verifies response-before-live ordering on the byte stream.
+#[tokio::test]
+async fn socket_projection_response_precedes_live_event_when_writer_is_blocked() {
+    let daemon = projection_daemon().await;
+    let lifecycle_seam = ProjectionLifecycleSeam::default();
+    let gate = lifecycle_seam.pause_next(ProjectionLifecycleBoundary::AfterReceiverInstallation);
+    let (socket_path, _socket_dir, server_handle, _shutdown) =
+        spawn_daemon_with_shutdown_and_seam(Arc::clone(&daemon), lifecycle_seam).await;
+    let stream = UnixStream::connect(&socket_path)
+        .await
+        .expect("connect blocked projection client");
+    let (mut reader, _writer, _client_id) =
+        projection_handshake_with_blocked_response(stream, "project-race").await;
+
+    gate.wait_until_entered().await;
+    publish_projection_event(&daemon, "project-race", "session-race").await;
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), read_frame(&mut reader))
+            .await
+            .is_err(),
+        "Unix projection event escaped while canonical response was blocked"
+    );
+
+    gate.release();
+    let first = read_frame(&mut reader).await.expect("canonical response");
+    let subscription_id = match first {
+        CoreFrame::Response { response, .. } => match *response {
+            crate::protocol::core::CoreResponse::ProjectionSubscribed {
+                subscription_id, ..
+            } => subscription_id,
+            other => panic!("expected ProjectionSubscribed, got {other:?}"),
+        },
+        other => panic!("expected canonical response first, got {other:?}"),
+    };
+    let event = tokio::time::timeout(Duration::from_millis(400), async {
+        loop {
+            if let Some(CoreFrame::Event(envelope)) = read_frame(&mut reader).await {
+                if let CoreEvent::ProjectionStreamEvent {
+                    subscription_id, ..
+                } = envelope.payload
+                {
+                    return subscription_id;
+                }
+            }
+        }
+    })
+    .await
+    .expect("live projection event after canonical response");
+    assert_eq!(event, subscription_id);
+    abort_server(server_handle).await;
+}
+
+#[tokio::test]
+async fn socket_failed_receiver_install_rolls_back_daemon_subscription() {
+    let daemon = projection_daemon().await;
+    let lifecycle_seam = ProjectionLifecycleSeam::default();
+    lifecycle_seam.fail_next(
+        ProjectionLifecycleBoundary::AfterReceiverInstallation,
+        crate::core::transport::projection::CriticalDeliveryError::WriterClosed,
+    );
+    let (socket_path, _socket_dir, server_handle, _shutdown) =
+        spawn_daemon_with_shutdown_and_seam(Arc::clone(&daemon), lifecycle_seam).await;
+    let stream = UnixStream::connect(&socket_path)
+        .await
+        .expect("connect failed-install client");
+    let (mut reader, _writer, _client_id) =
+        projection_handshake_with_blocked_response(stream, "project-failure").await;
+    match read_frame(&mut reader).await.expect("failure response") {
+        CoreFrame::Response { response, .. } => assert!(matches!(
+            *response,
+            crate::protocol::core::CoreResponse::Error { code, .. }
+                if code == "projection_receiver_setup_failed"
+        )),
+        other => panic!("expected typed setup failure, got {other:?}"),
+    }
+    let seam = daemon.projection_seam.as_ref().unwrap();
+    tokio::time::timeout(Duration::from_millis(500), async {
+        loop {
+            if seam.service().subscriptions().active_count() == 0 {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("failed Unix setup must remove daemon subscription");
     abort_server(server_handle).await;
 }
 

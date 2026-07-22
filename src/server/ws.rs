@@ -15,6 +15,7 @@ use tracing::info;
 use crate::core::transport::projection::{
     bounded_critical_delivery, CriticalDeliveryError, OwnedProjectionLifecycle,
     OwnedProjectionSubscription, ProjectionConnectionMode, ProjectionConnectionState,
+    ProjectionLifecycleBoundary, ProjectionLifecycleSeam,
 };
 use crate::error::AxumServerRuntimeError;
 use crate::protocol::core::{CoreEvent, CoreRequest, EventEnvelope};
@@ -30,9 +31,16 @@ type WsSender = mpsc::Sender<OutboundMessage>;
 
 type CriticalSendFailure = CriticalDeliveryError;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OutboundRoute {
+    Control,
+    Raw { generation: u64 },
+}
+
 struct OutboundMessage {
     message: WsMessage,
     receipt: Option<oneshot::Sender<Result<(), CriticalSendFailure>>>,
+    route: OutboundRoute,
 }
 
 async fn critical_send<T: serde::Serialize>(
@@ -45,6 +53,7 @@ async fn critical_send<T: serde::Serialize>(
     let outbound = OutboundMessage {
         message: WsMessage::Text(json.into()),
         receipt: Some(receipt_tx),
+        route: OutboundRoute::Control,
     };
 
     bounded_critical_delivery(cancellation, async move {
@@ -58,10 +67,55 @@ async fn critical_send<T: serde::Serialize>(
     .await
 }
 
+async fn staged_critical_send<T: serde::Serialize>(
+    tx: &WsSender,
+    value: &T,
+    cancellation: &CancellationToken,
+    seam: &ProjectionLifecycleSeam,
+) -> Result<(), CriticalSendFailure> {
+    let json = serde_json::to_string(value).map_err(|_| CriticalSendFailure::Serialization)?;
+    let (receipt_tx, receipt_rx) = oneshot::channel();
+    let outbound = OutboundMessage {
+        message: WsMessage::Text(json.into()),
+        receipt: Some(receipt_tx),
+        route: OutboundRoute::Control,
+    };
+
+    bounded_critical_delivery(cancellation, async {
+        seam.checkpoint(
+            ProjectionLifecycleBoundary::BeforeControlEnqueue,
+            cancellation,
+        )
+        .await?;
+        tx.send(outbound)
+            .await
+            .map_err(|_| CriticalSendFailure::QueueClosed)?;
+        seam.checkpoint(
+            ProjectionLifecycleBoundary::AfterControlEnqueueBeforeWriterReceipt,
+            cancellation,
+        )
+        .await?;
+        receipt_rx
+            .await
+            .map_err(|_| CriticalSendFailure::WriterClosed)?
+    })
+    .await
+}
+
 fn queue_message(tx: &WsSender, message: WsMessage) -> bool {
     tx.try_send(OutboundMessage {
         message,
         receipt: None,
+        route: OutboundRoute::Control,
+    })
+    .is_ok()
+}
+
+fn queue_raw_message(tx: &WsSender, message: WsMessage, generation: u64) -> bool {
+    tx.try_send(OutboundMessage {
+        message,
+        receipt: None,
+        route: OutboundRoute::Raw { generation },
     })
     .is_ok()
 }
@@ -70,6 +124,13 @@ fn queue_json<T: serde::Serialize>(tx: &WsSender, value: &T) -> bool {
     serde_json::to_string(value)
         .ok()
         .map(|json| queue_message(tx, WsMessage::Text(json.into())))
+        .unwrap_or(false)
+}
+
+fn queue_raw_json<T: serde::Serialize>(tx: &WsSender, value: &T, generation: u64) -> bool {
+    serde_json::to_string(value)
+        .ok()
+        .map(|json| queue_raw_message(tx, WsMessage::Text(json.into()), generation))
         .unwrap_or(false)
 }
 
@@ -88,6 +149,28 @@ async fn activate_after_critical_delivery(
     projection
         .activate_after_delivery(subscription_id)
         .map_err(|_| CriticalSendFailure::QueueClosed)
+}
+
+async fn cleanup_projection_connection_state(
+    projection: &Arc<tokio::sync::Mutex<ProjectionConnectionState>>,
+) {
+    let subscriptions = projection.lock().await.drain_for_cleanup();
+    ProjectionConnectionState::join_cleanup_tasks(subscriptions).await;
+}
+
+async fn stop_owned_projection_subscription(
+    projection: &Arc<tokio::sync::Mutex<ProjectionConnectionState>>,
+    subscription_id: &crate::protocol::projection::replay::ProjectionSubscriptionId,
+) -> bool {
+    let subscription = projection
+        .lock()
+        .await
+        .remove_subscription_for_cleanup(subscription_id);
+    let removed = subscription.is_some();
+    if let Some(subscription) = subscription {
+        ProjectionConnectionState::join_cleanup_tasks(vec![subscription]).await;
+    }
+    removed
 }
 
 fn event_matches_raw_filter(
@@ -619,13 +702,17 @@ async fn upgrade_tui(
         mpsc::channel::<OutboundMessage>(WS_OUTBOUND_QUEUE_CAPACITY);
     let (raw_tx, mut raw_rx) = mpsc::channel::<OutboundMessage>(WS_OUTBOUND_QUEUE_CAPACITY);
     let connection_id = format!("tui-{}", uuid::Uuid::new_v4());
-    let projection = Arc::new(tokio::sync::Mutex::new(ProjectionConnectionState::new(
-        connection_id.clone(),
-    )));
+    let projection = Arc::new(tokio::sync::Mutex::new(
+        ProjectionConnectionState::new_with_lifecycle_seam(
+            connection_id.clone(),
+            state.projection_lifecycle_seam.clone(),
+        ),
+    ));
     let session_state = Arc::new(Mutex::new(TuiSessionState::new(
         addr.to_string(),
         projection,
     )));
+    let session_state_for_writer = Arc::clone(&session_state);
     let connection_cancel = CancellationToken::new();
     let connection_cancel_for_writer = connection_cancel.clone();
     let daemon_clone = state.daemon.clone();
@@ -637,26 +724,35 @@ async fn upgrade_tui(
                 biased;
                 outbound = out_rx.recv() => {
                     let Some(outbound) = outbound else { break };
-                    let result = ws_tx.send(outbound.message).await;
-                    if let Some(receipt) = outbound.receipt {
-                        let _ = receipt.send(result.as_ref().map(|_| ()).map_err(|_| CriticalSendFailure::WriterClosed));
-                    }
+                    let result = deliver_tui_outbound(
+                        &mut ws_tx,
+                        outbound,
+                        &session_state_for_writer,
+                        &connection_cancel_for_writer,
+                    )
+                    .await;
                     if result.is_err() { break; }
                 }
                 outbound = projection_rx.recv() => {
                     let Some(outbound) = outbound else { break };
-                    let result = ws_tx.send(outbound.message).await;
-                    if let Some(receipt) = outbound.receipt {
-                        let _ = receipt.send(result.as_ref().map(|_| ()).map_err(|_| CriticalSendFailure::WriterClosed));
-                    }
+                    let result = deliver_tui_outbound(
+                        &mut ws_tx,
+                        outbound,
+                        &session_state_for_writer,
+                        &connection_cancel_for_writer,
+                    )
+                    .await;
                     if result.is_err() { break; }
                 }
                 outbound = raw_rx.recv() => {
                     let Some(outbound) = outbound else { break };
-                    let result = ws_tx.send(outbound.message).await;
-                    if let Some(receipt) = outbound.receipt {
-                        let _ = receipt.send(result.as_ref().map(|_| ()).map_err(|_| CriticalSendFailure::WriterClosed));
-                    }
+                    let result = deliver_tui_outbound(
+                        &mut ws_tx,
+                        outbound,
+                        &session_state_for_writer,
+                        &connection_cancel_for_writer,
+                    )
+                    .await;
                     if result.is_err() { break; }
                 }
             }
@@ -734,9 +830,11 @@ async fn upgrade_tui(
                                 event_seq: envelope.event_seq,
                                 payload: Box::new(tui_msg),
                             };
-                            serde_json::to_string(&wire).ok().map(|json| {
-                                queue_message(&raw_tx_events, WsMessage::Text(json.into()))
-                            })
+                            Some(queue_raw_json(
+                                &raw_tx_events,
+                                &wire,
+                                session.raw_route_generation,
+                            ))
                         } else {
                             None
                         }
@@ -789,7 +887,7 @@ async fn upgrade_tui(
         .map(|subscription| subscription.subscription_id.clone())
         .collect();
     let projection_state = session_state.lock().await.projection.clone();
-    projection_state.lock().await.cleanup().await;
+    cleanup_projection_connection_state(&projection_state).await;
     if let Some(daemon) = state.daemon {
         for subscription_id in subscription_ids {
             let _ = daemon
@@ -812,6 +910,12 @@ struct TuiSessionState {
     session_id: Option<String>,
     model: Option<String>,
     rate_limit_key: String,
+    /// Generation of the normalized `SessionInfo` route. Identical routes do
+    /// not advance it; model-only changes do not invalidate queued raw data.
+    raw_route_generation: u64,
+    /// Serializes route/mode commits with the writer's final raw-delivery
+    /// check. The session-state lock itself is never held over socket I/O.
+    raw_delivery_gate: Arc<tokio::sync::Mutex<()>>,
     projection: Arc<tokio::sync::Mutex<ProjectionConnectionState>>,
 }
 
@@ -838,9 +942,183 @@ impl TuiSessionState {
             session_id: None,
             model: None,
             rate_limit_key,
+            raw_route_generation: 0,
+            raw_delivery_gate: Arc::new(tokio::sync::Mutex::new(())),
             projection,
         }
     }
+}
+
+fn normalize_tui_session_id(id: String) -> Option<String> {
+    (!id.is_empty()).then_some(id)
+}
+
+async fn update_tui_session_info(
+    state: &Arc<tokio::sync::Mutex<TuiSessionState>>,
+    id: String,
+    model: String,
+) {
+    let raw_delivery_gate = state.lock().await.raw_delivery_gate.clone();
+    let _raw_delivery_guard = raw_delivery_gate.lock().await;
+    let mut state_guard = state.lock().await;
+    let normalized_session_id = normalize_tui_session_id(id);
+    if state_guard.session_id != normalized_session_id {
+        state_guard.raw_route_generation = state_guard
+            .raw_route_generation
+            .checked_add(1)
+            .expect("TUI raw route generation exhausted");
+    }
+    state_guard.rate_limit_key = normalized_session_id
+        .as_deref()
+        .map(|id| format!("session:{id}"))
+        .unwrap_or_else(|| "session:unknown".to_string());
+    state_guard.session_id = normalized_session_id;
+    state_guard.model = Some(model);
+}
+
+async fn update_tui_projection_mode(
+    state: &Arc<tokio::sync::Mutex<TuiSessionState>>,
+    mode: ProjectionConnectionMode,
+    negotiated_version: Option<u32>,
+) {
+    let (raw_delivery_gate, projection) = {
+        let session = state.lock().await;
+        (
+            session.raw_delivery_gate.clone(),
+            session.projection.clone(),
+        )
+    };
+    let _raw_delivery_guard = raw_delivery_gate.lock().await;
+    projection.lock().await.set_mode(mode, negotiated_version);
+}
+
+async fn deliver_tui_outbound<S>(
+    ws_tx: &mut S,
+    outbound: OutboundMessage,
+    session_state: &Arc<tokio::sync::Mutex<TuiSessionState>>,
+    connection_cancellation: &CancellationToken,
+) -> Result<(), S::Error>
+where
+    S: futures::Sink<WsMessage> + Unpin,
+{
+    let OutboundMessage {
+        message,
+        mut receipt,
+        route,
+    } = outbound;
+
+    let result = match route {
+        OutboundRoute::Control => {
+            if receipt.is_some() {
+                let projection = session_state.lock().await.projection.clone();
+                let (lifecycle_seam, cancellation) = {
+                    let projection_state = projection.lock().await;
+                    (
+                        projection_state.lifecycle_seam(),
+                        connection_cancellation.clone(),
+                    )
+                };
+                if let Err(error) = lifecycle_seam
+                    .checkpoint(
+                        ProjectionLifecycleBoundary::DuringWriterWrite,
+                        &cancellation,
+                    )
+                    .await
+                {
+                    if let Some(receipt) = receipt.take() {
+                        let _ = receipt.send(Err(error));
+                    }
+                    return Ok(());
+                }
+            }
+            ws_tx.send(message).await
+        }
+        OutboundRoute::Raw { generation } => {
+            let raw_delivery_gate = session_state.lock().await.raw_delivery_gate.clone();
+            // This gate is deliberately separate from the session-state lock:
+            // it linearizes a route/mode commit against the final check while
+            // allowing the WebSocket send itself to proceed without holding
+            // state.
+            let _raw_delivery_guard = raw_delivery_gate.lock().await;
+            let projection = {
+                let session = session_state.lock().await;
+                if session.raw_route_generation != generation {
+                    None
+                } else {
+                    Some(session.projection.clone())
+                }
+            };
+            let Some(projection) = projection else {
+                if let Some(receipt) = receipt {
+                    let _ = receipt.send(Err(CriticalSendFailure::Cancelled));
+                }
+                return Ok(());
+            };
+            if projection.lock().await.mode() == ProjectionConnectionMode::ProjectionPrimary {
+                if let Some(receipt) = receipt {
+                    let _ = receipt.send(Err(CriticalSendFailure::Cancelled));
+                }
+                return Ok(());
+            }
+            ws_tx.send(message).await
+        }
+    };
+    if let Some(receipt) = receipt {
+        let _ = receipt.send(
+            result
+                .as_ref()
+                .map(|_| ())
+                .map_err(|_| CriticalSendFailure::WriterClosed),
+        );
+    }
+    result
+}
+
+async fn deliver_core_outbound<S>(
+    ws_tx: &mut S,
+    outbound: OutboundMessage,
+    projection: &Arc<tokio::sync::Mutex<ProjectionConnectionState>>,
+    connection_cancellation: &CancellationToken,
+) -> Result<(), S::Error>
+where
+    S: futures::Sink<WsMessage> + Unpin,
+{
+    let OutboundMessage {
+        message,
+        mut receipt,
+        route: _,
+    } = outbound;
+    if receipt.is_some() {
+        let (lifecycle_seam, cancellation) = {
+            let projection_state = projection.lock().await;
+            (
+                projection_state.lifecycle_seam(),
+                connection_cancellation.clone(),
+            )
+        };
+        if let Err(error) = lifecycle_seam
+            .checkpoint(
+                ProjectionLifecycleBoundary::DuringWriterWrite,
+                &cancellation,
+            )
+            .await
+        {
+            if let Some(receipt) = receipt.take() {
+                let _ = receipt.send(Err(error));
+            }
+            return Ok(());
+        }
+    }
+    let result = ws_tx.send(message).await;
+    if let Some(receipt) = receipt {
+        let _ = receipt.send(
+            result
+                .as_ref()
+                .map(|_| ())
+                .map_err(|_| CriticalSendFailure::WriterClosed),
+        );
+    }
+    result
 }
 
 async fn handle_tui_message(
@@ -896,7 +1174,10 @@ async fn handle_tui_message(
             }
             tracing::debug!("TUI resume requested from event seq {}", from_event_seq);
             if let Some(ref daemon) = _server_state.daemon {
-                let session_id = state.lock().await.session_id.clone();
+                let (session_id, raw_route_generation) = {
+                    let session = state.lock().await;
+                    (session.session_id.clone(), session.raw_route_generation)
+                };
                 let filter = crate::core::event_log::EventFilter {
                     session_id,
                     client_id: None,
@@ -909,9 +1190,7 @@ async fn handle_tui_message(
                             event_seq: event.event_seq,
                             payload: Box::new(tui_msg),
                         };
-                        if let Ok(json) = serde_json::to_string(&envelope) {
-                            let _ = queue_message(bus_tx, WsMessage::Text(json.into()));
-                        }
+                        let _ = queue_raw_json(bus_tx, &envelope, raw_route_generation);
                     }
                 }
             } else {
@@ -960,14 +1239,7 @@ async fn handle_tui_message(
             });
         }
         TuiMessage::SessionInfo { id, model } => {
-            let mut state_guard = state.lock().await;
-            state_guard.session_id = Some(id.clone());
-            state_guard.model = Some(model);
-            state_guard.rate_limit_key = if id.is_empty() {
-                "session:unknown".to_string()
-            } else {
-                format!("session:{}", id)
-            };
+            update_tui_session_info(state, id, model).await;
         }
         TuiMessage::RequestSnapshot { reason } => {
             tracing::info!("RequestSnapshot from client: reason={:?}", reason);
@@ -977,7 +1249,10 @@ async fn handle_tui_message(
                 return Ok(());
             }
             if let Some(ref daemon) = _server_state.daemon {
-                let session_id = state.lock().await.session_id.clone();
+                let (session_id, raw_route_generation) = {
+                    let session = state.lock().await;
+                    (session.session_id.clone(), session.raw_route_generation)
+                };
                 let filter = crate::core::event_log::EventFilter {
                     session_id,
                     client_id: None,
@@ -990,9 +1265,7 @@ async fn handle_tui_message(
                             event_seq: event.event_seq,
                             payload: Box::new(tui_msg),
                         };
-                        if let Ok(json) = serde_json::to_string(&envelope) {
-                            let _ = queue_message(bus_tx, WsMessage::Text(json.into()));
-                        }
+                        let _ = queue_raw_json(bus_tx, &envelope, raw_route_generation);
                     }
                 }
             }
@@ -1140,10 +1413,7 @@ async fn handle_projection_capabilities(
     } else {
         ProjectionConnectionMode::RawCompatibility
     };
-    {
-        let mut projection_state = projection.lock().await;
-        projection_state.set_mode(mode, negotiated);
-    }
+    update_tui_projection_mode(state, mode, negotiated).await;
     if !accepted {
         let (client_id, subscription_ids) = {
             let projection_state = projection.lock().await;
@@ -1155,7 +1425,7 @@ async fn handle_projection_capabilities(
                     .collect::<Vec<_>>(),
             )
         };
-        projection.lock().await.cleanup().await;
+        cleanup_projection_connection_state(&projection).await;
         if let Some(daemon) = &server_state.daemon {
             for subscription_id in subscription_ids {
                 let _ = daemon
@@ -1204,6 +1474,7 @@ async fn handle_projection_subscribe(
     };
     let projection = state.lock().await.projection.clone();
     let client_id = projection.lock().await.connection_id().to_string();
+    let lifecycle_seam = projection.lock().await.lifecycle_seam();
     let requested_cursor = request.cursor.clone();
 
     let response = daemon
@@ -1223,6 +1494,22 @@ async fn handle_projection_subscribe(
             cursor,
             retention_floor_seq,
         }) => {
+            if let Err(error) = lifecycle_seam
+                .checkpoint(
+                    ProjectionLifecycleBoundary::AfterDaemonSubscriptionCreation,
+                    cancellation,
+                )
+                .await
+            {
+                rollback_tui_projection_subscription(
+                    daemon,
+                    &projection,
+                    &subscription_id,
+                    &client_id,
+                )
+                .await;
+                return Err(error);
+            }
             if !install_tui_projection_receiver(
                 daemon,
                 &projection,
@@ -1250,6 +1537,22 @@ async fn handle_projection_subscribe(
                 queue_tui_error(bus_tx, "projection_receiver_install_failed");
                 return Ok(());
             }
+            if let Err(error) = lifecycle_seam
+                .checkpoint(
+                    ProjectionLifecycleBoundary::AfterReceiverInstallation,
+                    cancellation,
+                )
+                .await
+            {
+                rollback_tui_projection_subscription(
+                    daemon,
+                    &projection,
+                    &subscription_id,
+                    &client_id,
+                )
+                .await;
+                return Err(error);
+            }
             let snapshot = match snapshot {
                 ProjectionSnapshotBundle::One { snapshot } => *snapshot,
                 ProjectionSnapshotBundle::BoundedSessionList { sessions, .. } => {
@@ -1269,7 +1572,9 @@ async fn handle_projection_subscribe(
                 cursor: Some(cursor),
                 retention_floor_seq: Some(retention_floor_seq),
             };
-            if let Err(error) = critical_send(bus_tx, &msg, cancellation).await {
+            if let Err(error) =
+                staged_critical_send(bus_tx, &msg, cancellation, &lifecycle_seam).await
+            {
                 rollback_tui_projection_subscription(
                     daemon,
                     &projection,
@@ -1300,6 +1605,7 @@ async fn handle_projection_subscribe(
                     projection_tx,
                     &client_id,
                     cancellation,
+                    &lifecycle_seam,
                 )
                 .await
                 {
@@ -1312,6 +1618,19 @@ async fn handle_projection_subscribe(
                     .await;
                     return Err(error);
                 }
+            }
+            if let Err(error) = lifecycle_seam
+                .checkpoint(ProjectionLifecycleBoundary::BeforeActivation, cancellation)
+                .await
+            {
+                rollback_tui_projection_subscription(
+                    daemon,
+                    &projection,
+                    &subscription_id,
+                    &client_id,
+                )
+                .await;
+                return Err(error);
             }
             if let Err(error) =
                 activate_after_critical_delivery(&projection, &subscription_id).await
@@ -1341,9 +1660,23 @@ async fn handle_projection_subscribe(
                 projection_tx,
                 &client_id,
                 cancellation,
+                &lifecycle_seam,
             )
             .await;
             if let Ok(()) = delivered {
+                if let Err(error) = lifecycle_seam
+                    .checkpoint(ProjectionLifecycleBoundary::BeforeActivation, cancellation)
+                    .await
+                {
+                    rollback_tui_projection_subscription(
+                        daemon,
+                        &projection,
+                        &subscription_id,
+                        &client_id,
+                    )
+                    .await;
+                    return Err(error);
+                }
                 if let Err(error) =
                     activate_after_critical_delivery(&projection, &subscription_id).await
                 {
@@ -1558,13 +1891,7 @@ async fn rollback_tui_projection_subscription(
     subscription_id: &crate::protocol::projection::replay::ProjectionSubscriptionId,
     client_id: &str,
 ) {
-    if let Some(mut subscription) = projection.lock().await.remove_subscription(subscription_id) {
-        subscription.cancel();
-        if let Some(forwarder) = subscription.forwarder.take() {
-            forwarder.abort();
-            let _ = forwarder.await;
-        }
-    }
+    stop_owned_projection_subscription(projection, subscription_id).await;
     let _ = daemon
         .handle_request_for_client(
             crate::core::new_request(
@@ -1586,6 +1913,7 @@ async fn emit_tui_projection_response(
     projection_tx: &WsSender,
     client_id: &str,
     cancellation: &CancellationToken,
+    lifecycle_seam: &ProjectionLifecycleSeam,
 ) -> Result<(), CriticalSendFailure> {
     match response {
         Ok(crate::protocol::core::CoreResponse::ProjectionReplay {
@@ -1615,13 +1943,20 @@ async fn emit_tui_projection_response(
                 queue_tui_error(bus_tx, "projection_receiver_install_failed");
                 return Err(CriticalSendFailure::QueueClosed);
             }
-            critical_send(
+            lifecycle_seam
+                .checkpoint(
+                    ProjectionLifecycleBoundary::AfterReceiverInstallation,
+                    cancellation,
+                )
+                .await?;
+            staged_critical_send(
                 bus_tx,
                 &TuiMessage::ProjectionReplay {
                     subscription_id,
                     batch,
                 },
                 cancellation,
+                lifecycle_seam,
             )
             .await
         }
@@ -1633,14 +1968,7 @@ async fn emit_tui_projection_response(
             snapshot,
         }) => {
             if let Some(subscription_id) = subscription_id.as_ref() {
-                if let Some(mut subscription) =
-                    projection.lock().await.remove_subscription(subscription_id)
-                {
-                    subscription.cancel();
-                    if let Some(forwarder) = subscription.forwarder.take() {
-                        forwarder.abort();
-                        let _ = forwarder.await;
-                    }
+                if stop_owned_projection_subscription(projection, subscription_id).await {
                     let _ = daemon
                         .handle_request_for_client(
                             crate::core::new_request(
@@ -1697,6 +2025,7 @@ async fn handle_projection_ack(
     };
     let projection = state.lock().await.projection.clone();
     let client_id = projection.lock().await.connection_id().to_string();
+    let lifecycle_seam = projection.lock().await.lifecycle_seam();
     if !projection.lock().await.owns(&ack.subscription_id) {
         critical_send(
             bus_tx,
@@ -1761,7 +2090,7 @@ async fn handle_projection_ack(
             error: Some(error.to_string()),
         },
     };
-    critical_send(bus_tx, &message, cancellation).await?;
+    staged_critical_send(bus_tx, &message, cancellation, &lifecycle_seam).await?;
     Ok(())
 }
 
@@ -1783,6 +2112,7 @@ async fn handle_projection_resume(
     };
     let projection = state.lock().await.projection.clone();
     let client_id = projection.lock().await.connection_id().to_string();
+    let lifecycle_seam = projection.lock().await.lifecycle_seam();
     let response = daemon
         .handle_request_for_client(
             crate::core::new_request(
@@ -1810,6 +2140,7 @@ async fn handle_projection_resume(
         projection_tx,
         &client_id,
         cancellation,
+        &lifecycle_seam,
     )
     .await;
     if let Err(error) = delivered {
@@ -1876,17 +2207,7 @@ async fn handle_projection_unsubscribe(
     } else {
         false
     };
-    if let Some(mut owned_subscription) = projection
-        .lock()
-        .await
-        .remove_subscription(&subscription_id)
-    {
-        owned_subscription.cancel();
-        if let Some(forwarder) = owned_subscription.forwarder.take() {
-            forwarder.abort();
-            let _ = forwarder.await;
-        }
-    }
+    stop_owned_projection_subscription(&projection, &subscription_id).await;
     critical_send(
         bus_tx,
         &TuiMessage::ProjectionUnsubscribeResult {
@@ -2182,11 +2503,15 @@ async fn upgrade_core_ws(
         mpsc::channel::<OutboundMessage>(WS_OUTBOUND_QUEUE_CAPACITY);
     let (raw_tx, mut raw_rx) = mpsc::channel::<OutboundMessage>(WS_OUTBOUND_QUEUE_CAPACITY);
     let connection_id = format!("core-ws-{}", uuid::Uuid::new_v4());
-    let projection = Arc::new(tokio::sync::Mutex::new(ProjectionConnectionState::new(
-        connection_id.clone(),
-    )));
+    let projection = Arc::new(tokio::sync::Mutex::new(
+        ProjectionConnectionState::new_with_lifecycle_seam(
+            connection_id.clone(),
+            state.projection_lifecycle_seam.clone(),
+        ),
+    ));
     let connection_cancel = CancellationToken::new();
     let connection_cancel_for_writer = connection_cancel.clone();
+    let projection_for_writer = Arc::clone(&projection);
     let filters: Arc<RwLock<Vec<crate::core::event_log::EventFilter>>> =
         Arc::new(RwLock::new(Vec::new()));
 
@@ -2197,26 +2522,38 @@ async fn upgrade_core_ws(
                 biased;
                 outbound = out_rx.recv() => {
                     let Some(outbound) = outbound else { break };
-                    let result = ws_tx.send(outbound.message).await;
-                    if let Some(receipt) = outbound.receipt {
-                        let _ = receipt.send(result.as_ref().map(|_| ()).map_err(|_| CriticalSendFailure::WriterClosed));
-                    }
+                    let result =
+                        deliver_core_outbound(
+                            &mut ws_tx,
+                            outbound,
+                            &projection_for_writer,
+                            &connection_cancel_for_writer,
+                        )
+                        .await;
                     if result.is_err() { break; }
                 }
                 outbound = projection_rx.recv() => {
                     let Some(outbound) = outbound else { break };
-                    let result = ws_tx.send(outbound.message).await;
-                    if let Some(receipt) = outbound.receipt {
-                        let _ = receipt.send(result.as_ref().map(|_| ()).map_err(|_| CriticalSendFailure::WriterClosed));
-                    }
+                    let result =
+                        deliver_core_outbound(
+                            &mut ws_tx,
+                            outbound,
+                            &projection_for_writer,
+                            &connection_cancel_for_writer,
+                        )
+                        .await;
                     if result.is_err() { break; }
                 }
                 outbound = raw_rx.recv() => {
                     let Some(outbound) = outbound else { break };
-                    let result = ws_tx.send(outbound.message).await;
-                    if let Some(receipt) = outbound.receipt {
-                        let _ = receipt.send(result.as_ref().map(|_| ()).map_err(|_| CriticalSendFailure::WriterClosed));
-                    }
+                    let result =
+                        deliver_core_outbound(
+                            &mut ws_tx,
+                            outbound,
+                            &projection_for_writer,
+                            &connection_cancel_for_writer,
+                        )
+                        .await;
                     if result.is_err() { break; }
                 }
             }
@@ -2252,6 +2589,7 @@ async fn upgrade_core_ws(
     });
 
     let projection_for_recv = Arc::clone(&projection);
+    let lifecycle_seam_for_recv = projection.lock().await.lifecycle_seam();
     let out_tx_for_recv = out_tx.clone();
     let projection_tx_for_recv = projection_tx.clone();
     let daemon_for_recv = Arc::clone(&daemon);
@@ -2291,12 +2629,22 @@ async fn upgrade_core_ws(
                                     }
                                     _ => None,
                                 };
-                                let delivery = critical_send(
-                                    &out_tx_for_recv,
-                                    &frame,
-                                    &connection_cancel_for_recv,
-                                )
-                                .await;
+                                let delivery = if projection_id.is_some() {
+                                    staged_critical_send(
+                                        &out_tx_for_recv,
+                                        &frame,
+                                        &connection_cancel_for_recv,
+                                        &lifecycle_seam_for_recv,
+                                    )
+                                    .await
+                                } else {
+                                    critical_send(
+                                        &out_tx_for_recv,
+                                        &frame,
+                                        &connection_cancel_for_recv,
+                                    )
+                                    .await
+                                };
                                 if delivery.is_err() {
                                     if let Some(subscription_id) = projection_id {
                                         rollback_core_projection_subscription(
@@ -2311,6 +2659,24 @@ async fn upgrade_core_ws(
                                     break;
                                 }
                                 if let Some(subscription_id) = projection_id {
+                                    if lifecycle_seam_for_recv
+                                        .checkpoint(
+                                            ProjectionLifecycleBoundary::BeforeActivation,
+                                            &connection_cancel_for_recv,
+                                        )
+                                        .await
+                                        .is_err()
+                                    {
+                                        rollback_core_projection_subscription(
+                                            &daemon_for_recv,
+                                            &projection_for_recv,
+                                            &subscription_id,
+                                            &connection_id_for_recv,
+                                        )
+                                        .await;
+                                        delivery_failed = true;
+                                        break;
+                                    }
                                     if activate_after_critical_delivery(
                                         &projection_for_recv,
                                         &subscription_id,
@@ -2366,7 +2732,7 @@ async fn upgrade_core_ws(
         .subscriptions()
         .map(|subscription| subscription.subscription_id.clone())
         .collect();
-    projection.lock().await.cleanup().await;
+    cleanup_projection_connection_state(&projection).await;
     for subscription_id in subscription_ids {
         let _ = daemon
             .handle_request_for_client(
@@ -2494,6 +2860,42 @@ async fn handle_core_frame(
                                 subscription_id: Some(_),
                                 ..
                             }
+                    ) {
+                        let lifecycle_seam = projection.lock().await.lifecycle_seam();
+                        if lifecycle_seam
+                            .checkpoint(
+                                ProjectionLifecycleBoundary::AfterDaemonSubscriptionCreation,
+                                connection_cancellation,
+                            )
+                            .await
+                            .is_err()
+                        {
+                            if let Some(subscription_id) = projection_response_id(&response) {
+                                cleanup_core_projection_subscription(
+                                    daemon,
+                                    projection,
+                                    &subscription_id,
+                                    client_id,
+                                )
+                                .await;
+                            }
+                            responses.push(CoreFrame::Response {
+                                request_id,
+                                response: Box::new(crate::protocol::core::CoreResponse::Error {
+                                    code: "projection_lifecycle_checkpoint_failed".into(),
+                                    message: "projection subscription setup was cancelled".into(),
+                                }),
+                            });
+                            return responses;
+                        }
+                    }
+                    if matches!(
+                        response,
+                        crate::protocol::core::CoreResponse::ProjectionSubscribed { .. }
+                            | crate::protocol::core::CoreResponse::ProjectionReplay {
+                                subscription_id: Some(_),
+                                ..
+                            }
                     ) && !install_core_projection_response(
                         daemon,
                         projection,
@@ -2548,7 +2950,7 @@ async fn handle_core_frame(
                     .subscriptions()
                     .map(|subscription| subscription.subscription_id.clone())
                     .collect();
-                projection.lock().await.cleanup().await;
+                cleanup_projection_connection_state(&projection).await;
                 for subscription_id in subscription_ids {
                     let _ = daemon
                         .handle_request_for_client(
@@ -2630,13 +3032,7 @@ async fn cleanup_core_projection_subscription(
     subscription_id: &crate::protocol::projection::replay::ProjectionSubscriptionId,
     client_id: &str,
 ) {
-    if let Some(mut subscription) = projection.lock().await.remove_subscription(subscription_id) {
-        subscription.cancel();
-        if let Some(forwarder) = subscription.forwarder.take() {
-            forwarder.abort();
-            let _ = forwarder.await;
-        }
-    }
+    stop_owned_projection_subscription(projection, subscription_id).await;
     let _ = daemon
         .handle_request_for_client(
             crate::core::new_request(
@@ -2764,7 +3160,7 @@ async fn install_core_projection_response(
     let sub_id = subscription_id.clone();
     let stream_id = descriptor.stream_id.clone();
     let lag_descriptor = descriptor.clone();
-    let connection_cancellation = connection_cancellation.clone();
+    let task_connection_cancellation = connection_cancellation.clone();
     let handle = tokio::spawn(async move {
         tokio::select! {
             _ = cancellation.cancelled() => return,
@@ -2810,7 +3206,8 @@ async fn install_core_projection_response(
                         snapshot: None,
                     }),
                 };
-                let _ = critical_send(&control_output, &resync, &connection_cancellation).await;
+                let _ =
+                    critical_send(&control_output, &resync, &task_connection_cancellation).await;
                 break;
             }
             if let Some(subscription) = projection_for_task.lock().await.subscription_mut(&sub_id) {
@@ -2826,6 +3223,31 @@ async fn install_core_projection_response(
     if let Some(subscription) = state.subscription_mut(&subscription_id) {
         subscription.forwarder = Some(handle);
     }
+    let lifecycle_seam = state.lifecycle_seam();
+    drop(state);
+    if lifecycle_seam
+        .checkpoint(
+            ProjectionLifecycleBoundary::AfterReceiverInstallation,
+            connection_cancellation,
+        )
+        .await
+        .is_err()
+    {
+        stop_owned_projection_subscription(projection, &subscription_id).await;
+        let _ = daemon
+            .handle_request_for_client(
+                crate::core::new_request(
+                    format!(
+                        "core-ws-projection-install-rollback-{}",
+                        uuid::Uuid::new_v4()
+                    ),
+                    CoreRequest::ProjectionUnsubscribe { subscription_id },
+                ),
+                client_id,
+            )
+            .await;
+        return false;
+    }
     true
 }
 
@@ -2833,6 +3255,67 @@ async fn install_core_projection_response(
 mod tests {
     use super::*;
     use serde::ser::Error as _;
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
+
+    #[derive(Default)]
+    struct RecordingSink {
+        messages: Vec<WsMessage>,
+    }
+
+    impl futures::Sink<WsMessage> for RecordingSink {
+        type Error = std::convert::Infallible;
+
+        fn poll_ready(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn start_send(self: Pin<&mut Self>, item: WsMessage) -> Result<(), Self::Error> {
+            self.get_mut().messages.push(item);
+            Ok(())
+        }
+
+        fn poll_flush(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_close(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    fn test_session_state() -> Arc<tokio::sync::Mutex<TuiSessionState>> {
+        Arc::new(tokio::sync::Mutex::new(TuiSessionState::new(
+            "test-client".to_string(),
+            Arc::new(tokio::sync::Mutex::new(ProjectionConnectionState::new(
+                "test-client".to_string(),
+            ))),
+        )))
+    }
+
+    async fn current_route_generation(state: &Arc<tokio::sync::Mutex<TuiSessionState>>) -> u64 {
+        state.lock().await.raw_route_generation
+    }
+
+    fn global_event(payload: CoreEvent) -> EventEnvelope<CoreEvent> {
+        EventEnvelope {
+            protocol_version: crate::protocol::core::PROTOCOL_VERSION,
+            event_seq: 1,
+            timestamp_ms: 0,
+            session_id: None,
+            turn_id: None,
+            payload,
+        }
+    }
 
     #[derive(Debug)]
     struct FailingSerialize;
@@ -2909,5 +3392,179 @@ mod tests {
             .await,
             Err(CriticalSendFailure::Timeout)
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn tui_raw_route_drops_a_after_switch_and_delivers_b() {
+        let state = test_session_state();
+        update_tui_session_info(&state, "session-a".into(), "model".into()).await;
+        let generation_a = current_route_generation(&state).await;
+        let (tx, mut rx) = mpsc::channel::<OutboundMessage>(4);
+
+        assert!(queue_raw_message(
+            &tx,
+            WsMessage::Text("session-a".into()),
+            generation_a,
+        ));
+        update_tui_session_info(&state, "session-b".into(), "model".into()).await;
+        let stale_a = rx.recv().await.expect("queued session-a event");
+        let mut sink = RecordingSink::default();
+        deliver_tui_outbound(&mut sink, stale_a, &state, &CancellationToken::new())
+            .await
+            .expect("stale delivery check should not fail");
+        assert!(sink.messages.is_empty());
+
+        let generation_b = current_route_generation(&state).await;
+        assert!(queue_raw_message(
+            &tx,
+            WsMessage::Text("session-b".into()),
+            generation_b,
+        ));
+        let current_b = rx.recv().await.expect("queued session-b event");
+        deliver_tui_outbound(&mut sink, current_b, &state, &CancellationToken::new())
+            .await
+            .expect("current delivery should succeed");
+        assert_eq!(sink.messages.len(), 1);
+        assert_eq!(sink.messages[0].clone().into_text().unwrap(), "session-b");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn tui_raw_route_a_to_b_to_a_drops_both_prior_generations() {
+        let state = test_session_state();
+        update_tui_session_info(&state, "session-a".into(), "model".into()).await;
+        let generation_a = current_route_generation(&state).await;
+        let (tx, mut rx) = mpsc::channel::<OutboundMessage>(4);
+        assert!(queue_raw_message(
+            &tx,
+            WsMessage::Text("old-a".into()),
+            generation_a,
+        ));
+
+        update_tui_session_info(&state, "session-b".into(), "model".into()).await;
+        let generation_b = current_route_generation(&state).await;
+        assert!(queue_raw_message(
+            &tx,
+            WsMessage::Text("old-b".into()),
+            generation_b,
+        ));
+
+        update_tui_session_info(&state, "session-a".into(), "model".into()).await;
+        let generation_a_again = current_route_generation(&state).await;
+        assert!(generation_a_again > generation_b);
+        assert!(queue_raw_message(
+            &tx,
+            WsMessage::Text("current-a".into()),
+            generation_a_again,
+        ));
+
+        let mut sink = RecordingSink::default();
+        for _ in 0..3 {
+            let outbound = rx.recv().await.expect("queued raw event");
+            deliver_tui_outbound(&mut sink, outbound, &state, &CancellationToken::new())
+                .await
+                .expect("stale delivery check should not fail");
+        }
+        assert_eq!(sink.messages.len(), 1);
+        assert_eq!(sink.messages[0].clone().into_text().unwrap(), "current-a");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn unchanged_tui_session_info_keeps_raw_route_generation() {
+        let state = test_session_state();
+        update_tui_session_info(&state, "session-a".into(), "model-a".into()).await;
+        let generation = current_route_generation(&state).await;
+        update_tui_session_info(&state, "session-a".into(), "model-b".into()).await;
+        assert_eq!(current_route_generation(&state).await, generation);
+        assert_eq!(state.lock().await.model.as_deref(), Some("model-b"));
+
+        let (tx, mut rx) = mpsc::channel::<OutboundMessage>(1);
+        assert!(queue_raw_message(
+            &tx,
+            WsMessage::Text("still-session-a".into()),
+            generation,
+        ));
+        let mut sink = RecordingSink::default();
+        deliver_tui_outbound(
+            &mut sink,
+            rx.recv().await.unwrap(),
+            &state,
+            &CancellationToken::new(),
+        )
+        .await
+        .expect("unchanged route should remain deliverable");
+        assert_eq!(sink.messages.len(), 1);
+
+        update_tui_session_info(&state, String::new(), "model-b".into()).await;
+        let empty_generation = current_route_generation(&state).await;
+        assert_eq!(empty_generation, generation + 1);
+        update_tui_session_info(&state, String::new(), "model-c".into()).await;
+        assert_eq!(current_route_generation(&state).await, empty_generation);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn tui_raw_global_allowlist_is_preserved_and_generation_tagged() {
+        let allowed = global_event(CoreEvent::SnapshotModels {
+            current_model: None,
+            models: Vec::new(),
+        });
+        let disallowed = global_event(CoreEvent::FileChanged {
+            path: "secret.txt".into(),
+            action: "changed".into(),
+        });
+        assert!(tui_raw_event_matches(&allowed, Some("session-a")));
+        assert!(!tui_raw_event_matches(&disallowed, Some("session-a")));
+
+        let state = test_session_state();
+        update_tui_session_info(&state, "session-a".into(), "model".into()).await;
+        let generation_a = current_route_generation(&state).await;
+        let (tx, mut rx) = mpsc::channel::<OutboundMessage>(1);
+        assert!(queue_raw_json(&tx, &allowed.payload, generation_a));
+        let allowed_outbound = rx.recv().await.expect("allowed global event");
+        assert_eq!(
+            allowed_outbound.route,
+            OutboundRoute::Raw {
+                generation: generation_a
+            }
+        );
+
+        update_tui_session_info(&state, "session-b".into(), "model".into()).await;
+        let mut sink = RecordingSink::default();
+        deliver_tui_outbound(
+            &mut sink,
+            allowed_outbound,
+            &state,
+            &CancellationToken::new(),
+        )
+        .await
+        .expect("stale global delivery check should not fail");
+        assert!(sink.messages.is_empty());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn projection_primary_suppresses_queued_raw_event_after_route_race() {
+        let state = test_session_state();
+        update_tui_session_info(&state, "session-a".into(), "model".into()).await;
+        let generation_a = current_route_generation(&state).await;
+        let (tx, mut rx) = mpsc::channel::<OutboundMessage>(1);
+        assert!(queue_raw_message(
+            &tx,
+            WsMessage::Text("session-a-mutation".into()),
+            generation_a,
+        ));
+
+        update_tui_projection_mode(&state, ProjectionConnectionMode::ProjectionPrimary, Some(1))
+            .await;
+        update_tui_session_info(&state, "session-b".into(), "model".into()).await;
+
+        let mut sink = RecordingSink::default();
+        deliver_tui_outbound(
+            &mut sink,
+            rx.recv().await.unwrap(),
+            &state,
+            &CancellationToken::new(),
+        )
+        .await
+        .expect("projection suppression should not fail the writer");
+        assert!(sink.messages.is_empty());
     }
 }

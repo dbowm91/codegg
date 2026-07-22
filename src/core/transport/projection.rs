@@ -7,6 +7,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::fmt;
 use std::future::Future;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use tokio::sync::Notify;
@@ -51,6 +52,194 @@ impl fmt::Display for CriticalDeliveryError {
     }
 }
 
+/// Deterministic checkpoints that a transport adapter may use when testing
+/// subscription setup and critical response delivery.  The seam is
+/// connection-local; it has no process-wide hooks or mutable test state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ProjectionLifecycleBoundary {
+    AfterDaemonSubscriptionCreation,
+    AfterReceiverInstallation,
+    BeforeControlEnqueue,
+    AfterControlEnqueueBeforeWriterReceipt,
+    DuringWriterWrite,
+    BeforeActivation,
+}
+
+/// Accepted cancellation-token forms for lifecycle checkpoints. The
+/// transport adapters commonly hold either a borrowed connection token or a
+/// cloned token while a setup task is in flight.
+pub trait ProjectionCancellation {
+    fn clone_token(&self) -> CancellationToken;
+}
+
+impl ProjectionCancellation for CancellationToken {
+    fn clone_token(&self) -> CancellationToken {
+        self.clone()
+    }
+}
+
+impl ProjectionCancellation for &CancellationToken {
+    fn clone_token(&self) -> CancellationToken {
+        (*self).clone()
+    }
+}
+
+/// A one-shot gate used by [`ProjectionLifecycleSeam`] to pause an adapter at
+/// a deterministic boundary.  The atomic flags close the notify registration
+/// race, while `notify_one` retains a permit if release happens first.
+#[derive(Clone)]
+pub struct ProjectionLifecycleGate {
+    inner: Arc<ProjectionLifecycleGateState>,
+}
+
+struct ProjectionLifecycleGateState {
+    entered: std::sync::atomic::AtomicBool,
+    released: std::sync::atomic::AtomicBool,
+    entered_notify: Notify,
+    released_notify: Notify,
+}
+
+impl ProjectionLifecycleGate {
+    fn new() -> Self {
+        Self {
+            inner: Arc::new(ProjectionLifecycleGateState {
+                entered: std::sync::atomic::AtomicBool::new(false),
+                released: std::sync::atomic::AtomicBool::new(false),
+                entered_notify: Notify::new(),
+                released_notify: Notify::new(),
+            }),
+        }
+    }
+
+    /// Wait until the adapter reaches this gate.
+    pub async fn wait_until_entered(&self) {
+        loop {
+            if self
+                .inner
+                .entered
+                .load(std::sync::atomic::Ordering::Acquire)
+            {
+                return;
+            }
+            let notified = self.inner.entered_notify.notified();
+            if self
+                .inner
+                .entered
+                .load(std::sync::atomic::Ordering::Acquire)
+            {
+                return;
+            }
+            notified.await;
+        }
+    }
+
+    /// Release the paused adapter. Releasing before the adapter arrives is
+    /// supported and is intentionally not lost.
+    pub fn release(&self) {
+        self.inner
+            .released
+            .store(true, std::sync::atomic::Ordering::Release);
+        self.inner.released_notify.notify_one();
+    }
+
+    async fn wait(&self, cancellation: &CancellationToken) -> Result<(), CriticalDeliveryError> {
+        self.inner
+            .entered
+            .store(true, std::sync::atomic::Ordering::Release);
+        self.inner.entered_notify.notify_one();
+
+        loop {
+            if self
+                .inner
+                .released
+                .load(std::sync::atomic::Ordering::Acquire)
+            {
+                return Ok(());
+            }
+            let notified = self.inner.released_notify.notified();
+            if self
+                .inner
+                .released
+                .load(std::sync::atomic::Ordering::Acquire)
+            {
+                return Ok(());
+            }
+            tokio::select! {
+                biased;
+                _ = cancellation.cancelled() => return Err(CriticalDeliveryError::Cancelled),
+                _ = notified => {}
+            }
+        }
+    }
+}
+
+enum ProjectionLifecycleFault {
+    Failure(CriticalDeliveryError),
+    Pause(ProjectionLifecycleGate),
+}
+
+/// Connection-owned fault injection for transport adapter tests.
+///
+/// Adapters call [`ProjectionLifecycleSeam::checkpoint`] at the boundaries
+/// above. Production connections use the same no-op seam, so tests can inject
+/// a pause or one-shot failure without process-wide mutable state.
+#[derive(Clone, Default)]
+pub struct ProjectionLifecycleSeam {
+    faults: Arc<Mutex<HashMap<ProjectionLifecycleBoundary, VecDeque<ProjectionLifecycleFault>>>>,
+}
+
+impl ProjectionLifecycleSeam {
+    /// Fail the next checkpoint at `boundary` with `error`.
+    pub fn fail_next(&self, boundary: ProjectionLifecycleBoundary, error: CriticalDeliveryError) {
+        self.faults
+            .lock()
+            .expect("projection lifecycle seam lock poisoned")
+            .entry(boundary)
+            .or_default()
+            .push_back(ProjectionLifecycleFault::Failure(error));
+    }
+
+    /// Pause the next checkpoint at `boundary` until the returned gate is
+    /// released or `cancellation` wins the checkpoint.
+    pub fn pause_next(&self, boundary: ProjectionLifecycleBoundary) -> ProjectionLifecycleGate {
+        let gate = ProjectionLifecycleGate::new();
+        self.faults
+            .lock()
+            .expect("projection lifecycle seam lock poisoned")
+            .entry(boundary)
+            .or_default()
+            .push_back(ProjectionLifecycleFault::Pause(gate.clone()));
+        gate
+    }
+
+    /// Reach a deterministic adapter boundary. A cancellation that is already
+    /// visible wins before an injected fault, matching critical delivery's
+    /// cancellation contract.
+    pub async fn checkpoint<C: ProjectionCancellation>(
+        &self,
+        boundary: ProjectionLifecycleBoundary,
+        cancellation: C,
+    ) -> Result<(), CriticalDeliveryError> {
+        let cancellation = cancellation.clone_token();
+        if cancellation.is_cancelled() {
+            return Err(CriticalDeliveryError::Cancelled);
+        }
+
+        let fault = self
+            .faults
+            .lock()
+            .expect("projection lifecycle seam lock poisoned")
+            .get_mut(&boundary)
+            .and_then(VecDeque::pop_front);
+
+        match fault {
+            Some(ProjectionLifecycleFault::Failure(error)) => Err(error),
+            Some(ProjectionLifecycleFault::Pause(gate)) => gate.wait(&cancellation).await,
+            None => Ok(()),
+        }
+    }
+}
+
 /// Apply the common bounded timeout/cancellation contract to a transport
 /// specific send operation.  The operation itself is responsible for
 /// distinguishing queue and writer failures.
@@ -92,6 +281,7 @@ pub enum OwnedProjectionLifecycle {
 pub enum ProjectionActivationError {
     MissingSubscription,
     InvalidLifecycle(OwnedProjectionLifecycle),
+    Cancelled,
 }
 
 impl From<OwnedProjectionLifecycle> for ProjectionSubscriptionState {
@@ -140,7 +330,10 @@ impl OwnedProjectionSubscription {
         }
     }
 
-    pub fn mark_live(&mut self) {
+    /// Complete activation. This is private so transports must use
+    /// `ProjectionConnectionState::activate_after_delivery`, which owns the
+    /// response-delivery and cancellation checks.
+    fn mark_live(&mut self) {
         self.lifecycle = OwnedProjectionLifecycle::Live;
         // `notify_one` retains a permit when the forwarder has not been
         // polled yet, closing the response/forwarder scheduling race.
@@ -148,15 +341,38 @@ impl OwnedProjectionSubscription {
     }
 
     pub fn mark_resync_required(&mut self) {
+        if self.lifecycle == OwnedProjectionLifecycle::Closed {
+            return;
+        }
         self.lifecycle = OwnedProjectionLifecycle::ResyncRequired;
         self.cancellation.cancel();
         self.ready.notify_waiters();
     }
 
     pub fn cancel(&mut self) {
+        if self.lifecycle == OwnedProjectionLifecycle::Closed {
+            return;
+        }
         self.lifecycle = OwnedProjectionLifecycle::Closed;
         self.cancellation.cancel();
         self.ready.notify_waiters();
+    }
+
+    fn abort_forwarder(&mut self) {
+        if let Some(forwarder) = self.forwarder.as_ref() {
+            forwarder.abort();
+        }
+    }
+
+    /// Cancel this subscription and abort-and-await its forwarder. The method
+    /// is idempotent, making it safe for rollback, disconnect, and shutdown
+    /// paths that converge on the same owned subscription.
+    pub async fn shutdown(&mut self) {
+        self.cancel();
+        if let Some(forwarder) = self.forwarder.take() {
+            forwarder.abort();
+            let _ = forwarder.await;
+        }
     }
 }
 
@@ -169,10 +385,20 @@ pub struct ProjectionConnectionState {
     artifact_reads: usize,
     diagnostics: VecDeque<String>,
     cancellation: CancellationToken,
+    lifecycle_seam: ProjectionLifecycleSeam,
 }
 
 impl ProjectionConnectionState {
     pub fn new(connection_id: impl Into<String>) -> Self {
+        Self::new_with_lifecycle_seam(connection_id, ProjectionLifecycleSeam::default())
+    }
+
+    /// Construct connection state with an adapter-owned lifecycle seam.
+    /// Production callers should normally use [`Self::new`].
+    pub fn new_with_lifecycle_seam(
+        connection_id: impl Into<String>,
+        lifecycle_seam: ProjectionLifecycleSeam,
+    ) -> Self {
         Self {
             connection_id: connection_id.into(),
             mode: ProjectionConnectionMode::Negotiating,
@@ -182,6 +408,7 @@ impl ProjectionConnectionState {
             artifact_reads: 0,
             diagnostics: VecDeque::with_capacity(MAX_CONNECTION_DIAGNOSTICS),
             cancellation: CancellationToken::new(),
+            lifecycle_seam,
         }
     }
 
@@ -221,6 +448,12 @@ impl ProjectionConnectionState {
 
     pub fn cancellation(&self) -> CancellationToken {
         self.cancellation.clone()
+    }
+
+    /// Return the connection-local lifecycle seam used by transport adapter
+    /// tests. The default seam is a no-op.
+    pub fn lifecycle_seam(&self) -> ProjectionLifecycleSeam {
+        self.lifecycle_seam.clone()
     }
 
     pub fn insert_subscription(
@@ -266,6 +499,7 @@ impl ProjectionConnectionState {
         &mut self,
         subscription_id: &ProjectionSubscriptionId,
     ) -> Result<(), ProjectionActivationError> {
+        let connection_cancelled = self.cancellation.is_cancelled();
         let subscription = self
             .subscriptions
             .get_mut(subscription_id)
@@ -275,33 +509,38 @@ impl ProjectionConnectionState {
                 subscription.lifecycle,
             ));
         }
+        if connection_cancelled || subscription.cancellation.is_cancelled() {
+            subscription.cancel();
+            return Err(ProjectionActivationError::Cancelled);
+        }
         subscription.mark_live();
         Ok(())
     }
 
-    /// Cancel and remove a subscription whose initial delivery failed. This
-    /// also stops its forwarder, so a failed activation cannot retain a live
-    /// task or receiver in the connection-local registry.
-    pub async fn rollback_subscription(
+    /// Remove and cancel a subscription before awaiting its task. Callers
+    /// must release the connection-state mutex before joining the returned
+    /// forwarder; task shutdown can otherwise deadlock on the same state.
+    pub fn remove_subscription_for_cleanup(
         &mut self,
         subscription_id: &ProjectionSubscriptionId,
-    ) -> bool {
-        let Some(mut subscription) = self.subscriptions.remove(subscription_id) else {
-            return false;
-        };
+    ) -> Option<OwnedProjectionSubscription> {
+        let mut subscription = self.subscriptions.remove(subscription_id)?;
         subscription.cancel();
-        if let Some(forwarder) = subscription.forwarder.take() {
-            forwarder.abort();
-            let _ = forwarder.await;
-        }
-        true
+        subscription.abort_forwarder();
+        Some(subscription)
     }
 
     pub fn remove_subscription(
         &mut self,
         subscription_id: &ProjectionSubscriptionId,
     ) -> Option<OwnedProjectionSubscription> {
-        self.subscriptions.remove(subscription_id)
+        let mut subscription = self.subscriptions.remove(subscription_id)?;
+        // This synchronous extraction cannot await. Request termination here
+        // so a caller that drops the returned value cannot leave a live
+        // forwarder; async callers should still join it.
+        subscription.cancel();
+        subscription.abort_forwarder();
+        Some(subscription)
     }
 
     pub fn subscriptions(&self) -> impl Iterator<Item = &OwnedProjectionSubscription> {
@@ -341,17 +580,27 @@ impl ProjectionConnectionState {
         self.diagnostics.iter()
     }
 
-    pub async fn cleanup(&mut self) {
+    /// Cancel and detach all connection-owned subscriptions. The returned
+    /// tasks must be joined after the caller releases the state lock.
+    pub fn drain_for_cleanup(&mut self) -> Vec<OwnedProjectionSubscription> {
         self.cancellation.cancel();
-        let mut subscriptions = std::mem::take(&mut self.subscriptions);
-        for subscription in subscriptions.values_mut() {
+        let mut subscriptions = std::mem::take(&mut self.subscriptions)
+            .into_values()
+            .collect::<Vec<_>>();
+        for subscription in &mut subscriptions {
             subscription.cancel();
-            if let Some(forwarder) = subscription.forwarder.take() {
-                forwarder.abort();
-                let _ = forwarder.await;
-            }
         }
         self.artifact_reads = 0;
+        subscriptions
+    }
+
+    /// Abort and await detached connection-owned forwarders. This is kept
+    /// separate from [`Self::drain_for_cleanup`] so no state mutex is held
+    /// while a task is being joined.
+    pub async fn join_cleanup_tasks(mut subscriptions: Vec<OwnedProjectionSubscription>) {
+        for subscription in &mut subscriptions {
+            subscription.shutdown().await;
+        }
     }
 }
 
@@ -436,7 +685,8 @@ mod tests {
                 .lifecycle,
             OwnedProjectionLifecycle::Closed
         );
-        state.cleanup().await;
+        let subscriptions = state.drain_for_cleanup();
+        ProjectionConnectionState::join_cleanup_tasks(subscriptions).await;
         assert_eq!(state.subscriptions().count(), 0);
     }
 
@@ -461,6 +711,44 @@ mod tests {
         );
     }
 
+    #[test]
+    fn activation_and_rollback_are_single_terminal() {
+        let mut state = ProjectionConnectionState::new("connection-a");
+        let subscription_id = ProjectionSubscriptionId::new("sub-a");
+        state.insert_subscription(owned("sub-a")).unwrap();
+
+        state.activate_after_delivery(&subscription_id).unwrap();
+        assert_eq!(
+            state.activate_after_delivery(&subscription_id),
+            Err(ProjectionActivationError::InvalidLifecycle(
+                OwnedProjectionLifecycle::Live
+            ))
+        );
+
+        let removed = state.remove_subscription_for_cleanup(&subscription_id);
+        assert!(removed.is_some());
+        assert!(state
+            .remove_subscription_for_cleanup(&subscription_id)
+            .is_none());
+    }
+
+    #[test]
+    fn activation_rejects_connection_cancellation() {
+        let mut state = ProjectionConnectionState::new("connection-a");
+        let subscription_id = ProjectionSubscriptionId::new("sub-a");
+        state.insert_subscription(owned("sub-a")).unwrap();
+        state.cancellation().cancel();
+
+        assert_eq!(
+            state.activate_after_delivery(&subscription_id),
+            Err(ProjectionActivationError::Cancelled)
+        );
+        assert_eq!(
+            state.subscription(&subscription_id).unwrap().lifecycle,
+            OwnedProjectionLifecycle::Closed
+        );
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn rollback_removes_and_cancels_initializing_subscription() {
         let mut state = ProjectionConnectionState::new("connection-a");
@@ -472,10 +760,45 @@ mod tests {
             cancellation
         };
 
-        assert!(state.rollback_subscription(&subscription_id).await);
+        let subscription = state.remove_subscription_for_cleanup(&subscription_id);
+        assert!(subscription.is_some());
         assert!(cancellation.is_cancelled());
         assert!(!state.owns(&subscription_id));
-        assert!(!state.rollback_subscription(&subscription_id).await);
+        ProjectionConnectionState::join_cleanup_tasks(subscription.into_iter().collect()).await;
+        assert!(state
+            .remove_subscription_for_cleanup(&subscription_id)
+            .is_none());
+    }
+
+    struct NotifyOnDrop(Option<tokio::sync::oneshot::Sender<()>>);
+
+    impl Drop for NotifyOnDrop {
+        fn drop(&mut self) {
+            if let Some(sender) = self.0.take() {
+                let _ = sender.send(());
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn cleanup_aborts_and_awaits_forwarders() {
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (stopped_tx, stopped_rx) = tokio::sync::oneshot::channel();
+        let forwarder = tokio::spawn(async move {
+            let _on_drop = NotifyOnDrop(Some(stopped_tx));
+            let _ = started_tx.send(());
+            std::future::pending::<()>().await;
+        });
+        started_rx.await.unwrap();
+
+        let mut subscription = owned("sub-a");
+        subscription.forwarder = Some(forwarder);
+        let mut state = ProjectionConnectionState::new("connection-a");
+        state.insert_subscription(subscription).unwrap();
+
+        let subscriptions = state.drain_for_cleanup();
+        ProjectionConnectionState::join_cleanup_tasks(subscriptions).await;
+        stopped_rx.await.unwrap();
     }
 
     #[test]
@@ -512,5 +835,44 @@ mod tests {
         });
         cancellation.cancel();
         assert_eq!(task.await.unwrap(), Err(CriticalDeliveryError::Cancelled));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn lifecycle_seam_injects_failure_and_cancellable_pause() {
+        let seam = ProjectionLifecycleSeam::default();
+        let mut state = ProjectionConnectionState::new_with_lifecycle_seam("connection-a", seam);
+        let subscription_id = ProjectionSubscriptionId::new("sub-a");
+        state.insert_subscription(owned("sub-a")).unwrap();
+        let seam = state.lifecycle_seam();
+        let cancellation = state.cancellation();
+        seam.fail_next(
+            ProjectionLifecycleBoundary::BeforeActivation,
+            CriticalDeliveryError::WriterClosed,
+        );
+        assert_eq!(
+            seam.checkpoint(ProjectionLifecycleBoundary::BeforeActivation, &cancellation,)
+                .await,
+            Err(CriticalDeliveryError::WriterClosed)
+        );
+
+        let gate = seam.pause_next(ProjectionLifecycleBoundary::BeforeActivation);
+        let checkpoint = {
+            let seam = seam.clone();
+            let cancellation = cancellation.clone();
+            tokio::spawn(async move {
+                seam.checkpoint(ProjectionLifecycleBoundary::BeforeActivation, &cancellation)
+                    .await
+            })
+        };
+        gate.wait_until_entered().await;
+        cancellation.cancel();
+        assert_eq!(
+            checkpoint.await.unwrap(),
+            Err(CriticalDeliveryError::Cancelled)
+        );
+        assert_eq!(
+            state.activate_after_delivery(&subscription_id),
+            Err(ProjectionActivationError::Cancelled)
+        );
     }
 }

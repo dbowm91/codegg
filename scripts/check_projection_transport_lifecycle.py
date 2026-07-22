@@ -1,0 +1,63 @@
+#!/usr/bin/env python3
+"""Guard connection-owned projection transport lifecycle invariants."""
+
+from pathlib import Path
+import re
+import sys
+
+
+ROOT = Path(__file__).resolve().parent.parent
+
+
+def main() -> int:
+    failures: list[str] = []
+    unix = (ROOT / "src/core/transport/daemon_socket.rs").read_text()
+    ws = (ROOT / "src/server/ws.rs").read_text()
+    projection = (ROOT / "src/core/transport/projection.rs").read_text()
+    unix_production = unix.split("#[cfg(test)]", 1)[0]
+
+    required_unix = (
+        ("JoinSet", "Unix connection tasks must be owned by a JoinSet"),
+        ("let raw_forwarder = tokio::spawn", "raw forwarder handle is not retained"),
+        ("raw_forwarder.await", "raw forwarder is not joined during teardown"),
+        ("forward_events(\n", "raw forwarder call is missing"),
+        ("cancellation.cancelled()", "raw forwarder lacks cancellation handling"),
+        ("DuringWriterWrite", "Unix writer lifecycle seam is not exercised"),
+    )
+    for needle, message in required_unix:
+        if needle not in unix_production:
+            failures.append(f"daemon_socket.rs: {message}")
+
+    if re.search(r"tokio::spawn\(forward_events", unix_production):
+        failures.append("daemon_socket.rs: raw forwarder is spawned without an owned handle")
+
+    required_ws = (
+        ("OutboundRoute::Raw { generation", "raw outbound items lack a route generation"),
+        ("async fn deliver_tui_outbound", "writer-side raw delivery check is missing"),
+        ("raw_route_generation != generation", "stale raw generation is not rejected at write time"),
+        ("queue_raw_json", "raw event queue does not preserve routing generation"),
+        ("ProjectionLifecycleBoundary::BeforeControlEnqueue", "TUI lifecycle seam is not wired"),
+    )
+    for needle, message in required_ws:
+        if needle not in ws:
+            failures.append(f"ws.rs: {message}")
+    if re.search(r"(?:tokio::sync::)?mpsc::unbounded_channel", ws):
+        failures.append("ws.rs: unbounded outbound channel is forbidden")
+    if re.search(r"pub\s+fn\s+mark_live", projection):
+        failures.append("projection.rs: mark_live must remain private to the activation helper")
+    if "fn mark_live(&mut self)" not in projection:
+        failures.append("projection.rs: private activation transition is missing")
+    if "activate_after_delivery" not in projection:
+        failures.append("projection.rs: approved activation helper is missing")
+
+    if failures:
+        for failure in failures:
+            print(f"ERROR: {failure}")
+        return 1
+
+    print("OK: projection transport lifecycle ownership and stale-route guards are present.")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -3,6 +3,7 @@ use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixListener;
 use tokio::sync::{broadcast, Mutex, RwLock};
+use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
 use crate::core::daemon::CoreDaemon;
@@ -14,7 +15,7 @@ use codegg_protocol::projection::replay::ProjectionSubscriptionId;
 
 use super::projection::{
     bounded_critical_delivery, CriticalDeliveryError, OwnedProjectionSubscription,
-    ProjectionConnectionState,
+    ProjectionConnectionState, ProjectionLifecycleBoundary, ProjectionLifecycleSeam,
 };
 
 /// Bind a Unix-domain socket listener to `endpoint`. Returns the bound
@@ -44,7 +45,28 @@ pub async fn run_core_socket_with_listener(
     endpoint: &Path,
     shutdown: CancellationToken,
 ) -> Result<(), AppError> {
+    run_core_socket_with_listener_and_seam(
+        daemon,
+        listener,
+        endpoint,
+        shutdown,
+        ProjectionLifecycleSeam::default(),
+    )
+    .await
+}
+
+/// Serve a pre-bound listener with an adapter-local lifecycle seam. The seam
+/// is normally a no-op; integration tests use it to pause or fail at the
+/// response/receiver/activation boundaries without global mutable hooks.
+pub async fn run_core_socket_with_listener_and_seam(
+    daemon: Arc<CoreDaemon>,
+    listener: UnixListener,
+    endpoint: &Path,
+    shutdown: CancellationToken,
+    lifecycle_seam: ProjectionLifecycleSeam,
+) -> Result<(), AppError> {
     tracing::info!("Core daemon listening on {}", endpoint.display());
+    let mut clients = JoinSet::new();
 
     loop {
         tokio::select! {
@@ -53,16 +75,40 @@ pub async fn run_core_socket_with_listener(
                 tracing::info!("Core daemon accept loop cancelled");
                 break;
             }
+            Some(result) = clients.join_next() => {
+                if let Err(error) = result {
+                    tracing::warn!("Core daemon client task terminated abnormally: {}", error);
+                }
+            }
             accept = listener.accept() => {
                 let (stream, _addr) = accept
                     .map_err(|e| AppError::Other(anyhow::anyhow!("accept failed: {}", e)))?;
                 let daemon = Arc::clone(&daemon);
-                tokio::spawn(async move {
-                    if let Err(e) = handle_client(daemon, stream).await {
+                let client_shutdown = shutdown.child_token();
+                let client_lifecycle_seam = lifecycle_seam.clone();
+                clients.spawn(async move {
+                    if let Err(e) = handle_client(
+                        daemon,
+                        stream,
+                        client_shutdown,
+                        client_lifecycle_seam,
+                    )
+                    .await
+                    {
                         tracing::error!("Client handler error: {}", e);
                     }
                 });
             }
+        }
+    }
+    // Let connection handlers observe shutdown and perform their own cleanup.
+    shutdown.cancel();
+    while let Some(result) = clients.join_next().await {
+        if let Err(error) = result {
+            tracing::warn!(
+                "Core daemon client cleanup terminated abnormally: {}",
+                error
+            );
         }
     }
     Ok(())
@@ -85,6 +131,8 @@ pub async fn run_core_socket(daemon: Arc<CoreDaemon>, endpoint: &str) -> Result<
 async fn handle_client(
     daemon: Arc<CoreDaemon>,
     stream: tokio::net::UnixStream,
+    shutdown: CancellationToken,
+    lifecycle_seam: ProjectionLifecycleSeam,
 ) -> Result<(), AppError> {
     let (read_half, write_half) = stream.into_split();
     let mut reader = BufReader::new(read_half);
@@ -96,21 +144,36 @@ async fn handle_client(
     // event forwarder.
     let client_id = format!("client-{}", uuid::Uuid::new_v4());
     let filters: Arc<RwLock<Vec<EventFilter>>> = Arc::new(RwLock::new(Vec::new()));
-    let projection_state = Arc::new(Mutex::new(ProjectionConnectionState::new(
-        client_id.clone(),
-    )));
+    let projection_state = Arc::new(Mutex::new(
+        ProjectionConnectionState::new_with_lifecycle_seam(client_id.clone(), lifecycle_seam),
+    ));
+    let connection_cancel = shutdown.child_token();
 
     let event_rx = daemon.event_log.subscribe();
     let writer_for_forwarder = Arc::clone(&writer);
     let filters_for_forwarder = Arc::clone(&filters);
-    tokio::spawn(async move {
-        forward_events(event_rx, writer_for_forwarder, filters_for_forwarder).await;
+    let raw_cancellation = connection_cancel.clone();
+    let raw_forwarder = tokio::spawn(async move {
+        forward_events(
+            event_rx,
+            writer_for_forwarder,
+            filters_for_forwarder,
+            raw_cancellation.clone(),
+        )
+        .await;
+        // A writer failure (or a closed event log) must wake the reader loop
+        // so it follows the same cleanup path as EOF and listener shutdown.
+        raw_cancellation.cancel();
     });
 
     let mut line = String::new();
     loop {
         line.clear();
-        match reader.read_line(&mut line).await {
+        let read_result = tokio::select! {
+            _ = connection_cancel.cancelled() => break,
+            result = reader.read_line(&mut line) => result,
+        };
+        match read_result {
             Ok(0) => break,
             Ok(_) => {
                 let trimmed = line.trim();
@@ -185,60 +248,7 @@ async fn handle_client(
                             // response is released. This closes the replay /
                             // live handoff window and makes the receiver the
                             // only source of projection-private events.
-                            let install_result = match &response {
-                                CoreResponse::ProjectionSubscribed {
-                                    subscription_id,
-                                    descriptor,
-                                    cursor,
-                                    retention_floor_seq,
-                                    ..
-                                } => Some(
-                                    install_projection_receiver(
-                                        &daemon,
-                                        &writer,
-                                        &projection_state,
-                                        subscription_id,
-                                        descriptor,
-                                        cursor,
-                                        *retention_floor_seq,
-                                        &client_id,
-                                    )
-                                    .await,
-                                ),
-                                CoreResponse::ProjectionReplay {
-                                    subscription_id: Some(subscription_id),
-                                    batch,
-                                } => {
-                                    let cursor = batch.next_cursor.clone().unwrap_or_else(|| {
-                                        crate::protocol::projection::replay::ProjectionCursor {
-                                            stream_id: batch.descriptor.stream_id.clone(),
-                                            event_seq: batch.current_high_water,
-                                            projection_version: batch.descriptor.projection_version,
-                                        }
-                                    });
-                                    Some(
-                                        install_projection_receiver(
-                                            &daemon,
-                                            &writer,
-                                            &projection_state,
-                                            subscription_id,
-                                            &batch.descriptor,
-                                            &cursor,
-                                            batch.descriptor.retention_floor_seq,
-                                            &client_id,
-                                        )
-                                        .await,
-                                    )
-                                }
-                                _ => None,
-                            };
-                            if install_result == Some(false) {
-                                response = CoreResponse::Error {
-                                    code: "projection_receiver_install_failed".into(),
-                                    message: "projection live receiver could not be installed"
-                                        .into(),
-                                };
-                            }
+                            let lifecycle_seam = projection_state.lock().await.lifecycle_seam();
                             let response_subscription_id = match &response {
                                 CoreResponse::ProjectionSubscribed {
                                     subscription_id, ..
@@ -249,16 +259,133 @@ async fn handle_client(
                                 } => Some(subscription_id.clone()),
                                 _ => None,
                             };
+                            let mut setup_failed = false;
+                            if let Some(subscription_id) = &response_subscription_id {
+                                let cancellation = projection_state.lock().await.cancellation();
+                                if lifecycle_seam
+                                    .checkpoint(
+                                        ProjectionLifecycleBoundary::AfterDaemonSubscriptionCreation,
+                                        &cancellation,
+                                    )
+                                    .await
+                                    .is_err()
+                                {
+                                    cleanup_projection_subscription(
+                                        &daemon,
+                                        &projection_state,
+                                        subscription_id,
+                                        &client_id,
+                                    )
+                                    .await;
+                                    setup_failed = true;
+                                }
+                            }
+                            let install_result = if setup_failed {
+                                None
+                            } else {
+                                match &response {
+                                    CoreResponse::ProjectionSubscribed {
+                                        subscription_id,
+                                        descriptor,
+                                        cursor,
+                                        retention_floor_seq,
+                                        ..
+                                    } => Some(
+                                        install_projection_receiver(
+                                            &daemon,
+                                            &writer,
+                                            &projection_state,
+                                            subscription_id,
+                                            descriptor,
+                                            cursor,
+                                            *retention_floor_seq,
+                                            &client_id,
+                                        )
+                                        .await,
+                                    ),
+                                    CoreResponse::ProjectionReplay {
+                                        subscription_id: Some(subscription_id),
+                                        batch,
+                                    } => {
+                                        let cursor = batch.next_cursor.clone().unwrap_or_else(|| {
+                                            crate::protocol::projection::replay::ProjectionCursor {
+                                                stream_id: batch.descriptor.stream_id.clone(),
+                                                event_seq: batch.current_high_water,
+                                                projection_version: batch.descriptor.projection_version,
+                                            }
+                                        });
+                                        Some(
+                                            install_projection_receiver(
+                                                &daemon,
+                                                &writer,
+                                                &projection_state,
+                                                subscription_id,
+                                                &batch.descriptor,
+                                                &cursor,
+                                                batch.descriptor.retention_floor_seq,
+                                                &client_id,
+                                            )
+                                            .await,
+                                        )
+                                    }
+                                    _ => None,
+                                }
+                            };
+                            if install_result == Some(false) {
+                                response = CoreResponse::Error {
+                                    code: "projection_receiver_install_failed".into(),
+                                    message: "projection live receiver could not be installed"
+                                        .into(),
+                                };
+                            } else if setup_failed {
+                                response = CoreResponse::Error {
+                                    code: "projection_subscription_setup_failed".into(),
+                                    message: "projection subscription setup was cancelled".into(),
+                                };
+                            } else if install_result == Some(true) && {
+                                let cancellation = projection_state.lock().await.cancellation();
+                                lifecycle_seam
+                                    .checkpoint(
+                                        ProjectionLifecycleBoundary::AfterReceiverInstallation,
+                                        &cancellation,
+                                    )
+                                    .await
+                                    .is_err()
+                            } {
+                                if let Some(subscription_id) = &response_subscription_id {
+                                    cleanup_projection_subscription(
+                                        &daemon,
+                                        &projection_state,
+                                        subscription_id,
+                                        &client_id,
+                                    )
+                                    .await;
+                                }
+                                response = CoreResponse::Error {
+                                    code: "projection_receiver_setup_failed".into(),
+                                    message: "projection receiver setup was cancelled".into(),
+                                };
+                            }
                             let frame = CoreFrame::Response {
                                 request_id,
                                 response: Box::new(response),
                             };
                             let cancellation = projection_state.lock().await.cancellation();
-                            let delivery = bounded_critical_delivery(
-                                &cancellation,
-                                send_frame(&writer, &frame),
-                            )
-                            .await;
+                            let delivery = if response_subscription_id.is_some() {
+                                staged_socket_critical_delivery(
+                                    &writer,
+                                    &frame,
+                                    &cancellation,
+                                    &lifecycle_seam,
+                                )
+                                .await
+                            } else {
+                                bounded_critical_delivery(
+                                    &cancellation,
+                                    send_frame(&writer, &frame),
+                                )
+                                .await
+                            };
                             if let Err(error) = delivery {
                                 if let Some(subscription_id) = &response_subscription_id {
                                     cleanup_projection_subscription(
@@ -276,6 +403,26 @@ async fn handle_client(
                                 break;
                             }
                             if let Some(subscription_id) = response_subscription_id {
+                                if lifecycle_seam
+                                    .checkpoint(
+                                        ProjectionLifecycleBoundary::BeforeActivation,
+                                        &cancellation,
+                                    )
+                                    .await
+                                    .is_err()
+                                {
+                                    cleanup_projection_subscription(
+                                        &daemon,
+                                        &projection_state,
+                                        &subscription_id,
+                                        &client_id,
+                                    )
+                                    .await;
+                                    tracing::warn!(
+                                        "projection activation cancelled before Unix-socket response commit"
+                                    );
+                                    break;
+                                }
                                 let activation = projection_state
                                     .lock()
                                     .await
@@ -364,13 +511,8 @@ async fn handle_client(
                                 projection_supported.then_some(1),
                             );
                             if !projection_supported {
-                                let subscription_ids: Vec<_> = projection_state
-                                    .lock()
-                                    .await
-                                    .subscriptions()
-                                    .map(|subscription| subscription.subscription_id.clone())
-                                    .collect();
-                                projection_state.lock().await.cleanup().await;
+                                let subscription_ids =
+                                    cleanup_projection_state(&projection_state).await;
                                 for subscription_id in subscription_ids {
                                     let _ = daemon
                                         .handle_request_for_client(
@@ -449,15 +591,21 @@ async fn handle_client(
         }
     }
 
+    connection_cancel.cancel();
+    // Join the raw task before doing any connection-owned daemon I/O. The
+    // cancellation is idempotent, so this is the same safe path for EOF,
+    // listener shutdown, and a writer failure reported by the forwarder.
+    if let Err(error) = raw_forwarder.await {
+        tracing::warn!(
+            client_id = %client_id,
+            "Unix raw event forwarder terminated abnormally: {}",
+            error
+        );
+    }
+
     daemon.clients.unregister(&client_id);
 
-    let subscription_ids: Vec<_> = projection_state
-        .lock()
-        .await
-        .subscriptions()
-        .map(|subscription| subscription.subscription_id.clone())
-        .collect();
-    projection_state.lock().await.cleanup().await;
+    let subscription_ids = cleanup_projection_state(&projection_state).await;
     for subscription_id in subscription_ids {
         let _ = daemon
             .handle_request_for_client(
@@ -561,11 +709,7 @@ async fn cleanup_projection_subscription(
     subscription_id: &ProjectionSubscriptionId,
     client_id: &str,
 ) {
-    let _ = projection_state
-        .lock()
-        .await
-        .rollback_subscription(subscription_id)
-        .await;
+    stop_projection_subscription(projection_state, subscription_id).await;
     let _ = daemon
         .handle_request_for_client(
             crate::core::new_request(
@@ -577,6 +721,67 @@ async fn cleanup_projection_subscription(
             client_id,
         )
         .await;
+}
+
+/// Cancel and join one projection forwarder without holding the connection
+/// state lock across the join. Removing it first also makes repeated cleanup
+/// calls harmless.
+async fn stop_projection_subscription(
+    projection_state: &Arc<Mutex<ProjectionConnectionState>>,
+    subscription_id: &ProjectionSubscriptionId,
+) -> bool {
+    let Some(mut subscription) = ({
+        let mut state = projection_state.lock().await;
+        state.remove_subscription(subscription_id)
+    }) else {
+        return false;
+    };
+
+    subscription.cancel();
+    if let Some(forwarder) = subscription.forwarder.take() {
+        forwarder.abort();
+        let _ = forwarder.await;
+    }
+    true
+}
+
+/// Drain all projection subscriptions owned by a connection. State is
+/// removed while locked, then cancellation and joins happen after the lock is
+/// released. This is safe to call more than once.
+async fn cleanup_projection_state(
+    projection_state: &Arc<Mutex<ProjectionConnectionState>>,
+) -> Vec<ProjectionSubscriptionId> {
+    let (cancellation, mut subscriptions) = {
+        let mut state = projection_state.lock().await;
+        let cancellation = state.cancellation();
+        let ids: Vec<_> = state
+            .subscriptions()
+            .map(|subscription| subscription.subscription_id.clone())
+            .collect();
+        let subscriptions: Vec<_> = ids
+            .iter()
+            .filter_map(|subscription_id| {
+                state
+                    .remove_subscription(subscription_id)
+                    .map(|subscription| (subscription_id.clone(), subscription))
+            })
+            .collect();
+        (cancellation, subscriptions)
+    };
+
+    cancellation.cancel();
+    let ids = subscriptions
+        .iter()
+        .map(|(subscription_id, _)| subscription_id.clone())
+        .collect();
+    for (_, subscription) in &mut subscriptions {
+        subscription.cancel();
+        if let Some(forwarder) = subscription.forwarder.take() {
+            forwarder.abort();
+            let _ = forwarder.await;
+        }
+    }
+    ids
 }
 
 /// Forward projection events from a subscription receiver to the client writer.
@@ -626,9 +831,14 @@ async fn forward_events(
     mut event_rx: broadcast::Receiver<EventEnvelope<CoreEvent>>,
     writer: Arc<tokio::sync::Mutex<tokio::net::unix::OwnedWriteHalf>>,
     filters: Arc<RwLock<Vec<EventFilter>>>,
+    cancellation: CancellationToken,
 ) {
     loop {
-        match event_rx.recv().await {
+        let receive = tokio::select! {
+            _ = cancellation.cancelled() => break,
+            receive = event_rx.recv() => receive,
+        };
+        match receive {
             Ok(event) => {
                 if matches!(event.payload, CoreEvent::ProjectionStreamEvent { .. }) {
                     continue;
@@ -651,7 +861,11 @@ async fn forward_events(
                     continue;
                 }
                 let frame = CoreFrame::Event(event);
-                if send_frame(&writer, &frame).await.is_err() {
+                let send_result = tokio::select! {
+                    _ = cancellation.cancelled() => break,
+                    result = send_frame(&writer, &frame) => result,
+                };
+                if send_result.is_err() {
                     break;
                 }
             }
@@ -680,10 +894,37 @@ async fn send_frame(
         .map_err(|_| CriticalDeliveryError::WriterClosed)
 }
 
+async fn staged_socket_critical_delivery(
+    writer: &Arc<tokio::sync::Mutex<tokio::net::unix::OwnedWriteHalf>>,
+    frame: &CoreFrame,
+    cancellation: &CancellationToken,
+    lifecycle_seam: &ProjectionLifecycleSeam,
+) -> Result<(), CriticalDeliveryError> {
+    lifecycle_seam
+        .checkpoint(
+            ProjectionLifecycleBoundary::BeforeControlEnqueue,
+            cancellation,
+        )
+        .await?;
+    // The Unix transport has no intermediate bounded queue, so this marks
+    // the point at which the response is committed to the direct writer path.
+    lifecycle_seam
+        .checkpoint(
+            ProjectionLifecycleBoundary::AfterControlEnqueueBeforeWriterReceipt,
+            cancellation,
+        )
+        .await?;
+    lifecycle_seam
+        .checkpoint(ProjectionLifecycleBoundary::DuringWriterWrite, cancellation)
+        .await?;
+    bounded_critical_delivery(cancellation, send_frame(writer, frame)).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::protocol::core::{CoreEvent, EventEnvelope, PROTOCOL_VERSION};
+    use std::time::Duration;
 
     fn envelope(seq: u64, session_id: Option<&str>) -> EventEnvelope<CoreEvent> {
         EventEnvelope {
@@ -797,6 +1038,67 @@ mod tests {
 
         let result = send_frame(&writer, &CoreFrame::Ping).await;
         assert_eq!(result, Err(CriticalDeliveryError::WriterClosed));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn raw_forwarder_cancellation_releases_receiver_and_shared_state() {
+        let (event_tx, event_rx) = broadcast::channel(4);
+        let (writer_stream, _peer_stream) = tokio::net::UnixStream::pair().unwrap();
+        let (_, writer_half) = writer_stream.into_split();
+        let writer = Arc::new(Mutex::new(writer_half));
+        let filters = Arc::new(RwLock::new(Vec::new()));
+        let cancellation = CancellationToken::new();
+
+        let handle = tokio::spawn(forward_events(
+            event_rx,
+            Arc::clone(&writer),
+            Arc::clone(&filters),
+            cancellation.clone(),
+        ));
+        assert_eq!(event_tx.receiver_count(), 1);
+
+        cancellation.cancel();
+        tokio::time::timeout(Duration::from_millis(100), handle)
+            .await
+            .expect("raw forwarder should join after cancellation")
+            .expect("raw forwarder should not panic");
+
+        assert_eq!(event_tx.receiver_count(), 0);
+        assert_eq!(Arc::strong_count(&writer), 1);
+        assert_eq!(Arc::strong_count(&filters), 1);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn raw_forwarder_writer_failure_terminates_without_a_retained_receiver() {
+        let (event_tx, event_rx) = broadcast::channel(4);
+        let (writer_stream, peer_stream) = tokio::net::UnixStream::pair().unwrap();
+        let (_, writer_half) = writer_stream.into_split();
+        let writer = Arc::new(Mutex::new(writer_half));
+        let filters = Arc::new(RwLock::new(vec![EventFilter {
+            session_id: None,
+            client_id: None,
+            include_global: true,
+        }]));
+        let cancellation = CancellationToken::new();
+
+        let handle = tokio::spawn(forward_events(
+            event_rx,
+            Arc::clone(&writer),
+            Arc::clone(&filters),
+            cancellation,
+        ));
+        drop(peer_stream);
+        event_tx
+            .send(envelope(1, None))
+            .expect("forwarder should still own the receiver");
+
+        tokio::time::timeout(Duration::from_millis(100), handle)
+            .await
+            .expect("writer failure should terminate the raw forwarder")
+            .expect("raw forwarder should not panic");
+        assert_eq!(event_tx.receiver_count(), 0);
+        assert_eq!(Arc::strong_count(&writer), 1);
+        assert_eq!(Arc::strong_count(&filters), 1);
     }
 
     #[tokio::test]

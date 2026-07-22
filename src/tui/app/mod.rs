@@ -14136,8 +14136,8 @@ mod remote_protocol_tests {
     }
 
     #[test]
-    fn protocol_version_constant_is_four() {
-        assert_eq!(REMOTE_TUI_PROTOCOL_VERSION, 4);
+    fn protocol_version_constant_is_five() {
+        assert_eq!(REMOTE_TUI_PROTOCOL_VERSION, 5);
     }
 
     #[test]
