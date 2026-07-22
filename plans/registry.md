@@ -30,25 +30,25 @@ Canonical direction remains in:
 | Provider connections and Eggpool | closed | `plans/subsystems/provider-connections-roadmap.md` | Milestone 5 closed | — |
 | Project catalog and lazy discovery | closed | `plans/subsystems/project-catalog-roadmap.md` | Milestone 4 closed | — |
 | Multi-project TUI and sessions | closed | `plans/subsystems/tui-project-sessions-roadmap.md` | Milestones 001–004 closed | — |
-| Frontend-neutral session projections | closed | `plans/subsystems/session-projections-roadmap.md` | Milestone 007 — corrective transport lifecycle and evidence closure | — |
+| Frontend-neutral session projections | active | `plans/subsystems/session-projections-roadmap.md` | Milestone 008 — final transport lifecycle and replay evidence polish | Ready; M007 remains conditionally closed on joined WebSocket task teardown, complete adapter-level failure evidence, exact replay sequence continuity, and final closure reconciliation |
 
 ## Dependency-ready implementation plans
 
 | Subsystem | Milestone | Class | Plan | Baseline | Status |
 |---|---|---|---|---|---|
-| — | — | — | — | — | No dependency-ready projection plan remains; deferred product work is intentionally unregistered |
+| Frontend-neutral session projections | 008 — final transport lifecycle and replay evidence polish | correctness polish / task lifecycle / adapter verification / closure reconciliation | `plans/implementation/session-projections/008-final-transport-lifecycle-and-replay-evidence-polish.md` | `8b547a3` | ready |
 
 ## Active closure work
 
 | Subsystem | Milestone | Closure record | Status | Open findings |
 |---|---|---|---|---|
-| — | — | — | — | No active session-projections closure work remains |
+| Frontend-neutral session projections | 007 — corrective transport lifecycle and evidence closure | `plans/closure/session-projections/007-status.md` | conditionally closed | `/core` and `/tui` sibling tasks are aborted but not awaited; staged adapter failure matrix is incomplete; reconnect tests do not prove full envelope sequence continuity and no duplication |
 
 ## Blocked work
 
 | Work item | Blocker | Required resolution | Owner document |
 |---|---|---|---|
-| — | — | — | No blocked session-projections work remains; M007 strict closure was accepted |
+| Return Session Projections roadmap to strict closed status | M008 final lifecycle/evidence findings | Implement joined `/core` and `/tui` connection-task teardown, complete staged adapter failures, prove exact replay-to-live envelope sequences without gaps/duplicates, and accept an M008 closure record | `plans/implementation/session-projections/008-final-transport-lifecycle-and-replay-evidence-polish.md` |
 
 ## Deferred unregistered product work
 
@@ -64,8 +64,8 @@ These are not dependency-ready correctness plans and remain outside the active h
 
 | Subsystem | Milestone | Closure record | Closed at commit | Follow-up |
 |---|---|---|---|---|
-| Frontend-neutral session projections | 007 — corrective transport lifecycle and evidence closure | `plans/closure/session-projections/007-status.md` | `9887c2d` implementation; `922333b` closure | Strict subsystem closure; no dependency-ready projection plan remains |
-| Frontend-neutral session projections | 006 — atomic control delivery, transport verification, and raw compatibility hardening | `plans/closure/session-projections/006-status.md` | `270cc5f` closure; `8ca570f` implementation | Historical conditional record; its findings were resolved by M007 strict closure |
+| Frontend-neutral session projections | 007 — corrective transport lifecycle and evidence closure | `plans/closure/session-projections/007-status.md` | `9887c2d` implementation; `922333b` original closure | Corrected to conditional closure; M008 owns final WebSocket task-join, adapter-failure, and replay-sequence evidence polish |
+| Frontend-neutral session projections | 006 — atomic control delivery, transport verification, and raw compatibility hardening | `plans/closure/session-projections/006-status.md` | `270cc5f` closure; `8ca570f` implementation | Historical conditional record; M007 resolved its principal lifecycle and race findings |
 | Frontend-neutral session projections | 005 — remote transport isolation, resume, and compatibility closure | `plans/closure/session-projections/005-status.md` | `4c751ff` | M006 hardened atomic control delivery and normal-flow transport evidence |
 | Frontend-neutral session projections | 004 — frontend adoption and compatibility | `plans/closure/session-projections/004-status.md` | `4c751ff` (strictly closed after corrective transport closure) | — |
 | Frontend-neutral session projections | 003 — visibility, redaction, and artifact handles | `plans/closure/session-projections/003-status.md` | `bac73ce` | — |
