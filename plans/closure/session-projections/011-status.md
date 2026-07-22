@@ -22,7 +22,7 @@ Implementation, follow-up, closure, and final reviewed commits:
 - `ae0a53f2259316217cdd55a7a158e2500a874f75` — M011 Work Package F completion: F1–F5 fixtures added (peer close before canonical response, real writer failure via partial-close, completion-vs-cancellation race, interrupted replay delivery, repeated convergence), plus writer-gate cancellation-arm bug fix in `WriterGate::wait` and `WriterGate::wait_pre_recv`, plus cancellation branch in the writer's biased `tokio::select!`. F1–F5 pass against `target/debug/deps/codegg-3d7d14e7658300a2`.
 - `b98a626217505f094a210a8c640e1f1530280cfb` — M011 Work Package G completion: `assert_tui_transport_rollback_complete` helper added for the TUI-shaped rollback path; TUI raw-source-first, TUI pending snapshot, and core writer-failure fixtures upgraded to use the complete harness. `tokio::task::sleep(...)` corrected to `tokio::time::sleep(...)` in the TUI raw-source fixture.
 - `0b61fbd97e41dca899a4626f81be420e018b1233` — M011 Work Package H: `scripts/check_projection_transport_lifecycle.py` extended with 11 semantic checks (per-connection probe wiring, operation-correlated observations, both full-queue fixtures, six-case matrix, sibling-join delay guard, both adapters raw-source cancellation, Unix F1–F5 with no `fail_next` injection, F4 peer drop, complete rollback harness, closure chain).
-- `<M011-CLOSURE-COMMIT>` — M011 closure: this record plus the registry/roadmap reconciliation. Final commit SHA recorded at the bottom of this record after the closure commit is created.
+- `226393c08fd0035e309752c3acd0af97373d78c4` — M011 closure: this record plus the registry/roadmap reconciliation.
 
 ## 1. Closure decision
 
