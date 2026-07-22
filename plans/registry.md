@@ -30,7 +30,25 @@ Canonical direction remains in:
 | Provider connections and Eggpool | closed | `plans/subsystems/provider-connections-roadmap.md` | Milestone 5 closed | — |
 | Project catalog and lazy discovery | closed | `plans/subsystems/project-catalog-roadmap.md` | Milestone 4 closed | — |
 | Multi-project TUI and sessions | closed | `plans/subsystems/tui-project-sessions-roadmap.md` | Milestones 001–004 closed | — |
-| Frontend-neutral session projections | closed | `plans/subsystems/session-projections-roadmap.md` | Milestones 001–010 closed | — |
+| Frontend-neutral session projections | active | `plans/subsystems/session-projections-roadmap.md` | Milestone 011 — evidence correctness and mechanism verification closure | Ready; M010 remains conditionally closed on operation-correlated `/core` and `/tui` queue timeouts, six production-path task-owner cases, TUI raw-source-first, actual Unix pre-response I/O/race/replay interruption, per-connection complete rollback, semantic guards, and exact evidence reconciliation |
+
+## Dependency-ready implementation plans
+
+| Subsystem | Milestone | Class | Plan | Baseline | Status |
+|---|---|---|---|---|---|
+| Frontend-neutral session projections | 011 — evidence correctness and mechanism verification closure | verification correction / mechanism attribution / per-connection evidence / Unix I/O races / closure integrity | `plans/implementation/session-projections/011-evidence-correctness-and-mechanism-verification-closure.md` | `8bd59b2` | ready |
+
+## Active closure work
+
+| Subsystem | Milestone | Closure record | Status | Open findings |
+|---|---|---|---|---|
+| Frontend-neutral session projections | 010 — mechanism-faithful transport verification and final closure | `plans/closure/session-projections/010-status.md` | conditionally closed | `/core` timeout is not causally attributed to a full-channel enqueue; `/tui` saturation is absent; task-owner matrix does not prove six production joins; TUI raw-source-first and actual Unix pre-response I/O/race/replay interruption remain unproven; rollback evidence is incomplete/aggregate; guards and closure evidence require correction |
+
+## Blocked work
+
+| Work item | Blocker | Required resolution | Owner document |
+|---|---|---|---|
+| Return Session Projections roadmap to strict closed status | M011 evidence correctness findings | Prove full-before-request enqueue timeout for `/core` and `/tui`; six production-path first-exit cases; both-adapter raw-source-first; actual Unix peer-induced I/O and forced race/interrupted replay; per-connection complete rollback/non-interference; semantic guards; exact final evidence | `plans/implementation/session-projections/011-evidence-correctness-and-mechanism-verification-closure.md` |
 
 ## Deferred unregistered product work
 
@@ -46,12 +64,12 @@ These are not dependency-ready correctness plans and remain outside the active h
 
 | Subsystem | Milestone | Closure record | Closed at commit | Follow-up |
 |---|---|---|---|---|
-| Frontend-neutral session projections | 010 — mechanism-faithful transport verification and final closure | `plans/closure/session-projections/010-status.md` | `a3ab136` implementation; `4b3adab` prior registry update | Strict closure recorded; static guard `scripts/check_projection_transport_lifecycle.py` enforces M010 mechanism markers |
-| Frontend-neutral session projections | 009 — production-shaped transport verification and strict closure | `plans/closure/session-projections/009-status.md` | `3406c742` implementation/evidence; `426dfffe` follow-up | Corrected to conditional closure; M010 owns mechanism-faithful queues, task-kind/raw-source, Unix races, TUI interruption, complete rollback, guards, and exact closure evidence |
-| Frontend-neutral session projections | 008 — final transport lifecycle and replay evidence polish | `plans/closure/session-projections/008-status.md` | `6975050a` implementation; `ea6e38d` original closure | Historical conditional record; M009/M010 own final verification depth |
-| Frontend-neutral session projections | 007 — corrective transport lifecycle and evidence closure | `plans/closure/session-projections/007-status.md` | `9887c2d` implementation; `922333b` original closure | Historical conditional record; M008 resolved principal task-join and replay-sequence findings |
+| Frontend-neutral session projections | 010 — mechanism-faithful transport verification and final closure | `plans/closure/session-projections/010-status.md` | `a3ab136` implementation; final reviewed M10 head `8bd59b2` | Corrected to conditional closure; M011 owns causal queue evidence, production task joins, TUI raw-source, real Unix I/O/races/replay interruption, complete rollback, guards, and exact evidence |
+| Frontend-neutral session projections | 009 — production-shaped transport verification and strict closure | `plans/closure/session-projections/009-status.md` | `3406c742` implementation/evidence; `426dfffe` follow-up | Historical conditional record; M10/M11 own final verification depth |
+| Frontend-neutral session projections | 008 — final transport lifecycle and replay evidence polish | `plans/closure/session-projections/008-status.md` | `6975050a` implementation; `ea6e38d` original closure | Historical conditional record; M9–M11 own final verification depth |
+| Frontend-neutral session projections | 007 — corrective transport lifecycle and evidence closure | `plans/closure/session-projections/007-status.md` | `9887c2d` implementation; `922333b` original closure | Historical conditional record; M8 resolved principal task-join and replay-sequence findings |
 | Frontend-neutral session projections | 006 — atomic control delivery, transport verification, and raw compatibility hardening | `plans/closure/session-projections/006-status.md` | `270cc5f` closure; `8ca570f` implementation | Historical conditional record; later milestones resolved principal lifecycle and race findings |
-| Frontend-neutral session projections | 005 — remote transport isolation, resume, and compatibility closure | `plans/closure/session-projections/005-status.md` | `4c751ff` | M006 hardened atomic control delivery and normal-flow transport evidence |
+| Frontend-neutral session projections | 005 — remote transport isolation, resume, and compatibility closure | `plans/closure/session-projections/005-status.md` | `4c751ff` | M6 hardened atomic control delivery and normal-flow transport evidence |
 | Frontend-neutral session projections | 004 — frontend adoption and compatibility | `plans/closure/session-projections/004-status.md` | `4c751ff` (strictly closed after corrective transport closure) | — |
 | Frontend-neutral session projections | 003 — visibility, redaction, and artifact handles | `plans/closure/session-projections/003-status.md` | `bac73ce` | — |
 | Frontend-neutral session projections | 002 — scoped subscriptions and durable replay | `plans/closure/session-projections/002-status.md` | `c1d910a` corrective integration; library at `8dc4b85` | — |
