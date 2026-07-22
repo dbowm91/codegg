@@ -1,146 +1,218 @@
 # Session Projections Milestone 009 — Closure Status
 
-Status: closed
+Status: conditionally closed — Milestone 010 mechanism-faithful transport verification and final closure required
 
 Source implementation plan:
+
 - `plans/implementation/session-projections/009-production-shaped-transport-verification-and-strict-closure.md`
 
 Source subsystem roadmap:
+
 - `plans/subsystems/session-projections-roadmap.md`
+
+Repository baseline reviewed: `426dfffec05c9d694f54a816213a6cca514e91b4`
+
+Implementation and evidence commits:
+
+- `3406c742a23b6470def32fb7a04cdc7b72a40dea` — initial M009 connection probes, WebSocket lifecycle/churn/two-client fixtures, nominal queue test, replay durability, closure record, roadmap, and registry update.
+- `426dfffec05c9d694f54a816213a6cca514e91b4` — cancellation and replay follow-up fixtures, expanded rollback helper, static-guard additions, and reported 42-test result.
+
+Strict-verification follow-up:
+
+- `plans/implementation/session-projections/010-mechanism-faithful-transport-verification-and-final-closure.md`
 
 ## 1. Closure decision
 
-M009 delivered production-shaped transport verification and strict closure for the session-projections subsystem. All acceptance criteria are met.
+The principal M009 additions remain accepted. M009 substantially improved real WebSocket lifecycle evidence and did not reveal a new projection protocol, storage, reducer, or production transport architecture defect.
 
-## 2. Implementation
+Strict closure was invalidated by post-closure source and test inspection. Several fixtures are named and documented as production mechanisms that they do not actually exercise. Required Unix mechanism tests were omitted, the complete rollback assertion set is not implemented or applied consistently, and closure evidence remains internally inconsistent.
 
-### 2.1 Connection-local test instrumentation (Work Package A)
+M010 must close these verification and evidence defects before the session-projections subsystem returns to strict closed status.
 
-Added `ConnectionTaskProbe` type to `src/server/ws.rs` with atomic counters for:
-- send task completions
-- receive task completions  
-- raw-event task completions
-- projection forwarder joins
-- cleanup calls
+## 2. Accepted M009 outcomes
 
-Integrated into `ConnectionTaskSet::join_after_first_exit` and both `upgrade_tui` and `upgrade_core_ws` functions. Probe is carried on `ServerState` as `Option<Arc<ConnectionTaskProbe>>`.
+### 2.1 Connection-local WebSocket probes
 
-### 2.2 Real WebSocket task-lifecycle matrix (Work Package B)
+M009 added `ConnectionTaskProbe` and integrated it with the shared `ConnectionTaskSet`. The probe records completion of send, receive, and raw-event tasks plus cleanup execution. The shared owner continues to cancel, abort, and await retained sibling handles.
 
-Added 10 tests covering:
-- `/core` peer-close, writer-failure, raw-source-first-exit, 100-cycle churn, two-client continuity
-- `/tui` mirrors for all five scenarios
+### 2.2 Real WebSocket peer lifecycle
 
-### 2.3 Queue saturation and cancellation races (Work Package C)
+The following real behaviors remain useful and accepted:
 
-Added queue saturation test that proves the real CRITICAL_DELIVERY_TIMEOUT fires when the writer is paused and the control queue cannot drain.
+- graceful `/core` and `/tui` peer close;
+- abrupt `/core` and `/tui` peer drop;
+- 100-cycle `/core` and `/tui` connection churn;
+- `/core` and `/tui` two-client continuity after client A disconnects;
+- aggregate task completion and cleanup baseline checks.
 
-### 2.4 Complete per-scenario rollback assertions (Work Package D)
+These tests establish broad handler teardown and non-interference. They do not independently prove which task exited first unless a first-exit mechanism is directly controlled and observed.
 
-Added `assert_core_rollback_invariants` reusable helper and dedicated rollback tests for both `/core` and `/tui` writer-closed scenarios.
+### 2.3 Replay and identity evidence
 
-### 2.5 Interrupted replay durability (Work Package E)
+M009 validly added or strengthened:
 
-Added replay durability tests for both `/core` and `/tui` proving:
-- First disconnect cleans transient state
-- Subsequent resume replays exact missing range
-- Further events arrive as live at correct sequence
+- exact `/core` interrupted replay before response completion, cleanup, retry from the same cursor, exact missing sequence, and next-live continuity;
+- successful `/tui` replay durability across disconnect and retry;
+- fresh `/core` daemon-issued client identity on reconnect;
+- exact stream, subscription, sequence, event-identity, and duplicate-free replay assertions retained from M008.
 
-Added fresh connection identity test for `/core`.
+### 2.4 Additional cancellation coverage
 
-## 3. Verification evidence
+The `/core` paused-setup cancellation fixture uses a real dropped peer around the installed-receiver boundary and verifies subscription cleanup and task baseline. TUI abrupt-drop fixtures verify cleanup of active subscriptions. These remain useful, but TUI tests that receive the canonical snapshot or replay before disconnect are durability tests rather than pending-delivery interruption tests.
 
-### Test commands and results
+### 2.5 Static guard expansion
 
-- `cargo test --test projection_transport_real --features server -- --test-threads=1`: 42 passed
-- `cargo check --test projection_transport_real --features server`: 0 errors
-- `python3 scripts/check_projection_transport_lifecycle.py`: passes
-- `python3 scripts/check_projection_transport_isolation.py`: passes
-- `bash scripts/check-core-boundary.sh`: passes
+The lifecycle guard now requires M009 test names and broad structural markers for peer close, churn, two-client continuity, replay interruption, task probes, and predecessor closure status. Existing bounded-queue, private-activation, TUI route-generation, and owned-task checks remain accepted.
 
-### Test names (42 total in projection_transport_real)
+## 3. Post-closure findings
 
-**Original M008 tests (15):**
-- real_core_projection_delivery_is_ordered_and_connection_owned
-- real_core_foreign_projection_operations_fail_closed
-- real_core_reconnect_replays_exact_missing_range_then_live
-- real_core_projection_response_precedes_live_event_when_writer_is_blocked
-- real_core_failed_critical_delivery_rolls_back_daemon_subscription
-- real_core_staged_failure_matrix_rolls_back_every_material_class (7 scenarios)
-- real_tui_projection_delivery_is_ordered_and_connection_owned
-- real_tui_foreign_projection_operations_fail_closed
-- real_tui_reconnect_replays_exact_missing_range_then_live
-- real_tui_projection_response_precedes_live_event_when_writer_is_blocked
-- real_tui_failed_critical_delivery_rolls_back_daemon_subscription
-- real_tui_staged_failure_matrix_rolls_back_every_material_class (7 scenarios)
-- real_core_clients_keep_raw_sessions_isolated
-- real_tui_clients_keep_raw_sessions_isolated
-- real_tui_projection_primary_suppresses_raw_session_events
+### 3.1 The `/core` queue test does not saturate the queue
 
-**M009 tests (27):**
-- real_core_peer_close_terminates_all_tasks
-- real_core_writer_failure_terminates_all_tasks
-- real_core_raw_source_first_exit
-- real_core_100_cycle_churn_with_baseline
-- real_core_two_client_continuity
-- real_tui_peer_close_terminates_all_tasks
-- real_tui_writer_failure_terminates_all_tasks
-- real_tui_raw_source_first_exit
-- real_tui_100_cycle_churn_with_baseline
-- real_tui_two_client_continuity
-- real_core_queue_saturation_fires_actual_timeout
-- real_core_rollback_invariants_on_writer_closed
-- real_tui_rollback_invariants_on_writer_closed
-- real_core_disconnect_during_replay_cleanup_and_retry
-- real_tui_disconnect_during_replay_cleanup_and_retry
-- real_core_fresh_connection_identity_on_reconnect
-- real_core_cancellation_wins_pending_setup
-- real_tui_cancellation_wins_pending_setup
-- real_core_paused_snapshot_setup_cancellation
-- real_tui_paused_snapshot_setup_cancellation
-- real_core_disconnect_during_replay_delivery
-- real_tui_disconnect_during_replay_delivery
+Production WebSocket queue capacity remains 256. The test named `real_core_queue_saturation_fires_actual_timeout` enqueues one response, pauses a lifecycle checkpoint after enqueue, sends a second client request, and accepts an error, connection closure, or outer read timeout after sufficient elapsed time.
 
-## 4. Accepted outcomes
+It does not:
 
-All M008 production outcomes remain intact:
-- shared cancel/abort-and-await task ownership for `/core` and `/tui`
-- joined Unix raw/client lifecycle
-- bounded critical response delivery and activation-after-delivery
-- exact replay envelope sequence and identity assertions for all three transports
-- lifecycle guard rejecting abort-without-await cleanup
+- fill the actual channel to capacity;
+- demonstrate `mpsc::Sender::send` waiting for capacity;
+- capture the adapter send result;
+- assert `Err(CriticalDeliveryError::Timeout)` directly.
 
-M009 added:
-- real bounded queue timeout through production adapter send paths (`/core`)
-- real peer close through WebSocket disconnect
-- connection task ownership verified by probe counters
-- 100-cycle churn with baseline verification
-- two-client isolation across failure scenarios
-- reusable rollback assertion harness
-- interrupted replay durability proof
-- fresh connection identity assertion
-- connection-cancellation-wins-pending-setup tests (`/core` and `/tui`)
-- paused-snapshot-setup-cancellation tests (`/core` and `/tui`)
-- replay mid-delivery interruption tests (`/core` and `/tui`)
+A receive-side checkpoint also blocks processing of the second request, so the test cannot establish the claimed concurrent full-queue send.
 
-## 5. Architectural notes
+Required M010 correction:
 
-### TUI queue saturation
+- add connection-local capacity control;
+- pause the real writer before drain;
+- fill until `Full` is observed;
+- invoke the real production sender;
+- directly assert the returned error is `Timeout`;
+- run complete rollback assertions.
 
-The plan required a `/tui` queue saturation test mirroring the `/core` test. This was not implemented because the TUI adapter uses separate async channels (`out_tx`, `projection_tx`, `raw_tx`) with an independent send_task that continuously drains them. Unlike the core adapter (where responses are generated synchronously in the receive task and the channel fills when the writer is paused), the TUI's async channel architecture means `tx.send()` completes immediately when buffer is available. Filling the 256-capacity channel from the client side is not feasible. The `/core` queue saturation test covers the production timeout mechanism; the TUI's bounded delivery is validated through the existing `staged_critical_send` and `bounded_critical_delivery` infrastructure.
+### 3.2 `/tui` queue saturation is absent
 
-### Unix peer-disconnect and cancellation/race tests
+The approved M009 plan required actual queue saturation for both `/core` and `/tui`. The M009 closure records the TUI case as unimplemented because filling the normal capacity-256 queue from client traffic is inconvenient.
 
-The plan required WebSocket and Unix integration fixtures for disconnect-during-replay. The server exposes only WebSocket endpoints (`/core`, `/tui`). The Unix transport (`daemon_socket.rs`) is the daemon-internal client↔daemon communication layer, which does not share the same lifecycle seam infrastructure. Unix transport coverage is provided by unit-level tests in `src/core/transport/daemon_socket.rs` (raw forwarder cancellation, writer failure, event log replay).
+That is not a valid strict-closure exception. M009 explicitly allowed connection-local queue-capacity and sender controls for deterministic tests.
 
-### TUI lifecycle gate limitations
+Required M010 correction:
 
-The TUI handler runs inline in the recv_task. A lifecycle gate at `AfterReceiverInstallation` blocks the recv_task, preventing it from detecting socket closure via `ws_rx.next()`. This means the gate-based cancellation pattern (pause → drop client → release gate) does not work for TUI. The TUI cancellation and paused-setup tests use alternative approaches (graceful close or abrupt drop with subscription count verification) that prove the same invariants.
+- use a capacity-1 or capacity-2 connection-local TUI fixture;
+- fill the actual canonical-response queue;
+- directly observe the production timeout result.
 
-## 6. Unresolved findings
+### 3.3 Unix production-shaped verification is absent
 
-None. All M009 acceptance criteria are met.
+M009 required real Unix fixtures for:
 
-## 7. Roadmap disposition
+- peer close before canonical response completion;
+- real write/flush failure;
+- cancellation racing response completion;
+- repeated resource convergence;
+- fresh Unix client identity;
+- interrupted replay followed by durable retry.
 
-M009 is strictly closed. The session-projections subsystem roadmap and registry may return to strict closed status through this record.
+These were not implemented. Existing Unix unit tests for raw forwarder cancellation, selected writer failures, and replay do not satisfy the integrated mechanism matrix.
+
+Required M010 correction:
+
+- add Unix-specific connection-local barriers;
+- close the real peer around response write/flush;
+- exercise allowed race outcomes;
+- prove identical cleanup convergence;
+- add interrupted replay retry and identity proof.
+
+### 3.4 Task first-exit tests are nominal
+
+The shared task-owner unit test exercises only send-first. Adapter tests named `raw_source_first_exit` publish an event and then close the client; they do not terminate the raw source first or assert `RawEvent` selected teardown.
+
+Required M010 correction:
+
+- add send-first, receive-first, raw-first, and panic-first unit cases;
+- record and assert first task kind;
+- add adapter fixtures that close the actual raw source while the peer remains open;
+- assert all siblings are cancelled and joined.
+
+### 3.5 TUI pending-operation interruption remains unproven
+
+The TUI receive task processes lifecycle requests inline. Existing tests either cannot observe peer closure while a receive-side gate is held or disconnect after receiving the snapshot/replay response.
+
+Required M010 correction:
+
+- use a writer-side barrier or equivalent bounded dispatch/cancellation design;
+- close the real peer before canonical response delivery success;
+- prove setup never becomes live and complete cleanup occurs;
+- retry replay from the same cursor exactly.
+
+### 3.6 Complete rollback assertions are not complete or consistently applied
+
+The helper documented as comprehensive checks subscription baseline, optional aggregate task baseline, receiver non-reuse, and a second unsubscribe call. It does not enforce all documented requirements, including:
+
+- no live event leakage;
+- direct connection ownership removal;
+- explicit projection-forwarder join assertion;
+- handler completion;
+- unrelated-client continuity;
+- diagnostic/resource counter baselines;
+- bounded queue/retry growth.
+
+`ConnectionTaskProbe::assert_all_at_baseline` also does not assert its projection-forwarder counter. Dedicated writer-failure fixtures call the smaller helper rather than the documented comprehensive helper.
+
+Required M010 correction:
+
+- implement one complete transport rollback harness;
+- explicitly assert forwarder completion;
+- apply it to every real failure fixture.
+
+### 3.7 Static guards remain name-oriented
+
+The lifecycle guard mostly checks names and substrings. It does not prove that:
+
+- a queue was filled;
+- the production send returned `Timeout`;
+- a raw source exited first;
+- replay was interrupted before response completion;
+- Unix write/flush paths failed;
+- every real failure used the complete rollback harness.
+
+Required M010 correction:
+
+- require stable mechanism markers and direct result assertions;
+- retain runtime tests as the authority.
+
+### 3.8 Planning and evidence are inconsistent
+
+At the reviewed head:
+
+- the M009 implementation plan still says `Status: ready for handoff`;
+- the closure does not record exact implementation, follow-up, and closure commits in a strict evidence section;
+- the closure reports 27 M009 tests but lists fewer names;
+- the registry leaves M009 `Closed at commit` blank;
+- the recorded verification command list is narrower than the approved matrix;
+- no GitHub workflow/status checks were attached to the reviewed head.
+
+M010 must reconcile exact plan status, commits, commands, executable counts, local results, and CI status.
+
+## 4. Verification evidence retained
+
+The recorded local result of 42 passing `projection_transport_real` tests and passing selected static guards remains historical evidence for the accepted M009 changes. It is not independent CI confirmation and does not prove omitted or nominal mechanisms.
+
+Existing M008 and M009 exact replay, disclosure, artifact, TUI, ownership, queue-bound, and compatibility tests remain part of the final regression matrix.
+
+## 5. Unresolved findings
+
+| Severity | Finding | Impact | Required action |
+|---|---|---|---|
+| medium | `/core` queue test does not fill the actual queue or assert the production timeout result | Production bounded-queue timeout claim is unproven | Add deterministic capacity control, fill-to-full observation, and direct `Timeout` assertion under M010 |
+| medium | `/tui` actual queue saturation test is absent | One production adapter lacks the required mechanism evidence | Add capacity-controlled real TUI queue test |
+| medium | Unix peer-close/write/flush/race/interrupted-replay fixtures are absent | Unix lifecycle and replay strict-closure claims remain unproven | Implement the complete Unix mechanism matrix |
+| medium | First-exit and raw-source tests do not control or observe the named first task | Joined teardown is broadly tested but mechanism-specific claims are unsupported | Add deterministic task-kind and real raw-source controls |
+| medium | TUI pending setup/replay is not interrupted before response delivery | Cancellation-during-pending-work guarantee is incomplete | Add writer-side or equivalent cancellation-aware barrier fixtures |
+| medium | Complete rollback harness is incomplete and not applied to every real failure | Ownership, receiver, forwarder, idempotence, and non-interference evidence remains fragmented | Implement and apply one complete harness |
+| low | Static guards and closure evidence are name/count/commit inconsistent | Regression and audit confidence is reduced | Strengthen semantic guards and reconcile all planning evidence |
+| repository baseline | Existing unrelated warnings or clippy findings outside the touched transport surface | Does not affect accepted projection behavior | Track separately and report precisely |
+
+## 6. Roadmap disposition
+
+M009 remains conditionally closed. M010 is the sole dependency-ready session-projections plan and owns final mechanism-faithful transport verification and strict closure.
+
+The subsystem roadmap and registry may return to strict closed status only through an accepted `plans/closure/session-projections/010-status.md` record.
