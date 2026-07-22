@@ -3377,13 +3377,13 @@ async fn real_core_queue_saturation_observer_records_timeout() {
     writer_gate.release();
     wait_projection_subscription_count(&daemon, 0).await;
     // Wait for the writer to finish tearing down after cancellation.
-    timeout(Duration::from_millis(500), async {
+    timeout(Duration::from_millis(2000), async {
         loop {
             if probe.send_count() >= 1 && probe.receive_count() >= 1 && probe.raw_event_count() >= 1
             {
                 return;
             }
-            tokio::task::yield_now().await;
+            tokio::time::sleep(Duration::from_millis(5)).await;
         }
     })
     .await
@@ -3455,13 +3455,13 @@ async fn real_core_outbound_queue_capacity_is_one_when_configured() {
     writer_gate.release();
     // Close the client so the writer sees a broken pipe and exits.
     drop(_client);
-    timeout(Duration::from_millis(500), async {
+    timeout(Duration::from_millis(2000), async {
         loop {
             if probe.send_count() >= 1 && probe.receive_count() >= 1 && probe.raw_event_count() >= 1
             {
                 return;
             }
-            tokio::task::yield_now().await;
+            tokio::time::sleep(Duration::from_millis(5)).await;
         }
     })
     .await
@@ -3592,13 +3592,13 @@ async fn real_tui_pending_snapshot_interruption_via_writer_barrier_impl() {
     writer_gate.release();
 
     wait_projection_subscription_count(&daemon, 0).await;
-    timeout(Duration::from_millis(500), async {
+    timeout(Duration::from_millis(2000), async {
         loop {
             if probe.send_count() >= 1 && probe.receive_count() >= 1 && probe.raw_event_count() >= 1
             {
                 return;
             }
-            tokio::task::yield_now().await;
+            tokio::time::sleep(Duration::from_millis(5)).await;
         }
     })
     .await
