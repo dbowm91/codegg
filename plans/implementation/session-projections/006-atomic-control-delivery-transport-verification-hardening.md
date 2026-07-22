@@ -1,6 +1,6 @@
 # Session Projections Milestone 006 — Atomic Control Delivery, Transport Verification, and Raw Compatibility Hardening
 
-Status: closed
+Status: conditionally closed — see `plans/closure/session-projections/006-status.md`; strict subsystem closure completed by corrective M007
 
 Repository baseline: `0ee134e9ddabf808a7a46310436b3c1342900fb2` (`main`)
 

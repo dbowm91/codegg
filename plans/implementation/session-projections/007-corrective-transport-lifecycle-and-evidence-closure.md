@@ -1,6 +1,6 @@
 # Session Projections Milestone 007 — Corrective Transport Lifecycle and Evidence Closure
 
-Status: ready for handoff
+Status: closed — see `plans/closure/session-projections/007-status.md`
 
 Repository baseline: `dbbaabdde51db09f0c5beb704234ce1d94d01c9a` (`main`)
 
@@ -327,6 +327,7 @@ cargo test --test tui_project_routing -- --nocapture
 cargo test --test tui_project_tabs -- --nocapture
 cargo test --test single_daemon_lifecycle -- --nocapture
 python3 scripts/check_projection_transport_isolation.py
+python3 scripts/check_projection_transport_lifecycle.py
 python3 scripts/check_websocket_bounds.py
 bash scripts/check-core-boundary.sh
 python3 scripts/check_daemon_cwd_usage.py

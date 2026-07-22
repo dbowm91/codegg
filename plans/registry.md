@@ -30,25 +30,25 @@ Canonical direction remains in:
 | Provider connections and Eggpool | closed | `plans/subsystems/provider-connections-roadmap.md` | Milestone 5 closed | — |
 | Project catalog and lazy discovery | closed | `plans/subsystems/project-catalog-roadmap.md` | Milestone 4 closed | — |
 | Multi-project TUI and sessions | closed | `plans/subsystems/tui-project-sessions-roadmap.md` | Milestones 001–004 closed | — |
-| Frontend-neutral session projections | active | `plans/subsystems/session-projections-roadmap.md` | Milestone 007 — corrective transport lifecycle and evidence closure | Ready; M006 remains conditionally closed on Unix raw-task teardown, TUI raw-route epochs, adapter failure/race evidence, complete foreign-operation coverage, reconnect proof, and closure reconciliation |
+| Frontend-neutral session projections | closed | `plans/subsystems/session-projections-roadmap.md` | Milestone 007 — corrective transport lifecycle and evidence closure | — |
 
 ## Dependency-ready implementation plans
 
 | Subsystem | Milestone | Class | Plan | Baseline | Status |
 |---|---|---|---|---|---|
-| Frontend-neutral session projections | 007 — corrective transport lifecycle and evidence closure | correctness / lifecycle cleanup / transport verification | `plans/implementation/session-projections/007-corrective-transport-lifecycle-and-evidence-closure.md` | `dbbaabd` | ready |
+| — | — | — | — | — | No dependency-ready projection plan remains; deferred product work is intentionally unregistered |
 
 ## Active closure work
 
 | Subsystem | Milestone | Closure record | Status | Open findings |
 |---|---|---|---|---|
-| Frontend-neutral session projections | 006 — atomic control delivery, transport verification, and raw compatibility hardening | `plans/closure/session-projections/006-status.md` | conditionally closed | Detached Unix raw forwarder; stale queued `/tui` raw events across `SessionInfo` changes; missing production-adapter failure/race proof; incomplete foreign-operation/reconnect matrix; evidence-count and protocol-version reconciliation |
+| — | — | — | — | No active session-projections closure work remains |
 
 ## Blocked work
 
 | Work item | Blocker | Required resolution | Owner document |
 |---|---|---|---|
-| Return Session Projections roadmap to strict closed status | M007 lifecycle and evidence findings | Implement owned Unix raw teardown, TUI route generations, deterministic staged-subscription failures, real blocked-response races, complete foreign/reconnect tests, and corrected closure evidence; then accept an M007 closure record | `plans/implementation/session-projections/007-corrective-transport-lifecycle-and-evidence-closure.md` |
+| — | — | — | No blocked session-projections work remains; M007 strict closure was accepted |
 
 ## Deferred unregistered product work
 
@@ -64,7 +64,8 @@ These are not dependency-ready correctness plans and remain outside the active h
 
 | Subsystem | Milestone | Closure record | Closed at commit | Follow-up |
 |---|---|---|---|---|
-| Frontend-neutral session projections | 006 — atomic control delivery, transport verification, and raw compatibility hardening | `plans/closure/session-projections/006-status.md` | `270cc5f` closure; `8ca570f` implementation | M006 corrected to conditional closure; M007 owns lifecycle and evidence findings |
+| Frontend-neutral session projections | 007 — corrective transport lifecycle and evidence closure | `plans/closure/session-projections/007-status.md` | `9887c2d` implementation; closure finalization commit recorded in the closure record | Strict subsystem closure; no dependency-ready projection plan remains |
+| Frontend-neutral session projections | 006 — atomic control delivery, transport verification, and raw compatibility hardening | `plans/closure/session-projections/006-status.md` | `270cc5f` closure; `8ca570f` implementation | Historical conditional record; its findings were resolved by M007 strict closure |
 | Frontend-neutral session projections | 005 — remote transport isolation, resume, and compatibility closure | `plans/closure/session-projections/005-status.md` | `4c751ff` | M006 hardened atomic control delivery and normal-flow transport evidence |
 | Frontend-neutral session projections | 004 — frontend adoption and compatibility | `plans/closure/session-projections/004-status.md` | `4c751ff` (strictly closed after corrective transport closure) | — |
 | Frontend-neutral session projections | 003 — visibility, redaction, and artifact handles | `plans/closure/session-projections/003-status.md` | `bac73ce` | — |

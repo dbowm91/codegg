@@ -1,6 +1,6 @@
 # Frontend-Neutral Session Projections and Replay Roadmap
 
-Status: active — Milestone 007 corrective transport lifecycle and evidence closure
+Status: closed — Milestone 007 corrective transport lifecycle and evidence closure accepted
 
 Long-term references:
 
@@ -57,7 +57,7 @@ It consumes stable project/session identities, daemon events, turn/tool/run/job 
 
 ### M6 conditional closure
 
-M6 remains a valid implementation foundation but is conditionally closed after post-closure inspection found:
+M6 remains a valid implementation foundation. Its historical closure record is conditionally closed because post-closure inspection found:
 
 - the Unix raw forwarder is detached from connection teardown and may retain writer/filter/event-receiver state after peer disconnect;
 - `/tui` raw events have no route generation, so an event queued for session A may drain after `SessionInfo` switches the connection to session B;
@@ -69,9 +69,9 @@ M6 remains a valid implementation foundation but is conditionally closed after p
 Authoritative documents:
 
 - Conditional M6 record: `plans/closure/session-projections/006-status.md`
-- M7 handoff: `plans/implementation/session-projections/007-corrective-transport-lifecycle-and-evidence-closure.md`
+- M7 corrective closure: `plans/closure/session-projections/007-status.md`
 
-M7 does not reopen storage, reducer, disclosure, replay authority, or protocol DTO meaning.
+M7 resolved these findings without reopening storage, reducer, disclosure, replay authority, or protocol DTO meaning.
 
 ## 4. Target architecture
 
@@ -123,10 +123,10 @@ M4 frontend adoption/controller                             [closed]
 M5 remote transport isolation, resume, compatibility        [closed]
         |
         v
-M6 atomic control delivery and transport hardening          [conditionally closed]
+M6 atomic control delivery and transport hardening          [conditionally closed; findings resolved by M7]
         |
         v
-M7 lifecycle ownership, route epochs, exact race evidence   [ready]
+M7 lifecycle ownership, route epochs, exact race evidence   [closed]
 ```
 
 M7 has no unmet design dependency. It consumes the M6 critical-send and activation state machine and tightens production lifecycle ownership and evidence.
@@ -175,7 +175,7 @@ Accepted outcomes include connection-local ownership, exact stream/subscription 
 
 ### Milestone 6 — Atomic control delivery, transport verification, and raw compatibility hardening
 
-Status: conditionally closed.
+Status: conditionally closed; findings resolved by corrective M007.
 
 - Plan: `plans/implementation/session-projections/006-atomic-control-delivery-transport-verification-hardening.md`
 - Conditional closure: `plans/closure/session-projections/006-status.md`
@@ -193,15 +193,19 @@ Accepted outcomes:
 - bounded deprecated `/ws` output;
 - static guards against unbounded server WebSocket channels.
 
-Strict closure is deferred to M7 because Unix raw task ownership, stale queued TUI raw routing, adapter-level failure/race tests, full foreign-operation coverage, reconnect evidence, and closure accuracy remain incomplete.
+The linked M006 record remains a historical conditional record. Its named lifecycle and evidence findings were resolved by M007; the subsystem is strictly closed by the M007 closure record.
 
 ### Milestone 7 — Corrective transport lifecycle and evidence closure
 
-Status: ready.
+Status: closed.
 
 Implementation plan:
 
 - `plans/implementation/session-projections/007-corrective-transport-lifecycle-and-evidence-closure.md`
+
+Closure:
+
+- `plans/closure/session-projections/007-status.md`
 
 Class: correctness / lifecycle cleanup / transport verification
 
@@ -312,5 +316,5 @@ This roadmap returns to strict closed status when the projection transport is co
 | 3 | closed | `plans/implementation/session-projections/003-visibility-redaction-artifact-handles.md` | `plans/closure/session-projections/003-status.md` | — |
 | 4 | closed | `plans/implementation/session-projections/004-frontend-adoption-compatibility-closure.md` | `plans/closure/session-projections/004-status.md` | — |
 | 5 | closed | `plans/implementation/session-projections/005-remote-transport-isolation-resume-closure.md` | `plans/closure/session-projections/005-status.md` | — |
-| 6 | conditionally closed | `plans/implementation/session-projections/006-atomic-control-delivery-transport-verification-hardening.md` | `plans/closure/session-projections/006-status.md` | M7 lifecycle/evidence findings |
-| 7 | ready | `plans/implementation/session-projections/007-corrective-transport-lifecycle-and-evidence-closure.md` | — | — |
+| 6 | conditionally closed; findings resolved by M7 | `plans/implementation/session-projections/006-atomic-control-delivery-transport-verification-hardening.md` | `plans/closure/session-projections/006-status.md` | —; strict subsystem closure is recorded by M7 |
+| 7 | closed | `plans/implementation/session-projections/007-corrective-transport-lifecycle-and-evidence-closure.md` | `plans/closure/session-projections/007-status.md` | — |
