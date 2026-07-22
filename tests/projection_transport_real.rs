@@ -4292,9 +4292,11 @@ async fn real_tui_full_queue_operation_correlated_timeout_impl() {
 
     // Wait for the writer to re-enter the pre-recv gate so the channel is
     // empty and stable, then issue the filler message via the production
-    // helper. Observe TrySendError::Full deterministically.
+    // helper. Observe TrySendError::Full deterministically. We do NOT
+    // release the pre-recv gate between filler and subscribe — keeping the
+    // writer parked at the pre-recv gate is what makes the channel stay full
+    // long enough for the snapshot enqueue below to time out.
     wait_until_writer_gates_reached(&observer, 3).await;
-    writer_gate.release();
     let _filler1 = codegg::server::ws::queue_message(
         &outbound_sender,
         axum::extract::ws::Message::Text("tui-filler-m011".to_string().into()),
@@ -4353,13 +4355,36 @@ async fn real_tui_full_queue_operation_correlated_timeout_impl() {
         "timeout fired at {elapsed:?} — outside CRITICAL_DELIVERY_TIMEOUT window"
     );
 
+    writer_gate.release();
+    drop(client);
+
+    // Wait for the writer parked at the pre-recv gate to drain the filler
+    // and exit via cancellation, then check the per-connection probe
+    // counters. Closing `client` cancels the connection, which causes the
+    // writer to break out of its gate wait and complete.
+    timeout(Duration::from_millis(2000), async {
+        loop {
+            let probes = registry.snapshot().await;
+            if !probes.is_empty() {
+                let p = &probes[0];
+                if p.send_count() >= 1
+                    && p.receive_count() >= 1
+                    && p.raw_event_count() >= 1
+                    && p.cleanup_count() >= 1
+                {
+                    return;
+                }
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("TUI connection tasks should drain after gate release and client drop");
+
     let mut probes = registry.take().await;
     assert_eq!(probes.len(), 1);
     let probe = probes.pop().unwrap();
     probe.assert_all_at_baseline();
-
-    writer_gate.release();
-    drop(client);
 
     // The TUI rollback path is local subscription state only — the daemon
     // has no projection subscription for TUI clients — so we use the

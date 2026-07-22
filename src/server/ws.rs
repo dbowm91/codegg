@@ -2207,35 +2207,38 @@ async fn handle_tui_message_with_observer(
                 projection_tx,
                 _server_state,
                 cancellation,
+                observer,
             )
             .await?;
         }
         TuiMessage::ProjectionAck { ack } => {
-            handle_projection_ack(ack, state, bus_tx, _server_state, cancellation).await?;
+            handle_projection_ack(ack, state, bus_tx, _server_state, cancellation, observer)
+                .await?;
         }
         TuiMessage::ProjectionResume {
             cursor,
             include_snapshot_if_resync,
         } => {
-            handle_projection_resume(
-                cursor,
-                include_snapshot_if_resync,
-                state,
-                bus_tx,
-                projection_tx,
-                _server_state,
-                cancellation,
-            )
-            .await?;
-        }
-        TuiMessage::ProjectionUnsubscribe { subscription_id } => {
-            handle_projection_unsubscribe(
-                subscription_id,
-                state,
-                bus_tx,
-                _server_state,
-                cancellation,
-            )
+                handle_projection_resume(
+                    cursor,
+                    include_snapshot_if_resync,
+                    state,
+                    bus_tx,
+                    projection_tx,
+                    _server_state,
+                    cancellation,
+                    observer,
+                )
+                .await?;
+            }
+            TuiMessage::ProjectionUnsubscribe { subscription_id } => {
+                handle_projection_unsubscribe(
+                    subscription_id,
+                    state,
+                    bus_tx,
+                    _server_state,
+                    cancellation,
+                )
             .await?;
         }
         TuiMessage::ProjectionSubscriptionStatus { subscription_id } => {
@@ -2375,6 +2378,7 @@ async fn handle_projection_subscribe(
     projection_tx: &WsSender,
     server_state: &crate::server::state::ServerState,
     cancellation: &CancellationToken,
+    observer: Option<&Arc<TransportLifecycleObserver>>,
 ) -> Result<(), CriticalSendFailure> {
     use crate::protocol::projection::replay::ProjectionSnapshotBundle;
     use crate::protocol::projection::snapshot::SessionProjectionSnapshot;
@@ -2487,8 +2491,11 @@ async fn handle_projection_subscribe(
                 cursor: Some(cursor),
                 retention_floor_seq: Some(retention_floor_seq),
             };
-            if let Err(error) =
+            if let Err(error) = if let Some(observer) = observer {
+                staged_critical_send_observed(bus_tx, &msg, cancellation, &lifecycle_seam, Some(observer)).await
+            } else {
                 staged_critical_send(bus_tx, &msg, cancellation, &lifecycle_seam).await
+            }
             {
                 rollback_tui_projection_subscription(
                     daemon,
@@ -2521,6 +2528,7 @@ async fn handle_projection_subscribe(
                     &client_id,
                     cancellation,
                     &lifecycle_seam,
+                    observer,
                 )
                 .await
                 {
@@ -2576,6 +2584,7 @@ async fn handle_projection_subscribe(
                 &client_id,
                 cancellation,
                 &lifecycle_seam,
+                observer,
             )
             .await;
             if let Ok(()) = delivered {
@@ -2829,6 +2838,7 @@ async fn emit_tui_projection_response(
     client_id: &str,
     cancellation: &CancellationToken,
     lifecycle_seam: &ProjectionLifecycleSeam,
+    observer: Option<&Arc<TransportLifecycleObserver>>,
 ) -> Result<(), CriticalSendFailure> {
     match response {
         Ok(crate::protocol::core::CoreResponse::ProjectionReplay {
@@ -2864,16 +2874,30 @@ async fn emit_tui_projection_response(
                     cancellation,
                 )
                 .await?;
-            staged_critical_send(
-                bus_tx,
-                &TuiMessage::ProjectionReplay {
-                    subscription_id,
-                    batch,
-                },
-                cancellation,
-                lifecycle_seam,
-            )
-            .await
+            if let Some(observer) = observer {
+                staged_critical_send_observed(
+                    bus_tx,
+                    &TuiMessage::ProjectionReplay {
+                        subscription_id,
+                        batch,
+                    },
+                    cancellation,
+                    lifecycle_seam,
+                    Some(observer),
+                )
+                .await
+            } else {
+                staged_critical_send(
+                    bus_tx,
+                    &TuiMessage::ProjectionReplay {
+                        subscription_id,
+                        batch,
+                    },
+                    cancellation,
+                    lifecycle_seam,
+                )
+                .await
+            }
         }
         Ok(crate::protocol::core::CoreResponse::ProjectionResyncRequired {
             subscription_id,
@@ -2930,6 +2954,7 @@ async fn handle_projection_ack(
     bus_tx: &WsSender,
     server_state: &crate::server::state::ServerState,
     cancellation: &CancellationToken,
+    observer: Option<&Arc<TransportLifecycleObserver>>,
 ) -> Result<(), CriticalSendFailure> {
     if !require_projection_primary(state, bus_tx).await {
         return Ok(());
@@ -3005,7 +3030,18 @@ async fn handle_projection_ack(
             error: Some(error.to_string()),
         },
     };
-    staged_critical_send(bus_tx, &message, cancellation, &lifecycle_seam).await?;
+    if let Some(observer) = observer {
+        staged_critical_send_observed(
+            bus_tx,
+            &message,
+            cancellation,
+            &lifecycle_seam,
+            Some(observer),
+        )
+        .await?;
+    } else {
+        staged_critical_send(bus_tx, &message, cancellation, &lifecycle_seam).await?;
+    }
     Ok(())
 }
 
@@ -3017,6 +3053,7 @@ async fn handle_projection_resume(
     projection_tx: &WsSender,
     server_state: &crate::server::state::ServerState,
     cancellation: &CancellationToken,
+    observer: Option<&Arc<TransportLifecycleObserver>>,
 ) -> Result<(), CriticalSendFailure> {
     if !require_projection_primary(state, bus_tx).await {
         return Ok(());
@@ -3056,6 +3093,7 @@ async fn handle_projection_resume(
         &client_id,
         cancellation,
         &lifecycle_seam,
+        observer,
     )
     .await;
     if let Err(error) = delivered {
